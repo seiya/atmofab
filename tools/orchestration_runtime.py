@@ -7521,6 +7521,7 @@ def build_readonly_bwrap_profile(
     backend_command: str,
     backend_type: str = "",
     backend_ro_extra: Sequence[str] = (),
+    backend_ro_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -7568,6 +7569,7 @@ def build_readonly_bwrap_profile(
         "read_roots": [],
         "write_roots": [],
         "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
+        "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
         "runtime_rw_bind_paths": backend_rw,
         "tmp_dir": str(tmp_root),
         "workspace_tmp_rw_abs": str(workspace_tmp_host),
@@ -7588,6 +7590,7 @@ def build_bwrap_profile(
     backend_command: str,
     backend_type: str = "",
     backend_ro_extra: Sequence[str] = (),
+    backend_ro_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -7793,6 +7796,7 @@ def build_bwrap_profile(
         "read_roots": read_roots,
         "write_roots": write_roots,
         "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
+        "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
         # Writable binds outside repo_root: the backend's config/credential home
         # (auth refresh + session transcript). Bound writable so the CLI runs and
         # Phase 4 `--session-id`/`--resume` can read/write their session files.
@@ -7839,6 +7843,14 @@ def render_bwrap_command(
     for item in profile.get("runtime_ro_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--ro-bind", item.strip(), item.strip()])
+    for mapping in profile.get("runtime_ro_bind_mappings", []):
+        if not (isinstance(mapping, list) and len(mapping) == 2
+                and all(isinstance(part, str) and part.strip() for part in mapping)):
+            raise ValueError("runtime_ro_bind_mappings entries must be [source, destination]")
+        source, destination = mapping[0].strip(), mapping[1].strip()
+        if not (Path(source).is_file() and Path(destination).is_file()):
+            raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
+        cmd.extend(["--ro-bind", source, destination])
     cmd.extend(["--ro-bind", repo_root, repo_root])
     # write_root absolute paths, used to suppress an ro read-bind that would otherwise
     # make a writable artifact read-only.
@@ -14866,7 +14878,12 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     auth = origin / "auth.json"
     if not auth.is_file():
         raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
-    return {"home": str(home.resolve()), "auth": str(auth.resolve()), "hooks_sha256": digest}
+    auth_destination = home / "auth.json"
+    # bwrap needs an existing destination for a file bind. This empty regular
+    # file is hidden by the read-only source bind before Codex starts.
+    auth_destination.touch(exist_ok=True)
+    return {"home": str(home.resolve()), "auth": str(auth.resolve()),
+            "auth_destination": str(auth_destination.resolve()), "hooks_sha256": digest}
 
 
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
@@ -16707,7 +16724,9 @@ def record_launch(
             profile_kwargs: dict[str, Any] = {}
             if codex_isolation is not None:
                 profile_kwargs = {
-                    "backend_ro_extra": [codex_isolation["auth"]],
+                    "backend_ro_mappings": [
+                        (codex_isolation["auth"], codex_isolation["auth_destination"])
+                    ],
                     "backend_rw_override": [codex_isolation["home"]],
                     "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
                 }
