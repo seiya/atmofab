@@ -39,6 +39,12 @@ class HookCliTests(unittest.TestCase):
         assert isinstance(body, dict)
         assert body.get("decision") == "allow"
 
+    def test_audit_summary_preserves_codex_session_start_model(self) -> None:
+        summary = cli._audit_payload_summary(
+            {"model": "gpt-5.6-codex", "session_id": "thread-123"}, None)
+        self.assertEqual(summary["model"], "gpt-5.6-codex")
+        self.assertEqual(summary["session_id"], "thread-123")
+
     def test_subprocess_command_works_with_module_entrypoint(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp:

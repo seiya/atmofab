@@ -146,6 +146,11 @@ def _sanitize_audit_detail(value: Any) -> Any:
 
 def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> dict[str, Any]:
     summary: dict[str, Any] = {}
+    model = _payload_value(payload, "model")
+    if isinstance(model, str) and model.strip():
+        # Codex SessionStart supplies the effective model even though the
+        # non-interactive JSONL stream does not guarantee a model field.
+        summary["model"] = _trim_audit_text(model.strip(), limit=200)
     session_id = _payload_value(payload, "session_id")
     if isinstance(session_id, str) and session_id.strip():
         summary["session_id"] = session_id.strip()

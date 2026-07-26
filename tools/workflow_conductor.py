@@ -2342,13 +2342,32 @@ class Conductor:
         if self.backend == "claude" and self._claude_session_resumable(target):
             return target
         if self.backend == "codex":
-            from tools.orchestration_runtime import _read_session_run_index
+            from tools.orchestration_runtime import (
+                _prepare_codex_workflow_home,
+                _read_session_run_index,
+            )
+            # Ensure the isolated home exists before accepting a recorded Codex
+            # thread. If /tmp state vanished, this rotates its generation; every
+            # prior thread is then deliberately cold-fallback only.
+            try:
+                isolation = _prepare_codex_workflow_home(self.repo_root, self.orchestration_id)
+            except (OSError, ValueError):
+                # Launch-time isolation validation remains authoritative.  At
+                # resume selection, an unavailable home simply means this reuse
+                # cannot be warm-resumed; preserve the established cold fallback.
+                isolation = None
+            if isolation is None:
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
+                return None
+            generation = int(isolation["generation"])
             index = _read_session_run_index(self.repo_root, self.orchestration_id)
             for entry in index.get("entries", []):
                 if not isinstance(entry, dict) or entry.get("agent_run_id") != target:
                     continue
                 session = entry.get("agent_session_id")
-                if isinstance(session, str) and session.strip() and session.strip() != target:
+                entry_generation = entry.get("codex_home_generation")
+                if (isinstance(session, str) and session.strip() and session.strip() != target
+                        and entry_generation == generation):
                     return session.strip()
         self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
         return None
@@ -2640,11 +2659,14 @@ class Conductor:
         _write_json(response_path, response)
         role = str(request.get("agent_role") or "substep").strip().lower()
         context = request.get("context_id")
+        raw_generation = response.get("codex_home_generation")
+        generation = raw_generation if isinstance(raw_generation, int) and raw_generation > 0 else None
         _append_session_run_index_entry(
             self.repo_root, self.orchestration_id, agent_run_id=child_arid,
             agent_session_id=thread_id,
             context_id=context if isinstance(context, str) else None,
             agent_role=role, status="running",
+            codex_home_generation=generation,
         )
 
     def _spawn_codex_json_leaf(
@@ -4816,6 +4838,13 @@ clean:
             # (`--output-format json`), NOT the session transcript (~/.claude is not read on the
             # pure path). A resolved override wins and skips the transcript lookup.
             payload["agent_model"] = str(agent_model_override).strip()
+            if self.backend == "codex":
+                payload["agent_model_provenance"] = "codex_jsonl"
+        elif self.backend == "codex":
+            hook_model = self._codex_session_start_model(session_id)
+            if hook_model:
+                payload["agent_model"] = hook_model
+                payload["agent_model_provenance"] = "codex_hook_session_start"
         elif pure:
             # Pure path with no envelope model (a provenance gap): leave agent_model ABSENT for
             # record_agent_run to backfill the launch-request alias. Crucially, do NOT fall back
@@ -4841,6 +4870,42 @@ clean:
         if (status != "pass" or not output_refs) and result_summary and result_summary.strip():
             payload["result_summary"] = result_summary.strip()
         return payload
+
+    def _codex_session_start_model(self, session_id: str) -> str | None:
+        """Return the effective model reported by Codex's SessionStart hook.
+
+        Codex JSONL standard events do not guarantee model provenance.  The
+        hook receives it with the session identity, and the conductor copies
+        the matching value only while authoring the terminal run record.
+        """
+        if not session_id.strip():
+            return None
+        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                / "hooks" / "native_hook_events.jsonl")
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        for raw in reversed(lines):
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("backend") != "codex" or event.get("event") != "session_start":
+                continue
+            summary = event.get("payload_summary")
+            if not isinstance(summary, dict):
+                continue
+            tokens = {
+                value.strip() for key in ("session_id", "agent_session_id")
+                if isinstance((value := summary.get(key)), str) and value.strip()
+            }
+            model = summary.get("model")
+            if session_id in tokens and isinstance(model, str) and model.strip():
+                return model.strip()
+        return None
 
     # -- deterministic (non-LLM) substep execution ----------------------------
     # Build and Validate.execute are contractually non-LLM (deterministic compile /

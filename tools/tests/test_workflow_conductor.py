@@ -295,6 +295,54 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
         self.assertIn("resume_session_unavailable", emitted)
 
+    def test_codex_reuse_falls_back_cold_after_home_generation_rotates(self) -> None:
+        """Threads from a tmpfiles-deleted CODEX_HOME are never resumed."""
+        from unittest.mock import patch
+        from tools.orchestration_runtime import _append_session_run_index_entry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id="orch_x",
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+            )
+            c.calls = []
+            emitted: list[str] = []
+            c.emit = lambda event, **kw: emitted.append(event)  # type: ignore[assignment]
+            _append_session_run_index_entry(
+                repo_root, "orch_x", agent_run_id="child-1", agent_session_id="thread-old",
+                context_id="child-1", agent_role="substep", status="pass",
+                codex_home_generation=1,
+            )
+            with patch(
+                "tools.orchestration_runtime._prepare_codex_workflow_home",
+                return_value={"generation": "2"},
+            ):
+                repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
+                self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
+            self.assertIn("resume_session_unavailable", emitted)
+
+    def test_codex_session_start_model_is_resolved_by_thread_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            hooks_path = repo_root / "workspace" / "orchestrations" / "orch_x" / "hooks" / "native_hook_events.jsonl"
+            hooks_path.parent.mkdir(parents=True)
+            hooks_path.write_text(
+                json.dumps({
+                    "backend": "codex", "event": "session_start",
+                    "payload_summary": {
+                        "session_id": "thread-123", "model": "gpt-5.6-codex",
+                    },
+                }) + "\n",
+                encoding="utf-8",
+            )
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id="orch_x",
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+            )
+            self.assertEqual(c._codex_session_start_model("thread-123"), "gpt-5.6-codex")
+            self.assertIsNone(c._codex_session_start_model("other-thread"))
+
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
         # strategy-driven warm/cold selection is preserved (LLM verify-attributed restarts stay
@@ -774,6 +822,34 @@ class ConductHappyPathTest(unittest.TestCase):
                 refs, "compile", "generate", "child-arid-2", "pass", [])
         # unresolved -> left absent so record_agent_run backfills the launch alias
         self.assertNotIn("agent_model", payload)
+
+    def test_agent_run_json_records_codex_session_start_model(self) -> None:
+        from tools.orchestration_runtime import _append_session_run_index_entry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id="orch_x",
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+            )
+            _append_session_run_index_entry(
+                repo_root, "orch_x", agent_run_id="child-arid-3", agent_session_id="thread-123",
+                context_id="child-arid-3", agent_role="substep", status="pass",
+                codex_home_generation=1,
+            )
+            hooks_path = repo_root / "workspace" / "orchestrations" / "orch_x" / "hooks" / "native_hook_events.jsonl"
+            hooks_path.parent.mkdir(parents=True)
+            hooks_path.write_text(
+                json.dumps({
+                    "backend": "codex", "event": "session_start",
+                    "payload_summary": {"session_id": "thread-123", "model": "gpt-5.6-codex"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            payload = c._agent_run_json(
+                self._refs(), "compile", "generate", "child-arid-3", "pass", [])
+        self.assertEqual(payload["agent_model"], "gpt-5.6-codex")
+        self.assertEqual(payload["agent_model_provenance"], "codex_hook_session_start")
 
     def test_agent_run_json_carries_step_and_substep(self) -> None:
         c = self._conductor()

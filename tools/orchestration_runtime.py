@@ -3804,6 +3804,7 @@ def _append_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
+    codex_home_generation: int | None = None,
 ) -> None:
     doc = _read_session_run_index(repo_root, orchestration_id)
     entries_obj = doc.get("entries")
@@ -3823,11 +3824,12 @@ def _append_session_run_index_entry(
         item["context_id"] = normalized_context_id
         item["agent_role"] = normalized_role
         item["status"] = normalized_status
+        if codex_home_generation is not None:
+            item["codex_home_generation"] = codex_home_generation
         item["updated_at"] = _utc_now_iso()
         _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
         return
-    entries.append(
-        {
+    entry: dict[str, Any] = {
             "agent_run_id": normalized_run_id,
             "agent_session_id": normalized_session_id,
             "session_id": normalized_session_id,
@@ -3836,7 +3838,9 @@ def _append_session_run_index_entry(
             "status": normalized_status,
             "recorded_at": _utc_now_iso(),
         }
-    )
+    if codex_home_generation is not None:
+        entry["codex_home_generation"] = codex_home_generation
+    entries.append(entry)
     doc["entries"] = entries
     _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
 
@@ -14919,10 +14923,22 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
         if not isinstance(meta, dict):
             raise ValueError("orchestration metadata missing while preparing Codex home")
         raw_home = meta.get("codex_workflow_home")
+        raw_generation = meta.get("codex_workflow_home_generation")
+        prior_generation = raw_generation if isinstance(raw_generation, int) and raw_generation > 0 else 0
+        rotate_missing_home = False
         if isinstance(raw_home, str) and raw_home.strip():
             home = Path(raw_home)
-            _require_secure_codex_home(home)
-        else:
+            try:
+                home.lstat()
+            except FileNotFoundError:
+                # /tmp is intentionally non-durable.  A host restart / tmpfiles
+                # cleanup therefore rotates the home instead of making --resume
+                # permanently unlaunchable.  The generation below prevents any
+                # thread recorded against the vanished home from warm-resuming.
+                rotate_missing_home = True
+            else:
+                _require_secure_codex_home(home)
+        if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
             # leaf scratch.  This home is a writable backend-state bind and must
             # never inherit that value: backend rw binds inside the repository are
@@ -14931,6 +14947,17 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             os.chmod(home, 0o700)
             _require_secure_codex_home(home)
             meta["codex_workflow_home"] = str(home)
+            meta["codex_workflow_home_generation"] = prior_generation + 1
+            if rotate_missing_home:
+                meta["codex_workflow_home_rotated_from"] = raw_home.strip()
+                meta["codex_workflow_home_rotated_at"] = _utc_now_iso()
+            _write_json(meta_path, meta)
+        generation = meta.get("codex_workflow_home_generation")
+        if not isinstance(generation, int) or generation <= 0:
+            # Metadata from before home generations existed: retain its secure
+            # home but treat old thread rows (which lack a generation) as stale.
+            generation = max(1, prior_generation)
+            meta["codex_workflow_home_generation"] = generation
             _write_json(meta_path, meta)
         hooks_path = home / "hooks.json"
         _secure_codex_home_file(hooks_path, data)
@@ -14955,6 +14982,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
         "auth_destination": str(auth_destination.resolve()),
         "hooks": str(hooks_path.resolve()),
         "config": str(config_path.resolve()),
+        "generation": str(generation),
         "hooks_sha256": digest,
     }
 
@@ -16793,6 +16821,7 @@ def record_launch(
             if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
                 codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
                 response_payload["codex_workflow_home"] = codex_isolation["home"]
+                response_payload["codex_home_generation"] = int(codex_isolation["generation"])
                 response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
             profile_kwargs: dict[str, Any] = {}
             if codex_isolation is not None:

@@ -374,6 +374,38 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     _prepare_codex_workflow_home(repo_root, orch)
             self.assertEqual(unsafe_target.read_text(encoding="utf-8"), "preserve me")
 
+    def test_prepare_codex_home_rotates_missing_tmp_home(self) -> None:
+        """A tmpfiles-cleaned home forces cold resume rather than blocking --resume."""
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            hooks_dir = repo_root / ".codex"
+            hooks_dir.mkdir(parents=True)
+            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            orch = "orch_codex_tmp_rotation"
+            meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
+            meta_path.parent.mkdir(parents=True)
+            meta_path.write_text(json.dumps({"orchestration_id": orch}), encoding="utf-8")
+            auth_home = root / "operator-codex"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            with patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
+                first = _prepare_codex_workflow_home(repo_root, orch)
+                old_home = Path(first["home"])
+                for child in old_home.iterdir():
+                    child.unlink()
+                old_home.rmdir()
+                second = _prepare_codex_workflow_home(repo_root, orch)
+            self.assertNotEqual(first["home"], second["home"])
+            self.assertEqual(first["generation"], "1")
+            self.assertEqual(second["generation"], "2")
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["codex_workflow_home_rotated_from"], first["home"])
+            self.assertEqual(meta["codex_workflow_home_generation"], 2)
+
     def test_effective_pass_substep_run_ids_uses_violation_file_without_nameerror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
