@@ -5742,6 +5742,11 @@ class LeafSpawnTest(unittest.TestCase):
                     c_codex._register_codex_thread = lambda *args: None  # type: ignore[method-assign]
                     c_codex.spawn_leaf(
                         "P", {"HOME": "/h"}, child_arid="A")
+                    # The read-only diagnostician has no child ARID / launch
+                    # record. It still needs the Codex JSONL transport, but must
+                    # not write a session-index row for the diagnostic thread.
+                    profile = json.loads((prof_dir / "A.json").read_text(encoding="utf-8"))
+                    c_codex.spawn_leaf("P", {"HOME": "/h"}, profile=profile)
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
                 # profile missing → fail closed (never launch unconfined)

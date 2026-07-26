@@ -2650,8 +2650,10 @@ class Conductor:
     def _spawn_codex_json_leaf(
         self, argv: list[str], child_env: dict[str, str], child_arid: str | None
     ) -> ProcResult:
-        if not child_arid:
-            raise RuntimeError("codex JSON launch requires a child agent_run_id")
+        # A recorded step/substep leaf must supply its child ARID so the emitted
+        # thread can be registered before file tools run.  The read-only failure
+        # diagnostician has no child run by design; it still uses JSONL for its
+        # final response, but its thread is intentionally not indexed.
         process = subprocess.Popen(
             argv, cwd=self.repo_root, env=child_env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -2706,7 +2708,8 @@ class Conductor:
                         raise RuntimeError("codex emitted conflicting thread IDs")
                     if thread_id is None:
                         thread_id = candidate.strip()
-                        self._register_codex_thread(child_arid, thread_id)
+                        if child_arid:
+                            self._register_codex_thread(child_arid, thread_id)
                 item = event.get("item")
                 if kind == "item.completed" and isinstance(item, dict):
                     if str(item.get("type") or "") == "agent_message":
