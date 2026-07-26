@@ -327,12 +327,19 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             auth_home = Path(tmp) / "operator-codex"
             auth_home.mkdir()
             (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
-            with patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
+            repo_tmpdir = repo_root / "workspace" / "tmp" / "orchestration-agent"
+            repo_tmpdir.mkdir(parents=True)
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(auth_home), "TMPDIR": str(repo_tmpdir)},
+                clear=False,
+            ):
                 first = _prepare_codex_workflow_home(repo_root, orch)
                 second = _prepare_codex_workflow_home(repo_root, orch)
             home = Path(first["home"])
             self.assertEqual(first["home"], second["home"])
             self.assertNotIn(orch, home.name, "home path must not derive from orchestration id")
+            self.assertFalse(home.is_relative_to(repo_root), "CODEX_HOME must ignore in-repo TMPDIR")
             self.assertEqual(home.stat().st_mode & 0o777, 0o700)
             recorded = json.loads(meta_path.read_text(encoding="utf-8"))
             self.assertEqual(recorded["codex_workflow_home"], str(home))

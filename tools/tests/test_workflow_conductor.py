@@ -5250,6 +5250,42 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(profile.get("write_roots"), [])
         self.assertEqual(profile.get("read_roots"), [])
 
+    def test_codex_diagnostician_uses_isolated_codex_home(self) -> None:
+        """The trust-bypassed diagnostician must not inherit ambient CODEX_HOME."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            hooks_dir = repo_root / ".codex"
+            hooks_dir.mkdir(parents=True)
+            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            orch = "orch_codex_diagnostician"
+            meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
+            meta_path.parent.mkdir(parents=True)
+            meta_path.write_text(json.dumps({"orchestration_id": orch}), encoding="utf-8")
+            ambient_home = Path(tmp) / "ambient-codex"
+            ambient_home.mkdir()
+            (ambient_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            in_repo_tmpdir = repo_root / "workspace" / "tmp" / "ORCH"
+            in_repo_tmpdir.mkdir(parents=True)
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id=orch,
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+            )
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(ambient_home), "TMPDIR": str(in_repo_tmpdir)},
+                clear=False,
+            ):
+                profile = c._readonly_sandbox_profile()
+            isolated_home = Path(profile["env"]["CODEX_HOME"])
+            self.assertNotEqual(isolated_home, ambient_home)
+            self.assertEqual(profile["runtime_rw_bind_paths"], [str(isolated_home)])
+            mappings = profile["runtime_ro_bind_mappings"]
+            self.assertIn([str(isolated_home / "hooks.json"), str(isolated_home / "hooks.json")], mappings)
+            self.assertIn([str(isolated_home / "config.toml"), str(isolated_home / "config.toml")], mappings)
+
     def test_conduct_escalates_then_reopens(self) -> None:
         c = self._conductor()
         c.workflow_mode = "prod"  # the diagnostician's cross-phase reopen is prod-only (F1)

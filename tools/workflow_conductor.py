@@ -2521,16 +2521,37 @@ class Conductor:
         auth/session home + the hooks/audit bookkeeping dirs. Raises
         SandboxEnforcementError if the host cannot build the profile (so the caller can
         fail closed instead of crashing or launching unconfined)."""
-        from tools.orchestration_runtime import build_readonly_bwrap_profile
+        from tools.orchestration_runtime import (
+            _prepare_codex_workflow_home,
+            build_readonly_bwrap_profile,
+        )
         base = shlex.split(self.llm_command) if self.llm_command.strip() else [self.backend]
         backend_command = base[0] if base else self.backend
         try:
+            profile_kwargs: dict[str, Any] = {}
+            if self.backend == "codex":
+                # Diagnostician launches do not pass through record_launch(), so
+                # construct the same isolated, SHA-pinned Codex home here before
+                # using the trust bypass.  Reusing the orchestration metadata home
+                # preserves Codex state without admitting ambient user hooks.
+                codex_isolation = _prepare_codex_workflow_home(
+                    self.repo_root, self.orchestration_id)
+                profile_kwargs = {
+                    "backend_ro_mappings": [
+                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
+                        (codex_isolation["hooks"], codex_isolation["hooks"]),
+                        (codex_isolation["config"], codex_isolation["config"]),
+                    ],
+                    "backend_rw_override": [codex_isolation["home"]],
+                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
+                }
             return build_readonly_bwrap_profile(
                 repo_root=self.repo_root,
                 orchestration_id=self.orchestration_id,
                 agent_run_id=self.orchestration_agent_run_id,
                 backend_command=backend_command,
                 backend_type=self.backend,
+                **profile_kwargs,
             )
         except (ValueError, OSError) as exc:
             raise SandboxEnforcementError(

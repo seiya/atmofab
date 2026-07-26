@@ -14923,7 +14923,11 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             home = Path(raw_home)
             _require_secure_codex_home(home)
         else:
-            home = Path(tempfile.mkdtemp(prefix="metdsl-codex-"))
+            # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
+            # leaf scratch.  This home is a writable backend-state bind and must
+            # never inherit that value: backend rw binds inside the repository are
+            # rejected to preserve the write-root boundary.
+            home = Path(tempfile.mkdtemp(prefix="metdsl-codex-", dir="/tmp"))
             os.chmod(home, 0o700)
             _require_secure_codex_home(home)
             meta["codex_workflow_home"] = str(home)
