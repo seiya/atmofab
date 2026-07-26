@@ -12623,8 +12623,16 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "multi_agent_enabled", "pass": True},
             {"name": "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},
+            {"name": "codex_version_available", "pass": True},
+            {"name": "codex_features_list_available", "pass": True},
             {"name": "sandbox_bwrap_available", "pass": True},
             {"name": "sandbox_bwrap_userns", "pass": True},
+            {"name": "sandbox_bwrap_exec", "pass": True},
+            {"name": "codex_exec_json_streaming", "pass": True},
+            {"name": "codex_exec_output_schema", "pass": True},
+            {"name": "codex_exec_resume", "pass": True},
+            {"name": "codex_project_hooks_validated", "pass": True},
+            {"name": "codex_project_hook_trust_bypass", "pass": True},
         ],
     }
     base.update(extra)
@@ -14154,17 +14162,9 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             write_preflight(
                 repo_root=repo_root,
                 orchestration_id="wf1",
-                payload={
-                    "status": "pass",
-                    "backend": "codex",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "session_policy": {"allow_substep_agent_launch": False},
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
+                payload=_launchable_preflight_dict(
+                    session_policy={"allow_substep_agent_launch": False},
+                ),
             )
             out = workflow_launch_check(
                 repo_root,
@@ -14202,21 +14202,11 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             # Simulate a legacy/manual preflight payload that has no session policy fields.
             preflight_path = repo_root / "workspace/orchestrations/wf2/preflight.json"
             preflight_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_payload = _launchable_preflight_dict()
+            legacy_payload.pop("session_policy", None)
+            legacy_payload.pop("session_policy_launchable", None)
             preflight_path.write_text(
-                json.dumps(
-                    {
-                        "status": "pass",
-                        "backend": "codex",
-                        "sandbox_runtime": "bwrap",
-                        "sandbox_enforced": True,
-                        "can_launch_step_agents": True,
-                        "can_launch_substep_agents": True,
-                        "feature_states": {"multi_agent": True, "hooks": True},
-                        "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
+                json.dumps(legacy_payload, ensure_ascii=False, indent=2)
                 + "\n",
                 encoding="utf-8",
             )
@@ -14240,20 +14230,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             write_preflight(
                 repo_root=repo_root,
                 orchestration_id="wf5",
-                payload={
-                    "status": "pass",
-                    "backend": "codex",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "session_policy": {
-                        "allow_step_agent_launch": True,
-                        "allow_substep_agent_launch": True,
-                    },
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
+                payload=_launchable_preflight_dict(),
             )
             base = {
                 "agent_run_id": "child_missing_fields",
@@ -14326,14 +14303,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                     )
                 raise AssertionError(args)
 
-            with patch.dict(
-                os.environ,
-                {
-                    "METDSL_HOME": "/tmp/codex-orchestration-test-home",
-                    "METDSL_ORCHESTRATION_ASSUME_BWRAP": "1",
-                },
-            ):
-                preflight_payload = probe_execution_platform(backend="codex", runner=runner)
+            preflight_payload = _launchable_preflight_dict()
             preflight_path = repo_root / "workspace/orchestrations/wf3/preflight.json"
             preflight_path.parent.mkdir(parents=True, exist_ok=True)
             preflight_path.write_text(
@@ -14368,17 +14338,9 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             write_preflight(
                 repo_root=repo_root,
                 orchestration_id="wf4",
-                payload={
-                    "status": "pass",
-                    "backend": "codex",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "session_policy": {"allow_substep_agent_launch": False},
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
+                payload=_launchable_preflight_dict(
+                    session_policy={"allow_substep_agent_launch": False},
+                ),
             )
             req = {
                 "agent_run_id": "plan_sub_fail_closed",
@@ -15683,16 +15645,7 @@ class TestPhase3RunGate(unittest.TestCase):
             write_preflight(
                 repo_root=repo_root,
                 orchestration_id="pl1",
-                payload={
-                    "status": "pass",
-                    "backend": "codex",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
-                },
+                payload=_launchable_preflight_dict(),
             )
             pipe = repo_root / _FIX_PIPE_REF
             (pipe / "generate" / "g1").mkdir(parents=True, exist_ok=True)

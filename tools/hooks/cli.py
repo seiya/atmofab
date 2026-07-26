@@ -1052,29 +1052,32 @@ def _evaluate_pre_command_file_access_policy(
             return common_decision
         if workflow_mode != "1":
             return common_decision
-        # Resolve before the read-only fast path.  A Codex pure leaf can run
-        # `cat` in its read-only sandbox; unlike the Read tool, that command
-        # would otherwise bypass the empty read manifest.  Pure leaves receive
-        # all authorized context in the prompt, so every shell spelling is
-        # forbidden rather than merely denied when it happens to write.
-        resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
-            backend=backend,
-            repo_root=repo_root,
-            orchestration_id=orchestration_id,
-            session_id=decoded.session_id,
-            agent_session_id=decoded.agent_session_id,
-            tool_name=tool_name,
-        )
-        if resolution_error is not None:
-            return resolution_error
-        if resolved_run_id and _is_pure_readonly_capability(
-            repo_root, orchestration_id, resolved_run_id
-        ):
-            return HookDecision(
-                action=HookDecisionAction.BLOCK,
-                reason="pure-function leaves may not invoke Bash or Shell; use only the host-inlined context",
-                continue_processing=False,
+        resolved_run_id: str | None = None
+        # Resolve before the read-only fast path only for Codex. A Codex pure
+        # leaf can run `cat` in its read-only sandbox; unlike the Read tool,
+        # that command would otherwise bypass the empty read manifest. Keep
+        # Claude's historical read-only auto-approval behavior unchanged.
+        if backend.strip().lower() == "codex":
+            resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+                backend=backend,
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                session_id=decoded.session_id,
+                agent_session_id=decoded.agent_session_id,
+                tool_name=tool_name,
             )
+            # An unmapped read-only Bash event is a pre-existing global-policy
+            # case (for example an audit-only SessionStart fixture), not proof
+            # of a pure child. Keep that behavior; mapped pure children below
+            # still fail closed before the auto-approval path.
+            if resolution_error is None and resolved_run_id and _is_pure_readonly_capability(
+                repo_root, orchestration_id, resolved_run_id
+            ):
+                return HookDecision(
+                    action=HookDecisionAction.BLOCK,
+                    reason="pure-function leaves may not invoke Bash or Shell; use only the host-inlined context",
+                    continue_processing=False,
+                )
         write_targets = _detect_bash_write_targets(decoded.command)
         if not write_targets:
             # Purely read-only command: if it is a provably-safe composition,
@@ -1095,6 +1098,17 @@ def _evaluate_pre_command_file_access_policy(
                     },
                 )
             return common_decision
+        if resolved_run_id is None:
+            resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+                backend=backend,
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                session_id=decoded.session_id,
+                agent_session_id=decoded.agent_session_id,
+                tool_name=tool_name,
+            )
+            if resolution_error is not None:
+                return resolution_error
         if resolved_run_id is None:
             return HookDecision(
                 action=HookDecisionAction.BLOCK,
