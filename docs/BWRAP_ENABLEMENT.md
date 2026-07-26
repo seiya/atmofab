@@ -80,6 +80,19 @@ returned bundle/verdict, so the leaf has no repository write authority. Its reco
 level is `sandboxed_structured_approximation`; it is not equivalent to Claude
 `closed_tool_free` isolation.
 
+`codex exec` and `codex exec resume` do **not** accept the same options: `resume` has no
+`--sandbox`. A pure repair turn therefore re-pins the read-only policy with
+`--config sandbox_mode="read-only"` rather than inheriting it from the resumed thread. Confirm this
+on a live run: every pure repair attempt must reach a `thread.started`, not exit at argv
+parsing. The `codex_exec_resume` preflight check probes `exec resume --help` for exactly the
+option set the resume argv emits (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`); probing `exec --help`
+alone would certify a command the CLI rejects.
+
+The whole JSONL event stream of each Codex leaf is kept at
+`agents/<arid>/dialogs/leaf.stdout.jsonl`. `leaf.stdout.log` holds only the extracted final
+`agent_message`, so the `.jsonl` file is the sole record of what the leaf actually did and is
+where a failed Codex leaf is diagnosed.
+
 For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
 It contains only a SHA-256-verified copy of this repository's `.codex/hooks.json`; the original
 home contributes only `auth.json` as a read-only bwrap bind. Its `config.toml` marks the repository

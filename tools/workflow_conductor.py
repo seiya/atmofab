@@ -1333,6 +1333,9 @@ class ProcResult:
     usage: dict[str, Any] | None = None
     model: str | None = None
     resume_mode: str | None = None
+    # Codex only: the untouched JSONL event stream (`stdout` keeps just the final
+    # agent_message), which is otherwise unrecoverable from any artifact.
+    raw_stdout: str | None = None
 
 
 # A leaf that dies on an LLM-infrastructure error exits nonzero with no artifacts, which the
@@ -2482,6 +2485,7 @@ class Conductor:
             # session identity and is registered before a later hook can authorize
             # a file operation.
             pure_flags: list[str] = []
+            pure_resume_flags: list[str] = []
             model = self._codex_pinned_model()
             if pure:
                 schema = self._codex_pure_schema_path(session_id)
@@ -2490,9 +2494,24 @@ class Conductor:
                 # hooks cannot join the verified user-level hook set.
                 pure_flags = ["--ignore-rules", "--sandbox", "read-only",
                               "--output-schema", str(schema)]
+                # `codex exec resume` and `codex exec` do NOT accept the same options:
+                # resume has no `--sandbox` (only the never-used
+                # `--dangerously-bypass-approvals-and-sandbox`), so the read-only policy
+                # is re-pinned through the `-c` override both subcommands share rather
+                # than inherited implicitly from the resumed thread. Passing `--sandbox`
+                # here aborts the repair turn at argv parsing — before any
+                # `thread.started` — which makes EVERY pure repair a transport death
+                # (warm resume is how both pure loops run every repair attempt).
+                # `--config`, not the `-c` alias: the preflight certifies this argv
+                # against `exec resume --help` by flag name
+                # (CODEX_EXEC_RESUME_REQUIRED_FLAGS), so emitting a spelling the probe
+                # does not assert would leave the gate green on a CLI that dropped it.
+                pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
+                                     "--output-schema", str(schema)]
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
-                        "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
+                        "--dangerously-bypass-hook-trust", *pure_resume_flags,
+                        "--json", prompt_text]
             return [*base, "exec", "--model", model,
                     "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
         raise ValueError(f"unsupported backend for leaf spawn: {self.backend}")
@@ -2661,7 +2680,12 @@ class Conductor:
                     f"sandbox profile for {child_arid} is invalid: {exc}") from exc
         try:
             if self.backend == "codex":
-                return self._spawn_codex_json_leaf(argv, child_env, child_arid)
+                # `resume` is derived from the caller's own argument, not sniffed out of
+                # argv: under mandatory bwrap argv is the WRAPPER command line, whose
+                # bind paths and the leaf prompt itself both sit in it, so a bare
+                # `"resume" in argv` scan can be satisfied by leaf-controlled text.
+                return self._spawn_codex_json_leaf(
+                    argv, child_env, child_arid, resume=bool(resume_session_id))
             proc = subprocess.run(
                 argv, cwd=self.repo_root, env=child_env, text=True, capture_output=True, check=False,
             )
@@ -2707,7 +2731,8 @@ class Conductor:
         )
 
     def _spawn_codex_json_leaf(
-        self, argv: list[str], child_env: dict[str, str], child_arid: str | None
+        self, argv: list[str], child_env: dict[str, str], child_arid: str | None,
+        *, resume: bool = False,
     ) -> ProcResult:
         # A recorded step/substep leaf must supply its child ARID so the emitted
         # thread can be registered before file tools run.  The read-only failure
@@ -2715,6 +2740,11 @@ class Conductor:
         # final response, but its thread is intentionally not indexed.
         process = subprocess.Popen(
             argv, cwd=self.repo_root, env=child_env, text=True,
+            # Decode leniently: with the default strict handler a single malformed byte
+            # anywhere in the stream raises mid-iteration, which escapes spawn_leaf as a
+            # conductor_error AND discards every diagnostic already drained from stderr.
+            # A leaf's own output must never be able to kill the conductor.
+            errors="backslashreplace",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         assert process.stdout is not None
@@ -2722,9 +2752,13 @@ class Conductor:
         thread_id: str | None = None
         final_text: str | None = None
         stderr_chunks: list[str] = []
+        raw_lines: list[str] = []
         failure_events: list[str] = []
+        turn_failed = False
+        registration_error: str | None = None
         usage: dict[str, Any] | None = None
         model: str | None = None
+        resume_mode = "in_place" if resume else None
 
         # Codex may emit diagnostics before it emits (or closes) its JSONL stdout.
         # Drain stderr concurrently: reading it only after the stdout iterator
@@ -2736,6 +2770,11 @@ class Conductor:
         stderr_thread.start()
         try:
             for line in process.stdout:
+                # Keep the raw stream: only the final agent_message survives into
+                # ProcResult.stdout, so without this the event log that shows what the
+                # leaf actually did (tool calls, item errors, the terminal event) is
+                # gone at the moment of capture and unrecoverable from any artifact.
+                raw_lines.append(line)
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -2756,6 +2795,12 @@ class Conductor:
                     candidate_model = candidate_meta.get("model")
                     if isinstance(candidate_model, str) and candidate_model.strip():
                         model = candidate_model.strip()
+                if kind == "turn.failed":
+                    # TERMINAL, unlike `error`: the turn itself ended failed, so any
+                    # `agent_message` seen before it is mid-turn narration, not an
+                    # answer. Tracked separately from `error` so a preceding message
+                    # cannot mask the failure (see the exit-code normalization below).
+                    turn_failed = True
                 if kind in {"error", "turn.failed"}:
                     # The retry and usage-reset classifiers operate on the
                     # process diagnostics. Preserve Codex's structured terminal
@@ -2768,7 +2813,23 @@ class Conductor:
                     if thread_id is None:
                         thread_id = candidate.strip()
                         if child_arid:
-                            self._register_codex_thread(child_arid, thread_id)
+                            try:
+                                self._register_codex_thread(child_arid, thread_id)
+                            except Exception as exc:  # noqa: BLE001 — see below
+                                # Binding the emitted thread to this child is a HOST
+                                # write (launch response + session index) and can fail
+                                # on ENOSPC or a conflicting recorded identity. Like
+                                # every other host-write failure on the leaf path, it
+                                # must come back as a transport-dead ProcResult the
+                                # substep loop can terminalize — never escape
+                                # spawn_leaf and take the whole orchestration down with
+                                # a generic conductor_error. Stop the leaf first: its
+                                # hooks would authorize file access against an identity
+                                # the host did not record.
+                                registration_error = (
+                                    "codex thread registration failed: "
+                                    f"{type(exc).__name__}: {exc}")
+                                break
                 item = event.get("item")
                 if kind == "item.completed" and isinstance(item, dict):
                     if str(item.get("type") or "") == "agent_message":
@@ -2780,19 +2841,45 @@ class Conductor:
             process.wait()
             stderr_thread.join()
             raise
+        if registration_error is not None:
+            process.terminate()
         returncode = process.wait()
         stderr_thread.join()
         stderr = "".join(stderr_chunks)
         if failure_events:
             stderr = (stderr.rstrip() + "\n" + "\n".join(failure_events)).strip()
+        raw_stdout = "".join(raw_lines)
+        if registration_error is not None:
+            return ProcResult(returncode or 1, "", (stderr + "\n" + registration_error).strip(),
+                              usage=usage, model=model, resume_mode=resume_mode,
+                              raw_stdout=raw_stdout)
         if thread_id is None:
             detail = "codex JSONL stream terminated without a usable thread.started thread_id"
             return ProcResult(returncode or 1, "", (stderr + "\n" + detail).strip(),
-                              usage=usage, model=model,
-                              resume_mode=("in_place" if "resume" in argv else None))
+                              usage=usage, model=model, resume_mode=resume_mode,
+                              raw_stdout=raw_stdout)
+        if turn_failed or (failure_events and final_text is None):
+            # A failed turn is a leaf death even when the CLI exits 0. Normalize it to a
+            # nonzero exit rather than signalling it out-of-band: every downstream
+            # consumer of a leaf death — `_classify_leaf_infra_error`, the
+            # `--wait-usage-reset` plan, run_substep's transient retry, and run_phase's
+            # fail_closed transport branch — keys on `returncode != 0`. Reported as a
+            # content defect instead, a usage limit would burn the whole bundle-repair
+            # budget re-prompting a throttled API.
+            #
+            # The two conditions are NOT interchangeable. `turn.failed` is terminal, so
+            # it wins outright: Codex emits `agent_message` items per message, and a
+            # turn that narrated before failing would otherwise have that narration
+            # accepted as its answer and the failure silently dropped. A bare `error` is
+            # tolerant, so it only counts when the turn also produced no document — a
+            # run that reported one and then recovered keeps its exit code and its
+            # answer.
+            return ProcResult(returncode or 1, "", stderr,
+                              usage=usage, model=model, resume_mode=resume_mode,
+                              raw_stdout=raw_stdout)
         return ProcResult(returncode, final_text or "", stderr,
-                          usage=usage, model=model,
-                          resume_mode=("in_place" if "resume" in argv else None))
+                          usage=usage, model=model, resume_mode=resume_mode,
+                          raw_stdout=raw_stdout)
 
     def read_parent_return_token(self, child_arid: str) -> str:
         path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
@@ -3848,7 +3935,8 @@ clean:
             token = self.read_parent_return_token(child_arid)
 
             envelope = (parse_result_envelope(proc.stdout) if self.backend == "claude" else
-                        ResultEnvelope(True, proc.stdout, False, proc.model if proc.model else _MISSING,
+                        ResultEnvelope(True, proc.stdout, False,
+                                       proc.model if proc.model else _MISSING,
                                        proc.usage if proc.usage is not None else _MISSING,
                                        self._session_id_for_child(child_arid) or _MISSING,
                                        None, None))
@@ -4251,7 +4339,8 @@ clean:
             token = self.read_parent_return_token(child_arid)
 
             envelope = (parse_result_envelope(proc.stdout) if self.backend == "claude" else
-                        ResultEnvelope(True, proc.stdout, False, proc.model if proc.model else _MISSING,
+                        ResultEnvelope(True, proc.stdout, False,
+                                       proc.model if proc.model else _MISSING,
                                        proc.usage if proc.usage is not None else _MISSING,
                                        self._session_id_for_child(child_arid) or _MISSING,
                                        None, None))
@@ -4923,8 +5012,6 @@ clean:
             # (`--output-format json`), NOT the session transcript (~/.claude is not read on the
             # pure path). A resolved override wins and skips the transcript lookup.
             payload["agent_model"] = str(agent_model_override).strip()
-            if self.backend == "codex":  # pragma: no cover - codex handled above
-                payload["agent_model_provenance"] = "codex_jsonl"
         elif pure:
             # Pure path with no envelope model (a provenance gap): leave agent_model ABSENT for
             # record_agent_run to backfill the launch-request alias. Crucially, do NOT fall back
@@ -6850,8 +6937,31 @@ clean:
         dialogs = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
                    / "agents" / child_arid / "dialogs")
         dialogs.mkdir(parents=True, exist_ok=True)
-        (dialogs / f"{prefix}.stdout.log").write_text(proc.stdout or "", encoding="utf-8")
-        (dialogs / f"{prefix}.stderr.log").write_text(proc.stderr or "", encoding="utf-8")
+        # `backslashreplace`, because persisting a leaf's own output must never be able
+        # to fail on leaf-controlled text. On the codex path `proc.stdout` is the
+        # agent_message pulled through `json.loads`, which materializes an escaped
+        # `\ud800` into a REAL lone surrogate that utf-8 cannot encode (`proc.stderr`
+        # carries the same hazard via the `json.dumps`-ed failure events). This runs
+        # immediately after spawn_leaf with no enclosing try, so a raw UnicodeEncodeError
+        # here escapes run_phase as a conductor_error: the child is never finalized and
+        # the bundle-repair loop that exists to handle exactly such a reply never runs.
+        # The pure loops' own surrogate guards are downstream of this point.
+        (dialogs / f"{prefix}.stdout.log").write_text(
+            proc.stdout or "", encoding="utf-8", errors="backslashreplace")
+        (dialogs / f"{prefix}.stderr.log").write_text(
+            proc.stderr or "", encoding="utf-8", errors="backslashreplace")
+        # Codex: `stdout` above is only the extracted final message, so the event stream
+        # is not recoverable from any other artifact — persist it alongside rather than
+        # dropping the one record of what the leaf actually did. Removed when absent
+        # rather than skipped: `escalate`'s diagnostician reuses one fixed
+        # (arid, prefix), so a leftover would sit next to freshly overwritten .log files
+        # and read as this run's event stream.
+        jsonl_path = dialogs / f"{prefix}.stdout.jsonl"
+        if proc.raw_stdout:
+            jsonl_path.write_text(proc.raw_stdout, encoding="utf-8",
+                                  errors="backslashreplace")
+        else:
+            jsonl_path.unlink(missing_ok=True)
 
     @staticmethod
     def _leaf_failure_summary(proc: ProcResult) -> str:

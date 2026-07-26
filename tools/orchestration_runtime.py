@@ -9550,6 +9550,52 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "preflight.json"
 
 
+# The codex probe checks a launchable `preflight.json` must carry as `pass: true`. ONE
+# source for both the read-time gate (`_preflight_allows_agent_launch`) and the document
+# validator (`_validate_preflight_payload`): two hand-kept copies of a gate's necessary
+# conditions drift, and a name dropped from one copy silently widens that gate.
+CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
+    "codex_version_available", "codex_features_list_available", "hooks_enabled",
+    "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
+    "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
+    "codex_exec_pure_isolation_flags", "codex_exec_resume",
+    "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+})
+
+# Codex probe checks recorded for diagnostics that do NOT gate a launch: the conductor
+# spawns independent `codex exec` processes and never uses Codex subagents, so the CLI's
+# own `multi_agent` feature says nothing about launchability. Everything NOT listed here
+# gates, so a check added to `_probe_codex_backend` later fails closed by default rather
+# than silently becoming non-gating.
+CODEX_ADVISORY_ONLY_CHECKS = frozenset({"multi_agent_enabled"})
+
+# Every option `Conductor.leaf_command` puts on a codex warm-resume argv, checked against
+# `codex exec resume --help` by the `codex_exec_resume` probe. The `exec` and `exec resume`
+# subcommands do NOT take the same options — notably `resume` has no `--sandbox`, so the
+# pure read-only policy is re-pinned there via `-c sandbox_mode=...` instead. Probing the
+# `exec` help alone would pass on a CLI where the resume argv aborts at parsing, before any
+# `thread.started`, turning every pure repair turn into a transport death. Keep this in sync
+# with the resume branch of `leaf_command` (pinned by `tools/tests/test_pure_leaf.py`
+# `LeafCommandPureBranchTest.test_codex_resume_argv_options_are_all_preflight_certified`,
+# which asserts the emitted option set equals this one).
+CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
+    "--model", "--dangerously-bypass-hook-trust", "--json",
+    "--output-schema", "--ignore-rules", "--config",
+)
+
+
+def _codex_check_pass_values(checks: Sequence[Any]) -> dict[str, Any]:
+    """`{check_name: pass}` with the legacy `codex_hooks_enabled` alias folded in."""
+    values = {
+        str(item.get("name")): item.get("pass")
+        for item in checks
+        if isinstance(item, dict)
+    }
+    if values.get("hooks_enabled") is None and values.get("codex_hooks_enabled") is True:
+        values["hooks_enabled"] = True
+    return values
+
+
 def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     feature_states = payload.get("feature_states")
     if not isinstance(feature_states, dict):
@@ -9564,6 +9610,7 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     checks = payload.get("checks")
     if not isinstance(checks, list):
         return False
+    multi_agent_check_pass: bool | None = None
     hooks_check_pass: bool | None = None
     codex_home_writable_check_pass: bool | None = None
     for item in checks:
@@ -9571,6 +9618,8 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             continue
         check_name = item.get("name")
         pass_value = item.get("pass")
+        if check_name == "multi_agent_enabled" and isinstance(pass_value, bool):
+            multi_agent_check_pass = pass_value
         if check_name == "hooks_enabled" and isinstance(pass_value, bool):
             hooks_check_pass = pass_value
         if (
@@ -9589,21 +9638,23 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
         and payload.get("sandbox_enforced") is True
     )
     if backend_token == "codex":
-        required = {
-            "codex_version_available", "codex_features_list_available", "hooks_enabled",
-            "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
-            "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-            "codex_exec_pure_isolation_flags", "codex_exec_resume",
-            "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
-        }
-        available = {str(item.get("name")): item.get("pass") for item in checks if isinstance(item, dict)}
-        if available.get("hooks_enabled") is None and available.get("codex_hooks_enabled") is True:
-            available["hooks_enabled"] = True
+        available = _codex_check_pass_values(checks)
         launchable = (
             launchable
             and hooks_check_pass is True
             and codex_home_writable_check_pass is True
-            and all(available.get(name) is True for name in required)
+            and all(available.get(name) is True for name in CODEX_REQUIRED_LAUNCH_CHECKS)
+        )
+    else:
+        # `multi_agent` is advisory ONLY for codex (see CODEX_ADVISORY_ONLY_CHECKS).
+        # Every other backend still launches its step/substep agents through the
+        # platform's own multi-agent capability, so a launchable document must keep
+        # asserting it — dropping the assertion here would silently relax the claude
+        # gate as well.
+        launchable = (
+            launchable
+            and feature_states.get("multi_agent") is True
+            and multi_agent_check_pass is True
         )
     return launchable
 
@@ -9619,7 +9670,18 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
 
     feature_states = payload.get("feature_states")
     backend_token = str(payload.get("backend", "")).strip().lower()
+    # `multi_agent` gates every backend EXCEPT codex, whose conductor spawns independent
+    # `codex exec` processes rather than Codex subagents (CODEX_ADVISORY_ONLY_CHECKS).
+    multi_agent_required = backend_token != "codex"
     if isinstance(feature_states, dict):
+        multi_agent = feature_states.get("multi_agent")
+        if multi_agent_required and isinstance(multi_agent, bool) and not multi_agent:
+            if payload.get("can_launch_step_agents") is True or payload.get(
+                "can_launch_substep_agents"
+            ) is True:
+                raise ValueError(
+                    "feature_states.multi_agent=false is incompatible with launchable preflight"
+                )
         hooks = feature_states.get("hooks")
         if hooks is None:
             hooks = feature_states.get("codex_hooks")
@@ -9636,6 +9698,7 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
             )
 
     checks = payload.get("checks")
+    multi_agent_check_pass: bool | None = None
     if isinstance(checks, list):
         hooks_check_pass: bool | None = None
         codex_home_writable_check_pass: bool | None = None
@@ -9644,6 +9707,8 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 continue
             check_name = item.get("name")
             pass_value = item.get("pass")
+            if check_name == "multi_agent_enabled" and isinstance(pass_value, bool):
+                multi_agent_check_pass = pass_value
             if check_name == "hooks_enabled" and isinstance(pass_value, bool):
                 hooks_check_pass = pass_value
             if (
@@ -9654,6 +9719,13 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 hooks_check_pass = pass_value
             if check_name == "codex_home_writable" and isinstance(pass_value, bool):
                 codex_home_writable_check_pass = pass_value
+        if multi_agent_required and multi_agent_check_pass is False:
+            if payload.get("can_launch_step_agents") is True or payload.get(
+                "can_launch_substep_agents"
+            ) is True:
+                raise ValueError(
+                    "checks.multi_agent_enabled.pass=false is incompatible with launchable preflight"
+                )
         if (
             backend_token == "codex"
             and hooks_check_pass is not True
@@ -9682,7 +9754,7 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
         and payload.get("can_launch_substep_agents") is True
     ):
         raise ValueError(
-            "checks must include multi_agent_enabled.pass=true when preflight is launchable"
+            "checks must be a list of capability probe results when preflight is launchable"
         )
 
     if (
@@ -9690,9 +9762,26 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
         and payload.get("can_launch_step_agents") is True
         and payload.get("can_launch_substep_agents") is True
     ):
-        hooks = feature_states.get("hooks")
+        if multi_agent_required and (
+            not isinstance(feature_states, dict)
+            or feature_states.get("multi_agent") is not True
+        ):
+            raise ValueError(
+                "feature_states.multi_agent=true is required when preflight is launchable"
+            )
+        # Mirror the gate exactly. `_preflight_allows_agent_launch` requires the CHECK to
+        # be present and true, not merely not-false, so accepting a document whose
+        # `multi_agent_enabled` row is absent or null would persist a `status=pass`
+        # preflight that every later record-launch refuses — with a gate message that
+        # names no missing check. Validator and gate must reject the same documents.
+        if multi_agent_required and multi_agent_check_pass is not True:
+            raise ValueError(
+                "checks.multi_agent_enabled.pass=true is required when preflight is launchable"
+            )
+        states = feature_states if isinstance(feature_states, dict) else {}
+        hooks = states.get("hooks")
         if hooks is None:
-            hooks = feature_states.get("codex_hooks")
+            hooks = states.get("codex_hooks")
         if backend_token == "codex" and hooks is not True:
             raise ValueError(
                 "feature_states.hooks=true is required when codex preflight is launchable"
@@ -9700,21 +9789,11 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
         if payload.get("sandbox_enforced") is not True:
             raise ValueError("sandbox_enforced=true is required when preflight is launchable")
         if backend_token == "codex":
-            check_values = {
-                str(item.get("name")): item.get("pass")
-                for item in (checks or []) if isinstance(item, dict)
-            }
-            if (check_values.get("hooks_enabled") is None
-                    and check_values.get("codex_hooks_enabled") is True):
-                check_values["hooks_enabled"] = True
-            required = {
-                "codex_version_available", "codex_features_list_available", "hooks_enabled",
-                "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
-                "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-                "codex_exec_pure_isolation_flags", "codex_exec_resume",
-                "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
-            }
-            missing = sorted(name for name in required if check_values.get(name) is not True)
+            check_values = _codex_check_pass_values(checks or [])
+            missing = sorted(
+                name for name in CODEX_REQUIRED_LAUNCH_CHECKS
+                if check_values.get(name) is not True
+            )
             if missing:
                 raise ValueError(
                     "codex launchable preflight is missing required capabilities: "
@@ -14895,11 +14974,41 @@ def _secure_codex_home_file(path: Path, data: bytes | None = None) -> None:
             raise ValueError(f"isolated Codex file differs from its verified source: {path}")
         return
     try:
-        if data is not None:
-            os.write(fd, data)
-        os.fchmod(fd, 0o600)
+        # Write the WHOLE payload (os.write may be short) and remove the file if any
+        # part of it fails: a half-written or empty leftover would otherwise be a
+        # permanent poison pill — every later call takes the FileExistsError branch
+        # above and raises "differs from its verified source" forever.
+        try:
+            offset = 0
+            while data is not None and offset < len(data):
+                offset += os.write(fd, data[offset:])
+            os.fchmod(fd, 0o600)
+        except BaseException:
+            # Clear the descriptor BEFORE closing it. `os.close` does not retry EINTR
+            # and the kernel frees the descriptor even when it reports an error, so
+            # closing first and clearing after would leave `fd >= 0` and let `finally`
+            # close a number another thread may already have reused — in this module
+            # that number can be the `orchestration_meta.json` flock held by
+            # `_prepare_codex_workflow_home`'s caller, silently dropping the lock
+            # mid-critical-section.
+            victim, fd = fd, -1
+            # Both cleanups are best-effort and independently guarded: neither may
+            # replace the write error the caller needs to see, and a failing close must
+            # not skip the unlink — that would leave the half-written file behind, i.e.
+            # reinstate the permanent poison pill this branch exists to prevent. Unlink
+            # first for the same reason; the inode survives until the close anyway.
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            try:
+                os.close(victim)
+            except OSError:
+                pass
+            raise
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
 
 
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
@@ -14965,23 +15074,27 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             generation = max(1, prior_generation)
             meta["codex_workflow_home_generation"] = generation
             _write_json(meta_path, meta)
+        # EVERY file of the home is populated under the same lock as the home itself.
+        # `_secure_codex_home_file` is create-exclusive-then-write, so a concurrent
+        # preparer that observed a created-but-not-yet-written file would take the
+        # content-comparison branch and fail with "differs from its verified source".
         hooks_path = home / "hooks.json"
         _secure_codex_home_file(hooks_path, data)
         if hashlib.sha256(hooks_path.read_bytes()).hexdigest() != digest:
             raise ValueError("isolated Codex hooks SHA-256 verification failed")
-    # TOML basic strings use JSON escaping for these path strings.
-    config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
-    config_path = home / "config.toml"
-    _secure_codex_home_file(config_path, config.encode("utf-8"))
-    raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
-    origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
-    auth = origin / "auth.json"
-    if not auth.is_file():
-        raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
-    auth_destination = home / "auth.json"
-    # bwrap needs an existing destination for a file bind. This empty regular
-    # file is hidden by the read-only source bind before Codex starts.
-    _secure_codex_home_file(auth_destination)
+        # TOML basic strings use JSON escaping for these path strings.
+        config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
+        config_path = home / "config.toml"
+        _secure_codex_home_file(config_path, config.encode("utf-8"))
+        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
+        origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
+        auth = origin / "auth.json"
+        if not auth.is_file():
+            raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
+        auth_destination = home / "auth.json"
+        # bwrap needs an existing destination for a file bind. This empty regular
+        # file is hidden by the read-only source bind before Codex starts.
+        _secure_codex_home_file(auth_destination)
     return {
         "home": str(home.resolve()),
         "auth": str(auth.resolve()),
@@ -15112,6 +15225,7 @@ def _probe_codex_backend(
     features_list_detail = features_proc.stdout.strip() or features_proc.stderr.strip()
     exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
     exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
+    resume_help_text = (resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or "")
     checks = [
         {
             "name": f"{backend_token}_version_available",
@@ -15156,8 +15270,8 @@ def _probe_codex_backend(
             "pass": (
                 resume_help_proc.returncode == 0
                 and all(
-                    flag in ((resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or ""))
-                    for flag in ("--model", "--dangerously-bypass-hook-trust", "--json", "--output-schema")
+                    flag in resume_help_text
+                    for flag in CODEX_EXEC_RESUME_REQUIRED_FLAGS
                 )
             ),
             "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
@@ -15800,15 +15914,13 @@ def probe_execution_platform(
         can_launch_agents = can_launch_agents and mcp_ok
     else:
         # Codex's internal multi_agent feature is diagnostic only: the conductor
-        # launches independent CLI processes and does not use Codex subagents.
-        can_launch_agents = all(
-            _pass_values_by_check_name(checks).get(name) is True
-            for name in (
-                "codex_version_available", "codex_features_list_available",
-                "codex_exec_json_streaming", "codex_exec_output_schema",
-                "codex_exec_pure_isolation_flags", "codex_exec_resume",
-                "codex_project_hook_trust_bypass",
-            )
+        # launches independent CLI processes and does not use Codex subagents. Every
+        # OTHER probe check gates — an allowlist here would silently make a check
+        # added to `_probe_codex_backend` later non-gating, so the advisory set is
+        # named instead and anything new fails closed by default.
+        can_launch_agents = _all_strict_boolean_probe_checks_pass(
+            [item for item in checks
+             if not (isinstance(item, dict) and item.get("name") in CODEX_ADVISORY_ONLY_CHECKS)]
         )
         hooks_enabled = features.get("hooks") is True
         checks.append(
@@ -16394,8 +16506,7 @@ def record_launch(
             raise ValueError("expected_codex_home_generation is valid only for the Codex backend")
         codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
         actual_generation = int(codex_isolation["generation"])
-        if (expected_codex_home_generation is not None
-                and expected_codex_home_generation != actual_generation):
+        if expected_codex_home_generation != actual_generation:
             return {
                 "codex_home_generation_mismatch": True,
                 "expected_codex_home_generation": expected_codex_home_generation,

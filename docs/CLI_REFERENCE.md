@@ -91,6 +91,7 @@ In Claude Code, call it **before launching the `Agent` tool** (because the child
 | `--request-json` | yes | the child-launch request payload (schema below) |
 | `--response-json` | yes | the spawn response payload (schema below) |
 | `--relation-type` | no | default `launch` |
+| `--expected-codex-home-generation` | no | codex only, warm resume only. The isolated `CODEX_HOME` generation the caller selected its resume thread under (positive integer; passing it for another backend is a `ValueError`). A codex thread is resumable only inside the home that created it, and that home lives in `/tmp`, so a host restart or a `tmpfiles` sweep can rotate it between the conductor's resume selection and this call. Checked FIRST, before any capability / launch artifact / active-child marker is written: on a mismatch `record-launch` records nothing and returns `{"codex_home_generation_mismatch": true, "expected_codex_home_generation": …, "codex_home_generation": …}` (kept intact by terse projection) so the caller rebuilds the request as a cold launch instead of issuing `codex exec resume` against an empty home. |
 
 ### `--request-json` payload (main fields)
 

@@ -5627,6 +5627,163 @@ class LeafSpawnTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "explicit --agent-model"):
             self._c(backend="codex", agent_model="codex").leaf_command("P")
 
+    # --- codex JSONL stream handling -----------------------------------------
+
+    def _codex_stream_result(self, lines: str, *, child_arid: str | None = "A",
+                             resume: bool = False, register=None,
+                             returncode: int = 0) -> wc.ProcResult:
+        """Drive `_spawn_codex_json_leaf` over a canned JSONL stdout stream."""
+        import io
+        from unittest.mock import patch
+
+        popen_kwargs: dict[str, Any] = {}
+
+        class _FakePopen:
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                popen_kwargs.update(kw)
+                self.stdout = io.StringIO(lines)
+                self.stderr = io.StringIO("")
+
+            def wait(self):  # type: ignore[no-untyped-def]
+                return returncode
+
+            def terminate(self):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = (  # type: ignore[method-assign]
+            register if register is not None else (lambda *a: None))
+        with patch.object(wc.subprocess, "Popen", _FakePopen):
+            result = c._spawn_codex_json_leaf(
+                ["codex", "exec"], {}, child_arid, resume=resume)
+        # The stream must be decoded LENIENTLY. With the default strict handler a single
+        # malformed byte raises mid-iteration, escaping spawn_leaf as a conductor_error
+        # and discarding the stderr already drained — a leaf's own output must never be
+        # able to kill the conductor. Asserted on every case here because no canned
+        # `io.StringIO` stream can reach the real decoder.
+        self.assertEqual(popen_kwargs.get("errors"), "backslashreplace")
+        self.assertIs(popen_kwargs.get("text"), True)
+        return result
+
+    def test_codex_thread_registration_failure_is_a_transport_result(self) -> None:
+        """A failed host-side identity binding must NOT escape spawn_leaf.
+
+        `_register_codex_thread` writes the launch response + session index, so it can
+        fail on ENOSPC or a conflicting recorded identity. Letting that raise would
+        terminalize the whole orchestration as a generic conductor_error instead of
+        routing the substep, and would leave the leaf running against an identity the
+        host never recorded.
+        """
+        def _boom(*_args):  # type: ignore[no-untyped-def]
+            raise OSError(28, "No space left on device")
+
+        proc = self._codex_stream_result(
+            '{"type":"thread.started","thread_id":"t-1"}\n', register=_boom)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("codex thread registration failed", proc.stderr)
+        self.assertIn("No space left on device", proc.stderr)
+
+    def test_codex_raw_jsonl_stream_is_retained(self) -> None:
+        # `stdout` keeps only the final agent_message, so the event log is
+        # unrecoverable from any other artifact unless it is carried out here.
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}\n')
+        proc = self._codex_stream_result(stream)
+        self.assertEqual(proc.stdout, "{}")
+        self.assertEqual(proc.raw_stdout, stream)
+        self.assertEqual(proc.returncode, 0)
+
+    def test_codex_resume_mode_comes_from_the_caller_not_argv(self) -> None:
+        # Under mandatory bwrap the argv passed here is the WRAPPER command line —
+        # bind paths and the leaf prompt are both in it — so a `"resume" in argv`
+        # scan is satisfiable by leaf-controlled text.
+        stream = '{"type":"thread.started","thread_id":"t-1"}\n'
+        self.assertIsNone(self._codex_stream_result(stream).resume_mode)
+        self.assertEqual(
+            self._codex_stream_result(stream, resume=True).resume_mode, "in_place")
+
+    def test_codex_failed_turn_with_no_document_normalizes_to_a_nonzero_exit(self) -> None:
+        """A documentless `turn.failed` must take the ordinary leaf-death path.
+
+        Every downstream consumer of a leaf death — infra classification, the
+        `--wait-usage-reset` plan, run_substep's transient retry, and run_phase's
+        fail_closed transport branch — keys on `returncode != 0`. Left at exit 0, a
+        usage limit reported this way would be treated as a repairable content defect
+        and burn the whole bundle-repair budget re-prompting a throttled API.
+        """
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"turn.failed","error":{"message":"usage limit reached"}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("usage limit reached", proc.stderr)
+
+    def test_codex_turn_failed_is_not_masked_by_a_mid_turn_message(self) -> None:
+        """`turn.failed` is TERMINAL, so a preceding `agent_message` cannot absolve it.
+
+        Codex emits `agent_message` items per message, so a turn that narrates ("Let me
+        read the spec…") and then fails is ordinary. Keying the normalization on
+        "no document" alone would accept that narration as the answer and drop the
+        failure — a usage limit reported this way would burn the whole repair budget.
+        """
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message",'
+                  '"text":"Let me start by reading the spec."}}\n'
+                  '{"type":"turn.failed","error":{"message":"usage limit reached"}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn("reading the spec", proc.stdout)
+        self.assertIn("usage limit reached", proc.stderr)
+        # The classifier must now be reachable for this result.
+        self.assertEqual(
+            (wc._classify_leaf_infra_error(proc.stderr, proc.stdout) or ("", ""))[0],
+            "llm_usage_limit")
+
+    def test_codex_recovered_error_event_does_not_discard_the_document(self) -> None:
+        # `error` is NOT guaranteed terminal in the JSONL stream. A turn that reported
+        # one and then produced a valid final message must keep both its document and
+        # its exit code — otherwise a recovered turn is thrown away as a leaf death.
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"error","message":"transient upstream hiccup"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"a\\":1}"}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, '{"a":1}')
+        # The diagnostic itself is still preserved for the operator.
+        self.assertIn("transient upstream hiccup", proc.stderr)
+
+    def test_leaf_output_persists_despite_a_lone_surrogate(self) -> None:
+        """Persisting leaf output must never fail on leaf-controlled text.
+
+        On the codex path `stdout` comes through `json.loads`, which turns an escaped
+        `\\ud800` into a real lone surrogate that utf-8 cannot encode. This runs right
+        after spawn_leaf with no enclosing try, so a raw UnicodeEncodeError would escape
+        as a conductor_error: the child is never finalized and the repair loop that
+        exists to handle such a reply never runs.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-codex")
+            proc = wc.ProcResult(0, '{"a":"\ud800"}', "boom \ud800",
+                                 raw_stdout='{"text":"\ud800"}\n')
+            c._persist_leaf_output("A", proc)
+            dialogs = (Path(tmp) / "workspace" / "orchestrations" / "o"
+                       / "agents" / "A" / "dialogs")
+            for name in ("leaf.stdout.log", "leaf.stderr.log", "leaf.stdout.jsonl"):
+                self.assertTrue((dialogs / name).is_file(), name)
+                self.assertIn("ud800", (dialogs / name).read_text(encoding="utf-8"))
+
+    def test_leaf_output_removes_a_stale_jsonl_from_a_prior_run(self) -> None:
+        # `escalate`'s diagnostician reuses one fixed (arid, prefix), so a leftover
+        # `.jsonl` would sit next to freshly overwritten `.log` files and read as this
+        # run's event stream. Skipping the write when absent is not enough.
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-codex")
+            dialogs = (Path(tmp) / "workspace" / "orchestrations" / "o"
+                       / "agents" / "A" / "dialogs")
+            c._persist_leaf_output("A", wc.ProcResult(0, "x", "", raw_stdout='{"a":1}\n'))
+            self.assertTrue((dialogs / "leaf.stdout.jsonl").is_file())
+            c._persist_leaf_output("A", wc.ProcResult(0, "y", ""))
+            self.assertFalse((dialogs / "leaf.stdout.jsonl").exists())
+
     def test_nonzero_leaf_exit_fails_substep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",

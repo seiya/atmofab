@@ -13,6 +13,7 @@ pinned by a golden.
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -407,9 +408,16 @@ class PurePromptConstantsTest(unittest.TestCase):
 
 
 class LeafCommandPureBranchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # A codex pure launch AUTHORS its output schema under repo_root/workspace/tmp,
+        # so this must be a disposable dir — a shared literal path would leave real
+        # files behind on every run.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
     def _conductor(self, backend: str) -> wc.Conductor:
         return wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o",
+            repo_root=Path(self._tmp.name), orchestration_id="o",
             orchestration_agent_run_id="ORCH", backend=backend, env={})
 
     def test_pure_claude_command_includes_flags(self):
@@ -446,6 +454,50 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertNotIn("--ignore-user-config", argv)
         self.assertIn("--ignore-rules", argv)
         self.assertEqual(argv[-2:], ["--json", "PROMPT"])
+
+    def test_codex_pure_warm_resume_omits_the_exec_only_sandbox_flag(self):
+        """`codex exec resume` takes NO `--sandbox`; passing it aborts at argv parsing.
+
+        Warm resume is how BOTH pure loops run every repair attempt, so this argv being
+        unparseable turns the first schema violation into a transport death with the
+        whole repair budget unused. The read-only policy is re-pinned through the `-c`
+        override that `exec` and `exec resume` share instead of being dropped.
+        """
+        argv = self._conductor("codex").leaf_command(
+            "REPAIR", session_id="arid-2", resume_session_id="thread-1", pure=True)
+        self.assertEqual(argv[:3], ["codex", "exec", "resume"])
+        self.assertNotIn("--sandbox", argv)
+        self.assertEqual(argv[argv.index("--config") + 1], 'sandbox_mode="read-only"')
+        self.assertIn("--ignore-rules", argv)
+        self.assertIn("--output-schema", argv)
+        self.assertIn("thread-1", argv)
+        self.assertEqual(argv[-2:], ["--json", "REPAIR"])
+
+    def test_codex_resume_argv_options_are_all_preflight_certified(self):
+        """Every option the resume argv emits must be one the resume probe checks.
+
+        The `exec` and `exec resume` subcommands do not accept the same options, so a
+        flag added to the resume branch without extending
+        CODEX_EXEC_RESUME_REQUIRED_FLAGS would leave the preflight green on a CLI that
+        rejects the command — exactly how the `--sandbox` regression passed review.
+        """
+        from tools.orchestration_runtime import CODEX_EXEC_RESUME_REQUIRED_FLAGS
+        required = set(CODEX_EXEC_RESUME_REQUIRED_FLAGS)
+        for pure in (False, True):
+            argv = self._conductor("codex").leaf_command(
+                "REPAIR", session_id="a", resume_session_id="thread-1", pure=pure)
+            # No short-form aliasing: the argv must emit exactly the spellings the
+            # probe asserts, so a CLI that drops an alias cannot pass the preflight.
+            emitted = {part for part in argv if part.startswith("-")}
+            self.assertTrue(
+                emitted <= required,
+                f"uncertified resume options (pure={pure}): {sorted(emitted - required)}",
+            )
+        # The pure resume argv is the widest one, so on that arm the relation is
+        # EQUALITY. Subset alone would let the constant grow a flag the argv never
+        # emits, making the preflight stricter than the command and false-failing the
+        # backend on a CLI that dropped an option nothing uses.
+        self.assertEqual(emitted, required)
 
 
 if __name__ == "__main__":
