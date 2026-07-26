@@ -1330,6 +1330,9 @@ class ProcResult:
     returncode: int
     stdout: str
     stderr: str
+    usage: dict[str, Any] | None = None
+    model: str | None = None
+    resume_mode: str | None = None
 
 
 # A leaf that dies on an LLM-infrastructure error exits nonzero with no artifacts, which the
@@ -2363,6 +2366,27 @@ class Conductor:
         except OSError:
             return False
 
+    def _pure_session_resumable(self, session_id: str) -> bool:
+        """Whether a backend session can be used by the pure repair loop."""
+        if self.backend == "claude":
+            return self._claude_session_resumable(session_id)
+        # Codex exposes no safe local transcript-presence probe.  A thread id
+        # emitted by this process is authoritative; `codex exec resume` remains
+        # the final capability check and its failure is handled as transport.
+        return self.backend == "codex" and bool(session_id and session_id.strip())
+
+    def _session_id_for_child(self, child_arid: str) -> str | None:
+        if self.backend != "codex":
+            return child_arid
+        from tools.orchestration_runtime import _read_session_run_index
+        index = _read_session_run_index(self.repo_root, self.orchestration_id)
+        for entry in index.get("entries", []):
+            if isinstance(entry, dict) and entry.get("agent_run_id") == child_arid:
+                value = entry.get("agent_session_id")
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
     def leaf_command(
         self,
         prompt_text: str,
@@ -2390,10 +2414,6 @@ class Conductor:
         leaf fails closed here (there is no migrated codex producer; the operator decision is
         claude-only for Z2), well before spawn, so the ValueError names the misconfiguration
         instead of a downstream parse failure."""
-        if pure and self.backend != "claude":
-            raise ValueError(
-                f"pure leaf mode is claude-only; backend {self.backend!r} has no pure "
-                "producer (Z2 fail-closed)")
         base = shlex.split(self.llm_command) if self.llm_command.strip() else [self.backend]
         if self.backend == "claude":
             # `-p` runs non-interactively; the committed .claude/settings.json supplies
@@ -2411,11 +2431,27 @@ class Conductor:
             # JSONL is mandatory: thread.started is the sole authoritative Codex
             # session identity and is registered before a later hook can authorize
             # a file operation.
+            pure_flags: list[str] = []
+            if pure:
+                schema = self._codex_pure_schema_path(session_id)
+                pure_flags = ["--ignore-user-config", "--ignore-rules", "--sandbox", "read-only",
+                              "--output-schema", str(schema)]
             if resume_session_id:
-                return [*base, "exec", "resume", resume_session_id,
-                        "--dangerously-bypass-hook-trust", "--json", prompt_text]
-            return [*base, "exec", "--dangerously-bypass-hook-trust", "--json", prompt_text]
+                return [*base, "exec", "resume", resume_session_id, *pure_flags, "--json", prompt_text]
+            return [*base, "exec", *pure_flags, "--json", prompt_text]
         raise ValueError(f"unsupported backend for leaf spawn: {self.backend}")
+
+    def _codex_pure_schema_path(self, child_arid: str | None) -> Path:
+        """Host-author the JSON-object schema for a Codex pure response.
+
+        Semantic CodegenBundle/verdict checks remain host-side.  This CLI schema
+        guarantees the transport response is one object before those checks run.
+        """
+        child = (child_arid or "").strip() or "codex-pure-schema"
+        path = self.repo_root / "workspace" / "tmp" / child / "codex_pure_output.schema.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"type": "object"}) + "\n", encoding="utf-8")
+        return path
 
     def _bwrap_enabled(self) -> bool:
         """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap
@@ -2605,6 +2641,8 @@ class Conductor:
         final_text: str | None = None
         stderr_chunks: list[str] = []
         failure_events: list[str] = []
+        usage: dict[str, Any] | None = None
+        model: str | None = None
 
         # Codex may emit diagnostics before it emits (or closes) its JSONL stdout.
         # Drain stderr concurrently: reading it only after the stdout iterator
@@ -2623,6 +2661,19 @@ class Conductor:
                 if not isinstance(event, dict):
                     continue
                 kind = str(event.get("type") or "")
+                # `turn.completed` is the canonical current event, while the
+                # tolerant top-level/nested extraction keeps old/new CLI JSONL
+                # shapes observable without inventing values.
+                candidates = (event, event.get("turn"), event.get("item"))
+                for candidate_meta in candidates:
+                    if not isinstance(candidate_meta, dict):
+                        continue
+                    candidate_usage = candidate_meta.get("usage")
+                    if isinstance(candidate_usage, dict):
+                        usage = candidate_usage
+                    candidate_model = candidate_meta.get("model")
+                    if isinstance(candidate_model, str) and candidate_model.strip():
+                        model = candidate_model.strip()
                 if kind in {"error", "turn.failed"}:
                     # The retry and usage-reset classifiers operate on the
                     # process diagnostics. Preserve Codex's structured terminal
@@ -2653,8 +2704,12 @@ class Conductor:
             stderr = (stderr.rstrip() + "\n" + "\n".join(failure_events)).strip()
         if thread_id is None:
             detail = "codex JSONL stream terminated without a usable thread.started thread_id"
-            return ProcResult(returncode or 1, "", (stderr + "\n" + detail).strip())
-        return ProcResult(returncode, final_text or "", stderr)
+            return ProcResult(returncode or 1, "", (stderr + "\n" + detail).strip(),
+                              usage=usage, model=model,
+                              resume_mode=("in_place" if "resume" in argv else None))
+        return ProcResult(returncode, final_text or "", stderr,
+                          usage=usage, model=model,
+                          resume_mode=("in_place" if "resume" in argv else None))
 
     def read_parent_return_token(self, child_arid: str) -> str:
         path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
@@ -2882,15 +2937,16 @@ class Conductor:
         """True when this substep runs as a Z2 host-mediated pure-function leaf.
 
         Since M-F the generate-executor is no longer selectable (legacy execution removed; `pure`
-        is the only executor), so this dispatch is decided purely by the node shape: the claude
-        backend (the ONLY pure producer; codex fail-closes in `leaf_command`), the two generate LLM
+        is the only executor), so this dispatch is decided purely by the node shape and the
+        supported backend (Claude's closed tool-free transport or Codex's sandboxed structured
+        approximation), the two generate LLM
         substeps, and the node's M3c shape (`_conductor_authors_makefile` ∧
         `_conductor_authors_runner`) — the shape the CodegenBundle v1 producer can express (the leaf
         authors model+checks; the host renders the runner glue + the Makefile).
 
         A non-M3c node (harness self-test, c/cpp/mixed, a physics node with no infra dep) has no
-        bundle representation for its runner, and a codex node has no pure producer, so those fall
-        through to the shared AGENTIC leaf loop in `run_substep`. That is a recorded RESIDUAL of the
+        bundle representation for its runner, so those fall through to the shared AGENTIC leaf loop
+        in `run_substep`. That is a recorded RESIDUAL of the
         migration scope, not a selectable executor: their invocation record still stamps
         `generate_executor=pure` (a provenance stamp), and they are not rejected on resume.
 
@@ -2899,7 +2955,7 @@ class Conductor:
         are dispatched to their own loops in `run_substep`. Deterministic generate substeps
         (lint/syntax/static) are never pure — they run in-process regardless — and compile.verify
         stays agentic (Z2 migrates the generate phase only)."""
-        if self.backend != "claude":
+        if self.backend not in {"claude", "codex"}:
             return False
         if (phase, substep) not in (("generate", "generate"), ("generate", "verify")):
             return False
@@ -3583,7 +3639,7 @@ clean:
         conformance test."""
         from tools.pure_leaf import (
             parse_result_envelope, extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
-            RESPONSE_UNPARSEABLE, _MISSING)
+            RESPONSE_UNPARSEABLE, ResultEnvelope, _MISSING)
         # Assembling the context reads host-owned artifacts and RAISES on a missing one
         # (`pure_runner_document_missing`). run_substep's callers must never see an exception —
         # recover it as the same fail_closed transport outcome a failed `_write_runner` produces.
@@ -3611,8 +3667,8 @@ clean:
         # resume_session_id stays None and the first attempt is a cold launch (findings dropped,
         # the safe degradation the pure launch template has no slot for).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
-            target = str(repair.get("repair_target_agent_run_id", "")).strip()
-            if target and target != "none" and self._claude_session_resumable(target):
+            target = self._resolve_reuse_resume(repair, phase, substep)
+            if target and self._pure_session_resumable(target):
                 resume_session_id = target
                 # The outer-reopen excerpt is threaded into the first repair turn's
                 # `repair_findings` (a UTF-8-persisted prompt). Its writers under the pure executor
@@ -3633,7 +3689,7 @@ clean:
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
-                    and self._claude_session_resumable(resume_session_id))
+                    and self._pure_session_resumable(resume_session_id))
             # A repair turn is any turn with a session to resume (an inner repair — resume_session_id
             # was set to the prior attempt below — or the seeded outer reopen). `warm` may still be
             # False if that session has since been GC'd, in which case the repair renders as a
@@ -3688,7 +3744,11 @@ clean:
             self._persist_leaf_output(child_arid, proc)
             token = self.read_parent_return_token(child_arid)
 
-            envelope = parse_result_envelope(proc.stdout)
+            envelope = (parse_result_envelope(proc.stdout) if self.backend == "claude" else
+                        ResultEnvelope(True, proc.stdout, False, proc.model if proc.model else _MISSING,
+                                       proc.usage if proc.usage is not None else _MISSING,
+                                       self._session_id_for_child(child_arid) or _MISSING,
+                                       None, None))
             model = None if envelope.model is _MISSING else envelope.model
             usage = None if envelope.usage is _MISSING else envelope.usage
             attempt_record: dict[str, Any] = {
@@ -3809,7 +3869,8 @@ clean:
             self.finalize_child(
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
-                                     [], result_summary, agent_model_override=model, pure=True))
+                                     [], result_summary, agent_model_override=model, pure=True,
+                                     usage=usage, resume_mode=proc.resume_mode))
 
             if status == "pass":
                 assert accepted_doc is not None
@@ -3916,7 +3977,7 @@ clean:
                 return SubstepOutcome(child_arid, "fail", [], proc.returncode,
                                       infra_error, launched_at, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's session.
-            resume_session_id = child_arid
+            resume_session_id = self._session_id_for_child(child_arid)
             attempt += 1
 
     # --- Z2 pure-leaf verify reviewer (M-D) ------------------------------------
@@ -4019,7 +4080,7 @@ clean:
         source_meta.json / verdict_meta.json."""
         from tools.pure_leaf import (
             parse_result_envelope, extract_json_document, verify_verdict_violations,
-            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_UNPARSEABLE, _MISSING)
+            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_UNPARSEABLE, ResultEnvelope, _MISSING)
         pure_context = self._build_pure_verify_context(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
@@ -4030,7 +4091,7 @@ clean:
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
-                    and self._claude_session_resumable(resume_session_id))
+                    and self._pure_session_resumable(resume_session_id))
             repair_payload: dict[str, str] | None = None
             if resume_session_id is not None:
                 repair_payload = {
@@ -4071,7 +4132,11 @@ clean:
             self._persist_leaf_output(child_arid, proc)
             token = self.read_parent_return_token(child_arid)
 
-            envelope = parse_result_envelope(proc.stdout)
+            envelope = (parse_result_envelope(proc.stdout) if self.backend == "claude" else
+                        ResultEnvelope(True, proc.stdout, False, proc.model if proc.model else _MISSING,
+                                       proc.usage if proc.usage is not None else _MISSING,
+                                       self._session_id_for_child(child_arid) or _MISSING,
+                                       None, None))
             model = None if envelope.model is _MISSING else envelope.model
             usage = None if envelope.usage is _MISSING else envelope.usage
             attempt_record: dict[str, Any] = {
@@ -4149,7 +4214,8 @@ clean:
                 self.finalize_child(
                     child_arid, token, reply,
                     self._agent_run_json(refs, phase, substep, child_arid, verify_status,
-                                         [], result_summary, agent_model_override=model, pure=True))
+                                         [], result_summary, agent_model_override=model, pure=True,
+                                         usage=usage, resume_mode=proc.resume_mode))
                 try:
                     self._write_verify_source_meta(
                         refs, accepted_verdict, attempts=len(per_attempt))
@@ -4222,7 +4288,8 @@ clean:
             self.finalize_child(
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, "fail",
-                                     [], result_summary, agent_model_override=model, pure=True))
+                                     [], result_summary, agent_model_override=model, pure=True,
+                                     usage=usage, resume_mode=proc.resume_mode))
 
             # --wait-usage-reset (opt-in): a transport death carrying a resolvable usage-limit
             # reset (in practice the CLI's TZ-anchored human form) is waited out in place and the
@@ -4288,7 +4355,7 @@ clean:
                                       infra_error, launched_at, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's OWN reviewer session (persona
             # separation — never an external/producer arid).
-            resume_session_id = child_arid
+            resume_session_id = self._session_id_for_child(child_arid)
             attempt += 1
 
     def write_step_result(self, node_key: str, step: str, executor_arid: str,
@@ -4673,7 +4740,9 @@ clean:
                         output_refs: list[str],
                         result_summary: str | None = None,
                         agent_model_override: str | None = None,
-                        pure: bool = False) -> dict[str, Any]:
+                        pure: bool = False,
+                        usage: dict[str, Any] | None = None,
+                        resume_mode: str | None = None) -> dict[str, Any]:
         session_id = child_arid
         context_id = child_arid
         if self.backend == "codex":
@@ -4706,6 +4775,10 @@ clean:
         }
         if substep is not None:
             payload["substep"] = substep
+        if usage is not None:
+            payload["usage"] = usage
+        if resume_mode in {"forked", "in_place"}:
+            payload["resume_mode"] = resume_mode
         # Record the EXACT model the leaf actually ran, resolved from its own session
         # transcript (the leaf's session id == child_arid, pinned via --session-id at
         # launch). This is the runtime-resolved ground truth that replaces the unpinned
@@ -6165,18 +6238,6 @@ clean:
         # Memoized per orchestration (no-op after the first); spawn_leaf also calls it as a
         # safety net for the record-launch-less diagnostician leaf.
         self._ensure_codex_feature_cache()
-        # Codex does not yet have the closed-context pure transport required by
-        # M3c Generate. Never silently fall through to the repository-facing
-        # agentic leaf path: that would misrepresent the pure contract.
-        if (
-            self.backend == "codex"
-            and (phase, substep) in (("generate", "generate"), ("generate", "verify"))
-            and self._conductor_authors_makefile(refs)
-            and self._conductor_authors_runner(refs)
-        ):
-            raise SandboxEnforcementError(
-                "Codex pure Generate is unavailable: refusing the agentic fallback for an M3c node"
-            )
         # Z2 pure-function producer (M-C): `generate.generate` on a claude M3c node under
         # executor=pure runs as a host-mediated pure function with its OWN spawn/validate/
         # repair/finalize/write loop (empty write authority; the host writes the bundle
@@ -6332,7 +6393,9 @@ clean:
             self.finalize_child(
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
-                                     output_refs, result_summary))
+                                     output_refs, result_summary,
+                                     agent_model_override=proc.model,
+                                     usage=proc.usage, resume_mode=proc.resume_mode))
             retryable = (
                 not deterministic
                 and proc.returncode != 0

@@ -370,9 +370,10 @@ class HookCommonTests(unittest.TestCase):
             HookDecision(action=HookDecisionAction.BLOCK, reason="denied"),
             event_name=HookEventName.PERMISSION_REQUEST,
         )
-        self.assertEqual(code, 2)
+        self.assertEqual(code, 0)
         self.assertEqual(
-            json.loads(stdout_text)["hookSpecificOutput"]["decision"]["behavior"], "deny"
+            json.loads(stdout_text)["hookSpecificOutput"]["decision"],
+            {"behavior": "deny", "message": "denied"},
         )
 
     def test_claude_adapter_supported_events(self) -> None:

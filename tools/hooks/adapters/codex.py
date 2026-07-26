@@ -103,10 +103,12 @@ class CodexHookAdapter(HookBackendAdapter):
                 }
             }
             if behavior == "deny":
-                body["hookSpecificOutput"]["decision"]["reason"] = (
+                body["hookSpecificOutput"]["decision"]["message"] = (
                     format_block_reason_with_hint(decision)
                 )
-            return (2 if behavior == "deny" else 0), json.dumps(body, ensure_ascii=False)
+            # PermissionRequest consumes the structured decision; exit 2 would
+            # instead report this hook as failed and can discard its decision.
+            return 0, json.dumps(body, ensure_ascii=False)
         if decision.action == HookDecisionAction.BLOCK:
             body = {
                 "decision": "block",

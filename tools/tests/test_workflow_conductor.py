@@ -5496,11 +5496,11 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="claude", llm_command="mywrap --model Z")
         self.assertEqual(c.leaf_command("PROMPT"), ["mywrap", "--model", "Z", "-p", "PROMPT"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x")
-        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "P"])
+        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--json", "P"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
         self.assertEqual(self._c(backend="claude").leaf_command("P"), ["claude", "-p", "P"])
-        self.assertEqual(self._c(backend="codex").leaf_command("P"), ["codex", "exec", "P"])
+        self.assertEqual(self._c(backend="codex").leaf_command("P"), ["codex", "exec", "--json", "P"])
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
@@ -5511,7 +5511,7 @@ class LeafSpawnTest(unittest.TestCase):
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
             self._c(backend="codex").leaf_command("P", session_id="arid-1"),
-            ["codex", "exec", "P"],
+            ["codex", "exec", "--json", "P"],
         )
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
@@ -5690,9 +5690,21 @@ class LeafSpawnTest(unittest.TestCase):
                 # dedicated coverage elsewhere).
                 captured.clear()
                 from unittest.mock import patch
+                class _FakePopen:
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        import io
+                        captured["argv"] = argv
+                        self.stdout = io.StringIO('{"type":"thread.started","thread_id":"t"}\n')
+                        self.stderr = io.StringIO("")
+                    def wait(self):  # type: ignore[no-untyped-def]
+                        return 0
+                    def terminate(self):  # type: ignore[no-untyped-def]
+                        return None
                 with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                           return_value=(True, "hooks=true")):
-                    self._c(repo_root=repo, backend="codex", env={}).spawn_leaf(
+                           return_value=(True, "hooks=true")), patch.object(wc.subprocess, "Popen", _FakePopen):
+                    c_codex = self._c(repo_root=repo, backend="codex", env={})
+                    c_codex._register_codex_thread = lambda *args: None  # type: ignore[method-assign]
+                    c_codex.spawn_leaf(
                         "P", {"HOME": "/h"}, child_arid="A")
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
@@ -7224,16 +7236,14 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "static"))
             self.assertFalse(c._pure_leaf_substep(refs, "compile", "verify"))
 
-    def test_codex_m3c_is_agentic_residual(self) -> None:
-        # (b) codex + M3c: no pure producer (codex fail-closes in leaf_command), so the node runs
-        # the shared agentic leaf loop as a recorded residual.
+    def test_codex_m3c_uses_sandboxed_structured_pure_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
             c = self._conductor(repo, "codex")
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "verify"))
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
 
     def test_claude_non_m3c_is_agentic_residual(self) -> None:
         # (c) claude but non-M3c (0 or 2 infra deps): no bundle representation for the runner, so

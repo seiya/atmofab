@@ -276,7 +276,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             {"name": "codex_exec_json_streaming", "pass": True},
             {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
-            {"name": "codex_project_hook_trust_bypass", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
             {"name": "codex_hooks_enabled" if legacy_hooks else "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},

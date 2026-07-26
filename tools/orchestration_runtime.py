@@ -9550,7 +9550,7 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             "codex_version_available", "codex_features_list_available", "hooks_enabled",
             "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
             "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-            "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+            "codex_exec_resume", "codex_project_hooks_validated",
         }
         available = {str(item.get("name")): item.get("pass") for item in checks if isinstance(item, dict)}
         if available.get("hooks_enabled") is None and available.get("codex_hooks_enabled") is True:
@@ -9667,7 +9667,7 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 "codex_version_available", "codex_features_list_available", "hooks_enabled",
                 "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
                 "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-                "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+                "codex_exec_resume", "codex_project_hooks_validated",
             }
             missing = sorted(name for name in required if check_values.get(name) is not True)
             if missing:
@@ -14961,12 +14961,6 @@ def _probe_codex_backend(
             "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
                        or f"exit={resume_help_proc.returncode}"),
         },
-        {
-            "name": "codex_project_hook_trust_bypass",
-            "pass": (exec_help_proc.returncode == 0
-                     and "--dangerously-bypass-hook-trust" in exec_help_text),
-            "detail": exec_help_detail,
-        },
     ]
     return checks, features, multi_agent_enabled, version_proc.stdout.strip()
 
@@ -15604,7 +15598,6 @@ def probe_execution_platform(
             for name in (
                 "codex_version_available", "codex_features_list_available",
                 "codex_exec_json_streaming", "codex_exec_output_schema", "codex_exec_resume",
-                "codex_project_hook_trust_bypass",
             )
         )
         hooks_enabled = features.get("hooks") is True
