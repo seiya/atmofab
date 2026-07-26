@@ -3034,7 +3034,7 @@ class Conductor:
         migration scope, not a selectable executor: their invocation record still stamps
         `generate_executor=pure` (a provenance stamp), and they are not rejected on resume.
 
-        Both generate LLM substeps go pure on an M3c claude node: `(generate, generate)` (the
+        Both generate LLM substeps go pure on an M3c Claude or Codex node: `(generate, generate)` (the
         CodegenBundle producer, M-C) and `(generate, verify)` (the verdict reviewer, M-D). The two
         are dispatched to their own loops in `run_substep`. Deterministic generate substeps
         (lint/syntax/static) are never pure — they run in-process regardless — and compile.verify
@@ -3452,7 +3452,7 @@ clean:
 
         The runner is injected VERBATIM (no interface extraction): it is the consumer of the
         checks-module ABI the leaf must author against, and `docs/workflow/CHECKS_MODULE_CONTRACT.md`
-        — where the agentic leaf reads that ABI — is unreachable from a tool-less leaf. Injecting
+        — where the agentic leaf reads that ABI — is unreachable from a closed-context pure leaf. Injecting
         the rendered artifact rather than a distilled restatement keeps the ABI's dynamic surface
         (which names the runner actually imports) exact by construction. `run_phase` renders it
         before any generate substep runs, so it is always on disk here."""
@@ -3504,7 +3504,7 @@ clean:
         satisfies nothing) -> state_variable ∈ IR algorithm.state_variables -> the M3c literal
         name constraint the host-rendered runner glue `use`s -> the fixed checks-module ABI ->
         `derive_build_graph` cross-origin object/module collisions. The pure leaf has
-        no tools, so a corrupted bundle can only propagate as content here — these layers are what
+        no repository write authority, so a corrupted bundle can only propagate as content here — these layers are what
         catch it before any file is written.
 
         The ABI layer makes a mis-authored checks module a BOUNDED in-conversation repair instead
@@ -3710,8 +3710,9 @@ clean:
                                    repair: dict[str, str] | None,
                                    resolved_dependencies: tuple[dict[str, str], ...]
                                    ) -> "SubstepOutcome":
-        """Run `generate.generate` as a Z2 pure-function producer: spawn a tool-less `claude -p`
-        leaf that returns one CodegenBundle, validate + assembly-preflight it, repair a violation
+        """Run `generate.generate` as a Z2 pure-function producer: launch a backend-specific
+        closed-context leaf (Claude tool-free transport or Codex's sandboxed structured-output
+        approximation) that returns one CodegenBundle, validate + assembly-preflight it, repair a violation
         in a bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs
         row, and ONLY THEN write the bundle's artifacts host-side.
 
@@ -4096,7 +4097,8 @@ clean:
         controlled_spec.md (the human-authored behavioral contract it verifies against — phase_02
         allows it for verify but forbids it for generate) and the producer's `codegen_bundle.json`
         (the artifact under review), but NOT the host-rendered runner/Makefile glue (deterministic,
-        not the reviewer's concern). All host-resolved from disk here (the leaf has no filesystem)."""
+        not the reviewer's concern). All host-resolved from disk here so the closed-context prompt
+        supplies the complete review input."""
         def _read(rel: str) -> str:
             try:
                 return (self.repo_root / rel).read_text(encoding="utf-8")
@@ -4161,8 +4163,9 @@ clean:
     def _run_pure_verify_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                  resolved_dependencies: tuple[dict[str, str], ...]
                                  ) -> "SubstepOutcome":
-        """Run `generate.verify` as a Z2 pure-function reviewer: spawn a tool-less `claude -p`
-        reviewer that returns one verify verdict, validate it, repair a schema violation in a
+        """Run `generate.verify` as a Z2 pure-function reviewer: launch a backend-specific
+        closed-context reviewer (Claude tool-free transport or Codex's sandboxed structured-output
+        approximation) that returns one verify verdict, validate it, repair a schema violation in a
         bounded warm-resume loop, finalize the accepted attempt with an EMPTY output_refs row, and
         ONLY THEN author source_meta.json host-side.
 

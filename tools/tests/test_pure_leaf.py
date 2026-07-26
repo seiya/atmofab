@@ -437,10 +437,15 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertNotIn("--strict-mcp-config", argv)
         self.assertNotIn("--disable-slash-commands", argv)
 
-    def test_codex_pure_fails_closed(self):
-        with self.assertRaises(ValueError) as ctx:
-            self._conductor("codex").leaf_command("PROMPT", pure=True)
-        self.assertIn("claude-only", str(ctx.exception))
+    def test_codex_pure_uses_structured_readonly_approximation(self):
+        argv = self._conductor("codex").leaf_command(
+            "PROMPT", session_id="arid-1", pure=True)
+        self.assertEqual(argv[:2], ["codex", "exec"])
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
+        self.assertIn("--output-schema", argv)
+        self.assertIn("--ignore-user-config", argv)
+        self.assertIn("--ignore-rules", argv)
+        self.assertEqual(argv[-2:], ["--json", "PROMPT"])
 
 
 if __name__ == "__main__":

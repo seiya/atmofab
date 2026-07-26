@@ -1848,7 +1848,7 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
     authors ``operations: []`` legitimately and must not be called, so its prefixed
     subroutines are never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
     unconditionally requires for a component dep has no facts to build against, and the
-    pure (tool-less) leaf must invent symbol names / argument orders that ``Generate.gate``
+    pure closed-context leaf must invent symbol names / argument orders that ``Generate.gate``
     rejects every retry — the closure fail_closed this fallback closes. The empty-list
     fallback fires ONLY when ``operations`` is empty/absent; when the IR enumerates real
     operations, only that enumerated surface is injected (IR is the sole carrier; never
@@ -4452,8 +4452,9 @@ def build_capability_document(
     run_id_val = str(request_payload.get("run_id") or "").strip()
     source_id_val = str(request_payload.get("source_id") or "").strip()
 
-    # A pure-function leaf holds NO write authority (no tools, host writes after the child
-    # window closes) and invokes no gate/MCP: its capability is a truthful zero-authority
+    # A pure-function leaf holds NO repository-write authority (the host writes after the child
+    # window closes) and receives no gate/MCP invocation contract: its capability is a truthful
+    # zero-authority
     # record — `write_roots: []`, no mcp_permissions — tagged `mode: PURE_CAPABILITY_MODE` so the
     # verification systems (and the record-launch read-only-profile branch) can recognize it.
     pure = _is_pure_launch_request(request_payload)
@@ -7249,14 +7250,14 @@ def build_access_policy_payload(
         raise ValueError("access policy requires pipeline_ref")
 
     if _is_pure_launch_request(request_payload):
-        # A pure leaf receives its whole context inlined in the `-p` body and reads NO file. The
-        # policy is an ALLOWLIST: an EMPTY `allowed_read_roots` is what denies every read (a path
-        # not under any allowed root is rejected) — that empty allow-set is the enforcing
-        # mechanism. `denied_read_roots: ["."]` is an explicit audit statement of intent, not the
-        # enforcer (the read matcher's containment check does not treat "." as a repo-wide
-        # prefix). `--safe-mode` means no PreToolUse hook runs anyway, so the manifest is audit
-        # truth and the read-only bwrap profile is the real defense-in-depth. No gate services
-        # either — the pure leaf invokes no validator gate.
+        # A pure leaf receives its whole context inlined in the prompt body and is authorized to
+        # read NO repository file. The policy is an ALLOWLIST: an EMPTY `allowed_read_roots` is
+        # what denies every hook-mediated read (a path not under any allowed root is rejected) —
+        # that empty allow-set is the enforcing mechanism. `denied_read_roots: ["."]` is an
+        # explicit audit statement of intent, not the enforcer (the read matcher's containment
+        # check does not treat "." as a repo-wide prefix). Claude is tool-free; Codex's hooks
+        # enforce the empty allow-set, and the read-only bwrap profile remains the write-defense
+        # in depth. No gate services either — the pure leaf invokes no validator gate.
         pure_body = {
             "agent_run_id": agent_run_id.strip(),
             "node_key": node_key.strip(),
@@ -9985,8 +9986,9 @@ _PROMPT_TEMPLATE_FILES = {
     "step agent": "step_agent.txt",
     "substep agent": "substep_agent.txt",
     "common boilerplate": "common_boilerplate.txt",
-    # Z2 pure-function leaf prompts (host-mediated `claude -p`, no tools). One per
-    # migrated (step, substep); the repair template is substep-agnostic. Their line 0 is
+    # Z2 pure-function leaf prompts (host-mediated closed context). Claude's transport is
+    # tool-free; Codex uses a read-only structured-output approximation. One per migrated
+    # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
@@ -10727,11 +10729,12 @@ def _render_slim_repair_launch_prompt(request_payload: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# Z2 pure-function leaf (host-mediated `claude -p`, tools disabled). A pure leaf receives a
-# fully closed context in its `-p` body and returns ONE JSON document; the host validates and
-# writes it. Its launch prompt has no skill section, no gate runbook, no write-authorization
-# constraints — the leaf has no write authority to constrain — so it needs its own renderer,
-# marker set, and record-launch branch, all keyed off `leaf_mode == "pure"`.
+# Z2 pure-function leaf (host-mediated closed context). Claude uses `claude -p` with tools
+# disabled; Codex uses a read-only structured-output approximation. A pure leaf receives a
+# fully closed context and returns ONE JSON document; the host validates and writes it. Its launch
+# prompt has no skill section, no gate runbook, or write-authorization constraints — the leaf has
+# no repository write authority to constrain — so it needs its own renderer, marker set, and
+# record-launch branch, all keyed off `leaf_mode == "pure"`.
 # --------------------------------------------------------------------------------------
 
 # Migrated (step, substep) pairs a pure leaf may serve, and the required `pure_context` keys the
@@ -16865,8 +16868,9 @@ def record_launch(
                 }
             if is_pure:
                 # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
-                # has no tools anyway (`--safe-mode`); this is defense-in-depth so even a
-                # tool-bearing regression could not write an artifact from the child window.
+                # has no repository write authority. Claude is tool-free, while Codex's
+                # structured-output approximation remains tool-bearing in a read-only sandbox;
+                # bwrap ensures neither can write an artifact from the child window.
                 profile = build_readonly_bwrap_profile(
                     repo_root=repo_root,
                     orchestration_id=orchestration_id,

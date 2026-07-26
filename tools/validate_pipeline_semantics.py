@@ -9879,7 +9879,7 @@ def _validate_component_dep_operations(
     (``_resolve_dependency_facts``) keyed off the IR's ``operations`` list. When Compile
     authors ``operations: []`` (an authoring wobble — the 7/19 run authored the real op
     names, 7/21 authored ``[]``), the injected ``<dependency_facts>`` name no ops, yet the
-    leaf must still emit the calls — so a pure (tool-less) leaf invents symbol names /
+    leaf must still emit the calls — so a pure closed-context leaf invents symbol names /
     argument orders that ``Generate.syntax`` rejects every retry until the budget is
     exhausted. Pinning non-emptiness at Compile catches the wobble at IR-authoring time and
     routes (via ``classify_compile_static_failure`` -> ``COMPILE_STATIC_FAILURE_ROUTING``)
