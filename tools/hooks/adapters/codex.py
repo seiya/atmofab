@@ -44,6 +44,20 @@ class CodexHookAdapter(HookBackendAdapter):
                 command = None
         prompt = _lookup_payload_field(payload, "prompt")
         tool_name = _lookup_payload_field(payload, "tool_name")
+        # `.codex/hooks.json` recognizes current lower-case Codex names and
+        # historical title-case aliases. Normalize at the adapter boundary so
+        # the backend-neutral policy cannot bypass manifest enforcement because
+        # of spelling alone.
+        if isinstance(tool_name, str):
+            tool_name = {
+                "bash": "Bash",
+                "shell": "Bash",
+                "write": "Write",
+                "edit": "Edit",
+                "read": "Read",
+                "applypatch": "apply_patch",
+                "apply_patch": "apply_patch",
+            }.get(tool_name.strip().lower(), tool_name.strip()) or None
         file_path: str | None = None
         if isinstance(tool_input, dict):
             fp = tool_input.get("file_path")
@@ -67,7 +81,32 @@ class CodexHookAdapter(HookBackendAdapter):
             ),
         )
 
-    def encode_decision(self, decision: HookDecision) -> tuple[int, str]:
+    def encode_decision(
+        self,
+        decision: HookDecision,
+        *,
+        event_name: HookEventName | None = None,
+    ) -> tuple[int, str]:
+        """Encode the current Codex command-hook response.
+
+        PermissionRequest is the one Codex hook event that consumes a decision
+        envelope.  Keep ordinary command-hook allow responses empty: emitting a
+        PermissionRequest envelope for (for example) SessionStart makes current
+        Codex reject an otherwise valid hook response.
+        """
+        if event_name == HookEventName.PERMISSION_REQUEST:
+            behavior = "deny" if decision.action == HookDecisionAction.BLOCK else "allow"
+            body: dict[str, Any] = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {"behavior": behavior},
+                }
+            }
+            if behavior == "deny":
+                body["hookSpecificOutput"]["decision"]["reason"] = (
+                    format_block_reason_with_hint(decision)
+                )
+            return (2 if behavior == "deny" else 0), json.dumps(body, ensure_ascii=False)
         if decision.action == HookDecisionAction.BLOCK:
             body = {
                 "decision": "block",

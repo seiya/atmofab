@@ -1550,6 +1550,29 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertIn("session-to-run mapping not found", body.get("reason", ""))
             self.assertIn("ambiguous candidates=2", body.get("reason", ""))
 
+    def test_codex_file_tool_resolves_in_place_resume_to_running_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_file_guard_in_place_resume_001"
+            session_id = "thread_in_place_resume_001"
+            orch_root = repo_root / "workspace" / "orchestrations" / orch
+            orch_root.mkdir(parents=True, exist_ok=True)
+            (orch_root / "session_run_index.json").write_text(
+                json.dumps({"entries": [
+                    {"agent_run_id": "prior_run", "agent_session_id": session_id,
+                     "session_id": session_id, "status": "fail"},
+                    {"agent_run_id": "repair_run", "agent_session_id": session_id,
+                     "session_id": session_id, "status": "running"},
+                ]}),
+                encoding="utf-8",
+            )
+            resolved, candidates = cli._resolve_codex_agent_run_id_from_session(
+                repo_root=repo_root, orchestration_id=orch,
+                session_id=session_id, agent_session_id=None,
+            )
+            self.assertEqual(resolved, "repair_run")
+            self.assertEqual(candidates, 1)
+
     def test_codex_file_tool_does_not_match_none_literal_from_missing_context_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1725,7 +1748,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_name": "apply_patch",
                 "session_id": session_id,
                 "tool_input": {
-                    "patch": (
+                    "command": (
                         "*** Begin Patch\n"
                         f"*** Add File: {target_path}\n"
                         "+notes\n"

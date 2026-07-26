@@ -30,6 +30,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -2330,15 +2331,22 @@ class Conductor:
         session transcript still exists (Claude Code may have expired/GC'd it); if it is gone,
         fall back to a cold launch (return None) rather than letting `claude --resume <missing>`
         fail the leaf and fail-close the phase."""
-        if not (self.backend == "claude"
-                and repair is not None
-                and repair.get("repair_strategy") == "reuse"):
+        if not (repair is not None and repair.get("repair_strategy") == "reuse"):
             return None
         target = str(repair.get("repair_target_agent_run_id") or "").strip()
         if not target or target == "none":
             return None
-        if self._claude_session_resumable(target):
+        if self.backend == "claude" and self._claude_session_resumable(target):
             return target
+        if self.backend == "codex":
+            from tools.orchestration_runtime import _read_session_run_index
+            index = _read_session_run_index(self.repo_root, self.orchestration_id)
+            for entry in index.get("entries", []):
+                if not isinstance(entry, dict) or entry.get("agent_run_id") != target:
+                    continue
+                session = entry.get("agent_session_id")
+                if isinstance(session, str) and session.strip() and session.strip() != target:
+                    return session.strip()
         self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
         return None
 
@@ -2400,7 +2408,13 @@ class Conductor:
                 flags += pure_leaf_flags()
             return [*base, *flags, "-p", prompt_text]
         if self.backend == "codex":
-            return [*base, "exec", prompt_text]
+            # JSONL is mandatory: thread.started is the sole authoritative Codex
+            # session identity and is registered before a later hook can authorize
+            # a file operation.
+            if resume_session_id:
+                return [*base, "exec", "resume", resume_session_id,
+                        "--dangerously-bypass-hook-trust", "--json", prompt_text]
+            return [*base, "exec", "--dangerously-bypass-hook-trust", "--json", prompt_text]
         raise ValueError(f"unsupported backend for leaf spawn: {self.backend}")
 
     def _bwrap_enabled(self) -> bool:
@@ -2533,6 +2547,8 @@ class Conductor:
                 raise SandboxEnforcementError(
                     f"sandbox profile for {child_arid} is invalid: {exc}") from exc
         try:
+            if self.backend == "codex":
+                return self._spawn_codex_json_leaf(argv, child_env, child_arid)
             proc = subprocess.run(
                 argv, cwd=self.repo_root, env=child_env, text=True, capture_output=True, check=False,
             )
@@ -2551,6 +2567,94 @@ class Conductor:
                     f"(bwrap missing on this host?): {exc}") from exc
             raise
         return ProcResult(proc.returncode, proc.stdout, proc.stderr)
+
+    def _register_codex_thread(self, child_arid: str, thread_id: str) -> None:
+        """Atomically replace the provisional launch identity with Codex's thread id."""
+        from tools.orchestration_runtime import _append_session_run_index_entry, _read_json, _write_json
+        launch_dir = self.repo_root / "workspace" / "orchestrations" / self.orchestration_id / "launches"
+        request = _read_json(launch_dir / f"{child_arid}.request.json") or {}
+        response_path = launch_dir / f"{child_arid}.response.json"
+        response = _read_json(response_path) or {}
+        recorded = response.get("agent_session_id")
+        if isinstance(recorded, str) and recorded.strip() not in {child_arid, thread_id}:
+            raise RuntimeError("codex emitted a thread_id conflicting with the launch record")
+        response["agent_session_id"] = thread_id
+        response["session_id"] = thread_id
+        _write_json(response_path, response)
+        role = str(request.get("agent_role") or "substep").strip().lower()
+        context = request.get("context_id")
+        _append_session_run_index_entry(
+            self.repo_root, self.orchestration_id, agent_run_id=child_arid,
+            agent_session_id=thread_id,
+            context_id=context if isinstance(context, str) else None,
+            agent_role=role, status="running",
+        )
+
+    def _spawn_codex_json_leaf(
+        self, argv: list[str], child_env: dict[str, str], child_arid: str | None
+    ) -> ProcResult:
+        if not child_arid:
+            raise RuntimeError("codex JSON launch requires a child agent_run_id")
+        process = subprocess.Popen(
+            argv, cwd=self.repo_root, env=child_env, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        assert process.stderr is not None
+        thread_id: str | None = None
+        final_text: str | None = None
+        stderr_chunks: list[str] = []
+        failure_events: list[str] = []
+
+        # Codex may emit diagnostics before it emits (or closes) its JSONL stdout.
+        # Drain stderr concurrently: reading it only after the stdout iterator
+        # reaches EOF can deadlock once the stderr pipe fills.
+        def _drain_stderr() -> None:
+            stderr_chunks.append(process.stderr.read())
+
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+        try:
+            for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                kind = str(event.get("type") or "")
+                if kind in {"error", "turn.failed"}:
+                    # The retry and usage-reset classifiers operate on the
+                    # process diagnostics. Preserve Codex's structured terminal
+                    # event there even when the CLI left stderr empty.
+                    failure_events.append(json.dumps(event, ensure_ascii=False)[:2000])
+                candidate = event.get("thread_id")
+                if kind == "thread.started" and isinstance(candidate, str) and candidate.strip():
+                    if thread_id is not None and candidate.strip() != thread_id:
+                        raise RuntimeError("codex emitted conflicting thread IDs")
+                    if thread_id is None:
+                        thread_id = candidate.strip()
+                        self._register_codex_thread(child_arid, thread_id)
+                item = event.get("item")
+                if kind == "item.completed" and isinstance(item, dict):
+                    if str(item.get("type") or "") == "agent_message":
+                        text = item.get("text")
+                        if isinstance(text, str):
+                            final_text = text
+        except Exception:
+            process.terminate()
+            process.wait()
+            stderr_thread.join()
+            raise
+        returncode = process.wait()
+        stderr_thread.join()
+        stderr = "".join(stderr_chunks)
+        if failure_events:
+            stderr = (stderr.rstrip() + "\n" + "\n".join(failure_events)).strip()
+        if thread_id is None:
+            detail = "codex JSONL stream terminated without a usable thread.started thread_id"
+            return ProcResult(returncode or 1, "", (stderr + "\n" + detail).strip())
+        return ProcResult(returncode, final_text or "", stderr)
 
     def read_parent_return_token(self, child_arid: str) -> str:
         path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
@@ -4264,6 +4368,16 @@ clean:
         # codex reads a different config surface and is left alone.
         if self.backend == "claude":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(LEAF_MAX_OUTPUT_TOKENS)
+        elif self.backend == "codex":
+            # METDSL_HOME was the historical private alias.  Pass the canonical
+            # variable to the CLI so its state/session directory matches the
+            # location the preflight and bwrap profile certified.
+            canonical = env.get("CODEX_HOME", "").strip()
+            legacy = env.get("METDSL_HOME", "").strip()
+            if canonical and legacy and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve():
+                raise SandboxEnforcementError("CODEX_HOME and deprecated METDSL_HOME conflict")
+            if not canonical and legacy:
+                env["CODEX_HOME"] = legacy
         return env
 
     def read_case_ids(self, refs: NodeRefs) -> tuple[str, ...]:
@@ -4560,6 +4674,20 @@ clean:
                         result_summary: str | None = None,
                         agent_model_override: str | None = None,
                         pure: bool = False) -> dict[str, Any]:
+        session_id = child_arid
+        context_id = child_arid
+        if self.backend == "codex":
+            from tools.orchestration_runtime import _read_session_run_index
+            index = _read_session_run_index(self.repo_root, self.orchestration_id)
+            for entry in index.get("entries", []):
+                if isinstance(entry, dict) and entry.get("agent_run_id") == child_arid:
+                    value = entry.get("agent_session_id")
+                    if isinstance(value, str) and value.strip():
+                        session_id = value.strip()
+                    value = entry.get("context_id")
+                    if isinstance(value, str) and value.strip():
+                        context_id = value.strip()
+                    break
         payload: dict[str, Any] = {
             "agent_run_id": child_arid,
             "agent_role": child_agent_role(phase),
@@ -4567,8 +4695,8 @@ clean:
             "status": status,
             "started_at": _iso_now(),
             "finished_at": _iso_now(),
-            "agent_session_id": child_arid,
-            "context_id": child_arid,
+            "agent_session_id": session_id,
+            "context_id": context_id,
             "context_isolated": True,
             "node_key": refs.node_key,
             # record_agent_run does NOT infer step/substep from the launch request
@@ -6037,6 +6165,18 @@ clean:
         # Memoized per orchestration (no-op after the first); spawn_leaf also calls it as a
         # safety net for the record-launch-less diagnostician leaf.
         self._ensure_codex_feature_cache()
+        # Codex does not yet have the closed-context pure transport required by
+        # M3c Generate. Never silently fall through to the repository-facing
+        # agentic leaf path: that would misrepresent the pure contract.
+        if (
+            self.backend == "codex"
+            and (phase, substep) in (("generate", "generate"), ("generate", "verify"))
+            and self._conductor_authors_makefile(refs)
+            and self._conductor_authors_runner(refs)
+        ):
+            raise SandboxEnforcementError(
+                "Codex pure Generate is unavailable: refusing the agentic fallback for an M3c node"
+            )
         # Z2 pure-function producer (M-C): `generate.generate` on a claude M3c node under
         # executor=pure runs as a host-mediated pure function with its OWN spawn/validate/
         # repair/finalize/write loop (empty write authority; the host writes the bundle
@@ -8389,4 +8529,3 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     refs = (resume_node_refs(conductor, node_key, spec_path) if resume
             else prepare_node(conductor, node_key, spec_path))
     return conductor.conduct(refs, until_phase.lower())
-

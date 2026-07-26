@@ -7459,9 +7459,11 @@ def _backend_runtime_bind_paths(
         elif btype == "codex":
             # Mirror preflight's codex-home resolution (`Path(raw).expanduser()`) so the
             # bound dir matches what preflight checked; coerce to absolute because bwrap
-            # binds require an absolute source (a `~`/relative METDSL_HOME otherwise
+            # binds require an absolute source (a `~`/relative CODEX_HOME otherwise
             # yields a wrong or non-absolute bind target).
-            raw_codex = os.environ.get("METDSL_HOME", "").strip()
+            raw_codex = os.environ.get("CODEX_HOME", "").strip()
+            if not raw_codex:
+                raw_codex = os.environ.get("METDSL_HOME", "").strip()
             codex_home = Path(raw_codex).expanduser() if raw_codex else Path(home) / ".codex"
             rw.add(str(codex_home if codex_home.is_absolute() else codex_home.resolve()))
     ro_paths = sorted(p for p in ro if p and Path(p).exists())
@@ -9509,8 +9511,6 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     feature_states = payload.get("feature_states")
     if not isinstance(feature_states, dict):
         return False
-    if feature_states.get("multi_agent") is not True:
-        return False
     backend_token = str(payload.get("backend", "")).strip().lower()
     hooks = feature_states.get("hooks")
     if hooks is None:
@@ -9521,7 +9521,6 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     checks = payload.get("checks")
     if not isinstance(checks, list):
         return False
-    multi_agent_check_pass: bool | None = None
     hooks_check_pass: bool | None = None
     codex_home_writable_check_pass: bool | None = None
     for item in checks:
@@ -9529,8 +9528,6 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             continue
         check_name = item.get("name")
         pass_value = item.get("pass")
-        if check_name == "multi_agent_enabled" and isinstance(pass_value, bool):
-            multi_agent_check_pass = pass_value
         if check_name == "hooks_enabled" and isinstance(pass_value, bool):
             hooks_check_pass = pass_value
         if (
@@ -9547,13 +9544,22 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
         and payload.get("can_launch_step_agents") is True
         and payload.get("can_launch_substep_agents") is True
         and payload.get("sandbox_enforced") is True
-        and multi_agent_check_pass is True
     )
     if backend_token == "codex":
+        required = {
+            "codex_version_available", "codex_features_list_available", "hooks_enabled",
+            "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
+            "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
+            "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+        }
+        available = {str(item.get("name")): item.get("pass") for item in checks if isinstance(item, dict)}
+        if available.get("hooks_enabled") is None and available.get("codex_hooks_enabled") is True:
+            available["hooks_enabled"] = True
         launchable = (
             launchable
             and hooks_check_pass is True
             and codex_home_writable_check_pass is True
+            and all(available.get(name) is True for name in required)
         )
     return launchable
 
@@ -9570,14 +9576,6 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
     feature_states = payload.get("feature_states")
     backend_token = str(payload.get("backend", "")).strip().lower()
     if isinstance(feature_states, dict):
-        multi_agent = feature_states.get("multi_agent")
-        if isinstance(multi_agent, bool) and not multi_agent:
-            if payload.get("can_launch_step_agents") is True or payload.get(
-                "can_launch_substep_agents"
-            ) is True:
-                raise ValueError(
-                    "feature_states.multi_agent=false is incompatible with launchable preflight"
-                )
         hooks = feature_states.get("hooks")
         if hooks is None:
             hooks = feature_states.get("codex_hooks")
@@ -9595,7 +9593,6 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
 
     checks = payload.get("checks")
     if isinstance(checks, list):
-        multi_agent_check_pass: bool | None = None
         hooks_check_pass: bool | None = None
         codex_home_writable_check_pass: bool | None = None
         for item in checks:
@@ -9603,8 +9600,6 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 continue
             check_name = item.get("name")
             pass_value = item.get("pass")
-            if check_name == "multi_agent_enabled" and isinstance(pass_value, bool):
-                multi_agent_check_pass = pass_value
             if check_name == "hooks_enabled" and isinstance(pass_value, bool):
                 hooks_check_pass = pass_value
             if (
@@ -9615,13 +9610,6 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 hooks_check_pass = pass_value
             if check_name == "codex_home_writable" and isinstance(pass_value, bool):
                 codex_home_writable_check_pass = pass_value
-        if multi_agent_check_pass is False:
-            if payload.get("can_launch_step_agents") is True or payload.get(
-                "can_launch_substep_agents"
-            ) is True:
-                raise ValueError(
-                    "checks.multi_agent_enabled.pass=false is incompatible with launchable preflight"
-                )
         if (
             backend_token == "codex"
             and hooks_check_pass is not True
@@ -9658,10 +9646,6 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
         and payload.get("can_launch_step_agents") is True
         and payload.get("can_launch_substep_agents") is True
     ):
-        if not isinstance(feature_states, dict) or feature_states.get("multi_agent") is not True:
-            raise ValueError(
-                "feature_states.multi_agent=true is required when preflight is launchable"
-            )
         hooks = feature_states.get("hooks")
         if hooks is None:
             hooks = feature_states.get("codex_hooks")
@@ -9671,6 +9655,26 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
             )
         if payload.get("sandbox_enforced") is not True:
             raise ValueError("sandbox_enforced=true is required when preflight is launchable")
+        if backend_token == "codex":
+            check_values = {
+                str(item.get("name")): item.get("pass")
+                for item in (checks or []) if isinstance(item, dict)
+            }
+            if (check_values.get("hooks_enabled") is None
+                    and check_values.get("codex_hooks_enabled") is True):
+                check_values["hooks_enabled"] = True
+            required = {
+                "codex_version_available", "codex_features_list_available", "hooks_enabled",
+                "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
+                "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
+                "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+            }
+            missing = sorted(name for name in required if check_values.get(name) is not True)
+            if missing:
+                raise ValueError(
+                    "codex launchable preflight is missing required capabilities: "
+                    + ", ".join(missing)
+                )
 
 
 def _live_preflight_mode() -> str:
@@ -9771,7 +9775,7 @@ def _run_live_probe_and_update(
     )
     if not _preflight_allows_agent_launch(live_probe):
         raise RuntimeError(
-            "live preflight gate failed: execution platform multi_agent must be enabled at launch time"
+            "live preflight gate failed: execution platform required launch capabilities are unavailable"
         )
     probed_at = live_probe.get("checked_at") or _utc_now_iso()
     _update_preflight_probed_at(repo_root, orchestration_id, probed_at)
@@ -9791,7 +9795,7 @@ def _require_preflight_launchable(
         raise RuntimeError(f"preflight must be object: {path}")
     if not _preflight_allows_agent_launch(payload):
         raise RuntimeError(
-            "preflight gate failed: launchable preflight with multi_agent=true is required"
+            "preflight gate failed: launchable preflight with required capabilities is required"
         )
 
     if not enforce_live_probe:
@@ -14689,8 +14693,22 @@ def _probe_existing_directory_writable(path: Path) -> tuple[bool, str]:
 
 
 def _probe_codex_home_writable() -> dict[str, Any]:
-    raw = os.environ.get("METDSL_HOME")
-    source = "env:METDSL_HOME" if isinstance(raw, str) and raw.strip() else "default:~/.codex"
+    """Check the canonical Codex state home without silently accepting conflicts."""
+    canonical = os.environ.get("CODEX_HOME")
+    legacy = os.environ.get("METDSL_HOME")
+    if (isinstance(canonical, str) and canonical.strip()
+            and isinstance(legacy, str) and legacy.strip()
+            and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve()):
+        return {
+            "name": "codex_home_writable", "pass": False,
+            "detail": "CODEX_HOME and deprecated METDSL_HOME conflict",
+        }
+    raw = canonical if isinstance(canonical, str) and canonical.strip() else legacy
+    source = (
+        "env:CODEX_HOME" if isinstance(canonical, str) and canonical.strip()
+        else ("env:METDSL_HOME (deprecated)" if isinstance(legacy, str) and legacy.strip()
+              else "default:~/.codex")
+    )
     codex_home = (
         Path(raw).expanduser()
         if isinstance(raw, str) and raw.strip()
@@ -14710,6 +14728,91 @@ def _probe_codex_home_writable() -> dict[str, Any]:
         + ("parent writable; codex_home can be created" if ok else f"parent not writable: {detail}")
     )
     return {"name": "codex_home_writable", "pass": ok, "detail": detail_text}
+
+
+_CODEX_REQUIRED_HOOK_EVENTS = {
+    "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop",
+}
+_CODEX_HOOK_MATCHER_COVERAGE = {
+    "SessionStart": {"anything"},
+    "UserPromptSubmit": {"anything"},
+    "PreToolUse": {"Bash", "shell", "Write", "write", "Edit", "edit", "Read", "read",
+                   "apply_patch", "ApplyPatch"},
+    "PermissionRequest": {"Bash", "shell", "apply_patch", "ApplyPatch"},
+    "PostToolUse": {"Bash", "shell", "apply_patch", "ApplyPatch"},
+    "Stop": {"anything"},
+}
+def _canonical_codex_hook_command(event: str) -> str:
+    """The sole repository-approved native Codex hook wrapper for an event."""
+    return (
+        "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; "
+        "PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" "
+        "METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli "
+        f"--backend codex --event {event} --repo-root \"$ROOT\"'"
+    )
+
+
+def _codex_hook_invokes_event(hook: Any, event: str) -> bool:
+    """True only for one real policy-CLI invocation wired to this event."""
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    command = hook.get("command")
+    # The trust-bypass flag is permitted only after validating this complete,
+    # executable repository wrapper.  A substring/partial shell-program check
+    # cannot prove that short-circuiting or redirection leaves the policy CLI
+    # reachable on every hook invocation.
+    return isinstance(command, str) and command == _canonical_codex_hook_command(event)
+
+
+def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
+    """Verify the repository-local Codex hook source that enforces leaf policy."""
+    root = (repo_root or Path.cwd()).resolve()
+    path = root / ".codex" / "hooks.json"
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError) as exc:
+        return {"name": "codex_project_hooks_validated", "pass": False,
+                "detail": f"cannot parse {path}: {exc}"}
+    if not isinstance(payload, dict) or not isinstance(payload.get("hooks"), dict):
+        return {"name": "codex_project_hooks_validated", "pass": False,
+                "detail": f"{path} must contain a hooks object"}
+    hooks = payload["hooks"]
+    missing: list[str] = []
+    for event in sorted(_CODEX_REQUIRED_HOOK_EVENTS):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            missing.append(event)
+            continue
+        covered: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                continue
+            matcher = entry.get("matcher")
+            if not isinstance(matcher, str):
+                continue
+            invokes_policy = any(
+                _codex_hook_invokes_event(hook, event)
+                for hook in entry["hooks"]
+            )
+            if not invokes_policy:
+                continue
+            if matcher == "*":
+                covered.update(_CODEX_HOOK_MATCHER_COVERAGE[event])
+                continue
+            try:
+                matcher_re = re.compile(matcher)
+            except re.error:
+                continue
+            for tool_name in _CODEX_HOOK_MATCHER_COVERAGE[event]:
+                if matcher_re.fullmatch(tool_name):
+                    covered.add(tool_name)
+        if covered != _CODEX_HOOK_MATCHER_COVERAGE[event]:
+            missing.append(event)
+    if missing:
+        return {"name": "codex_project_hooks_validated", "pass": False,
+                "detail": "workflow hook command missing for: " + ", ".join(missing)}
+    return {"name": "codex_project_hooks_validated", "pass": True,
+            "detail": f"validated repository hook source: {path}"}
 
 
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
@@ -14801,6 +14904,22 @@ def _probe_codex_backend(
     """Run the codex backend probe and return (checks, features, multi_agent_enabled, agent_version)."""
     version_proc = runner([command, "--version"], text=True, capture_output=True, check=False)
     features_proc = runner([command, "features", "list"], text=True, capture_output=True, check=False)
+    try:
+        exec_help_proc = runner(
+            [command, "exec", "--help"], text=True, capture_output=True, check=False
+        )
+    except Exception as exc:  # test runners and unavailable CLIs are capability failures
+        exec_help_proc = subprocess.CompletedProcess(
+            [command, "exec", "--help"], 1, "", str(exc)
+        )
+    try:
+        resume_help_proc = runner(
+            [command, "exec", "resume", "--help"], text=True, capture_output=True, check=False
+        )
+    except Exception as exc:  # test runners and unavailable CLIs are capability failures
+        resume_help_proc = subprocess.CompletedProcess(
+            [command, "exec", "resume", "--help"], 1, "", str(exc)
+        )
     features: dict[str, bool] = {}
     features_list_available = features_proc.returncode == 0
     multi_agent_enabled = False
@@ -14808,6 +14927,8 @@ def _probe_codex_backend(
         features = parse_feature_list(features_proc.stdout)
         multi_agent_enabled = features.get("multi_agent") is True
     features_list_detail = features_proc.stdout.strip() or features_proc.stderr.strip()
+    exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
+    exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
     checks = [
         {
             "name": f"{backend_token}_version_available",
@@ -14823,6 +14944,28 @@ def _probe_codex_backend(
             "name": "multi_agent_enabled",
             "pass": multi_agent_enabled,
             "detail": f"multi_agent={features.get('multi_agent')}",
+        },
+        {
+            "name": "codex_exec_json_streaming",
+            "pass": exec_help_proc.returncode == 0 and "--json" in exec_help_text,
+            "detail": exec_help_detail,
+        },
+        {
+            "name": "codex_exec_output_schema",
+            "pass": exec_help_proc.returncode == 0 and "--output-schema" in exec_help_text,
+            "detail": exec_help_detail,
+        },
+        {
+            "name": "codex_exec_resume",
+            "pass": resume_help_proc.returncode == 0,
+            "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
+                       or f"exit={resume_help_proc.returncode}"),
+        },
+        {
+            "name": "codex_project_hook_trust_bypass",
+            "pass": (exec_help_proc.returncode == 0
+                     and "--dangerously-bypass-hook-trust" in exec_help_text),
+            "detail": exec_help_detail,
         },
     ]
     return checks, features, multi_agent_enabled, version_proc.stdout.strip()
@@ -15454,7 +15597,16 @@ def probe_execution_platform(
         checks.extend(mcp_checks)
         can_launch_agents = can_launch_agents and mcp_ok
     else:
-        can_launch_agents = _all_strict_boolean_probe_checks_pass(checks)
+        # Codex's internal multi_agent feature is diagnostic only: the conductor
+        # launches independent CLI processes and does not use Codex subagents.
+        can_launch_agents = all(
+            _pass_values_by_check_name(checks).get(name) is True
+            for name in (
+                "codex_version_available", "codex_features_list_available",
+                "codex_exec_json_streaming", "codex_exec_output_schema", "codex_exec_resume",
+                "codex_project_hook_trust_bypass",
+            )
+        )
         hooks_enabled = features.get("hooks") is True
         checks.append(
             {
@@ -15464,6 +15616,9 @@ def probe_execution_platform(
             }
         )
         can_launch_agents = can_launch_agents and hooks_enabled
+        project_hooks_check = _probe_codex_project_hooks(repo_root)
+        checks.append(project_hooks_check)
+        can_launch_agents = can_launch_agents and (project_hooks_check.get("pass") is True)
         codex_home_check = _probe_codex_home_writable()
         checks.append(codex_home_check)
         can_launch_agents = can_launch_agents and (codex_home_check.get("pass") is True)

@@ -166,7 +166,12 @@ def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> di
         summary["command"] = _trim_audit_text(command.strip())
 
     if (tool_name or "").strip() == "apply_patch":
-        patch_value = tool_input.get("patch")
+        # Current Codex sends apply_patch's complete patch program as
+        # tool_input.command.  The older patch / patch_text shapes remain only
+        # for fixture and older-CLI compatibility.
+        patch_value = tool_input.get("command")
+        if not isinstance(patch_value, str):
+            patch_value = tool_input.get("patch")
         if not isinstance(patch_value, str):
             patch_value = tool_input.get("patch_text")
         if isinstance(patch_value, str):
@@ -731,6 +736,20 @@ def _resolve_codex_agent_run_id_from_session(
                 if len(matched_from_index) == 1:
                     return next(iter(matched_from_index)), 1
                 if len(matched_from_index) > 1:
+                    # Codex `exec resume` continues the same thread in place.
+                    # Its prior terminal row and the newly allocated repair row
+                    # therefore share a thread ID. The active repair owns file
+                    # access while it is the sole running candidate; concurrent
+                    # running rows remain fail-closed as ambiguous.
+                    active_matches = {
+                        str(item.get("agent_run_id")).strip()
+                        for item in entries_obj
+                        if isinstance(item, dict)
+                        and str(item.get("agent_run_id") or "").strip() in matched_from_index
+                        and str(item.get("status") or "").strip().lower() == "running"
+                    }
+                    if len(active_matches) == 1:
+                        return next(iter(active_matches)), 1
                     return None, len(matched_from_index)
     runs_path = orch_root / "agent_runs.jsonl"
     if not runs_path.is_file():
@@ -916,12 +935,21 @@ def _evaluate_pre_command_file_access_policy(
             return None
         patch_text = ""
         decoded_tool_input = _tool_input(decoded.payload)
-        patch_value = decoded_tool_input.get("patch")
+        patch_value = decoded_tool_input.get("command")
+        if not isinstance(patch_value, str):
+            patch_value = decoded_tool_input.get("patch")
         if not isinstance(patch_value, str):
             patch_value = decoded_tool_input.get("patch_text")
         if isinstance(patch_value, str):
             patch_text = patch_value
         apply_patch_paths = _extract_apply_patch_paths(patch_text)
+        # A workflow-mode apply_patch without a parseable target is not an
+        # authorization-free operation.  In particular, never turn a changed
+        # Codex payload shape into an empty target allow.
+        if not apply_patch_paths:
+            return _decision_error(
+                "apply_patch payload is missing, unparseable, or has no target paths"
+            )
         resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
             backend=backend,
             repo_root=repo_root,
@@ -1099,7 +1127,7 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id = "_global"
         if orchestration_id == "_global":
             exit_code, stdout_text = adapter.encode_decision(
-                HookDecision(action=HookDecisionAction.ALLOW)
+                HookDecision(action=HookDecisionAction.ALLOW), event_name=event_name
             )
             return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
@@ -1143,7 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
                         decision=decision,
                         orchestration_id_override=orchestration_id,
                     )
-                    exit_code, stdout_text = adapter.encode_decision(decision)
+                    exit_code, stdout_text = adapter.encode_decision(decision, event_name=event_name)
                     return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
         if event_name not in adapter.supported_events():
@@ -1167,7 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
             decision=decision,
             orchestration_id_override=orchestration_id,
         )
-        exit_code, stdout_text = adapter.encode_decision(decision)
+        exit_code, stdout_text = adapter.encode_decision(decision, event_name=event_name)
     except Exception as exc:
         fallback_adapter = _adapter_for_backend(args.backend)
         decision = _decision_error(f"hook entrypoint failure: {exc}")
@@ -1179,7 +1207,7 @@ def main(argv: list[str] | None = None) -> int:
             decision=decision,
             orchestration_id_override=fallback_orchestration_id,
         )
-        exit_code, stdout_text = fallback_adapter.encode_decision(decision)
+        exit_code, stdout_text = fallback_adapter.encode_decision(decision, event_name=event_name)
     return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
 

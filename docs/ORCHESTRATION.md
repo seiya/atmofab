@@ -38,13 +38,14 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 
 ### preflight and launch control
 - Workflow execution runs exactly one conductor per `node` (started by `tools/run_workflow.py`).
-- Before the workflow starts, the preflight of an execution platform that can launch the `step agent` and `substep agent` independently must be run. The preflight includes the `multi_agent` feature and the launchability of a child `agent` in its verification scope, and when it is not `pass` the workflow must not start.
+- Before the workflow starts, the preflight of an execution platform that can launch the `step agent` and `substep agent` independently must be run. A failed preflight prevents workflow start.
+- The `multi_agent` feature is advisory diagnostics for `backend=codex`; the conductor launches independent Codex CLI processes and does not use Codex subagents. Codex launchability requires headless JSON event streaming, thread-ID capture, enabled hooks, a writable `CODEX_HOME`, structured-output support, and the mandatory bwrap checks.
 - The preflight of `backend=codex` must simultaneously satisfy `feature_states.hooks=true`, `checks.hooks_enabled.pass=true`, and `checks.codex_home_writable.pass=true`.
 - A pre-existing `preflight.json` that contains `feature_states.codex_hooks=true` and `checks.codex_hooks_enabled.pass=true` is accepted only as a read-time compatibility input. A newly generated `preflight.json` must use `feature_states.hooks` and `checks.hooks_enabled`.
 - The preflight must include `sandbox_runtime=bwrap` and `sandbox_enforced=true` as required conditions. When at least 1 of `checks.sandbox_bwrap_available.pass=true`, `checks.sandbox_bwrap_userns.pass=true`, or `checks.sandbox_bwrap_exec.pass=true` is not satisfied, the workflow must not start.
 - The `hooks` feature decision is probed **host-side by the conductor** (`Conductor._ensure_codex_feature_cache`) once per `orchestration_id` and written to `workspace/orchestrations/<orchestration_id>/codex_feature_check.json` (the orchestration-dir ROOT, which is read-only inside the bwrap sandbox — NOT the leaf-writable `hooks/` dir, so a confined leaf cannot forge it). The in-sandbox native hook reads this cache read-only and fail-closes when it is missing/invalid.
 - Making `preflight.json` `pass` by manual editing is forbidden.
-- Just before launching a child `agent`, `multi_agent` and the launchability of the child `agent` must be re-checked by a live probe of the execution platform. On `fail`, `record-launch` and the child-`agent` launch are forbidden, and the workflow transitions to `fail`.
+- Just before launching a child `agent`, launchability must be re-checked by a live probe of the execution platform. On `fail`, `record-launch` and the child-`agent` launch are forbidden, and the workflow transitions to `fail`.
 - Before starting each phase, run `workflow-launch-check`, and simultaneously check the required child-`agent`-type decision, execution-platform allowability, session-policy allowability, and dependency readiness.
 
 ### phase type and agent type

@@ -58,7 +58,13 @@ class ClaudeHookAdapter(HookBackendAdapter):
             file_path=file_path,
         )
 
-    def encode_decision(self, decision: HookDecision) -> tuple[int, str]:
+    def encode_decision(
+        self,
+        decision: HookDecision,
+        *,
+        event_name: HookEventName | None = None,
+    ) -> tuple[int, str]:
+        del event_name
         # Claude Code hook protocol: exit code signals allow/block; stdout is
         # the message shown to the user. continue_processing is Codex-specific
         # and is intentionally omitted here.

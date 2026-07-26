@@ -268,6 +268,24 @@ class _FakeCompletedProcess:
 
 
 class CodexOrchestrationRuntimeTests(unittest.TestCase):
+    @staticmethod
+    def _codex_launch_checks(*, legacy_hooks: bool = False) -> list[dict[str, object]]:
+        checks: list[dict[str, object]] = [
+            {"name": "codex_version_available", "pass": True},
+            {"name": "codex_features_list_available", "pass": True},
+            {"name": "codex_exec_json_streaming", "pass": True},
+            {"name": "codex_exec_output_schema", "pass": True},
+            {"name": "codex_exec_resume", "pass": True},
+            {"name": "codex_project_hook_trust_bypass", "pass": True},
+            {"name": "codex_project_hooks_validated", "pass": True},
+            {"name": "codex_hooks_enabled" if legacy_hooks else "hooks_enabled", "pass": True},
+            {"name": "codex_home_writable", "pass": True},
+            {"name": "sandbox_bwrap_available", "pass": True},
+            {"name": "sandbox_bwrap_userns", "pass": True},
+            {"name": "sandbox_bwrap_exec", "pass": True},
+        ]
+        return checks
+
     def setUp(self) -> None:
         self._old_live_preflight = os.environ.get("METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
         self._old_assume_bwrap = os.environ.get("METDSL_ORCHESTRATION_ASSUME_BWRAP")
@@ -350,7 +368,7 @@ shell_tool                       stable             true
             },
         )
 
-    def test_probe_codex_cli_passes_when_multi_agent_is_enabled(self) -> None:
+    def test_probe_codex_cli_accepts_multi_agent_as_advisory(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
@@ -363,6 +381,12 @@ shell_tool                       stable             true
                         "child_agents_md under development false\n"
                     ),
                 )
+            if args[1:] == ["exec", "--help"]:
+                return _FakeCompletedProcess(
+                    0, stdout="--json --output-schema --dangerously-bypass-hook-trust"
+                )
+            if args[1:] == ["exec", "resume", "--help"]:
+                return _FakeCompletedProcess(0, stdout="resume THREAD_ID")
             raise AssertionError(args)
 
         result = probe_codex_cli(codex_command="codex", runner=runner)
@@ -370,7 +394,7 @@ shell_tool                       stable             true
         self.assertTrue(result["can_launch_step_agents"])
         self.assertTrue(result["can_launch_substep_agents"])
 
-    def test_probe_codex_cli_fails_when_multi_agent_is_disabled(self) -> None:
+    def test_probe_codex_cli_accepts_disabled_multi_agent_when_capabilities_exist(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
@@ -379,12 +403,18 @@ shell_tool                       stable             true
                     0,
                     stdout="multi_agent experimental false\nhooks under-development true\n",
                 )
+            if args[1:] == ["exec", "--help"]:
+                return _FakeCompletedProcess(
+                    0, stdout="--json --output-schema --dangerously-bypass-hook-trust"
+                )
+            if args[1:] == ["exec", "resume", "--help"]:
+                return _FakeCompletedProcess(0, stdout="resume THREAD_ID")
             raise AssertionError(args)
 
         result = probe_codex_cli(codex_command="codex", runner=runner)
-        self.assertEqual(result["status"], "fail")
-        self.assertFalse(result["can_launch_step_agents"])
-        self.assertFalse(result["can_launch_substep_agents"])
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["can_launch_step_agents"])
+        self.assertTrue(result["can_launch_substep_agents"])
 
 
 
@@ -1211,6 +1241,90 @@ shell_tool                       stable             true
         self.assertIn("codex_features_list_available", by_name)
         self.assertNotIn("codex_features_available", by_name)
 
+    def test_probe_codex_backend_rejects_cli_without_json_exec(self) -> None:
+        from tools.orchestration_runtime import _probe_codex_backend
+
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+            if cmd[-2:] == ["features", "list"]:
+                return _FakeCompletedProcess(0, stdout="hooks available true")
+            if cmd[-2:] == ["exec", "--help"]:
+                return _FakeCompletedProcess(0, stdout="usage: codex exec [PROMPT]")
+            raise AssertionError(cmd)
+
+        checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
+        by_name = {check["name"]: check for check in checks}
+        self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
+        self.assertFalse(by_name["codex_exec_output_schema"]["pass"])
+        self.assertFalse(by_name["codex_exec_resume"]["pass"])
+
+    def test_codex_project_hook_probe_rejects_missing_policy_event(self) -> None:
+        from tools.orchestration_runtime import _probe_codex_project_hooks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".codex").mkdir()
+            (repo / ".codex" / "hooks.json").write_text(
+                json.dumps({"hooks": {"PreToolUse": [{"hooks": [{
+                    "command": "python3 -m tools.hooks.cli --backend codex"
+                }]}]}}),
+                encoding="utf-8",
+            )
+            result = _probe_codex_project_hooks(repo)
+        self.assertFalse(result["pass"])
+        self.assertIn("PermissionRequest", result["detail"])
+
+    def test_codex_project_hook_probe_rejects_non_invoking_or_narrow_matcher(self) -> None:
+        from tools.orchestration_runtime import _probe_codex_project_hooks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".codex").mkdir()
+            hook = {"matcher": "^Bash$", "hooks": [{
+                "command": "echo tools.hooks.cli --backend codex"
+            }]}
+            (repo / ".codex" / "hooks.json").write_text(
+                json.dumps({"hooks": {event: [hook] for event in (
+                    "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+                    "PostToolUse", "Stop",
+                )}}),
+                encoding="utf-8",
+            )
+            result = _probe_codex_project_hooks(repo)
+        self.assertFalse(result["pass"])
+        self.assertIn("PreToolUse", result["detail"])
+
+    def test_codex_project_hook_probe_rejects_wrong_event_wiring(self) -> None:
+        from tools.orchestration_runtime import _probe_codex_project_hooks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".codex").mkdir()
+            source = (Path(__file__).resolve().parents[2] / ".codex" / "hooks.json")
+            config = source.read_text(encoding="utf-8").replace(
+                "--event PreToolUse", "--event SessionStart"
+            )
+            (repo / ".codex" / "hooks.json").write_text(config, encoding="utf-8")
+            result = _probe_codex_project_hooks(repo)
+        self.assertFalse(result["pass"])
+        self.assertIn("PreToolUse", result["detail"])
+
+    def test_codex_project_hook_probe_rejects_short_circuited_command(self) -> None:
+        from tools.orchestration_runtime import _probe_codex_project_hooks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".codex").mkdir()
+            source = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            config = source.read_text(encoding="utf-8").replace(
+                '"command": "sh -lc', '"command": "false && sh -lc'
+            )
+            (repo / ".codex" / "hooks.json").write_text(config, encoding="utf-8")
+            result = _probe_codex_project_hooks(repo)
+        self.assertFalse(result["pass"])
+        self.assertIn("PreToolUse", result["detail"])
+
     def test_probe_codex_cli_fails_when_hooks_is_disabled(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[1:] == ["--version"]:
@@ -1702,11 +1816,7 @@ shell_tool                       stable             true
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
                     "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [
-                        {"name": "multi_agent_enabled", "pass": True},
-                        {"name": "hooks_enabled", "pass": True},
-                        {"name": "codex_home_writable", "pass": True},
-                    ],
+                    "checks": self._codex_launch_checks(),
                 },
             )
             launch_refs = record_launch(
@@ -8604,27 +8714,24 @@ shell_tool                       stable             true
                     },
                 )
 
-    def test_rejects_inconsistent_preflight_payload(self) -> None:
+    def test_accepts_multi_agent_as_advisory_in_preflight_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "feature_states.multi_agent=false"):
-                write_preflight(
-                    repo_root=repo_root,
-                    orchestration_id="orch_001",
-                    payload={
-                        "status": "pass",
-                        "sandbox_runtime": "bwrap",
-                        "sandbox_enforced": True,
-                        "can_launch_step_agents": True,
-                        "can_launch_substep_agents": True,
-                        "feature_states": {"multi_agent": False},
-                        "checks": [
-                            {"name": "multi_agent_enabled", "pass": False},
-                        ],
-                    },
-                )
+            write_preflight(
+                repo_root=repo_root,
+                orchestration_id="orch_001",
+                payload={
+                    "status": "pass",
+                    "sandbox_runtime": "bwrap",
+                    "sandbox_enforced": True,
+                    "can_launch_step_agents": True,
+                    "can_launch_substep_agents": True,
+                    "feature_states": {"multi_agent": False},
+                    "checks": [{"name": "multi_agent_enabled", "pass": False}],
+                },
+            )
 
     def test_rejects_codex_launchable_preflight_when_hooks_state_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8690,13 +8797,7 @@ shell_tool                       stable             true
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
                     "feature_states": {"multi_agent": True, "codex_hooks": True},
-                    "checks": [
-                        {"name": "multi_agent_enabled", "pass": True},
-                        {"name": "codex_hooks_enabled", "pass": True},
-                        {"name": "codex_home_writable", "pass": True},
-                        {"name": "sandbox_bwrap_available", "pass": True},
-                        {"name": "sandbox_bwrap_userns", "pass": True},
-                    ],
+                    "checks": self._codex_launch_checks(legacy_hooks=True),
                 },
             )
             _require_preflight_launchable(repo_root, "orch_001", enforce_live_probe=False)

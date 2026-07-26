@@ -344,6 +344,37 @@ class HookCommonTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stdout_text, "")
 
+    def test_codex_adapter_normalizes_current_tool_aliases(self) -> None:
+        adapter = CodexHookAdapter()
+        expected = {
+            "shell": "Bash", "write": "Write", "edit": "Edit", "read": "Read",
+            "ApplyPatch": "apply_patch",
+        }
+        for raw_name, canonical_name in expected.items():
+            with self.subTest(raw_name=raw_name):
+                decoded = adapter.decode_event("PreToolUse", {"tool_name": raw_name})
+                self.assertEqual(decoded.tool_name, canonical_name)
+
+    def test_codex_permission_request_uses_current_decision_envelope(self) -> None:
+        adapter = CodexHookAdapter()
+        code, stdout_text = adapter.encode_decision(
+            HookDecision(action=HookDecisionAction.ALLOW),
+            event_name=HookEventName.PERMISSION_REQUEST,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(stdout_text)["hookSpecificOutput"],
+            {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}},
+        )
+        code, stdout_text = adapter.encode_decision(
+            HookDecision(action=HookDecisionAction.BLOCK, reason="denied"),
+            event_name=HookEventName.PERMISSION_REQUEST,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            json.loads(stdout_text)["hookSpecificOutput"]["decision"]["behavior"], "deny"
+        )
+
     def test_claude_adapter_supported_events(self) -> None:
         adapter = ClaudeHookAdapter()
         events = adapter.supported_events()

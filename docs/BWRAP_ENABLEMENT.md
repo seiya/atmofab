@@ -1,6 +1,6 @@
 # bwrap leaf-sandboxing verification runbook (live re-verification)
 
-Procedure to verify the leaf bwrap sandbox under a real `claude -p` run. bwrap leaf
+Procedure to verify the leaf bwrap sandbox under a real `claude -p` or `codex exec --json` run. bwrap leaf
 sandboxing is **unconditionally mandatory** (Linux + user-namespaces only); there is no
 opt-out. Use this runbook to re-verify the sandbox end-to-end after a change to the
 profile builder, the leaf-launch path, or the build toolchain.
@@ -31,6 +31,9 @@ profile builder, the leaf-launch path, or the build toolchain.
    affordance that makes the preflight probe *assume* bwrap is available (so unit/
    integration tests can drive the enforced launch path without bwrap installed). On a
    real host it would only mask a missing sandbox — the run must verify bwrap for real.
+5. For Codex, set `CODEX_HOME` to the writable Codex state directory when a non-default
+   location is required. `METDSL_HOME` is a deprecated compatibility alias. The two variables
+   must resolve to the same path when both are set.
 
 ## 1. Run one node end-to-end under the sandbox
 
@@ -62,6 +65,19 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 
 `python3 tools/audit_orchestration.py <orchestration_id>` summarizes per-run cost and
 status for a quick read.
+
+## Codex session and hook criteria
+
+For a Codex run, confirm that every leaf launch has a distinct `thread.started` event before a
+tool request, and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
+terminal `agent_run.json` record that thread ID as `agent_session_id`. A missing or conflicting
+thread ID is a launch failure. `codex exec resume <thread_id>` continues the recorded thread in
+place; it is not a Claude-style fork.
+
+Codex pure Generate is not available. An M3c Generate request with `--llm codex` fails closed
+rather than falling back to a repository-facing agentic leaf. The future Codex pure transport
+must use `sandboxed_structured_approximation`; it must not be described as equivalent to Claude
+`closed_tool_free` isolation.
 
 ## 3. If it fails
 
