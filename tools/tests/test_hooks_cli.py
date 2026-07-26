@@ -39,6 +39,12 @@ class HookCliTests(unittest.TestCase):
         assert isinstance(body, dict)
         assert body.get("decision") == "allow"
 
+    def test_audit_summary_preserves_codex_session_start_model(self) -> None:
+        summary = cli._audit_payload_summary(
+            {"model": "gpt-5.6-codex", "session_id": "thread-123"}, None)
+        self.assertEqual(summary["model"], "gpt-5.6-codex")
+        self.assertEqual(summary["session_id"], "thread-123")
+
     def test_subprocess_command_works_with_module_entrypoint(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         with tempfile.TemporaryDirectory() as tmp:
@@ -1061,8 +1067,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             repo_root_path = Path(tmp)
             payload = {
                 "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
+                "tool_name": "WebSearch",
+                "tool_input": {"query": "workflow status"},
             }
             out = io.StringIO()
             with redirect_stdout(out):
@@ -1191,8 +1197,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             repo_root_path = Path(tmp)
             payload = {
                 "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
+                "tool_name": "WebSearch",
+                "tool_input": {"query": "workflow status"},
             }
             with patch.dict(
                 os.environ,
@@ -1218,8 +1224,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             repo_root_path = Path(tmp)
             payload = {
                 "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
+                "tool_name": "WebSearch",
+                "tool_input": {"query": "workflow status"},
             }
             with patch.dict(
                 os.environ,
@@ -1550,6 +1556,29 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertIn("session-to-run mapping not found", body.get("reason", ""))
             self.assertIn("ambiguous candidates=2", body.get("reason", ""))
 
+    def test_codex_file_tool_resolves_in_place_resume_to_running_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_file_guard_in_place_resume_001"
+            session_id = "thread_in_place_resume_001"
+            orch_root = repo_root / "workspace" / "orchestrations" / orch
+            orch_root.mkdir(parents=True, exist_ok=True)
+            (orch_root / "session_run_index.json").write_text(
+                json.dumps({"entries": [
+                    {"agent_run_id": "prior_run", "agent_session_id": session_id,
+                     "session_id": session_id, "status": "fail"},
+                    {"agent_run_id": "repair_run", "agent_session_id": session_id,
+                     "session_id": session_id, "status": "running"},
+                ]}),
+                encoding="utf-8",
+            )
+            resolved, candidates = cli._resolve_codex_agent_run_id_from_session(
+                repo_root=repo_root, orchestration_id=orch,
+                session_id=session_id, agent_session_id=None,
+            )
+            self.assertEqual(resolved, "repair_run")
+            self.assertEqual(candidates, 1)
+
     def test_codex_file_tool_does_not_match_none_literal_from_missing_context_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1725,7 +1754,7 @@ class ClaudeHookCliTests(unittest.TestCase):
                 "tool_name": "apply_patch",
                 "session_id": session_id,
                 "tool_input": {
-                    "patch": (
+                    "command": (
                         "*** Begin Patch\n"
                         f"*** Add File: {target_path}\n"
                         "+notes\n"
@@ -2043,7 +2072,9 @@ class ClaudeHookCliTests(unittest.TestCase):
                         json.dumps(payload),
                     ]
                 )
-            self.assertEqual(code, 0)
+            # A Codex PreToolUse file-access event without a session mapping
+            # must fail closed; audit logging still redacts the token.
+            self.assertEqual(code, 2)
             log_path = (
                 repo_root
                 / "workspace"
@@ -2437,6 +2468,120 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertEqual(body.get("decision"), "block")
             self.assertIn("read manifest not found", body.get("reason", ""))
             self.assertIn("Ensure record-launch generated the manifest", body.get("reason", ""))
+
+    def test_codex_pure_bash_blocks_readonly_repository_command(self) -> None:
+        """A pure Codex leaf must not bypass its empty read manifest via `cat`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_pure_shell_001"
+            run_id = "substep_run_pure_001"
+            session_id = "thread_pure_001"
+            orch_root = repo_root / "workspace" / "orchestrations" / orch
+            cap_dir = orch_root / "capabilities"
+            cap_dir.mkdir(parents=True, exist_ok=True)
+            (cap_dir / f"{run_id}.json").write_text(
+                json.dumps({"mode": "pure_readonly", "write_roots": []}),
+                encoding="utf-8",
+            )
+            (orch_root / "agent_runs.jsonl").write_text(
+                json.dumps({
+                    "agent_run_id": run_id,
+                    "agent_backend": "codex",
+                    "agent_session_id": session_id,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "orchestration_id": orch,
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "session_id": session_id,
+                "tool_input": {"command": "cat workspace/pipelines/prior/source_meta.json"},
+            }
+            out = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                clear=False,
+            ):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "--backend", "codex", "--event", "PreToolUse",
+                            "--input-json", json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 2)
+            body = json.loads(out.getvalue().strip())
+            self.assertEqual(body.get("decision"), "block")
+            self.assertIn("may not invoke Bash or Shell", body.get("reason", ""))
+
+    def test_codex_unmapped_bash_blocks_before_readonly_auto_approval(self) -> None:
+        """A missing Codex session index must not let `cat` bypass pure policy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = {
+                "orchestration_id": "orch_unmapped_shell_001",
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "session_id": "unknown-thread",
+                "tool_input": {"command": "cat workspace/pipelines/prior/source_meta.json"},
+            }
+            out = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                clear=False,
+            ):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "--backend", "codex", "--event", "PreToolUse",
+                            "--input-json", json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 2)
+            body = json.loads(out.getvalue().strip())
+            self.assertEqual(body.get("decision"), "block")
+            self.assertIn("session-to-run mapping not found", body.get("reason", ""))
+
+    def test_codex_bootstrap_child_binding_blocks_pure_shell_before_thread_index(self) -> None:
+        """The inherited child id closes the thread.started-to-hook race."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_bootstrap_shell_001"
+            run_id = "substep_run_bootstrap_001"
+            orch_root = repo_root / "workspace" / "orchestrations" / orch
+            (orch_root / "capabilities").mkdir(parents=True, exist_ok=True)
+            (orch_root / "active_children").mkdir(parents=True, exist_ok=True)
+            (orch_root / "capabilities" / f"{run_id}.json").write_text(
+                json.dumps({"mode": "pure_readonly", "write_roots": []}), encoding="utf-8"
+            )
+            (orch_root / "active_children" / f"{run_id}.txt").write_text(run_id, encoding="utf-8")
+            payload = {
+                "orchestration_id": orch,
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "session_id": "thread-not-yet-indexed",
+                "tool_input": {"command": "cat workspace/pipelines/prior/source_meta.json"},
+            }
+            out = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {
+                    "METDSL_WORKFLOW_MODE": "1",
+                    "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0",
+                    "METDSL_CHILD_AGENT_RUN_ID": run_id,
+                },
+                clear=False,
+            ):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        ["--backend", "codex", "--event", "PreToolUse",
+                         "--input-json", json.dumps(payload)]
+                    )
+            self.assertEqual(code, 2)
+            self.assertIn("may not invoke Bash or Shell", json.loads(out.getvalue())["reason"])
 
 
 class GetAgentRoleFromCapabilityTests(unittest.TestCase):

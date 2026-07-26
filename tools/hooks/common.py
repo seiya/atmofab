@@ -199,7 +199,9 @@ class HookBackendAdapter(Protocol):
     def decode_event(self, event_name: str, payload: dict[str, Any]) -> HookInput:
         """Normalize backend-native event payload to HookInput."""
 
-    def encode_decision(self, decision: HookDecision) -> tuple[int, str]:
+    def encode_decision(
+        self, decision: HookDecision, *, event_name: HookEventName | None = None
+    ) -> tuple[int, str]:
         """Return `(exit_code, stdout_text)` for backend hook process protocol."""
 
 

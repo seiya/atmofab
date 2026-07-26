@@ -24,34 +24,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^Bash$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli --backend codex --event PreToolUse --repo-root \"$ROOT\"'"
-          }
-        ]
-      },
-      {
-        "matcher": "^Write$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli --backend codex --event PreToolUse --repo-root \"$ROOT\"'"
-          }
-        ]
-      },
-      {
-        "matcher": "^Edit$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli --backend codex --event PreToolUse --repo-root \"$ROOT\"'"
-          }
-        ]
-      },
-      {
-        "matcher": "^Read$",
+        "matcher": "^(Bash|bash|Shell|shell|Write|write|Edit|edit|Read|read|apply_patch|ApplyPatch)$",
         "hooks": [
           {
             "type": "command",
@@ -62,7 +35,7 @@
     ],
     "PermissionRequest": [
       {
-        "matcher": "^Bash$",
+        "matcher": "^(Bash|bash|Shell|shell|apply_patch|ApplyPatch)$",
         "hooks": [
           {
             "type": "command",
@@ -73,7 +46,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "^Bash$",
+        "matcher": "^(Bash|bash|Shell|shell|apply_patch|ApplyPatch)$",
         "hooks": [
           {
             "type": "command",

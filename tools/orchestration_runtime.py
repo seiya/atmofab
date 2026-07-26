@@ -10,7 +10,9 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,7 +22,7 @@ import uuid
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 # fcntl is POSIX-only. Used by Adv-24 to serialize agent_runs.jsonl
 # duplicate-check + append against concurrent finalizers. On non-POSIX
@@ -1847,7 +1849,7 @@ def _resolve_dependency_facts(repo_root: Path, ir_ref: Any) -> list[dict[str, An
     authors ``operations: []`` legitimately and must not be called, so its prefixed
     subroutines are never surfaced (matching the ``_validate_component_dep_operations`` scope). Without this, the ``use``/``call`` the generate-side gate
     unconditionally requires for a component dep has no facts to build against, and the
-    pure (tool-less) leaf must invent symbol names / argument orders that ``Generate.gate``
+    pure closed-context leaf must invent symbol names / argument orders that ``Generate.gate``
     rejects every retry — the closure fail_closed this fallback closes. The empty-list
     fallback fires ONLY when ``operations`` is empty/absent; when the IR enumerates real
     operations, only that enumerated surface is injected (IR is the sole carrier; never
@@ -3165,6 +3167,322 @@ def _write_json(path: Path, payload: Any) -> None:
     _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
+_JSON_TRANSACTIONS_DIRNAME = ".json_transactions"
+_JSON_TRANSACTION_VERSION = 1
+_JSON_TRANSACTION_KIND = "codex_thread_registration"
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes used by the crash-recovery protocol."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(str(path), flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _codex_registration_transaction_targets(
+    transaction_dir: Path,
+    agent_run_id: str,
+) -> tuple[Path, Path, Path]:
+    if _AGENT_RUN_ID_RE.fullmatch(agent_run_id) is None:
+        raise RuntimeError(
+            f"invalid agent_run_id in Codex registration transaction: {agent_run_id!r}"
+        )
+    return (
+        transaction_dir / "launches" / f"{agent_run_id}.response.json",
+        transaction_dir / "agents" / agent_run_id / "dialogs" / "child.response.json",
+        transaction_dir / "session_run_index.json",
+    )
+
+
+def _read_session_run_index_from_path(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"entries": []}
+    try:
+        payload = _read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {"entries": []}
+    if not isinstance(payload, dict):
+        return {"entries": []}
+    if not isinstance(payload.get("entries"), list):
+        payload["entries"] = []
+    return payload
+
+
+@contextlib.contextmanager
+def _json_transaction_exclusive_lock(transaction_dir: Path) -> Iterator[None]:
+    """Serialize every session-index writer with registration/recovery transactions."""
+    lock_path = transaction_dir / "session_run_index.json.lock"
+    if _fcntl is None:  # pragma: no cover — non-POSIX
+        _fcntl_warn_once("Codex registration transaction")
+        yield
+        return
+    with _fcntl_exclusive_lock(lock_path):
+        yield
+
+
+def _remove_transaction_tree(tx_dir: Path, tx_root: Path) -> None:
+    shutil.rmtree(tx_dir)
+    _fsync_directory(tx_root)
+
+
+def _recover_json_transactions_unlocked(transaction_dir: Path) -> None:
+    """Roll back journaled commits and remove pre-journal staging directories."""
+    tx_root = transaction_dir / _JSON_TRANSACTIONS_DIRNAME
+    if not tx_root.is_dir():
+        return
+    if tx_root.is_symlink():
+        raise RuntimeError(f"JSON transaction root must not be a symlink: {tx_root}")
+    for tx_dir in sorted(tx_root.iterdir()):
+        if (
+            not tx_dir.is_dir()
+            or tx_dir.is_symlink()
+            or re.fullmatch(r"[0-9a-f]{32}", tx_dir.name) is None
+        ):
+            raise RuntimeError(f"invalid JSON transaction staging entry: {tx_dir}")
+        journal_path = tx_dir / "journal.json"
+        if not journal_path.exists():
+            _remove_transaction_tree(tx_dir, tx_root)
+            continue
+        if journal_path.is_symlink():
+            raise RuntimeError(
+                f"JSON transaction journal must not be a symlink: {journal_path}"
+            )
+        try:
+            journal = _read_json(journal_path)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"cannot recover malformed json transaction journal {journal_path}: {exc}"
+            ) from exc
+        if (
+            not isinstance(journal, dict)
+            or set(journal) != {
+                "version", "kind", "agent_run_id", "old_exists", "old_sha256"
+            }
+            or journal.get("version") != _JSON_TRANSACTION_VERSION
+            or journal.get("kind") != _JSON_TRANSACTION_KIND
+        ):
+            raise RuntimeError(
+                f"cannot recover invalid json transaction journal {journal_path}"
+            )
+        agent_run_id = journal.get("agent_run_id")
+        old_exists = journal.get("old_exists")
+        old_sha256 = journal.get("old_sha256")
+        if (
+            not isinstance(agent_run_id, str)
+            or not isinstance(old_exists, list)
+            or not isinstance(old_sha256, list)
+            or len(old_exists) != 3
+            or len(old_sha256) != 3
+            or any(type(value) is not bool for value in old_exists)
+            or any(
+                (exists and (
+                    not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                ))
+                or (not exists and digest is not None)
+                for exists, digest in zip(old_exists, old_sha256)
+            )
+        ):
+            raise RuntimeError(
+                f"cannot recover invalid json transaction metadata {journal_path}"
+            )
+        targets = _codex_registration_transaction_targets(
+            transaction_dir, agent_run_id
+        )
+        for idx in reversed(range(3)):
+            target = targets[idx]
+            old_path = tx_dir / f"{idx}.old"
+            if not old_exists[idx]:
+                target.unlink(missing_ok=True)
+                _fsync_directory(target.parent)
+                continue
+            expected_sha = old_sha256[idx]
+            if old_path.exists():
+                if not old_path.is_file() or old_path.is_symlink():
+                    raise RuntimeError(
+                        f"invalid JSON transaction backup: {old_path}"
+                    )
+                if (
+                    not isinstance(expected_sha, str)
+                    or hashlib.sha256(old_path.read_bytes()).hexdigest() != expected_sha
+                ):
+                    raise RuntimeError(
+                        f"JSON transaction backup hash mismatch: {old_path}"
+                    )
+                os.replace(str(old_path), str(target))
+                _fsync_directory(target.parent)
+                _fsync_directory(tx_dir)
+                continue
+            if (
+                not target.is_file()
+                or target.is_symlink()
+                or not isinstance(expected_sha, str)
+                or hashlib.sha256(target.read_bytes()).hexdigest() != expected_sha
+            ):
+                raise RuntimeError(
+                    f"json transaction backup missing before recovery completed: "
+                    f"{journal_path} target={target}"
+                )
+        journal_path.unlink()
+        _fsync_directory(tx_dir)
+        _remove_transaction_tree(tx_dir, tx_root)
+
+
+def _recover_json_transactions(transaction_dir: Path) -> None:
+    """Serialize restart recovery against live registration transactions."""
+    if not transaction_dir.is_dir():
+        return
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+
+
+def _read_session_run_index_consistent(
+    repo_root: Path,
+    orchestration_id: str,
+) -> dict[str, Any]:
+    """Read the index after serializing with registration and recovering journals."""
+    transaction_dir = _orchestration_root(repo_root, orchestration_id)
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+        return _read_session_run_index_from_path(
+            _session_run_index_path(repo_root, orchestration_id)
+        )
+
+
+def _write_json_transaction(
+    *,
+    transaction_dir: Path,
+    agent_run_id: str,
+    thread_id: str,
+    context_id: str | None,
+    agent_role: str,
+    status: str,
+) -> None:
+    """Durably commit JSON files together, with rollback after errors or restart.
+
+    Every new payload and prior target is staged before a durable journal is written.
+    Rename failures roll back immediately without allocating more space.  If the process
+    dies between renames, the surviving journal and backups are recovered on the next
+    transaction or when a conductor is reconstructed.
+    """
+    expected_targets = _codex_registration_transaction_targets(
+        transaction_dir, agent_run_id
+    )
+    tx_root = transaction_dir / _JSON_TRANSACTIONS_DIRNAME
+
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+        response = _read_json(expected_targets[0])
+        if not isinstance(response, dict):
+            raise RuntimeError("Codex launch response must be a JSON object")
+        recorded = response.get("agent_session_id")
+        if (
+            isinstance(recorded, str)
+            and recorded.strip() not in {agent_run_id, thread_id}
+        ):
+            raise RuntimeError(
+                "codex emitted a thread_id conflicting with the launch record"
+            )
+        response["agent_session_id"] = thread_id
+        response["session_id"] = thread_id
+        raw_generation = response.get("codex_home_generation")
+        generation = (
+            raw_generation
+            if isinstance(raw_generation, int) and raw_generation > 0
+            else None
+        )
+        transaction_updates = {
+            expected_targets[0]: response,
+            expected_targets[1]: response,
+        }
+        session_index = _read_session_run_index_from_path(expected_targets[2])
+        _upsert_session_run_index_entry(
+            session_index,
+            agent_run_id=agent_run_id,
+            agent_session_id=thread_id,
+            context_id=context_id,
+            agent_role=agent_role,
+            status=status,
+            codex_home_generation=generation,
+        )
+        transaction_updates[expected_targets[2]] = session_index
+        targets = list(expected_targets)
+        tx_root.mkdir(parents=True, exist_ok=True)
+        if tx_root.is_symlink():
+            raise RuntimeError(f"JSON transaction root must not be a symlink: {tx_root}")
+        _fsync_directory(transaction_dir)
+        tx_dir = tx_root / uuid.uuid4().hex
+        tx_dir.mkdir()
+        _fsync_directory(tx_root)
+        journal_path = tx_dir / "journal.json"
+        journal_written = False
+        try:
+            old_exists: list[bool] = []
+            old_sha256: list[str | None] = []
+            for idx, target in enumerate(targets):
+                new_path = tx_dir / f"{idx}.new"
+                new_body = json.dumps(
+                    transaction_updates[target], ensure_ascii=False, indent=2
+                ).encode("utf-8") + b"\n"
+                new_path.write_bytes(new_body)
+                with new_path.open("rb") as fh:
+                    os.fsync(fh.fileno())
+                exists = target.exists()
+                old_exists.append(exists)
+                if exists:
+                    old_path = tx_dir / f"{idx}.old"
+                    old_body = target.read_bytes()
+                    old_path.write_bytes(old_body)
+                    with old_path.open("rb") as fh:
+                        os.fsync(fh.fileno())
+                    old_sha256.append(hashlib.sha256(old_body).hexdigest())
+                else:
+                    old_sha256.append(None)
+            _fsync_directory(tx_dir)
+            journal_written = True
+            _atomic_write_text(
+                journal_path,
+                json.dumps({
+                    "version": _JSON_TRANSACTION_VERSION,
+                    "kind": _JSON_TRANSACTION_KIND,
+                    "agent_run_id": agent_run_id,
+                    "old_exists": old_exists,
+                    "old_sha256": old_sha256,
+                }, ensure_ascii=False, indent=2) + "\n",
+            )
+            # `_atomic_write_text` deliberately treats fsync as best-effort for
+            # ordinary artifacts.  The rollback journal is different: target
+            # renames must not start unless its contents are durably persisted.
+            with journal_path.open("rb") as journal_fh:
+                os.fsync(journal_fh.fileno())
+            _fsync_directory(tx_dir)
+
+            for idx, target in enumerate(targets):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(str(tx_dir / f"{idx}.new"), str(target))
+                _fsync_directory(target.parent)
+                _fsync_directory(tx_dir)
+        except BaseException as exc:
+            if journal_written and journal_path.exists():
+                try:
+                    _recover_json_transactions_unlocked(transaction_dir)
+                except BaseException as rollback_exc:
+                    raise RuntimeError(
+                        f"json transaction failed and durable rollback remains pending "
+                        f"in {journal_path}: {rollback_exc}"
+                    ) from exc
+            elif tx_dir.exists():
+                _remove_transaction_tree(tx_dir, tx_root)
+            raise
+        else:
+            journal_path.unlink()
+            _fsync_directory(tx_dir)
+            _remove_transaction_tree(tx_dir, tx_root)
+
+
 def _write_text(path: Path, text: str) -> None:
     body = text if text.endswith("\n") else f"{text}\n"
     _atomic_write_text(path, body)
@@ -3779,19 +4097,9 @@ def _session_run_index_path(repo_root: Path, orchestration_id: str) -> Path:
 
 
 def _read_session_run_index(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
-    path = _session_run_index_path(repo_root, orchestration_id)
-    if not path.is_file():
-        return {"entries": []}
-    try:
-        payload = _read_json(path)
-    except (OSError, json.JSONDecodeError):
-        return {"entries": []}
-    if not isinstance(payload, dict):
-        return {"entries": []}
-    entries = payload.get("entries")
-    if not isinstance(entries, list):
-        payload["entries"] = []
-    return payload
+    return _read_session_run_index_from_path(
+        _session_run_index_path(repo_root, orchestration_id)
+    )
 
 
 def _append_session_run_index_entry(
@@ -3803,8 +4111,35 @@ def _append_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
+    codex_home_generation: int | None = None,
 ) -> None:
-    doc = _read_session_run_index(repo_root, orchestration_id)
+    transaction_dir = _orchestration_root(repo_root, orchestration_id)
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+        doc = _read_session_run_index(repo_root, orchestration_id)
+        _upsert_session_run_index_entry(
+            doc,
+            agent_run_id=agent_run_id,
+            agent_session_id=agent_session_id,
+            context_id=context_id,
+            agent_role=agent_role,
+            status=status,
+            codex_home_generation=codex_home_generation,
+        )
+        _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
+
+
+def _upsert_session_run_index_entry(
+    doc: dict[str, Any],
+    *,
+    agent_run_id: str,
+    agent_session_id: str,
+    context_id: str | None,
+    agent_role: str,
+    status: str,
+    codex_home_generation: int | None = None,
+) -> None:
+    """Update ``doc`` with one normalized session/run binding without writing it."""
     entries_obj = doc.get("entries")
     entries = entries_obj if isinstance(entries_obj, list) else []
     normalized_run_id = agent_run_id.strip()
@@ -3822,11 +4157,11 @@ def _append_session_run_index_entry(
         item["context_id"] = normalized_context_id
         item["agent_role"] = normalized_role
         item["status"] = normalized_status
+        if codex_home_generation is not None:
+            item["codex_home_generation"] = codex_home_generation
         item["updated_at"] = _utc_now_iso()
-        _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
         return
-    entries.append(
-        {
+    entry: dict[str, Any] = {
             "agent_run_id": normalized_run_id,
             "agent_session_id": normalized_session_id,
             "session_id": normalized_session_id,
@@ -3835,9 +4170,10 @@ def _append_session_run_index_entry(
             "status": normalized_status,
             "recorded_at": _utc_now_iso(),
         }
-    )
+    if codex_home_generation is not None:
+        entry["codex_home_generation"] = codex_home_generation
+    entries.append(entry)
     doc["entries"] = entries
-    _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
 
 
 # --- Phase 1: access policy / phase state artifact layout (Item 10) ---
@@ -4447,8 +4783,9 @@ def build_capability_document(
     run_id_val = str(request_payload.get("run_id") or "").strip()
     source_id_val = str(request_payload.get("source_id") or "").strip()
 
-    # A pure-function leaf holds NO write authority (no tools, host writes after the child
-    # window closes) and invokes no gate/MCP: its capability is a truthful zero-authority
+    # A pure-function leaf holds NO repository-write authority (the host writes after the child
+    # window closes) and receives no gate/MCP invocation contract: its capability is a truthful
+    # zero-authority
     # record — `write_roots: []`, no mcp_permissions — tagged `mode: PURE_CAPABILITY_MODE` so the
     # verification systems (and the record-launch read-only-profile branch) can recognize it.
     pure = _is_pure_launch_request(request_payload)
@@ -7244,14 +7581,14 @@ def build_access_policy_payload(
         raise ValueError("access policy requires pipeline_ref")
 
     if _is_pure_launch_request(request_payload):
-        # A pure leaf receives its whole context inlined in the `-p` body and reads NO file. The
-        # policy is an ALLOWLIST: an EMPTY `allowed_read_roots` is what denies every read (a path
-        # not under any allowed root is rejected) — that empty allow-set is the enforcing
-        # mechanism. `denied_read_roots: ["."]` is an explicit audit statement of intent, not the
-        # enforcer (the read matcher's containment check does not treat "." as a repo-wide
-        # prefix). `--safe-mode` means no PreToolUse hook runs anyway, so the manifest is audit
-        # truth and the read-only bwrap profile is the real defense-in-depth. No gate services
-        # either — the pure leaf invokes no validator gate.
+        # A pure leaf receives its whole context inlined in the prompt body and is authorized to
+        # read NO repository file. The policy is an ALLOWLIST: an EMPTY `allowed_read_roots` is
+        # what denies every hook-mediated read (a path not under any allowed root is rejected) —
+        # that empty allow-set is the enforcing mechanism. `denied_read_roots: ["."]` is an
+        # explicit audit statement of intent, not the enforcer (the read matcher's containment
+        # check does not treat "." as a repo-wide prefix). Claude is tool-free; Codex's hooks
+        # enforce the empty allow-set, and the read-only bwrap profile remains the write-defense
+        # in depth. No gate services either — the pure leaf invokes no validator gate.
         pure_body = {
             "agent_run_id": agent_run_id.strip(),
             "node_key": node_key.strip(),
@@ -7459,9 +7796,11 @@ def _backend_runtime_bind_paths(
         elif btype == "codex":
             # Mirror preflight's codex-home resolution (`Path(raw).expanduser()`) so the
             # bound dir matches what preflight checked; coerce to absolute because bwrap
-            # binds require an absolute source (a `~`/relative METDSL_HOME otherwise
+            # binds require an absolute source (a `~`/relative CODEX_HOME otherwise
             # yields a wrong or non-absolute bind target).
-            raw_codex = os.environ.get("METDSL_HOME", "").strip()
+            raw_codex = os.environ.get("CODEX_HOME", "").strip()
+            if not raw_codex:
+                raw_codex = os.environ.get("METDSL_HOME", "").strip()
             codex_home = Path(raw_codex).expanduser() if raw_codex else Path(home) / ".codex"
             rw.add(str(codex_home if codex_home.is_absolute() else codex_home.resolve()))
     ro_paths = sorted(p for p in ro if p and Path(p).exists())
@@ -7518,6 +7857,10 @@ def build_readonly_bwrap_profile(
     agent_run_id: str,
     backend_command: str,
     backend_type: str = "",
+    backend_ro_extra: Sequence[str] = (),
+    backend_ro_mappings: Sequence[tuple[str, str]] = (),
+    backend_rw_override: Sequence[str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """A bwrap profile for a READ-ONLY leaf that has no capability / write_roots.
 
@@ -7541,7 +7884,12 @@ def build_readonly_bwrap_profile(
     child_env = _safe_host_env_for_child()
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
+    backend_ro.extend(str(p) for p in backend_ro_extra)
+    if backend_rw_override is not None:
+        backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
+    if env_overrides:
+        child_env.update(env_overrides)
     # The leaf's own hooks persist hook-event audit (hooks/) and the first-read-invariant
     # state (audit/<arid>.auto_reads_seen.json, which fail-closes the hook if unwritable),
     # both outside any write_root. Bind their per-orchestration dirs writable.
@@ -7558,6 +7906,7 @@ def build_readonly_bwrap_profile(
         "read_roots": [],
         "write_roots": [],
         "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
+        "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
         "runtime_rw_bind_paths": backend_rw,
         "tmp_dir": str(tmp_root),
         "workspace_tmp_rw_abs": str(workspace_tmp_host),
@@ -7577,6 +7926,10 @@ def build_bwrap_profile(
     agent_run_id: str,
     backend_command: str,
     backend_type: str = "",
+    backend_ro_extra: Sequence[str] = (),
+    backend_ro_mappings: Sequence[tuple[str, str]] = (),
+    backend_rw_override: Sequence[str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     read_manifest = _load_read_access_manifest(
         repo_root,
@@ -7662,7 +8015,12 @@ def build_bwrap_profile(
     child_env = _safe_host_env_for_child()
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
+    backend_ro.extend(str(p) for p in backend_ro_extra)
+    if backend_rw_override is not None:
+        backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
+    if env_overrides:
+        child_env.update(env_overrides)
     # The leaf runs `run-gate` (a runtime-CLI subprocess) which records each gate result
     # under workspace/orchestrations/<orch>/gates/<arid>/<gate>.json (validate_pipeline_
     # semantics / orchestration_read / etc.). That path is outside the artifact
@@ -7775,6 +8133,7 @@ def build_bwrap_profile(
         "read_roots": read_roots,
         "write_roots": write_roots,
         "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
+        "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
         # Writable binds outside repo_root: the backend's config/credential home
         # (auth refresh + session transcript). Bound writable so the CLI runs and
         # Phase 4 `--session-id`/`--resume` can read/write their session files.
@@ -7851,6 +8210,17 @@ def render_bwrap_command(
     for item in profile.get("runtime_rw_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--bind", item.strip(), item.strip()])
+    # Apply file mappings AFTER their parent writable homes.  In particular,
+    # the isolated CODEX_HOME is rw for session state, while its auth.json is
+    # a read-only mount of the operator's original credential file.
+    for mapping in profile.get("runtime_ro_bind_mappings", []):
+        if not (isinstance(mapping, list) and len(mapping) == 2
+                and all(isinstance(part, str) and part.strip() for part in mapping)):
+            raise ValueError("runtime_ro_bind_mappings entries must be [source, destination]")
+        source, destination = mapping[0].strip(), mapping[1].strip()
+        if not (Path(source).is_file() and Path(destination).is_file()):
+            raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
+        cmd.extend(["--ro-bind", source, destination])
     for rel in profile.get("write_roots", []):
         if not isinstance(rel, str) or not rel.strip():
             continue
@@ -7965,6 +8335,11 @@ def render_bwrap_command(
     ws_abs = str(ws_path.resolve())
     cmd.extend(["--bind", ws_abs, ws_abs])
     cmd.extend(["--setenv", "TMPDIR", ws_abs])
+    profile_env = profile.get("env")
+    if isinstance(profile_env, dict):
+        codex_home = profile_env.get("CODEX_HOME")
+        if isinstance(codex_home, str) and codex_home.strip():
+            cmd.extend(["--setenv", "CODEX_HOME", codex_home.strip()])
     cmd.extend(["--bind", tmp_dir, tmp_dir])
     cmd.append("--")
     cmd.extend([str(part) for part in command_argv])
@@ -8198,6 +8573,9 @@ def _should_ignore_runtime_snapshot_path(
         f"{orch_root}/capabilities/",
         f"{orch_root}/gates/",
         f"{orch_root}/hooks/",
+        # Host-only staged files and durable recovery journal for Codex's
+        # multi-file thread-identity registration transaction.
+        f"{orch_root}/{_JSON_TRANSACTIONS_DIRNAME}/",
         f"{orch_root}/launches/",
         f"{orch_root}/output_manifests/",
         f"{orch_root}/read_manifests/",
@@ -8268,6 +8646,7 @@ def _should_ignore_runtime_snapshot_path(
         f"{orch_root}/preflight.json",
         f"{orch_root}/orchestration_run_write_baseline.json",
         f"{orch_root}/session_run_index.json",
+        f"{orch_root}/session_run_index.json.lock",
     }
     return token in runtime_files
 
@@ -9505,11 +9884,55 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "preflight.json"
 
 
+# The codex probe checks a launchable `preflight.json` must carry as `pass: true`. ONE
+# source for both the read-time gate (`_preflight_allows_agent_launch`) and the document
+# validator (`_validate_preflight_payload`): two hand-kept copies of a gate's necessary
+# conditions drift, and a name dropped from one copy silently widens that gate.
+CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
+    "codex_version_available", "codex_features_list_available", "hooks_enabled",
+    "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
+    "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
+    "codex_exec_pure_isolation_flags", "codex_exec_resume",
+    "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+})
+
+# Codex probe checks recorded for diagnostics that do NOT gate a launch: the conductor
+# spawns independent `codex exec` processes and never uses Codex subagents, so the CLI's
+# own `multi_agent` feature says nothing about launchability. Everything NOT listed here
+# gates, so a check added to `_probe_codex_backend` later fails closed by default rather
+# than silently becoming non-gating.
+CODEX_ADVISORY_ONLY_CHECKS = frozenset({"multi_agent_enabled"})
+
+# Every option `Conductor.leaf_command` puts on a codex warm-resume argv, checked against
+# `codex exec resume --help` by the `codex_exec_resume` probe. The `exec` and `exec resume`
+# subcommands do NOT take the same options — notably `resume` has no `--sandbox`, so the
+# pure read-only policy is re-pinned there via `-c sandbox_mode=...` instead. Probing the
+# `exec` help alone would pass on a CLI where the resume argv aborts at parsing, before any
+# `thread.started`, turning every pure repair turn into a transport death. Keep this in sync
+# with the resume branch of `leaf_command` (pinned by `tools/tests/test_pure_leaf.py`
+# `LeafCommandPureBranchTest.test_codex_resume_argv_options_are_all_preflight_certified`,
+# which asserts the emitted option set equals this one).
+CODEX_EXEC_RESUME_REQUIRED_FLAGS = (
+    "--model", "--dangerously-bypass-hook-trust", "--json",
+    "--output-schema", "--ignore-rules", "--config",
+)
+
+
+def _codex_check_pass_values(checks: Sequence[Any]) -> dict[str, Any]:
+    """`{check_name: pass}` with the legacy `codex_hooks_enabled` alias folded in."""
+    values = {
+        str(item.get("name")): item.get("pass")
+        for item in checks
+        if isinstance(item, dict)
+    }
+    if values.get("hooks_enabled") is None and values.get("codex_hooks_enabled") is True:
+        values["hooks_enabled"] = True
+    return values
+
+
 def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     feature_states = payload.get("feature_states")
     if not isinstance(feature_states, dict):
-        return False
-    if feature_states.get("multi_agent") is not True:
         return False
     backend_token = str(payload.get("backend", "")).strip().lower()
     hooks = feature_states.get("hooks")
@@ -9547,13 +9970,25 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
         and payload.get("can_launch_step_agents") is True
         and payload.get("can_launch_substep_agents") is True
         and payload.get("sandbox_enforced") is True
-        and multi_agent_check_pass is True
     )
     if backend_token == "codex":
+        available = _codex_check_pass_values(checks)
         launchable = (
             launchable
             and hooks_check_pass is True
             and codex_home_writable_check_pass is True
+            and all(available.get(name) is True for name in CODEX_REQUIRED_LAUNCH_CHECKS)
+        )
+    else:
+        # `multi_agent` is advisory ONLY for codex (see CODEX_ADVISORY_ONLY_CHECKS).
+        # Every other backend still launches its step/substep agents through the
+        # platform's own multi-agent capability, so a launchable document must keep
+        # asserting it — dropping the assertion here would silently relax the claude
+        # gate as well.
+        launchable = (
+            launchable
+            and feature_states.get("multi_agent") is True
+            and multi_agent_check_pass is True
         )
     return launchable
 
@@ -9569,9 +10004,12 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
 
     feature_states = payload.get("feature_states")
     backend_token = str(payload.get("backend", "")).strip().lower()
+    # `multi_agent` gates every backend EXCEPT codex, whose conductor spawns independent
+    # `codex exec` processes rather than Codex subagents (CODEX_ADVISORY_ONLY_CHECKS).
+    multi_agent_required = backend_token != "codex"
     if isinstance(feature_states, dict):
         multi_agent = feature_states.get("multi_agent")
-        if isinstance(multi_agent, bool) and not multi_agent:
+        if multi_agent_required and isinstance(multi_agent, bool) and not multi_agent:
             if payload.get("can_launch_step_agents") is True or payload.get(
                 "can_launch_substep_agents"
             ) is True:
@@ -9594,8 +10032,8 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
             )
 
     checks = payload.get("checks")
+    multi_agent_check_pass: bool | None = None
     if isinstance(checks, list):
-        multi_agent_check_pass: bool | None = None
         hooks_check_pass: bool | None = None
         codex_home_writable_check_pass: bool | None = None
         for item in checks:
@@ -9615,7 +10053,7 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 hooks_check_pass = pass_value
             if check_name == "codex_home_writable" and isinstance(pass_value, bool):
                 codex_home_writable_check_pass = pass_value
-        if multi_agent_check_pass is False:
+        if multi_agent_required and multi_agent_check_pass is False:
             if payload.get("can_launch_step_agents") is True or payload.get(
                 "can_launch_substep_agents"
             ) is True:
@@ -9650,7 +10088,7 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
         and payload.get("can_launch_substep_agents") is True
     ):
         raise ValueError(
-            "checks must include multi_agent_enabled.pass=true when preflight is launchable"
+            "checks must be a list of capability probe results when preflight is launchable"
         )
 
     if (
@@ -9658,19 +10096,43 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
         and payload.get("can_launch_step_agents") is True
         and payload.get("can_launch_substep_agents") is True
     ):
-        if not isinstance(feature_states, dict) or feature_states.get("multi_agent") is not True:
+        if multi_agent_required and (
+            not isinstance(feature_states, dict)
+            or feature_states.get("multi_agent") is not True
+        ):
             raise ValueError(
                 "feature_states.multi_agent=true is required when preflight is launchable"
             )
-        hooks = feature_states.get("hooks")
+        # Mirror the gate exactly. `_preflight_allows_agent_launch` requires the CHECK to
+        # be present and true, not merely not-false, so accepting a document whose
+        # `multi_agent_enabled` row is absent or null would persist a `status=pass`
+        # preflight that every later record-launch refuses — with a gate message that
+        # names no missing check. Validator and gate must reject the same documents.
+        if multi_agent_required and multi_agent_check_pass is not True:
+            raise ValueError(
+                "checks.multi_agent_enabled.pass=true is required when preflight is launchable"
+            )
+        states = feature_states if isinstance(feature_states, dict) else {}
+        hooks = states.get("hooks")
         if hooks is None:
-            hooks = feature_states.get("codex_hooks")
+            hooks = states.get("codex_hooks")
         if backend_token == "codex" and hooks is not True:
             raise ValueError(
                 "feature_states.hooks=true is required when codex preflight is launchable"
             )
         if payload.get("sandbox_enforced") is not True:
             raise ValueError("sandbox_enforced=true is required when preflight is launchable")
+        if backend_token == "codex":
+            check_values = _codex_check_pass_values(checks or [])
+            missing = sorted(
+                name for name in CODEX_REQUIRED_LAUNCH_CHECKS
+                if check_values.get(name) is not True
+            )
+            if missing:
+                raise ValueError(
+                    "codex launchable preflight is missing required capabilities: "
+                    + ", ".join(missing)
+                )
 
 
 def _live_preflight_mode() -> str:
@@ -9771,7 +10233,7 @@ def _run_live_probe_and_update(
     )
     if not _preflight_allows_agent_launch(live_probe):
         raise RuntimeError(
-            "live preflight gate failed: execution platform multi_agent must be enabled at launch time"
+            "live preflight gate failed: execution platform required launch capabilities are unavailable"
         )
     probed_at = live_probe.get("checked_at") or _utc_now_iso()
     _update_preflight_probed_at(repo_root, orchestration_id, probed_at)
@@ -9791,7 +10253,7 @@ def _require_preflight_launchable(
         raise RuntimeError(f"preflight must be object: {path}")
     if not _preflight_allows_agent_launch(payload):
         raise RuntimeError(
-            "preflight gate failed: launchable preflight with multi_agent=true is required"
+            "preflight gate failed: launchable preflight with required capabilities is required"
         )
 
     if not enforce_live_probe:
@@ -9940,8 +10402,9 @@ _PROMPT_TEMPLATE_FILES = {
     "step agent": "step_agent.txt",
     "substep agent": "substep_agent.txt",
     "common boilerplate": "common_boilerplate.txt",
-    # Z2 pure-function leaf prompts (host-mediated `claude -p`, no tools). One per
-    # migrated (step, substep); the repair template is substep-agnostic. Their line 0 is
+    # Z2 pure-function leaf prompts (host-mediated closed context). Claude's transport is
+    # tool-free; Codex uses a read-only structured-output approximation. One per migrated
+    # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
@@ -10682,11 +11145,12 @@ def _render_slim_repair_launch_prompt(request_payload: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------------------
-# Z2 pure-function leaf (host-mediated `claude -p`, tools disabled). A pure leaf receives a
-# fully closed context in its `-p` body and returns ONE JSON document; the host validates and
-# writes it. Its launch prompt has no skill section, no gate runbook, no write-authorization
-# constraints — the leaf has no write authority to constrain — so it needs its own renderer,
-# marker set, and record-launch branch, all keyed off `leaf_mode == "pure"`.
+# Z2 pure-function leaf (host-mediated closed context). Claude uses `claude -p` with tools
+# disabled; Codex uses a read-only structured-output approximation. A pure leaf receives a
+# fully closed context and returns ONE JSON document; the host validates and writes it. Its launch
+# prompt has no skill section, no gate runbook, or write-authorization constraints — the leaf has
+# no repository write authority to constrain — so it needs its own renderer, marker set, and
+# record-launch branch, all keyed off `leaf_mode == "pure"`.
 # --------------------------------------------------------------------------------------
 
 # Migrated (step, substep) pairs a pure leaf may serve, and the required `pure_context` keys the
@@ -14689,8 +15153,22 @@ def _probe_existing_directory_writable(path: Path) -> tuple[bool, str]:
 
 
 def _probe_codex_home_writable() -> dict[str, Any]:
-    raw = os.environ.get("METDSL_HOME")
-    source = "env:METDSL_HOME" if isinstance(raw, str) and raw.strip() else "default:~/.codex"
+    """Check the canonical Codex state home without silently accepting conflicts."""
+    canonical = os.environ.get("CODEX_HOME")
+    legacy = os.environ.get("METDSL_HOME")
+    if (isinstance(canonical, str) and canonical.strip()
+            and isinstance(legacy, str) and legacy.strip()
+            and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve()):
+        return {
+            "name": "codex_home_writable", "pass": False,
+            "detail": "CODEX_HOME and deprecated METDSL_HOME conflict",
+        }
+    raw = canonical if isinstance(canonical, str) and canonical.strip() else legacy
+    source = (
+        "env:CODEX_HOME" if isinstance(canonical, str) and canonical.strip()
+        else ("env:METDSL_HOME (deprecated)" if isinstance(legacy, str) and legacy.strip()
+              else "default:~/.codex")
+    )
     codex_home = (
         Path(raw).expanduser()
         if isinstance(raw, str) and raw.strip()
@@ -14710,6 +15188,256 @@ def _probe_codex_home_writable() -> dict[str, Any]:
         + ("parent writable; codex_home can be created" if ok else f"parent not writable: {detail}")
     )
     return {"name": "codex_home_writable", "pass": ok, "detail": detail_text}
+
+
+_CODEX_REQUIRED_HOOK_EVENTS = {
+    "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop",
+}
+_CODEX_HOOK_MATCHER_COVERAGE = {
+    "SessionStart": {"anything"},
+    "UserPromptSubmit": {"anything"},
+    "PreToolUse": {"Bash", "bash", "Shell", "shell", "Write", "write", "Edit", "edit", "Read", "read",
+                   "apply_patch", "ApplyPatch"},
+    "PermissionRequest": {"Bash", "bash", "Shell", "shell", "apply_patch", "ApplyPatch"},
+    "PostToolUse": {"Bash", "bash", "Shell", "shell", "apply_patch", "ApplyPatch"},
+    "Stop": {"anything"},
+}
+def _canonical_codex_hook_command(event: str) -> str:
+    """The sole repository-approved native Codex hook wrapper for an event."""
+    return (
+        "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; "
+        "PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" "
+        "METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli "
+        f"--backend codex --event {event} --repo-root \"$ROOT\"'"
+    )
+
+
+def _codex_hook_invokes_event(hook: Any, event: str) -> bool:
+    """True only for one real policy-CLI invocation wired to this event."""
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    command = hook.get("command")
+    # The trust-bypass flag is permitted only after validating this complete,
+    # executable repository wrapper.  A substring/partial shell-program check
+    # cannot prove that short-circuiting or redirection leaves the policy CLI
+    # reachable on every hook invocation.
+    return isinstance(command, str) and command == _canonical_codex_hook_command(event)
+
+
+def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
+    """Verify the repository-local Codex hook source that enforces leaf policy."""
+    root = (repo_root or Path.cwd()).resolve()
+    path = root / ".codex" / "hooks.json"
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError) as exc:
+        return {"name": "codex_project_hooks_validated", "pass": False,
+                "detail": f"cannot parse {path}: {exc}"}
+    if not isinstance(payload, dict) or not isinstance(payload.get("hooks"), dict):
+        return {"name": "codex_project_hooks_validated", "pass": False,
+                "detail": f"{path} must contain a hooks object"}
+    hooks = payload["hooks"]
+    missing: list[str] = []
+    for event in sorted(_CODEX_REQUIRED_HOOK_EVENTS):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            missing.append(event)
+            continue
+        covered: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                continue
+            matcher = entry.get("matcher")
+            if not isinstance(matcher, str):
+                continue
+            invokes_policy = any(
+                _codex_hook_invokes_event(hook, event)
+                for hook in entry["hooks"]
+            )
+            if not invokes_policy:
+                continue
+            if matcher == "*":
+                covered.update(_CODEX_HOOK_MATCHER_COVERAGE[event])
+                continue
+            try:
+                matcher_re = re.compile(matcher)
+            except re.error:
+                continue
+            for tool_name in _CODEX_HOOK_MATCHER_COVERAGE[event]:
+                if matcher_re.fullmatch(tool_name):
+                    covered.add(tool_name)
+        if covered != _CODEX_HOOK_MATCHER_COVERAGE[event]:
+            missing.append(event)
+    if missing:
+        return {"name": "codex_project_hooks_validated", "pass": False,
+                "detail": "workflow hook command missing for: " + ", ".join(missing)}
+    return {"name": "codex_project_hooks_validated", "pass": True,
+            "detail": f"validated repository hook source: {path}"}
+
+
+def _require_secure_codex_home(home: Path) -> None:
+    """Fail closed unless ``home`` is a private, non-symlinked directory."""
+    try:
+        info = home.lstat()
+    except OSError as exc:
+        raise ValueError(f"isolated Codex home is inaccessible: {home}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"isolated Codex home must be a real directory: {home}")
+    if info.st_uid != os.getuid():
+        raise ValueError(f"isolated Codex home is not owned by this user: {home}")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError(f"isolated Codex home must have mode 0700: {home}")
+
+
+def _secure_codex_home_file(path: Path, data: bytes | None = None) -> None:
+    """Create or validate a private regular file without following symlinks."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags, 0o600)
+    except FileExistsError:
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise ValueError(f"isolated Codex file is inaccessible: {path}") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"isolated Codex file must be a regular file: {path}")
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError(f"isolated Codex file has unsafe ownership or mode: {path}")
+        if data is not None and path.read_bytes() != data:
+            raise ValueError(f"isolated Codex file differs from its verified source: {path}")
+        return
+    try:
+        # Write the WHOLE payload (os.write may be short) and remove the file if any
+        # part of it fails: a half-written or empty leftover would otherwise be a
+        # permanent poison pill — every later call takes the FileExistsError branch
+        # above and raises "differs from its verified source" forever.
+        try:
+            offset = 0
+            while data is not None and offset < len(data):
+                offset += os.write(fd, data[offset:])
+            os.fchmod(fd, 0o600)
+        except BaseException:
+            # Clear the descriptor BEFORE closing it. `os.close` does not retry EINTR
+            # and the kernel frees the descriptor even when it reports an error, so
+            # closing first and clearing after would leave `fd >= 0` and let `finally`
+            # close a number another thread may already have reused — in this module
+            # that number can be the `orchestration_meta.json` flock held by
+            # `_prepare_codex_workflow_home`'s caller, silently dropping the lock
+            # mid-critical-section.
+            victim, fd = fd, -1
+            # Both cleanups are best-effort and independently guarded: neither may
+            # replace the write error the caller needs to see, and a failing close must
+            # not skip the unlink — that would leave the half-written file behind, i.e.
+            # reinstate the permanent poison pill this branch exists to prevent. Unlink
+            # first for the same reason; the inode survives until the close anyway.
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            try:
+                os.close(victim)
+            except OSError:
+                pass
+            raise
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
+    """Create the only hook-bearing Codex home for one orchestration.
+
+    The home is outside the repository and has fresh state/session storage.  It
+    contains exactly the SHA-pinned repository hook source and a config that
+    marks this checkout untrusted, preventing the project layer from loading a
+    second copy.  Authentication is deliberately *not* copied: the original
+    auth.json is bound read-only by the bwrap profile.  The hook and config
+    files are likewise remounted read-only after the writable home bind; only
+    Codex's session/state files remain writable to a leaf.
+    """
+    probe = _probe_codex_project_hooks(repo_root)
+    if probe.get("pass") is not True:
+        raise ValueError(f"cannot prepare isolated Codex hooks: {probe.get('detail')}")
+    source = repo_root / ".codex" / "hooks.json"
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    # A single random, 0700 home belongs to an orchestration.  Persist its path
+    # in host-authored metadata so warm resume reuses Codex's state without using
+    # predictable temporary names.  The metadata lock also serializes concurrent
+    # child launches that otherwise could create competing homes.
+    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
+        meta = _read_json(meta_path)
+        if not isinstance(meta, dict):
+            raise ValueError("orchestration metadata missing while preparing Codex home")
+        raw_home = meta.get("codex_workflow_home")
+        raw_generation = meta.get("codex_workflow_home_generation")
+        prior_generation = raw_generation if isinstance(raw_generation, int) and raw_generation > 0 else 0
+        rotate_missing_home = False
+        if isinstance(raw_home, str) and raw_home.strip():
+            home = Path(raw_home)
+            try:
+                home.lstat()
+            except FileNotFoundError:
+                # /tmp is intentionally non-durable.  A host restart / tmpfiles
+                # cleanup therefore rotates the home instead of making --resume
+                # permanently unlaunchable.  The generation below prevents any
+                # thread recorded against the vanished home from warm-resuming.
+                rotate_missing_home = True
+            else:
+                _require_secure_codex_home(home)
+        if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
+            # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
+            # leaf scratch.  This home is a writable backend-state bind and must
+            # never inherit that value: backend rw binds inside the repository are
+            # rejected to preserve the write-root boundary.
+            home = Path(tempfile.mkdtemp(prefix="metdsl-codex-", dir="/tmp"))
+            os.chmod(home, 0o700)
+            _require_secure_codex_home(home)
+            meta["codex_workflow_home"] = str(home)
+            meta["codex_workflow_home_generation"] = prior_generation + 1
+            if rotate_missing_home:
+                meta["codex_workflow_home_rotated_from"] = raw_home.strip()
+                meta["codex_workflow_home_rotated_at"] = _utc_now_iso()
+            _write_json(meta_path, meta)
+        generation = meta.get("codex_workflow_home_generation")
+        if not isinstance(generation, int) or generation <= 0:
+            # Metadata from before home generations existed: retain its secure
+            # home but treat old thread rows (which lack a generation) as stale.
+            generation = max(1, prior_generation)
+            meta["codex_workflow_home_generation"] = generation
+            _write_json(meta_path, meta)
+        # EVERY file of the home is populated under the same lock as the home itself.
+        # `_secure_codex_home_file` is create-exclusive-then-write, so a concurrent
+        # preparer that observed a created-but-not-yet-written file would take the
+        # content-comparison branch and fail with "differs from its verified source".
+        hooks_path = home / "hooks.json"
+        _secure_codex_home_file(hooks_path, data)
+        if hashlib.sha256(hooks_path.read_bytes()).hexdigest() != digest:
+            raise ValueError("isolated Codex hooks SHA-256 verification failed")
+        # TOML basic strings use JSON escaping for these path strings.
+        config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
+        config_path = home / "config.toml"
+        _secure_codex_home_file(config_path, config.encode("utf-8"))
+        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
+        origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
+        auth = origin / "auth.json"
+        if not auth.is_file():
+            raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
+        auth_destination = home / "auth.json"
+        # bwrap needs an existing destination for a file bind. This empty regular
+        # file is hidden by the read-only source bind before Codex starts.
+        _secure_codex_home_file(auth_destination)
+    return {
+        "home": str(home.resolve()),
+        "auth": str(auth.resolve()),
+        "auth_destination": str(auth_destination.resolve()),
+        "hooks": str(hooks_path.resolve()),
+        "config": str(config_path.resolve()),
+        "generation": str(generation),
+        "hooks_sha256": digest,
+    }
 
 
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
@@ -14795,12 +15523,33 @@ def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
 
 def _probe_codex_backend(
     backend_token: str,
-    command: str,
+    command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
     """Run the codex backend probe and return (checks, features, multi_agent_enabled, agent_version)."""
-    version_proc = runner([command, "--version"], text=True, capture_output=True, check=False)
-    features_proc = runner([command, "features", "list"], text=True, capture_output=True, check=False)
+    command_argv = (
+        list(command) if not isinstance(command, str) else shlex.split(command)
+    )
+    if not command_argv:
+        raise ValueError("codex command must be non-empty")
+    version_proc = runner([*command_argv, "--version"], text=True, capture_output=True, check=False)
+    features_proc = runner([*command_argv, "features", "list"], text=True, capture_output=True, check=False)
+    try:
+        exec_help_proc = runner(
+            [*command_argv, "exec", "--help"], text=True, capture_output=True, check=False
+        )
+    except Exception as exc:  # test runners and unavailable CLIs are capability failures
+        exec_help_proc = subprocess.CompletedProcess(
+            [*command_argv, "exec", "--help"], 1, "", str(exc)
+        )
+    try:
+        resume_help_proc = runner(
+            [*command_argv, "exec", "resume", "--help"], text=True, capture_output=True, check=False
+        )
+    except Exception as exc:  # test runners and unavailable CLIs are capability failures
+        resume_help_proc = subprocess.CompletedProcess(
+            [*command_argv, "exec", "resume", "--help"], 1, "", str(exc)
+        )
     features: dict[str, bool] = {}
     features_list_available = features_proc.returncode == 0
     multi_agent_enabled = False
@@ -14808,6 +15557,9 @@ def _probe_codex_backend(
         features = parse_feature_list(features_proc.stdout)
         multi_agent_enabled = features.get("multi_agent") is True
     features_list_detail = features_proc.stdout.strip() or features_proc.stderr.strip()
+    exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
+    exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
+    resume_help_text = (resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or "")
     checks = [
         {
             "name": f"{backend_token}_version_available",
@@ -14823,6 +15575,47 @@ def _probe_codex_backend(
             "name": "multi_agent_enabled",
             "pass": multi_agent_enabled,
             "detail": f"multi_agent={features.get('multi_agent')}",
+        },
+        {
+            "name": "codex_exec_json_streaming",
+            "pass": (
+                exec_help_proc.returncode == 0
+                and "--json" in exec_help_text
+                and "--model" in exec_help_text
+            ),
+            "detail": exec_help_detail,
+        },
+        {
+            "name": "codex_exec_output_schema",
+            "pass": exec_help_proc.returncode == 0 and "--output-schema" in exec_help_text,
+            "detail": exec_help_detail,
+        },
+        {
+            "name": "codex_exec_pure_isolation_flags",
+            "pass": (
+                exec_help_proc.returncode == 0
+                and "--sandbox" in exec_help_text
+                and "--ignore-rules" in exec_help_text
+            ),
+            "detail": exec_help_detail,
+        },
+        {
+            "name": "codex_exec_resume",
+            "pass": (
+                resume_help_proc.returncode == 0
+                and all(
+                    flag in resume_help_text
+                    for flag in CODEX_EXEC_RESUME_REQUIRED_FLAGS
+                )
+            ),
+            "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
+                       or f"exit={resume_help_proc.returncode}"),
+        },
+        {
+            "name": "codex_project_hook_trust_bypass",
+            "pass": (exec_help_proc.returncode == 0
+                     and "--dangerously-bypass-hook-trust" in exec_help_text),
+            "detail": exec_help_detail,
         },
     ]
     return checks, features, multi_agent_enabled, version_proc.stdout.strip()
@@ -15454,7 +16247,15 @@ def probe_execution_platform(
         checks.extend(mcp_checks)
         can_launch_agents = can_launch_agents and mcp_ok
     else:
-        can_launch_agents = _all_strict_boolean_probe_checks_pass(checks)
+        # Codex's internal multi_agent feature is diagnostic only: the conductor
+        # launches independent CLI processes and does not use Codex subagents. Every
+        # OTHER probe check gates — an allowlist here would silently make a check
+        # added to `_probe_codex_backend` later non-gating, so the advisory set is
+        # named instead and anything new fails closed by default.
+        can_launch_agents = _all_strict_boolean_probe_checks_pass(
+            [item for item in checks
+             if not (isinstance(item, dict) and item.get("name") in CODEX_ADVISORY_ONLY_CHECKS)]
+        )
         hooks_enabled = features.get("hooks") is True
         checks.append(
             {
@@ -15464,6 +16265,9 @@ def probe_execution_platform(
             }
         )
         can_launch_agents = can_launch_agents and hooks_enabled
+        project_hooks_check = _probe_codex_project_hooks(repo_root)
+        checks.append(project_hooks_check)
+        can_launch_agents = can_launch_agents and (project_hooks_check.get("pass") is True)
         codex_home_check = _probe_codex_home_writable()
         checks.append(codex_home_check)
         can_launch_agents = can_launch_agents and (codex_home_check.get("pass") is True)
@@ -15979,6 +16783,7 @@ def record_launch(
     request_payload: dict[str, Any],
     response_payload: dict[str, Any],
     relation_type: str = "launch",
+    expected_codex_home_generation: int | None = None,
 ) -> dict[str, Any]:
     if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
         raise ValueError("record-launch requires non-empty parent_agent_run_id")
@@ -16020,6 +16825,27 @@ def record_launch(
         else ""
     )
     backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
+
+    # A Codex warm-resume target belongs to one isolated HOME generation.  Prepare
+    # the home at the beginning of the launch transaction and reject a stale
+    # expectation *before* writing a capability, launch artifacts, or an active
+    # child marker.  This closes the tmpfiles TOCTOU between the conductor's
+    # resume selection and its later record-launch call: the conductor can simply
+    # rebuild a cold request when a vanished home has rotated.
+    codex_isolation: dict[str, str] | None = None
+    if expected_codex_home_generation is not None and expected_codex_home_generation <= 0:
+        raise ValueError("expected_codex_home_generation must be a positive integer")
+    if expected_codex_home_generation is not None:
+        if backend_token != "codex":
+            raise ValueError("expected_codex_home_generation is valid only for the Codex backend")
+        codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+        actual_generation = int(codex_isolation["generation"])
+        if expected_codex_home_generation != actual_generation:
+            return {
+                "codex_home_generation_mismatch": True,
+                "expected_codex_home_generation": expected_codex_home_generation,
+                "codex_home_generation": actual_generation,
+            }
 
     # The Claude backend enforces sequential child launch via the active file.
     if backend_token == "claude":
@@ -16490,16 +17316,41 @@ def record_launch(
             out_refs["allowed_output_manifest_ref"] = manifest_ref
         try:
             _resp_backend = response_payload.get("backend")
+            if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
+                # Prepared before any launch-side durable mutations above.  Do not
+                # re-prepare here: doing so would reopen the generation race that
+                # the expected-generation transaction check closes.
+                if codex_isolation is None:
+                    codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+                response_payload["codex_workflow_home"] = codex_isolation["home"]
+                response_payload["codex_home_generation"] = int(codex_isolation["generation"])
+                response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
+            profile_kwargs: dict[str, Any] = {}
+            if codex_isolation is not None:
+                profile_kwargs = {
+                    "backend_ro_mappings": [
+                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
+                        # The home itself stays writable for Codex session/state
+                        # persistence, but the trust-bypassed hook source and
+                        # project-layer exclusion config must remain immutable.
+                        (codex_isolation["hooks"], codex_isolation["hooks"]),
+                        (codex_isolation["config"], codex_isolation["config"]),
+                    ],
+                    "backend_rw_override": [codex_isolation["home"]],
+                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
+                }
             if is_pure:
                 # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
-                # has no tools anyway (`--safe-mode`); this is defense-in-depth so even a
-                # tool-bearing regression could not write an artifact from the child window.
+                # has no repository write authority. Claude is tool-free, while Codex's
+                # structured-output approximation remains tool-bearing in a read-only sandbox;
+                # bwrap ensures neither can write an artifact from the child window.
                 profile = build_readonly_bwrap_profile(
                     repo_root=repo_root,
                     orchestration_id=orchestration_id,
                     agent_run_id=child_agent_run_id,
                     backend_command=backend_command,
                     backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                    **profile_kwargs,
                 )
             else:
                 profile = build_bwrap_profile(
@@ -16508,6 +17359,7 @@ def record_launch(
                     agent_run_id=child_agent_run_id,
                     backend_command=backend_command,
                     backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                    **profile_kwargs,
                 )
             command_argv = [backend_command]
             rendered = render_bwrap_command(profile=profile, command_argv=command_argv)
@@ -16837,7 +17689,7 @@ def record_timeout(
     # session_run_index status check — the index is updated to the terminal
     # status on successful record-agent-run, so any non-running status here
     # signals that another finalization path already won the race.
-    index_doc = _read_session_run_index(repo_root, orchestration_id)
+    index_doc = _read_session_run_index_consistent(repo_root, orchestration_id)
     for _entry in index_doc.get("entries", []) or []:
         if isinstance(_entry, dict) and _entry.get("agent_run_id") == arid:
             _sess_status = _entry.get("status")
@@ -17098,7 +17950,11 @@ def record_agent_run(
     # same orchestration. _validate_terminal_run_payload runs inside the
     # lock (H2 fix) because its violation path calls _cleanup_agent_tmp_root —
     # a destructive operation that two unsynchronized finalizers must not race.
-    with _runs_jsonl_exclusive_lock(repo_root, orchestration_id):
+    with (
+        _json_transaction_exclusive_lock(root),
+        _runs_jsonl_exclusive_lock(repo_root, orchestration_id),
+    ):
+        _recover_json_transactions_unlocked(root)
         # NEW-H1: caller holds the lock, so writer-active probe would
         # self-contend. Pass the flag so durable corruption is surfaced
         # rather than masked.
@@ -18716,7 +19572,7 @@ def _sync_orchestration_session_index_status(
     if orch_arid is None:
         return False
     target = status.strip().lower()
-    doc = _read_session_run_index(repo_root, orchestration_id)
+    doc = _read_session_run_index_consistent(repo_root, orchestration_id)
     entries = doc.get("entries")
     if isinstance(entries, list):
         for item in entries:
@@ -19388,6 +20244,10 @@ def _project_terse_result(command: str, result: Any) -> Any:
     fields = _TERSE_RESULT_FIELDS.get(command)
     if fields is None or not isinstance(result, dict):
         return result
+    # A stale Codex HOME generation is not a completed launch: return its
+    # transaction sentinel intact so the conductor can rebuild the request cold.
+    if command == "record-launch" and result.get("codex_home_generation_mismatch"):
+        return result
     projected: dict[str, Any] = {key: result[key] for key in fields if key in result}
     for key in _TERSE_ALWAYS_KEEP:
         if key not in projected and result.get(key):
@@ -19544,6 +20404,11 @@ def main(argv: list[str] | None = None) -> int:
     launch_parser.add_argument("--response-json", required=True, type=_json_arg,
                                help=_RECORD_LAUNCH_RESPONSE_HELP)
     launch_parser.add_argument("--relation-type", default="launch")
+    launch_parser.add_argument(
+        "--expected-codex-home-generation", type=int,
+        help=("For a Codex warm resume, require this isolated CODEX_HOME generation. "
+              "A rotated home returns a cold-fallback sentinel before recording a launch."),
+    )
 
     orch_read_parser = subparsers.add_parser("orchestration-read")
     orch_read_parser.add_argument("--repo-root", required=True)
@@ -20083,6 +20948,7 @@ def main(argv: list[str] | None = None) -> int:
                 request_payload=args.request_json,
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
+                expected_codex_home_generation=args.expected_codex_home_generation,
             )
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)

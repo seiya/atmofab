@@ -101,6 +101,9 @@ PINNED: dict[str, str] = {
     # — a component public_api no longer implies infrastructure) + (6b) component published-surface
     # pin (operation entrypoints / model subroutines == IR public_api.published_operations).
     "pure-13": "d656ccd45489006020ad09c52abb0b42ed826cd149230fd4c13804cab6344dc5",
+    # pure-14: pure prompts and their line-0 sentinel now describe the Codex read-only,
+    # structured-output approximation accurately instead of promising tool-free isolation.
+    "pure-14": "f15dc94b346844b2523bd38ed6a374abc8073114c103a080db2c6f90e8a6bb87",
 }
 
 

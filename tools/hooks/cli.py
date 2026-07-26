@@ -146,6 +146,11 @@ def _sanitize_audit_detail(value: Any) -> Any:
 
 def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> dict[str, Any]:
     summary: dict[str, Any] = {}
+    model = _payload_value(payload, "model")
+    if isinstance(model, str) and model.strip():
+        # Codex SessionStart supplies the effective model even though the
+        # non-interactive JSONL stream does not guarantee a model field.
+        summary["model"] = _trim_audit_text(model.strip(), limit=200)
     session_id = _payload_value(payload, "session_id")
     if isinstance(session_id, str) and session_id.strip():
         summary["session_id"] = session_id.strip()
@@ -166,7 +171,12 @@ def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> di
         summary["command"] = _trim_audit_text(command.strip())
 
     if (tool_name or "").strip() == "apply_patch":
-        patch_value = tool_input.get("patch")
+        # Current Codex sends apply_patch's complete patch program as
+        # tool_input.command.  The older patch / patch_text shapes remain only
+        # for fixture and older-CLI compatibility.
+        patch_value = tool_input.get("command")
+        if not isinstance(patch_value, str):
+            patch_value = tool_input.get("patch")
         if not isinstance(patch_value, str):
             patch_value = tool_input.get("patch_text")
         if isinstance(patch_value, str):
@@ -731,6 +741,20 @@ def _resolve_codex_agent_run_id_from_session(
                 if len(matched_from_index) == 1:
                     return next(iter(matched_from_index)), 1
                 if len(matched_from_index) > 1:
+                    # Codex `exec resume` continues the same thread in place.
+                    # Its prior terminal row and the newly allocated repair row
+                    # therefore share a thread ID. The active repair owns file
+                    # access while it is the sole running candidate; concurrent
+                    # running rows remain fail-closed as ambiguous.
+                    active_matches = {
+                        str(item.get("agent_run_id")).strip()
+                        for item in entries_obj
+                        if isinstance(item, dict)
+                        and str(item.get("agent_run_id") or "").strip() in matched_from_index
+                        and str(item.get("status") or "").strip().lower() == "running"
+                    }
+                    if len(active_matches) == 1:
+                        return next(iter(active_matches)), 1
                     return None, len(matched_from_index)
     runs_path = orch_root / "agent_runs.jsonl"
     if not runs_path.is_file():
@@ -813,6 +837,26 @@ def _get_agent_role_from_capability(
     return None
 
 
+def _is_pure_readonly_capability(
+    repo_root: Path, orchestration_id: str, agent_run_id: str
+) -> bool:
+    """Whether this run is a host-mediated pure leaf.
+
+    Codex's pure transport has a read-only sandbox, not Claude's absence of
+    tools.  Shell access must therefore be denied explicitly rather than
+    relying on the output/write policy to make a read-only command harmless.
+    """
+    cap_path = (
+        repo_root / "workspace" / "orchestrations" / orchestration_id
+        / "capabilities" / f"{agent_run_id}.json"
+    )
+    try:
+        doc = json.loads(cap_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(doc, dict) and str(doc.get("mode") or "").strip() == "pure_readonly"
+
+
 def _hint_for_file_tool(tool_name: str) -> str:
     return READ_HINT if tool_name == "Read" else WRITE_HINT
 
@@ -853,6 +897,19 @@ def _resolve_agent_run_id_for_file_tool(
                 continue_processing=False,
             )
         return orch_agent_run_id, None
+    # Codex creates its thread id inside `exec`; the first hook can run after
+    # it writes `thread.started` to stdout but before the parent drains that
+    # pipe and updates session_run_index.json.  record-launch has already
+    # created this child's capability and active marker, and the Codex process
+    # passes its inherited child identity unchanged to hooks.  Prefer that
+    # launch-scoped binding during this narrow bootstrap interval.
+    child_run_id = os.environ.get("METDSL_CHILD_AGENT_RUN_ID", "").strip()
+    if child_run_id:
+        orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
+        cap_path = orch_root / "capabilities" / f"{child_run_id}.json"
+        active_path = orch_root / "active_children" / f"{child_run_id}.txt"
+        if cap_path.is_file() and active_path.is_file():
+            return child_run_id, None
     mapped_agent_run_id, match_count = _resolve_codex_agent_run_id_from_session(
         repo_root=repo_root,
         orchestration_id=orchestration_id,
@@ -916,12 +973,21 @@ def _evaluate_pre_command_file_access_policy(
             return None
         patch_text = ""
         decoded_tool_input = _tool_input(decoded.payload)
-        patch_value = decoded_tool_input.get("patch")
+        patch_value = decoded_tool_input.get("command")
+        if not isinstance(patch_value, str):
+            patch_value = decoded_tool_input.get("patch")
         if not isinstance(patch_value, str):
             patch_value = decoded_tool_input.get("patch_text")
         if isinstance(patch_value, str):
             patch_text = patch_value
         apply_patch_paths = _extract_apply_patch_paths(patch_text)
+        # A workflow-mode apply_patch without a parseable target is not an
+        # authorization-free operation.  In particular, never turn a changed
+        # Codex payload shape into an empty target allow.
+        if not apply_patch_paths:
+            return _decision_error(
+                "apply_patch payload is missing, unparseable, or has no target paths"
+            )
         resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
             backend=backend,
             repo_root=repo_root,
@@ -992,13 +1058,42 @@ def _evaluate_pre_command_file_access_policy(
             )
         return write_decision
 
-    # step 3: Bash read/write guard
-    if tool_name == "Bash":
+    # step 3: Bash/Shell read/write guard
+    if tool_name in {"Bash", "bash", "Shell", "shell"}:
         common_decision = evaluate_common_policy(decoded)
         if common_decision.action == HookDecisionAction.BLOCK:
             return common_decision
         if workflow_mode != "1":
             return common_decision
+        resolved_run_id: str | None = None
+        # Resolve before the read-only fast path only for Codex. A Codex pure
+        # leaf can run `cat` in its read-only sandbox; unlike the Read tool,
+        # that command would otherwise bypass the empty read manifest. Keep
+        # Claude's historical read-only auto-approval behavior unchanged.
+        if backend.strip().lower() == "codex":
+            resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+                backend=backend,
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                session_id=decoded.session_id,
+                agent_session_id=decoded.agent_session_id,
+                tool_name=tool_name,
+            )
+            # Codex leaves can read the repository through Shell even in a
+            # read-only sandbox.  Do not allow a missing or ambiguous session
+            # mapping to bypass the pure-leaf boundary via the read-only fast
+            # path.  Non-file-access diagnostic events must be handled outside
+            # this PreToolUse policy.
+            if resolution_error is not None:
+                return resolution_error
+            if resolved_run_id and _is_pure_readonly_capability(
+                repo_root, orchestration_id, resolved_run_id
+            ):
+                return HookDecision(
+                    action=HookDecisionAction.BLOCK,
+                    reason="pure-function leaves may not invoke Bash or Shell; use only the host-inlined context",
+                    continue_processing=False,
+                )
         write_targets = _detect_bash_write_targets(decoded.command)
         if not write_targets:
             # Purely read-only command: if it is a provably-safe composition,
@@ -1019,16 +1114,17 @@ def _evaluate_pre_command_file_access_policy(
                     },
                 )
             return common_decision
-        resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
-            backend=backend,
-            repo_root=repo_root,
-            orchestration_id=orchestration_id,
-            session_id=decoded.session_id,
-            agent_session_id=decoded.agent_session_id,
-            tool_name=tool_name,
-        )
-        if resolution_error is not None:
-            return resolution_error
+        if resolved_run_id is None:
+            resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+                backend=backend,
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                session_id=decoded.session_id,
+                agent_session_id=decoded.agent_session_id,
+                tool_name=tool_name,
+            )
+            if resolution_error is not None:
+                return resolution_error
         if resolved_run_id is None:
             return HookDecision(
                 action=HookDecisionAction.BLOCK,
@@ -1099,7 +1195,7 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id = "_global"
         if orchestration_id == "_global":
             exit_code, stdout_text = adapter.encode_decision(
-                HookDecision(action=HookDecisionAction.ALLOW)
+                HookDecision(action=HookDecisionAction.ALLOW), event_name=event_name
             )
             return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
@@ -1143,7 +1239,7 @@ def main(argv: list[str] | None = None) -> int:
                         decision=decision,
                         orchestration_id_override=orchestration_id,
                     )
-                    exit_code, stdout_text = adapter.encode_decision(decision)
+                    exit_code, stdout_text = adapter.encode_decision(decision, event_name=event_name)
                     return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
         if event_name not in adapter.supported_events():
@@ -1167,7 +1263,7 @@ def main(argv: list[str] | None = None) -> int:
             decision=decision,
             orchestration_id_override=orchestration_id,
         )
-        exit_code, stdout_text = adapter.encode_decision(decision)
+        exit_code, stdout_text = adapter.encode_decision(decision, event_name=event_name)
     except Exception as exc:
         fallback_adapter = _adapter_for_backend(args.backend)
         decision = _decision_error(f"hook entrypoint failure: {exc}")
@@ -1179,7 +1275,7 @@ def main(argv: list[str] | None = None) -> int:
             decision=decision,
             orchestration_id_override=fallback_orchestration_id,
         )
-        exit_code, stdout_text = fallback_adapter.encode_decision(decision)
+        exit_code, stdout_text = fallback_adapter.encode_decision(decision, event_name=event_name)
     return _emit_hook_response(exit_code, stdout_text, event_name=event_name)
 
 

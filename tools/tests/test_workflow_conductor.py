@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime
@@ -294,6 +295,33 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
         self.assertIn("resume_session_unavailable", emitted)
+
+    def test_codex_reuse_falls_back_cold_after_home_generation_rotates(self) -> None:
+        """Threads from a tmpfiles-deleted CODEX_HOME are never resumed."""
+        from unittest.mock import patch
+        from tools.orchestration_runtime import _append_session_run_index_entry
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id="orch_x",
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+            )
+            c.calls = []
+            emitted: list[str] = []
+            c.emit = lambda event, **kw: emitted.append(event)  # type: ignore[assignment]
+            _append_session_run_index_entry(
+                repo_root, "orch_x", agent_run_id="child-1", agent_session_id="thread-old",
+                context_id="child-1", agent_role="substep", status="pass",
+                codex_home_generation=1,
+            )
+            with patch(
+                "tools.orchestration_runtime._prepare_codex_workflow_home",
+                return_value={"generation": "2"},
+            ):
+                repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
+                self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
+            self.assertIn("resume_session_unavailable", emitted)
 
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
@@ -718,9 +746,8 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(completes[0]["result"], "skipped")
         self.assertNotIn("elapsed_seconds", completes[0])
 
-    def test_run_conductor_falls_back_to_backend_alias(self) -> None:
-        """run_conductor with no explicit agent_model uses the backend's unpinned
-        alias (claude -> 'opus' default / codex -> 'codex'), never a pinned version."""
+    def test_run_conductor_falls_back_to_claude_alias(self) -> None:
+        """Claude may use its unpinned config alias when none was supplied."""
         from unittest.mock import patch
         seen: dict[str, str] = {}
         orig_init = wc.Conductor.__init__
@@ -729,24 +756,29 @@ class ConductHappyPathTest(unittest.TestCase):
             seen["agent_model"] = kw.get("agent_model", "")
             orig_init(self, **kw)
 
-        for backend, expected in (("codex", "codex"), ("claude", "opus")):
-            seen.clear()
-            with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
-                 patch.object(wc, "prepare_node",
-                              return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
-                                                       ir_id="x_1", pipeline_id="x_1")), \
-                 patch.object(wc.Conductor, "__init__", _capture_init), \
-                 patch.object(wc.Conductor, "conduct", return_value="pass"), \
-                 patch("tools.orchestration_runtime.resolve_claude_model_alias",
-                       return_value="opus"):
-                status = wc.run_conductor(
-                    repo_root="/tmp/repo", orchestration_id="o",
-                    orchestration_agent_run_id="O", spec_ref="spec/c/x",
-                    source_dependency_ref="d", until_phase="compile", backend=backend,
-                    agent_model="", workflow_mode="dev", env={})
-            self.assertEqual(status, "pass")
-            self.assertEqual(seen["agent_model"], expected)
-            self.assertNotRegex(seen["agent_model"], r"-\d+-\d+$")
+        with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
+             patch.object(wc, "prepare_node",
+                          return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
+                                                   ir_id="x_1", pipeline_id="x_1")), \
+             patch.object(wc.Conductor, "__init__", _capture_init), \
+             patch.object(wc.Conductor, "conduct", return_value="pass"), \
+             patch("tools.orchestration_runtime.resolve_claude_model_alias", return_value="opus"):
+            status = wc.run_conductor(
+                repo_root="/tmp/repo", orchestration_id="o",
+                orchestration_agent_run_id="O", spec_ref="spec/c/x",
+                source_dependency_ref="d", until_phase="compile", backend="claude",
+                agent_model="", workflow_mode="dev", env={})
+        self.assertEqual(status, "pass")
+        self.assertEqual(seen["agent_model"], "opus")
+        self.assertNotRegex(seen["agent_model"], r"-\d+-\d+$")
+
+    def test_run_conductor_requires_explicit_codex_model(self) -> None:
+        with self.assertRaisesRegex(ValueError, "explicit model slug"):
+            wc.run_conductor(
+                repo_root="/tmp/repo", orchestration_id="o",
+                orchestration_agent_run_id="O", spec_ref="spec/c/x",
+                source_dependency_ref="d", until_phase="compile", backend="codex",
+                agent_model="", workflow_mode="dev", env={})
 
     def test_agent_run_json_records_transcript_resolved_model(self) -> None:
         from unittest.mock import patch
@@ -774,6 +806,29 @@ class ConductHappyPathTest(unittest.TestCase):
                 refs, "compile", "generate", "child-arid-2", "pass", [])
         # unresolved -> left absent so record_agent_run backfills the launch alias
         self.assertNotIn("agent_model", payload)
+
+    def test_agent_run_json_records_host_pinned_codex_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id="orch_x",
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+                agent_model="gpt-5.6-codex",
+            )
+            hooks_path = repo_root / "workspace" / "orchestrations" / "orch_x" / "hooks" / "native_hook_events.jsonl"
+            hooks_path.parent.mkdir(parents=True)
+            # A leaf-controlled audit value must not affect model provenance.
+            hooks_path.write_text(
+                json.dumps({
+                    "backend": "codex", "event": "session_start",
+                    "payload_summary": {"session_id": "thread-123", "model": "forged-model"},
+                }) + "\n",
+                encoding="utf-8",
+            )
+            payload = c._agent_run_json(
+                self._refs(), "compile", "generate", "child-arid-3", "pass", [])
+        self.assertEqual(payload["agent_model"], "gpt-5.6-codex")
+        self.assertEqual(payload["agent_model_provenance"], "codex_launch_pinned")
 
     def test_agent_run_json_carries_step_and_substep(self) -> None:
         c = self._conductor()
@@ -5250,6 +5305,42 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(profile.get("write_roots"), [])
         self.assertEqual(profile.get("read_roots"), [])
 
+    def test_codex_diagnostician_uses_isolated_codex_home(self) -> None:
+        """The trust-bypassed diagnostician must not inherit ambient CODEX_HOME."""
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            hooks_dir = repo_root / ".codex"
+            hooks_dir.mkdir(parents=True)
+            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            orch = "orch_codex_diagnostician"
+            meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
+            meta_path.parent.mkdir(parents=True)
+            meta_path.write_text(json.dumps({"orchestration_id": orch}), encoding="utf-8")
+            ambient_home = Path(tmp) / "ambient-codex"
+            ambient_home.mkdir()
+            (ambient_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            in_repo_tmpdir = repo_root / "workspace" / "tmp" / "ORCH"
+            in_repo_tmpdir.mkdir(parents=True)
+            c = _FakeConductor(
+                repo_root=repo_root, orchestration_id=orch,
+                orchestration_agent_run_id="ORCH", backend="codex", env={},
+            )
+            with patch.dict(
+                os.environ,
+                {"CODEX_HOME": str(ambient_home), "TMPDIR": str(in_repo_tmpdir)},
+                clear=False,
+            ):
+                profile = c._readonly_sandbox_profile()
+            isolated_home = Path(profile["env"]["CODEX_HOME"])
+            self.assertNotEqual(isolated_home, ambient_home)
+            self.assertEqual(profile["runtime_rw_bind_paths"], [str(isolated_home)])
+            mappings = profile["runtime_ro_bind_mappings"]
+            self.assertIn([str(isolated_home / "hooks.json"), str(isolated_home / "hooks.json")], mappings)
+            self.assertIn([str(isolated_home / "config.toml"), str(isolated_home / "config.toml")], mappings)
+
     def test_conduct_escalates_then_reopens(self) -> None:
         c = self._conductor()
         c.workflow_mode = "prod"  # the diagnostician's cross-phase reopen is prod-only (F1)
@@ -5495,12 +5586,15 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
         self.assertEqual(c.leaf_command("PROMPT"), ["mywrap", "--model", "Z", "-p", "PROMPT"])
-        c2 = self._c(backend="codex", llm_command="codexwrap --x")
-        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "P"])
+        c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-codex")
+        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
         self.assertEqual(self._c(backend="claude").leaf_command("P"), ["claude", "-p", "P"])
-        self.assertEqual(self._c(backend="codex").leaf_command("P"), ["codex", "exec", "P"])
+        self.assertEqual(
+            self._c(backend="codex", agent_model="gpt-5.6-codex").leaf_command("P"),
+            ["codex", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"],
+        )
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
@@ -5510,8 +5604,8 @@ class LeafSpawnTest(unittest.TestCase):
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
-            self._c(backend="codex").leaf_command("P", session_id="arid-1"),
-            ["codex", "exec", "P"],
+            self._c(backend="codex", agent_model="gpt-5.6-codex").leaf_command("P", session_id="arid-1"),
+            ["codex", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"],
         )
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
@@ -5521,6 +5615,452 @@ class LeafSpawnTest(unittest.TestCase):
             ["claude", "--resume", "producer-arid", "--fork-session",
              "--session-id", "new-arid", "-p", "P"],
         )
+
+    def test_codex_resume_pins_the_same_host_model(self) -> None:
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        self.assertEqual(
+            c.leaf_command("repair", resume_session_id="thread-123"),
+            ["codex", "exec", "resume", "--model", "gpt-5.6-codex", "thread-123",
+             "--dangerously-bypass-hook-trust", "--json", "repair"],
+        )
+
+    def test_codex_leaf_rejects_generic_model_alias(self) -> None:
+        with self.assertRaisesRegex(ValueError, "explicit --agent-model"):
+            self._c(backend="codex", agent_model="codex").leaf_command("P")
+
+    # --- codex JSONL stream handling -----------------------------------------
+
+    def _codex_stream_result(self, lines: str, *, child_arid: str | None = "A",
+                             resume: bool = False, register=None,
+                             returncode: int = 0) -> wc.ProcResult:
+        """Drive `_spawn_codex_json_leaf` over a canned JSONL stdout stream."""
+        import io
+        from unittest.mock import patch
+
+        popen_kwargs: dict[str, Any] = {}
+
+        class _FakePopen:
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                popen_kwargs.update(kw)
+                self.stdout = io.StringIO(lines)
+                self.stderr = io.StringIO("")
+
+            def wait(self):  # type: ignore[no-untyped-def]
+                return returncode
+
+            def terminate(self):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = (  # type: ignore[method-assign]
+            register if register is not None else (lambda *a: None))
+        with patch.object(wc.subprocess, "Popen", _FakePopen):
+            result = c._spawn_codex_json_leaf(
+                ["codex", "exec"], {}, child_arid, resume=resume)
+        # The stream must be decoded LENIENTLY. With the default strict handler a single
+        # malformed byte raises mid-iteration, escaping spawn_leaf as a conductor_error
+        # and discarding the stderr already drained — a leaf's own output must never be
+        # able to kill the conductor. Asserted on every case here because no canned
+        # `io.StringIO` stream can reach the real decoder.
+        self.assertEqual(popen_kwargs.get("errors"), "backslashreplace")
+        self.assertIs(popen_kwargs.get("text"), True)
+        return result
+
+    def test_codex_thread_registration_failure_is_a_transport_result(self) -> None:
+        """A failed host-side identity binding must NOT escape spawn_leaf.
+
+        `_register_codex_thread` writes both response mirrors + the session index, so it
+        can fail on ENOSPC or a conflicting recorded identity. Letting that raise would
+        terminalize the whole orchestration as a generic conductor_error instead of
+        routing the substep, and would leave the leaf running against an identity the
+        host never recorded.
+        """
+        def _boom(*_args):  # type: ignore[no-untyped-def]
+            raise OSError(28, "No space left on device")
+
+        proc = self._codex_stream_result(
+            '{"type":"thread.started","thread_id":"t-1"}\n', register=_boom)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("codex thread registration failed", proc.stderr)
+        self.assertIn("No space left on device", proc.stderr)
+
+    def test_codex_thread_registration_updates_both_response_mirrors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+            launch_dir.mkdir(parents=True)
+            dialogs_dir.mkdir(parents=True)
+            request = {"agent_role": "substep", "context_id": "ctx"}
+            provisional_response = {
+                "agent_session_id": "A",
+                "session_id": "A",
+                "backend": "codex",
+            }
+            (launch_dir / "A.request.json").write_text(
+                json.dumps(request), encoding="utf-8")
+            (launch_dir / "A.response.json").write_text(
+                json.dumps(provisional_response), encoding="utf-8")
+            (dialogs_dir / "child.response.json").write_text(
+                json.dumps(provisional_response), encoding="utf-8")
+
+            c = self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+            c._register_codex_thread("A", "thread-1")
+
+            launch_response = json.loads(
+                (launch_dir / "A.response.json").read_text(encoding="utf-8"))
+            child_response = json.loads(
+                (dialogs_dir / "child.response.json").read_text(encoding="utf-8"))
+            session_index = json.loads(
+                (orchestration_dir / "session_run_index.json").read_text(encoding="utf-8"))
+            self.assertEqual(child_response, launch_response)
+            self.assertEqual(launch_response["agent_session_id"], "thread-1")
+            self.assertEqual(launch_response["session_id"], "thread-1")
+            self.assertEqual(session_index["entries"][0]["agent_session_id"], "thread-1")
+
+    def test_concurrent_codex_registrations_preserve_both_session_index_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            launch_dir.mkdir(parents=True)
+            for arid in ("A", "B"):
+                dialogs_dir = (
+                    orchestration_dir / "agents" / arid / "dialogs"
+                )
+                dialogs_dir.mkdir(parents=True)
+                request = {"agent_role": "substep", "context_id": f"ctx-{arid}"}
+                response = {
+                    "agent_session_id": arid,
+                    "session_id": arid,
+                    "backend": "codex",
+                }
+                wc_runtime._write_json(
+                    launch_dir / f"{arid}.request.json", request)
+                wc_runtime._write_json(
+                    launch_dir / f"{arid}.response.json", response)
+                wc_runtime._write_json(
+                    dialogs_dir / "child.response.json", response)
+
+            barrier = threading.Barrier(2)
+            errors: list[BaseException] = []
+
+            def _register(arid: str) -> None:
+                try:
+                    c = self._c(
+                        repo_root=repo, orchestration_id="o", backend="codex",
+                        agent_model="gpt-5.6-codex")
+                    barrier.wait()
+                    c._register_codex_thread(arid, f"thread-{arid}")
+                except BaseException as exc:
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=_register, args=(arid,))
+                for arid in ("A", "B")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            session_index = json.loads(
+                (orchestration_dir / "session_run_index.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {
+                    item["agent_run_id"]: item["agent_session_id"]
+                    for item in session_index["entries"]
+                },
+                {"A": "thread-A", "B": "thread-B"},
+            )
+
+    def test_codex_thread_registration_rolls_back_all_records_on_commit_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+            launch_dir.mkdir(parents=True)
+            dialogs_dir.mkdir(parents=True)
+            request = {"agent_role": "substep", "context_id": "ctx"}
+            provisional_response = {
+                "agent_session_id": "A",
+                "session_id": "A",
+                "backend": "codex",
+            }
+            wc_runtime._write_json(launch_dir / "A.request.json", request)
+            wc_runtime._write_json(
+                launch_dir / "A.response.json", provisional_response)
+            wc_runtime._write_json(
+                dialogs_dir / "child.response.json", provisional_response)
+
+            c = self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+            child_response_path = dialogs_dir / "child.response.json"
+            real_replace = wc_runtime.os.replace
+            failed = False
+
+            def _fail_second_commit(src, dst):  # type: ignore[no-untyped-def]
+                nonlocal failed
+                if Path(dst) == child_response_path and not failed:
+                    failed = True
+                    raise OSError(5, "injected second mirror failure")
+                return real_replace(src, dst)
+
+            with mock.patch.object(
+                wc_runtime.os, "replace", side_effect=_fail_second_commit
+            ):
+                with self.assertRaisesRegex(OSError, "injected second mirror failure"):
+                    c._register_codex_thread("A", "thread-1")
+
+            launch_response = json.loads(
+                (launch_dir / "A.response.json").read_text(encoding="utf-8"))
+            child_response = json.loads(
+                child_response_path.read_text(encoding="utf-8"))
+            self.assertEqual(launch_response, provisional_response)
+            self.assertEqual(child_response, provisional_response)
+            self.assertFalse((orchestration_dir / "session_run_index.json").exists())
+
+    def test_codex_thread_registration_recovers_pending_rollback_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+            launch_dir.mkdir(parents=True)
+            dialogs_dir.mkdir(parents=True)
+            request = {"agent_role": "substep", "context_id": "ctx"}
+            provisional_response = {
+                "agent_session_id": "A",
+                "session_id": "A",
+                "backend": "codex",
+            }
+            response_path = launch_dir / "A.response.json"
+            child_response_path = dialogs_dir / "child.response.json"
+            wc_runtime._write_json(launch_dir / "A.request.json", request)
+            wc_runtime._write_json(response_path, provisional_response)
+            wc_runtime._write_json(child_response_path, provisional_response)
+
+            c = self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+            real_replace = wc_runtime.os.replace
+            failed_commit = False
+            failed_rollback = False
+
+            def _fail_commit_and_rollback(src, dst):  # type: ignore[no-untyped-def]
+                nonlocal failed_commit, failed_rollback
+                if Path(dst) == child_response_path and not failed_commit:
+                    failed_commit = True
+                    raise OSError(5, "injected child commit failure")
+                if (
+                    Path(dst) == response_path
+                    and failed_commit
+                    and not failed_rollback
+                ):
+                    failed_rollback = True
+                    raise OSError(5, "injected response rollback failure")
+                return real_replace(src, dst)
+
+            with mock.patch.object(
+                wc_runtime.os, "replace", side_effect=_fail_commit_and_rollback
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "durable rollback remains pending"
+                ):
+                    c._register_codex_thread("A", "thread-1")
+
+            self.assertEqual(
+                json.loads(response_path.read_text(encoding="utf-8"))["session_id"],
+                "thread-1",
+            )
+            self.assertEqual(
+                json.loads(child_response_path.read_text(encoding="utf-8"))["session_id"],
+                "A",
+            )
+            self.assertEqual(
+                len(list(orchestration_dir.glob(
+                    ".json_transactions/*/journal.json"
+                ))), 1
+            )
+            self.assertTrue(
+                list(orchestration_dir.glob(".json_transactions/*/0.old")),
+                "failed rollback must preserve the recovery backup",
+            )
+
+            self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+
+            self.assertEqual(
+                json.loads(response_path.read_text(encoding="utf-8")),
+                provisional_response,
+            )
+            self.assertEqual(
+                json.loads(child_response_path.read_text(encoding="utf-8")),
+                provisional_response,
+            )
+            self.assertFalse(
+                list(orchestration_dir.glob(".json_transactions/*/journal.json"))
+            )
+
+    def test_codex_thread_recovery_removes_prejournal_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            tx_dir = (
+                orchestration_dir
+                / ".json_transactions"
+                / "0123456789abcdef0123456789abcdef"
+            )
+            tx_dir.mkdir(parents=True)
+            (tx_dir / "0.new").write_text("staged", encoding="utf-8")
+
+            self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+
+            self.assertFalse(tx_dir.exists())
+
+    def test_codex_thread_recovery_rejects_invalid_journal_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            tx_dir = (
+                orchestration_dir
+                / ".json_transactions"
+                / "0123456789abcdef0123456789abcdef"
+            )
+            tx_dir.mkdir(parents=True)
+            protected = orchestration_dir / "orchestration_meta.json"
+            wc_runtime._write_json(protected, {"status": "running"})
+            wc_runtime._write_json(tx_dir / "journal.json", {
+                "version": 999,
+                "kind": "codex_thread_registration",
+                "agent_run_id": "A",
+                "old_exists": [False, False, False],
+                "old_sha256": [None, None, None],
+            })
+
+            with self.assertRaisesRegex(
+                RuntimeError, "invalid json transaction journal"
+            ):
+                self._c(
+                    repo_root=repo, orchestration_id="o", backend="codex",
+                    agent_model="gpt-5.6-codex")
+
+            self.assertEqual(
+                json.loads(protected.read_text(encoding="utf-8")),
+                {"status": "running"},
+            )
+            self.assertTrue((tx_dir / "journal.json").exists())
+
+    def test_codex_raw_jsonl_stream_is_retained(self) -> None:
+        # `stdout` keeps only the final agent_message, so the event log is
+        # unrecoverable from any other artifact unless it is carried out here.
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}\n')
+        proc = self._codex_stream_result(stream)
+        self.assertEqual(proc.stdout, "{}")
+        self.assertEqual(proc.raw_stdout, stream)
+        self.assertEqual(proc.returncode, 0)
+
+    def test_codex_resume_mode_comes_from_the_caller_not_argv(self) -> None:
+        # Under mandatory bwrap the argv passed here is the WRAPPER command line —
+        # bind paths and the leaf prompt are both in it — so a `"resume" in argv`
+        # scan is satisfiable by leaf-controlled text.
+        stream = '{"type":"thread.started","thread_id":"t-1"}\n'
+        self.assertIsNone(self._codex_stream_result(stream).resume_mode)
+        self.assertEqual(
+            self._codex_stream_result(stream, resume=True).resume_mode, "in_place")
+
+    def test_codex_failed_turn_with_no_document_normalizes_to_a_nonzero_exit(self) -> None:
+        """A documentless `turn.failed` must take the ordinary leaf-death path.
+
+        Every downstream consumer of a leaf death — infra classification, the
+        `--wait-usage-reset` plan, run_substep's transient retry, and run_phase's
+        fail_closed transport branch — keys on `returncode != 0`. Left at exit 0, a
+        usage limit reported this way would be treated as a repairable content defect
+        and burn the whole bundle-repair budget re-prompting a throttled API.
+        """
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"turn.failed","error":{"message":"usage limit reached"}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("usage limit reached", proc.stderr)
+
+    def test_codex_turn_failed_is_not_masked_by_a_mid_turn_message(self) -> None:
+        """`turn.failed` is TERMINAL, so a preceding `agent_message` cannot absolve it.
+
+        Codex emits `agent_message` items per message, so a turn that narrates ("Let me
+        read the spec…") and then fails is ordinary. Keying the normalization on
+        "no document" alone would accept that narration as the answer and drop the
+        failure — a usage limit reported this way would burn the whole repair budget.
+        """
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message",'
+                  '"text":"Let me start by reading the spec."}}\n'
+                  '{"type":"turn.failed","error":{"message":"usage limit reached"}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn("reading the spec", proc.stdout)
+        self.assertIn("usage limit reached", proc.stderr)
+        # The classifier must now be reachable for this result.
+        self.assertEqual(
+            (wc._classify_leaf_infra_error(proc.stderr, proc.stdout) or ("", ""))[0],
+            "llm_usage_limit")
+
+    def test_codex_recovered_error_event_does_not_discard_the_document(self) -> None:
+        # `error` is NOT guaranteed terminal in the JSONL stream. A turn that reported
+        # one and then produced a valid final message must keep both its document and
+        # its exit code — otherwise a recovered turn is thrown away as a leaf death.
+        stream = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                  '{"type":"error","message":"transient upstream hiccup"}\n'
+                  '{"type":"item.completed","item":{"type":"agent_message","text":"{\\"a\\":1}"}}\n')
+        proc = self._codex_stream_result(stream, returncode=0)
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, '{"a":1}')
+        # The diagnostic itself is still preserved for the operator.
+        self.assertIn("transient upstream hiccup", proc.stderr)
+
+    def test_leaf_output_persists_despite_a_lone_surrogate(self) -> None:
+        """Persisting leaf output must never fail on leaf-controlled text.
+
+        On the codex path `stdout` comes through `json.loads`, which turns an escaped
+        `\\ud800` into a real lone surrogate that utf-8 cannot encode. This runs right
+        after spawn_leaf with no enclosing try, so a raw UnicodeEncodeError would escape
+        as a conductor_error: the child is never finalized and the repair loop that
+        exists to handle such a reply never runs.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-codex")
+            proc = wc.ProcResult(0, '{"a":"\ud800"}', "boom \ud800",
+                                 raw_stdout='{"text":"\ud800"}\n')
+            c._persist_leaf_output("A", proc)
+            dialogs = (Path(tmp) / "workspace" / "orchestrations" / "o"
+                       / "agents" / "A" / "dialogs")
+            for name in ("leaf.stdout.log", "leaf.stderr.log", "leaf.stdout.jsonl"):
+                self.assertTrue((dialogs / name).is_file(), name)
+                self.assertIn("ud800", (dialogs / name).read_text(encoding="utf-8"))
+
+    def test_leaf_output_removes_a_stale_jsonl_from_a_prior_run(self) -> None:
+        # `escalate`'s diagnostician reuses one fixed (arid, prefix), so a leftover
+        # `.jsonl` would sit next to freshly overwritten `.log` files and read as this
+        # run's event stream. Skipping the write when absent is not enough.
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-codex")
+            dialogs = (Path(tmp) / "workspace" / "orchestrations" / "o"
+                       / "agents" / "A" / "dialogs")
+            c._persist_leaf_output("A", wc.ProcResult(0, "x", "", raw_stdout='{"a":1}\n'))
+            self.assertTrue((dialogs / "leaf.stdout.jsonl").is_file())
+            c._persist_leaf_output("A", wc.ProcResult(0, "y", ""))
+            self.assertFalse((dialogs / "leaf.stdout.jsonl").exists())
 
     def test_nonzero_leaf_exit_fails_substep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5690,10 +6230,27 @@ class LeafSpawnTest(unittest.TestCase):
                 # dedicated coverage elsewhere).
                 captured.clear()
                 from unittest.mock import patch
+                class _FakePopen:
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        import io
+                        captured["argv"] = argv
+                        self.stdout = io.StringIO('{"type":"thread.started","thread_id":"t"}\n')
+                        self.stderr = io.StringIO("")
+                    def wait(self):  # type: ignore[no-untyped-def]
+                        return 0
+                    def terminate(self):  # type: ignore[no-untyped-def]
+                        return None
                 with patch("tools.hooks.codex_feature.codex_hooks_feature_enabled",
-                           return_value=(True, "hooks=true")):
-                    self._c(repo_root=repo, backend="codex", env={}).spawn_leaf(
+                           return_value=(True, "hooks=true")), patch.object(wc.subprocess, "Popen", _FakePopen):
+                    c_codex = self._c(repo_root=repo, backend="codex", env={})
+                    c_codex._register_codex_thread = lambda *args: None  # type: ignore[method-assign]
+                    c_codex.spawn_leaf(
                         "P", {"HOME": "/h"}, child_arid="A")
+                    # The read-only diagnostician has no child ARID / launch
+                    # record. It still needs the Codex JSONL transport, but must
+                    # not write a session-index row for the diagnostic thread.
+                    profile = json.loads((prof_dir / "A.json").read_text(encoding="utf-8"))
+                    c_codex.spawn_leaf("P", {"HOME": "/h"}, profile=profile)
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
                 # profile missing → fail closed (never launch unconfined)
@@ -7224,16 +7781,14 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertFalse(c._pure_leaf_substep(refs, "generate", "static"))
             self.assertFalse(c._pure_leaf_substep(refs, "compile", "verify"))
 
-    def test_codex_m3c_is_agentic_residual(self) -> None:
-        # (b) codex + M3c: no pure producer (codex fail-closes in leaf_command), so the node runs
-        # the shared agentic leaf loop as a recorded residual.
+    def test_codex_m3c_uses_sandboxed_structured_pure_leaf(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
             WriteRunnerTest._write_consumer_ir(self, repo, refs, infra=1)
             c = self._conductor(repo, "codex")
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "generate"))
-            self.assertFalse(c._pure_leaf_substep(refs, "generate", "verify"))
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
+            self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
 
     def test_claude_non_m3c_is_agentic_residual(self) -> None:
         # (c) claude but non-M3c (0 or 2 infra deps): no bundle representation for the runner, so

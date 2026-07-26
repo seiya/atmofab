@@ -1,6 +1,6 @@
 # bwrap leaf-sandboxing verification runbook (live re-verification)
 
-Procedure to verify the leaf bwrap sandbox under a real `claude -p` run. bwrap leaf
+Procedure to verify the leaf bwrap sandbox under a real `claude -p` or `codex exec --json` run. bwrap leaf
 sandboxing is **unconditionally mandatory** (Linux + user-namespaces only); there is no
 opt-out. Use this runbook to re-verify the sandbox end-to-end after a change to the
 profile builder, the leaf-launch path, or the build toolchain.
@@ -31,6 +31,9 @@ profile builder, the leaf-launch path, or the build toolchain.
    affordance that makes the preflight probe *assume* bwrap is available (so unit/
    integration tests can drive the enforced launch path without bwrap installed). On a
    real host it would only mask a missing sandbox — the run must verify bwrap for real.
+5. For Codex, set `CODEX_HOME` to the writable Codex state directory when a non-default
+   location is required. `METDSL_HOME` is a deprecated compatibility alias. The two variables
+   must resolve to the same path when both are set.
 
 ## 1. Run one node end-to-end under the sandbox
 
@@ -62,6 +65,41 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 
 `python3 tools/audit_orchestration.py <orchestration_id>` summarizes per-run cost and
 status for a quick read.
+
+## Codex session and hook criteria
+
+For a Codex run, confirm that every leaf launch has a distinct `thread.started` event before a
+tool request, and that `session_run_index.json`, `launches/<agent_run_id>.response.json`, and the
+terminal `agent_run.json` record that thread ID as `agent_session_id`. A missing or conflicting
+thread ID is a launch failure. `codex exec resume <thread_id>` continues the recorded thread in
+place; it is not a Claude-style fork.
+
+For an M3c node, Codex pure Generate uses `codex exec --json --output-schema` with the
+CLI read-only sandbox and the outer read-only bwrap profile. The host validates and writes the
+returned bundle/verdict, so the leaf has no repository write authority. Its recorded isolation
+level is `sandboxed_structured_approximation`; it is not equivalent to Claude
+`closed_tool_free` isolation.
+
+`codex exec` and `codex exec resume` do **not** accept the same options: `resume` has no
+`--sandbox`. A pure repair turn therefore re-pins the read-only policy with
+`--config sandbox_mode="read-only"` rather than inheriting it from the resumed thread. Confirm this
+on a live run: every pure repair attempt must reach a `thread.started`, not exit at argv
+parsing. The `codex_exec_resume` preflight check probes `exec resume --help` for exactly the
+option set the resume argv emits (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`); probing `exec --help`
+alone would certify a command the CLI rejects.
+
+The whole JSONL event stream of each Codex leaf is kept at
+`agents/<arid>/dialogs/leaf.stdout.jsonl`. `leaf.stdout.log` holds only the extracted final
+`agent_message`, so the `.jsonl` file is the sole record of what the leaf actually did and is
+where a failed Codex leaf is diagnosed.
+
+For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
+It contains only a SHA-256-verified copy of this repository's `.codex/hooks.json`; the original
+home contributes only `auth.json` as a read-only bwrap bind. Its `config.toml` marks the repository
+project `untrusted`, preventing the project hook layer from being loaded a second time. Therefore
+`--dangerously-bypass-hook-trust` applies only to that verified user-level hook source, never to
+ambient user or plugin hooks. The same isolated home is reused by `codex exec resume` for the
+orchestration's thread state.
 
 ## 3. If it fails
 

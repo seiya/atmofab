@@ -55,12 +55,12 @@ DEFAULT_LLM_COMMANDS = {
     "claude": "claude",
 }
 # Default orchestration-agent model recorded on the orchestration agent_runs row
-# for the claude backend, as an UNPINNED alias (e.g. "opus") read from the
+# for the Claude backend, as an UNPINNED alias (e.g. "opus") read from the
 # operator's settings — never a pinned version, which would go stale as versions
-# update. Operators on a different model override it with --agent-model. The codex
-# model id is not knowable to this entrypoint, so it is left to repair-agent-runs
-# sibling backfill. The exact version each leaf actually ran is resolved post-run
-# from its transcript by the conductor (resolve_claude_model_from_transcript).
+# update. Operators on a different Claude model override it with --agent-model.
+# Codex is intentionally excluded: its fresh and resume workflows require an
+# explicit model slug, which the conductor pins in every `codex exec --model`
+# launch and records as host-side provenance.
 def _default_claude_agent_model() -> str:
     from tools.orchestration_runtime import resolve_claude_model_alias
     return resolve_claude_model_alias()
@@ -808,6 +808,7 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
     - llm                              ← preflight.json#backend
     - llm_command                      ← preflight.json#probe_command
     - until_phase / mode               ← launches/orchestration.start.prompt.txt
+    - agent_model                      ← orchestration_meta.json#invocation
     - closure_id / closure_target_spec_ref / closure_until_phase
                                        ← orchestration_meta.json#invocation
     Missing/unparseable values are returned as None for the caller to validate. The
@@ -836,6 +837,7 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
         "llm_command": _clean(preflight.get("probe_command")),
         "until_phase": prompt_params.get("until_phase"),
         "mode": prompt_params.get("mode"),
+        "agent_model": _clean(invocation.get("agent_model")),
         "closure_id": _clean(invocation.get("closure_id")),
         "closure_target_spec_ref": _clean(invocation.get("closure_target_spec_ref")),
         "closure_until_phase": _clean(invocation.get("closure_until_phase")),
@@ -971,8 +973,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "the operator's configured claude alias (e.g. 'opus') only for the claude "
             "backend running the unmodified default command; with a custom --llm-command "
             "(which may launch a different model) it is omitted unless given here. When "
-            "omitted, repair-agent-runs backfills it from sibling rows on resume. Prefer "
-            "an unpinned alias over a pinned version so it does not go stale."
+            "omitted, repair-agent-runs backfills it from sibling rows on resume. Codex "
+            "requires an explicit non-'codex' model slug on a fresh run; a resume recovers "
+            "the recorded invocation.agent_model unless this option overrides it. Prefer an "
+            "unpinned alias over a pinned version so it does not go stale."
         ),
     )
     parser.add_argument(
@@ -1304,6 +1308,12 @@ def _run_main(argv: list[str] | None = None) -> int:
             until_phase_in = until_phase_arg or recovered.get("until_phase")
         llm_in = args.llm or recovered.get("llm")
         mode_in = args.mode or recovered.get("mode")
+        # A model slug belongs to its backend.  Do not pass (for example) a
+        # recovered Claude model to a Codex resume after --llm switches the
+        # backend; Codex then requires the operator to provide its own slug.
+        agent_model_in = args.agent_model
+        if not agent_model_in and llm_in == recovered.get("llm"):
+            agent_model_in = recovered.get("agent_model")
         # Carry the recovered values; the reuse decision happens in the try block
         # below, keyed on whether the *effective* spec/backend actually changed
         # (not merely whether the arg was passed) — passing the same value
@@ -1366,6 +1376,12 @@ def _run_main(argv: list[str] | None = None) -> int:
         until_phase_in = args.until_phase
         llm_in = args.llm or DEFAULT_LLM
         mode_in = args.mode or DEFAULT_WORKFLOW_MODE
+        agent_model_in = args.agent_model
+
+    # Resume restores the model that the original Codex invocation pinned; an
+    # explicit flag is the sole override.  Make every downstream init/launch
+    # consumer use this effective value rather than the raw argparse field.
+    args.agent_model = agent_model_in
 
     try:
         workflow_mode = _normalize_workflow_mode(mode_in)
@@ -1382,6 +1398,16 @@ def _run_main(argv: list[str] | None = None) -> int:
         if llm not in ("claude", "codex"):
             raise ValueError(
                 f"conductor orchestration supports --llm claude|codex, not {llm!r}"
+            )
+        if llm == "codex" and (
+            not isinstance(agent_model_in, str)
+            or not agent_model_in.strip()
+            or agent_model_in.strip().lower() == "codex"
+        ):
+            raise ValueError(
+                "Codex workflow execution requires --agent-model with an explicit model slug; "
+                "for --resume, the original invocation.agent_model must be present or pass "
+                "--agent-model explicitly"
             )
         # Reuse the recovered agent command unless --llm-command was given or the
         # backend actually changed; restating the same --llm must keep the command.

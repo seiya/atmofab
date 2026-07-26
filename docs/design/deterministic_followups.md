@@ -3130,7 +3130,7 @@ certified-outcome accuracy — is satisfied, and the adoption commit flips the d
 without run_workflow's stamp); `_build_invocation_record` takes the executor as a required keyword so no call site can
 silently record a wrong provenance. Everything else is unchanged: `legacy` remains explicitly selectable until M-F
 removes it, the recorded executor stays immutable across `--resume`, an orchestration whose invocation predates the
-field still resumes as `legacy` (it was), and the `claude`+`M3c` narrowing still applies — a non-matching node runs
+field still resumes as `legacy` (it was), and the supported-backend+`M3c` narrowing still applies — a non-matching node runs
 `legacy` under the `pure` default exactly as it did under `--generate-executor pure`. Next step: M-F (legacy-path
 removal), plus the filed residuals (the `controlled_spec` interim inline's removal trigger, the runner-driven checks
 ABI, `compile.generate` authoring variance).
@@ -3148,7 +3148,7 @@ is *migration-scope* removal only — the broad hook / preflight / contract-doc 
   `generate_executor_immutable_on_resume` conflict check.
 - `_build_invocation_record`'s `generate_executor` keyword — the record now hardcodes `"pure"` as provenance.
 - `_pure_leaf_substep`'s `generate_executor == "pure"` guard: dispatch is now decided by node SHAPE alone
-  (`backend == "claude"` ∧ the two generate substeps ∧ the `M3c` makefile/runner shape).
+  (`backend in {claude,codex}` ∧ the two generate substeps ∧ the `M3c` makefile/runner shape).
 
 **Fail-close semantics.** Legacy execution cannot be resumed onto. A resume of an orchestration whose recorded
 `invocation.generate_executor` is not exactly `"pure"` — a `legacy` record, the field absent (a pre-adoption run), or
@@ -3165,13 +3165,13 @@ than kept with `choices=("pure",)`. A cold run that still passes `--generate-exe
 resume path, where a legacy-recorded orchestration is the actual hazard.
 
 **What was retained as a recorded residual (deletion would be wrong).** The migration scope removed the *executor
-choice*, not the *agentic leaf loop*. A node the pure producer cannot express — a `codex` backend, or a node whose
-runner/Makefile are not host-rendered (harness self-test, c/cpp/mixed, a physics node with no infra dep) — runs the
+choice*, not the *agentic leaf loop*. A node the pure producer cannot express — a node whose runner/Makefile are not
+host-rendered (harness self-test, c/cpp/mixed, a physics node with no infra dep) — runs the
 shared agentic leaf loop as before. Its invocation still stamps `generate_executor=pure` (a provenance stamp, since the
 leaf-mode is decided by node shape, not the executor), so it is NOT rejected on resume. Also retained: `_write_makefile`
 (the live Makefile author for Model B dependency closures and non-`M3c` leaves), the verify-meta warm-resume loop,
-`leaf_command(pure=True)`'s `codex` fail-close (defense-in-depth), the two `Generate` SKILLs (`skills/workflow-generate-
-generate|verify/`, consumed by the residual agentic leaves), and `audit_orchestration.py`'s
+Codex's structured pure approximation (`--output-schema` plus the read-only sandbox), the two `Generate` SKILLs
+(`skills/workflow-generate-generate|verify/`, consumed by the residual agentic leaves), and `audit_orchestration.py`'s
 `_KNOWN_GENERATE_EXECUTORS=("legacy","pure")` (so historical `legacy` records stay readable — the audit reports the
 recorded value, it does not validate it).
 
