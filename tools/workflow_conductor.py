@@ -2322,7 +2322,7 @@ class Conductor:
 
         Resolved BEFORE building the launch request (not after) so the slim-vs-full prompt
         choice, what `record_launch` persists, and what `spawn_leaf` actually sends all stay
-        consistent. Warm resume is ALWAYS active for a `reuse` repair (claude only): resume the
+        consistent. Warm resume is ALWAYS active for a `reuse` repair (Claude and Codex): resume the
         producer leaf's session so the repair inherits its context (and design intent) instead
         of cold-starting. The warm/cold choice is therefore driven by the failure
         classification's `repair_strategy`: deterministic-gate findings (lint/static/
@@ -2406,6 +2406,28 @@ class Conductor:
                     return value.strip()
         return None
 
+    def _codex_session_home_generation(self, session_id: str | None) -> int | None:
+        """Return the isolated-home generation that owns a Codex thread.
+
+        A thread is resumable only inside the CODEX_HOME generation in which it
+        was created.  This value is carried to record-launch as a transaction
+        precondition; a /tmp rotation there turns the pending launch cold before
+        any child bookkeeping is created.
+        """
+        if self.backend != "codex" or not isinstance(session_id, str) or not session_id.strip():
+            return None
+        from tools.orchestration_runtime import _read_session_run_index
+        index = _read_session_run_index(self.repo_root, self.orchestration_id)
+        for entry in index.get("entries", []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("agent_session_id") != session_id.strip():
+                continue
+            generation = entry.get("codex_home_generation")
+            if isinstance(generation, int) and generation > 0:
+                return generation
+        return None
+
     def leaf_command(
         self,
         prompt_text: str,
@@ -2420,7 +2442,7 @@ class Conductor:
 
         For the claude backend, `session_id` pins the leaf's Claude Code session id
         to its `agent_run_id` (so the per-arid transcript is addressable and a later
-        repair can `--resume` it). `resume_session_id` (claude only) resumes a prior
+        repair can `--resume` it). `resume_session_id` resumes a prior
         leaf's session for context inheritance on a minor-fix `repair_strategy=reuse`,
         forked into the new session so the prior transcript is not mutated. Guards key
         on the active_child marker (= the new arid), not the session, so the resumed
@@ -2767,20 +2789,24 @@ class Conductor:
     def _oid_args(self) -> list[str]:
         return ["--repo-root", ".", "--orchestration-id", self.orchestration_id]
 
-    def record_launch(self, child_arid: str, request: dict[str, Any]) -> dict[str, Any]:
+    def record_launch(self, child_arid: str, request: dict[str, Any], *,
+                      expected_codex_home_generation: int | None = None) -> dict[str, Any]:
         response = {
             "agent_run_id": child_arid,
             "agent_session_id": child_arid,
             "started_at": _iso_now(),
             "backend": self.backend,
         }
-        return self.runtime([
+        argv = [
             "record-launch", *self._oid_args(),
             "--parent-agent-run-id", self.orchestration_agent_run_id,
             "--child-agent-run-id", child_arid,
             "--request-json", json.dumps(request),
             "--response-json", json.dumps(response),
-        ])
+        ]
+        if expected_codex_home_generation is not None:
+            argv += ["--expected-codex-home-generation", str(expected_codex_home_generation)]
+        return self.runtime(argv)
 
     def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
@@ -3703,6 +3729,7 @@ clean:
                 time.time(), 1)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
+        cold_repair_target: str | None = None
         prior_document: str | None = None
         last_excerpt: str | None = None
         # An OUTER cross-phase reopen (run_phase routed a terminal bundle failure to
@@ -3741,11 +3768,12 @@ clean:
             # False if that session has since been GC'd, in which case the repair renders as a
             # cold fallback (prior_document + re-inlined context) but keeps the reuse repair shape.
             repair_payload: dict[str, str] | None = None
-            if resume_session_id is not None:
+            repair_target = resume_session_id or cold_repair_target
+            if repair_target is not None:
                 repair_payload = {
                     "issue_severity": "major",
                     "repair_strategy": "reuse",
-                    "repair_target_agent_run_id": resume_session_id,
+                    "repair_target_agent_run_id": repair_target,
                     "repair_reason": "pure_bundle_repair",
                 }
                 if last_excerpt:
@@ -3780,7 +3808,20 @@ clean:
             )
             if repair_payload is not None and not warm and prior_document:
                 request["prior_document"] = prior_document
-            rec = self.record_launch(child_arid, request)
+            expected_generation = (
+                self._codex_session_home_generation(resume_session_id) if warm else None)
+            rec = (self.record_launch(
+                child_arid, request, expected_codex_home_generation=expected_generation)
+                   if expected_generation is not None else self.record_launch(child_arid, request))
+            if rec.get("codex_home_generation_mismatch"):
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "", reason="codex_home_generation_rotated")
+                # Keep the semantic repair carrier while dropping only the
+                # unusable transport session.  The next request is a full cold
+                # reuse repair, including findings and prior_document.
+                cold_repair_target = resume_session_id
+                resume_session_id = None
+                continue
             launched_at = time.time()
             proc = self.spawn_leaf(
                 rec["launch_prompt_text"], self._child_env(child_arid),
@@ -4024,6 +4065,7 @@ clean:
                                       infra_error, launched_at, len(per_attempt))
             # Set up the next (repair) turn: resume this attempt's session.
             resume_session_id = self._session_id_for_child(child_arid)
+            cold_repair_target = None
             attempt += 1
 
     # --- Z2 pure-leaf verify reviewer (M-D) ------------------------------------
@@ -4130,6 +4172,7 @@ clean:
         pure_context = self._build_pure_verify_context(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
+        cold_repair_target: str | None = None
         prior_document: str | None = None
         last_excerpt: str | None = None
         attempt = 0
@@ -4139,11 +4182,12 @@ clean:
             warm = (resume_session_id is not None
                     and self._pure_session_resumable(resume_session_id))
             repair_payload: dict[str, str] | None = None
-            if resume_session_id is not None:
+            repair_target = resume_session_id or cold_repair_target
+            if repair_target is not None:
                 repair_payload = {
                     "issue_severity": "major",
                     "repair_strategy": "reuse",
-                    "repair_target_agent_run_id": resume_session_id,
+                    "repair_target_agent_run_id": repair_target,
                     "repair_reason": "pure_verdict_repair",
                 }
                 if last_excerpt:
@@ -4168,7 +4212,17 @@ clean:
             )
             if repair_payload is not None and not warm and prior_document:
                 request["prior_document"] = prior_document
-            rec = self.record_launch(child_arid, request)
+            expected_generation = (
+                self._codex_session_home_generation(resume_session_id) if warm else None)
+            rec = (self.record_launch(
+                child_arid, request, expected_codex_home_generation=expected_generation)
+                   if expected_generation is not None else self.record_launch(child_arid, request))
+            if rec.get("codex_home_generation_mismatch"):
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "", reason="codex_home_generation_rotated")
+                cold_repair_target = resume_session_id
+                resume_session_id = None
+                continue
             launched_at = time.time()
             proc = self.spawn_leaf(
                 rec["launch_prompt_text"], self._child_env(child_arid),
@@ -4402,6 +4456,7 @@ clean:
             # Set up the next (repair) turn: resume this attempt's OWN reviewer session (persona
             # separation — never an external/producer arid).
             resume_session_id = self._session_id_for_child(child_arid)
+            cold_repair_target = None
             attempt += 1
 
     def write_step_result(self, node_key: str, step: str, executor_arid: str,
@@ -4829,10 +4884,10 @@ clean:
         # transcript (the leaf's session id == child_arid, pinned via --session-id at
         # launch). This is the runtime-resolved ground truth that replaces the unpinned
         # alias carried in the launch request — record_agent_run only setdefaults the
-        # alias, so a value set here wins. Claude only; a codex leaf's transcript lives
-        # outside ~/.claude, so it keeps the launch-request alias. If unresolvable
-        # (no transcript yet, or a leaf that crashed before any assistant message),
-        # we leave agent_model absent and let record_agent_run backfill the alias.
+        # alias, so a value set here wins. Codex resolves its effective model from
+        # the correlated SessionStart hook below because JSONL does not guarantee it.
+        # If unresolvable (for example, a leaf that crashed before SessionStart), we
+        # leave agent_model absent and let record_agent_run backfill the request alias.
         if agent_model_override and str(agent_model_override).strip():
             # Z2 pure leaf: the model the leaf ran under comes from the CLI result envelope
             # (`--output-format json`), NOT the session transcript (~/.claude is not read on the
@@ -6327,7 +6382,7 @@ clean:
         # Memoized per orchestration (no-op after the first); spawn_leaf also calls it as a
         # safety net for the record-launch-less diagnostician leaf.
         self._ensure_codex_feature_cache()
-        # Z2 pure-function producer (M-C): `generate.generate` on a claude M3c node under
+        # Z2 pure-function producer (M-C): `generate.generate` on an M3c node under
         # executor=pure runs as a host-mediated pure function with its OWN spawn/validate/
         # repair/finalize/write loop (empty write authority; the host writes the bundle
         # artifacts after the child window closes). It does not share the generic leaf loop
@@ -6354,6 +6409,8 @@ clean:
         # deterministic-gate reopens — lint/static/compile_static — which carry one; a warm reuse
         # without findings, e.g. a cross-phase code repair, still re-sends the full prompt).
         warm_resume = resume_session_id is not None
+        expected_codex_home_generation = (
+            self._codex_session_home_generation(resume_session_id) if warm_resume else None)
         # R5: resolve a certified sibling exemplar for the authoring leaf only (generate.generate),
         # and NOT on a warm-resume slim repair (the resumed leaf already has it). build_launch_request
         # attaches it solely for generate.generate; other substeps ignore the value.
@@ -6397,7 +6454,22 @@ clean:
                 exemplar=exemplar,
                 warm_resume=warm_resume,
             )
-            rec = self.record_launch(child_arid, request)
+            rec = (self.record_launch(
+                child_arid, request,
+                expected_codex_home_generation=expected_codex_home_generation)
+                   if expected_codex_home_generation is not None
+                   else self.record_launch(child_arid, request))
+            if rec.get("codex_home_generation_mismatch"):
+                # The isolated /tmp HOME vanished after resume selection.  The
+                # runtime deliberately returned before creating launch state, so
+                # retry this same substep as a full cold launch against the new
+                # home rather than issuing `codex exec resume` to an empty one.
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "", reason="codex_home_generation_rotated")
+                resume_session_id = None
+                warm_resume = False
+                expected_codex_home_generation = None
+                continue
             # Capture the launch instant so a producer substep only passes on outputs
             # (re)written during this child window, not stale files from a prior attempt.
             # Re-taken per attempt: a half-written artifact left by the leaf that died is older

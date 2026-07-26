@@ -16306,6 +16306,7 @@ def record_launch(
     request_payload: dict[str, Any],
     response_payload: dict[str, Any],
     relation_type: str = "launch",
+    expected_codex_home_generation: int | None = None,
 ) -> dict[str, Any]:
     if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
         raise ValueError("record-launch requires non-empty parent_agent_run_id")
@@ -16347,6 +16348,28 @@ def record_launch(
         else ""
     )
     backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
+
+    # A Codex warm-resume target belongs to one isolated HOME generation.  Prepare
+    # the home at the beginning of the launch transaction and reject a stale
+    # expectation *before* writing a capability, launch artifacts, or an active
+    # child marker.  This closes the tmpfiles TOCTOU between the conductor's
+    # resume selection and its later record-launch call: the conductor can simply
+    # rebuild a cold request when a vanished home has rotated.
+    codex_isolation: dict[str, str] | None = None
+    if expected_codex_home_generation is not None and expected_codex_home_generation <= 0:
+        raise ValueError("expected_codex_home_generation must be a positive integer")
+    if expected_codex_home_generation is not None:
+        if backend_token != "codex":
+            raise ValueError("expected_codex_home_generation is valid only for the Codex backend")
+        codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+        actual_generation = int(codex_isolation["generation"])
+        if (expected_codex_home_generation is not None
+                and expected_codex_home_generation != actual_generation):
+            return {
+                "codex_home_generation_mismatch": True,
+                "expected_codex_home_generation": expected_codex_home_generation,
+                "codex_home_generation": actual_generation,
+            }
 
     # The Claude backend enforces sequential child launch via the active file.
     if backend_token == "claude":
@@ -16817,9 +16840,12 @@ def record_launch(
             out_refs["allowed_output_manifest_ref"] = manifest_ref
         try:
             _resp_backend = response_payload.get("backend")
-            codex_isolation: dict[str, str] | None = None
             if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
-                codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+                # Prepared before any launch-side durable mutations above.  Do not
+                # re-prepare here: doing so would reopen the generation race that
+                # the expected-generation transaction check closes.
+                if codex_isolation is None:
+                    codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
                 response_payload["codex_workflow_home"] = codex_isolation["home"]
                 response_payload["codex_home_generation"] = int(codex_isolation["generation"])
                 response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
@@ -19737,6 +19763,10 @@ def _project_terse_result(command: str, result: Any) -> Any:
     fields = _TERSE_RESULT_FIELDS.get(command)
     if fields is None or not isinstance(result, dict):
         return result
+    # A stale Codex HOME generation is not a completed launch: return its
+    # transaction sentinel intact so the conductor can rebuild the request cold.
+    if command == "record-launch" and result.get("codex_home_generation_mismatch"):
+        return result
     projected: dict[str, Any] = {key: result[key] for key in fields if key in result}
     for key in _TERSE_ALWAYS_KEEP:
         if key not in projected and result.get(key):
@@ -19893,6 +19923,11 @@ def main(argv: list[str] | None = None) -> int:
     launch_parser.add_argument("--response-json", required=True, type=_json_arg,
                                help=_RECORD_LAUNCH_RESPONSE_HELP)
     launch_parser.add_argument("--relation-type", default="launch")
+    launch_parser.add_argument(
+        "--expected-codex-home-generation", type=int,
+        help=("For a Codex warm resume, require this isolated CODEX_HOME generation. "
+              "A rotated home returns a cold-fallback sentinel before recording a launch."),
+    )
 
     orch_read_parser = subparsers.add_parser("orchestration-read")
     orch_read_parser.add_argument("--repo-root", required=True)
@@ -20432,6 +20467,7 @@ def main(argv: list[str] | None = None) -> int:
                 request_payload=args.request_json,
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
+                expected_codex_home_generation=args.expected_codex_home_generation,
             )
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)

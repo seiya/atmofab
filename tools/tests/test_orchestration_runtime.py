@@ -406,6 +406,44 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(meta["codex_workflow_home_rotated_from"], first["home"])
             self.assertEqual(meta["codex_workflow_home_generation"], 2)
 
+    def test_record_launch_rejects_stale_codex_home_generation_before_launch_state(self) -> None:
+        """A rotation after resume selection returns a cold-fallback sentinel.
+
+        This must happen before capability/launch artifacts are written, otherwise
+        the conductor cannot safely discard the warm request and rebuild it cold.
+        """
+        from tools.orchestration_runtime import record_launch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            with patch(
+                "tools.orchestration_runtime._require_preflight_launchable",
+                return_value={"backend": "codex"},
+            ), patch(
+                "tools.orchestration_runtime._prepare_codex_workflow_home",
+                return_value={"generation": "2"},
+            ):
+                result = record_launch(
+                    repo_root, "orch_generation_race",
+                    parent_agent_run_id="parent", child_agent_run_id="child",
+                    request_payload={}, response_payload={},
+                    expected_codex_home_generation=1,
+                )
+            self.assertTrue(result["codex_home_generation_mismatch"])
+            self.assertEqual(result["codex_home_generation"], 2)
+            self.assertFalse((repo_root / "workspace" / "orchestrations" /
+                              "orch_generation_race" / "launches").exists())
+
+    def test_terse_record_launch_preserves_codex_generation_mismatch(self) -> None:
+        """The conductor must see the sentinel rather than an empty terse response."""
+        result = _project_terse_result("record-launch", {
+            "codex_home_generation_mismatch": True,
+            "expected_codex_home_generation": 1,
+            "codex_home_generation": 2,
+        })
+        self.assertEqual(result["expected_codex_home_generation"], 1)
+        self.assertEqual(result["codex_home_generation"], 2)
+
     def test_effective_pass_substep_run_ids_uses_violation_file_without_nameerror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
