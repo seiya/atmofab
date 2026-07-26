@@ -751,7 +751,7 @@ class RunWorkflowTests(unittest.TestCase):
             idx = init_calls[0].index("--agent-model")
             self.assertEqual(init_calls[0][idx + 1], "claude-sonnet-4-6")
 
-    def test_fresh_codex_run_omits_agent_model_default(self) -> None:
+    def test_fresh_codex_run_requires_explicit_agent_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
@@ -759,9 +759,41 @@ class RunWorkflowTests(unittest.TestCase):
                 ["spec/problem/test.md", "compile", "--llm", "codex",
                  "--repo-root", str(repo_root), "--no-run-conductor"]
             )
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "invalid_startup_input")
+            self.assertIn("--agent-model", out["detail"])
+            self.assertEqual(calls, [])
+
+    def test_fresh_codex_run_records_explicit_agent_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["spec/problem/test.md", "compile", "--llm", "codex",
+                 "--agent-model", "gpt-5.3-codex", "--repo-root", str(repo_root),
+                 "--no-run-conductor"]
+            )
             self.assertEqual(code, 0, out)
-            init_calls = [c for c in calls if c and c[0] == "init"]
-            self.assertNotIn("--agent-model", init_calls[0])
+            init_call = next(c for c in calls if c and c[0] == "init")
+            idx = init_call.index("--agent-model")
+            self.assertEqual(init_call[idx + 1], "gpt-5.3-codex")
+
+    def test_resume_codex_restores_recorded_agent_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            self._seed_resumable_orchestration(
+                repo_root, "orch_20260101T000000Z_aaaaaaaa",
+                spec_ref="spec/problem/test.md", until_phase="Build", mode="dev", backend="codex",
+                invocation={"agent_model": "gpt-5.3-codex"},
+            )
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
+            )
+            self.assertEqual(code, 0, out)
+            init_call = next(c for c in calls if c and c[0] == "init")
+            idx = init_call.index("--agent-model")
+            self.assertEqual(init_call[idx + 1], "gpt-5.3-codex")
 
     def test_overridden_claude_command_omits_opus_default(self) -> None:
         """A custom --llm-command may launch a non-Opus model, so the Opus default
@@ -806,6 +838,7 @@ class RunWorkflowTests(unittest.TestCase):
                 self._seed_resumable_orchestration(
                     repo_root, oid, spec_ref="spec/problem/test.md",
                     until_phase=phase, mode="dev", backend="codex", started_at=started,
+                    invocation={"agent_model": "gpt-5.3-codex"},
                 )
             code, out, _ = self._run_main_with_fake_runtime(
                 ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
@@ -996,7 +1029,8 @@ class RunWorkflowTests(unittest.TestCase):
                 probe_command="/opt/wrappers/claude-wrapper",
             )
             code, out, _ = self._run_main_with_fake_runtime(
-                ["--resume", "--llm", "codex", "--repo-root", str(repo_root), "--no-run-conductor"]
+                ["--resume", "--llm", "codex", "--agent-model", "gpt-5.3-codex",
+                 "--repo-root", str(repo_root), "--no-run-conductor"]
             )
             self.assertEqual(code, 0, out)
             self.assertEqual(out["llm"], "codex")

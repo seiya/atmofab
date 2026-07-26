@@ -2467,6 +2467,53 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertIn("read manifest not found", body.get("reason", ""))
             self.assertIn("Ensure record-launch generated the manifest", body.get("reason", ""))
 
+    def test_codex_pure_bash_blocks_readonly_repository_command(self) -> None:
+        """A pure Codex leaf must not bypass its empty read manifest via `cat`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_pure_shell_001"
+            run_id = "substep_run_pure_001"
+            session_id = "thread_pure_001"
+            orch_root = repo_root / "workspace" / "orchestrations" / orch
+            cap_dir = orch_root / "capabilities"
+            cap_dir.mkdir(parents=True, exist_ok=True)
+            (cap_dir / f"{run_id}.json").write_text(
+                json.dumps({"mode": "pure_readonly", "write_roots": []}),
+                encoding="utf-8",
+            )
+            (orch_root / "agent_runs.jsonl").write_text(
+                json.dumps({
+                    "agent_run_id": run_id,
+                    "agent_backend": "codex",
+                    "agent_session_id": session_id,
+                }) + "\n",
+                encoding="utf-8",
+            )
+            payload = {
+                "orchestration_id": orch,
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "session_id": session_id,
+                "tool_input": {"command": "cat workspace/pipelines/prior/source_meta.json"},
+            }
+            out = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                clear=False,
+            ):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "--backend", "codex", "--event", "PreToolUse",
+                            "--input-json", json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 2)
+            body = json.loads(out.getvalue().strip())
+            self.assertEqual(body.get("decision"), "block")
+            self.assertIn("may not invoke Bash or Shell", body.get("reason", ""))
+
 
 class GetAgentRoleFromCapabilityTests(unittest.TestCase):
     """`_get_agent_role_from_capability` resolution including orchestration fallback."""

@@ -837,6 +837,26 @@ def _get_agent_role_from_capability(
     return None
 
 
+def _is_pure_readonly_capability(
+    repo_root: Path, orchestration_id: str, agent_run_id: str
+) -> bool:
+    """Whether this run is a host-mediated pure leaf.
+
+    Codex's pure transport has a read-only sandbox, not Claude's absence of
+    tools.  Shell access must therefore be denied explicitly rather than
+    relying on the output/write policy to make a read-only command harmless.
+    """
+    cap_path = (
+        repo_root / "workspace" / "orchestrations" / orchestration_id
+        / "capabilities" / f"{agent_run_id}.json"
+    )
+    try:
+        doc = json.loads(cap_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(doc, dict) and str(doc.get("mode") or "").strip() == "pure_readonly"
+
+
 def _hint_for_file_tool(tool_name: str) -> str:
     return READ_HINT if tool_name == "Read" else WRITE_HINT
 
@@ -1025,13 +1045,36 @@ def _evaluate_pre_command_file_access_policy(
             )
         return write_decision
 
-    # step 3: Bash read/write guard
-    if tool_name == "Bash":
+    # step 3: Bash/Shell read/write guard
+    if tool_name in {"Bash", "bash", "Shell", "shell"}:
         common_decision = evaluate_common_policy(decoded)
         if common_decision.action == HookDecisionAction.BLOCK:
             return common_decision
         if workflow_mode != "1":
             return common_decision
+        # Resolve before the read-only fast path.  A Codex pure leaf can run
+        # `cat` in its read-only sandbox; unlike the Read tool, that command
+        # would otherwise bypass the empty read manifest.  Pure leaves receive
+        # all authorized context in the prompt, so every shell spelling is
+        # forbidden rather than merely denied when it happens to write.
+        resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+            backend=backend,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            session_id=decoded.session_id,
+            agent_session_id=decoded.agent_session_id,
+            tool_name=tool_name,
+        )
+        if resolution_error is not None:
+            return resolution_error
+        if resolved_run_id and _is_pure_readonly_capability(
+            repo_root, orchestration_id, resolved_run_id
+        ):
+            return HookDecision(
+                action=HookDecisionAction.BLOCK,
+                reason="pure-function leaves may not invoke Bash or Shell; use only the host-inlined context",
+                continue_processing=False,
+            )
         write_targets = _detect_bash_write_targets(decoded.command)
         if not write_targets:
             # Purely read-only command: if it is a provably-safe composition,
@@ -1052,16 +1095,6 @@ def _evaluate_pre_command_file_access_policy(
                     },
                 )
             return common_decision
-        resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
-            backend=backend,
-            repo_root=repo_root,
-            orchestration_id=orchestration_id,
-            session_id=decoded.session_id,
-            agent_session_id=decoded.agent_session_id,
-            tool_name=tool_name,
-        )
-        if resolution_error is not None:
-            return resolution_error
         if resolved_run_id is None:
             return HookDecision(
                 action=HookDecisionAction.BLOCK,

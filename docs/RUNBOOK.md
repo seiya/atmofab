@@ -77,7 +77,7 @@ When running with `--llm claude` (preflight `--backend claude`):
 - Before the workflow starts, run the `preflight` that verifies the independent launchability of a `step agent` and a `substep agent`, and when it is not `pass` do not start.
 - The preflight of `backend=codex` must simultaneously satisfy `checks.hooks_enabled.pass=true` and `checks.codex_home_writable.pass=true`.
 - The `preflight` includes `sandbox_runtime=bwrap` and `sandbox_enforced=true` as required conditions.
-- The canonical entrypoint for starting the workflow is `python3 tools/run_workflow.py <spec_ref> <until_phase> [--llm <codex|claude>]`. `<until_phase>` specifies one of `compile` / `generate` / `build` / `validate`.
+- The canonical entrypoint for starting the workflow is `python3 tools/run_workflow.py <spec_ref> <until_phase> [--llm <codex|claude>]`. `<until_phase>` specifies one of `compile` / `generate` / `build` / `validate`. A Codex run additionally requires `--agent-model <explicit-model-slug>`; the generic `codex` alias is rejected so each leaf has authoritative model provenance.
 - The `Build` step, which has no standard `substep`, runs by launching a `step agent` independently.
 - Each phase of `Compile` / `Generate` / `Validate` runs with the `orchestration agent` launching each `substep`'s `substep agent` independently.
 - The actual processing of each `step` / `substep` must not be proxied by a script.
@@ -183,6 +183,7 @@ The canonical path to resume a workflow that failed midway, from the failure poi
 
 ```bash
 # resume the most recent orchestration with the previous spec_ref / until_phase / llm
+# (a Codex resume also restores invocation.agent_model; pass --agent-model only to override it)
 python3 tools/run_workflow.py --resume
 
 # to resume a specific orchestration
