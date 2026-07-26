@@ -14777,10 +14777,10 @@ _CODEX_REQUIRED_HOOK_EVENTS = {
 _CODEX_HOOK_MATCHER_COVERAGE = {
     "SessionStart": {"anything"},
     "UserPromptSubmit": {"anything"},
-    "PreToolUse": {"Bash", "shell", "Write", "write", "Edit", "edit", "Read", "read",
+    "PreToolUse": {"Bash", "bash", "Shell", "shell", "Write", "write", "Edit", "edit", "Read", "read",
                    "apply_patch", "ApplyPatch"},
-    "PermissionRequest": {"Bash", "shell", "apply_patch", "ApplyPatch"},
-    "PostToolUse": {"Bash", "shell", "apply_patch", "ApplyPatch"},
+    "PermissionRequest": {"Bash", "bash", "Shell", "shell", "apply_patch", "ApplyPatch"},
+    "PostToolUse": {"Bash", "bash", "Shell", "shell", "apply_patch", "ApplyPatch"},
     "Stop": {"anything"},
 }
 def _canonical_codex_hook_command(event: str) -> str:

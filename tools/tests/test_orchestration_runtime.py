@@ -1428,6 +1428,24 @@ shell_tool                       stable             true
         self.assertFalse(result["pass"])
         self.assertIn("PreToolUse", result["detail"])
 
+    def test_codex_project_hook_probe_requires_every_shell_alias(self) -> None:
+        """A validated policy hook must cover current Bash/Shell spellings."""
+        from tools.orchestration_runtime import _probe_codex_project_hooks
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".codex").mkdir()
+            source = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            # Keep only the legacy names in every shell-tool matcher.  A config
+            # like this used to pass while `bash` and `Shell` skipped policy hooks.
+            mutated = source.read_text(encoding="utf-8").replace(
+                "Bash|bash|Shell|shell", "Bash|shell"
+            )
+            (repo / ".codex" / "hooks.json").write_text(mutated, encoding="utf-8")
+            result = _probe_codex_project_hooks(repo)
+        self.assertFalse(result["pass"])
+        self.assertIn("PreToolUse", result["detail"])
+
     def test_codex_project_hook_probe_rejects_wrong_event_wiring(self) -> None:
         from tools.orchestration_runtime import _probe_codex_project_hooks
 
