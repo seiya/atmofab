@@ -9592,7 +9592,8 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             "codex_version_available", "codex_features_list_available", "hooks_enabled",
             "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
             "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-            "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+            "codex_exec_pure_isolation_flags", "codex_exec_resume",
+            "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
         }
         available = {str(item.get("name")): item.get("pass") for item in checks if isinstance(item, dict)}
         if available.get("hooks_enabled") is None and available.get("codex_hooks_enabled") is True:
@@ -9709,7 +9710,8 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 "codex_version_available", "codex_features_list_available", "hooks_enabled",
                 "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
                 "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-                "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
+                "codex_exec_pure_isolation_flags", "codex_exec_resume",
+                "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
             }
             missing = sorted(name for name in required if check_values.get(name) is not True)
             if missing:
@@ -15131,8 +15133,23 @@ def _probe_codex_backend(
             "detail": exec_help_detail,
         },
         {
+            "name": "codex_exec_pure_isolation_flags",
+            "pass": (
+                exec_help_proc.returncode == 0
+                and "--sandbox" in exec_help_text
+                and "--ignore-rules" in exec_help_text
+            ),
+            "detail": exec_help_detail,
+        },
+        {
             "name": "codex_exec_resume",
-            "pass": resume_help_proc.returncode == 0,
+            "pass": (
+                resume_help_proc.returncode == 0
+                and all(
+                    flag in ((resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or ""))
+                    for flag in ("--model", "--dangerously-bypass-hook-trust", "--json", "--output-schema")
+                )
+            ),
             "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
                        or f"exit={resume_help_proc.returncode}"),
         },
@@ -15778,7 +15795,8 @@ def probe_execution_platform(
             _pass_values_by_check_name(checks).get(name) is True
             for name in (
                 "codex_version_available", "codex_features_list_available",
-                "codex_exec_json_streaming", "codex_exec_output_schema", "codex_exec_resume",
+                "codex_exec_json_streaming", "codex_exec_output_schema",
+                "codex_exec_pure_isolation_flags", "codex_exec_resume",
                 "codex_project_hook_trust_bypass",
             )
         )

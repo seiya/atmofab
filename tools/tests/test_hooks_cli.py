@@ -1067,8 +1067,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             repo_root_path = Path(tmp)
             payload = {
                 "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
+                "tool_name": "WebSearch",
+                "tool_input": {"query": "workflow status"},
             }
             out = io.StringIO()
             with redirect_stdout(out):
@@ -1197,8 +1197,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             repo_root_path = Path(tmp)
             payload = {
                 "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
+                "tool_name": "WebSearch",
+                "tool_input": {"query": "workflow status"},
             }
             with patch.dict(
                 os.environ,
@@ -1224,8 +1224,8 @@ class ClaudeHookCliTests(unittest.TestCase):
             repo_root_path = Path(tmp)
             payload = {
                 "repo_root": str(repo_root_path),
-                "tool_name": "Bash",
-                "tool_input": {"command": "echo hi"},
+                "tool_name": "WebSearch",
+                "tool_input": {"query": "workflow status"},
             }
             with patch.dict(
                 os.environ,
@@ -2072,7 +2072,9 @@ class ClaudeHookCliTests(unittest.TestCase):
                         json.dumps(payload),
                     ]
                 )
-            self.assertEqual(code, 0)
+            # A Codex PreToolUse file-access event without a session mapping
+            # must fail closed; audit logging still redacts the token.
+            self.assertEqual(code, 2)
             log_path = (
                 repo_root
                 / "workspace"
@@ -2513,6 +2515,35 @@ class ClaudeHookCliTests(unittest.TestCase):
             body = json.loads(out.getvalue().strip())
             self.assertEqual(body.get("decision"), "block")
             self.assertIn("may not invoke Bash or Shell", body.get("reason", ""))
+
+    def test_codex_unmapped_bash_blocks_before_readonly_auto_approval(self) -> None:
+        """A missing Codex session index must not let `cat` bypass pure policy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = {
+                "orchestration_id": "orch_unmapped_shell_001",
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "session_id": "unknown-thread",
+                "tool_input": {"command": "cat workspace/pipelines/prior/source_meta.json"},
+            }
+            out = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"METDSL_WORKFLOW_MODE": "1", "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0"},
+                clear=False,
+            ):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        [
+                            "--backend", "codex", "--event", "PreToolUse",
+                            "--input-json", json.dumps(payload),
+                        ]
+                    )
+            self.assertEqual(code, 2)
+            body = json.loads(out.getvalue().strip())
+            self.assertEqual(body.get("decision"), "block")
+            self.assertIn("session-to-run mapping not found", body.get("reason", ""))
 
 
 class GetAgentRoleFromCapabilityTests(unittest.TestCase):

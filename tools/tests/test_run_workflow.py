@@ -1036,6 +1036,24 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["llm"], "codex")
             self.assertEqual(out["llm_command"], run_workflow.DEFAULT_LLM_COMMANDS["codex"])
 
+    def test_resume_backend_override_does_not_reuse_prior_backend_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            self._seed_resumable_orchestration(
+                repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
+                until_phase="Build", mode="dev", backend="claude",
+                invocation={"agent_model": "claude-opus-4-8"},
+            )
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["--resume", "--llm", "codex", "--repo-root", str(repo_root),
+                 "--no-run-conductor"]
+            )
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "invalid_startup_input")
+            self.assertIn("--agent-model", out["detail"])
+            self.assertEqual(calls, [])
+
     def test_resume_cli_overrides_recovered_until_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

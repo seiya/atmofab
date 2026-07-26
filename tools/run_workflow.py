@@ -1308,7 +1308,12 @@ def _run_main(argv: list[str] | None = None) -> int:
             until_phase_in = until_phase_arg or recovered.get("until_phase")
         llm_in = args.llm or recovered.get("llm")
         mode_in = args.mode or recovered.get("mode")
-        agent_model_in = args.agent_model or recovered.get("agent_model")
+        # A model slug belongs to its backend.  Do not pass (for example) a
+        # recovered Claude model to a Codex resume after --llm switches the
+        # backend; Codex then requires the operator to provide its own slug.
+        agent_model_in = args.agent_model
+        if not agent_model_in and llm_in == recovered.get("llm"):
+            agent_model_in = recovered.get("agent_model")
         # Carry the recovered values; the reuse decision happens in the try block
         # below, keyed on whether the *effective* spec/backend actually changed
         # (not merely whether the arg was passed) — passing the same value

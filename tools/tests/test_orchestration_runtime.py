@@ -275,6 +275,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             {"name": "codex_features_list_available", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
             {"name": "codex_exec_output_schema", "pass": True},
+            {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
@@ -516,10 +517,15 @@ shell_tool                       stable             true
                 )
             if args[1:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(
-                    0, stdout="--json --output-schema --dangerously-bypass-hook-trust"
+                    0, stdout=(
+                        "--json --output-schema --sandbox --ignore-rules "
+                        "--dangerously-bypass-hook-trust"
+                    )
                 )
             if args[1:] == ["exec", "resume", "--help"]:
-                return _FakeCompletedProcess(0, stdout="resume THREAD_ID")
+                return _FakeCompletedProcess(
+                    0, stdout="--model --dangerously-bypass-hook-trust --json --output-schema"
+                )
             raise AssertionError(args)
 
         result = probe_codex_cli(codex_command="codex", runner=runner)
@@ -538,10 +544,15 @@ shell_tool                       stable             true
                 )
             if args[1:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(
-                    0, stdout="--json --output-schema --dangerously-bypass-hook-trust"
+                    0, stdout=(
+                        "--json --output-schema --sandbox --ignore-rules "
+                        "--dangerously-bypass-hook-trust"
+                    )
                 )
             if args[1:] == ["exec", "resume", "--help"]:
-                return _FakeCompletedProcess(0, stdout="resume THREAD_ID")
+                return _FakeCompletedProcess(
+                    0, stdout="--model --dangerously-bypass-hook-trust --json --output-schema"
+                )
             raise AssertionError(args)
 
         result = probe_codex_cli(codex_command="codex", runner=runner)
@@ -1390,6 +1401,27 @@ shell_tool                       stable             true
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
         self.assertFalse(by_name["codex_exec_output_schema"]["pass"])
+        self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
+        self.assertFalse(by_name["codex_exec_resume"]["pass"])
+
+    def test_probe_codex_backend_rejects_resume_missing_required_flags(self) -> None:
+        from tools.orchestration_runtime import _probe_codex_backend
+
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+            if cmd[-2:] == ["features", "list"]:
+                return _FakeCompletedProcess(0, stdout="hooks available true")
+            if cmd[-2:] == ["exec", "--help"]:
+                return _FakeCompletedProcess(
+                    0, stdout="--json --output-schema --sandbox --ignore-rules "
+                )
+            if cmd[-3:] == ["exec", "resume", "--help"]:
+                return _FakeCompletedProcess(0, stdout="--model --json")
+            raise AssertionError(cmd)
+
+        checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
+        by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
 
     def test_codex_project_hook_probe_rejects_missing_policy_event(self) -> None:
@@ -12630,6 +12662,7 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "sandbox_bwrap_exec", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
             {"name": "codex_exec_output_schema", "pass": True},
+            {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},

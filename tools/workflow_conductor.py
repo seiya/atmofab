@@ -2485,7 +2485,10 @@ class Conductor:
             model = self._codex_pinned_model()
             if pure:
                 schema = self._codex_pure_schema_path(session_id)
-                pure_flags = ["--ignore-user-config", "--ignore-rules", "--sandbox", "read-only",
+                # CODEX_HOME is already an orchestration-private directory.
+                # Its config.toml marks this checkout untrusted so project-local
+                # hooks cannot join the verified user-level hook set.
+                pure_flags = ["--ignore-rules", "--sandbox", "read-only",
                               "--output-schema", str(schema)]
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,

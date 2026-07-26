@@ -443,7 +443,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertEqual(argv[:2], ["codex", "exec"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("--output-schema", argv)
-        self.assertIn("--ignore-user-config", argv)
+        self.assertNotIn("--ignore-user-config", argv)
         self.assertIn("--ignore-rules", argv)
         self.assertEqual(argv[-2:], ["--json", "PROMPT"])
 

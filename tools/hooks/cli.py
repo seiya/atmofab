@@ -1066,11 +1066,14 @@ def _evaluate_pre_command_file_access_policy(
                 agent_session_id=decoded.agent_session_id,
                 tool_name=tool_name,
             )
-            # An unmapped read-only Bash event is a pre-existing global-policy
-            # case (for example an audit-only SessionStart fixture), not proof
-            # of a pure child. Keep that behavior; mapped pure children below
-            # still fail closed before the auto-approval path.
-            if resolution_error is None and resolved_run_id and _is_pure_readonly_capability(
+            # Codex leaves can read the repository through Shell even in a
+            # read-only sandbox.  Do not allow a missing or ambiguous session
+            # mapping to bypass the pure-leaf boundary via the read-only fast
+            # path.  Non-file-access diagnostic events must be handled outside
+            # this PreToolUse policy.
+            if resolution_error is not None:
+                return resolution_error
+            if resolved_run_id and _is_pure_readonly_capability(
                 repo_root, orchestration_id, resolved_run_id
             ):
                 return HookDecision(
