@@ -2410,10 +2410,9 @@ class Conductor:
         `pure=True` (Z2) launches a HOST-MEDIATED PURE FUNCTION rather than an agentic
         session: `tools/pure_leaf.pure_leaf_flags()` disables every tool, MCP server, and
         slash command and selects the JSON result envelope, so the model returns exactly one
-        typed document and holds no write path. Claude-only by construction — a codex pure
-        leaf fails closed here (there is no migrated codex producer; the operator decision is
-        claude-only for Z2), well before spawn, so the ValueError names the misconfiguration
-        instead of a downstream parse failure."""
+        typed document and holds no write path.  Codex uses its documented structured
+        approximation: an output schema plus a read-only sandbox, while the host retains
+        semantic validation and output publication."""
         base = shlex.split(self.llm_command) if self.llm_command.strip() else [self.backend]
         if self.backend == "claude":
             # `-p` runs non-interactively; the committed .claude/settings.json supplies

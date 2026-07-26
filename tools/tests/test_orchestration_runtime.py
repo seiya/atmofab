@@ -311,6 +311,62 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def test_terminal_statuses_do_not_include_fail_closed(self) -> None:
         self.assertEqual(TERMINAL_STATUSES, {"pass", "fail", "blocked", "timeout", "cancel"})
 
+    def test_prepare_codex_home_is_private_random_and_reused_from_metadata(self) -> None:
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp) / "repo"
+            hooks_dir = repo_root / ".codex"
+            hooks_dir.mkdir(parents=True)
+            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            orch = "orch_private_codex_home"
+            meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
+            meta_path.parent.mkdir(parents=True)
+            meta_path.write_text(json.dumps({"orchestration_id": orch}), encoding="utf-8")
+            auth_home = Path(tmp) / "operator-codex"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            with patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
+                first = _prepare_codex_workflow_home(repo_root, orch)
+                second = _prepare_codex_workflow_home(repo_root, orch)
+            home = Path(first["home"])
+            self.assertEqual(first["home"], second["home"])
+            self.assertNotIn(orch, home.name, "home path must not derive from orchestration id")
+            self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+            recorded = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(recorded["codex_workflow_home"], str(home))
+
+    def test_prepare_codex_home_rejects_precreated_hook_symlink(self) -> None:
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            hooks_dir = repo_root / ".codex"
+            hooks_dir.mkdir(parents=True)
+            source_hooks = Path(__file__).resolve().parents[2] / ".codex" / "hooks.json"
+            (hooks_dir / "hooks.json").write_bytes(source_hooks.read_bytes())
+            orch = "orch_codex_symlink"
+            unsafe_home = root / "unsafe-home"
+            unsafe_home.mkdir(mode=0o700)
+            unsafe_target = root / "must-not-overwrite.json"
+            unsafe_target.write_text("preserve me", encoding="utf-8")
+            os.symlink(unsafe_target, unsafe_home / "hooks.json")
+            meta_path = repo_root / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
+            meta_path.parent.mkdir(parents=True)
+            meta_path.write_text(
+                json.dumps({"orchestration_id": orch, "codex_workflow_home": str(unsafe_home)}),
+                encoding="utf-8",
+            )
+            auth_home = root / "operator-codex"
+            auth_home.mkdir()
+            (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
+            with patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    _prepare_codex_workflow_home(repo_root, orch)
+            self.assertEqual(unsafe_target.read_text(encoding="utf-8"), "preserve me")
+
     def test_effective_pass_substep_run_ids_uses_violation_file_without_nameerror(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

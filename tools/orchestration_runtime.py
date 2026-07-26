@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14851,6 +14852,46 @@ def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
             "detail": f"validated repository hook source: {path}"}
 
 
+def _require_secure_codex_home(home: Path) -> None:
+    """Fail closed unless ``home`` is a private, non-symlinked directory."""
+    try:
+        info = home.lstat()
+    except OSError as exc:
+        raise ValueError(f"isolated Codex home is inaccessible: {home}") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"isolated Codex home must be a real directory: {home}")
+    if info.st_uid != os.getuid():
+        raise ValueError(f"isolated Codex home is not owned by this user: {home}")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        raise ValueError(f"isolated Codex home must have mode 0700: {home}")
+
+
+def _secure_codex_home_file(path: Path, data: bytes | None = None) -> None:
+    """Create or validate a private regular file without following symlinks."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(str(path), flags, 0o600)
+    except FileExistsError:
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise ValueError(f"isolated Codex file is inaccessible: {path}") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"isolated Codex file must be a regular file: {path}")
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError(f"isolated Codex file has unsafe ownership or mode: {path}")
+        if data is not None and path.read_bytes() != data:
+            raise ValueError(f"isolated Codex file differs from its verified source: {path}")
+        return
+    try:
+        if data is not None:
+            os.write(fd, data)
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
     """Create the only hook-bearing Codex home for one orchestration.
 
@@ -14868,17 +14909,33 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     source = repo_root / ".codex" / "hooks.json"
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
-    safe_oid = re.sub(r"[^A-Za-z0-9_.-]", "_", orchestration_id)
-    home = Path(tempfile.gettempdir()) / "metdsl-codex" / safe_oid
-    home.mkdir(parents=True, exist_ok=True)
-    hooks_path = home / "hooks.json"
-    hooks_path.write_bytes(data)
-    if hashlib.sha256(hooks_path.read_bytes()).hexdigest() != digest:
-        raise ValueError("isolated Codex hooks SHA-256 verification failed")
+    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    # A single random, 0700 home belongs to an orchestration.  Persist its path
+    # in host-authored metadata so warm resume reuses Codex's state without using
+    # predictable temporary names.  The metadata lock also serializes concurrent
+    # child launches that otherwise could create competing homes.
+    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
+        meta = _read_json(meta_path)
+        if not isinstance(meta, dict):
+            raise ValueError("orchestration metadata missing while preparing Codex home")
+        raw_home = meta.get("codex_workflow_home")
+        if isinstance(raw_home, str) and raw_home.strip():
+            home = Path(raw_home)
+            _require_secure_codex_home(home)
+        else:
+            home = Path(tempfile.mkdtemp(prefix="metdsl-codex-"))
+            os.chmod(home, 0o700)
+            _require_secure_codex_home(home)
+            meta["codex_workflow_home"] = str(home)
+            _write_json(meta_path, meta)
+        hooks_path = home / "hooks.json"
+        _secure_codex_home_file(hooks_path, data)
+        if hashlib.sha256(hooks_path.read_bytes()).hexdigest() != digest:
+            raise ValueError("isolated Codex hooks SHA-256 verification failed")
     # TOML basic strings use JSON escaping for these path strings.
     config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
     config_path = home / "config.toml"
-    config_path.write_text(config, encoding="utf-8")
+    _secure_codex_home_file(config_path, config.encode("utf-8"))
     raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
     origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
     auth = origin / "auth.json"
@@ -14887,7 +14944,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     auth_destination = home / "auth.json"
     # bwrap needs an existing destination for a file bind. This empty regular
     # file is hidden by the read-only source bind before Codex starts.
-    auth_destination.touch(exist_ok=True)
+    _secure_codex_home_file(auth_destination)
     return {
         "home": str(home.resolve()),
         "auth": str(auth.resolve()),
