@@ -7843,14 +7843,6 @@ def render_bwrap_command(
     for item in profile.get("runtime_ro_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--ro-bind", item.strip(), item.strip()])
-    for mapping in profile.get("runtime_ro_bind_mappings", []):
-        if not (isinstance(mapping, list) and len(mapping) == 2
-                and all(isinstance(part, str) and part.strip() for part in mapping)):
-            raise ValueError("runtime_ro_bind_mappings entries must be [source, destination]")
-        source, destination = mapping[0].strip(), mapping[1].strip()
-        if not (Path(source).is_file() and Path(destination).is_file()):
-            raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
-        cmd.extend(["--ro-bind", source, destination])
     cmd.extend(["--ro-bind", repo_root, repo_root])
     # write_root absolute paths, used to suppress an ro read-bind that would otherwise
     # make a writable artifact read-only.
@@ -7881,6 +7873,17 @@ def render_bwrap_command(
     for item in profile.get("runtime_rw_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--bind", item.strip(), item.strip()])
+    # Apply file mappings AFTER their parent writable homes.  In particular,
+    # the isolated CODEX_HOME is rw for session state, while its auth.json is
+    # a read-only mount of the operator's original credential file.
+    for mapping in profile.get("runtime_ro_bind_mappings", []):
+        if not (isinstance(mapping, list) and len(mapping) == 2
+                and all(isinstance(part, str) and part.strip() for part in mapping)):
+            raise ValueError("runtime_ro_bind_mappings entries must be [source, destination]")
+        source, destination = mapping[0].strip(), mapping[1].strip()
+        if not (Path(source).is_file() and Path(destination).is_file()):
+            raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
+        cmd.extend(["--ro-bind", source, destination])
     for rel in profile.get("write_roots", []):
         if not isinstance(rel, str) or not rel.strip():
             continue
