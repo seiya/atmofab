@@ -3167,6 +3167,322 @@ def _write_json(path: Path, payload: Any) -> None:
     _atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
+_JSON_TRANSACTIONS_DIRNAME = ".json_transactions"
+_JSON_TRANSACTION_VERSION = 1
+_JSON_TRANSACTION_KIND = "codex_thread_registration"
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes used by the crash-recovery protocol."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    fd = os.open(str(path), flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _codex_registration_transaction_targets(
+    transaction_dir: Path,
+    agent_run_id: str,
+) -> tuple[Path, Path, Path]:
+    if _AGENT_RUN_ID_RE.fullmatch(agent_run_id) is None:
+        raise RuntimeError(
+            f"invalid agent_run_id in Codex registration transaction: {agent_run_id!r}"
+        )
+    return (
+        transaction_dir / "launches" / f"{agent_run_id}.response.json",
+        transaction_dir / "agents" / agent_run_id / "dialogs" / "child.response.json",
+        transaction_dir / "session_run_index.json",
+    )
+
+
+def _read_session_run_index_from_path(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"entries": []}
+    try:
+        payload = _read_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {"entries": []}
+    if not isinstance(payload, dict):
+        return {"entries": []}
+    if not isinstance(payload.get("entries"), list):
+        payload["entries"] = []
+    return payload
+
+
+@contextlib.contextmanager
+def _json_transaction_exclusive_lock(transaction_dir: Path) -> Iterator[None]:
+    """Serialize every session-index writer with registration/recovery transactions."""
+    lock_path = transaction_dir / "session_run_index.json.lock"
+    if _fcntl is None:  # pragma: no cover — non-POSIX
+        _fcntl_warn_once("Codex registration transaction")
+        yield
+        return
+    with _fcntl_exclusive_lock(lock_path):
+        yield
+
+
+def _remove_transaction_tree(tx_dir: Path, tx_root: Path) -> None:
+    shutil.rmtree(tx_dir)
+    _fsync_directory(tx_root)
+
+
+def _recover_json_transactions_unlocked(transaction_dir: Path) -> None:
+    """Roll back journaled commits and remove pre-journal staging directories."""
+    tx_root = transaction_dir / _JSON_TRANSACTIONS_DIRNAME
+    if not tx_root.is_dir():
+        return
+    if tx_root.is_symlink():
+        raise RuntimeError(f"JSON transaction root must not be a symlink: {tx_root}")
+    for tx_dir in sorted(tx_root.iterdir()):
+        if (
+            not tx_dir.is_dir()
+            or tx_dir.is_symlink()
+            or re.fullmatch(r"[0-9a-f]{32}", tx_dir.name) is None
+        ):
+            raise RuntimeError(f"invalid JSON transaction staging entry: {tx_dir}")
+        journal_path = tx_dir / "journal.json"
+        if not journal_path.exists():
+            _remove_transaction_tree(tx_dir, tx_root)
+            continue
+        if journal_path.is_symlink():
+            raise RuntimeError(
+                f"JSON transaction journal must not be a symlink: {journal_path}"
+            )
+        try:
+            journal = _read_json(journal_path)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"cannot recover malformed json transaction journal {journal_path}: {exc}"
+            ) from exc
+        if (
+            not isinstance(journal, dict)
+            or set(journal) != {
+                "version", "kind", "agent_run_id", "old_exists", "old_sha256"
+            }
+            or journal.get("version") != _JSON_TRANSACTION_VERSION
+            or journal.get("kind") != _JSON_TRANSACTION_KIND
+        ):
+            raise RuntimeError(
+                f"cannot recover invalid json transaction journal {journal_path}"
+            )
+        agent_run_id = journal.get("agent_run_id")
+        old_exists = journal.get("old_exists")
+        old_sha256 = journal.get("old_sha256")
+        if (
+            not isinstance(agent_run_id, str)
+            or not isinstance(old_exists, list)
+            or not isinstance(old_sha256, list)
+            or len(old_exists) != 3
+            or len(old_sha256) != 3
+            or any(type(value) is not bool for value in old_exists)
+            or any(
+                (exists and (
+                    not isinstance(digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                ))
+                or (not exists and digest is not None)
+                for exists, digest in zip(old_exists, old_sha256)
+            )
+        ):
+            raise RuntimeError(
+                f"cannot recover invalid json transaction metadata {journal_path}"
+            )
+        targets = _codex_registration_transaction_targets(
+            transaction_dir, agent_run_id
+        )
+        for idx in reversed(range(3)):
+            target = targets[idx]
+            old_path = tx_dir / f"{idx}.old"
+            if not old_exists[idx]:
+                target.unlink(missing_ok=True)
+                _fsync_directory(target.parent)
+                continue
+            expected_sha = old_sha256[idx]
+            if old_path.exists():
+                if not old_path.is_file() or old_path.is_symlink():
+                    raise RuntimeError(
+                        f"invalid JSON transaction backup: {old_path}"
+                    )
+                if (
+                    not isinstance(expected_sha, str)
+                    or hashlib.sha256(old_path.read_bytes()).hexdigest() != expected_sha
+                ):
+                    raise RuntimeError(
+                        f"JSON transaction backup hash mismatch: {old_path}"
+                    )
+                os.replace(str(old_path), str(target))
+                _fsync_directory(target.parent)
+                _fsync_directory(tx_dir)
+                continue
+            if (
+                not target.is_file()
+                or target.is_symlink()
+                or not isinstance(expected_sha, str)
+                or hashlib.sha256(target.read_bytes()).hexdigest() != expected_sha
+            ):
+                raise RuntimeError(
+                    f"json transaction backup missing before recovery completed: "
+                    f"{journal_path} target={target}"
+                )
+        journal_path.unlink()
+        _fsync_directory(tx_dir)
+        _remove_transaction_tree(tx_dir, tx_root)
+
+
+def _recover_json_transactions(transaction_dir: Path) -> None:
+    """Serialize restart recovery against live registration transactions."""
+    if not transaction_dir.is_dir():
+        return
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+
+
+def _read_session_run_index_consistent(
+    repo_root: Path,
+    orchestration_id: str,
+) -> dict[str, Any]:
+    """Read the index after serializing with registration and recovering journals."""
+    transaction_dir = _orchestration_root(repo_root, orchestration_id)
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+        return _read_session_run_index_from_path(
+            _session_run_index_path(repo_root, orchestration_id)
+        )
+
+
+def _write_json_transaction(
+    *,
+    transaction_dir: Path,
+    agent_run_id: str,
+    thread_id: str,
+    context_id: str | None,
+    agent_role: str,
+    status: str,
+) -> None:
+    """Durably commit JSON files together, with rollback after errors or restart.
+
+    Every new payload and prior target is staged before a durable journal is written.
+    Rename failures roll back immediately without allocating more space.  If the process
+    dies between renames, the surviving journal and backups are recovered on the next
+    transaction or when a conductor is reconstructed.
+    """
+    expected_targets = _codex_registration_transaction_targets(
+        transaction_dir, agent_run_id
+    )
+    tx_root = transaction_dir / _JSON_TRANSACTIONS_DIRNAME
+
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+        response = _read_json(expected_targets[0])
+        if not isinstance(response, dict):
+            raise RuntimeError("Codex launch response must be a JSON object")
+        recorded = response.get("agent_session_id")
+        if (
+            isinstance(recorded, str)
+            and recorded.strip() not in {agent_run_id, thread_id}
+        ):
+            raise RuntimeError(
+                "codex emitted a thread_id conflicting with the launch record"
+            )
+        response["agent_session_id"] = thread_id
+        response["session_id"] = thread_id
+        raw_generation = response.get("codex_home_generation")
+        generation = (
+            raw_generation
+            if isinstance(raw_generation, int) and raw_generation > 0
+            else None
+        )
+        transaction_updates = {
+            expected_targets[0]: response,
+            expected_targets[1]: response,
+        }
+        session_index = _read_session_run_index_from_path(expected_targets[2])
+        _upsert_session_run_index_entry(
+            session_index,
+            agent_run_id=agent_run_id,
+            agent_session_id=thread_id,
+            context_id=context_id,
+            agent_role=agent_role,
+            status=status,
+            codex_home_generation=generation,
+        )
+        transaction_updates[expected_targets[2]] = session_index
+        targets = list(expected_targets)
+        tx_root.mkdir(parents=True, exist_ok=True)
+        if tx_root.is_symlink():
+            raise RuntimeError(f"JSON transaction root must not be a symlink: {tx_root}")
+        _fsync_directory(transaction_dir)
+        tx_dir = tx_root / uuid.uuid4().hex
+        tx_dir.mkdir()
+        _fsync_directory(tx_root)
+        journal_path = tx_dir / "journal.json"
+        journal_written = False
+        try:
+            old_exists: list[bool] = []
+            old_sha256: list[str | None] = []
+            for idx, target in enumerate(targets):
+                new_path = tx_dir / f"{idx}.new"
+                new_body = json.dumps(
+                    transaction_updates[target], ensure_ascii=False, indent=2
+                ).encode("utf-8") + b"\n"
+                new_path.write_bytes(new_body)
+                with new_path.open("rb") as fh:
+                    os.fsync(fh.fileno())
+                exists = target.exists()
+                old_exists.append(exists)
+                if exists:
+                    old_path = tx_dir / f"{idx}.old"
+                    old_body = target.read_bytes()
+                    old_path.write_bytes(old_body)
+                    with old_path.open("rb") as fh:
+                        os.fsync(fh.fileno())
+                    old_sha256.append(hashlib.sha256(old_body).hexdigest())
+                else:
+                    old_sha256.append(None)
+            _fsync_directory(tx_dir)
+            journal_written = True
+            _atomic_write_text(
+                journal_path,
+                json.dumps({
+                    "version": _JSON_TRANSACTION_VERSION,
+                    "kind": _JSON_TRANSACTION_KIND,
+                    "agent_run_id": agent_run_id,
+                    "old_exists": old_exists,
+                    "old_sha256": old_sha256,
+                }, ensure_ascii=False, indent=2) + "\n",
+            )
+            # `_atomic_write_text` deliberately treats fsync as best-effort for
+            # ordinary artifacts.  The rollback journal is different: target
+            # renames must not start unless its contents are durably persisted.
+            with journal_path.open("rb") as journal_fh:
+                os.fsync(journal_fh.fileno())
+            _fsync_directory(tx_dir)
+
+            for idx, target in enumerate(targets):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(str(tx_dir / f"{idx}.new"), str(target))
+                _fsync_directory(target.parent)
+                _fsync_directory(tx_dir)
+        except BaseException as exc:
+            if journal_written and journal_path.exists():
+                try:
+                    _recover_json_transactions_unlocked(transaction_dir)
+                except BaseException as rollback_exc:
+                    raise RuntimeError(
+                        f"json transaction failed and durable rollback remains pending "
+                        f"in {journal_path}: {rollback_exc}"
+                    ) from exc
+            elif tx_dir.exists():
+                _remove_transaction_tree(tx_dir, tx_root)
+            raise
+        else:
+            journal_path.unlink()
+            _fsync_directory(tx_dir)
+            _remove_transaction_tree(tx_dir, tx_root)
+
+
 def _write_text(path: Path, text: str) -> None:
     body = text if text.endswith("\n") else f"{text}\n"
     _atomic_write_text(path, body)
@@ -3781,19 +4097,9 @@ def _session_run_index_path(repo_root: Path, orchestration_id: str) -> Path:
 
 
 def _read_session_run_index(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
-    path = _session_run_index_path(repo_root, orchestration_id)
-    if not path.is_file():
-        return {"entries": []}
-    try:
-        payload = _read_json(path)
-    except (OSError, json.JSONDecodeError):
-        return {"entries": []}
-    if not isinstance(payload, dict):
-        return {"entries": []}
-    entries = payload.get("entries")
-    if not isinstance(entries, list):
-        payload["entries"] = []
-    return payload
+    return _read_session_run_index_from_path(
+        _session_run_index_path(repo_root, orchestration_id)
+    )
 
 
 def _append_session_run_index_entry(
@@ -3807,7 +4113,33 @@ def _append_session_run_index_entry(
     status: str,
     codex_home_generation: int | None = None,
 ) -> None:
-    doc = _read_session_run_index(repo_root, orchestration_id)
+    transaction_dir = _orchestration_root(repo_root, orchestration_id)
+    with _json_transaction_exclusive_lock(transaction_dir):
+        _recover_json_transactions_unlocked(transaction_dir)
+        doc = _read_session_run_index(repo_root, orchestration_id)
+        _upsert_session_run_index_entry(
+            doc,
+            agent_run_id=agent_run_id,
+            agent_session_id=agent_session_id,
+            context_id=context_id,
+            agent_role=agent_role,
+            status=status,
+            codex_home_generation=codex_home_generation,
+        )
+        _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
+
+
+def _upsert_session_run_index_entry(
+    doc: dict[str, Any],
+    *,
+    agent_run_id: str,
+    agent_session_id: str,
+    context_id: str | None,
+    agent_role: str,
+    status: str,
+    codex_home_generation: int | None = None,
+) -> None:
+    """Update ``doc`` with one normalized session/run binding without writing it."""
     entries_obj = doc.get("entries")
     entries = entries_obj if isinstance(entries_obj, list) else []
     normalized_run_id = agent_run_id.strip()
@@ -3828,7 +4160,6 @@ def _append_session_run_index_entry(
         if codex_home_generation is not None:
             item["codex_home_generation"] = codex_home_generation
         item["updated_at"] = _utc_now_iso()
-        _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
         return
     entry: dict[str, Any] = {
             "agent_run_id": normalized_run_id,
@@ -3843,7 +4174,6 @@ def _append_session_run_index_entry(
         entry["codex_home_generation"] = codex_home_generation
     entries.append(entry)
     doc["entries"] = entries
-    _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
 
 
 # --- Phase 1: access policy / phase state artifact layout (Item 10) ---
@@ -8243,6 +8573,9 @@ def _should_ignore_runtime_snapshot_path(
         f"{orch_root}/capabilities/",
         f"{orch_root}/gates/",
         f"{orch_root}/hooks/",
+        # Host-only staged files and durable recovery journal for Codex's
+        # multi-file thread-identity registration transaction.
+        f"{orch_root}/{_JSON_TRANSACTIONS_DIRNAME}/",
         f"{orch_root}/launches/",
         f"{orch_root}/output_manifests/",
         f"{orch_root}/read_manifests/",
@@ -8313,6 +8646,7 @@ def _should_ignore_runtime_snapshot_path(
         f"{orch_root}/preflight.json",
         f"{orch_root}/orchestration_run_write_baseline.json",
         f"{orch_root}/session_run_index.json",
+        f"{orch_root}/session_run_index.json.lock",
     }
     return token in runtime_files
 
@@ -17355,7 +17689,7 @@ def record_timeout(
     # session_run_index status check — the index is updated to the terminal
     # status on successful record-agent-run, so any non-running status here
     # signals that another finalization path already won the race.
-    index_doc = _read_session_run_index(repo_root, orchestration_id)
+    index_doc = _read_session_run_index_consistent(repo_root, orchestration_id)
     for _entry in index_doc.get("entries", []) or []:
         if isinstance(_entry, dict) and _entry.get("agent_run_id") == arid:
             _sess_status = _entry.get("status")
@@ -17616,7 +17950,11 @@ def record_agent_run(
     # same orchestration. _validate_terminal_run_payload runs inside the
     # lock (H2 fix) because its violation path calls _cleanup_agent_tmp_root —
     # a destructive operation that two unsynchronized finalizers must not race.
-    with _runs_jsonl_exclusive_lock(repo_root, orchestration_id):
+    with (
+        _json_transaction_exclusive_lock(root),
+        _runs_jsonl_exclusive_lock(repo_root, orchestration_id),
+    ):
+        _recover_json_transactions_unlocked(root)
         # NEW-H1: caller holds the lock, so writer-active probe would
         # self-contend. Pass the flag so durable corruption is surfaced
         # rather than masked.
@@ -19234,7 +19572,7 @@ def _sync_orchestration_session_index_status(
     if orch_arid is None:
         return False
     target = status.strip().lower()
-    doc = _read_session_run_index(repo_root, orchestration_id)
+    doc = _read_session_run_index_consistent(repo_root, orchestration_id)
     entries = doc.get("entries")
     if isinstance(entries, list):
         for item in entries:

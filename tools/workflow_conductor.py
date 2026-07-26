@@ -2287,6 +2287,13 @@ class Conductor:
     # of fail-closing the run for a next-day manual `--resume`. Off keeps the prior behavior exactly.
     wait_usage_reset: bool = False
 
+    def __post_init__(self) -> None:
+        if self.backend == "codex":
+            from tools.orchestration_runtime import _recover_json_transactions
+            _recover_json_transactions(
+                self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+            )
+
     def emit(self, event: str, **fields: Any) -> None:
         """Write one JSONL info event to stdout (the conductor runs in-process
         under run_workflow.py, so these join its node-level event stream)."""
@@ -2347,7 +2354,7 @@ class Conductor:
         if self.backend == "codex":
             from tools.orchestration_runtime import (
                 _prepare_codex_workflow_home,
-                _read_session_run_index,
+                _read_session_run_index_consistent,
             )
             # Ensure the isolated home exists before accepting a recorded Codex
             # thread. If /tmp state vanished, this rotates its generation; every
@@ -2363,7 +2370,9 @@ class Conductor:
                 self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
                 return None
             generation = int(isolation["generation"])
-            index = _read_session_run_index(self.repo_root, self.orchestration_id)
+            index = _read_session_run_index_consistent(
+                self.repo_root, self.orchestration_id
+            )
             for entry in index.get("entries", []):
                 if not isinstance(entry, dict) or entry.get("agent_run_id") != target:
                     continue
@@ -2400,8 +2409,10 @@ class Conductor:
     def _session_id_for_child(self, child_arid: str) -> str | None:
         if self.backend != "codex":
             return child_arid
-        from tools.orchestration_runtime import _read_session_run_index
-        index = _read_session_run_index(self.repo_root, self.orchestration_id)
+        from tools.orchestration_runtime import _read_session_run_index_consistent
+        index = _read_session_run_index_consistent(
+            self.repo_root, self.orchestration_id
+        )
         for entry in index.get("entries", []):
             if isinstance(entry, dict) and entry.get("agent_run_id") == child_arid:
                 value = entry.get("agent_session_id")
@@ -2419,8 +2430,10 @@ class Conductor:
         """
         if self.backend != "codex" or not isinstance(session_id, str) or not session_id.strip():
             return None
-        from tools.orchestration_runtime import _read_session_run_index
-        index = _read_session_run_index(self.repo_root, self.orchestration_id)
+        from tools.orchestration_runtime import _read_session_run_index_consistent
+        index = _read_session_run_index_consistent(
+            self.repo_root, self.orchestration_id
+        )
         for entry in index.get("entries", []):
             if not isinstance(entry, dict):
                 continue
@@ -2706,28 +2719,25 @@ class Conductor:
         return ProcResult(proc.returncode, proc.stdout, proc.stderr)
 
     def _register_codex_thread(self, child_arid: str, thread_id: str) -> None:
-        """Atomically replace the provisional launch identity with Codex's thread id."""
-        from tools.orchestration_runtime import _append_session_run_index_entry, _read_json, _write_json
-        launch_dir = self.repo_root / "workspace" / "orchestrations" / self.orchestration_id / "launches"
+        """Transactionally replace the provisional Codex identity in all host records."""
+        from tools.orchestration_runtime import (
+            _read_json,
+            _write_json_transaction,
+        )
+        orchestration_dir = (
+            self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+        )
+        launch_dir = orchestration_dir / "launches"
         request = _read_json(launch_dir / f"{child_arid}.request.json") or {}
-        response_path = launch_dir / f"{child_arid}.response.json"
-        response = _read_json(response_path) or {}
-        recorded = response.get("agent_session_id")
-        if isinstance(recorded, str) and recorded.strip() not in {child_arid, thread_id}:
-            raise RuntimeError("codex emitted a thread_id conflicting with the launch record")
-        response["agent_session_id"] = thread_id
-        response["session_id"] = thread_id
-        _write_json(response_path, response)
         role = str(request.get("agent_role") or "substep").strip().lower()
         context = request.get("context_id")
-        raw_generation = response.get("codex_home_generation")
-        generation = raw_generation if isinstance(raw_generation, int) and raw_generation > 0 else None
-        _append_session_run_index_entry(
-            self.repo_root, self.orchestration_id, agent_run_id=child_arid,
-            agent_session_id=thread_id,
+        _write_json_transaction(
+            transaction_dir=orchestration_dir,
+            agent_run_id=child_arid,
+            thread_id=thread_id,
             context_id=context if isinstance(context, str) else None,
-            agent_role=role, status="running",
-            codex_home_generation=generation,
+            agent_role=role,
+            status="running",
         )
 
     def _spawn_codex_json_leaf(
@@ -2816,6 +2826,26 @@ class Conductor:
                             try:
                                 self._register_codex_thread(child_arid, thread_id)
                             except Exception as exc:  # noqa: BLE001 — see below
+                                # A failed multi-file registration is safe to route as
+                                # a transport result only after any durable rollback
+                                # journal has been recovered.  If recovery is still
+                                # impossible (persistent EIO), escape fail-closed
+                                # instead of finalizing against split identities.
+                                from tools.orchestration_runtime import (
+                                    _recover_json_transactions,
+                                )
+                                try:
+                                    _recover_json_transactions(
+                                        self.repo_root
+                                        / "workspace"
+                                        / "orchestrations"
+                                        / self.orchestration_id
+                                    )
+                                except Exception as recovery_exc:
+                                    raise RuntimeError(
+                                        "codex thread registration failed and its "
+                                        f"rollback could not be recovered: {recovery_exc}"
+                                    ) from exc
                                 # Binding the emitted thread to this child is a HOST
                                 # write (launch response + session index) and can fail
                                 # on ENOSPC or a conflicting recorded identity. Like
@@ -4960,8 +4990,10 @@ clean:
         session_id = child_arid
         context_id = child_arid
         if self.backend == "codex":
-            from tools.orchestration_runtime import _read_session_run_index
-            index = _read_session_run_index(self.repo_root, self.orchestration_id)
+            from tools.orchestration_runtime import _read_session_run_index_consistent
+            index = _read_session_run_index_consistent(
+                self.repo_root, self.orchestration_id
+            )
             for entry in index.get("entries", []):
                 if isinstance(entry, dict) and entry.get("agent_run_id") == child_arid:
                     value = entry.get("agent_session_id")

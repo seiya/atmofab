@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime
@@ -5668,8 +5669,8 @@ class LeafSpawnTest(unittest.TestCase):
     def test_codex_thread_registration_failure_is_a_transport_result(self) -> None:
         """A failed host-side identity binding must NOT escape spawn_leaf.
 
-        `_register_codex_thread` writes the launch response + session index, so it can
-        fail on ENOSPC or a conflicting recorded identity. Letting that raise would
+        `_register_codex_thread` writes both response mirrors + the session index, so it
+        can fail on ENOSPC or a conflicting recorded identity. Letting that raise would
         terminalize the whole orchestration as a generic conductor_error instead of
         routing the substep, and would leave the leaf running against an identity the
         host never recorded.
@@ -5682,6 +5683,283 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("codex thread registration failed", proc.stderr)
         self.assertIn("No space left on device", proc.stderr)
+
+    def test_codex_thread_registration_updates_both_response_mirrors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+            launch_dir.mkdir(parents=True)
+            dialogs_dir.mkdir(parents=True)
+            request = {"agent_role": "substep", "context_id": "ctx"}
+            provisional_response = {
+                "agent_session_id": "A",
+                "session_id": "A",
+                "backend": "codex",
+            }
+            (launch_dir / "A.request.json").write_text(
+                json.dumps(request), encoding="utf-8")
+            (launch_dir / "A.response.json").write_text(
+                json.dumps(provisional_response), encoding="utf-8")
+            (dialogs_dir / "child.response.json").write_text(
+                json.dumps(provisional_response), encoding="utf-8")
+
+            c = self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+            c._register_codex_thread("A", "thread-1")
+
+            launch_response = json.loads(
+                (launch_dir / "A.response.json").read_text(encoding="utf-8"))
+            child_response = json.loads(
+                (dialogs_dir / "child.response.json").read_text(encoding="utf-8"))
+            session_index = json.loads(
+                (orchestration_dir / "session_run_index.json").read_text(encoding="utf-8"))
+            self.assertEqual(child_response, launch_response)
+            self.assertEqual(launch_response["agent_session_id"], "thread-1")
+            self.assertEqual(launch_response["session_id"], "thread-1")
+            self.assertEqual(session_index["entries"][0]["agent_session_id"], "thread-1")
+
+    def test_concurrent_codex_registrations_preserve_both_session_index_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            launch_dir.mkdir(parents=True)
+            for arid in ("A", "B"):
+                dialogs_dir = (
+                    orchestration_dir / "agents" / arid / "dialogs"
+                )
+                dialogs_dir.mkdir(parents=True)
+                request = {"agent_role": "substep", "context_id": f"ctx-{arid}"}
+                response = {
+                    "agent_session_id": arid,
+                    "session_id": arid,
+                    "backend": "codex",
+                }
+                wc_runtime._write_json(
+                    launch_dir / f"{arid}.request.json", request)
+                wc_runtime._write_json(
+                    launch_dir / f"{arid}.response.json", response)
+                wc_runtime._write_json(
+                    dialogs_dir / "child.response.json", response)
+
+            barrier = threading.Barrier(2)
+            errors: list[BaseException] = []
+
+            def _register(arid: str) -> None:
+                try:
+                    c = self._c(
+                        repo_root=repo, orchestration_id="o", backend="codex",
+                        agent_model="gpt-5.6-codex")
+                    barrier.wait()
+                    c._register_codex_thread(arid, f"thread-{arid}")
+                except BaseException as exc:
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=_register, args=(arid,))
+                for arid in ("A", "B")
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            session_index = json.loads(
+                (orchestration_dir / "session_run_index.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                {
+                    item["agent_run_id"]: item["agent_session_id"]
+                    for item in session_index["entries"]
+                },
+                {"A": "thread-A", "B": "thread-B"},
+            )
+
+    def test_codex_thread_registration_rolls_back_all_records_on_commit_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+            launch_dir.mkdir(parents=True)
+            dialogs_dir.mkdir(parents=True)
+            request = {"agent_role": "substep", "context_id": "ctx"}
+            provisional_response = {
+                "agent_session_id": "A",
+                "session_id": "A",
+                "backend": "codex",
+            }
+            wc_runtime._write_json(launch_dir / "A.request.json", request)
+            wc_runtime._write_json(
+                launch_dir / "A.response.json", provisional_response)
+            wc_runtime._write_json(
+                dialogs_dir / "child.response.json", provisional_response)
+
+            c = self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+            child_response_path = dialogs_dir / "child.response.json"
+            real_replace = wc_runtime.os.replace
+            failed = False
+
+            def _fail_second_commit(src, dst):  # type: ignore[no-untyped-def]
+                nonlocal failed
+                if Path(dst) == child_response_path and not failed:
+                    failed = True
+                    raise OSError(5, "injected second mirror failure")
+                return real_replace(src, dst)
+
+            with mock.patch.object(
+                wc_runtime.os, "replace", side_effect=_fail_second_commit
+            ):
+                with self.assertRaisesRegex(OSError, "injected second mirror failure"):
+                    c._register_codex_thread("A", "thread-1")
+
+            launch_response = json.loads(
+                (launch_dir / "A.response.json").read_text(encoding="utf-8"))
+            child_response = json.loads(
+                child_response_path.read_text(encoding="utf-8"))
+            self.assertEqual(launch_response, provisional_response)
+            self.assertEqual(child_response, provisional_response)
+            self.assertFalse((orchestration_dir / "session_run_index.json").exists())
+
+    def test_codex_thread_registration_recovers_pending_rollback_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            launch_dir = orchestration_dir / "launches"
+            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+            launch_dir.mkdir(parents=True)
+            dialogs_dir.mkdir(parents=True)
+            request = {"agent_role": "substep", "context_id": "ctx"}
+            provisional_response = {
+                "agent_session_id": "A",
+                "session_id": "A",
+                "backend": "codex",
+            }
+            response_path = launch_dir / "A.response.json"
+            child_response_path = dialogs_dir / "child.response.json"
+            wc_runtime._write_json(launch_dir / "A.request.json", request)
+            wc_runtime._write_json(response_path, provisional_response)
+            wc_runtime._write_json(child_response_path, provisional_response)
+
+            c = self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+            real_replace = wc_runtime.os.replace
+            failed_commit = False
+            failed_rollback = False
+
+            def _fail_commit_and_rollback(src, dst):  # type: ignore[no-untyped-def]
+                nonlocal failed_commit, failed_rollback
+                if Path(dst) == child_response_path and not failed_commit:
+                    failed_commit = True
+                    raise OSError(5, "injected child commit failure")
+                if (
+                    Path(dst) == response_path
+                    and failed_commit
+                    and not failed_rollback
+                ):
+                    failed_rollback = True
+                    raise OSError(5, "injected response rollback failure")
+                return real_replace(src, dst)
+
+            with mock.patch.object(
+                wc_runtime.os, "replace", side_effect=_fail_commit_and_rollback
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "durable rollback remains pending"
+                ):
+                    c._register_codex_thread("A", "thread-1")
+
+            self.assertEqual(
+                json.loads(response_path.read_text(encoding="utf-8"))["session_id"],
+                "thread-1",
+            )
+            self.assertEqual(
+                json.loads(child_response_path.read_text(encoding="utf-8"))["session_id"],
+                "A",
+            )
+            self.assertEqual(
+                len(list(orchestration_dir.glob(
+                    ".json_transactions/*/journal.json"
+                ))), 1
+            )
+            self.assertTrue(
+                list(orchestration_dir.glob(".json_transactions/*/0.old")),
+                "failed rollback must preserve the recovery backup",
+            )
+
+            self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+
+            self.assertEqual(
+                json.loads(response_path.read_text(encoding="utf-8")),
+                provisional_response,
+            )
+            self.assertEqual(
+                json.loads(child_response_path.read_text(encoding="utf-8")),
+                provisional_response,
+            )
+            self.assertFalse(
+                list(orchestration_dir.glob(".json_transactions/*/journal.json"))
+            )
+
+    def test_codex_thread_recovery_removes_prejournal_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            tx_dir = (
+                orchestration_dir
+                / ".json_transactions"
+                / "0123456789abcdef0123456789abcdef"
+            )
+            tx_dir.mkdir(parents=True)
+            (tx_dir / "0.new").write_text("staged", encoding="utf-8")
+
+            self._c(
+                repo_root=repo, orchestration_id="o", backend="codex",
+                agent_model="gpt-5.6-codex")
+
+            self.assertFalse(tx_dir.exists())
+
+    def test_codex_thread_recovery_rejects_invalid_journal_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            tx_dir = (
+                orchestration_dir
+                / ".json_transactions"
+                / "0123456789abcdef0123456789abcdef"
+            )
+            tx_dir.mkdir(parents=True)
+            protected = orchestration_dir / "orchestration_meta.json"
+            wc_runtime._write_json(protected, {"status": "running"})
+            wc_runtime._write_json(tx_dir / "journal.json", {
+                "version": 999,
+                "kind": "codex_thread_registration",
+                "agent_run_id": "A",
+                "old_exists": [False, False, False],
+                "old_sha256": [None, None, None],
+            })
+
+            with self.assertRaisesRegex(
+                RuntimeError, "invalid json transaction journal"
+            ):
+                self._c(
+                    repo_root=repo, orchestration_id="o", backend="codex",
+                    agent_model="gpt-5.6-codex")
+
+            self.assertEqual(
+                json.loads(protected.read_text(encoding="utf-8")),
+                {"status": "running"},
+            )
+            self.assertTrue((tx_dir / "journal.json").exists())
 
     def test_codex_raw_jsonl_stream_is_retained(self) -> None:
         # `stdout` keeps only the final agent_message, so the event log is
