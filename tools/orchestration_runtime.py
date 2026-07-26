@@ -10,6 +10,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import stat
 import subprocess
@@ -15075,27 +15076,32 @@ def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
 
 def _probe_codex_backend(
     backend_token: str,
-    command: str,
+    command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
     """Run the codex backend probe and return (checks, features, multi_agent_enabled, agent_version)."""
-    version_proc = runner([command, "--version"], text=True, capture_output=True, check=False)
-    features_proc = runner([command, "features", "list"], text=True, capture_output=True, check=False)
+    command_argv = (
+        list(command) if not isinstance(command, str) else shlex.split(command)
+    )
+    if not command_argv:
+        raise ValueError("codex command must be non-empty")
+    version_proc = runner([*command_argv, "--version"], text=True, capture_output=True, check=False)
+    features_proc = runner([*command_argv, "features", "list"], text=True, capture_output=True, check=False)
     try:
         exec_help_proc = runner(
-            [command, "exec", "--help"], text=True, capture_output=True, check=False
+            [*command_argv, "exec", "--help"], text=True, capture_output=True, check=False
         )
     except Exception as exc:  # test runners and unavailable CLIs are capability failures
         exec_help_proc = subprocess.CompletedProcess(
-            [command, "exec", "--help"], 1, "", str(exc)
+            [*command_argv, "exec", "--help"], 1, "", str(exc)
         )
     try:
         resume_help_proc = runner(
-            [command, "exec", "resume", "--help"], text=True, capture_output=True, check=False
+            [*command_argv, "exec", "resume", "--help"], text=True, capture_output=True, check=False
         )
     except Exception as exc:  # test runners and unavailable CLIs are capability failures
         resume_help_proc = subprocess.CompletedProcess(
-            [command, "exec", "resume", "--help"], 1, "", str(exc)
+            [*command_argv, "exec", "resume", "--help"], 1, "", str(exc)
         )
     features: dict[str, bool] = {}
     features_list_available = features_proc.returncode == 0
@@ -15124,7 +15130,11 @@ def _probe_codex_backend(
         },
         {
             "name": "codex_exec_json_streaming",
-            "pass": exec_help_proc.returncode == 0 and "--json" in exec_help_text,
+            "pass": (
+                exec_help_proc.returncode == 0
+                and "--json" in exec_help_text
+                and "--model" in exec_help_text
+            ),
             "detail": exec_help_detail,
         },
         {

@@ -897,6 +897,19 @@ def _resolve_agent_run_id_for_file_tool(
                 continue_processing=False,
             )
         return orch_agent_run_id, None
+    # Codex creates its thread id inside `exec`; the first hook can run after
+    # it writes `thread.started` to stdout but before the parent drains that
+    # pipe and updates session_run_index.json.  record-launch has already
+    # created this child's capability and active marker, and the Codex process
+    # passes its inherited child identity unchanged to hooks.  Prefer that
+    # launch-scoped binding during this narrow bootstrap interval.
+    child_run_id = os.environ.get("METDSL_CHILD_AGENT_RUN_ID", "").strip()
+    if child_run_id:
+        orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
+        cap_path = orch_root / "capabilities" / f"{child_run_id}.json"
+        active_path = orch_root / "active_children" / f"{child_run_id}.txt"
+        if cap_path.is_file() and active_path.is_file():
+            return child_run_id, None
     mapped_agent_run_id, match_count = _resolve_codex_agent_run_id_from_session(
         repo_root=repo_root,
         orchestration_id=orchestration_id,

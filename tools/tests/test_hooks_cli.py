@@ -2545,6 +2545,44 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertEqual(body.get("decision"), "block")
             self.assertIn("session-to-run mapping not found", body.get("reason", ""))
 
+    def test_codex_bootstrap_child_binding_blocks_pure_shell_before_thread_index(self) -> None:
+        """The inherited child id closes the thread.started-to-hook race."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_bootstrap_shell_001"
+            run_id = "substep_run_bootstrap_001"
+            orch_root = repo_root / "workspace" / "orchestrations" / orch
+            (orch_root / "capabilities").mkdir(parents=True, exist_ok=True)
+            (orch_root / "active_children").mkdir(parents=True, exist_ok=True)
+            (orch_root / "capabilities" / f"{run_id}.json").write_text(
+                json.dumps({"mode": "pure_readonly", "write_roots": []}), encoding="utf-8"
+            )
+            (orch_root / "active_children" / f"{run_id}.txt").write_text(run_id, encoding="utf-8")
+            payload = {
+                "orchestration_id": orch,
+                "repo_root": str(repo_root),
+                "tool_name": "Bash",
+                "session_id": "thread-not-yet-indexed",
+                "tool_input": {"command": "cat workspace/pipelines/prior/source_meta.json"},
+            }
+            out = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {
+                    "METDSL_WORKFLOW_MODE": "1",
+                    "METDSL_REQUIRE_CODEX_HOOKS_FEATURE": "0",
+                    "METDSL_CHILD_AGENT_RUN_ID": run_id,
+                },
+                clear=False,
+            ):
+                with redirect_stdout(out):
+                    code = cli.main(
+                        ["--backend", "codex", "--event", "PreToolUse",
+                         "--input-json", json.dumps(payload)]
+                    )
+            self.assertEqual(code, 2)
+            self.assertIn("may not invoke Bash or Shell", json.loads(out.getvalue())["reason"])
+
 
 class GetAgentRoleFromCapabilityTests(unittest.TestCase):
     """`_get_agent_role_from_capability` resolution including orchestration fallback."""

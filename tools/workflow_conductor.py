@@ -4545,6 +4545,12 @@ clean:
     def _child_env(self, child_arid: str) -> dict[str, str]:
         env = dict(self.env)
         env["METDSL_ORCHESTRATION_ID"] = self.orchestration_id
+        # Codex assigns a thread id internally, so stdout-based discovery can
+        # race its first hook.  The hook command inherits this immutable parent
+        # process environment and uses the recorded child id to select the
+        # already-created capability until the parent replaces the provisional
+        # session-index token with the authoritative thread id.
+        env["METDSL_CHILD_AGENT_RUN_ID"] = child_arid
         env["TMPDIR"] = str(self.repo_root / "workspace" / "tmp" / child_arid)
         # Lift the claude leaf's output ceiling off the CLI default (see LEAF_MAX_OUTPUT_TOKENS:
         # thinking is billed against it, so the default truncates a hard leaf mid-think). Set

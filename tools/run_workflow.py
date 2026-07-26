@@ -55,12 +55,12 @@ DEFAULT_LLM_COMMANDS = {
     "claude": "claude",
 }
 # Default orchestration-agent model recorded on the orchestration agent_runs row
-# for the claude backend, as an UNPINNED alias (e.g. "opus") read from the
+# for the Claude backend, as an UNPINNED alias (e.g. "opus") read from the
 # operator's settings — never a pinned version, which would go stale as versions
-# update. Operators on a different model override it with --agent-model. The codex
-# model id is not knowable to this entrypoint, so it is left to repair-agent-runs
-# sibling backfill. The exact version each leaf actually ran is resolved post-run
-# from its transcript by the conductor (resolve_claude_model_from_transcript).
+# update. Operators on a different Claude model override it with --agent-model.
+# Codex is intentionally excluded: its fresh and resume workflows require an
+# explicit model slug, which the conductor pins in every `codex exec --model`
+# launch and records as host-side provenance.
 def _default_claude_agent_model() -> str:
     from tools.orchestration_runtime import resolve_claude_model_alias
     return resolve_claude_model_alias()
