@@ -14858,7 +14858,9 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     contains exactly the SHA-pinned repository hook source and a config that
     marks this checkout untrusted, preventing the project layer from loading a
     second copy.  Authentication is deliberately *not* copied: the original
-    auth.json is bound read-only by the bwrap profile.
+    auth.json is bound read-only by the bwrap profile.  The hook and config
+    files are likewise remounted read-only after the writable home bind; only
+    Codex's session/state files remain writable to a leaf.
     """
     probe = _probe_codex_project_hooks(repo_root)
     if probe.get("pass") is not True:
@@ -14875,7 +14877,8 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
         raise ValueError("isolated Codex hooks SHA-256 verification failed")
     # TOML basic strings use JSON escaping for these path strings.
     config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
-    (home / "config.toml").write_text(config, encoding="utf-8")
+    config_path = home / "config.toml"
+    config_path.write_text(config, encoding="utf-8")
     raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
     origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
     auth = origin / "auth.json"
@@ -14885,8 +14888,14 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     # bwrap needs an existing destination for a file bind. This empty regular
     # file is hidden by the read-only source bind before Codex starts.
     auth_destination.touch(exist_ok=True)
-    return {"home": str(home.resolve()), "auth": str(auth.resolve()),
-            "auth_destination": str(auth_destination.resolve()), "hooks_sha256": digest}
+    return {
+        "home": str(home.resolve()),
+        "auth": str(auth.resolve()),
+        "auth_destination": str(auth_destination.resolve()),
+        "hooks": str(hooks_path.resolve()),
+        "config": str(config_path.resolve()),
+        "hooks_sha256": digest,
+    }
 
 
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
@@ -16728,7 +16737,12 @@ def record_launch(
             if codex_isolation is not None:
                 profile_kwargs = {
                     "backend_ro_mappings": [
-                        (codex_isolation["auth"], codex_isolation["auth_destination"])
+                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
+                        # The home itself stays writable for Codex session/state
+                        # persistence, but the trust-bypassed hook source and
+                        # project-layer exclusion config must remain immutable.
+                        (codex_isolation["hooks"], codex_isolation["hooks"]),
+                        (codex_isolation["config"], codex_isolation["config"]),
                     ],
                     "backend_rw_override": [codex_isolation["home"]],
                     "env_overrides": {"CODEX_HOME": codex_isolation["home"]},

@@ -16890,6 +16890,51 @@ class BwrapProfileFilePinTests(unittest.TestCase):
             self.assertGreater(in_repo_bind_idx, repo_robind_idx,
                                "in-repo writable home must be bound AFTER the repo ro-bind")
 
+    def test_runtime_ro_file_mappings_override_writable_codex_home(self) -> None:
+        """Trust-sensitive files stay immutable even when their CODEX_HOME is writable."""
+        from tools.orchestration_runtime import render_bwrap_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_root = root / "repo"
+            repo_root.mkdir()
+            workspace_tmp = root / "workspace-tmp"
+            workspace_tmp.mkdir()
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            hooks = codex_home / "hooks.json"
+            config = codex_home / "config.toml"
+            auth = codex_home / "auth.json"
+            for path in (hooks, config, auth):
+                path.write_text("{}\n", encoding="utf-8")
+            profile = {
+                "repo_root": str(repo_root),
+                "tmp_dir": str(root / "tmp"),
+                "workspace_tmp_rw_abs": str(workspace_tmp),
+                "read_roots": [],
+                "write_roots": [],
+                "runtime_ro_bind_paths": [],
+                "runtime_rw_bind_paths": [str(codex_home)],
+                "runtime_ro_bind_mappings": [
+                    [str(hooks), str(hooks)],
+                    [str(config), str(config)],
+                    [str(auth), str(auth)],
+                ],
+            }
+            cmd = render_bwrap_command(profile=profile, command_argv=["codex"])
+            home_bind_idx = next(
+                i for i, token in enumerate(cmd)
+                if token == "--bind" and cmd[i + 1] == str(codex_home)
+            )
+            for protected in (hooks, config, auth):
+                mapping_idx = next(
+                    i for i, token in enumerate(cmd)
+                    if token == "--ro-bind" and cmd[i + 1] == str(protected)
+                )
+                self.assertGreater(
+                    mapping_idx, home_bind_idx,
+                    f"{protected.name} must be remounted read-only after CODEX_HOME")
+
     def test_backend_runtime_bind_paths_claude_home(self) -> None:
         """_backend_runtime_bind_paths(claude) must expose the claude install (ro) and
         ~/.claude{,.json} (rw) so the CLI can run + write its session transcript."""
