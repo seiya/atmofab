@@ -5496,11 +5496,11 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="claude", llm_command="mywrap --model Z")
         self.assertEqual(c.leaf_command("PROMPT"), ["mywrap", "--model", "Z", "-p", "PROMPT"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x")
-        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--json", "P"])
+        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--dangerously-bypass-hook-trust", "--json", "P"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
         self.assertEqual(self._c(backend="claude").leaf_command("P"), ["claude", "-p", "P"])
-        self.assertEqual(self._c(backend="codex").leaf_command("P"), ["codex", "exec", "--json", "P"])
+        self.assertEqual(self._c(backend="codex").leaf_command("P"), ["codex", "exec", "--dangerously-bypass-hook-trust", "--json", "P"])
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
@@ -5511,7 +5511,7 @@ class LeafSpawnTest(unittest.TestCase):
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
             self._c(backend="codex").leaf_command("P", session_id="arid-1"),
-            ["codex", "exec", "--json", "P"],
+            ["codex", "exec", "--dangerously-bypass-hook-trust", "--json", "P"],
         )
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:

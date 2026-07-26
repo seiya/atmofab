@@ -20,7 +20,7 @@ import uuid
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 # fcntl is POSIX-only. Used by Adv-24 to serialize agent_runs.jsonl
 # duplicate-check + append against concurrent finalizers. On non-POSIX
@@ -7520,6 +7520,9 @@ def build_readonly_bwrap_profile(
     agent_run_id: str,
     backend_command: str,
     backend_type: str = "",
+    backend_ro_extra: Sequence[str] = (),
+    backend_rw_override: Sequence[str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """A bwrap profile for a READ-ONLY leaf that has no capability / write_roots.
 
@@ -7543,7 +7546,12 @@ def build_readonly_bwrap_profile(
     child_env = _safe_host_env_for_child()
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
+    backend_ro.extend(str(p) for p in backend_ro_extra)
+    if backend_rw_override is not None:
+        backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
+    if env_overrides:
+        child_env.update(env_overrides)
     # The leaf's own hooks persist hook-event audit (hooks/) and the first-read-invariant
     # state (audit/<arid>.auto_reads_seen.json, which fail-closes the hook if unwritable),
     # both outside any write_root. Bind their per-orchestration dirs writable.
@@ -7579,6 +7587,9 @@ def build_bwrap_profile(
     agent_run_id: str,
     backend_command: str,
     backend_type: str = "",
+    backend_ro_extra: Sequence[str] = (),
+    backend_rw_override: Sequence[str] | None = None,
+    env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     read_manifest = _load_read_access_manifest(
         repo_root,
@@ -7664,7 +7675,12 @@ def build_bwrap_profile(
     child_env = _safe_host_env_for_child()
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
+    backend_ro.extend(str(p) for p in backend_ro_extra)
+    if backend_rw_override is not None:
+        backend_rw_desired = list(backend_rw_override)
     backend_rw = _resolve_backend_rw_binds(repo_root, backend_rw_desired)
+    if env_overrides:
+        child_env.update(env_overrides)
     # The leaf runs `run-gate` (a runtime-CLI subprocess) which records each gate result
     # under workspace/orchestrations/<orch>/gates/<arid>/<gate>.json (validate_pipeline_
     # semantics / orchestration_read / etc.). That path is outside the artifact
@@ -7967,6 +7983,11 @@ def render_bwrap_command(
     ws_abs = str(ws_path.resolve())
     cmd.extend(["--bind", ws_abs, ws_abs])
     cmd.extend(["--setenv", "TMPDIR", ws_abs])
+    profile_env = profile.get("env")
+    if isinstance(profile_env, dict):
+        codex_home = profile_env.get("CODEX_HOME")
+        if isinstance(codex_home, str) and codex_home.strip():
+            cmd.extend(["--setenv", "CODEX_HOME", codex_home.strip()])
     cmd.extend(["--bind", tmp_dir, tmp_dir])
     cmd.append("--")
     cmd.extend([str(part) for part in command_argv])
@@ -9550,7 +9571,7 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             "codex_version_available", "codex_features_list_available", "hooks_enabled",
             "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
             "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-            "codex_exec_resume", "codex_project_hooks_validated",
+            "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
         }
         available = {str(item.get("name")): item.get("pass") for item in checks if isinstance(item, dict)}
         if available.get("hooks_enabled") is None and available.get("codex_hooks_enabled") is True:
@@ -9667,7 +9688,7 @@ def _validate_preflight_payload(payload: dict[str, Any]) -> None:
                 "codex_version_available", "codex_features_list_available", "hooks_enabled",
                 "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
                 "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-                "codex_exec_resume", "codex_project_hooks_validated",
+                "codex_exec_resume", "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
             }
             missing = sorted(name for name in required if check_values.get(name) is not True)
             if missing:
@@ -14815,6 +14836,39 @@ def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
             "detail": f"validated repository hook source: {path}"}
 
 
+def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
+    """Create the only hook-bearing Codex home for one orchestration.
+
+    The home is outside the repository and has fresh state/session storage.  It
+    contains exactly the SHA-pinned repository hook source and a config that
+    marks this checkout untrusted, preventing the project layer from loading a
+    second copy.  Authentication is deliberately *not* copied: the original
+    auth.json is bound read-only by the bwrap profile.
+    """
+    probe = _probe_codex_project_hooks(repo_root)
+    if probe.get("pass") is not True:
+        raise ValueError(f"cannot prepare isolated Codex hooks: {probe.get('detail')}")
+    source = repo_root / ".codex" / "hooks.json"
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    safe_oid = re.sub(r"[^A-Za-z0-9_.-]", "_", orchestration_id)
+    home = Path(tempfile.gettempdir()) / "metdsl-codex" / safe_oid
+    home.mkdir(parents=True, exist_ok=True)
+    hooks_path = home / "hooks.json"
+    hooks_path.write_bytes(data)
+    if hashlib.sha256(hooks_path.read_bytes()).hexdigest() != digest:
+        raise ValueError("isolated Codex hooks SHA-256 verification failed")
+    # TOML basic strings use JSON escaping for these path strings.
+    config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
+    (home / "config.toml").write_text(config, encoding="utf-8")
+    raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
+    origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
+    auth = origin / "auth.json"
+    if not auth.is_file():
+        raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
+    return {"home": str(home.resolve()), "auth": str(auth.resolve()), "hooks_sha256": digest}
+
+
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
     """Preflight probe: confirm the host can sandbox a leaf (bwrap present + user
     namespaces + a dry-run exec). bwrap enforcement is mandatory (Linux+userns only), so
@@ -14960,6 +15014,12 @@ def _probe_codex_backend(
             "pass": resume_help_proc.returncode == 0,
             "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
                        or f"exit={resume_help_proc.returncode}"),
+        },
+        {
+            "name": "codex_project_hook_trust_bypass",
+            "pass": (exec_help_proc.returncode == 0
+                     and "--dangerously-bypass-hook-trust" in exec_help_text),
+            "detail": exec_help_detail,
         },
     ]
     return checks, features, multi_agent_enabled, version_proc.stdout.strip()
@@ -15598,6 +15658,7 @@ def probe_execution_platform(
             for name in (
                 "codex_version_available", "codex_features_list_available",
                 "codex_exec_json_streaming", "codex_exec_output_schema", "codex_exec_resume",
+                "codex_project_hook_trust_bypass",
             )
         )
         hooks_enabled = features.get("hooks") is True
@@ -16638,6 +16699,18 @@ def record_launch(
             out_refs["allowed_output_manifest_ref"] = manifest_ref
         try:
             _resp_backend = response_payload.get("backend")
+            codex_isolation: dict[str, str] | None = None
+            if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
+                codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+                response_payload["codex_workflow_home"] = codex_isolation["home"]
+                response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
+            profile_kwargs: dict[str, Any] = {}
+            if codex_isolation is not None:
+                profile_kwargs = {
+                    "backend_ro_extra": [codex_isolation["auth"]],
+                    "backend_rw_override": [codex_isolation["home"]],
+                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
+                }
             if is_pure:
                 # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
                 # has no tools anyway (`--safe-mode`); this is defense-in-depth so even a
@@ -16648,6 +16721,7 @@ def record_launch(
                     agent_run_id=child_agent_run_id,
                     backend_command=backend_command,
                     backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                    **profile_kwargs,
                 )
             else:
                 profile = build_bwrap_profile(
@@ -16656,6 +16730,7 @@ def record_launch(
                     agent_run_id=child_agent_run_id,
                     backend_command=backend_command,
                     backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                    **profile_kwargs,
                 )
             command_argv = [backend_command]
             rendered = render_bwrap_command(profile=profile, command_argv=command_argv)

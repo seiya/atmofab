@@ -2437,8 +2437,9 @@ class Conductor:
                 pure_flags = ["--ignore-user-config", "--ignore-rules", "--sandbox", "read-only",
                               "--output-schema", str(schema)]
             if resume_session_id:
-                return [*base, "exec", "resume", resume_session_id, *pure_flags, "--json", prompt_text]
-            return [*base, "exec", *pure_flags, "--json", prompt_text]
+                return [*base, "exec", "resume", resume_session_id,
+                        "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
+            return [*base, "exec", "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
         raise ValueError(f"unsupported backend for leaf spawn: {self.backend}")
 
     def _codex_pure_schema_path(self, child_arid: str | None) -> Path:

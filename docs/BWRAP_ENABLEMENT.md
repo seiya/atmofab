@@ -80,6 +80,14 @@ returned bundle/verdict, so the leaf has no repository write authority. Its reco
 level is `sandboxed_structured_approximation`; it is not equivalent to Claude
 `closed_tool_free` isolation.
 
+For every Codex orchestration, the host creates an isolated `CODEX_HOME` outside the repository.
+It contains only a SHA-256-verified copy of this repository's `.codex/hooks.json`; the original
+home contributes only `auth.json` as a read-only bwrap bind. Its `config.toml` marks the repository
+project `untrusted`, preventing the project hook layer from being loaded a second time. Therefore
+`--dangerously-bypass-hook-trust` applies only to that verified user-level hook source, never to
+ambient user or plugin hooks. The same isolated home is reused by `codex exec resume` for the
+orchestration's thread state.
+
 ## 3. If it fails
 
 - **Build fails with a write/`Read-only file system`/`unauthorized_write_violation`
