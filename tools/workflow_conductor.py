@@ -2428,6 +2428,16 @@ class Conductor:
                 return generation
         return None
 
+    def _codex_pinned_model(self) -> str:
+        """Return the operator-selected Codex model, never a mutable leaf claim."""
+        model = self.agent_model.strip()
+        if not model or model.lower() == "codex":
+            raise ValueError(
+                "Codex workflow leaves require an explicit --agent-model model slug; "
+                "the generic 'codex' alias cannot provide authoritative provenance"
+            )
+        return model
+
     def leaf_command(
         self,
         prompt_text: str,
@@ -2472,14 +2482,16 @@ class Conductor:
             # session identity and is registered before a later hook can authorize
             # a file operation.
             pure_flags: list[str] = []
+            model = self._codex_pinned_model()
             if pure:
                 schema = self._codex_pure_schema_path(session_id)
                 pure_flags = ["--ignore-user-config", "--ignore-rules", "--sandbox", "read-only",
                               "--output-schema", str(schema)]
             if resume_session_id:
-                return [*base, "exec", "resume", resume_session_id,
+                return [*base, "exec", "resume", "--model", model, resume_session_id,
                         "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
-            return [*base, "exec", "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
+            return [*base, "exec", "--model", model,
+                    "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
         raise ValueError(f"unsupported backend for leaf spawn: {self.backend}")
 
     def _codex_pure_schema_path(self, child_arid: str | None) -> Path:
@@ -4884,22 +4896,23 @@ clean:
         # transcript (the leaf's session id == child_arid, pinned via --session-id at
         # launch). This is the runtime-resolved ground truth that replaces the unpinned
         # alias carried in the launch request — record_agent_run only setdefaults the
-        # alias, so a value set here wins. Codex resolves its effective model from
-        # the correlated SessionStart hook below because JSONL does not guarantee it.
-        # If unresolvable (for example, a leaf that crashed before SessionStart), we
-        # leave agent_model absent and let record_agent_run backfill the request alias.
-        if agent_model_override and str(agent_model_override).strip():
+        # alias, so a value set here wins. Codex instead pins an operator-selected
+        # model into the host-authored CLI argv; JSONL and hook audit data are not
+        # trusted for model provenance because the leaf can write their log bind.
+        if self.backend == "codex":
+            # The host injects `codex exec --model <slug>` into every initial
+            # and resumed turn.  That launch configuration is the provenance
+            # source: unlike JSONL and hook audit files, the leaf cannot replace
+            # it through its writable repository binds.
+            payload["agent_model"] = self._codex_pinned_model()
+            payload["agent_model_provenance"] = "codex_launch_pinned"
+        elif agent_model_override and str(agent_model_override).strip():
             # Z2 pure leaf: the model the leaf ran under comes from the CLI result envelope
             # (`--output-format json`), NOT the session transcript (~/.claude is not read on the
             # pure path). A resolved override wins and skips the transcript lookup.
             payload["agent_model"] = str(agent_model_override).strip()
-            if self.backend == "codex":
+            if self.backend == "codex":  # pragma: no cover - codex handled above
                 payload["agent_model_provenance"] = "codex_jsonl"
-        elif self.backend == "codex":
-            hook_model = self._codex_session_start_model(session_id)
-            if hook_model:
-                payload["agent_model"] = hook_model
-                payload["agent_model_provenance"] = "codex_hook_session_start"
         elif pure:
             # Pure path with no envelope model (a provenance gap): leave agent_model ABSENT for
             # record_agent_run to backfill the launch-request alias. Crucially, do NOT fall back
@@ -4925,42 +4938,6 @@ clean:
         if (status != "pass" or not output_refs) and result_summary and result_summary.strip():
             payload["result_summary"] = result_summary.strip()
         return payload
-
-    def _codex_session_start_model(self, session_id: str) -> str | None:
-        """Return the effective model reported by Codex's SessionStart hook.
-
-        Codex JSONL standard events do not guarantee model provenance.  The
-        hook receives it with the session identity, and the conductor copies
-        the matching value only while authoring the terminal run record.
-        """
-        if not session_id.strip():
-            return None
-        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                / "hooks" / "native_hook_events.jsonl")
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return None
-        for raw in reversed(lines):
-            try:
-                event = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
-                continue
-            if event.get("backend") != "codex" or event.get("event") != "session_start":
-                continue
-            summary = event.get("payload_summary")
-            if not isinstance(summary, dict):
-                continue
-            tokens = {
-                value.strip() for key in ("session_id", "agent_session_id")
-                if isinstance((value := summary.get(key)), str) and value.strip()
-            }
-            model = summary.get("model")
-            if session_id in tokens and isinstance(model, str) and model.strip():
-                return model.strip()
-        return None
 
     # -- deterministic (non-LLM) substep execution ----------------------------
     # Build and Validate.execute are contractually non-LLM (deterministic compile /
@@ -8737,12 +8714,18 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     ids), and runs the deterministic phase loop. Returns the terminal orchestration
     status (pass | fail | fail_closed)."""
     root = Path(repo_root)
-    node_key, spec_path = resolve_node(root, spec_ref)
-    # An explicit --agent-model wins; otherwise fall back to the backend's unpinned
-    # spec-side alias (claude -> settings alias / "opus"; codex -> "codex"). Never a
-    # pinned version: the exact version is resolved post-run from the leaf transcript.
+    # Claude may use its settings alias. Codex is deliberately different: every
+    # workflow leaf must receive an explicit host-pinned model slug, so no
+    # leaf-writable JSONL or hook audit channel can forge provenance.
     from tools.orchestration_runtime import default_agent_model_for_backend
     resolved_agent_model = agent_model or default_agent_model_for_backend(backend)
+    if backend == "codex" and (not resolved_agent_model.strip()
+                                or resolved_agent_model.strip().lower() == "codex"):
+        raise ValueError(
+            "Codex workflow execution requires --agent-model with an explicit model slug; "
+            "the generic 'codex' alias cannot provide authoritative provenance"
+        )
+    node_key, spec_path = resolve_node(root, spec_ref)
     conductor = Conductor(
         repo_root=root, orchestration_id=orchestration_id,
         orchestration_agent_run_id=orchestration_agent_run_id,

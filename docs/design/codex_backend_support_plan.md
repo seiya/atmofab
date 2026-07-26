@@ -21,9 +21,10 @@ the strict tool-free isolation provided by the Claude backend.
   response, backend session ID, usage, model metadata, and normalized failure
   details.
 - Run Codex with `codex exec --json` and consume JSONL incrementally.
-- Record the effective Codex model from the SessionStart hook, correlated to
-  the registered thread ID. JSONL model fields are supplementary only because
-  they are not guaranteed by the standard event stream.
+- Require an explicit Codex model slug, pass it as `codex exec --model` on
+  every initial and resumed leaf, and record that host-authored launch value as
+  model provenance. Do not derive model provenance from JSONL or hook audit
+  files because those are not authoritative model channels.
 - When Codex emits `thread.started`, atomically register its `thread_id` against
   the allocated `agent_run_id` before processing later events.
 - Keep the identifier responsibilities separate:

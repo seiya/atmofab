@@ -322,27 +322,6 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
             self.assertIn("resume_session_unavailable", emitted)
 
-    def test_codex_session_start_model_is_resolved_by_thread_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            hooks_path = repo_root / "workspace" / "orchestrations" / "orch_x" / "hooks" / "native_hook_events.jsonl"
-            hooks_path.parent.mkdir(parents=True)
-            hooks_path.write_text(
-                json.dumps({
-                    "backend": "codex", "event": "session_start",
-                    "payload_summary": {
-                        "session_id": "thread-123", "model": "gpt-5.6-codex",
-                    },
-                }) + "\n",
-                encoding="utf-8",
-            )
-            c = _FakeConductor(
-                repo_root=repo_root, orchestration_id="orch_x",
-                orchestration_agent_run_id="ORCH", backend="codex", env={},
-            )
-            self.assertEqual(c._codex_session_start_model("thread-123"), "gpt-5.6-codex")
-            self.assertIsNone(c._codex_session_start_model("other-thread"))
-
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
         # strategy-driven warm/cold selection is preserved (LLM verify-attributed restarts stay
@@ -766,9 +745,8 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(completes[0]["result"], "skipped")
         self.assertNotIn("elapsed_seconds", completes[0])
 
-    def test_run_conductor_falls_back_to_backend_alias(self) -> None:
-        """run_conductor with no explicit agent_model uses the backend's unpinned
-        alias (claude -> 'opus' default / codex -> 'codex'), never a pinned version."""
+    def test_run_conductor_falls_back_to_claude_alias(self) -> None:
+        """Claude may use its unpinned config alias when none was supplied."""
         from unittest.mock import patch
         seen: dict[str, str] = {}
         orig_init = wc.Conductor.__init__
@@ -777,24 +755,29 @@ class ConductHappyPathTest(unittest.TestCase):
             seen["agent_model"] = kw.get("agent_model", "")
             orig_init(self, **kw)
 
-        for backend, expected in (("codex", "codex"), ("claude", "opus")):
-            seen.clear()
-            with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
-                 patch.object(wc, "prepare_node",
-                              return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
-                                                       ir_id="x_1", pipeline_id="x_1")), \
-                 patch.object(wc.Conductor, "__init__", _capture_init), \
-                 patch.object(wc.Conductor, "conduct", return_value="pass"), \
-                 patch("tools.orchestration_runtime.resolve_claude_model_alias",
-                       return_value="opus"):
-                status = wc.run_conductor(
-                    repo_root="/tmp/repo", orchestration_id="o",
-                    orchestration_agent_run_id="O", spec_ref="spec/c/x",
-                    source_dependency_ref="d", until_phase="compile", backend=backend,
-                    agent_model="", workflow_mode="dev", env={})
-            self.assertEqual(status, "pass")
-            self.assertEqual(seen["agent_model"], expected)
-            self.assertNotRegex(seen["agent_model"], r"-\d+-\d+$")
+        with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
+             patch.object(wc, "prepare_node",
+                          return_value=wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x",
+                                                   ir_id="x_1", pipeline_id="x_1")), \
+             patch.object(wc.Conductor, "__init__", _capture_init), \
+             patch.object(wc.Conductor, "conduct", return_value="pass"), \
+             patch("tools.orchestration_runtime.resolve_claude_model_alias", return_value="opus"):
+            status = wc.run_conductor(
+                repo_root="/tmp/repo", orchestration_id="o",
+                orchestration_agent_run_id="O", spec_ref="spec/c/x",
+                source_dependency_ref="d", until_phase="compile", backend="claude",
+                agent_model="", workflow_mode="dev", env={})
+        self.assertEqual(status, "pass")
+        self.assertEqual(seen["agent_model"], "opus")
+        self.assertNotRegex(seen["agent_model"], r"-\d+-\d+$")
+
+    def test_run_conductor_requires_explicit_codex_model(self) -> None:
+        with self.assertRaisesRegex(ValueError, "explicit model slug"):
+            wc.run_conductor(
+                repo_root="/tmp/repo", orchestration_id="o",
+                orchestration_agent_run_id="O", spec_ref="spec/c/x",
+                source_dependency_ref="d", until_phase="compile", backend="codex",
+                agent_model="", workflow_mode="dev", env={})
 
     def test_agent_run_json_records_transcript_resolved_model(self) -> None:
         from unittest.mock import patch
@@ -823,33 +806,28 @@ class ConductHappyPathTest(unittest.TestCase):
         # unresolved -> left absent so record_agent_run backfills the launch alias
         self.assertNotIn("agent_model", payload)
 
-    def test_agent_run_json_records_codex_session_start_model(self) -> None:
-        from tools.orchestration_runtime import _append_session_run_index_entry
-
+    def test_agent_run_json_records_host_pinned_codex_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             c = _FakeConductor(
                 repo_root=repo_root, orchestration_id="orch_x",
                 orchestration_agent_run_id="ORCH", backend="codex", env={},
-            )
-            _append_session_run_index_entry(
-                repo_root, "orch_x", agent_run_id="child-arid-3", agent_session_id="thread-123",
-                context_id="child-arid-3", agent_role="substep", status="pass",
-                codex_home_generation=1,
+                agent_model="gpt-5.6-codex",
             )
             hooks_path = repo_root / "workspace" / "orchestrations" / "orch_x" / "hooks" / "native_hook_events.jsonl"
             hooks_path.parent.mkdir(parents=True)
+            # A leaf-controlled audit value must not affect model provenance.
             hooks_path.write_text(
                 json.dumps({
                     "backend": "codex", "event": "session_start",
-                    "payload_summary": {"session_id": "thread-123", "model": "gpt-5.6-codex"},
+                    "payload_summary": {"session_id": "thread-123", "model": "forged-model"},
                 }) + "\n",
                 encoding="utf-8",
             )
             payload = c._agent_run_json(
                 self._refs(), "compile", "generate", "child-arid-3", "pass", [])
         self.assertEqual(payload["agent_model"], "gpt-5.6-codex")
-        self.assertEqual(payload["agent_model_provenance"], "codex_hook_session_start")
+        self.assertEqual(payload["agent_model_provenance"], "codex_launch_pinned")
 
     def test_agent_run_json_carries_step_and_substep(self) -> None:
         c = self._conductor()
@@ -5607,12 +5585,15 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
         self.assertEqual(c.leaf_command("PROMPT"), ["mywrap", "--model", "Z", "-p", "PROMPT"])
-        c2 = self._c(backend="codex", llm_command="codexwrap --x")
-        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--dangerously-bypass-hook-trust", "--json", "P"])
+        c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-codex")
+        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
         self.assertEqual(self._c(backend="claude").leaf_command("P"), ["claude", "-p", "P"])
-        self.assertEqual(self._c(backend="codex").leaf_command("P"), ["codex", "exec", "--dangerously-bypass-hook-trust", "--json", "P"])
+        self.assertEqual(
+            self._c(backend="codex", agent_model="gpt-5.6-codex").leaf_command("P"),
+            ["codex", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"],
+        )
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
@@ -5622,8 +5603,8 @@ class LeafSpawnTest(unittest.TestCase):
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
-            self._c(backend="codex").leaf_command("P", session_id="arid-1"),
-            ["codex", "exec", "--dangerously-bypass-hook-trust", "--json", "P"],
+            self._c(backend="codex", agent_model="gpt-5.6-codex").leaf_command("P", session_id="arid-1"),
+            ["codex", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"],
         )
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
@@ -5633,6 +5614,18 @@ class LeafSpawnTest(unittest.TestCase):
             ["claude", "--resume", "producer-arid", "--fork-session",
              "--session-id", "new-arid", "-p", "P"],
         )
+
+    def test_codex_resume_pins_the_same_host_model(self) -> None:
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        self.assertEqual(
+            c.leaf_command("repair", resume_session_id="thread-123"),
+            ["codex", "exec", "resume", "--model", "gpt-5.6-codex", "thread-123",
+             "--dangerously-bypass-hook-trust", "--json", "repair"],
+        )
+
+    def test_codex_leaf_rejects_generic_model_alias(self) -> None:
+        with self.assertRaisesRegex(ValueError, "explicit --agent-model"):
+            self._c(backend="codex", agent_model="codex").leaf_command("P")
 
     def test_nonzero_leaf_exit_fails_substep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
