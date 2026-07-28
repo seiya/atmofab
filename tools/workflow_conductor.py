@@ -26,9 +26,11 @@ real, working request.json artifacts in tools/tests/test_workflow_conductor.py.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -1323,6 +1325,52 @@ def build_launch_request(
 # message rather than as a phantom outage. Lower this constant to the ceiling of the model the
 # leaves actually run.
 LEAF_MAX_OUTPUT_TOKENS = 128000
+
+# How long a leaf gets to exit on SIGTERM before the group is SIGKILLed, and how long
+# the whole teardown may take. Both are bounded on purpose: this runs on the driver's
+# way out (an interrupt, or a host-write failure that must come back as a transport
+# result), so a leaf that ignores SIGTERM must not be able to hang the exit path.
+LEAF_TERMINATE_GRACE_SECONDS = 5.0
+
+
+def _terminate_leaf_process_group(process: Any) -> None:
+    """Stop a leaf and everything it started, with bounded escalation to SIGKILL.
+
+    `Popen.terminate()` signals only the direct child. A Codex CLI (or the `bwrap`
+    wrapper in front of it) spawns shell/tool subprocesses of its own, and those
+    survive their parent — continuing to write after the driver has cancelled the
+    orchestration, revoked its authority, and deleted its TMPDIR. The leaf is launched
+    with `start_new_session=True` so the whole tree is one process group that can be
+    signalled at once.
+
+    Falls back to signalling the direct child when the group cannot be resolved (the
+    process already exited, or a platform without process groups), and never raises:
+    every caller is already unwinding.
+    """
+    def _signal_group(sig: int) -> None:
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+            return
+        except (OSError, AttributeError):
+            pass
+        try:
+            process.send_signal(sig)
+        except (OSError, ValueError):
+            pass
+
+    _signal_group(signal.SIGTERM)
+    try:
+        process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    _signal_group(signal.SIGKILL)
+    try:
+        process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        # SIGKILL cannot be ignored; reaching here means the process is wedged in
+        # uninterruptible sleep. Returning beats blocking the driver's exit forever.
+        pass
 
 
 @dataclass
@@ -2756,6 +2804,11 @@ class Conductor:
             # A leaf's own output must never be able to kill the conductor.
             errors="backslashreplace",
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            # Own process group: the CLI (and the bwrap wrapper in front of it) spawn
+            # shell/tool subprocesses, and `terminate()` reaches only the direct child.
+            # Grouping them lets `_terminate_leaf_process_group` stop the whole tree
+            # before the driver revokes this leaf's authority and deletes its TMPDIR.
+            start_new_session=True,
         )
         assert process.stdout is not None
         assert process.stderr is not None
@@ -2866,15 +2919,38 @@ class Conductor:
                         text = item.get("text")
                         if isinstance(text, str):
                             final_text = text
-        except Exception:
-            process.terminate()
-            process.wait()
-            stderr_thread.join()
+        except BaseException:
+            # BaseException, not Exception: `SystemExit` (the SIGTERM converter in
+            # run_workflow raises it) and `KeyboardInterrupt` are the two ways this
+            # loop is unwound while the leaf is mid-turn, and they are exactly the
+            # cases where leaving the child running is worst — the driver goes on to
+            # terminalize the orchestration and delete its TMPDIR while the leaf keeps
+            # writing under an authorization the host has already revoked. Every other
+            # leaf spawn is a `subprocess.run`, whose own bare `except:` kills the
+            # child; this raw Popen is the only path that had to do it itself.
+            _terminate_leaf_process_group(process)
+            # Bounded: the drain thread is blocked on a pipe whose writers are the
+            # process group just killed, so it ends promptly — but the driver's exit
+            # path must not depend on that.
+            stderr_thread.join(timeout=LEAF_TERMINATE_GRACE_SECONDS)
             raise
         if registration_error is not None:
-            process.terminate()
-        returncode = process.wait()
-        stderr_thread.join()
+            # Same reasoning as the interrupt path: the host refused to record this
+            # leaf's identity, so its descendants must not outlive the decision.
+            _terminate_leaf_process_group(process)
+            # The helper has already spent its SIGTERM and SIGKILL grace periods, so a
+            # process still alive here is wedged (uninterruptible I/O). Re-entering an
+            # UNBOUNDED wait would hand back exactly the indefinite block the bounded
+            # teardown exists to prevent — report the leaf dead and move on.
+            try:
+                returncode = process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                returncode = -int(signal.SIGKILL)
+            stderr_thread.join(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+        else:
+            # The ordinary path: block for as long as the leaf's turn takes.
+            returncode = process.wait()
+            stderr_thread.join()
         stderr = "".join(stderr_chunks)
         if failure_events:
             stderr = (stderr.rstrip() + "\n" + "\n".join(failure_events)).strip()

@@ -31379,5 +31379,129 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
             r"(?:.*\n)*?\s*finally:\s*\n\s*sys\.pycache_prefix\s*=\s*saved_pycache_prefix")
 
 
+class DriverIdentityRecordingTest(unittest.TestCase):
+    """`orchestration_meta.json#driver` — the record that lets a later run tell a
+    CRASHED driver (meta stuck at `running`) apart from a live concurrent one."""
+
+    def _meta(self, repo_root: Path, oid: str) -> dict:
+        return json.loads(
+            (repo_root / "workspace" / "orchestrations" / oid
+             / "orchestration_meta.json").read_text(encoding="utf-8")
+        )
+
+    def _run_init(self, argv: list[str]) -> None:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(main(argv), 0)
+
+    def test_init_driver_json_records_block_with_recorded_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._run_init([
+                "init", "--repo-root", str(repo_root), "--orchestration-id", "o1",
+                "--driver-json",
+                json.dumps({"pid": 4242, "pid_start_ticks": "8236241",
+                            "boot_id": "b-1", "hostname": "h1"}),
+            ])
+            driver = self._meta(repo_root, "o1")["driver"]
+            self.assertEqual(driver["pid"], 4242)
+            self.assertEqual(driver["pid_start_ticks"], "8236241")
+            self.assertEqual(driver["hostname"], "h1")
+            self.assertTrue(driver["recorded_at"])
+
+    def test_cold_reinit_without_flag_drops_a_stale_driver_block(self) -> None:
+        # A cold (re-)init is a NEW driver. Preserving the old block would let a probe
+        # report the fresh run dead — or, after pid reuse, alive on another process.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="o1",
+                               driver={"pid": 4242, "pid_start_ticks": "1"})
+            self.assertIn("driver", self._meta(repo_root, "o1"))
+            init_orchestration(repo_root=repo_root, orchestration_id="o1")
+            self.assertNotIn("driver", self._meta(repo_root, "o1"))
+
+    def test_malformed_driver_block_is_not_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for bad in ({}, {"pid": 0}, {"pid": -1}, {"pid": "4242"}, {"pid": True},
+                        {"ticks": "1"}):
+                with self.subTest(driver=bad):
+                    init_orchestration(repo_root=repo_root, orchestration_id="o_bad",
+                                       driver=bad)
+                    self.assertNotIn("driver", self._meta(repo_root, "o_bad"))
+
+    def test_resume_init_refreshes_the_driver_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="o1",
+                               driver={"pid": 4242, "pid_start_ticks": "1"})
+            enable_checkpoint_resume(repo_root, "o1",
+                                     driver={"pid": 5151, "pid_start_ticks": "2"})
+            self.assertEqual(self._meta(repo_root, "o1")["driver"]["pid"], 5151)
+            # A resume that cannot capture an identity POPS the stale one rather than
+            # leaving the dead driver's pid on a live run.
+            enable_checkpoint_resume(repo_root, "o1")
+            self.assertNotIn("driver", self._meta(repo_root, "o1"))
+
+    def test_init_rejects_unusable_driver_json(self) -> None:
+        # Both arms raise rather than silently recording nothing: a driver block the
+        # caller believed it passed, but which never reached the meta, would make every
+        # later liveness probe answer `unknown` with no indication why.
+        # The two arms are asserted on their messages, not merely on the exception
+        # type: both reject, so only the diagnostic distinguishes "you passed a JSON
+        # array" from "you passed something that is not JSON at all".
+        for label, value, expected in (
+            ("non-object", "[1]", "must be a JSON object"),
+            ("invalid JSON", "{not json", "must be valid JSON"),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                with self.assertRaises(ValueError) as ctx:
+                    with redirect_stdout(io.StringIO()):
+                        main(["init", "--repo-root", str(tmp),
+                              "--orchestration-id", "o1", "--driver-json", value])
+                self.assertIn(expected, str(ctx.exception))
+
+    def test_driver_crashed_terminalization_enables_terminal_reset_resume(self) -> None:
+        # The whole point of terminalizing a corpse: `fail` is what routes the
+        # subsequent resume through `terminal_reset`, where the crash reconciliations
+        # (stale active_child markers, orphan graph edges, ...) actually run.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_crashed"
+            init_orchestration(repo_root=repo_root, orchestration_id=oid,
+                               driver={"pid": 4242, "pid_start_ticks": "1"})
+            root = repo_root / "workspace" / "orchestrations" / oid
+            child = "dangling-child-arid"
+            (root / "active_child_agent_run_id.txt").write_text(child, encoding="utf-8")
+            (root / "active_children").mkdir(exist_ok=True)
+            (root / "active_children" / f"{child}.txt").write_text(child, encoding="utf-8")
+
+            update_orchestration_status(
+                repo_root, oid, status="fail", reason_code="driver_crashed",
+                reason_detail="driver process is gone while the orchestration was running",
+            )
+            self.assertEqual(self._meta(repo_root, oid)["status"], "fail")
+
+            returned = enable_checkpoint_resume(repo_root, oid)
+            self.assertEqual(returned.get("status"), "running")
+            self.assertEqual(returned.get("resumed_from_status"), "fail")
+            self.assertEqual(returned.get("resumed_from_reason_code"), "driver_crashed")
+            # terminal_reset fired → the dangling launch's markers are reconciled.
+            self.assertFalse((root / "active_child_agent_run_id.txt").exists())
+            self.assertFalse((root / "active_children" / f"{child}.txt").exists())
+
+    def test_driver_interrupted_cancel_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="o1")
+            update_orchestration_status(
+                repo_root, "o1", status="cancel", reason_code="driver_interrupted",
+                reason_detail="driver process was interrupted",
+            )
+            meta = self._meta(repo_root, "o1")
+            self.assertEqual(meta["status"], "cancel")
+            self.assertEqual(meta["reason_code"], "driver_interrupted")
+
+
 if __name__ == "__main__":
     unittest.main()
