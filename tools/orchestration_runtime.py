@@ -13280,6 +13280,7 @@ def enable_checkpoint_resume(
     source_dependency_ref: str | None = None,
     closure_until_phase: str | None = None,
     wait_usage_reset: bool = False,
+    driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Set resume_enabled=true in orchestration_meta.json.
 
@@ -13480,6 +13481,15 @@ def enable_checkpoint_resume(
             orchestration_id,
             list(pruned_graph_children) + list(cleared_active_child),
         )
+    # The RESUMING process is now this orchestration's driver, so its identity replaces
+    # the block the prior (often dead) driver left behind. An unusable/absent identity
+    # POPS the field rather than leaving the corpse's pid in place: a stale pid can be
+    # reused by an unrelated process, and a probe would then call this run alive.
+    normalized_driver = _normalized_driver_identity(driver)
+    if normalized_driver is not None:
+        meta["driver"] = normalized_driver
+    else:
+        meta.pop("driver", None)
     _write_json(meta_path, meta)
     merge_phase_state_for_resume(repo_root, orchestration_id)
     if terminal_reset:
@@ -16358,6 +16368,26 @@ def _capture_repo_revision(
     return {"commit": commit, "dirty": dirty}
 
 
+def _normalized_driver_identity(driver: Any) -> dict[str, Any] | None:
+    """Return the driver-liveness block to persist, or None when it is unusable.
+
+    `driver` is the identity of the host process that is (re)starting this
+    orchestration — captured by `tools/run_workflow.py` and passed through
+    `init --driver-json`. It exists so a later run can tell a CRASHED driver
+    (its meta is stuck at `running` because nothing terminalized it) apart from a
+    genuinely live concurrent run. The only structural requirement enforced here is
+    a usable `pid`: every other field is advisory and the probe side degrades to
+    `unknown` when one is missing, which is the fail direction that never unblocks
+    an implicit resume and never blocks a cold run.
+    """
+    if not isinstance(driver, dict) or not driver:
+        return None
+    pid = driver.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    return {**driver, "recorded_at": _utc_now_iso()}
+
+
 def init_orchestration(
     repo_root: Path,
     orchestration_id: str,
@@ -16370,6 +16400,7 @@ def init_orchestration(
     agent_backend: str = "claude",
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,
+    driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
@@ -16428,6 +16459,14 @@ def init_orchestration(
     # enable_checkpoint_resume, which never re-supplies invocation and preserves it.
     if isinstance(invocation, dict) and invocation:
         meta["invocation"] = invocation
+    # Driver liveness identity of the process that starts this run. Deliberately NOT
+    # in the preservation loop above: a cold (re-)init is a NEW driver, so an omitted
+    # block must DROP the stale one rather than leave a corpse's pid on a live run's
+    # meta (a probe would then report the new run dead, or — worse, after pid reuse —
+    # alive on the wrong process).
+    normalized_driver = _normalized_driver_identity(driver)
+    if normalized_driver is not None:
+        meta["driver"] = normalized_driver
     if not orchestration_agent_run_id:
         orchestration_agent_run_id = str(uuid.uuid4())
     backend_token = str(agent_backend).strip().lower()
@@ -20287,6 +20326,22 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     init_parser.add_argument(
+        "--driver-json",
+        default=None,
+        help=(
+            "JSON object identifying the host process driving this run (pid, "
+            "pid_start_ticks, boot_id, hostname, pid_ns, uid), persisted to "
+            "orchestration_meta.json#driver. Lets a later run distinguish a crashed "
+            "driver (status stuck at 'running') from a live concurrent one. pid_ns (the "
+            "PID-namespace inode) and uid are what make a later /proc lookup conclusive: "
+            "without them a probe cannot tell whether the recorded pid is even in its own "
+            "numbering, so it reports 'unknown' rather than terminalizing. Only 'pid' "
+            "(a positive int) is required; the block is recorded as given. Recorded on "
+            "BOTH the cold init and --resume-from-checkpoint (the resuming process "
+            "becomes the driver); omitting it drops any recorded block."
+        ),
+    )
+    init_parser.add_argument(
         "--closure-until-phase",
         default=None,
         help=(
@@ -20851,6 +20906,16 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(getattr(args, "repo_root")).resolve()
 
     if args.command == "init":
+        driver_record: dict[str, Any] | None = None
+        driver_json = getattr(args, "driver_json", None)
+        if isinstance(driver_json, str) and driver_json.strip():
+            try:
+                parsed_driver = json.loads(driver_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"--driver-json must be valid JSON: {exc}") from exc
+            if not isinstance(parsed_driver, dict):
+                raise ValueError("--driver-json must be a JSON object")
+            driver_record = parsed_driver
         if getattr(args, "resume_from_checkpoint", False):
             result = enable_checkpoint_resume(
                 repo_root=repo_root,
@@ -20859,6 +20924,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_dependency_ref=args.source_dependency_ref,
                 closure_until_phase=getattr(args, "closure_until_phase", None),
                 wait_usage_reset=bool(getattr(args, "wait_usage_reset", False)),
+                driver=driver_record,
             )
             # Self-heal any step_result.json whose executor arid is a verify-substep
             # arid instead of the orchestration arid (the
@@ -20914,6 +20980,7 @@ def main(argv: list[str] | None = None) -> int:
                 agent_backend=args.agent_backend,
                 agent_model=args.agent_model,
                 invocation=invocation_record,
+                driver=driver_record,
             )
     elif args.command == "preflight":
         agent_command = args.agent_command
