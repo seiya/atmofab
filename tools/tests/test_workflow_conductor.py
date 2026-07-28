@@ -13,6 +13,7 @@ import glob
 import io
 import json
 import os
+import signal
 import subprocess
 import tempfile
 import threading
@@ -5640,15 +5641,20 @@ class LeafSpawnTest(unittest.TestCase):
         popen_kwargs: dict[str, Any] = {}
 
         class _FakePopen:
+            pid = 424242
+
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                 popen_kwargs.update(kw)
                 self.stdout = io.StringIO(lines)
                 self.stderr = io.StringIO("")
 
-            def wait(self):  # type: ignore[no-untyped-def]
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 return returncode
 
             def terminate(self):  # type: ignore[no-untyped-def]
+                return None
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
         c = self._c(backend="codex", agent_model="gpt-5.6-codex")
@@ -5664,6 +5670,10 @@ class LeafSpawnTest(unittest.TestCase):
         # `io.StringIO` stream can reach the real decoder.
         self.assertEqual(popen_kwargs.get("errors"), "backslashreplace")
         self.assertIs(popen_kwargs.get("text"), True)
+        # Own process group: `terminate()` reaches only the direct child, and the CLI
+        # (or the bwrap wrapper in front of it) spawns tool subprocesses that would
+        # otherwise outlive a cancelled orchestration.
+        self.assertIs(popen_kwargs.get("start_new_session"), True)
         return result
 
     def test_codex_thread_registration_failure_is_a_transport_result(self) -> None:
@@ -5683,6 +5693,120 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("codex thread registration failed", proc.stderr)
         self.assertIn("No space left on device", proc.stderr)
+
+    def test_codex_leaf_is_terminated_when_the_driver_is_interrupted(self) -> None:
+        """A SIGTERM/Ctrl-C on the driver must not leave the leaf running.
+
+        `SystemExit` (what run_workflow's SIGTERM converter raises) and
+        `KeyboardInterrupt` are not `Exception`, so an `except Exception` cleanup skips
+        them — and these are exactly the cases where an orphan is worst: the driver
+        goes on to terminalize the orchestration and delete its TMPDIR while the leaf
+        keeps writing under an authorization the host has already revoked. Every other
+        leaf spawn is a `subprocess.run`, whose own bare `except:` kills the child;
+        this raw `Popen` is the only path that has to do it itself.
+        """
+        from unittest.mock import patch
+
+        for exc, exits_on_sigterm in (
+            (SystemExit(143), True),
+            (KeyboardInterrupt(), True),
+            # A leaf that ignores SIGTERM must not be able to hang the driver's exit.
+            (SystemExit(143), False),
+        ):
+            with self.subTest(exception=type(exc).__name__,
+                              exits_on_sigterm=exits_on_sigterm):
+                signalled: list[tuple[int, int]] = []
+                start_new_session: list[Any] = []
+
+                class _RaisingStdout:
+                    def __iter__(self):  # type: ignore[no-untyped-def]
+                        return self
+
+                    def __next__(self):  # type: ignore[no-untyped-def]
+                        raise exc
+
+                class _FakePopen:
+                    pid = 424242
+
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        start_new_session.append(kw.get("start_new_session"))
+                        self.stdout = _RaisingStdout()
+                        self.stderr = io.StringIO("")
+
+                    def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        # Every wait on the teardown path must be BOUNDED: this runs on
+                        # the driver's way out, so a leaf that ignores signals cannot be
+                        # allowed to block the exit forever.
+                        assert timeout is not None, "teardown wait must be bounded"
+                        # Exits only once the group has been signalled — and, in the
+                        # stubborn case, only after SIGKILL.
+                        needed = (signal.SIGTERM if exits_on_sigterm
+                                  else signal.SIGKILL)
+                        if any(sig == needed for _pgid, sig in signalled):
+                            return -int(needed)
+                        raise subprocess.TimeoutExpired("codex", timeout)
+
+                    def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                        signalled.append((-1, sig))
+
+                c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+                c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+                with patch.object(wc.subprocess, "Popen", _FakePopen), \
+                        patch.object(wc.os, "getpgid", lambda pid: 999), \
+                        patch.object(wc.os, "killpg",
+                                     lambda pgid, sig: signalled.append((pgid, sig))):
+                    with self.assertRaises(type(exc)):
+                        c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                # The whole GROUP is signalled, not just the direct child: the CLI
+                # spawns tool subprocesses that would otherwise outlive the leaf and
+                # keep writing after the orchestration is cancelled.
+                self.assertEqual(start_new_session, [True])
+                self.assertEqual(signalled[0], (999, signal.SIGTERM))
+                if exits_on_sigterm:
+                    self.assertEqual(len(signalled), 1)
+                else:
+                    self.assertEqual(signalled[1], (999, signal.SIGKILL))
+
+    def test_registration_failure_teardown_cannot_block_on_a_wedged_leaf(self) -> None:
+        """The bounded-teardown contract must hold on the host-write failure path too.
+
+        `_terminate_leaf_process_group` deliberately RETURNS once its SIGTERM and
+        SIGKILL grace periods are spent — a process still alive is wedged in
+        uninterruptible I/O. Following that with an unbounded `wait()` / `join()` would
+        hand back the very indefinite block the bounded teardown exists to prevent, and
+        would do it while the driver is already unwinding a failed identity binding.
+        """
+        from unittest.mock import patch
+
+        class _NeverExitsPopen:
+            pid = 424242
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout = io.StringIO(
+                    '{"type":"thread.started","thread_id":"t-1"}\n')
+                self.stderr = io.StringIO("")
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                assert timeout is not None, "teardown wait must be bounded"
+                raise subprocess.TimeoutExpired("codex", timeout)
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        def _boom(*_args):  # type: ignore[no-untyped-def]
+            raise OSError(28, "No space left on device")
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = _boom  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _NeverExitsPopen), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # Returned rather than blocked, and still reports the leaf as dead so the
+        # substep loop terminalizes it as a transport failure.
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("codex thread registration failed", proc.stderr)
 
     def test_codex_thread_registration_updates_both_response_mirrors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
