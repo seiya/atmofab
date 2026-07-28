@@ -26,6 +26,7 @@ real, working request.json artifacts in tools/tests/test_workflow_conductor.py.
 from __future__ import annotations
 
 import json
+import queue
 import os
 import re
 import shlex
@@ -1332,45 +1333,392 @@ LEAF_MAX_OUTPUT_TOKENS = 128000
 # result), so a leaf that ignores SIGTERM must not be able to hang the exit path.
 LEAF_TERMINATE_GRACE_SECONDS = 5.0
 
+# How often a leaf's streams are re-checked while the cap runs. The waits below are bounded by
+# the cap, but they end at stream EOF, which needs EVERY inheritor of the write end to close it:
+# a leaf that answers and EXITS while leaking a tool subprocess would otherwise be waited on for
+# the whole remaining cap and then reported as a wedge. Polling costs one wakeup per second and
+# turns that into a prompt, correctly-attributed return.
+LEAF_STREAM_POLL_SECONDS = 1.0
+# ...and the ceiling the claude path's slice grows to. Each expired slice re-joins everything
+# `communicate` has buffered, so a fixed short slice is quadratic in the capture; the growth
+# bounds that work while keeping the lag in noticing an exit far below any cap worth setting.
+LEAF_STREAM_POLL_MAX_SECONDS = 30.0
 
-def _terminate_leaf_process_group(process: Any) -> None:
+# How much of a leaf's stderr the codex drain will accumulate. Both budgets below are enforced
+# per DELIVERED CHUNK, and the readers deliver LINES — so a producer that writes megabytes
+# without a newline terminator is bounded only by the cap (measured: 1.35 GB of newline-free
+# stdout under a 10s cap), and an ABANDONED reader blocked mid-line cannot see `stop_reading`
+# until that line ends. Closing the pipes under a blocked reader is not an option (`close()`
+# waits on the same lock), so removing that residual means rebuilding both readers on
+# fixed-size block reads — deliberately out of scope here, and tracked as issue #18. A drain the conductor has given
+# up on keeps running for the driver's lifetime (nothing can close the pipe a leaked descendant
+# holds), and an unbounded appender then grows the heap for the rest of the run AND hands back a
+# ProcResult whose stderr is persisted, tail-sliced and regex-scanned. Measured on a flooding
+# descendant: 770 MB returned and still climbing.
+LEAF_STDERR_CAPTURE_MAX_CHARS = 1_000_000
+# The same budget for the codex JSONL capture (`raw_stdout` → `leaf.stdout.jsonl`), which is
+# persisted the same way and which a leaf in an output loop grows just as fast. Larger because
+# it is the leaf's PRIMARY evidence, where stderr is its diagnostics.
+LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS = 4_000_000
+# How much UNPARSED stdout the codex pump may hold ahead of the reader. The queue's own bound
+# counts LINES, and one JSONL record can be a whole tool result — 2048 records of a megabyte
+# each is ~2 GB held before the capture budget above ever applies, i.e. the driver OOMs before
+# the cap can terminalize the leaf. This is the byte-aware half of that backpressure; the
+# residual (a SINGLE record larger than this, which is read before anything can bound it) is
+# issue #18.
+LEAF_STREAM_QUEUE_MAX_CHARS = 2_000_000
+
+# Appended to a leaf's captured output when the conductor gave up on a stream whose writer had
+# not closed it. Deliberately silent about WHY the leaf is gone: it is appended both when the
+# leaf exited on its own and when the conductor killed it at the cap (under bwrap the group
+# signal reaches the wrapper, not a tool subprocess the CLI leaked, so the pipe survives the
+# kill). A truncated capture must never read as a leaf that wrote nothing.
+LEAF_STREAM_ABANDONED_MARKER = (
+    "[conductor] leaf_stream_abandoned: a descendant still holds the leaf's pipes; "
+    "the output above may be truncated")
+
+# The HARD per-leaf cap. A wedged leaf — alive, holding its pipes open, producing nothing — used
+# to block the conductor forever: the claude path waited on `subprocess.run` and the codex path on
+# an unbounded `process.wait()`, and neither had a deadline. The 2026-07-25 billed E2E lost 99
+# minutes to exactly that (a `generate.generate` leaf that neither answered nor died), and lost it
+# with ZERO events in between — from the outside it is indistinguishable from a leaf thinking hard.
+# This is the complement of the crashed-driver recovery: that one revives a run whose DRIVER died,
+# this one stops a LIVE driver from blocking on a dead leaf.
+#
+# 7200s sits deliberately far above any legitimate leaf: a healthy generate leaf takes ~7 minutes
+# per cycle and the thinking-heaviest recorded ones tens of minutes, against a 99-minute field
+# hang. This is a backstop against an unbounded block, not a scheduling budget — sizing it tight
+# would start killing slow-but-working leaves, and the asymmetry is what makes a generous cap the
+# right default: a wrongly killed leaf costs ONE resumable fail_closed, while no cap at all costs
+# unbounded wall-clock that nothing in the event stream reports.
+#
+# A per-substep table (the `_MCP_TOOL_GRANTS_BY_SUBSTEP` shape) is future work: one cap already
+# bounds the damage, and per-substep numbers need per-substep evidence this repo does not have yet.
+LEAF_TIMEOUT_DEFAULT_SECONDS = 7200  # 2h
+# Ceiling for the env override: a sanity bound on an operator-settable value, pinned to the
+# largest deadline `communicate(timeout=…)` accepts (it selects with an int-millisecond
+# deadline, so above INT_MAX ms it raises `OverflowError: timeout is too large` instead of
+# waiting — measured exactly here, at 2_147_483s ≈ 24.8 days). The only wait handed the whole
+# remaining cap today is `Popen.wait`, which does not overflow; every `communicate`-family wait
+# is sliced. The ceiling is kept AT the platform limit so that a future unsliced deadline —
+# which would fire only for an operator who raised the cap, i.e. never in test — cannot be
+# invalid.
+LEAF_TIMEOUT_MAX_SECONDS = 2_147_483
+
+
+def _leaf_timeout_seconds() -> int:
+    """The per-leaf cap in seconds: `METDSL_LEAF_TIMEOUT_SECONDS`, else the default.
+
+    A value that parses to `0` (`0`, `00`, `+0`) disables the cap, restoring the unbounded wait
+    for an operator deliberately running a leaf longer than the default — the leaf's EXIT is
+    still noticed, only the deadline is gone. Everything the
+    parser cannot make sense of — unset, non-numeric, NEGATIVE — falls back to the default
+    rather than to 0: a typo must not fail a run at the moment a leaf is launched, and it must
+    not silently remove the backstop either (`-1` is a plausible spelling of "no limit" and a
+    plausible sign slip, and both would restore the 99-minute hang with nothing to grep for).
+
+    The upper bound is a sanity ceiling, pinned to the largest deadline `communicate(timeout=…)`
+    accepts (see `LEAF_TIMEOUT_MAX_SECONDS`). The runbook actively invites raising this value,
+    so an absurd one must clamp rather than reach any wait at all.
+
+    The sign is rejected on the STRING, not after `int()`: `-0` parses to 0, which is the one
+    value that disables the cap, so the "a negative never disables the backstop" rule would be
+    false for exactly one spelling of a negative.
+    """
+    raw = os.environ.get("METDSL_LEAF_TIMEOUT_SECONDS", "").strip()
+    if not raw or raw.startswith("-"):
+        return LEAF_TIMEOUT_DEFAULT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return LEAF_TIMEOUT_DEFAULT_SECONDS
+    return min(max(0, value), LEAF_TIMEOUT_MAX_SECONDS)
+
+
+def _leaf_timeout_marker(timeout_seconds: int, elapsed: float) -> str:
+    """The conductor's own note, appended to a killed leaf's captured stderr.
+
+    APPENDED, never substituted: whatever the leaf managed to write before it wedged is the
+    evidence for why it wedged. The `[conductor] leaf_timeout` prefix is what `_leaf_infra_error`
+    greps for to recover this line as the tag's EVIDENCE; the tag itself never comes from this
+    text (it comes from `ProcResult.timed_out`), and no classifier pattern may ever match it —
+    that would let any leaf claim the tag by writing the line (see `_LEAF_INFRA_ERROR_PATTERNS`).
+    """
+    return (f"[conductor] leaf_timeout: leaf exceeded METDSL_LEAF_TIMEOUT_SECONDS="
+            f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
+
+
+def _partial_stream_text(*candidates: Any, encoding: str = "utf-8") -> str:
+    """The first non-empty partial stream carried by a `TimeoutExpired`, decoded.
+
+    `communicate(timeout=…)` attaches what it had already read to the exception — as RAW BYTES
+    even for a text-mode Popen, because the decode happens only on the path that returns. The
+    caller passes the codec the Popen itself selected (the locale codec, not necessarily utf-8),
+    so a leaf's output does not decode one way when it returns and another way when it is
+    harvested. `backslashreplace` for the same reason the codex stream is read leniently: a
+    malformed byte in a dying leaf's output must not become an exception on the error path.
+    """
+    for value in candidates:
+        if not value:
+            continue
+        if isinstance(value, bytes):
+            return value.decode(encoding, "backslashreplace")
+        return str(value)
+    return ""
+
+
+def _parse_codex_line(line: str) -> dict[str, Any] | None:
+    """One codex JSONL line as a dict, or None when it carries nothing usable.
+
+    `RecursionError` as well as `JSONDecodeError`: one deeply-nested line (`"[" * 100000`)
+    blows the stack inside `json.loads`, and a leaf's own output must never be able to kill the
+    conductor.
+    """
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _absorb_codex_event(
+    event: dict[str, Any], usage: dict[str, Any] | None, model: str | None,
+    final_text: str | None, turn_failed: bool, failure_events: list[str],
+) -> tuple[dict[str, Any] | None, str | None, str | None, bool]:
+    """Fold ONE codex event into the value fields, with no side effects.
+
+    Shared by the streaming read and by the post-break drain of whatever was still queued, so
+    the two cannot drift: a leaf's answer sitting in the queue when the cap expires has to be
+    recognised the same way as one read a moment earlier. Deliberately does NOT perform the
+    `thread.started` registration — that is a HOST WRITE, and it must not fire after the
+    conductor has stopped reading and killed the leaf.
+    """
+    kind = str(event.get("type") or "")
+    # `turn.completed` is the canonical current event, while the tolerant top-level/nested
+    # extraction keeps old/new CLI JSONL shapes observable without inventing values.
+    for candidate_meta in (event, event.get("turn"), event.get("item")):
+        if not isinstance(candidate_meta, dict):
+            continue
+        candidate_usage = candidate_meta.get("usage")
+        if isinstance(candidate_usage, dict):
+            usage = candidate_usage
+        candidate_model = candidate_meta.get("model")
+        if isinstance(candidate_model, str) and candidate_model.strip():
+            model = candidate_model.strip()
+    if kind == "turn.failed":
+        # TERMINAL, unlike `error`: the turn itself ended failed, so any `agent_message` seen
+        # before it is mid-turn narration, not an answer. Tracked separately from `error` so a
+        # preceding message cannot mask the failure (see the exit-code normalization below).
+        turn_failed = True
+    if kind in {"error", "turn.failed"}:
+        # The retry and usage-reset classifiers operate on the process diagnostics. Preserve
+        # Codex's structured terminal event there even when the CLI left stderr empty.
+        failure_events.append(json.dumps(event, ensure_ascii=False)[:2000])
+    item = event.get("item")
+    if kind == "item.completed" and isinstance(item, dict):
+        if str(item.get("type") or "") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str):
+                final_text = text
+    return usage, model, final_text, turn_failed
+
+
+def _close_leaf_pipes(process: Any) -> None:
+    """Release the read ends of a leaf the conductor has given up on.
+
+    Nothing else will: the leaf is not reaped (a writer still holds the pipes), so `Popen.__del__`
+    cannot close them either, and `with process:` is not an option — its `__exit__` ends in an
+    UNBOUNDED `wait()`, the very block these paths exist to escape. Closing also gives the leaked
+    writer an EPIPE instead of a reader that never returns. Only safe where no thread is reading
+    the stream (the claude path); a `close()` racing a blocked reader would wait on the same
+    internal lock, trading a leaked fd for a hung driver.
+    """
+    for stream in (process.stdout, process.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _drain_exited_leaf(process: Any, expired: subprocess.TimeoutExpired, *,
+                       encoding: str = "utf-8", pgid: int | None = None,
+                       pgid_start_ticks: str | None = None) -> tuple[str, str, bool]:
+    """`(stdout, stderr, abandoned)` for a leaf that EXITED while its pipes are still open.
+
+    Its exit status is authoritative, so this is not a timeout and the cap must not be spent on
+    it: only a descendant the leaf leaked can still hold the write end, and it gets the teardown
+    grace, not the remaining hours.
+
+    That descendant is SIGNALLED when the grace runs out, not merely disconnected. Closing the
+    read ends only reaches one that writes (it gets an EPIPE); a silent one — a stuck `sleep`, a
+    wedged tool child — would otherwise keep running under an authority the driver is about to
+    revoke, writing into the very artifact directory the next substep reads. It is reachable
+    exactly when it stayed in the leaf's process group.
+    """
+    try:
+        stdout, stderr = process.communicate(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+        return stdout, stderr, False
+    except subprocess.TimeoutExpired as drained:
+        stdout = _partial_stream_text(drained.output, expired.output, encoding=encoding)
+        stderr = _partial_stream_text(drained.stderr, expired.stderr, encoding=encoding)
+        _terminate_leaf_process_group(process, pgid=pgid, pgid_start_ticks=pgid_start_ticks)
+        _close_leaf_pipes(process)
+        return stdout, stderr, True
+
+
+def _join_thread(thread: threading.Thread, timeout: float) -> None:
+    """`Thread.join` that tolerates a thread which never started.
+
+    `Thread.start()` can itself fail (thread exhaustion, MemoryError), and a bare `join` then
+    raises `RuntimeError: cannot join thread before it is started` from inside the handler that
+    was reporting the real cause — replacing it with a misleading one.
+    """
+    if thread.ident is None:
+        return
+    thread.join(timeout=timeout)
+
+
+def _pid_start_ticks(pid: int) -> str | None:
+    """`starttime` (field 22 of `/proc/<pid>/stat`) for `pid`, or None when it is not readable.
+
+    The one identity a pid cannot carry across REUSE: a recycled pid belongs to a process that
+    started later, so its ticks differ. Read through `run_workflow`'s parser rather than a second
+    one here — the driver-liveness probe answers the same question about the same file, and two
+    implementations of that would drift (the comm field can contain spaces and parentheses, which
+    a naive split gets wrong). Imported lazily and defensively: this runs on teardown paths that
+    must never raise, and a host without `/proc` simply has no such identity.
+    """
+    try:
+        from tools.run_workflow import _read_proc_starttime
+        return _read_proc_starttime(pid)
+    except Exception:  # noqa: BLE001 — an unreadable identity is "unknown", never an error here
+        return None
+
+
+def _terminate_leaf_process_group(process: Any, *, pgid: int | None = None,
+                                  pgid_start_ticks: str | None = None) -> None:
     """Stop a leaf and everything it started, with bounded escalation to SIGKILL.
 
-    `Popen.terminate()` signals only the direct child. A Codex CLI (or the `bwrap`
-    wrapper in front of it) spawns shell/tool subprocesses of its own, and those
-    survive their parent — continuing to write after the driver has cancelled the
-    orchestration, revoked its authority, and deleted its TMPDIR. The leaf is launched
-    with `start_new_session=True` so the whole tree is one process group that can be
-    signalled at once.
+    `Popen.terminate()` signals only the direct child — under mandatory bwrap, the WRAPPER —
+    while the CLI behind it spawns shell/tool subprocesses of its own that survive their parent,
+    continuing to write after the driver has cancelled the orchestration, revoked its authority
+    and deleted its TMPDIR. The leaf is launched with `start_new_session=True` so at least the
+    wrapper is its own group leader and can be signalled as a group.
 
-    Falls back to signalling the direct child when the group cannot be resolved (the
-    process already exited, or a platform without process groups), and never raises:
-    every caller is already unwinding.
+    The reach is bounded, and deliberately not overstated: `render_bwrap_command` passes
+    `--new-session`, so bwrap `setsid`s the sandboxed command into a session of ITS own. The
+    group signal therefore reaches the wrapper, and the CLI dies with it via `--die-with-parent`
+    — but a tool subprocess the CLI leaked is outside this group entirely and survives. Every
+    caller is written to tolerate that (bounded waits, then abandon), rather than assuming the
+    tree is gone.
+
+    `pgid` is the group id pinned at SPAWN time, and it is the only id this function will ever
+    signal. `os.getpgid(process.pid)` is deliberately NOT consulted: it is a lookup on a pid the
+    caller may already have reaped, and a reaped pid can be recycled — by, among others, the
+    next leaf this conductor spawns, which becomes a group leader exactly as this one did.
+    Verified in a PID namespace with the allocator steered: after the leaf was reaped, the live
+    lookup on its pid resolved an UNRELATED process's group and the escalation killed it
+    (SIGTERM, then SIGKILL). Since every leaf is spawned with `start_new_session=True`, the
+    pinned pgid is the same value the live lookup would have returned while the leaf lived, so
+    nothing is lost by dropping it.
+
+    `pgid_start_ticks` is what makes the pinned id safe in turn — the leaf's `starttime` from
+    `/proc/<pid>/stat`, the one identity a pid cannot carry across reuse. Before signalling:
+      * the pid's identity reads back as the RECORDED ticks -> still our leaf (alive, or a
+        zombie awaiting its reap). Safe.
+      * it reads back different -> the pid was recycled, which means the kernel had already
+        freed it, which means the leaf's group had no members left. Refuse: there is nothing of
+        ours to signal and the id now belongs to someone else.
+      * it cannot be read at all -> that is TWO different situations and they are separated by
+        an existence probe, not conflated. `os.kill(pgid, 0)` raising `ProcessLookupError` is
+        proof that no process holds the pid, so the id can only still exist as a GROUP id, which
+        the kernel reserves while the group has members — exactly the survivors this function is
+        for, so signalling is safe. Anything else (the probe succeeds, or is refused) means a
+        process DOES hold the pid while its identity is unknown to us — a restricted `/proc`, or
+        a host without one — and the id is not signalled at all. The direct-child fallback below
+        still stops the leaf itself; only the group reach is given up.
+
+    Falls back to signalling the direct child when the group cannot be addressed (a platform
+    without process groups, or a refused id), and never raises. That matters more than it used
+    to: besides the unwind paths, this now runs INLINE on the timeout path, where an exception
+    would replace a routable `leaf_timeout` result with a generic conductor_error and no event.
     """
-    def _signal_group(sig: int) -> None:
+    def _addressable_pgid() -> int | None:
+        """The pinned group id, or None when it can no longer be proven to be the leaf's."""
+        if pgid is None:
+            return None
+        current = _pid_start_ticks(pgid)
+        if current is not None:
+            # The pid's identity is readable: signal only if it is still the one we recorded.
+            if pgid_start_ticks is not None and current == pgid_start_ticks:
+                return pgid
+            return None                       # recycled (or no identity was ever recorded)
         try:
-            os.killpg(os.getpgid(process.pid), sig)
-            return
+            os.kill(pgid, 0)
+        except ProcessLookupError:
+            return pgid                       # CONFIRMED absent: only the group can own the id
         except (OSError, AttributeError):
-            pass
+            return None                       # indeterminate — do not signal blind
+        return None                           # someone holds the pid; whose, we cannot tell
+
+    def _signal_group(sig: int) -> None:
+        target = _addressable_pgid()
+        if target is not None:
+            try:
+                os.killpg(target, sig)
+                return
+            except (OSError, AttributeError):
+                pass
         try:
             process.send_signal(sig)
         except (OSError, ValueError):
             pass
 
+    def _group_alive() -> bool:
+        """Whether the pinned group still has members (signal 0 = existence probe)."""
+        target = _addressable_pgid()
+        if target is None:
+            return False
+        try:
+            os.killpg(target, 0)
+        except PermissionError:
+            return True          # exists, just not ours to signal
+        except (OSError, AttributeError):
+            return False
+        return True
+
+    def _gone_within(grace: float) -> bool:
+        """True when the leaf AND its pinned group are gone within `grace`.
+
+        The escalation must not be gated on the leaf's exit alone: for a leaf that has already
+        exited while leaving group members behind, `process.wait` returns instantly, so SIGKILL
+        would never be sent and a survivor that ignores SIGTERM would outlive the orchestration
+        that authorized it. Under mandatory bwrap the group holds only the wrapper (see above),
+        so in that configuration this reduces to "has the wrapper exited" — the survivors it
+        cannot see are handled by the callers' bounded-then-abandon waits.
+        """
+        end = time.monotonic() + grace
+        try:
+            process.wait(timeout=grace)
+        except subprocess.TimeoutExpired:
+            return False
+        except (OSError, ValueError):
+            pass                 # already reaped / no child to wait for
+        while _group_alive():
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+        return True
+
     _signal_group(signal.SIGTERM)
-    try:
-        process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+    if _gone_within(LEAF_TERMINATE_GRACE_SECONDS):
         return
-    except subprocess.TimeoutExpired:
-        pass
     _signal_group(signal.SIGKILL)
-    try:
-        process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        # SIGKILL cannot be ignored; reaching here means the process is wedged in
-        # uninterruptible sleep. Returning beats blocking the driver's exit forever.
-        pass
+    # SIGKILL cannot be ignored, so what survives this is wedged in uninterruptible sleep (or
+    # is a descendant outside the group's reach — bwrap `--new-session` puts the sandboxed
+    # command in a session of its own). Returning beats blocking the driver forever.
+    _gone_within(LEAF_TERMINATE_GRACE_SECONDS)
 
 
 @dataclass
@@ -1384,6 +1732,11 @@ class ProcResult:
     # Codex only: the untouched JSONL event stream (`stdout` keeps just the final
     # agent_message), which is otherwise unrecoverable from any artifact.
     raw_stdout: str | None = None
+    # The CONDUCTOR killed this leaf at the per-leaf cap (`_leaf_timeout_seconds`). Carried on
+    # the result object rather than recognised from the captured output: the kill is the
+    # conductor's own act, and routing it back through a regex over leaf-written text would let
+    # any leaf claim it (see `_LEAF_INFRA_ERROR_PATTERNS`).
+    timed_out: bool = False
 
 
 # A leaf that dies on an LLM-infrastructure error exits nonzero with no artifacts, which the
@@ -1508,6 +1861,16 @@ _USAGE_ABORT_HIT_YOUR_LIMIT = r"^\s*" + _HIT_YOUR_LIMIT_BODY
 _USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE = (
     r"^(?:\s*|\{[^\n]*\"result\"\s*:\s*\")" + _HIT_YOUR_LIMIT_BODY)
 
+# Named because it is the ONE member other code reaches for directly (the `--wait-usage-reset`
+# arming path checks its own abort shape against it). It used to be spelled
+# `_LEAF_INFRA_ERROR_PATTERNS[0][1]`, which silently meant "whatever is most severe" — inserting
+# any rank above it would have repointed the usage-limit wait at an unrelated pattern.
+_USAGE_LIMIT_INFRA_PATTERN = re.compile(
+    r"(?<!not your )\busage limit\b|\bsession limit\b"
+    rf"|\b{_USAGE_LIMIT_WINDOWS}\s+limit\s+reached\b"
+    rf"|{_USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE}"
+    r"|\bcredit balance is too low\b|\bquota\b[^\n]{0,20}exceed")
+
 # Ordered MOST severe first — the tuple index is the severity rank (see `_classify_leaf_infra_error`).
 # A usage limit is a hard stop that costs hours; a rate limit or an overload is transient. Reporting
 # the hard stop as the transient one sends the operator back to a run that cannot start.
@@ -1517,6 +1880,12 @@ _USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE = (
 # rate-limiting step", "the generic interface is overloaded across ranks", or "Newton iteration
 # limit reached", and a compiler that writes "call of overloaded 'update(double)'". Hence the word
 # boundaries, the required error context, and the qualifier on `limit reached`.
+#
+# `leaf_timeout` is deliberately NOT a member: the conductor knows it killed the leaf, and that
+# fact is carried out of band on `ProcResult.timed_out` (see `_leaf_infra_error`). Recognising the
+# conductor's own marker line here instead would hand every leaf the tag as a forgery — a verify
+# leaf quoting the marker while REVIEWING THIS FILE, then dying of a quota stop, would have its
+# `llm_usage_limit` outranked and `--wait-usage-reset` silently disarmed.
 _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # `(?<!not your )` — the CLI's 429 message literally reads "Server is temporarily limiting
     # requests (not your usage limit)". Tagging that a usage limit would be exactly backwards.
@@ -1525,11 +1894,7 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # bare `session limit` alternative: the sibling windows (`weekly`, `Opus weekly`, `5-hour`) carry
     # no "reached", so they matched NOTHING and a real quota stop terminalized UNTAGGED — no
     # `llm_usage_limit`, no wait, and not even a `leaf_usage_limit_wait_declined` to grep for.
-    ("llm_usage_limit", re.compile(
-        r"(?<!not your )\busage limit\b|\bsession limit\b"
-        rf"|\b{_USAGE_LIMIT_WINDOWS}\s+limit\s+reached\b"
-        rf"|{_USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE}"
-        r"|\bcredit balance is too low\b|\bquota\b[^\n]{0,20}exceed")),
+    ("llm_usage_limit", _USAGE_LIMIT_INFRA_PATTERN),
     # `overloaded` is a WORD, not a marker: this repo's own prose ("Overloaded the `__box` generic
     # so ranks 0..3 share one writer") and every compiler's overload diagnostic (`error: call of
     # overloaded 'update(double)' is ambiguous`, `Error: Type mismatch; overloaded generic __box`)
@@ -1636,6 +2001,13 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #   - `llm_client_error` (4xx) is a rejected REQUEST: an expired credential, an unsupported
 #     parameter, an oversized prompt. Every re-launch sends the same request and gets the same 4xx.
 #   - `llm_permission_probe_unavailable` needs an operator/config fix, not another attempt.
+#   - `leaf_timeout` (not a pattern above — see `_leaf_infra_error`) is the one tag whose retry
+#     cost is bounded from BELOW by the cap itself: a re-launch stakes another FULL cap (2h by
+#     default) of wall-clock on a leaf that already proved it can wedge, and the budget allows
+#     three of them — a 6-hour silent block in place of the 99-minute one the cap exists to stop.
+#     Fail_closed costs the operator one `--resume` instead, and that resume is substep-granular
+#     wherever item 51's preconditions hold (a `verify` death in Compile/Generate on an unmoved
+#     repo revision); elsewhere it re-runs the phase, which is still bounded work.
 #   - an UNCLASSIFIABLE nonzero exit (crash, OOM, hook denial) is deterministic: retrying it just
 #     hides the same failure behind 3x the wall-clock.
 _RETRYABLE_LEAF_INFRA_TAGS = frozenset({
@@ -1776,7 +2148,7 @@ def _stream_terminal_usage_limit_line(stream: str) -> str | None:
     """The LAST line of ONE stream that the `llm_usage_limit` pattern matches, skipping recovered
     retry-notice banners, or None when there is none. The per-stream scan behind
     `_terminal_usage_limit_line`."""
-    usage_pattern = _LEAF_INFRA_ERROR_PATTERNS[0][1]
+    usage_pattern = _USAGE_LIMIT_INFRA_PATTERN
     lines = (stream or "").splitlines()
     terminal: str | None = None
     for idx, line in enumerate(lines):
@@ -1855,7 +2227,7 @@ def _is_cli_usage_abort_line(line: str) -> bool:
         return False
     if not _CLI_USAGE_ABORT_LINE_RE.match(line):
         return False
-    return bool(_LEAF_INFRA_ERROR_PATTERNS[0][1].search(lowered))
+    return bool(_USAGE_LIMIT_INFRA_PATTERN.search(lowered))
 
 
 def _sole_content_usage_limit_line(stdout: str, *, allow_envelope: bool) -> str | None:
@@ -2266,6 +2638,27 @@ class UsageResetWaitPlan(NamedTuple):
     reset_epoch: int
     reset_source: str
     window: str | None
+
+
+def _leaf_infra_error(proc: ProcResult) -> tuple[str, str] | None:
+    """The infra `(tag, evidence)` for a dead leaf — the ONE entry point every caller uses.
+
+    A leaf the conductor killed at the cap is `leaf_timeout`, decided from `proc.timed_out` and
+    nothing else. That is the whole point of the flag: the tag decides whether the run waits out
+    a quota reset, so it must not be derivable from text the leaf controls. The evidence is the
+    conductor's own marker line, recovered from the stderr it was appended to (a caller that
+    re-reads a persisted log rather than the live `ProcResult` therefore sees the marker as
+    prose, which is correct — the classifier must not tag it).
+
+    Otherwise the captured output is classified as before.
+    """
+    if proc.timed_out:
+        marker = next(
+            (line for line in reversed((proc.stderr or "").splitlines())
+             if line.lstrip().startswith("[conductor] leaf_timeout")),
+            "[conductor] leaf_timeout")
+        return ("leaf_timeout", " ".join(marker.split())[:160])
+    return _classify_leaf_infra_error(proc.stderr or "", proc.stdout or "")
 
 
 def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str] | None:
@@ -2703,7 +3096,14 @@ class Conductor:
         child_arid: str | None = None,
         profile: dict[str, Any] | None = None,
         pure: bool = False,
+        timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
+        """Launch one leaf and return its captured result.
+
+        `timeout_context` only labels the `leaf_timeout` event with the node/step/substep the
+        leaf belongs to (`spawn_leaf` itself has no access to them). It never changes what is
+        launched, and an absent field is reported empty rather than guessed.
+        """
         # Host-certify the codex hooks feature into the leaf-unwritable cache before the
         # codex leaf launches (the in-sandbox hook reads it read-only; see
         # _ensure_codex_feature_cache). Memoized; no-op for claude.
@@ -2746,9 +3146,29 @@ class Conductor:
                 # bind paths and the leaf prompt itself both sit in it, so a bare
                 # `"resume" in argv` scan can be satisfied by leaf-controlled text.
                 return self._spawn_codex_json_leaf(
-                    argv, child_env, child_arid, resume=bool(resume_session_id))
-            proc = subprocess.run(
-                argv, cwd=self.repo_root, env=child_env, text=True, capture_output=True, check=False,
+                    argv, child_env, child_arid, resume=bool(resume_session_id),
+                    timeout_context=timeout_context)
+            # Popen + communicate(timeout=), not `subprocess.run(timeout=)`: on a timeout `run`
+            # calls `kill()`, which signals the DIRECT child only — and under mandatory bwrap the
+            # direct child is the wrapper, so the CLI behind it would survive. `start_new_session
+            # =True` gives the wrapper its own process group for `_terminate_leaf_process_group`,
+            # matching the codex path. (bwrap itself calls `setsid` for the sandboxed command, so
+            # the group signal reaches the wrapper and — via `--die-with-parent` — the CLI it
+            # started; a tool subprocess the CLI spawned is inside the sandbox's own session and
+            # is left to the same fate the interrupt path already leaves it to.)
+            process = subprocess.Popen(
+                argv, cwd=self.repo_root, env=child_env, text=True,
+                # Decode leniently, for the same reason the codex leaf does (`:_spawn_codex_json
+                # _leaf`): a leaf's own output must never be able to kill the conductor. Under
+                # the default STRICT codec a SIGKILL that truncates a multi-byte character mid
+                # sequence — the normal outcome of killing a leaf writing non-ASCII prose —
+                # makes the recovery `communicate` raise `UnicodeDecodeError`, which is not a
+                # `TimeoutExpired`, escapes `spawn_leaf`, and terminalizes the run as a generic
+                # conductor_error with no `leaf_timeout` event at all: the feature failing in
+                # exactly the case it exists for.
+                errors="backslashreplace",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True,
             )
         except FileNotFoundError as exc:
             # The leaf executable could not be found. Under mandatory bwrap argv[0] is
@@ -2764,7 +3184,169 @@ class Conductor:
                     f"cannot launch sandboxed leaf — executable not found "
                     f"(bwrap missing on this host?): {exc}") from exc
             raise
-        return ProcResult(proc.returncode, proc.stdout, proc.stderr)
+        # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
+        # be armed: a deterministic substep never reaches spawn_leaf, the usage-reset wait happens
+        # BETWEEN launches, and the `/usage` probe carries its own timeout.
+        timeout_seconds = _leaf_timeout_seconds()
+        started = time.monotonic()
+        deadline = (started + timeout_seconds) if timeout_seconds else None
+        # Pinned now, while the leaf is unquestionably alive: `start_new_session=True` makes it
+        # its own group leader, so its pid IS the pgid, and `os.getpgid` stops resolving the
+        # moment the leaf is reaped (see `_terminate_leaf_process_group`).
+        leaf_pgid = process.pid
+        leaf_start_ticks = _pid_start_ticks(process.pid)
+        # The locale codec `text=True` selected, so the partial output harvested off a
+        # `TimeoutExpired` (raw bytes) decodes the same way as output that returns normally.
+        stream_encoding = getattr(process.stdout, "encoding", None) or "utf-8"
+        stream_abandoned = False
+        poll_slice = LEAF_STREAM_POLL_SECONDS
+        try:
+            while True:
+                # SLICED, not one `communicate(timeout=<cap>)`: `communicate` returns at EOF, and
+                # EOF needs every inheritor of the write end to close it. A leaf that answered and
+                # EXITED while leaking a tool subprocess that kept the pipe would otherwise be
+                # waited on for the whole remaining cap and then reported as a timeout — a
+                # spurious fail_closed for a leaf that succeeded. Polling lets the exit be
+                # noticed the moment it happens.
+                # The slice applies even with the cap DISABLED: `0` removes the DEADLINE, not
+                # the exit detection. Without it a leaf that answered, exited and leaked a
+                # pipe-holder blocks the driver forever — on a leaf that SUCCEEDED.
+                # It GROWS, up to `LEAF_STREAM_POLL_MAX_SECONDS`, because every expired slice
+                # costs a full re-join of everything `communicate` has accumulated: at a fixed
+                # one-second slice a chatty leaf makes that O(n^2) (measured: a 20s cap
+                # overrunning to 87s, 16 GB peak). The growth saturates at the ceiling, so this
+                # divides the joins by 30 (~244 at the default cap) rather than changing the
+                # asymptote — the exit is still noticed within one ceiling-length slice, and a
+                # leaf that floods the claude path is bounded only by the cap (see the capture
+                # budgets, which the claude path deliberately does not have).
+                slice_seconds = (
+                    poll_slice if deadline is None
+                    else min(max(deadline - time.monotonic(), 0.0), poll_slice))
+                try:
+                    stdout, stderr = process.communicate(timeout=slice_seconds)
+                    break
+                except subprocess.TimeoutExpired as expired:
+                    poll_slice = min(poll_slice * 2, LEAF_STREAM_POLL_MAX_SECONDS)
+                    if process.poll() is not None:
+                        # The leaf EXITED on its own, so its status is authoritative and this is
+                        # NOT a timeout. Only a descendant it leaked can still hold the pipes;
+                        # give them the teardown grace and then keep whatever arrived.
+                        stdout, stderr, stream_abandoned = _drain_exited_leaf(
+                            process, expired, encoding=stream_encoding, pgid=leaf_pgid,
+                            pgid_start_ticks=leaf_start_ticks)
+                        break
+                    if deadline is not None and time.monotonic() >= deadline:
+                        # Still running with the cap spent: this is the wedge.
+                        _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+                        try:
+                            # Collect whatever the leaf wrote before it wedged — it is the only
+                            # evidence of what it was doing. Bounded, because the pipes are NOT
+                            # guaranteed to close: a tool subprocess the CLI started inherited the
+                            # write end and sits inside the sandbox's own session, out of reach of
+                            # the group signal (measured: a leaked grandchild holds the pipe open
+                            # indefinitely). The driver must not wait that out.
+                            stdout, stderr = process.communicate(
+                                timeout=LEAF_TERMINATE_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired as drained:
+                            # ...and when it does not close, take the partial output off the
+                            # exceptions rather than reporting the leaf as silent: `communicate`
+                            # attaches what it had already read, as RAW BYTES even in text mode
+                            # (the decode only happens on the path that returns). Dropping it was
+                            # a real defect — the smoke test's leaf wrote to both streams and the
+                            # conductor reported `stdout_chars: 0`.
+                            # The residual: `communicate` raises with EMPTY payloads when the
+                            # streams were read to EOF and the timeout came from its internal
+                            # `wait()` instead — i.e. a leaf that wrote everything, closed both
+                            # fds, and then survived SIGKILL in uninterruptible sleep. Its output
+                            # is then held in the Popen's private buffers and is not reachable
+                            # without reaching into them. The marker still reports the kill; only
+                            # the leaf's own words are lost, in a case where the leaf is wedged in
+                            # the kernel rather than in the model.
+                            stdout = _partial_stream_text(
+                                drained.output, expired.output, encoding=stream_encoding)
+                            stderr = _partial_stream_text(
+                                drained.stderr, expired.stderr, encoding=stream_encoding)
+                            # The pipes outlived the kill, so this capture is a PREFIX. Say so
+                            # in band, exactly as the exited-leaf path does — an operator
+                            # cannot otherwise tell a complete capture from a truncated one.
+                            # Appended BEFORE `_timed_out_result`, which adds its own marker
+                            # last (the tag's evidence is read from the last such line).
+                            stderr = (stderr.rstrip() + "\n"
+                                      + LEAF_STREAM_ABANDONED_MARKER).strip()
+                            _close_leaf_pipes(process)
+                        return self._timed_out_result(
+                            process.returncode, stdout, stderr, timeout_seconds=timeout_seconds,
+                            started=started, context=timeout_context)
+        except MemoryError:
+            # The claude path buffers inside `communicate` with no budget of its own (the codex
+            # captures are bounded; this one is not — see LEAF_STDERR_CAPTURE_MAX_CHARS), so a
+            # leaf in an output loop can exhaust memory inside its join. Route it as a dead leaf
+            # rather than letting it unwind as a generic conductor_error with no event at all:
+            # the substep can then be retried or resumed, and the cause is named.
+            _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+            _close_leaf_pipes(process)
+            return ProcResult(
+                process.returncode if process.returncode not in (None, 0) else 1, "",
+                "[conductor] leaf_capture_exhausted_memory: the leaf produced more output than "
+                "the driver could hold; its capture was discarded")
+        except BaseException:
+            # BaseException, not Exception: `SystemExit` (run_workflow's SIGTERM converter) and
+            # `KeyboardInterrupt` unwind the driver while the leaf is mid-turn, which is exactly
+            # when an orphan is worst — the driver goes on to revoke this leaf's authority and
+            # delete its TMPDIR while it keeps writing. The codex path below carries the same
+            # obligation for the same reason; `subprocess.run`'s own cleanup used to cover both.
+            _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+            raise
+        if stream_abandoned:
+            stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
+        return ProcResult(process.returncode, stdout, stderr)
+
+    def _timed_out_result(
+        self, returncode: int | None, stdout: str, stderr: str, *,
+        timeout_seconds: int, started: float, context: dict[str, str] | None,
+        usage: dict[str, Any] | None = None, model: str | None = None,
+        resume_mode: str | None = None, raw_stdout: str | None = None,
+    ) -> ProcResult:
+        """The ProcResult for a leaf the conductor killed at the cap, plus its `leaf_timeout` event.
+
+        Emitted HERE, before any downstream handling, because "no event at all" is the defect this
+        whole path exists to fix: the 99-minute field hang produced nothing an operator could see.
+
+        The marker is APPENDED to the leaf's captured stderr, never substituted for it, and the
+        partial stdout is returned untouched — `_persist_leaf_output` then stores both, which is
+        all the after-the-fact attribution a killed leaf can offer. The exit code is forced
+        nonzero because every downstream consumer of a leaf death keys on `returncode != 0`; the
+        real code is normally `-15` / `-9` (the escalation the teardown just performed), and the
+        fallback to `1` covers only a process that reported success, or no status at all, while
+        being killed.
+        """
+        elapsed = time.monotonic() - started
+        if returncode is None or returncode == 0:
+            returncode = 1
+        marker = _leaf_timeout_marker(timeout_seconds, elapsed)
+        stderr = ((stderr or "").rstrip() + "\n" + marker).strip()
+        fields = {
+            "node_key": (context or {}).get("node_key", ""),
+            "step": (context or {}).get("step", ""),
+            "substep": (context or {}).get("substep", ""),
+            "agent_run_id": (context or {}).get("agent_run_id", ""),
+            "backend": self.backend,
+            "timeout_seconds": timeout_seconds,
+            "elapsed_seconds": round(elapsed, 1),
+            "leaf_exit": returncode,
+            "stdout_chars": len(stdout or ""),
+            "stderr_chars": len(stderr),
+        }
+        if raw_stdout is not None:
+            fields["raw_stdout_chars"] = len(raw_stdout)
+        self.emit("leaf_timeout", **fields)
+        # `timed_out=True` is what makes this a `leaf_timeout` downstream (`_leaf_infra_error`);
+        # the marker in stderr is evidence for the operator, never the mechanism.
+        return ProcResult(returncode, stdout or "", stderr, usage=usage, model=model,
+                          resume_mode=resume_mode, raw_stdout=raw_stdout, timed_out=True)
 
     def _register_codex_thread(self, child_arid: str, thread_id: str) -> None:
         """Transactionally replace the provisional Codex identity in all host records."""
@@ -2788,9 +3370,41 @@ class Conductor:
             status="running",
         )
 
+    def _bind_codex_thread(self, child_arid: str | None, thread_id: str) -> str | None:
+        """Record the emitted codex thread against this child; the error text, or None.
+
+        Binding the emitted thread to a child is a HOST write (launch response + session index)
+        and can fail on ENOSPC or a conflicting recorded identity. Like every other host-write
+        failure on the leaf path, it must come back as a transport-dead ProcResult the substep
+        loop can terminalize — never escape `spawn_leaf` and take the whole orchestration down
+        with a generic conductor_error.
+
+        A failed multi-file registration is safe to route that way only after any durable
+        rollback journal has been recovered. If recovery is still impossible (persistent EIO),
+        escape fail-closed instead of finalizing against split identities.
+
+        One method, two callers: the streaming read, and the post-break drain when it turns out
+        the whole turn was queued and the conductor is about to RETURN that leaf's answer.
+        """
+        if not child_arid:
+            return None                 # the read-only diagnostician has no child to bind
+        try:
+            self._register_codex_thread(child_arid, thread_id)
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            from tools.orchestration_runtime import _recover_json_transactions
+            try:
+                _recover_json_transactions(
+                    self.repo_root / "workspace" / "orchestrations" / self.orchestration_id)
+            except Exception as recovery_exc:
+                raise RuntimeError(
+                    "codex thread registration failed and its rollback could not be "
+                    f"recovered: {recovery_exc}") from exc
+            return f"codex thread registration failed: {type(exc).__name__}: {exc}"
+        return None
+
     def _spawn_codex_json_leaf(
         self, argv: list[str], child_env: dict[str, str], child_arid: str | None,
-        *, resume: bool = False,
+        *, resume: bool = False, timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
         # A recorded step/substep leaf must supply its child ARID so the emitted
         # thread can be registered before file tools run.  The read-only failure
@@ -2812,13 +3426,50 @@ class Conductor:
         )
         assert process.stdout is not None
         assert process.stderr is not None
+        # Set when the conductor gives up on the streams: the reader threads survive the call
+        # (see the abandon path below), and this is what stops them appending — and reading —
+        # once nobody is listening.
+        stop_reading = threading.Event()
+        # The cap, as a DEADLINE ON EVERY WAIT rather than a watchdog timer that kills and hopes.
+        # A timer was the first shape of this and it does not hold: killing the process group
+        # does NOT guarantee the stdout pipe closes, because `bwrap --new-session` puts the
+        # sandboxed command in a session of its own — the group signal reaches the wrapper (and,
+        # via `--die-with-parent`, the CLI) but not a tool subprocess the CLI leaked, and that
+        # subprocess inherited the write end. A blocking `for line in process.stdout` would then
+        # never reach EOF and the conductor would block FOREVER PAST THE CAP: the original defect,
+        # merely delayed. So the read runs in a pump thread and the main path waits on a queue
+        # with the remaining time; every wait below is bounded the same way.
+        timeout_seconds = _leaf_timeout_seconds()
+        started = time.monotonic()
+        deadline = (started + timeout_seconds) if timeout_seconds else None
+        # Set by THIS thread only, when a wait actually runs out — never by a timer racing a
+        # clean finish.
+        timed_out = False
+        # Pinned while the leaf is unquestionably alive, together with the start-time identity
+        # that makes the id safe to use after the leaf has been reaped (see
+        # `_terminate_leaf_process_group`).
+        leaf_pgid = process.pid
+        leaf_start_ticks = _pid_start_ticks(process.pid)
+
+        def _remaining() -> float | None:
+            """Seconds left of the cap, or None when the cap is disabled (wait forever)."""
+            return None if deadline is None else max(deadline - time.monotonic(), 0.0)
         thread_id: str | None = None
         final_text: str | None = None
         stderr_chunks: list[str] = []
         raw_lines: list[str] = []
+        raw_captured = 0
         failure_events: list[str] = []
         turn_failed = False
         registration_error: str | None = None
+        # Set when a stream could not be drained to its end (a descendant the leaf leaked still
+        # holds the write end), so the captured output is truncated and must say so.
+        stream_abandoned = False
+        # The leaf's exit status as observed BEFORE any kill this function performs; `None`
+        # means it was still running (see the clean-finish guard below).
+        pre_kill_status: int | None = None
+        # A `thread.started` that was still QUEUED when the read stopped (see the drain below).
+        drained_thread_id: str | None = None
         usage: dict[str, Any] | None = None
         model: str | None = None
         resume_mode = "in_place" if resume else None
@@ -2826,99 +3477,290 @@ class Conductor:
         # Codex may emit diagnostics before it emits (or closes) its JSONL stdout.
         # Drain stderr concurrently: reading it only after the stdout iterator
         # reaches EOF can deadlock once the stderr pipe fills.
+        #
+        # Line by line, NOT one `read()`: `read()` returns only at EOF, so a drain this function
+        # gives up on (every bounded join below) would contribute NOTHING and a killed leaf would
+        # be reported with no stderr at all — the evidence the claude path goes to the trouble of
+        # harvesting off `TimeoutExpired`. Appending per line makes whatever arrived before the
+        # kill available to a join that expires.
         def _drain_stderr() -> None:
-            stderr_chunks.append(process.stderr.read())
+            captured = 0
+            try:
+                for chunk in process.stderr:
+                    if stop_reading.is_set():
+                        return
+                    if captured >= LEAF_STDERR_CAPTURE_MAX_CHARS:
+                        # KEEP READING past the budget, and only stop KEEPING. Stopping the
+                        # read leaves nobody draining a pipe nothing will close, so the leaf's
+                        # next write blocks forever once the kernel buffer fills — measured: a
+                        # healthy leaf that wrote 1.1 MB of progress to stderr then never got
+                        # to emit its answer, and was killed at the cap. The cap must not
+                        # become the cause of the hang it exists to stop.
+                        continue
+                    room = LEAF_STDERR_CAPTURE_MAX_CHARS - captured
+                    stderr_chunks.append(chunk[:room])
+                    captured += min(len(chunk), room)
+                    if captured >= LEAF_STDERR_CAPTURE_MAX_CHARS:
+                        stderr_chunks.append(
+                            "\n[conductor] leaf_stderr_capture_truncated: kept the first "
+                            f"{LEAF_STDERR_CAPTURE_MAX_CHARS} characters; the leaf went on "
+                            "writing")
+            except Exception as exc:  # noqa: BLE001 — a dying pipe must not raise in a thread
+                stderr_chunks.append(f"\n[conductor] leaf_stderr_read_error: {exc}")
+
+        # The stdout pump: the ONLY job of this thread is to move lines off the pipe so the main
+        # thread's wait can have a deadline. Parsing stays in the main thread, so the registration
+        # side effects and their error handling are unchanged. Bounded queue = the pipe's own
+        # backpressure, preserved.
+        stdout_lines: queue.Queue[str | None] = queue.Queue(maxsize=2048)
+        # Characters currently queued but not yet taken by the reader (see `_pump_stdout`).
+        queued_chars = [0]
+        queued_lock = threading.Lock()
+
+        def _queued_chars() -> int:
+            with queued_lock:
+                return queued_chars[0]
+
+        def _took(line: str | None) -> str | None:
+            """Account for a line the reader has taken off the queue."""
+            if line is not None:
+                with queued_lock:
+                    queued_chars[0] -= len(line)
+            return line
+
+        def _pump_stdout() -> None:
+            try:
+                for line in process.stdout:
+                    if stop_reading.is_set():
+                        return
+                    # Byte-aware backpressure. `Queue(maxsize=…)` bounds the number of lines,
+                    # not their size, so a leaf emitting large records could park megabytes per
+                    # slot in front of a reader that had not yet applied any budget. Waiting
+                    # here lets the pipe fill instead, which is the flow control the OS already
+                    # provides — and the pipe is what the leaf itself blocks on, so nothing is
+                    # lost. Polled rather than condition-signalled: the consumer is the same
+                    # thread that decides to abandon the stream, and a missed notify there
+                    # would be a hang.
+                    while (_queued_chars() >= LEAF_STREAM_QUEUE_MAX_CHARS
+                           and not stop_reading.is_set()):
+                        time.sleep(0.01)
+                    with queued_lock:
+                        queued_chars[0] += len(line)
+                    stdout_lines.put(line)
+            except Exception as exc:  # noqa: BLE001 — same reasoning as the stderr drain
+                stderr_chunks.append(f"\n[conductor] leaf_stdout_read_error: {exc}")
+            finally:
+                stdout_lines.put(None)          # EOF sentinel
 
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
-        stderr_thread.start()
+        stdout_thread = threading.Thread(target=_pump_stdout, daemon=True)
+
+        def _keep_raw(line: str) -> None:
+            """Retain one JSONL line as evidence, within a budget.
+
+            `raw_stdout` is persisted as `leaf.stdout.jsonl` — the only record of what a codex
+            leaf did — so it is kept; but a leaf in an output loop would otherwise grow it
+            without limit (measured: 475 MB in 20s, i.e. the driver OOMs long before a 2h cap
+            can fire). Truncation is recorded in the stream itself.
+            """
+            nonlocal raw_captured
+            if raw_captured >= LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS:
+                return
+            # Clipped, not appended whole: one JSONL record can carry a large tool result, and
+            # a budget checked only after the append overshoots it by that record's size.
+            room = LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS - raw_captured
+            raw_lines.append(line[:room])
+            raw_captured += min(len(line), room)
+            if raw_captured >= LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS:
+                raw_lines.append(
+                    "[conductor] leaf_stdout_capture_truncated: kept the first "
+                    f"{LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS} characters; the leaf went on "
+                    "writing\n")
         try:
-            for line in process.stdout:
+            stderr_thread.start()
+            stdout_thread.start()
+            # Set once the leaf has EXITED with its stream still open: from then on only a
+            # descendant it leaked can be holding the write end, so the wait is the teardown
+            # grace and NOT the rest of the cap (the leaf may well have succeeded).
+            grace_deadline: float | None = None
+            next_poll_at = started
+            while True:
+                # EVERYTHING that can end this loop is evaluated HERE, before the wait, and
+                # never only in the "the queue came up empty" branch: a stream that keeps
+                # DELIVERING — a runaway tool loop, a retry storm, a descendant in an output
+                # loop — never lets the loop reach that branch, so a check placed there does
+                # not run at all. That includes noticing the leaf's EXIT: a descendant still
+                # flooding the pipe would otherwise hide it until the cap.
+                now = time.monotonic()
+                if grace_deadline is None and now >= next_poll_at:
+                    next_poll_at = now + LEAF_STREAM_POLL_SECONDS
+                    if process.poll() is not None:
+                        # The leaf is gone; from here only a descendant it leaked can be
+                        # holding the stream, and it gets the teardown grace, not the cap.
+                        grace_deadline = now + LEAF_TERMINATE_GRACE_SECONDS
+                if grace_deadline is not None:
+                    if now >= grace_deadline:
+                        stream_abandoned = True
+                        break
+                    # Deliberately NOT clamped by the cap's remainder: the grace is what the
+                    # already-exited leaf's leaked pipe-holder gets, and clamping it to a spent
+                    # cap turns this into a zero-timeout spin at 100% of a core.
+                    wait_for = max(grace_deadline - now, 0.05)
+                else:
+                    if deadline is not None and now >= deadline:
+                        timed_out = True
+                        break
+                    # Sliced so the leaf's EXIT is noticed promptly, not only its stream's EOF.
+                    # The slice applies even with the cap DISABLED: `0` removes the deadline,
+                    # not the exit detection — otherwise a leaf that answered, exited and leaked
+                    # a pipe-holder would block the driver forever on a leaf that SUCCEEDED.
+                    remaining = _remaining()
+                    wait_for = (LEAF_STREAM_POLL_SECONDS if remaining is None
+                                else min(remaining, LEAF_STREAM_POLL_SECONDS))
+                try:
+                    line = _took(stdout_lines.get(timeout=wait_for))
+                except queue.Empty:
+                    # A quiet moment means nothing on its own: the loop head above decides
+                    # whether the leaf has exited, the cap has run out, or the grace is spent.
+                    next_poll_at = time.monotonic()      # ...but do look at once
+                    continue
+                if line is None:                # EOF: the leaf closed stdout
+                    break
                 # Keep the raw stream: only the final agent_message survives into
                 # ProcResult.stdout, so without this the event log that shows what the
                 # leaf actually did (tool calls, item errors, the terminal event) is
                 # gone at the moment of capture and unrecoverable from any artifact.
-                raw_lines.append(line)
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
+                _keep_raw(line)
+                event = _parse_codex_line(line)
+                if event is None:
                     continue
-                if not isinstance(event, dict):
-                    continue
+                usage, model, final_text, turn_failed = _absorb_codex_event(
+                    event, usage, model, final_text, turn_failed, failure_events)
                 kind = str(event.get("type") or "")
-                # `turn.completed` is the canonical current event, while the
-                # tolerant top-level/nested extraction keeps old/new CLI JSONL
-                # shapes observable without inventing values.
-                candidates = (event, event.get("turn"), event.get("item"))
-                for candidate_meta in candidates:
-                    if not isinstance(candidate_meta, dict):
-                        continue
-                    candidate_usage = candidate_meta.get("usage")
-                    if isinstance(candidate_usage, dict):
-                        usage = candidate_usage
-                    candidate_model = candidate_meta.get("model")
-                    if isinstance(candidate_model, str) and candidate_model.strip():
-                        model = candidate_model.strip()
-                if kind == "turn.failed":
-                    # TERMINAL, unlike `error`: the turn itself ended failed, so any
-                    # `agent_message` seen before it is mid-turn narration, not an
-                    # answer. Tracked separately from `error` so a preceding message
-                    # cannot mask the failure (see the exit-code normalization below).
-                    turn_failed = True
-                if kind in {"error", "turn.failed"}:
-                    # The retry and usage-reset classifiers operate on the
-                    # process diagnostics. Preserve Codex's structured terminal
-                    # event there even when the CLI left stderr empty.
-                    failure_events.append(json.dumps(event, ensure_ascii=False)[:2000])
                 candidate = event.get("thread_id")
                 if kind == "thread.started" and isinstance(candidate, str) and candidate.strip():
                     if thread_id is not None and candidate.strip() != thread_id:
                         raise RuntimeError("codex emitted conflicting thread IDs")
                     if thread_id is None:
                         thread_id = candidate.strip()
-                        if child_arid:
-                            try:
-                                self._register_codex_thread(child_arid, thread_id)
-                            except Exception as exc:  # noqa: BLE001 — see below
-                                # A failed multi-file registration is safe to route as
-                                # a transport result only after any durable rollback
-                                # journal has been recovered.  If recovery is still
-                                # impossible (persistent EIO), escape fail-closed
-                                # instead of finalizing against split identities.
-                                from tools.orchestration_runtime import (
-                                    _recover_json_transactions,
-                                )
-                                try:
-                                    _recover_json_transactions(
-                                        self.repo_root
-                                        / "workspace"
-                                        / "orchestrations"
-                                        / self.orchestration_id
-                                    )
-                                except Exception as recovery_exc:
-                                    raise RuntimeError(
-                                        "codex thread registration failed and its "
-                                        f"rollback could not be recovered: {recovery_exc}"
-                                    ) from exc
-                                # Binding the emitted thread to this child is a HOST
-                                # write (launch response + session index) and can fail
-                                # on ENOSPC or a conflicting recorded identity. Like
-                                # every other host-write failure on the leaf path, it
-                                # must come back as a transport-dead ProcResult the
-                                # substep loop can terminalize — never escape
-                                # spawn_leaf and take the whole orchestration down with
-                                # a generic conductor_error. Stop the leaf first: its
-                                # hooks would authorize file access against an identity
-                                # the host did not record.
-                                registration_error = (
-                                    "codex thread registration failed: "
-                                    f"{type(exc).__name__}: {exc}")
-                                break
-                item = event.get("item")
-                if kind == "item.completed" and isinstance(item, dict):
-                    if str(item.get("type") or "") == "agent_message":
-                        text = item.get("text")
-                        if isinstance(text, str):
-                            final_text = text
+                        registration_error = self._bind_codex_thread(child_arid, thread_id)
+                        if registration_error is not None:
+                            break
+            if registration_error is not None or timed_out:
+                # Read BEFORE the kill: `returncode` afterwards says nothing about whether the
+                # leaf had finished on its own, and a CLI that handles SIGTERM and exits 0
+                # would otherwise satisfy the clean-finish guard below — reporting a leaf the
+                # conductor killed as a clean success, with mid-turn narration as its answer
+                # and no `leaf_timeout` event at all.
+                pre_kill_status = process.poll()
+                # Same reasoning as the interrupt path: the host refused to record this
+                # leaf's identity (or the cap ran out), so its descendants must not outlive
+                # the decision and the waits must stay bounded.
+                _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+                # The helper has already spent its SIGTERM and SIGKILL grace periods, so a
+                # process still alive here is wedged (uninterruptible I/O). Re-entering an
+                # UNBOUNDED wait would hand back exactly the indefinite block the bounded
+                # teardown exists to prevent — report the leaf dead and move on.
+                try:
+                    returncode = process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    returncode = -int(signal.SIGKILL)
+            else:
+                # EOF on stdout. The leaf may still not have EXITED — this wait is its own
+                # hang point — so it too gets the remainder of the cap, and running out here
+                # is a timeout like any other.
+                try:
+                    returncode = process.wait(timeout=_remaining())
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    pre_kill_status = process.poll()      # still running: not a clean finish
+                    _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+                    try:
+                        returncode = process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        returncode = -int(signal.SIGKILL)
+            # Retire the pump, and take everything it had already queued. UNCONDITIONALLY, not
+            # only while the thread is alive: a pump that has finished still leaves its backlog
+            # (up to 2048 lines) in the queue, and `leaf.stdout.jsonl` is the only record of
+            # what a codex leaf did — dropping the backlog would lose exactly the evidence a
+            # `leaf_timeout` post-mortem needs. Consuming is also what frees a pump parked in
+            # `put()` on a full queue, where it can never return to its read and so can never
+            # notice the closed pipe.
+            #
+            # The leftovers are PARSED as well as kept: a leaf's answer can be sitting in the
+            # queue at the instant the cap expires, and the clean-finish guard below cannot
+            # recognise a healthy turn it never read.
+            pump_deadline = time.monotonic() + LEAF_TERMINATE_GRACE_SECONDS
+            while True:
+                try:
+                    leftover = _took(stdout_lines.get_nowait())
+                except queue.Empty:
+                    if not stdout_thread.is_alive() or time.monotonic() >= pump_deadline:
+                        break
+                    time.sleep(0.02)
+                    continue
+                if leftover is None:
+                    break                                  # EOF sentinel: the pump is done
+                _keep_raw(leftover)
+                leftover_event = _parse_codex_line(leftover)
+                if leftover_event is not None:
+                    usage, model, final_text, turn_failed = _absorb_codex_event(
+                        leftover_event, usage, model, final_text, turn_failed, failure_events)
+                    # The identity is only REMEMBERED here, never bound: registration is a host
+                    # write, and a leaf the conductor has already killed must not have one made
+                    # on its behalf. It is bound below, and only if this turn is accepted.
+                    candidate = leftover_event.get("thread_id")
+                    if (str(leftover_event.get("type") or "") == "thread.started"
+                            and isinstance(candidate, str) and candidate.strip()):
+                        seen = candidate.strip()
+                        known = thread_id if thread_id is not None else drained_thread_id
+                        if known is not None and seen != known:
+                            # The same fail-closed identity check the streaming read makes: a
+                            # backlog is not a licence to accept mixed-session output, and this
+                            # branch can END in an accepted turn (see the binding below).
+                            raise RuntimeError("codex emitted conflicting thread IDs")
+                        drained_thread_id = seen
+                if time.monotonic() >= pump_deadline:
+                    # A leaf that is STILL producing (a runaway tool loop) would otherwise hold
+                    # this drain open forever: the queue never runs empty, so the empty branch
+                    # above is never reached. The backlog is bounded work, not a second wait.
+                    break
+            # The leaf is dead either way now, so the stderr drain gets only the teardown
+            # grace, NOT the remainder of the cap: only a descendant the leaf leaked can still
+            # hold the write end (measured against a real bwrap profile), and waiting hours for
+            # one would be the same indefinite block a step later — on a leaf that may have
+            # SUCCEEDED, i.e. a silent stall nothing in the event stream reports.
+            _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
+            if stderr_thread.is_alive():
+                _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+                _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
+            # Give up on either stream that has still not ended: both are read per LINE, so
+            # everything that arrived is already captured, and the loss is recorded in band
+            # below rather than looking like a leaf that wrote nothing. The read ends are
+            # deliberately NOT closed here (the claude path does close them): a reader thread
+            # is blocked on them, and `close()` would wait on the same internal lock — trading
+            # a leaked fd for a hung driver. The cost, accepted knowingly: an abandoned stream
+            # leaves its reader thread and the two pipe fds behind for the driver's lifetime,
+            # plus whatever the queue still holds. Removing that needs both readers rebuilt on
+            # non-blocking fds + `select` (the shape `communicate` itself uses); until then the
+            # leak is bounded per leaf and recorded in band by the marker below.
+            if stderr_thread.is_alive() or stdout_thread.is_alive():
+                stream_abandoned = True
+                # Both threads outlive this call (nothing can close a pipe a descendant holds),
+                # so tell them to stop the moment their current read returns rather than let
+                # them read and append for the rest of the driver's life.
+                stop_reading.set()
+                # ...and free a pump that re-parked in `put()` while the teardown above ran:
+                # parked, it never returns to its read and so never sees the event, pinning the
+                # thread and the queue's contents for the driver's lifetime.
+                while True:
+                    try:
+                        _took(stdout_lines.get_nowait())
+                    except queue.Empty:
+                        break
         except BaseException:
             # BaseException, not Exception: `SystemExit` (the SIGTERM converter in
             # run_workflow raises it) and `KeyboardInterrupt` are the two ways this
@@ -2926,35 +3768,58 @@ class Conductor:
             # cases where leaving the child running is worst — the driver goes on to
             # terminalize the orchestration and delete its TMPDIR while the leaf keeps
             # writing under an authorization the host has already revoked. Every other
-            # leaf spawn is a `subprocess.run`, whose own bare `except:` kills the
-            # child; this raw Popen is the only path that had to do it itself.
-            _terminate_leaf_process_group(process)
-            # Bounded: the drain thread is blocked on a pipe whose writers are the
-            # process group just killed, so it ends promptly — but the driver's exit
-            # path must not depend on that.
-            stderr_thread.join(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+            # leaf spawn used to be a `subprocess.run`, whose own bare `except:` kills the
+            # child; the claude path in `spawn_leaf` now carries the same obligation, since
+            # it too is a raw Popen.
+            _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                              pgid_start_ticks=leaf_start_ticks)
+            # Bounded, and tolerant of a thread that never started (`Thread.start()` itself
+            # can fail under resource exhaustion, and a bare `join` would then raise from
+            # inside this handler and replace the real cause).
+            _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
             raise
-        if registration_error is not None:
-            # Same reasoning as the interrupt path: the host refused to record this
-            # leaf's identity, so its descendants must not outlive the decision.
-            _terminate_leaf_process_group(process)
-            # The helper has already spent its SIGTERM and SIGKILL grace periods, so a
-            # process still alive here is wedged (uninterruptible I/O). Re-entering an
-            # UNBOUNDED wait would hand back exactly the indefinite block the bounded
-            # teardown exists to prevent — report the leaf dead and move on.
-            try:
-                returncode = process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                returncode = -int(signal.SIGKILL)
-            stderr_thread.join(timeout=LEAF_TERMINATE_GRACE_SECONDS)
-        else:
-            # The ordinary path: block for as long as the leaf's turn takes.
-            returncode = process.wait()
-            stderr_thread.join()
-        stderr = "".join(stderr_chunks)
+        # `list(...)` first: an abandoned drain thread may still be appending, and `str.join`
+        # walks the list's raw item array — a concurrent append that reallocates it under the
+        # walk is a crash, not a lost chunk. Copying is atomic under the GIL; whatever the
+        # thread adds afterwards is lost either way, which is what `stream_abandoned` records.
+        stderr = "".join(list(stderr_chunks))
+        if stream_abandoned:
+            stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
         if failure_events:
             stderr = (stderr.rstrip() + "\n" + "\n".join(failure_events)).strip()
         raw_stdout = "".join(raw_lines)
+        if timed_out and not (
+                pre_kill_status == 0 and final_text is not None and not turn_failed):
+            # FIRST, ahead of the `thread_id is None` diagnostic: a leaf killed before
+            # `thread.started` has no thread id, and reporting that as a malformed stream would
+            # blame the transport for a wedge the conductor itself resolved.
+            #
+            # The guard is for the boundary case where the cap runs out at the same instant the
+            # leaf finishes: the queue can come up empty while the leaf's last line is still in
+            # flight, or the post-EOF `wait` can expire on a process that then exits. A turn that
+            # exited 0 with an agent message and no failure event is a healthy answer and must
+            # not be relabelled a timeout. Everything else — any nonzero exit, a failed turn, a
+            # missing answer — was going to terminalize anyway, and the timeout is the more
+            # accurate cause.
+            if registration_error is not None:
+                # Defensive: a registration failure breaks the read loop at once, so it
+                # normally reports itself below rather than reaching here. If the two ever do
+                # coincide, the kill is the tag and the host-write diagnostic still survives.
+                stderr = (stderr + "\n" + registration_error).strip()
+            return self._timed_out_result(
+                returncode, "", stderr, timeout_seconds=timeout_seconds, started=started,
+                context=timeout_context, usage=usage, model=model, resume_mode=resume_mode,
+                raw_stdout=raw_stdout)
+        if thread_id is None and drained_thread_id is not None:
+            # The whole turn was still queued when the read stopped, and the guard above did NOT
+            # call it a timeout — so this leaf's answer is about to be returned, and its identity
+            # has to be recorded like any other accepted turn's. Without this the run rejects a
+            # leaf that succeeded, reporting a stream that "terminated without a usable
+            # thread.started thread_id" for a stream that carried one all along. A leaf the
+            # conductor KILLED never reaches here: that path returned above.
+            registration_error = self._bind_codex_thread(child_arid, drained_thread_id)
+            if registration_error is None:
+                thread_id = drained_thread_id
         if registration_error is not None:
             return ProcResult(returncode or 1, "", (stderr + "\n" + registration_error).strip(),
                               usage=usage, model=model, resume_mode=resume_mode,
@@ -4036,7 +4901,9 @@ clean:
                 rec["launch_prompt_text"], self._child_env(child_arid),
                 session_id=child_arid,
                 resume_session_id=(resume_session_id if warm else None),
-                child_arid=child_arid, pure=True)
+                child_arid=child_arid, pure=True,
+                timeout_context={"node_key": refs.node_key, "step": phase,
+                                 "substep": substep or "", "agent_run_id": child_arid})
             self._persist_leaf_output(child_arid, proc)
             token = self.read_parent_return_token(child_arid)
 
@@ -4063,7 +4930,7 @@ clean:
             if proc.returncode != 0:
                 # A nonzero leaf exit is a transport/infra failure (not a content defect the
                 # bundle repair can fix): finalize fail and let run_phase route it fail_closed.
-                infra_error = _classify_leaf_infra_error(proc.stderr or "", proc.stdout or "")
+                infra_error = _leaf_infra_error(proc)
                 category = "pure_transport"
                 findings = self._leaf_failure_summary(proc)
             elif not envelope.parsed or envelope.is_error is True:
@@ -4440,7 +5307,9 @@ clean:
                 rec["launch_prompt_text"], self._child_env(child_arid),
                 session_id=child_arid,
                 resume_session_id=(resume_session_id if warm else None),
-                child_arid=child_arid, pure=True)
+                child_arid=child_arid, pure=True,
+                timeout_context={"node_key": refs.node_key, "step": phase,
+                                 "substep": substep or "", "agent_run_id": child_arid})
             self._persist_leaf_output(child_arid, proc)
             token = self.read_parent_return_token(child_arid)
 
@@ -4464,7 +5333,7 @@ clean:
             if proc.returncode != 0:
                 # A nonzero reviewer exit is a transport/infra failure (not a verdict the repair can
                 # fix): finalize fail and let run_phase route it fail_closed.
-                infra_error = _classify_leaf_infra_error(proc.stderr or "", proc.stdout or "")
+                infra_error = _leaf_infra_error(proc)
                 category = "pure_transport"
                 findings = self._leaf_failure_summary(proc)
             elif not envelope.parsed or envelope.is_error is True:
@@ -6680,7 +7549,9 @@ clean:
                 proc = self.spawn_leaf(
                     rec["launch_prompt_text"], self._child_env(child_arid),
                     session_id=child_arid, resume_session_id=resume_session_id,
-                    child_arid=child_arid)
+                    child_arid=child_arid,
+                    timeout_context={"node_key": refs.node_key, "step": phase,
+                                     "substep": substep or "", "agent_run_id": child_arid})
                 # Persist the leaf's verbatim stdout/stderr durably (every run, pass or
                 # fail) so the LLM's actual response — including an infra failure message
                 # such as a token-limit abort — is never lost. These conductor-side writes
@@ -6710,7 +7581,7 @@ clean:
             if proc.returncode != 0:
                 status = "fail"
                 result_summary = self._leaf_failure_summary(proc)
-                infra_error = _classify_leaf_infra_error(proc.stderr or "", proc.stdout or "")
+                infra_error = _leaf_infra_error(proc)
             elif status != "pass":
                 result_summary = f"substep_fail: {phase}" + (f".{substep}" if substep else "")
             reply = f"status: {status}\noutput_refs: {len(output_refs)}\nleaf rc={proc.returncode}"
@@ -6803,9 +7674,11 @@ clean:
     def _sleep_backoff(self, seconds: float) -> None:
         """Wait out a transient LLM-infrastructure failure before re-launching the leaf.
 
-        The conductor's ONE and ONLY sleep, isolated in a method so tests can replace it (they
-        assert the schedule without waiting it out) and so a future reader can see at a glance
-        that the loop does not otherwise block."""
+        The conductor's only sleep that WAITS, isolated in a method so tests can replace it
+        (they assert the schedule without waiting it out) and so a future reader can see at a
+        glance that the loop does not otherwise block. The leaf-teardown paths also sleep, but
+        only as 20-50ms spin guards inside a bounded loop (`_gone_within`, the post-break
+        drain)."""
         time.sleep(seconds)
 
     def _run_usage_probe(self) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
@@ -7080,7 +7953,7 @@ clean:
         PREPENDED to that tail, never substituted for it: the tail is the leaf's real error and
         must survive, while a marker that landed on stdout would otherwise be buried under a noisy
         stderr. A misfiring classifier can then only add noise, never destroy evidence."""
-        infra = _classify_leaf_infra_error(proc.stderr or "", proc.stdout or "")
+        infra = _leaf_infra_error(proc)
         tail = " ".join((proc.stderr.strip() or proc.stdout.strip() or "")[-400:].split())
         parts = [f"leaf_exit={proc.returncode}"]
         if infra is not None:
@@ -8132,11 +9005,14 @@ clean:
             # leaf has nothing to attribute, so the FS-diff is trivially empty.
             profile = self._readonly_sandbox_profile() if self._bwrap_enabled() else None
             proc = self.spawn_leaf(
-                prompt, self._child_env(self.orchestration_agent_run_id), profile=profile)
+                prompt, self._child_env(self.orchestration_agent_run_id), profile=profile,
+                timeout_context={"node_key": refs.node_key, "step": phase,
+                                 "substep": "diagnose",
+                                 "agent_run_id": self.orchestration_agent_run_id})
         except (SandboxEnforcementError, OSError) as exc:
             # The host cannot launch the sandboxed read-only diagnostician — either the
             # profile is unbuildable (SandboxEnforcementError) or the bwrap/backend
-            # binary is missing (OSError/FileNotFoundError from subprocess.run, e.g. if
+            # binary is missing (OSError/FileNotFoundError from `subprocess.Popen`, e.g. if
             # the startup preflight was bypassed). The diagnostician is a best-effort
             # recovery leaf, so treat an un-launchable diagnosis as conservatively
             # terminal — same posture as an unparsable directive — rather than crashing
@@ -8145,7 +9021,13 @@ clean:
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_sandbox_unavailable")
         self._persist_leaf_output(self.orchestration_agent_run_id, proc,
                                   prefix=f"diagnose.{phase}")
-        decision = _parse_directive(proc.stdout)
+        # A diagnostician the conductor KILLED does not get to route the phase. Its partial
+        # stdout can contain a complete-looking directive it wrote before it wedged (the claude
+        # path returns that partial text verbatim), and acting on it would spend a phase attempt
+        # on the word of a leaf whose turn never finished — while the operator is being told the
+        # leaf was killed and the phase fails closed. Same conservative posture as an unparsable
+        # directive; the partial output is already persisted above as evidence.
+        decision = None if proc.timed_out else _parse_directive(proc.stdout)
         if decision is None:
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unparsable")
         # G5: normalize reuse-vs-discard from the graded severity so every escalate site

@@ -4602,6 +4602,33 @@ class StdoutFormatTests(unittest.TestCase):
             "    [warn   ] transient leaf failure (llm_transport_flake) in compile.verify "
             "[attempt 1/3]: retrying in 2.0s",
         )
+        # A leaf killed at the hard per-leaf cap. This is the event that ends a 2-hour silent
+        # block, and it is read at the moment a phase fails closed — it must not be the one
+        # leaf-lifecycle event rendered as a raw JSON blob among the formatted lines.
+        timeout_line = f({"status": "info", "event": "leaf_timeout",
+                          "node_key": "n", "step": "generate", "substep": "generate",
+                          "agent_run_id": "ar_dead", "backend": "claude",
+                          "timeout_seconds": 7200, "elapsed_seconds": 7205.3, "leaf_exit": -9,
+                          "stdout_chars": 0, "stderr_chars": 812, "orchestration_id": "o"})
+        self.assertEqual(
+            timeout_line,
+            "    [warn   ] leaf timeout in generate.generate: no answer after 7205.3s "
+            "(cap 7200s, METDSL_LEAF_TIMEOUT_SECONDS) — process group killed, "
+            "phase fails closed",
+        )
+        # Defence for a future `spawn_leaf` caller that omits (or half-fills) `timeout_context`:
+        # the line must still name the step rather than reading `leaf timeout in build.:`. No
+        # production path emits this today — `Build` runs its substep in-process and never
+        # reaches `spawn_leaf` — which is exactly why the fallback needs a test.
+        self.assertEqual(
+            f({"status": "info", "event": "leaf_timeout", "node_key": "n", "step": "build",
+               "substep": "", "agent_run_id": "ar_dead", "backend": "claude",
+               "timeout_seconds": 7200, "elapsed_seconds": 7205.3, "leaf_exit": -9,
+               "stdout_chars": 0, "stderr_chars": 812, "orchestration_id": "o"}),
+            "    [warn   ] leaf timeout in build.step: no answer after 7205.3s "
+            "(cap 7200s, METDSL_LEAF_TIMEOUT_SECONDS) — process group killed, "
+            "phase fails closed",
+        )
         # An opt-in usage-limit wait: the run is deliberately parked until the reset, so the wait is
         # announced rather than left as a silent multi-hour gap the operator might kill.
         wait_line = f({"status": "info", "event": "leaf_usage_limit_wait",
