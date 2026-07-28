@@ -73,6 +73,10 @@ The bundled script handles all seven structurally; do not hand-sum these:
      `record_agent_run_terminal` was stamped when the conductor next ran, i.e. at the
      operator's `--resume`, hours later. The span is mostly *waiting for a human*
      (observed: a leaf reporting **6.9 h** whose transcript spans **129 s**, status `fail`).
+     **Not so for a leaf the conductor KILLED at the per-leaf cap** (`leaf_timeout`): the
+     script classifies it `dead_leaf` all the same, but its terminal was stamped in band by
+     the live conductor, so the span is real run time the run actually burned — count it, and
+     see the per-leaf-cap bullet below for the discriminators.
    - **`host_suspend`** — the host slept mid-leaf (on WSL2 the VM is paused when Windows
      sleeps). The leaf resumes and **completes normally**; only the wall clock jumped
      (observed: **4.3 h** on a leaf that *passed*, E2E #5).
@@ -169,6 +173,21 @@ thinking.
   the transcript with `isApiErrorMessage`. The conductor reports it as
   `reason_code=leaf_transport_error`. Do not read such a leaf's timing as model behavior,
   and do not read its `elapsed` at all (trap 6).
+- **A leaf can be KILLED at the per-leaf cap.** Such a leaf reports the same
+  `reason_code=leaf_transport_error`, and its `elapsed` is slightly ABOVE
+  `METDSL_LEAF_TIMEOUT_SECONDS` (7200 s by default — the cap plus the poll slice, the
+  SIGTERM/SIGKILL grace and the post-kill drain). Filter on `>=` the cap, never on equality.
+  The discriminators are the `leaf_timeout` event on the node's event stream and the
+  `[conductor] leaf_timeout:` line at the end of the leaf's captured stderr; the tag is also
+  carried in the fail_closed reason as `(tag: leaf_timeout; …)`. Two consequences for the
+  audit: exclude the leaf from throughput and thinking-share statistics (its elapsed is a
+  deadline, not a token count), but **count its elapsed as real wall clock** — unlike trap 6's
+  `dead_leaf` gap above, whose terminal was stamped at a later operator `--resume`, this
+  span was burned by the run itself, and it is normally the largest single item in it. The
+  bundled `scripts/analyze_timing.py` does not yet distinguish the two: it classifies any
+  non-`pass` leaf as `dead_leaf` and, when a transcript ends at the wedge, replaces the
+  reported elapsed with the transcript wall (`[dead wall dropped]`). Re-add that span by
+  hand when a `leaf_timeout` event is present.
 - Wall time ≈ total output tokens (thinking + visible) ÷ ~100 tok/s. **The output is
   dominated by extended thinking (~80–90%), NOT by the emitted source** — the final
   files are small (~3 k visible tokens) regardless of how long the leaf runs. The

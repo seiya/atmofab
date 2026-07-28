@@ -184,7 +184,9 @@ def classify_gap(status, wall_s, mono_s):
 
 GAP_CAUSE_NOTE = {
     "dead_leaf": "dead leaf's terminal record stamped when the conductor next ran "
-                 "(the operator's --resume); the gap is the human fix window",
+                 "(the operator's --resume); the gap is the human fix window — UNLESS the "
+                 "leaf was killed at the per-leaf cap (a leaf_timeout event / a "
+                 "'[conductor] leaf_timeout:' stderr line), where it is real run time",
     "host_suspend": "host suspended mid-leaf (the leaf then passed); wall clock jumped "
                     "while the conductor's monotonic clock stood still",
     "unattributed": "cause not established from the logs",
