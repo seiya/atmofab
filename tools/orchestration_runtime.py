@@ -4206,7 +4206,8 @@ FAIL_CLOSED_REASON_CODES = {
     "sandbox_enforcement_violation",
     # Conductor (deterministic driver) terminal failure modes. The conductor is the
     # canonical driver, so its fail_closed terminalizations must use allowlisted codes:
-    #   - leaf_transport_error: a leaf process crashed / hit a token limit / transport.
+    #   - leaf_transport_error: a leaf process crashed / hit a token limit / transport,
+    #     or was killed by the conductor at the per-leaf cap (tag `leaf_timeout`).
     #   - retry_budget_exhausted: a phase exceeded its cross-phase reopen budget.
     #   - conductor_phase_fail_closed: a generic phase fail_closed routing decision
     #     (e.g. judge spec-attribution, dev-mode severe verify) — the specific reason is

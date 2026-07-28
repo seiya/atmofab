@@ -178,6 +178,47 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(oc.attempts, 1)
         self.assertFalse((c.repo_root / refs.source_dir() / "source_meta.json").exists())
 
+    def test_a_timed_out_reviewer_is_a_leaf_timeout_and_never_waits_out_a_quota(self) -> None:
+        """The pure loops are where the field hang happened, and they classify the dead leaf
+        themselves. A leaf the conductor KILLED must be tagged from `ProcResult.timed_out` — if
+        this site classified the captured text instead, the throttle notice a wedged leaf had
+        printed before it stopped answering would read as `llm_usage_limit`, and with
+        `--wait-usage-reset` on the conductor would sleep for hours and re-launch a leaf it had
+        killed itself: the multi-hour silent block the cap exists to remove."""
+        marker = wc._leaf_timeout_marker(7200, 7203.0)
+
+        spawn_kwargs: list = []
+
+        class _C(_PureFakeConductor):
+            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+                spawn_kwargs.append(kwargs)
+                return wc.ProcResult(
+                    -9, "", "You've hit your session limit · resets 3pm (Asia/Tokyo)\n" + marker,
+                    timed_out=True)
+
+            def _sleep_backoff(self, seconds):  # type: ignore[override]
+                self.slept.append(seconds)
+
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _verify_node(repo)
+        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+        # wait_usage_reset ON: the opt-in that would otherwise park the run for hours.
+        c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+               backend="claude", env={}, wait_usage_reset=True)
+        c.slept = []
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.leaf_returncode, -9)
+        self.assertEqual(oc.infra_error[0], "leaf_timeout")
+        self.assertEqual(oc.attempts, 1)             # not repaired, not retried...
+        self.assertEqual(c.slept, [])                # ...and never parked for a reset
+        self.assertEqual(getattr(c, "usage_probe_calls", 0), 0)
+        # The event has to NAME the wedged leaf; only the caller knows node/step/substep.
+        self.assertEqual(spawn_kwargs[0]["timeout_context"],
+                         {"node_key": refs.node_key, "step": "generate", "substep": "verify",
+                          "agent_run_id": spawn_kwargs[0]["child_arid"]})
+
     def test_wait_usage_reset_recovers_a_transport_usage_limit(self) -> None:
         """--wait-usage-reset (opt-in) mirrors the producer: a reviewer transport death carrying a
         machine-form usage-limit epoch is waited out in place and re-launched, rather than

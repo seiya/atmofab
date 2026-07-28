@@ -2576,6 +2576,18 @@ def _format_event_human(payload: dict[str, Any]) -> str | None:
         return (f"    [warn   ] transient leaf failure ({tag}) in {phase}.{substep} "
                 f"[attempt {attempt}/{total}]: retrying in {backoff}s")
 
+    if status == "info" and event == "leaf_timeout":
+        # The one event that reports "your leaf was killed after N hours". Rendered like its
+        # siblings rather than falling through to the raw-JSON line: it is the most consequential
+        # leaf-lifecycle event and the operator reads it at the moment a phase fails closed.
+        phase = payload.get("step", "?")
+        substep = payload.get("substep") or "step"
+        elapsed = payload.get("elapsed_seconds", "?")
+        cap = payload.get("timeout_seconds", "?")
+        return (f"    [warn   ] leaf timeout in {phase}.{substep}: no answer after {elapsed}s "
+                f"(cap {cap}s, METDSL_LEAF_TIMEOUT_SECONDS) — process group killed, "
+                f"phase fails closed")
+
     if status == "info" and event == "leaf_usage_limit_wait":
         phase = payload.get("step", "?")
         substep = payload.get("substep") or "step"

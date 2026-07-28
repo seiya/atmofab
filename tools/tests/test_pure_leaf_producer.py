@@ -1047,6 +1047,49 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         c.slept = []
         return c
 
+    def test_a_timed_out_producer_is_a_leaf_timeout_and_never_waits_out_a_quota(self) -> None:
+        """`generate.generate` is the substep of the 99-minute field hang, so this loop's own
+        classification of the dead leaf is load-bearing. A leaf the conductor KILLED is tagged
+        from `ProcResult.timed_out`; classifying its captured TEXT instead would read the
+        throttle notice a wedged leaf had printed as `llm_usage_limit`, and — with the opt-in
+        wait ON, as here — park the run for hours before re-launching a leaf the conductor had
+        killed itself."""
+        marker = wc._leaf_timeout_marker(7200, 7203.0)
+        now = 1_752_200_000.0
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo,
+                [wc.ProcResult(-9, "", f"Claude AI usage limit reached|{int(now) + 300}\n"
+                                       + marker, timed_out=True)],
+                wait_usage_reset=True)
+            spawn_kwargs: list = []
+            inner = c.spawn_leaf
+
+            def _spawn(prompt_text, child_env, **kwargs):  # type: ignore[no-untyped-def]
+                spawn_kwargs.append(kwargs)
+                return inner(prompt_text, child_env, **kwargs)
+
+            c.spawn_leaf = _spawn  # type: ignore[assignment]
+            with mock.patch.object(wc.time, "time", return_value=now):
+                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(oc.leaf_returncode, -9)
+            self.assertEqual(oc.infra_error[0], "leaf_timeout")
+            self.assertEqual(c._spawn, 1)          # no re-launch...
+            self.assertEqual(c.slept, [])          # ...and no multi-hour park
+            self.assertEqual(getattr(c, "usage_probe_calls", 0), 0)
+            meta = json.loads(
+                (c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+            self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
+            # The event has to NAME the wedged leaf: `generate.generate` is the substep of the
+            # incident this cap exists for, and only the caller knows the node/step/substep.
+            self.assertEqual(spawn_kwargs[0]["timeout_context"],
+                             {"node_key": refs.node_key, "step": "generate",
+                              "substep": "generate",
+                              "agent_run_id": spawn_kwargs[0]["child_arid"]})
+
     def test_transport_usage_limit_waits_then_passes(self) -> None:
         now = 1_752_200_000.0
         with tempfile.TemporaryDirectory() as tmp:
