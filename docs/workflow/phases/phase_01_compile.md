@@ -208,7 +208,7 @@ The host directly-required set is `{all_nodes} − {self} − {transitive_deps}`
 gate cross-checks it against the IR's `direct_deps`.
 
 ### `shape_expr` allowed forms
-`spec/schema/ir/shape_expr.schema.json` is the canonical source. Limited to the 3 forms `scalar` (case-insensitive) / `[d1, d2, ...]` / `(d1, d2, ...)`. Function-call notation such as `vector(N)` / `matrix(M,N)` / `tensor` is forbidden and is a `Compile fail`.
+`spec/schema/ir/shape_expr.schema.json` is the canonical source. Limited to the 3 forms `scalar` (case-insensitive) / `[d1, d2, ...]` / `(d1, d2, ...)`. Function-call notation such as `vector(N)` / `matrix(M,N)` / `tensor` is forbidden and is a `Compile fail`. Each dimension token `d_i` is itself limited to an **unsigned integer literal or an identifier**: arithmetic (`[nx + 2*ng]`, `[n-1]`), decimals (`[3.0]`), and signs (`[-3]`) are all a `Compile fail`. For a computed extent, introduce a named dimension symbol (`nx_total`) and write that name as the token.
 
 ### `algorithm.steps[].inputs` and `algorithm.steps[].outputs`
 A list of non-empty strings (e.g. `["U_L", "U_R"]`); the object form (`[{name: ..., source: ...}]`) is forbidden.

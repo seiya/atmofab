@@ -4822,6 +4822,11 @@ end program shallow_water2d_runner
             # fix: `_extract_spec_var_names` folds the snapshot schema's variables into
             # `direct_spec_vars`, so declaring it there works and is usually what is meant.
             self.assertIn("state_snapshots schema.variables", offending[0])
+            # ... and the io_contract route, which the first draft of this remedy omitted.
+            # For a spec-boundary variable simply missing from io_contract.inputs, none of
+            # the other three routes is the right fix, and the cheapest of them
+            # (temporaries) reclassifies a spec input as an intermediate.
+            self.assertIn("io_contract.inputs/outputs", offending[0])
 
     def test_detects_makefile_missing_fortran_module_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

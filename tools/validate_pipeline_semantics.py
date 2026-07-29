@@ -7274,13 +7274,16 @@ def _validate_algorithm_contract_file(
                             f"{contract_path}:steps[{step_idx}].{field_name}[{tok_idx}]"
                             f" token '{stripped}' is not traceable to direct spec I/O,"
                             f" temporaries, or derived_field_rules (undefined binding)"
-                            f" — give '{stripped}' provenance by declaring it in"
-                            f" algorithm.temporaries or algorithm.derived_field_rules,"
-                            f" or, for a prognostic state field, by listing it in the"
+                            f" — give '{stripped}' provenance by naming it in"
+                            f" io_contract.inputs/outputs (a spec-boundary variable), in"
+                            f" algorithm.temporaries, or in algorithm.derived_field_rules;"
+                            f" a prognostic state field also qualifies via the"
                             f" state_snapshots schema.variables of"
-                            f" io_contract.raw_requirements (usually the right fix for"
-                            f" state); declaring it in algorithm.state_variables does NOT"
-                            f" make it a provenance source on its own"
+                            f" io_contract.raw_requirements, but only add that evidence"
+                            f" entry if this node already requires state_snapshots"
+                            f" (adding it obliges every io_contract.outputs entry to carry"
+                            f" raw_variables). Declaring it in algorithm.state_variables"
+                            f" does NOT make it a provenance source on its own"
                         )
 
     invariants = contract.get("invariants")

@@ -28082,7 +28082,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # conductor-authored `dependency_surface.json` sidecar
         # (`_validate_component_dep_operations_membership`), V8a/V8b split, and the two new
         # Verification-tools entries — plus the component public_api authoring bullet.
-        "docs/workflow/phases/phase_01_compile.md": 43600,
+        # Bumped 43600->43800: the `shape_expr` section states the per-dim-token grammar
+        # (unsigned integer literal or identifier). It listed only the 3 outer forms and the
+        # function-call ban, which is what let `[nx + 2*ng]` look legal — and as the doc the
+        # SKILL names canonical, it was the least complete of the three statements of the rule.
+        "docs/workflow/phases/phase_01_compile.md": 43800,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28171,7 +28175,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # zero-signal end (a bare op name with no lowering signal at all) is caught by the
         # `Compile.static` gate `_validate_local_operation_lowering`, so this `major` covers only
         # the present-but-incomplete band above the floor.
-        "skills/workflow-compile-verify/SKILL.md": 15200,
+        # Bumped 15200->15700: the traceability checklist item now states that a
+        # `state_snapshots` `schema.variables` name IS traceable. The verify leaf reads this
+        # file, not the generate SKILL, so without it the two halves of the same rule
+        # disagreed and verify would remand a gate-clean 2d node — a warm retry, which is the
+        # cost issue #12 exists to remove.
+        "skills/workflow-compile-verify/SKILL.md": 15700,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.
