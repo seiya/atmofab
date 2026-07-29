@@ -41,7 +41,7 @@ In other words, the schema can declare the grammar of shape_expr that the valida
 
 ## Reference rules
 - Cross-reference this schema as the canonical source from documents such as `docs/workflow/phases/phase_01_compile.md`.
-- Also reference it from SKILL documents such as `skills/workflow-plan-generate/SKILL.md`.
+- Also reference it from SKILL documents such as `skills/workflow-compile-generate/SKILL.md`.
 - The only legitimate reference targets when an agent derives a rule are `docs/` / `spec/` / `skill_must_read_refs` (the validator code is under `tools/`, so referencing it is forbidden). `spec/schema/` is under `spec/`, so it can be referenced.
 
 ## Current schema
