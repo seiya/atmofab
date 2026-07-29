@@ -1348,7 +1348,9 @@ LEAF_STREAM_POLL_SECONDS = 1.0
 # 10s, when the readers delivered lines and the budget was checked per delivered line), and a
 # check that only runs when a line ends does not run at all against such a producer. Reading a
 # block at a time gives three guarantees at once:
-#   - every capture is bounded by its budget plus at most one block (plus the incremental
+#   - every capture is bounded by its budget plus at most one decoded block (a block is
+#     `LEAF_STREAM_READ_BLOCK_BYTES` of BYTES, and `backslashreplace` expands a malformed
+#     byte to four characters, so the worst case is four times that, plus the incremental
 #     decoder's few carried bytes);
 #   - an ABANDONED reader observes `stop_reading` within one block, where one blocked mid-line
 #     could not observe it until the line ended (measured: ~210 MB/s of heap growth for the
@@ -1661,12 +1663,28 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
             tail.publish(chunks)
 
 
-# Appended in band when ONE record grew beyond `LEAF_STREAM_QUEUE_MAX_CHARS`. Deliberately NOT a reuse of `leaf_stdout_capture_truncated`, which says something else:
+# Appended in band when ONE record grew beyond `LEAF_STREAM_QUEUE_MAX_CHARS`. Deliberately
+# NOT a reuse of `leaf_stdout_capture_truncated`, which says something else:
 # that one reports the TOTAL budget spent and the capture over, this one reports a single
 # oversized record clipped while the capture goes on. Reading an operator's `leaf.stdout.jsonl`
 # depends on being able to tell those apart. Like every other `[conductor]` marker it must
 # match no `_LEAF_INFRA_ERROR_PATTERNS` entry, or a leaf could claim a tag by writing the line.
 LEAF_STDOUT_RECORD_TRUNCATED_LABEL = "leaf_stdout_record_truncated"
+# Every other in-band label the conductor writes into a leaf's captured streams. Named
+# rather than spelled at each call site because `docs/RUNBOOK.md` tells an operator to grep
+# for exactly these, and because NONE of them may match a `_LEAF_INFRA_ERROR_PATTERNS` entry
+# — a leaf that could write one would be able to claim an infra tag it did not earn. The set
+# is what `_LEAF_CONDUCTOR_MARKER_LABELS` below makes testable in one place.
+LEAF_STDERR_CAPTURE_TRUNCATED_LABEL = "leaf_stderr_capture_truncated"
+LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL = "leaf_stdout_capture_truncated"
+LEAF_STDERR_CAPTURE_TAIL_LABEL = "leaf_stderr_capture_tail"
+LEAF_STDERR_READ_ERROR_LABEL = "leaf_stderr_read_error"
+LEAF_STDOUT_READ_ERROR_LABEL = "leaf_stdout_read_error"
+_LEAF_CONDUCTOR_MARKER_LABELS = (
+    LEAF_STDOUT_RECORD_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TRUNCATED_LABEL,
+    LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TAIL_LABEL,
+    LEAF_STDERR_READ_ERROR_LABEL, LEAF_STDOUT_READ_ERROR_LABEL,
+)
 
 
 def _leaf_stdout_record_truncated_marker(limit: int) -> str:
@@ -1694,6 +1712,10 @@ class _LineReassembler:
     """
 
     def __init__(self, limit: int = 0) -> None:
+        # `0` means "the module's limit", read HERE rather than defaulted in the signature:
+        # a default argument binds once at definition time, so the constant could no longer
+        # be overridden — the tests that exercise the clip patch it, and so could an
+        # operator-facing change to the value.
         self._limit = limit or LEAF_STREAM_QUEUE_MAX_CHARS
         self._pending = ""
         self._discarding = False
@@ -3461,19 +3483,19 @@ class Conductor:
         stdout_thread = threading.Thread(target=_drain_capped_stream, args=(
             process.stdout, stdout_chunks), kwargs=dict(
                 budget=LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS,
-                truncated_label="leaf_stdout_capture_truncated",
+                truncated_label=LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL,
                 # A stdout READ error goes to stderr, as it does on the codex path: stdout is
                 # the leaf's answer and a conductor breadcrumb spliced into it would be parsed
                 # as part of that answer.
-                error_label="leaf_stdout_read_error", error_chunks=stderr_chunks,
+                error_label=LEAF_STDOUT_READ_ERROR_LABEL, error_chunks=stderr_chunks,
                 stop_reading=stop_reading, encoding=stream_encoding), daemon=True)
         stderr_tail = _StreamTail(LEAF_STDERR_CAPTURE_TAIL_CHARS,
-                                  "leaf_stderr_capture_tail")
+                                  LEAF_STDERR_CAPTURE_TAIL_LABEL)
         stderr_thread = threading.Thread(target=_drain_capped_stream, args=(
             process.stderr, stderr_chunks), kwargs=dict(
                 budget=LEAF_STDERR_CAPTURE_MAX_CHARS,
-                truncated_label="leaf_stderr_capture_truncated",
-                error_label="leaf_stderr_read_error", error_chunks=stderr_chunks,
+                truncated_label=LEAF_STDERR_CAPTURE_TRUNCATED_LABEL,
+                error_label=LEAF_STDERR_READ_ERROR_LABEL, error_chunks=stderr_chunks,
                 stop_reading=stop_reading, encoding=stream_encoding,
                 tail=stderr_tail), daemon=True)
 
@@ -3771,14 +3793,14 @@ class Conductor:
         # arrived before the kill available to a join that expires.
         stream_encoding = _leaf_stream_encoding()
         stderr_tail = _StreamTail(LEAF_STDERR_CAPTURE_TAIL_CHARS,
-                                  "leaf_stderr_capture_tail")
+                                  LEAF_STDERR_CAPTURE_TAIL_LABEL)
 
         def _drain_stderr() -> None:
             _drain_capped_stream(
                 process.stderr, stderr_chunks,
                 budget=LEAF_STDERR_CAPTURE_MAX_CHARS,
-                truncated_label="leaf_stderr_capture_truncated",
-                error_label="leaf_stderr_read_error", error_chunks=stderr_chunks,
+                truncated_label=LEAF_STDERR_CAPTURE_TRUNCATED_LABEL,
+                error_label=LEAF_STDERR_READ_ERROR_LABEL, error_chunks=stderr_chunks,
                 stop_reading=stop_reading, encoding=stream_encoding, tail=stderr_tail)
 
         # The stdout pump: the ONLY job of this thread is to move lines off the pipe so the main
@@ -3869,6 +3891,21 @@ class Conductor:
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
         stdout_thread = threading.Thread(target=_pump_stdout, daemon=True)
 
+        raw_notified = False
+
+        def _note_raw_truncated() -> None:
+            """Recorded where a record is actually DROPPED, never on merely reaching the
+            budget: a leaf whose stream is exactly the budget long has lost nothing, and
+            telling an operator it "went on writing" sends them looking for output that does
+            not exist. The same rule the stream captures follow."""
+            nonlocal raw_notified
+            if not raw_notified:
+                raw_notified = True
+                raw_lines.append(
+                    f"[conductor] {LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL}: kept the first "
+                    f"{LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS} characters; the leaf went on "
+                    "writing\n")
+
         def _keep_raw(line: str) -> None:
             """Retain one JSONL line as evidence, within a budget.
 
@@ -3877,19 +3914,20 @@ class Conductor:
             without limit (measured: 475 MB in 20s, i.e. the driver OOMs long before a 2h cap
             can fire). Truncation is recorded in the stream itself.
             """
-            nonlocal raw_captured
+            nonlocal raw_captured, raw_notified
             if raw_captured >= LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS:
+                _note_raw_truncated()
                 return
             # Clipped, not appended whole: one JSONL record can carry a large tool result, and
             # a budget checked only after the append overshoots it by that record's size.
             room = LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS - raw_captured
-            raw_lines.append(line[:room])
-            raw_captured += min(len(line), room)
-            if raw_captured >= LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS:
-                raw_lines.append(
-                    "[conductor] leaf_stdout_capture_truncated: kept the first "
-                    f"{LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS} characters; the leaf went on "
-                    "writing\n")
+            if len(line) > room:
+                raw_lines.append(line[:room])
+                raw_captured = LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS
+                _note_raw_truncated()
+            else:
+                raw_lines.append(line)
+                raw_captured += len(line)
         try:
             stderr_thread.start()
             stdout_thread.start()

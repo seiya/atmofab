@@ -9091,6 +9091,124 @@ class LeafSpawnTest(unittest.TestCase):
         tail.publish(chunks)
         self.assertEqual("".join(chunks), published)
 
+    def test_the_claude_stderr_tail_survives_an_abandoned_stream_too(self) -> None:
+        """The claude twin of the codex abandon test, and the more important of the two: this
+        is the DEFAULT backend. The tail is published by the main thread at BOTH claude
+        snapshots — the timeout branch and the normal one — because a drain the conductor gave
+        up on never reaches its own exit to publish for itself."""
+        from unittest.mock import patch
+
+        cause = "API Error: Connection closed mid-response.\n"
+        for wedged in (False, True):
+            with self.subTest(wedged=wedged):
+                held = threading.Event()
+                self.addCleanup(held.set)
+                # Past the budget, then the cause, then silence with the pipe still open.
+                pipes = (self._stream(("wait", held), ("hold_open",)).reader,
+                         self._stream(("write", "noise\n" * 2000), ("write", cause),
+                                      ("wait", held), ("hold_open",)).reader)
+
+                class _Popen:
+                    pid = 424242
+                    returncode = None if wedged else 1
+
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        self.stdout, self.stderr = pipes
+
+                    def poll(self):  # type: ignore[no-untyped-def]
+                        return self.returncode
+
+                    def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        # `wedged` takes the TIMEOUT branch, the other the normal one.
+                        if wedged:
+                            raise subprocess.TimeoutExpired("claude", timeout)
+                        return 1
+
+                    def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                        return None
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = self._profile_repo(tmp)
+                    with patch.object(wc.subprocess, "Popen", _Popen), \
+                            patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 3_000), \
+                            patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
+                            patch.object(wc.os, "getpgid", lambda pid: 999), \
+                            patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                            patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                            patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
+                            redirect_stdout(io.StringIO()):
+                        proc = self._c(repo_root=repo, env={}).spawn_leaf(
+                            "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                self.assertIn("leaf_stream_abandoned", proc.stderr)
+                # The cause the drain had already read comes back, so the attempt routes.
+                self.assertIn("Connection closed mid-response", proc.stderr)
+                self.assertEqual(wc._leaf_infra_error(proc)[0],
+                                 "leaf_timeout" if wedged else "llm_transport_flake")
+                self.assertEqual(proc.stderr.count("leaf_stderr_capture_tail"), 1)
+
+    def test_a_character_split_across_the_end_of_the_stream_is_not_dropped(self) -> None:
+        """The decoder's final flush. A leaf SIGKILLed mid-character — the normal outcome of
+        killing one writing non-ASCII prose — leaves a partial sequence held inside the
+        incremental decoder. Without flushing it at EOF those bytes are silently dropped
+        instead of escaped, which is evidence lost from the last thing the leaf ever wrote."""
+        from unittest.mock import patch
+
+        # A valid character, then a TRUNCATED one, and then the stream simply ends.
+        payload = "diagnostics: 日本".encode()[:-1]
+        pipes = (self._pipe('{"type":"thread.started","thread_id":"t-1"}\n'
+                            '{"type":"item.completed","item":'
+                            '{"type":"agent_message","text":"done"}}\n'),
+                 self._stream(("write", payload)).reader)
+
+        class _Popen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc, "_leaf_stream_encoding", lambda: "utf-8"), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertTrue(proc.stderr.startswith("diagnostics: 日"), proc.stderr)
+        # The truncated character is ESCAPED, not dropped: the bytes the leaf wrote are all
+        # accounted for, and the result is still something a UTF-8 artifact can hold.
+        self.assertIn("\\x", proc.stderr)
+        proc.stderr.encode("utf-8")
+
+    def test_no_conductor_marker_can_be_claimed_as_an_infra_tag_by_a_leaf(self) -> None:
+        """Every `[conductor]` line the capture layer writes is LEAF-VISIBLE: it lands in a
+        stream a leaf also writes to, and `docs/RUNBOOK.md` tells an operator to grep for it.
+        If any of them matched a classifier pattern, a leaf could mint an infra tag by writing
+        the line — claiming a retry, or suppressing a genuine `llm_usage_limit`. Asserted over
+        the whole SET, so a marker added later cannot quietly miss the rule."""
+        markers = [wc.LEAF_STREAM_ABANDONED_MARKER,
+                   wc._leaf_timeout_marker(7200, 7201.0),
+                   wc._leaf_stdout_record_truncated_marker(2_000_000)]
+        for label in wc._LEAF_CONDUCTOR_MARKER_LABELS:
+            markers.append(f"[conductor] {label}: kept the first 1000 characters; "
+                           "the leaf went on writing")
+        self.assertGreaterEqual(len(markers), 9)
+        for marker in markers:
+            with self.subTest(marker=marker[:60]):
+                self.assertIsNone(wc._classify_leaf_infra_error(marker))
+                self.assertIsNone(wc._classify_leaf_infra_error("", marker))
+
     def test_the_capture_notice_marks_dropped_output_not_a_budget_reached(self) -> None:
         """`*_capture_truncated` tells an operator the leaf "went on writing", which sends
         them looking for output that was dropped. A leaf that wrote exactly the budget and
