@@ -14,6 +14,7 @@ import io
 import json
 import os
 import queue
+import select
 import signal
 import subprocess
 import tempfile
@@ -5768,27 +5769,115 @@ class _SilentQueue(queue.Queue):
         return super().get(block, timeout)
 
 
-class _FakePipe:
-    """A stand-in for a `Popen` pipe: a text stream with a codec and a close().
+class _ScriptedStream:
+    """A REAL OS pipe whose write end is driven by a scripted writer thread.
 
-    The real object is a `TextIOWrapper` over the pipe, and the conductor reads its `encoding`
-    (to decode partial output the same way as output that returns) and closes it when it gives
-    up on a stream — a fake without both is a shape production never produces.
+    The conductor's stream readers are the thing under test, so what they read has to be a
+    real fd. An iterable fake cannot reproduce the two properties every guarantee in this
+    layer rests on: flow control (a reader that stops draining wedges its writer, which is
+    why the budget stops KEEPING and never stops READING) and partial delivery (a producer
+    that writes megabytes without a newline). It also has no `fileno()`.
+
+    The script is a sequence of ops, run in order by a daemon writer thread:
+
+    - `("write", text_or_bytes)` — hand it to the pipe, blocking while the pipe is full.
+    - `("sleep", seconds)` — pause before the next op.
+    - `("wait", event)` — block until a `threading.Event` is set.
+    - `("hold_open",)` — do not close the write end, modelling the descendant a leaf leaks.
+
+    The write end is closed once the last op has run, unless `hold_open` was among them.
+    Every blocking step is polled against `release()`'s abort flag, so no script can wedge
+    the test run itself — including a `write` whose reader has walked away.
     """
 
-    encoding = "UTF-8"
+    _BLOCK = 65536
 
-    def __init__(self, name: str = "", closed_log: list | None = None,
-                 encoding: str | None = None) -> None:
-        self.name, self._log = name, closed_log
-        self.closed = False
-        if encoding is not None:
-            self.encoding = encoding
+    def __init__(self, script, *, encoding: str = "utf-8") -> None:
+        read_fd, self._write_fd = os.pipe()
+        self.encoding = encoding
+        self._written = [0]
+        self._aborted = threading.Event()
+        self.finished = threading.Event()
+        self._hold_open = False
+        # BINARY, because that is what `Popen(stdout=PIPE)` hands the conductor now that it
+        # decodes for itself. A text-mode read end would be a shape production no longer
+        # produces — and the conductor only ever takes `fileno()` off this, so a text wrapper
+        # would hide any accidental dependence on the stream object itself.
+        self.reader = os.fdopen(read_fd, "rb")
+        self._thread = threading.Thread(
+            target=self._run, args=(list(script),), daemon=True)
+        self._thread.start()
 
-    def close(self) -> None:
-        self.closed = True
-        if self._log is not None:
-            self._log.append(self.name)
+    @property
+    def bytes_written(self) -> int:
+        """Bytes the writer has actually handed to the pipe, readable while it runs."""
+        return self._written[0]
+
+    def _run(self, script) -> None:
+        try:
+            for op in script:
+                if self._aborted.is_set():
+                    return
+                kind = op[0]
+                if kind == "write":
+                    self._write(op[1])
+                elif kind == "sleep":
+                    self._pause(op[1])
+                elif kind == "wait":
+                    while not op[1].wait(timeout=0.02):
+                        if self._aborted.is_set():
+                            return
+                elif kind == "hold_open":
+                    self._hold_open = True
+                else:                                   # pragma: no cover - test bug
+                    raise AssertionError(f"unknown scripted stream op {kind!r}")
+        except (BrokenPipeError, OSError, ValueError):
+            pass                                        # the reader walked away
+        finally:
+            self.finished.set()
+            if not self._hold_open:
+                self._close_write()
+
+    def _write(self, payload) -> None:
+        data = (payload if isinstance(payload, bytes)
+                else payload.encode(self.encoding))
+        sent = 0
+        while sent < len(data) and not self._aborted.is_set():
+            # `select` rather than a bare blocking `os.write`: a script whose reader has
+            # stopped draining must still be abortable, or an assertion failure would hang
+            # the suite instead of failing it.
+            if not select.select([], [self._write_fd], [], 0.05)[1]:
+                continue
+            pushed = os.write(self._write_fd, data[sent:sent + self._BLOCK])
+            sent += pushed
+            self._written[0] += pushed
+
+    def _pause(self, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not self._aborted.is_set():
+            time.sleep(0.01)
+
+    def _close_write(self) -> None:
+        try:
+            os.close(self._write_fd)
+        except OSError:
+            pass
+
+    def release(self) -> None:
+        """Abort the script and let go of both ends. Registered as test cleanup.
+
+        Order matters: the write end goes first, so any conductor reader still parked on
+        this pipe — including one the conductor deliberately abandoned — sees EOF and
+        returns before the read end is taken out from under it.
+        """
+        self._aborted.set()
+        self._thread.join(timeout=5.0)
+        self._close_write()
+        time.sleep(0.01)
+        try:
+            self.reader.close()
+        except (OSError, ValueError):
+            pass
 
 
 class LeafSpawnTest(unittest.TestCase):
@@ -5800,6 +5889,16 @@ class LeafSpawnTest(unittest.TestCase):
                     orchestration_agent_run_id="O", backend="claude", env={})
         base.update(kw)
         return wc.Conductor(**base)
+
+    def _stream(self, *script, **kw) -> _ScriptedStream:
+        """A scripted pipe released when the test ends (see `_ScriptedStream`)."""
+        stream = _ScriptedStream(script, **kw)
+        self.addCleanup(stream.release)
+        return stream
+
+    def _pipe(self, text: str = "", **kw):
+        """The read end of a pipe carrying `text` and then EOF — the common case."""
+        return self._stream(("write", text), **kw).reader
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
@@ -5852,19 +5951,19 @@ class LeafSpawnTest(unittest.TestCase):
                              resume: bool = False, register=None,
                              returncode: int = 0, wait_recorder=None,
                              timeout_context=None) -> wc.ProcResult:
-        """Drive `_spawn_codex_json_leaf` over a canned JSONL stdout stream."""
-        import io
+        """Drive `_spawn_codex_json_leaf` over a scripted JSONL stdout stream."""
         from unittest.mock import patch
 
         popen_kwargs: dict[str, Any] = {}
+        pipes = (self._stream(("write", lines)), self._stream())
 
         class _FakePopen:
             pid = 424242
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                 popen_kwargs.update(kw)
-                self.stdout = io.StringIO(lines)
-                self.stderr = io.StringIO("")
+                self.stdout = pipes[0].reader
+                self.stderr = pipes[1].reader
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 if wait_recorder is not None:
@@ -5887,13 +5986,12 @@ class LeafSpawnTest(unittest.TestCase):
             result = c._spawn_codex_json_leaf(
                 ["codex", "exec"], {}, child_arid, resume=resume,
                 timeout_context=timeout_context)
-        # The stream must be decoded LENIENTLY. With the default strict handler a single
-        # malformed byte raises mid-iteration, escaping spawn_leaf as a conductor_error
-        # and discarding the stderr already drained — a leaf's own output must never be
-        # able to kill the conductor. Asserted on every case here because no canned
-        # `io.StringIO` stream can reach the real decoder.
-        self.assertEqual(popen_kwargs.get("errors"), "backslashreplace")
-        self.assertIs(popen_kwargs.get("text"), True)
+        # The pipes are BINARY: the conductor reads fixed-size blocks off the raw fd and
+        # decodes them itself, because a text-mode stream can only be read a line at a time
+        # and a line is not a bound on anything. (That the decode is lenient is pinned
+        # behaviourally, on a real malformed byte, rather than by inspecting a kwarg.)
+        self.assertIsNone(popen_kwargs.get("errors"))
+        self.assertIsNone(popen_kwargs.get("text"))
         # Own process group: `terminate()` reaches only the direct child, and the CLI
         # (or the bwrap wrapper in front of it) spawns tool subprocesses that would
         # otherwise outlive a cancelled orchestration.
@@ -5945,6 +6043,7 @@ class LeafSpawnTest(unittest.TestCase):
                               exits_on_sigterm=exits_on_sigterm):
                 signalled: list[tuple[int, int]] = []
                 start_new_session: list[Any] = []
+                interrupt_pipes = (self._pipe(), self._pipe())
 
                 class _InterruptedQueue(queue.Queue):
                     """The driver's interrupt, arriving while the conductor waits for the
@@ -5958,8 +6057,7 @@ class LeafSpawnTest(unittest.TestCase):
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                         start_new_session.append(kw.get("start_new_session"))
-                        self.stdout = io.StringIO("")
-                        self.stderr = io.StringIO("")
+                        self.stdout, self.stderr = interrupt_pipes
 
                     def poll(self):  # type: ignore[no-untyped-def]
                         return None
@@ -6022,13 +6120,13 @@ class LeafSpawnTest(unittest.TestCase):
         """
         from unittest.mock import patch
 
+        pipes = (self._pipe('{"type":"thread.started","thread_id":"t-1"}\n'), self._pipe())
+
         class _NeverExitsPopen:
             pid = 424242
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n')
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -6576,6 +6674,8 @@ class LeafSpawnTest(unittest.TestCase):
             }), encoding="utf-8")
 
             captured: dict = {}
+            # One pair per launch: a pipe is read to EOF once, and this block spawns two.
+            claude_pipes = [(self._pipe(), self._pipe()) for _ in range(2)]
 
             class _ClaudePopen:
                 """The claude leaf is a `Popen` (not `subprocess.run`) so the hard per-leaf
@@ -6588,10 +6688,10 @@ class LeafSpawnTest(unittest.TestCase):
                 def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                     captured["argv"] = argv
                     captured["popen_kwargs"] = kw
-                    self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
+                    self.stdout, self.stderr = claude_pipes.pop(0)
 
-                def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                    return ("", "")
+                def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                    return 0
 
             from unittest.mock import patch as _patch
             with _patch.object(wc.subprocess, "Popen", _ClaudePopen):
@@ -6604,12 +6704,11 @@ class LeafSpawnTest(unittest.TestCase):
                 # Own process group, exactly as the codex leaf already had: the timeout
                 # path signals the GROUP, and under bwrap the direct child is the wrapper.
                 self.assertIs(captured["popen_kwargs"].get("start_new_session"), True)
-                # Lenient decode, as on the codex leaf: under the default STRICT codec a
-                # SIGKILL that truncates a multi-byte character makes the timeout path's
-                # recovery `communicate` raise `UnicodeDecodeError` — not a `TimeoutExpired`,
-                # so it escapes spawn_leaf and terminalizes the run as a generic
-                # conductor_error with no `leaf_timeout` event at all.
-                self.assertEqual(captured["popen_kwargs"].get("errors"), "backslashreplace")
+                # BINARY pipes, as on the codex leaf: the conductor reads fixed-size blocks
+                # off the raw fd and decodes them itself, because a text-mode stream can only
+                # be read a line at a time and a line bounds nothing.
+                self.assertIsNone(captured["popen_kwargs"].get("text"))
+                self.assertIsNone(captured["popen_kwargs"].get("errors"))
                 # A leaf that returned normally is not a conductor kill.
                 self.assertIs(
                     self._c(repo_root=repo, env={}).spawn_leaf(
@@ -6620,14 +6719,18 @@ class LeafSpawnTest(unittest.TestCase):
                 # dedicated coverage elsewhere).
                 captured.clear()
                 from unittest.mock import patch
+                # One pair per launch: a pipe is read to EOF once, and this block spawns
+                # two leaves (the recorded one and the diagnostician).
+                codex_pipes = [
+                    (self._pipe('{"type":"thread.started","thread_id":"t"}\n'), self._pipe())
+                    for _ in range(2)]
+
                 class _FakePopen:
                     pid = 424242
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                        import io
                         captured["argv"] = argv
-                        self.stdout = io.StringIO('{"type":"thread.started","thread_id":"t"}\n')
-                        self.stderr = io.StringIO("")
+                        self.stdout, self.stderr = codex_pipes.pop(0)
                     def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                         return 0
                     def poll(self):  # type: ignore[no-untyped-def]
@@ -6722,6 +6825,10 @@ class LeafSpawnTest(unittest.TestCase):
 
         signalled: list[tuple[int, int]] = []
         waited: list[float | None] = []
+        # What the leaf wrote before it wedged, on real pipes: the drain threads have it
+        # regardless of whether the leaf ever exits, which is the point of reading
+        # concurrently rather than harvesting off a timed-out `communicate`.
+        wedged_pipes = (self._pipe("<partial answer>"), self._pipe("thinking...\n"))
 
         class _WedgedPopen:
             pid = 424242
@@ -6730,27 +6837,22 @@ class LeafSpawnTest(unittest.TestCase):
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                 self.kwargs = kw
                 popen_kwargs.update(kw)
-                self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
+                self.stdout, self.stderr = wedged_pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return self.returncode          # None until the kill lands
 
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                waited.append(timeout)
-                if any(sig == signal.SIGKILL for _pgid, sig in signalled):
-                    # Only once the group is dead does the partial output drain.
-                    return ("<partial answer>", "thinking...\n")
-                # Spend a measurable interval so `elapsed_seconds` cannot be satisfied by a
-                # hardcoded 0 — that number is what tells a 2-hour wedge from a leaf that died
-                # at launch, and the renderer prints it to the operator.
-                time.sleep(0.02)
-                raise subprocess.TimeoutExpired("claude", timeout)
-
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
-                assert timeout is not None, "teardown wait must be bounded"
+                waited.append(timeout)
+                assert timeout is not None, "every wait on a capped leaf must be bounded"
                 if any(sig == signal.SIGKILL for _pgid, sig in signalled):
                     self.returncode = -int(signal.SIGKILL)
                     return self.returncode
+                # Spend a measurable interval so `elapsed_seconds` cannot be satisfied by a
+                # hardcoded 0 — that number is what tells a 2-hour wedge from a leaf that died
+                # at launch, and the renderer prints it to the operator. Long enough to survive
+                # the event's `round(elapsed, 1)`, which a 20ms wedge rounds away to 0.0.
+                time.sleep(0.1)
                 raise subprocess.TimeoutExpired("claude", timeout)
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
@@ -6784,22 +6886,15 @@ class LeafSpawnTest(unittest.TestCase):
                     timeout_context={"node_key": "component/spec_x@0.1.0",
                                      "step": "generate", "substep": "generate",
                                      "agent_run_id": "A"})
-        # Every wait is bounded, and by the POLL SLICE rather than the whole cap: the leaf's
-        # EXIT has to be noticed promptly, not only its stream's EOF (a leaf that answers and
-        # exits while leaking a pipe-holder must not be waited out to the cap and then blamed
-        # for a wedge). The final one is the post-kill drain, bounded by the teardown grace.
-        self.assertGreaterEqual(len(waited), 2)
-        # Bounded by the poll slice (which GROWS, so later slices are longer — each expired
-        # slice costs `communicate` a full re-join of what it has buffered) and, at the end, by
-        # the teardown grace. `0` is allowed: the deadline can be crossed between the check and
-        # the next wait.
-        self.assertTrue(
-            all(t is not None and 0 <= t <= wc.LEAF_STREAM_POLL_MAX_SECONDS for t in waited),
-            waited)
-        # The sequence itself: the first slice is the configured one and each expiry DOUBLES
-        # it. Without the growth a 2h cap makes 7200 `communicate` calls, each re-joining the
-        # whole accumulated capture — the O(n^2) blow-up (16 GB peak) the comment records.
-        self.assertEqual(waited[:2], [0.01, 0.02])
+        # ONE deadline-bounded wait, and then the grace-bounded teardown. There is no slicing
+        # left to do: `wait` ends at the leaf's EXIT where `communicate` ended at stream EOF,
+        # so a leaf that answers and exits while leaking a pipe-holder is noticed structurally
+        # rather than by a poll that has to be frequent enough to catch it.
+        self.assertTrue(all(t is not None for t in waited), waited)
+        self.assertLessEqual(waited[0], 0.05)          # ...carrying the cap's remaining time
+        # Everything after it belongs to the teardown, which is bounded by the grace — the
+        # escalation's own waits included.
+        self.assertTrue(all(t <= 0.01 for t in waited[1:]), waited)
         # The whole process GROUP is signalled: under bwrap the direct child is the wrapper,
         # and the CLI spawns tool subprocesses that would otherwise keep running.
         self.assertIs(popen_kwargs.get("start_new_session"), True)
@@ -6833,7 +6928,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(timeouts[0]["stdout_chars"], len("<partial answer>"))
         self.assertEqual(timeouts[0]["stderr_chars"], len(proc.stderr))
         elapsed = timeouts[0]["elapsed_seconds"]
-        self.assertGreaterEqual(elapsed, 0.02)      # measured, never a hardcoded 0
+        self.assertGreaterEqual(elapsed, 0.1)       # measured, never a hardcoded 0
         self.assertLess(elapsed, 2.0)               # ...and it is THIS run's elapsed
         # The marker carries BOTH numbers the operator routes on — the cap that was exceeded
         # and how long the leaf actually took — and it is the tag's evidence line verbatim.
@@ -6860,17 +6955,21 @@ class LeafSpawnTest(unittest.TestCase):
             with self.subTest(exception=type(exc).__name__):
                 signalled: list[tuple[int, int]] = []
 
+                interrupted_pipes = (self._pipe(), self._pipe())
+                interrupted: list[int] = []
+
                 class _InterruptedPopen:
                     pid = 424242
                     returncode = None
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                        self.stdout, self.stderr = _FakePipe(), _FakePipe()
-
-                    def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                        raise exc
+                        self.stdout, self.stderr = interrupted_pipes
 
                     def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        # The interrupt lands where the conductor actually waits for the leaf.
+                        if not interrupted:
+                            interrupted.append(1)
+                            raise exc
                         assert timeout is not None, "teardown wait must be bounded"
                         self.returncode = -int(signal.SIGTERM)
                         return self.returncode
@@ -6895,6 +6994,114 @@ class LeafSpawnTest(unittest.TestCase):
                                 "P", {"HOME": "/h"}, session_id="A", child_arid="A")
                 # The whole GROUP, not just the direct child (which under bwrap is the wrapper).
                 self.assertEqual(signalled[0], (424242, signal.SIGTERM))
+
+    def test_an_interrupt_during_the_post_exit_stream_teardown_still_kills_the_group(self) -> None:
+        """The leaf has exited, but a descendant it leaked still holds the pipes, so the call is
+        inside the bounded joins when the driver is interrupted. The leaf itself is beyond
+        saving; the DESCENDANT is not, and the driver is on its way to revoking this leaf's
+        authority and deleting its TMPDIR. A teardown placed after the handler would leave it
+        running."""
+        from unittest.mock import patch
+
+        signalled: list[tuple[int, int]] = []
+        held = threading.Event()
+        self.addCleanup(held.set)
+        held_pipes = (self._stream(("wait", held), ("hold_open",)).reader,
+                      self._stream(("wait", held), ("hold_open",)).reader)
+
+        class _ExitedWithHolderPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = held_pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                signalled.append((-1, sig))
+
+        def _interrupt(thread, timeout):  # type: ignore[no-untyped-def]
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._profile_repo(tmp)
+            with patch.object(wc.subprocess, "Popen", _ExitedWithHolderPopen), \
+                    patch.object(wc, "_join_thread", _interrupt), \
+                    patch.object(wc.os, "getpgid", lambda pid: 999), \
+                    patch.object(wc.os, "killpg",
+                                 lambda pgid, sig: signalled.append((pgid, sig))), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
+                    patch.object(wc, "_leaf_timeout_seconds", lambda: 3):
+                with self.assertRaises(KeyboardInterrupt):
+                    self._c(repo_root=repo, env={}).spawn_leaf(
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+        self.assertIn((424242, signal.SIGTERM), signalled)
+
+    def test_an_interrupted_claude_leaf_stops_draining_a_leaked_descendant(self) -> None:
+        """The interrupt handler's obligation, matching the codex path's. Under bwrap a
+        descendant the leaf leaked survives the group signal, and readers left running keep
+        its pipe DRAINED — which is exactly what lets it go on writing, instead of blocking on
+        a full pipe, into the artifact directory the driver is on its way to deleting."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        flood = "x" * 4096 + "\n"
+        # The leaked descendant floods once the driver is already unwinding.
+        leaked = self._stream(("write", "leaf: started\n"), ("wait", held),
+                              *[("write", flood) for _ in range(1000)], ("hold_open",))
+        pipes = (leaked.reader,
+                 self._stream(("wait", held), ("hold_open",)).reader)
+
+        interrupted: list[int] = []
+
+        class _InterruptedPopen:
+            pid = 424242
+            returncode = None
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                # ONCE: the teardown waits on the leaf too, and a double that interrupts
+                # that wait as well would unwind the handler itself rather than exercise it.
+                if not interrupted:
+                    interrupted.append(1)
+                    raise KeyboardInterrupt      # where the conductor waits for the leaf
+                return -int(signal.SIGTERM)
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._profile_repo(tmp)
+            with patch.object(wc.subprocess, "Popen", _InterruptedPopen), \
+                    patch.object(wc.os, "getpgid", lambda pid: 999), \
+                    patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                    patch.object(wc, "_leaf_timeout_seconds", lambda: 3600):
+                with self.assertRaises(KeyboardInterrupt):
+                    self._c(repo_root=repo, env={}).spawn_leaf(
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+        # A plateau in what the flood gets through, the same observable the abandon and codex
+        # interrupt paths use: a reader parked on a SILENT pipe stays parked either way, so
+        # what the flag buys is that a reader still being delivered to stops within one block.
+        held.set()
+        deadline = time.monotonic() + 5.0
+        while leaked.bytes_written == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.3)
+        ceiling = wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024
+        self.assertLess(leaked.bytes_written, ceiling,
+                        "the readers must stop draining once the driver is unwinding")
+        settled = leaked.bytes_written
+        time.sleep(0.2)
+        self.assertEqual(leaked.bytes_written, settled)
 
     def test_a_recycled_pid_is_never_signalled(self) -> None:
         """The teardown must not signal a group that merely INHERITED the leaf's pid.
@@ -6972,15 +7179,17 @@ class LeafSpawnTest(unittest.TestCase):
 
         seen: list[int] = []
 
+        quick_pipes = (self._pipe("done"), self._pipe())
+
         class _QuickPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
+                self.stdout, self.stderr = quick_pipes
 
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                return ("done", "")
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
@@ -7052,47 +7261,34 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_claude_leaf_that_exits_with_its_pipes_still_open_is_not_a_timeout(self) -> None:
         """The claude twin: a leaf that answered and EXITED while leaking a tool subprocess
-        that keeps its pipes open. `communicate` returns at EOF, not at exit, so waiting it out
-        would burn the rest of the cap on a dead process and then relabel a SUCCESSFUL leaf a
-        `leaf_timeout` — a spurious, non-retryable fail_closed (and, at the production cap, two
-        silent hours). The exit status is authoritative."""
+        that keeps its pipes open. Waiting for EOF would burn the rest of the cap on a dead
+        process and then relabel a SUCCESSFUL leaf a `leaf_timeout` — a spurious, non-retryable
+        fail_closed (and, at the production cap, two silent hours). The exit status is
+        authoritative, and the streams get the teardown grace rather than the cap."""
         from unittest.mock import patch
 
         signalled: list[tuple[int, int]] = []
-        waited: list[float | None] = []
-        closed: list[str] = []
+        held = threading.Event()
+        self.addCleanup(held.set)
+        # Everything the leaf wrote, and then a descendant that holds both write ends: these
+        # pipes never reach EOF.
+        held_pipes = (
+            self._stream(("write", "THE ANSWER\n"), ("write", "AND THE POSTSCRIPT\n"),
+                         ("wait", held), ("hold_open",)).reader,
+            self._stream(("write", "noise\n"), ("wait", held), ("hold_open",)).reader)
 
         class _ExitedWithOpenPipePopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _FakePipe("stdout", closed)
-                self.stderr = _FakePipe("stderr", closed)
+                self.stdout, self.stderr = held_pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0                    # the leaf itself is already gone
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 return 0                    # reaped; only the descendant remains
-
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                # Never reaches EOF: the leaked descendant still holds both write ends. The
-                # wait is HONOURED so an unbounded call would actually hang the test — the
-                # bound on the post-exit drain has to be pinned by something.
-                waited.append(timeout)
-                if timeout is None:
-                    raise AssertionError("the post-exit drain must be bounded")
-                time.sleep(timeout)
-                # The payloads ACCUMULATE, as CPython's shared buffer does, so the drain's
-                # exception carries strictly more than the slice's: taking the earlier one
-                # would silently drop everything written during the teardown grace.
-                if len(waited) > 1:
-                    raise subprocess.TimeoutExpired(
-                        "claude", timeout, output=b"THE ANSWER\nAND THE POSTSCRIPT\n",
-                        stderr=b"noise\n")
-                raise subprocess.TimeoutExpired(
-                    "claude", timeout, output=b"THE ANSWER\n", stderr=b"noise\n")
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 signalled.append((-1, sig))
@@ -7115,14 +7311,13 @@ class LeafSpawnTest(unittest.TestCase):
         # Bounded by the GRACE, not by the cap: a regression that waits the cap out has to fail
         # this quickly rather than park CI for the length of a production timeout.
         self.assertLess(elapsed, 1.0, "the cap must not be spent on an already-exited leaf")
-        self.assertEqual(waited[-1], 0.05)          # the post-exit drain took the grace
         self.assertIs(proc.timed_out, False)
         self.assertEqual(proc.returncode, 0)
-        # The LATER payload — everything that arrived, including during the teardown grace.
+        # Everything that arrived before the conductor gave up, which the concurrent drain has
+        # regardless of whether the stream ever reaches EOF.
         self.assertEqual(proc.stdout, "THE ANSWER\nAND THE POSTSCRIPT\n")
-        # The read ends are released: nothing else can (the leaf is reaped, so `Popen.__del__`
-        # will not), and closing is what gives the leaked writer an EPIPE.
-        self.assertEqual(sorted(closed), ["stderr", "stdout"])
+        # The read ends are deliberately NOT closed: a reader thread is blocked on them, and
+        # `close()` waits on the same internal lock — a leaked fd traded for a hung driver.
         self.assertNotIn("leaf_timeout", out.getvalue())    # ...and no kill is reported
         self.assertIn("leaf_stream_abandoned", proc.stderr)  # the truncation IS recorded
         # ...and the descendant that kept the pipes IS signalled, by the PINNED group id (the
@@ -7137,22 +7332,22 @@ class LeafSpawnTest(unittest.TestCase):
         it — a permanent false truncation notice on passing leaves."""
         from unittest.mock import patch
 
+        # The leaked holder has the pipes when the leaf exits, and lets go WITHIN the grace.
+        drains_pipes = (self._stream(("sleep", 0.01), ("write", "THE ANSWER\n")).reader,
+                        self._stream(("sleep", 0.01)).reader)
+
         class _ExitedThenDrainsPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
-                self.calls = 0
+                self.stdout, self.stderr = drains_pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
 
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                self.calls += 1
-                if self.calls == 1:      # the first slice: the leaked holder still has it...
-                    raise subprocess.TimeoutExpired("claude", timeout)
-                return ("THE ANSWER\n", "")     # ...and it lets go within the grace
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
@@ -7174,10 +7369,9 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_a_real_wedged_leaf_is_killed_and_harvested(self) -> None:
         """One END-TO-END case against a REAL subprocess. Every other test here drives hand
-        written `Popen` doubles, which encode assumptions about CPython that nothing would
-        notice changing: that a timed-out `communicate` attaches partial output as raw BYTES in
-        text mode, that repeated calls accumulate rather than restart, and that a killed
-        process group closes the pipes. This one asserts the observable contract — killed at
+        written `Popen` doubles, which encode assumptions about CPython and about the kernel
+        that nothing would notice changing: what `Popen.wait` does with a deadline, and whether
+        killing a process group closes the pipes. This one asserts the observable contract — killed at
         the cap, terminal, partial output kept, marker appended, event emitted — through the
         real primitives. (bwrap is bypassed: the sandbox is orthogonal to what is measured, and
         `test_spawn_leaf_wraps_in_bwrap` covers the wrapping.)"""
@@ -7210,38 +7404,176 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
         self.assertGreaterEqual(events[0]["elapsed_seconds"], 1.0)
 
-    def test_the_claude_path_checks_the_exit_before_the_deadline(self) -> None:
-        """The ordering `docs/ORCHESTRATION.md` calls exact for this backend. A leaf that
-        completes inside the FINAL slice while a leaked tool subprocess still holds the pipe:
-        `communicate` cannot return (no EOF), the deadline has passed, and only checking the
-        exit FIRST turns this into the success it is instead of a non-retryable `leaf_timeout`
-        fail_closed for a leaf that produced its answer."""
+    def test_a_real_claude_leaf_flooding_without_newlines_is_captured_within_budget(self) -> None:
+        """Issue #18's acceptance, on the claude path, against a REAL subprocess.
+
+        A leaf writes megabytes to both streams with no newline terminator in any of it and
+        then exits 0. Before the block reads there was no budget on this path at all and the
+        whole flood was buffered inside `communicate` (4.2 GB captured, 16 GB peak RSS). The
+        leaf still SUCCEEDS: reading continues past the budget, so nothing here is the leaf
+        blocking on a pipe the conductor stopped draining."""
         from unittest.mock import patch
+
+        import tracemalloc
+
+        budget, blob = 20_000, 2_000_000
+        leaf = ("import sys;"
+                f"sys.stdout.write('o' * {blob}); sys.stdout.flush();"
+                f"sys.stderr.write('e' * {blob}); sys.stderr.flush()")
+        c = self._c(repo_root=Path("/tmp"), env={}, llm_command=f"python3 -c {leaf!r}")
+        c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        wc._pid_start_ticks(os.getpid())        # warm the lazy import (see the codex twin)
+        tracemalloc.start()
+        self.addCleanup(tracemalloc.stop)
+        tracemalloc.reset_peak()
+        baseline, _ = tracemalloc.get_traced_memory()
+        with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
+                patch.object(wc, "LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 0), \
+                redirect_stdout(io.StringIO()):
+            proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+        _current, peak = tracemalloc.get_traced_memory()
+        growth = peak - baseline
+        # PEAK MEMORY is the acceptance, not the size of what came back: this path used to
+        # buffer inside `communicate` and was measured at 4.2 GB captured / 16 GB peak RSS.
+        # A reader that clipped the capture but still held the flood would satisfy every
+        # other assertion here.
+        self.assertLess(growth, 500_000,
+                        f"grew {growth} bytes: the flood was held rather than streamed")
+        self.assertEqual(proc.returncode, 0)             # it finished; it was never blocked
+        self.assertIs(proc.timed_out, False)
+        ceiling = budget + wc.LEAF_STREAM_READ_BLOCK_BYTES + 500
+        self.assertLess(len(proc.stdout), ceiling, len(proc.stdout))
+        self.assertLess(len(proc.stderr), ceiling, len(proc.stderr))
+        self.assertIn("leaf_stdout_capture_truncated", proc.stdout)
+        self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+        # Nothing was abandoned: the leaf closed its pipes, so this is a bounded capture of a
+        # COMPLETE read, not a capture cut short.
+        self.assertNotIn("leaf_stream_abandoned", proc.stderr)
+
+    def test_a_real_codex_leaf_flooding_without_newlines_still_lands_its_turn(self) -> None:
+        """The same acceptance on the codex path, and the property that makes it safe: the
+        oversized record is clipped, but the reader carries on and the TURN AFTER IT still
+        lands. A reader that stopped at the budget would wedge this leaf on a full pipe and it
+        would never get to emit its answer — the regression the keep-reading invariant exists
+        to prevent, measured against a real leaf that died at the cap with 1.1 MB of progress
+        written and no answer."""
+        from unittest.mock import patch
+
+        limit = 50_000
+        source = (
+            "import sys\n"
+            "w = sys.stdout.write\n"
+            "w('{\"junk\":\"' + 'q' * 3000000 + '\"}')\n"
+            "w('\\n')\n"
+            "w('{\"type\":\"thread.started\",\"thread_id\":\"t-1\"}\\n')\n"
+            "w('{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",'\n"
+            "  '\"text\":\"done\"}}\\n')\n"
+            "sys.stdout.flush()\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            # From a FILE, not `python3 -c`: the leaf command is shlex-split, and a program
+            # carrying both quote characters cannot survive that round trip.
+            script = Path(tmp) / "leaf.py"
+            script.write_text(source, encoding="utf-8")
+            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
+                        env={}, llm_command=f"python3 {script}")
+            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+            with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
+                    patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
+                    redirect_stdout(io.StringIO()):
+                proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIs(proc.timed_out, False)
+        self.assertEqual(proc.stdout, "done")            # the turn behind the flood lands
+        self.assertIn("leaf_stdout_record_truncated", proc.raw_stdout)
+        self.assertLess(len(proc.raw_stdout), limit * 2)
+
+    def test_a_real_wedged_codex_leaf_is_killed_and_its_jsonl_kept(self) -> None:
+        """The codex twin of `test_a_real_wedged_leaf_is_killed_and_harvested`, which had no
+        counterpart on this backend: every other codex test drives a hand-written `Popen`
+        double. Emits a valid turn, then wedges holding its stream open."""
+        from unittest.mock import patch
+
+        source = (
+            "import sys, time\n"
+            "sys.stdout.write('{\"type\":\"thread.started\",\"thread_id\":\"t-1\"}\\n')\n"
+            "sys.stdout.flush()\n"
+            "sys.stderr.write('codex: thinking\\n')\n"
+            "sys.stderr.flush()\n"
+            "time.sleep(300)\n")
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            # From a FILE: see the sibling flood test — the leaf command is shlex-split.
+            script = Path(tmp) / "leaf.py"
+            script.write_text(source, encoding="utf-8")
+            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
+                        env={}, llm_command=f"python3 {script}")
+            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+            with patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
+                    redirect_stdout(out):
+                started = time.monotonic()
+                proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A",
+                                    timeout_context={"node_key": "n", "step": "generate",
+                                                     "substep": "generate",
+                                                     "agent_run_id": "A"})
+                elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 20.0)
+        self.assertIs(proc.timed_out, True)
+        self.assertNotEqual(proc.returncode, 0)
+        # A wedge's last words are the whole evidence, on both streams.
+        self.assertIn('"thread.started"', proc.raw_stdout)
+        self.assertIn("codex: thinking", proc.stderr)
+        self.assertEqual(proc.stderr.splitlines()[-1][:26], "[conductor] leaf_timeout: ")
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
+        events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
+        self.assertEqual(events[0]["backend"], "codex")
+
+    def test_a_claude_leaf_that_exits_late_beats_the_pipe_that_never_closes(self) -> None:
+        """What used to need an explicit exit-before-deadline CHECK is now structural, and
+        this pins that it stays so. The leaf finishes while a leaked tool subprocess still
+        holds its pipes open. A wait that ended at stream EOF could not return at all here —
+        which is why the old code sliced `communicate` and inspected the exit first — whereas
+        `Popen.wait` ends at the EXIT, so the success is reported as one with no ordering rule
+        to get wrong. The double HONOURS its deadline, so a wait that was somehow given the
+        cap's remainder rather than ending at the exit would time out and fail this."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        waited: list[float | None] = []
+        # The leaked holder keeps stdout open past the deadline; the answer is already in it.
+        last_slice_pipes = (
+            self._stream(("write", "THE ANSWER\n"), ("wait", held), ("hold_open",)).reader,
+            self._stream(("wait", held), ("hold_open",)).reader)
 
         class _ExitsInTheLastSlicePopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
-                self.polls = 0
+                self.stdout, self.stderr = last_slice_pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
-                # Running while the slice is waited out, exited by the time it expires — so
-                # the exit and the deadline land on the SAME iteration.
-                self.polls += 1
-                if self.polls < 2:
-                    return None
-                self.returncode = 0
-                return 0
+                return self.returncode
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                # It finishes 10ms in. The deadline is HONOURED rather than ignored, so this
+                # double behaves like `Popen.wait`: a caller that passed a spent deadline
+                # gets `TimeoutExpired`, and the test would report the wedge it is asserting
+                # does not happen.
+                waited.append(timeout)
+                if timeout is not None and timeout < 0.01:
+                    raise subprocess.TimeoutExpired("claude", timeout)
+                time.sleep(0.01)
+                self.returncode = 0
                 return 0
-
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                if self.polls >= 2:
-                    return ("THE ANSWER\n", "")     # the holder let go inside the grace
-                raise subprocess.TimeoutExpired("claude", timeout, output=b"THE ANSWER\n")
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
@@ -7262,6 +7594,11 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "THE ANSWER\n")
         self.assertNotIn("leaf_timeout", out.getvalue())
+        # The leaf itself was waited on ONCE, carrying the cap's remaining time — not polled
+        # around a stream that was never going to reach EOF. Everything after it belongs to
+        # the teardown and is bounded by the grace.
+        self.assertGreater(waited[0], 0.01, waited)
+        self.assertTrue(all(t <= 0.05 for t in waited[1:]), waited)
 
     def test_the_exited_leaf_drain_pins_the_pgid_too(self) -> None:
         """The pin matters MOST here: the leaf was just reaped, so the live `os.getpgid` lookup
@@ -7283,21 +7620,24 @@ class LeafSpawnTest(unittest.TestCase):
             signalled.append((pgid, sig))
             return None
 
+        held = threading.Event()
+        self.addCleanup(held.set)
+        holder_pipes = (
+            self._stream(("write", "ANSWER\n"), ("wait", held), ("hold_open",)).reader,
+            self._stream(("wait", held), ("hold_open",)).reader)
+
         class _ExitedWithHolderPopen:
             pid = 4242                      # ...which IS the pgid (start_new_session=True)
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
+                self.stdout, self.stderr = holder_pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 return 0
-
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                raise subprocess.TimeoutExpired("claude", timeout, output=b"ANSWER\n")
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 signalled.append((-1, sig))
@@ -7328,6 +7668,9 @@ class LeafSpawnTest(unittest.TestCase):
         for backend in ("claude", "codex"):
             with self.subTest(backend=backend):
                 signalled: list[tuple[int, int]] = []
+                # A wedged JSONL stream: open, silent, never reaching EOF.
+                wedged_pipes = (self._stream(("wait", wedged), ("hold_open",)).reader,
+                                self._stream(("wait", wedged), ("hold_open",)).reader)
 
                 def _killpg(pgid, sig):  # type: ignore[no-untyped-def]
                     if sig == 0:
@@ -7345,26 +7688,16 @@ class LeafSpawnTest(unittest.TestCase):
                     returncode = None
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                        if backend == "codex":
-                            # A wedged JSONL stream: open, silent, never reaching EOF.
-                            self.stdout = self._silent()
-                            self.stderr = io.StringIO("")
-                        else:
-                            self.stdout = _FakePipe("stdout")
-                            self.stderr = _FakePipe("stderr")
-
-                    def _silent(self):  # type: ignore[no-untyped-def]
-                        wedged.wait(30)
-                        return
-                        yield  # pragma: no cover - generator marker
+                        self.stdout, self.stderr = wedged_pipes
+                        self.waits = 0
 
                     def poll(self):  # type: ignore[no-untyped-def]
                         return None
 
-                    def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                        raise subprocess.TimeoutExpired("claude", timeout)
-
                     def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        self.waits += 1
+                        if self.waits == 1:       # the cap runs out on a leaf still running
+                            raise subprocess.TimeoutExpired("claude", timeout)
                         return -int(signal.SIGKILL)
 
                     def send_signal(self, sig):  # type: ignore[no-untyped-def]
@@ -7392,45 +7725,37 @@ class LeafSpawnTest(unittest.TestCase):
     def test_claude_timeout_harvests_partial_output_when_the_pipe_stays_open(self) -> None:
         """The killed leaf's pipes are NOT guaranteed to close: bwrap runs the sandboxed command
         in its own session, so a tool subprocess the CLI spawned survives the group signal and
-        keeps the write end open (measured against a real bwrap profile). The bounded drain then
-        times out too — and the partial output must come off the EXCEPTIONS rather than being
-        dropped, which is what made the first smoke run report a leaf that had written to both
-        streams as silent. `communicate` attaches raw BYTES there even in text mode."""
+        keeps the write end open (measured against a real bwrap profile). What the leaf wrote
+        before it wedged has to come back anyway — the first smoke run reported a leaf that had
+        written to both streams as silent. The concurrent drains have it by construction: they
+        appended it as it arrived, where the old path had to recover it from a timed-out
+        `communicate`'s exception payload."""
         from unittest.mock import patch
 
-        closed: list[str] = []
         killed: list[int] = []
+        held = threading.Event()
+        self.addCleanup(held.set)
+        # Written before the wedge, then a descendant that never lets the pipes close. The
+        # stderr byte is invalid UTF-8 but a legal latin-1 character, so the decode is pinned
+        # to the locale codec rather than a hardcoded utf-8.
+        held_pipes = (
+            self._stream(("write", "partial answer\n"), ("wait", held),
+                         ("hold_open",), encoding="latin-1").reader,
+            self._stream(("write", "leaf: thinking\xff\n"), ("wait", held),
+                         ("hold_open",), encoding="latin-1").reader)
 
         class _PipeHeldOpenPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.calls = 0
-                # A non-UTF-8 locale codec, which is what `text=True` selects from the
-                # environment: the harvest must use the pipe's codec, or the same bytes decode
-                # one way when they return and another when they are recovered.
-                self.stdout = _FakePipe("stdout", closed, encoding="latin-1")
-                self.stderr = _FakePipe("stderr", closed, encoding="latin-1")
+                self.stdout, self.stderr = held_pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return self.returncode          # never exits on its own
 
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
-                self.calls += 1
-                if killed:
-                    # The post-kill call: EMPTY payloads, which is what CPython raises when
-                    # both streams already reached EOF and the timeout came from its internal
-                    # `wait()`. Everything the leaf wrote is then only on the exception the
-                    # PRE-kill call raised — the fallback under test.
-                    raise subprocess.TimeoutExpired("claude", timeout)
-                # Each pre-kill slice carries what has accumulated so far, as CPython does.
-                raise subprocess.TimeoutExpired(
-                    "claude", timeout,
-                    output=b"partial answer\n", stderr=b"leaf: thinking\xff\n")
-
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
-                assert timeout is not None, "teardown wait must be bounded"
+                assert timeout is not None, "every wait on a capped leaf must be bounded"
                 raise subprocess.TimeoutExpired("claude", timeout)
 
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
@@ -7439,6 +7764,7 @@ class LeafSpawnTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
             with patch.object(wc.subprocess, "Popen", _PipeHeldOpenPopen), \
+                    patch.object(wc, "_leaf_stream_encoding", lambda: "latin-1"), \
                     patch.object(wc.os, "getpgid", lambda pid: 999), \
                     patch.object(wc.os, "killpg", lambda pgid, sig: killed.append(sig)), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
@@ -7447,56 +7773,55 @@ class LeafSpawnTest(unittest.TestCase):
                     redirect_stdout(io.StringIO()):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
                     "P", {"HOME": "/h"}, session_id="A", child_arid="A")
-        # Recovered from the FIRST exception — the fallback, not the post-kill payload.
         self.assertEqual(proc.stdout, "partial answer\n")
-        # The FALLBACK to the first exception's payload: `communicate` raises with EMPTY
-        # payloads when the streams were read to EOF and the timeout came from its internal
-        # `wait()`, so without it a leaf that wrote everything and then wedged is reported as
-        # silent — the defect the first smoke run actually hit.
-        self.assertEqual(
-            wc._partial_stream_text(None, b"from the first exception"),
-            "from the first exception")
-        # ...and the harvest decodes with the codec the Popen selected, not a hardcoded utf-8:
-        # otherwise the same bytes read one way when they return and another when they are
-        # harvested (mojibake in the one artifact this path exists to preserve).
-        self.assertEqual(wc._partial_stream_text(b"caf\xe9", encoding="latin-1"), "café")
-        self.assertEqual(wc._partial_stream_text(b"caf\xe9"), "caf\\xe9")   # lenient utf-8
-        # ...and a malformed byte in a dying leaf's output is decoded leniently rather than
-        # raising on the conductor's own error path.
-        # `\xff` is invalid UTF-8 but a legal latin-1 character: this pins that the pipe's own
-        # codec was used, not a hardcoded utf-8 (which would render it `\\xff`).
+        # `\xff` is invalid UTF-8 but a legal latin-1 character: this pins that the LOCALE
+        # codec was used, not a hardcoded utf-8 (which would render it `\\xff`). Otherwise the
+        # same bytes read one way when they return and another when they are harvested —
+        # mojibake in the one artifact this path exists to preserve.
         self.assertTrue(proc.stderr.startswith("leaf: thinking\xff"))
         self.assertIn("leaf_timeout", proc.stderr)
-        # Still terminal even though the process never reported an exit status.
-        self.assertEqual(proc.returncode, 1)
+        # Still terminal even though the process never reported an exit status: the escalation
+        # the conductor actually performed is what gets reported.
+        self.assertEqual(proc.returncode, -int(signal.SIGKILL))
         # ...and the capture says it is a PREFIX, the same as on every other abandoned stream:
         # `docs/RUNBOOK.md` tells the operator to read this line, and without it a truncated
         # post-mortem is indistinguishable from a complete one.
         self.assertIn("leaf_stream_abandoned", proc.stderr)
-        # The read ends we give up on are released: the leaf is never reaped (a writer still
-        # holds them), so nothing else would ever close them, and the leaked writer gets an
-        # EPIPE instead of a reader that never returns.
-        self.assertEqual(sorted(closed), ["stderr", "stdout"])
+        # The read ends are deliberately NOT closed: a reader thread is parked on them, and
+        # `close()` waits on the same internal lock — a leaked fd traded for a hung driver.
+
+    def test_the_leaf_stream_codec_is_the_one_a_text_mode_pipe_would_have_used(self) -> None:
+        """The pipes are opened binary now and the conductor decodes them itself, so the codec
+        it picks has to be the one `Popen(text=True)` was picking — otherwise every leaf's
+        non-ASCII prose starts decoding differently on a non-UTF-8 host the day this lands."""
+        import locale as _locale
+        self.assertEqual(wc._leaf_stream_encoding(),
+                         _locale.getpreferredencoding(False) or "utf-8")
+        # ...and it never returns an empty codec name, which `open()` would reject.
+        from unittest.mock import patch
+        with patch.object(wc.locale, "getpreferredencoding", lambda do_setlocale=True: ""):
+            self.assertEqual(wc._leaf_stream_encoding(), "utf-8")
 
     def test_leaf_timeout_zero_disables_the_cap(self) -> None:
         """`0` removes the DEADLINE — for an operator deliberately running a leaf longer than
-        the default — but not the exit detection: the waits stay sliced so a leaf that answers
-        and exits while leaking a pipe-holder still returns, instead of blocking the driver
-        forever on a leaf that SUCCEEDED."""
+        the default — but not the exit detection: the wait ends at the leaf's EXIT, so a leaf
+        that answers and exits while leaking a pipe-holder still returns instead of blocking
+        the driver forever on a leaf that SUCCEEDED."""
         from unittest.mock import patch
 
         waited: list[float | None] = []
+        quick_pipes = (self._pipe("done"), self._pipe())
 
         class _QuickPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout, self.stderr = _FakePipe("stdout"), _FakePipe("stderr")
+                self.stdout, self.stderr = quick_pipes
 
-            def communicate(self, timeout=None):  # type: ignore[no-untyped-def]
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 waited.append(timeout)
-                return ("done", "")
+                return 0
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
@@ -7504,8 +7829,10 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.dict(wc.os.environ, {"METDSL_LEAF_TIMEOUT_SECONDS": "0"}):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
                     "P", {"HOME": "/h"}, session_id="A", child_arid="A")
-        # Sliced, never a deadline: the wait repeats until the leaf ends, however long it takes.
-        self.assertEqual(waited, [wc.LEAF_STREAM_POLL_SECONDS])
+        # No deadline at all: the wait runs until the leaf ends, however long it takes. It is
+        # still the leaf's EXIT that ends it, which is why a leaked pipe-holder cannot stretch
+        # it — the reason the cap-off configuration is safe to offer.
+        self.assertEqual(waited, [None])
         self.assertEqual((proc.returncode, proc.stdout), (0, "done"))
         # A leaf that returned on its own is NEVER a conductor kill: flipping this would tag
         # every claude leaf `leaf_timeout`, which outranks the real cause, stops every
@@ -7553,13 +7880,22 @@ class LeafSpawnTest(unittest.TestCase):
         # slice of minutes would blind the exit detection, and a capture budget of gigabytes
         # would restore the heap growth the budget exists to stop.
         self.assertEqual(wc.LEAF_STREAM_POLL_SECONDS, 1.0)
-        self.assertEqual(wc.LEAF_STREAM_POLL_MAX_SECONDS, 30.0)
         self.assertEqual(wc.LEAF_STDERR_CAPTURE_MAX_CHARS, 1_000_000)
         self.assertEqual(wc.LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS, 4_000_000)
         self.assertEqual(wc.LEAF_STREAM_QUEUE_MAX_CHARS, 2_000_000)
-        # The ceiling is a real platform limit, not a policy: one second above it,
-        # `communicate(timeout=…)` raises OverflowError instead of waiting — which on the
-        # claude path escapes `spawn_leaf` as a generic conductor_error before any leaf runs.
+        self.assertEqual(wc.LEAF_STREAM_READ_BLOCK_BYTES, 65536)
+        # NONZERO above all: every test that exercises the tail patches this, so a default of
+        # `0` would ship the head-only capture — a flooding leaf's terminal cause discarded and
+        # the run terminalized untagged — with the whole suite still green.
+        self.assertEqual(wc.LEAF_STDERR_CAPTURE_TAIL_CHARS, 65_536)
+        # At least 2: index 0 is the notice and index -1 the terminal event, so the bound
+        # has to hold both before it holds anything else.
+        self.assertEqual(wc.LEAF_FAILURE_EVENTS_MAX, 20)
+        self.assertGreaterEqual(wc.LEAF_FAILURE_EVENTS_MAX, 2)
+        # The ceiling is a real platform limit, not a policy: one second above it, a
+        # `select`-based wait in `subprocess` raises OverflowError instead of waiting. Both
+        # leaf paths hand the whole remaining cap to `Popen.wait`, which does not overflow, so
+        # this guards a future deadline placed on a selecting wait rather than a live path.
         proc = subprocess.Popen(["python3", "-c", "import time; time.sleep(0.05)"],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -7576,18 +7912,18 @@ class LeafSpawnTest(unittest.TestCase):
         finishes on its own (EOF) shortly after the leaf, so only the join can make it in."""
         from unittest.mock import patch
 
-        class _SlowStderr:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                time.sleep(0.15)          # arrives AFTER the main thread reaches the join
-                yield "Claude AI usage limit reached\n"
+        # Arrives AFTER the main thread reaches the join, then reaches EOF on its own.
+        stdout_pipe = self._pipe('{"type":"thread.started","thread_id":"t-1"}\n')
+        stderr_pipe = self._stream(
+            ("sleep", 0.15), ("write", "Claude AI usage limit reached\n")).reader
 
         class _QuickPopen:
             pid = 424242
             returncode = 1
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO('{"type":"thread.started","thread_id":"t-1"}\n')
-                self.stderr = _SlowStderr()
+                self.stdout = stdout_pipe
+                self.stderr = stderr_pipe
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 1
@@ -7623,27 +7959,20 @@ class LeafSpawnTest(unittest.TestCase):
         usage_line = ('{"type":"turn.started","turn":{"usage":{"input_tokens":11},'
                       '"model":"gpt-5.6-codex"}}\n')
 
-        class _WedgedStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield usage_line
-                # Then nothing, exactly like a wedged leaf, until the kill lands.
-                released.wait(10)
-
-        class _WedgedStderr:
-            """Iterated, not `read()`: the drain appends per LINE so that a join which
-            expires still carries whatever the leaf managed to write."""
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield "codex: waiting for model response\n"
-                released.wait(10)
+        # One line each, then nothing at all — exactly like a wedged leaf — until the kill
+        # lands. The pipes stay OPEN meanwhile, which is what makes this a wedge rather
+        # than an EOF: the drain must still carry whatever arrived before it.
+        wedged_stdout = self._stream(("write", usage_line), ("wait", released)).reader
+        wedged_stderr = self._stream(
+            ("write", "codex: waiting for model response\n"), ("wait", released)).reader
 
         class _WedgedPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _WedgedStdout()
-                self.stderr = _WedgedStderr()
+                self.stdout = wedged_stdout
+                self.stderr = wedged_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return self.returncode      # alive until the kill lands
@@ -7723,18 +8052,19 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         waits: list = []
+        # WITH an answer: the clean-finish guard's other terms then hold, so the pre-kill
+        # status is the only thing that can keep this a timeout.
+        pipes = (self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'),
+            self._pipe("codex: done streaming\n"))
 
         class _NeverExitsPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                # WITH an answer: the clean-finish guard's other terms then hold, so the
-                # pre-kill status is the only thing that can keep this a timeout.
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = io.StringIO("codex: done streaming\n")
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return self.returncode
@@ -7785,20 +8115,19 @@ class LeafSpawnTest(unittest.TestCase):
 
         never_closes = threading.Event()
         self.addCleanup(never_closes.set)
+        # The whole turn, and then the leaked descendant holding the write end open.
+        pipes = (self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'
+                      '{"type":"item.completed","item":'
+                      '{"type":"agent_message","text":"done"}}\n'),
+            ("wait", never_closes)).reader, self._pipe("codex: fine\n"))
 
         class _ExitedWithOpenPipePopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("codex: fine\n")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                yield ('{"type":"item.completed","item":'
-                       '{"type":"agent_message","text":"done"}}\n')
-                never_closes.wait(30)       # the leaked descendant, holding the write end
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0                    # the leaf itself is already gone
@@ -7836,21 +8165,21 @@ class LeafSpawnTest(unittest.TestCase):
         past) the deadline is exactly how that gets hit."""
         from unittest.mock import patch
 
-        chatty = threading.Event()
-        self.addCleanup(chatty.set)
+        # A line every 10ms for far longer than the 50ms cap below, so the stream is still
+        # delivering when the deadline lands. `release()` aborts whatever is left.
+        chatty_pipe = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[op for _ in range(500) for op in (
+                ("write", '{"type":"item.started","item":{"type":"tool_call"}}\n'),
+                ("sleep", 0.01))]).reader
+        chatty_stderr = self._pipe()
 
         class _ChattyPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not chatty.wait(0.01):     # a line every 10ms, straddling the deadline
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
+                self.stdout, self.stderr = chatty_pipe, chatty_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -7884,18 +8213,16 @@ class LeafSpawnTest(unittest.TestCase):
 
         wedged = threading.Event()
         self.addCleanup(wedged.set)
+        pipes = (self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("wait", wedged)).reader, self._pipe())
 
         class _WedgedAfterRegistrationPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                wedged.wait(30)
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -7932,21 +8259,20 @@ class LeafSpawnTest(unittest.TestCase):
         runaway shape that is more likely than total silence."""
         from unittest.mock import patch
 
-        chatty = threading.Event()
-        self.addCleanup(chatty.set)
+        # Never a quiet moment: back-to-back records, no pauses, for far longer than the
+        # 0.2s cap below. `release()` aborts whatever the reader never got to.
+        chatty_pipe = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[("write", '{"type":"item.started","item":{"type":"tool_call"}}\n')
+              for _ in range(200_000)]).reader
+        chatty_stderr = self._pipe()
 
         class _ChattyPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not chatty.is_set():          # never a quiet moment
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
+                self.stdout, self.stderr = chatty_pipe, chatty_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -7991,13 +8317,14 @@ class LeafSpawnTest(unittest.TestCase):
                     '"model":"gpt-5.6-codex"}}\n',
                     '{"type":"turn.failed","error":{"message":"boom"}}\n'])
 
+        pipes = (self._pipe("".join(lines)), self._pipe())
+
         class _BacklogPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = iter(lines)
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None                     # still running when the cap expires
@@ -8013,8 +8340,12 @@ class LeafSpawnTest(unittest.TestCase):
         c._register_codex_thread = (  # type: ignore[method-assign]
             lambda *a: registrations.append(a))
         # A cap so small that the read loop gives up before consuming the stream, leaving the
-        # pump's backlog behind: the drain after the break is what must recover it.
+        # pump's backlog behind: the drain after the break is what must recover it. The
+        # reader is silenced rather than merely raced — with a real pipe the pump can fill
+        # the queue before the first deadline check, and "the read loop consumed nothing"
+        # has to be the premise of this test, not a scheduling accident.
         with patch.object(wc.subprocess, "Popen", _BacklogPopen), \
+                patch.object(wc.queue, "Queue", _SilentQueue), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 0.001), \
                 patch.object(wc, "LEAF_STREAM_POLL_SECONDS", 0.001), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
@@ -8042,18 +8373,30 @@ class LeafSpawnTest(unittest.TestCase):
         indefinite block moved one step later. The failure must also be visible."""
         from unittest.mock import patch
 
-        class _RaisingStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                raise OSError(5, "Input/output error")
+        dying_stderr = self._pipe()
+        # A real pipe that carries one record and then fails at the READ, which is where a
+        # dying pipe actually fails. Injected on the fd rather than modelled by a fake
+        # stream object, so the pump is exercised exactly as production drives it.
+        dying_stdout = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("hold_open",)).reader
+        dying_fd = dying_stdout.fileno()
+        real_read, reads = os.read, [0]
+
+        def _read(fd, size):  # type: ignore[no-untyped-def]
+            if fd == dying_fd:
+                reads[0] += 1
+                if reads[0] > 1:        # the record lands, and the NEXT read is the failure
+                    raise OSError(5, "Input/output error")
+            return real_read(fd, size)
 
         class _DyingPipePopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _RaisingStdout()
-                self.stderr = io.StringIO("")
+                self.stdout = dying_stdout
+                self.stderr = dying_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 # STILL RUNNING as far as the conductor can see: without this the exited-leaf
@@ -8070,6 +8413,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="codex", agent_model="gpt-5.6-codex")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _DyingPipePopen), \
+                patch.object(wc.os, "read", _read), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
@@ -8111,27 +8455,21 @@ class LeafSpawnTest(unittest.TestCase):
         persisted, tail-sliced and regex-scanned — 770 MB in the measured case."""
         from unittest.mock import patch
 
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
+        def _flood(payload: str):
+            """The leaked descendant: it writes far more than the reader will take, and
+            never closes the write end (`hold_open`) — so nothing here reaches EOF."""
+            return self._stream(
+                *[("write", payload) for _ in range(50_000)], ("hold_open",)).reader
 
-        class _FloodingHolder:
-            """The leaked descendant: it never stops writing and never closes."""
-
-            def __init__(self, payload: str) -> None:
-                self.payload = payload
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                while not flooding.is_set():
-                    yield self.payload
+        flood_stdout = _flood('{"type":"item.started","item":{"type":"tool_call"}}\n')
+        flood_stderr = _flood("x" * 4096 + "\n")
 
         class _ExitedFloodedPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _FloodingHolder(
-                    '{"type":"item.started","item":{"type":"tool_call"}}\n')
-                self.stderr = _FloodingHolder("x" * 4096 + "\n")
+                self.stdout, self.stderr = flood_stdout, flood_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0                     # the leaf itself exited immediately
@@ -8169,24 +8507,22 @@ class LeafSpawnTest(unittest.TestCase):
         that only checks its deadline on an empty queue would never end."""
         from unittest.mock import patch
 
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
-
-        class _SlowThenFloodingStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                time.sleep(0.15)             # in flight at the break: the drain must wait
-                yield '{"type":"item.completed","item":{"type":"agent_message","text":"late"}}\n'
-                while not flooding.is_set():  # ...and then never stop
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
+        slow_then_flooding = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("sleep", 0.15),              # in flight at the break: the drain must wait
+            ("write",
+             '{"type":"item.completed","item":{"type":"agent_message","text":"late"}}\n'),
+            # ...and then never stop, and never close.
+            *[("write", '{"type":"item.started","item":{"type":"tool_call"}}\n')
+              for _ in range(200_000)], ("hold_open",)).reader
+        flooding_stderr = self._pipe()
 
         class _NeverExitsPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _SlowThenFloodingStdout()
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = slow_then_flooding, flooding_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8229,20 +8565,31 @@ class LeafSpawnTest(unittest.TestCase):
         in the capture, exactly as the stdout pump's is."""
         from unittest.mock import patch
 
-        class _RaisingStderr:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield "codex: starting\n"
-                raise OSError(5, "Input/output error")
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+
+        # One line through a real pipe, and then the read itself fails — where a dying pipe
+        # actually fails.
+        dying_stderr = self._stream(
+            ("write", "codex: starting\n"), ("hold_open",)).reader
+        dying_fd = dying_stderr.fileno()
+        real_read, reads = os.read, [0]
+
+        def _read(fd, size):  # type: ignore[no-untyped-def]
+            if fd == dying_fd:
+                reads[0] += 1
+                if reads[0] > 1:        # the line lands, and the NEXT read is the failure
+                    raise OSError(5, "Input/output error")
+            return real_read(fd, size)
 
         class _Popen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = _RaisingStderr()
+                self.stdout = answered
+                self.stderr = dying_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
@@ -8256,6 +8603,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="codex", agent_model="gpt-5.6-codex")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc.os, "read", _read), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
@@ -8274,30 +8622,25 @@ class LeafSpawnTest(unittest.TestCase):
         `LEAF_STDERR_CAPTURE_MAX_CHARS`, and say where the capture stops."""
         from unittest.mock import patch
 
-        consumed = []
-
-        class _CountingStderr:
-            """A writer the conductor must keep reading to the end."""
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                for i in range(60):
-                    consumed.append(i)
-                    yield "e" * 1000 + "\n"
-                # ...and one blob with no newline in it at all: the iterator yields it whole,
-                # so a budget checked only AFTER the append would keep all of it. That string
-                # is returned, persisted, tail-sliced and regex-scanned.
-                consumed.append("blob")
-                yield "b" * 100_000
+        # 60 KB of lines, then a blob with no newline in it at all — far more than the
+        # 10 KB budget below and far more than a pipe will hold, so a drain that stopped
+        # reading at the budget would leave this writer WEDGED with its script unfinished.
+        # That is the property, and only a real pipe can carry it: the writer's own progress
+        # is the evidence, where a counter incremented by the fake was the fake's own claim.
+        chatty_stderr = self._stream(
+            *[("write", "e" * 1000 + "\n") for _ in range(60)],
+            ("write", "b" * 100_000))
+        stderr_total = 60 * 1001 + 100_000
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 
         class _ChattyStderrPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = _CountingStderr()
+                self.stdout, self.stderr = answered, chatty_stderr.reader
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
@@ -8312,16 +8655,755 @@ class LeafSpawnTest(unittest.TestCase):
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ChattyStderrPopen), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 10_000), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 1_000), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
             proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
-        self.assertEqual(len(consumed), 61, "the drain must read to EOF, not stop at the budget")
+        self.assertTrue(chatty_stderr.finished.is_set(),
+                        "the drain must read to EOF, not stop at the budget")
+        self.assertEqual(chatty_stderr.bytes_written, stderr_total,
+                         "a drain that stopped at the budget would wedge this writer")
         self.assertEqual(proc.stdout, "done")            # ...so the leaf still gets to answer
         self.assertIs(proc.timed_out, False)
-        self.assertLess(len(proc.stderr), 12_000)        # kept: bounded, clip and all
+        # Bounded: the head budget, the retained tail, and the two notices.
+        self.assertLess(len(proc.stderr), 10_000 + 1_000 + 500)
         self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+
+    def test_a_newline_free_stderr_flood_is_captured_within_the_budget(self) -> None:
+        """Issue #18's stderr half. The budget used to be checked per DELIVERED LINE, and a
+        producer that never writes one delivered nothing to check — measured at 1.35 GB against
+        a 4 MB budget. Reading in fixed-size blocks makes the budget a bound on MEMORY, and it
+        must do so without becoming a bound on the leaf: the writer still reaches EOF."""
+        from unittest.mock import patch
+
+        import tracemalloc
+
+        budget = 20_000
+        # Pre-encoded, so the fixture's own 4 MB allocation happens OUTSIDE the measured
+        # region and cannot be mistaken for the conductor holding the flood.
+        blob = ("z" * 4_000_000).encode()   # 200x the budget, and not one newline in it
+        flood = self._stream(("write", blob))
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+
+        class _FloodingPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = answered, flood.reader
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        # Warm the lazy import behind `_pid_start_ticks` (it pulls in `tools.run_workflow`
+        # and its dependents, ~1 MB of module objects on first call): one-time import cost
+        # charged to the first leaf would swamp the measurement below.
+        wc._pid_start_ticks(os.getpid())
+        tracemalloc.start()
+        self.addCleanup(tracemalloc.stop)
+        tracemalloc.reset_peak()
+        # A DELTA: `get_traced_memory` reports absolute totals, so the fixture's own
+        # allocations would otherwise be charged to the conductor.
+        baseline, _ = tracemalloc.get_traced_memory()
+        with patch.object(wc.subprocess, "Popen", _FloodingPopen), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 0), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        _current, peak = tracemalloc.get_traced_memory()
+        growth = peak - baseline
+        # THE ACCEPTANCE, and the only assertion here a line-based reader cannot also satisfy:
+        # PEAK MEMORY, not the size of what came back. A reader that buffers until a newline
+        # returns a capture clipped to exactly the same size while holding the whole flood —
+        # which is the defect, measured in the field at 1.35 GB against a 4 MB budget. The
+        # bound is far below the 4 MB flood and far above budget + one block.
+        self.assertLess(growth, 500_000,
+                        f"grew {growth} bytes: the flood was held rather than streamed")
+        # Budget, plus at most the one block that crossed it, plus the notice.
+        self.assertLess(len(proc.stderr), budget + wc.LEAF_STREAM_READ_BLOCK_BYTES + 500)
+        self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+        # ...and the leaf was never blocked by the conductor's own bookkeeping.
+        self.assertTrue(flood.finished.is_set())
+        self.assertEqual(flood.bytes_written, len(blob))
+        self.assertEqual(proc.stdout, "done")
+
+    def test_one_oversized_record_is_clipped_and_the_stream_resynchronizes(self) -> None:
+        """The other half: the JSONL capture is reassembled from blocks, so a record with no
+        newline in it would otherwise be held WHOLE before any budget could apply — one codex
+        tool result can be arbitrarily large, and a leaf in an output loop can make one that
+        never ends. It is clipped where it stands, said so in band, and the read resumes at the
+        next newline: a clipped record costs its own contents, never the rest of the turn."""
+        from unittest.mock import patch
+
+        limit = 30_000
+        pipes = (self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            + '{"junk":"' + "q" * 1_000_000 + '"}\n'          # 33x the record cap
+            + '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'),
+            self._pipe())
+
+        class _BigRecordPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _BigRecordPopen), \
+                patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # The turn on the far side of the oversized record still lands: the read resynchronized
+        # at the newline rather than discarding what followed.
+        self.assertEqual(proc.stdout, "done")
+        self.assertIn("leaf_stdout_record_truncated", proc.raw_stdout)
+        self.assertNotIn("q" * (limit + 1), proc.raw_stdout)
+        self.assertLess(len(proc.raw_stdout), limit * 2)
+        # The marker is the conductor's, so no classifier may match it — otherwise a leaf
+        # could claim an infra tag by writing the line itself.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            wc._leaf_stdout_record_truncated_marker(limit)))
+
+    def test_a_leaf_stream_is_decoded_leniently_and_across_block_boundaries(self) -> None:
+        """Two properties of the conductor's own decode, which used to be `Popen(text=True)`'s.
+
+        A malformed byte must not raise: under a strict codec it escapes `spawn_leaf` as a
+        conductor_error AND discards every diagnostic already drained. And a multi-byte
+        character straddling a block boundary must decode WHOLE — the boundary falls wherever
+        the kernel put it, so a per-block `bytes.decode` would escape both halves of it."""
+        from unittest.mock import patch
+
+        block = wc.LEAF_STREAM_READ_BLOCK_BYTES
+        # A 3-byte character positioned so the block boundary splits it, then a byte that is
+        # not valid UTF-8 at all, then the turn.
+        payload = (b'{"type":"thread.started","thread_id":"t-1"}\n'
+                   + b"#" * (block - 46) + "あ".encode()
+                   + b"\xff"
+                   + b'\n{"type":"item.completed","item":'
+                     b'{"type":"agent_message","text":"done"}}\n')
+        pipes = (self._stream(("write", payload)).reader, self._pipe())
+
+        class _Popen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc, "_leaf_stream_encoding", lambda: "utf-8"), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertEqual(proc.stdout, "done")          # nothing raised, the turn still lands
+        self.assertIn("あ", proc.raw_stdout)       # ...whole, not two escaped halves
+        self.assertIn("\\xff", proc.raw_stdout)        # ...and the bad byte is escaped
+        # `backslashreplace`, never `surrogateescape`: a lone surrogate crashes the UTF-8
+        # write that persists this capture.
+        proc.raw_stdout.encode("utf-8")
+
+    def test_the_line_reassembler_preserves_framing_and_bounds_one_record(self) -> None:
+        """Unit-level, because the block boundaries a pipe happens to produce are not the ones
+        worth pinning: the reassembler has to be correct for EVERY split."""
+        r = wc._LineReassembler()
+        self.assertEqual(r.feed("a\nb"), ["a\n"])       # keepends, and a partial line waits
+        self.assertEqual(r.feed("c\n"), ["bc\n"])       # ...and is completed by the next block
+        self.assertEqual(r.feed(""), [])
+        self.assertEqual(r.flush(), [])
+        # A line the leaf never terminated is still evidence.
+        r = wc._LineReassembler()
+        self.assertEqual(r.feed("tail"), [])
+        self.assertEqual(r.flush(), ["tail"])
+        self.assertEqual(r.flush(), [])                # ...once
+        # Past the cap: the record is dropped from where it crossed. Checked with and without
+        # a terminator, because a 3 MB record that DOES end is exactly as unbounded as one
+        # that never does.
+        # The clipped prefix comes back BEHIND its marker, as one line: a prefix of an
+        # oversized record can be valid JSON by accident, and must never be parsed as a
+        # complete record. The bytes are still all there.
+        clipped = (wc._leaf_stdout_record_truncated_marker(10).rstrip("\n")
+                   + " :: " + "x" * 10 + "\n")
+        r = wc._LineReassembler(limit=10)
+        self.assertEqual(r.feed("x" * 25), [clipped])
+        self.assertEqual(r.feed("dropped\nnext\n"), ["next\n"])   # resynced at the newline
+        r = wc._LineReassembler(limit=10)
+        self.assertEqual(r.feed("x" * 25 + "\nnext\n"), [clipped, "next\n"])
+        # The cap is not a per-block accident: a record assembled from many small blocks is
+        # clipped at exactly the same place.
+        r = wc._LineReassembler(limit=10)
+        out = [line for _ in range(25) for line in r.feed("x")]
+        self.assertEqual(out, [clipped])
+        # ...and a clipped record that WOULD have been valid JSON is not parsed as one.
+        r = wc._LineReassembler(limit=44)
+        record = '{"type":"thread.started","thread_id":"t-1"}'
+        out = r.feed(record + " " * 200 + "garbage\n")
+        self.assertEqual(len(out), 1)
+        self.assertIn(record, out[0])                  # the evidence is retained verbatim...
+        self.assertIsNone(wc._parse_codex_line(out[0]))   # ...but it is not an event
+        # THE BOUNDARY. A record of exactly the cap fits and must pass through whole: marking
+        # it would tell an operator that a record sitting complete in `leaf.stdout.jsonl` had
+        # its remainder discarded — a false report of lost evidence in the artifact they read
+        # to find out what a leaf did. Only the record that EXCEEDS the cap is clipped.
+        for split in (None, 4, 10):          # whole, mid-record, and exactly at the cap
+            for size, is_clipped in ((9, False), (10, False), (11, True)):
+                with self.subTest(size=size, split=split):
+                    r = wc._LineReassembler(limit=10)
+                    body = "x" * size + "\n"
+                    blocks = ([body] if split is None
+                              else [body[:split], body[split:]])
+                    out = [line for b in blocks for line in r.feed(b)]
+                    if is_clipped:
+                        self.assertEqual(out, [clipped])
+                    else:
+                        self.assertEqual(out, [body])   # whole, and no marker
+        # ...and an UNTERMINATED record at exactly the cap is still held whole, because the
+        # newline may be the very next byte.
+        r = wc._LineReassembler(limit=10)
+        self.assertEqual(r.feed("x" * 10), [])
+        self.assertEqual(r.feed("\n"), ["x" * 10 + "\n"])
+
+    def test_the_line_reassembler_output_does_not_depend_on_where_blocks_split(self) -> None:
+        """The core property, and the one no hand-picked case can establish: a block boundary
+        falls wherever the kernel put it, so the SAME byte stream must reassemble identically
+        however it is chopped up. Below the cap the result must also equal a plain keepends
+        split — the block reads must not change framing at all."""
+        import random
+        rng = random.Random(20260729)            # seeded: a flake here is unreproducible
+        for case in range(600):
+            limit = rng.randint(1, 8)
+            stream = "".join(rng.choice("ab\n") for _ in range(rng.randint(0, 40)))
+            with self.subTest(case=case):
+                runs = []
+                for _ in range(5):
+                    r = wc._LineReassembler(limit=limit)
+                    rest, out = stream, []
+                    while rest:
+                        cut = rng.randint(1, len(rest))
+                        out.extend(r.feed(rest[:cut]))
+                        rest = rest[cut:]
+                    out.extend(r.flush())
+                    runs.append(out)
+                self.assertEqual(runs[1:], runs[:-1], (limit, stream))
+                # ...and when nothing was long enough to clip, it IS a plain keepends split.
+                if all(len(rec) <= limit for rec in stream.split("\n")):
+                    self.assertEqual(runs[0], stream.splitlines(keepends=True),
+                                     (limit, stream))
+
+    def test_a_flooding_leafs_terminal_cause_survives_the_stderr_budget(self) -> None:
+        """The budget must not cost the run its TAG. Every consumer of a leaf's stderr reads
+        the END of it — `_classify_leaf_infra_error` takes the last matching line as the
+        terminal cause, and `_leaf_failure_summary` takes the last 400 characters — so a
+        head-only capture spends the budget on a chatty leaf's progress log and discards the
+        `API Error:` it died of. The run then fail_closes untagged: no transient retry, and
+        `--wait-usage-reset` silently disarmed. The measurement behind this very budget is a
+        leaf that wrote 1.1 MB of progress to stderr, so the case is the expected one."""
+        from unittest.mock import patch
+
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend):
+                cause = "API Error: Connection closed mid-response.\n"
+                noise = "progress line that says nothing useful\n"
+                stderr_body = noise * 4000 + cause          # far past the patched budget
+                answer = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                          '{"type":"item.completed","item":'
+                          '{"type":"agent_message","text":"done"}}\n')
+                pipes = (self._pipe(answer if backend == "codex" else "out\n"),
+                         self._pipe(stderr_body))
+
+                class _Popen:
+                    pid = 424242
+                    returncode = 1
+
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        self.stdout, self.stderr = pipes
+
+                    def poll(self):  # type: ignore[no-untyped-def]
+                        return 1
+
+                    def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        return 1
+
+                    def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                        return None
+
+                c = self._c(backend=backend, agent_model="gpt-5.6-codex")
+                c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+                c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+                with patch.object(wc.subprocess, "Popen", _Popen), \
+                        patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 5_000), \
+                        patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
+                        patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                        patch.object(wc.os, "getpgid", lambda pid: 999), \
+                        patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                        redirect_stdout(io.StringIO()):
+                    proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A") \
+                        if backend == "codex" else \
+                        c.spawn_leaf("P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                # Still bounded — this is not a licence to keep the whole stream...
+                self.assertLess(len(proc.stderr), 5_000 + 2_000 + 500, len(proc.stderr))
+                self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+                self.assertIn("leaf_stderr_capture_tail", proc.stderr)
+                # ...and the head is still there, so the leaf's opening context is not lost.
+                self.assertTrue(proc.stderr.startswith(noise))
+                # THE POINT: the cause survived, so the leaf still routes and still retries.
+                self.assertIn("Connection closed mid-response", proc.stderr)
+                self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_transport_flake")
+                self.assertIn("Connection closed", c._leaf_failure_summary(proc))
+                # The conductor's own tail marker must not be claimable as a tag by a leaf.
+                self.assertIsNone(wc._classify_leaf_infra_error(
+                    "[conductor] leaf_stderr_capture_tail: 10 characters dropped; "
+                    "the last 5 follow"))
+
+    def test_the_stderr_tail_survives_a_stream_the_conductor_abandons(self) -> None:
+        """The abandon path is where the tail matters MOST, and the one a reader can never
+        publish for itself: a descendant the leaf leaked holds the pipe open, so the drain
+        never reaches its own exit. Its terminal cause has already been READ — it is sitting
+        in the tail — and losing it with the thread would mean the capture that most needs a
+        cause is the one guaranteed not to have one."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        cause = "API Error: Connection closed mid-response.\n"
+        # Past the budget, then the cause, then silence with the pipe still open: the
+        # conductor gives up on this stream, and the drain thread never finishes.
+        stderr_pipe = self._stream(
+            ("write", "noise\n" * 2000), ("write", cause),
+            ("wait", held), ("hold_open",)).reader
+        stdout_pipe = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n')
+
+        class _ExitedPopen:
+            pid = 424242
+            returncode = 1
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = stdout_pipe, stderr_pipe
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 1                      # the leaf is gone; only the holder remains
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 1
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 3_000), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertIn("leaf_stream_abandoned", proc.stderr)   # it DID give up on the stream
+        # ...and the cause it had already read came back with it, so the attempt still routes.
+        self.assertIn("Connection closed mid-response", proc.stderr)
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_transport_flake")
+        # Published exactly once, whichever of the two racing publishers got there first.
+        self.assertEqual(proc.stderr.count("leaf_stderr_capture_tail"), 1)
+
+    def test_the_stream_tail_is_consistent_under_a_concurrent_publisher(self) -> None:
+        """`add` runs on the reader thread while `publish`/`text` run on the main thread, so
+        the two must not see each other half-done. An unsynchronized version increments the
+        dropped counter before appending the text, and a publication landing in that window
+        reports characters as dropped that the tail does not contain — permanently, since
+        publication is a one-shot latch."""
+        tail = wc._StreamTail(200, "leaf_stderr_capture_tail")
+        stop = threading.Event()
+        torn: list[str] = []
+
+        def _writer() -> None:
+            i = 0
+            while not stop.is_set():
+                tail.add(f"[{i:06d}]")
+                i += 1
+
+        t = threading.Thread(target=_writer, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 5.0)
+        self.addCleanup(stop.set)
+        import re
+
+        def _is_torn(seen: str) -> bool:
+            """A snapshot is a SUFFIX of everything written, clipped to the budget: it may
+            OPEN mid-record, but from there on it must be whole, consecutive records."""
+            if len(seen) > tail.budget:
+                return True
+            body = seen[seen.index("["):] if "[" in seen else ""
+            if not re.fullmatch(r"(\[\d{6}\])*", body):
+                return True
+            found = [int(n) for n in re.findall(r"\[(\d{6})\]", body)]
+            return bool(found) and found != list(range(found[0], found[0] + len(found)))
+
+        try:
+            for _ in range(4000):
+                seen = tail.text()
+                if _is_torn(seen):
+                    torn.append(seen)
+                    break
+        finally:
+            stop.set()
+        self.assertEqual(torn, [], "the tail was observed mid-update")
+
+        # ...and PUBLICATION races `add` too, which is the half that actually loses evidence:
+        # a publish landing between the dropped counter and the append reports characters as
+        # dropped that the tail does not contain, and the latch means that block — the leaf's
+        # terminal cause — can never be published afterwards. Published MID-FLIGHT here, not
+        # after the writer stops, or the window is never opened at all.
+        width = 8                                   # len("[000000]")
+        for trial in range(300):
+            with self.subTest(trial=trial):
+                racing = wc._StreamTail(200, "leaf_stderr_capture_tail")
+                halt = threading.Event()
+
+                def _write(target=racing, stop_at=halt) -> None:
+                    i = 0
+                    while not stop_at.is_set():
+                        target.add(f"[{i:06d}]")
+                        i += 1
+
+                writer = threading.Thread(target=_write, daemon=True)
+                writer.start()
+                try:
+                    # Wait for the writer to be RUNNING before racing it. `Thread.start()`
+                    # does not guarantee the target has executed, and `publish` correctly
+                    # no-ops on an empty tail — so without this the race is sometimes not a
+                    # race at all, and under load the trial has nothing to parse.
+                    deadline = time.monotonic() + 5.0
+                    while not racing.dropped and time.monotonic() < deadline:
+                        time.sleep(0)
+                    self.assertTrue(racing.dropped, "the writer never started")
+                    out: list[str] = []
+                    racing.publish(out)
+                finally:
+                    halt.set()
+                    writer.join(timeout=5.0)
+                text = "".join(out)
+                kept = text.split("follow\n", 1)[1]
+                stated = int(text.split(": ", 1)[1].split(" characters", 1)[0])
+                # The tail must be the tail: its LAST record is the last one accounted for.
+                accounted = stated + len(kept)
+                self.assertEqual(accounted % width, 0, text[:120])
+                self.assertTrue(kept.endswith(f"[{accounted // width - 1:06d}]"),
+                                f"tail ends {kept[-9:]!r}, accounted {accounted}")
+
+    def test_the_claude_stderr_tail_survives_an_abandoned_stream_too(self) -> None:
+        """The claude twin of the codex abandon test, and the more important of the two: this
+        is the DEFAULT backend. The tail is published by the main thread at BOTH claude
+        snapshots — the timeout branch and the normal one — because a drain the conductor gave
+        up on never reaches its own exit to publish for itself."""
+        from unittest.mock import patch
+
+        cause = "API Error: Connection closed mid-response.\n"
+        for wedged in (False, True):
+            with self.subTest(wedged=wedged):
+                held = threading.Event()
+                self.addCleanup(held.set)
+                # Past the budget, then the cause, then silence with the pipe still open.
+                pipes = (self._stream(("wait", held), ("hold_open",)).reader,
+                         self._stream(("write", "noise\n" * 2000), ("write", cause),
+                                      ("wait", held), ("hold_open",)).reader)
+
+                class _Popen:
+                    pid = 424242
+                    returncode = None if wedged else 1
+
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        self.stdout, self.stderr = pipes
+
+                    def poll(self):  # type: ignore[no-untyped-def]
+                        return self.returncode
+
+                    def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        # `wedged` takes the TIMEOUT branch, the other the normal one.
+                        if wedged:
+                            raise subprocess.TimeoutExpired("claude", timeout)
+                        return 1
+
+                    def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                        return None
+
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = self._profile_repo(tmp)
+                    with patch.object(wc.subprocess, "Popen", _Popen), \
+                            patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 3_000), \
+                            patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
+                            patch.object(wc.os, "getpgid", lambda pid: 999), \
+                            patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                            patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                            patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
+                            redirect_stdout(io.StringIO()):
+                        proc = self._c(repo_root=repo, env={}).spawn_leaf(
+                            "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                self.assertIn("leaf_stream_abandoned", proc.stderr)
+                # The cause the drain had already read comes back, so the attempt routes.
+                self.assertIn("Connection closed mid-response", proc.stderr)
+                self.assertEqual(wc._leaf_infra_error(proc)[0],
+                                 "leaf_timeout" if wedged else "llm_transport_flake")
+                self.assertEqual(proc.stderr.count("leaf_stderr_capture_tail"), 1)
+
+    def test_a_character_split_across_the_end_of_the_stream_is_not_dropped(self) -> None:
+        """The decoder's final flush. A leaf SIGKILLed mid-character — the normal outcome of
+        killing one writing non-ASCII prose — leaves a partial sequence held inside the
+        incremental decoder. Without flushing it at EOF those bytes are silently dropped
+        instead of escaped, which is evidence lost from the last thing the leaf ever wrote."""
+        from unittest.mock import patch
+
+        # A valid character, then a TRUNCATED one, and then the stream simply ends.
+        payload = "diagnostics: 日本".encode()[:-1]
+        pipes = (self._pipe('{"type":"thread.started","thread_id":"t-1"}\n'
+                            '{"type":"item.completed","item":'
+                            '{"type":"agent_message","text":"done"}}\n'),
+                 self._stream(("write", payload)).reader)
+
+        class _Popen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc, "_leaf_stream_encoding", lambda: "utf-8"), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertTrue(proc.stderr.startswith("diagnostics: 日"), proc.stderr)
+        # The truncated character is ESCAPED, not dropped: the bytes the leaf wrote are all
+        # accounted for, and the result is still something a UTF-8 artifact can hold.
+        self.assertIn("\\x", proc.stderr)
+        proc.stderr.encode("utf-8")
+
+    def test_a_codex_leaf_in_an_error_loop_cannot_grow_the_captured_stderr(self) -> None:
+        """The one capture a leaf could still grow without limit. Codex's structured terminal
+        events are spliced into `stderr` AFTER every stream budget has been applied, so a leaf
+        in an error loop added them at ~290 KB/s — gigabytes at the production cap, written
+        whole to `dialogs/leaf.stderr.log`. Bounding the streams is not bounding the capture
+        unless this is bounded too."""
+        from unittest.mock import patch
+
+        errors = 400
+        body = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                + '{"type":"error","message":"%s"}\n' % ("e" * 1500) * errors
+                + '{"type":"turn.failed","error":{"message":"API Error: 529 overloaded"}}\n')
+        pipes = (self._pipe(body), self._pipe())
+
+        class _Popen:
+            pid = 424242
+            returncode = 1
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 1
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 1
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # Bounded by the retained event count, not by how long the leaf kept failing.
+        self.assertLess(len(proc.stderr), wc.LEAF_FAILURE_EVENTS_MAX * 2100)
+        self.assertIn("leaf_failure_events_truncated", proc.stderr)
+        # The TERMINAL event is what survives — the classifier reads the last matching line,
+        # so keeping the oldest would route the attempt on a stale cause.
+        self.assertIn("529 overloaded", proc.stderr)
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_overloaded")
+
+    def test_bounding_the_failure_events_never_drops_a_tagged_one_for_an_untagged_one(
+            self) -> None:
+        """`_classify_leaf_infra_error` is most-severe-wins, so WHICH events the bound keeps
+        decides how the attempt routes. A plain "keep the most recent N" would let a usage
+        limit be pushed out by later generic errors — burning every retry against a throttled
+        API and leaving `--wait-usage-reset` disarmed, the most expensive misroute there is."""
+        events: list[str] = []
+        limit = json.dumps({"type": "error",
+                            "message": "You've hit your usage limit. Resets 10:20pm (Asia/Tokyo)"})
+        # The usage limit arrives FIRST, then far more generic errors than the bound holds.
+        events.append(limit)
+        wc._bound_failure_events(events)
+        for i in range(wc.LEAF_FAILURE_EVENTS_MAX * 5):
+            events.append(json.dumps({"type": "error", "message": f"tool blew up {i}"}))
+            wc._bound_failure_events(events)
+        self.assertEqual(len(events), wc.LEAF_FAILURE_EVENTS_MAX)
+        self.assertIn(limit, events, "the tagged event was pushed out by untagged ones")
+        # ...so the stream still routes as a usage limit rather than a generic failure.
+        self.assertEqual(wc._classify_leaf_infra_error("\n".join(events))[0],
+                         "llm_usage_limit")
+        # The notice is at index 0, exactly once, and the newest event is always retained.
+        self.assertTrue(events[0].startswith(
+            f"[conductor] {wc.LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}"))
+        self.assertEqual(sum(1 for e in events if e.startswith("[conductor]")), 1)
+        self.assertIn(f"tool blew up {wc.LEAF_FAILURE_EVENTS_MAX * 5 - 1}", events[-1])
+        # When EVERY event is tagged the list is still bounded — it cannot grow to keep them.
+        # (`overloaded_error` really does tag; a plausible-looking string like "429 rate
+        # limit 0" does NOT, so a flood built from one of those would exercise the untagged
+        # path while claiming to exercise this one.)
+        tagged = json.dumps({"type": "error", "message": "overloaded_error"})
+        self.assertIsNotNone(wc._classify_leaf_infra_error(tagged))
+        allt: list[str] = []
+        for _ in range(wc.LEAF_FAILURE_EVENTS_MAX * 3):
+            allt.append(tagged)
+            wc._bound_failure_events(allt)
+        self.assertEqual(len(allt), wc.LEAF_FAILURE_EVENTS_MAX)
+        # ...and the axis is SEVERITY, not merely "has a tag". A quota-stopped CLI's later
+        # errors are far more often 429- or disconnect-shaped than untagged, so a rule that
+        # only survived an untagged flood would lose the usage limit in the likely case.
+        for flood in ('{"type":"error","message":"API Error: 429 rate_limit_error"}',
+                      '{"type":"error","message":"stream disconnected before completion"}',
+                      '{"type":"error","message":"overloaded_error"}'):
+            with self.subTest(flood=flood[:44]):
+                mixed = [limit]
+                wc._bound_failure_events(mixed)
+                for _ in range(wc.LEAF_FAILURE_EVENTS_MAX * 3):
+                    mixed.append(flood)
+                    wc._bound_failure_events(mixed)
+                self.assertEqual(len(mixed), wc.LEAF_FAILURE_EVENTS_MAX)
+                self.assertIn(limit, mixed, "a less severe flood evicted the usage limit")
+                self.assertEqual(
+                    wc._classify_leaf_infra_error("\n".join(mixed))[0], "llm_usage_limit")
+        # The newest is never the victim: it is the terminal event that routes the attempt.
+        # Every OLDER event is genuinely tagged and the newest is not, so a scan that could
+        # reach the newest would pick it as the least severe.
+        newest = [tagged for _ in range(wc.LEAF_FAILURE_EVENTS_MAX)]
+        newest.append(json.dumps({"type": "turn.failed", "error": {"message": "the end"}}))
+        self.assertIsNone(wc._classify_leaf_infra_error(newest[-1]))
+        wc._bound_failure_events(newest)
+        self.assertIn("the end", newest[-1])
+        # Among EQUALLY severe events the OLDEST is the victim. Load-bearing: the classifier
+        # takes the last matching line, so which usage-limit line survives is which reset
+        # instant `--wait-usage-reset` sleeps to. Evicting the newest instead would resume
+        # against an earlier reset — straight back into a throttled quota.
+        equal = [json.dumps({"type": "error",
+                             "message": f"You've hit your usage limit. Resets 5:{m}pm "
+                                        "(Asia/Tokyo)"})
+                 for m in range(30, 30 + wc.LEAF_FAILURE_EVENTS_MAX + 4)]
+        kept: list[str] = []
+        for event in equal:
+            kept.append(event)
+            wc._bound_failure_events(kept)
+        # Index 0 is the notice, so MAX-1 real events survive: the newest ones.
+        oldest_kept = 30 + len(equal) - (wc.LEAF_FAILURE_EVENTS_MAX - 1)
+        self.assertIn(f"5:{oldest_kept}pm", kept[1])   # the OLDEST went, not the newest
+        self.assertIn(f"5:{30 + len(equal) - 1}pm", kept[-1])
+        # Exactly at the bound nothing is dropped and no notice appears — the same rule the
+        # stream captures follow.
+        exact = [json.dumps({"type": "error", "message": f"e{i}"})
+                 for i in range(wc.LEAF_FAILURE_EVENTS_MAX)]
+        wc._bound_failure_events(exact)
+        self.assertEqual(len(exact), wc.LEAF_FAILURE_EVENTS_MAX)
+        self.assertNotIn("[conductor]", "".join(exact))
+        # Under the bound nothing is touched and no notice appears.
+        few = [limit]
+        wc._bound_failure_events(few)
+        self.assertEqual(few, [limit])
+
+    def test_no_conductor_marker_can_be_claimed_as_an_infra_tag_by_a_leaf(self) -> None:
+        """Every `[conductor]` line the capture layer writes is LEAF-VISIBLE: it lands in a
+        stream a leaf also writes to, and `docs/RUNBOOK.md` tells an operator to grep for it.
+        If any of them matched a classifier pattern, a leaf could mint an infra tag by writing
+        the line — claiming a retry, or suppressing a genuine `llm_usage_limit`. Asserted over
+        the whole SET, so a marker added later cannot quietly miss the rule."""
+        markers = [wc.LEAF_STREAM_ABANDONED_MARKER,
+                   wc._leaf_timeout_marker(7200, 7201.0),
+                   wc._leaf_stdout_record_truncated_marker(2_000_000)]
+        markers.append(wc._leaf_failure_events_marker())
+        for label in wc._LEAF_CONDUCTOR_MARKER_LABELS:
+            markers.append(f"[conductor] {label}: kept the first 1000 characters; "
+                           "the leaf went on writing")
+        self.assertGreaterEqual(len(markers), 10)
+        for marker in markers:
+            with self.subTest(marker=marker[:60]):
+                self.assertIsNone(wc._classify_leaf_infra_error(marker))
+                self.assertIsNone(wc._classify_leaf_infra_error("", marker))
+
+    def test_the_capture_notice_marks_dropped_output_not_a_budget_reached(self) -> None:
+        """`*_capture_truncated` tells an operator the leaf "went on writing", which sends
+        them looking for output that was dropped. A leaf that wrote exactly the budget and
+        stopped dropped nothing, so the notice must not appear — it is emitted where data is
+        actually discarded, never merely on reaching the bound."""
+        for size, truncated in ((999, False), (1000, False), (1001, True)):
+            with self.subTest(size=size):
+                chunks: list[str] = []
+                stream = self._stream(("write", "y" * size))
+                wc._drain_capped_stream(
+                    stream.reader, chunks, budget=1000,
+                    truncated_label="leaf_stderr_capture_truncated",
+                    error_label="leaf_stderr_read_error", error_chunks=chunks,
+                    stop_reading=threading.Event(), encoding="utf-8")
+                captured = "".join(chunks)
+                self.assertEqual(("leaf_stderr_capture_truncated" in captured), truncated)
+                self.assertEqual(captured.count("y"), min(size, 1000))
 
     def test_the_pump_holds_a_bounded_number_of_BYTES_not_lines(self) -> None:
         """The queue bounds LINES, and one JSONL record can be a whole tool result: 2048 slots
@@ -8332,21 +9414,17 @@ class LeafSpawnTest(unittest.TestCase):
 
         record = '{"type":"item.completed","item":{"type":"tool_call","out":"%s"}}\n' % ("x" * 50_000)
         in_flight: list[int] = []
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
+        big_records = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[("write", record) for _ in range(10_000)], ("hold_open",)).reader
+        big_record_stderr = self._pipe()
 
         class _BigRecordPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not flooding.is_set():
-                    yield record
+                self.stdout, self.stderr = big_records, big_record_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8381,6 +9459,155 @@ class LeafSpawnTest(unittest.TestCase):
         # records the line-count bound alone would have allowed.
         self.assertLess(max(in_flight), 200_000 + 2 * len(record), max(in_flight))
 
+    def test_the_pump_cannot_park_forever_once_the_conductor_stops_listening(self) -> None:
+        """The main thread frees a parked pump exactly ONCE, by draining the queue as it
+        abandons the stream. A pump that reaches a blocking `put` after that drain has run can
+        never be freed — nothing will ever take another item — so it holds the queue's
+        contents, its thread and its pipe for the driver's whole remaining life.
+
+        One block can carry thousands of records, so honouring the stop flag only between
+        READS is not enough: the pump must honour it between records, and its `put` must be
+        abortable. The interleaving is injected rather than raced for — the reassembler is
+        held between its read and its puts until the conductor has given up — because the
+        window is real but narrow, and a test that waits for it to happen is a flake."""
+        from unittest.mock import patch
+
+        abandoned = threading.Event()
+        self.addCleanup(abandoned.set)
+        # More records than the queue has slots (2048), so a pump that keeps pushing after
+        # the drain WILL fill it and block.
+        record = '{"type":"item.started","item":{"type":"tool_call"}}\n'
+
+        class _StalledReassembler:
+            def __init__(self, limit: int = 0) -> None:
+                pass
+
+            def feed(self, block):  # type: ignore[no-untyped-def]
+                abandoned.wait(10)
+                return [record] * 5000
+
+            def flush(self):  # type: ignore[no-untyped-def]
+                return []
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        pipes = (self._stream(("write", record), ("wait", held), ("hold_open",)).reader,
+                 self._stream(("wait", held), ("hold_open",)).reader)
+        made: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def _named(*a, **kw):  # type: ignore[no-untyped-def]
+            kw["name"] = getattr(kw.get("target"), "__name__", "reader")
+            made.append(real_thread(*a, **kw))
+            return made[-1]
+
+        class _ExitedPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0                        # exited; only the leaked holder remains
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
+                patch.object(wc, "_LineReassembler", _StalledReassembler), \
+                patch.object(wc.threading, "Thread", _named), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertIn("leaf_stream_abandoned", proc.stderr)   # it did give up on the stream
+        abandoned.set()                                        # ...now let the pump resume
+        pump = [t for t in made if "pump" in t.name][0]
+        pump.join(timeout=5.0)
+        self.assertFalse(pump.is_alive(),
+                         "the pump must stop, not park in put() on a queue nobody drains")
+
+    def test_an_interrupted_codex_leaf_does_not_leave_its_pump_running(self) -> None:
+        """The interrupt path's obligation is the abandon path's: the frame is unwinding and
+        the queue goes with it, so a pump left behind drains the leaf's pipe into a capture
+        nobody will read — and parks in `put` once that queue fills. It is told to stop and
+        joined, both readers, exactly as the claude path does."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        # After the interrupt the leaked descendant floods stdout. A pump still running
+        # drains all 4 MB of it; a pump told to stop takes at most one more block.
+        flood = "x" * 4096 + "\n"
+        stdout_stream = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t"}\n'), ("wait", held),
+            *[("write", flood) for _ in range(1000)], ("hold_open",))
+        pipes = (stdout_stream.reader,
+                 self._stream(("wait", held), ("hold_open",)).reader)
+        made: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def _named(*a, **kw):  # type: ignore[no-untyped-def]
+            kw["name"] = getattr(kw.get("target"), "__name__", "reader")
+            made.append(real_thread(*a, **kw))
+            return made[-1]
+
+        class _InterruptedQueue(queue.Queue):
+            def get(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        class _Popen:
+            pid = 424242
+            returncode = None
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return None
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return -int(signal.SIGTERM)
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc.queue, "Queue", _InterruptedQueue), \
+                patch.object(wc.threading, "Thread", _named), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05):
+            with self.assertRaises(KeyboardInterrupt):
+                c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # Measured as a PLATEAU in what the flood gets through, the same way the abandoned
+        # drain is: a reader parked on a pipe that has gone SILENT stays parked until the
+        # process exits (nothing can close a pipe a descendant holds), so what is observable
+        # is that a reader still being DELIVERED to stops within one block.
+        self.assertEqual(len(made), 2)
+        held.set()                              # ...let the flood loose
+        deadline = time.monotonic() + 5.0
+        while stdout_stream.bytes_written == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.3)
+        ceiling = wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024
+        self.assertLess(stdout_stream.bytes_written, ceiling,
+                        "the pump must stop draining once the driver is unwinding")
+        settled = stdout_stream.bytes_written
+        time.sleep(0.2)
+        self.assertEqual(stdout_stream.bytes_written, settled)
+
     def test_a_whole_turn_left_in_the_queue_is_accepted_and_its_identity_bound(self) -> None:
         """The reader can fall behind by the ENTIRE turn: the leaf answers and exits with its
         stream — `thread.started` included — still queued when the deadline expires. The
@@ -8400,6 +9627,7 @@ class LeafSpawnTest(unittest.TestCase):
         def _drive_stream(body: str) -> tuple[wc.ProcResult, list]:
             never = threading.Event()
             self.addCleanup(never.set)
+            pipes = (self._stream(("write", body), ("wait", never)).reader, self._pipe())
 
             class _QueuedTurnPopen:
                 """Exited before the kill, with its whole stream still in the queue."""
@@ -8408,14 +9636,8 @@ class LeafSpawnTest(unittest.TestCase):
                 returncode = None
 
                 def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                    self.stdout = self._lines()
-                    self.stderr = io.StringIO("")
+                    self.stdout, self.stderr = pipes
                     self.polls = 0
-
-                def _lines(self):  # type: ignore[no-untyped-def]
-                    for line in body.splitlines(keepends=True):
-                        yield line
-                    never.wait(30)
 
                 def poll(self):  # type: ignore[no-untyped-def]
                     if self.returncode is not None:
@@ -8474,18 +9696,19 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         line = '{"type":"item.started","item":{"type":"tool_call"}}\n'
+        body = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                + line * 2000
+                + '{"type":"item.completed","item":'
+                  '{"type":"agent_message","text":"done"}}\n')
+        # One pair per drive: this test runs the same leaf twice, at two budgets.
+        pipes = [(self._pipe(body), self._pipe()) for _ in range(2)]
 
         class _ChattyPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = iter(
-                    ['{"type":"thread.started","thread_id":"t-1"}\n']
-                    + [line] * 2000
-                    + ['{"type":"item.completed","item":'
-                       '{"type":"agent_message","text":"done"}}\n'])
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = pipes.pop(0)
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
@@ -8527,22 +9750,21 @@ class LeafSpawnTest(unittest.TestCase):
         after it and hold the run to the cap."""
         from unittest.mock import patch
 
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
+        # Never idle, and never closed: the descendant keeps the stream busy for as long as
+        # the conductor is willing to read it.
+        busy = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[("write", '{"type":"item.started","item":{"type":"tool_call"}}\n')
+              for _ in range(200_000)], ("hold_open",)).reader
+        busy_stderr = self._pipe()
 
         class _ExitsLatePopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = busy, busy_stderr
                 self.polls = 0
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not flooding.is_set():     # never idle
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
 
             def poll(self):  # type: ignore[no-untyped-def]
                 self.polls += 1
@@ -8629,19 +9851,21 @@ class LeafSpawnTest(unittest.TestCase):
         never_closes = threading.Event()
         self.addCleanup(never_closes.set)
 
-        class _NeverClosingStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                never_closes.wait(30)   # the leaked descendant, holding the write end open
-                yield '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}\n'
+        # The leaked descendant holds the write end open right through the kill.
+        never_closing = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("wait", never_closes),
+            ("write",
+             '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}\n'),
+            ("hold_open",)).reader
+        still_working = self._pipe("codex: still working\n")
 
         class _UnkillablePopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _NeverClosingStdout()
-                self.stderr = io.StringIO("codex: still working\n")
+                self.stdout, self.stderr = never_closing, still_working
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None                  # never exits, never killable
@@ -8686,30 +9910,24 @@ class LeafSpawnTest(unittest.TestCase):
         released = threading.Event()
         signalled: list[int] = []
 
-        chunks_read = [0]
-
-        class _LeakedPipeStderr:
-            """A descendant that kept the write end: one line arrives, then nothing for long
-            enough that both bounded joins expire — and then a flood the abandoned reader must
-            NOT go on consuming."""
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                chunks_read[0] += 1
-                yield "codex: partial diagnostics\n"
-                released.wait(10)
-                while True:
-                    chunks_read[0] += 1
-                    yield "codex: this arrives after the conductor has given up\n"
+        # A descendant that kept the write end: one line arrives, then nothing for long
+        # enough that both bounded joins expire — and then a 4 MB flood the abandoned
+        # reader must NOT go on consuming.
+        flood_line = "codex: this arrives after the conductor has given up\n"
+        leaked_stderr = self._stream(
+            ("write", "codex: partial diagnostics\n"),
+            ("wait", released),
+            *[("write", flood_line) for _ in range(80_000)], ("hold_open",))
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 
         class _ExitedPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = _LeakedPipeStderr()
+                self.stdout, self.stderr = answered, leaked_stderr.reader
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 return 0
@@ -8750,13 +9968,23 @@ class LeafSpawnTest(unittest.TestCase):
         # the driver's whole remaining life, and it keeps the leaked descendant's pipe drained
         # so that descendant goes on writing into the artifact directory the next substep
         # reads, instead of blocking on a full pipe.
-        released.set()                       # ...let the next chunk through
+        # Measured as a PLATEAU in what the flood managed to push rather than as a chunk
+        # count: with a real pipe the reader stopping is what wedges the writer, so the
+        # writer's own progress is the evidence. A reader that went on draining would let
+        # all 4 MB through.
+        released.set()                       # ...let the flood loose
         deadline = time.monotonic() + 5.0
-        while chunks_read[-1] < 2 and time.monotonic() < deadline:
+        while leaked_stderr.bytes_written == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
-        self.assertEqual(chunks_read[-1], 2, "the reader should have taken one more chunk")
-        time.sleep(0.1)
-        self.assertEqual(chunks_read[-1], 2, "...and then stopped, without draining the rest")
+        time.sleep(0.3)
+        # One in-flight read plus whatever the kernel pipe itself holds, and then nothing.
+        ceiling = 65536 * 2 + 64 * 1024
+        self.assertLess(leaked_stderr.bytes_written, ceiling,
+                        "the abandoned reader must stop, not drain the rest")
+        settled = leaked_stderr.bytes_written
+        time.sleep(0.2)
+        self.assertEqual(leaked_stderr.bytes_written, settled,
+                         "...and stay stopped: the writer is wedged on a full pipe")
 
     def test_codex_timeout_race_with_a_clean_finish_is_not_a_timeout(self) -> None:
         """The boundary case the cap cannot avoid: the leaf is still running when the deadline
@@ -8770,6 +9998,10 @@ class LeafSpawnTest(unittest.TestCase):
             body = stream + ('{"type":"turn.failed","error":{"message":"boom"}}\n'
                              if turn_failed else "")
 
+            # The whole turn, and then a stream that never reaches EOF.
+            pipes = (self._stream(("write", body), ("wait", never_closes),
+                                  ("hold_open",)).reader, self._pipe())
+
             class _FinishingPopen:
                 """Finished at the instant the cap expired, with its stream still open."""
 
@@ -8777,14 +10009,8 @@ class LeafSpawnTest(unittest.TestCase):
                 returncode = None
 
                 def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                    self.stdout = self._lines()
-                    self.stderr = io.StringIO("")
+                    self.stdout, self.stderr = pipes
                     self.polls = 0
-
-                def _lines(self):  # type: ignore[no-untyped-def]
-                    for line in body.splitlines(keepends=True):
-                        yield line
-                    never_closes.wait(30)   # the stream never reaches EOF
 
                 def poll(self):  # type: ignore[no-untyped-def]
                     # The cap and the poll slice are equal here, so the read makes exactly two
