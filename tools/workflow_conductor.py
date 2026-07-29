@@ -1724,10 +1724,10 @@ class _LineReassembler:
     budget can apply to it — one JSONL record can carry an entire tool result, and a leaf in an
     output loop can make one that never ends. A record that EXCEEDS `LEAF_STREAM_QUEUE_MAX_CHARS`
     — terminated or not, since a 3 MB record that does end is exactly as unbounded as one that
-    does not — has its prefix emitted (newline-terminated, so downstream framing still holds),
-    a marker line appended after it, and everything up to the next newline DISCARDED. The
-    stream resynchronizes at that newline: a clipped record costs its own contents, never the
-    rest of the turn. A record of exactly the cap fits and passes through untouched.
+    does not — has its prefix returned behind the truncation marker as ONE line (see `_clip`),
+    and everything up to the next newline DISCARDED. The stream resynchronizes at that
+    newline: a clipped record costs its own contents, never the rest of the turn. A record of
+    exactly the cap fits and passes through untouched.
     """
 
     def __init__(self, limit: int = 0) -> None:

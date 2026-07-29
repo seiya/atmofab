@@ -8857,9 +8857,9 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(r.feed("tail"), [])
         self.assertEqual(r.flush(), ["tail"])
         self.assertEqual(r.flush(), [])                # ...once
-        # Past the cap: the prefix is emitted newline-terminated, the marker follows it, and
-        # the rest of that record is dropped. Checked with and without a terminator, because
-        # a 3 MB record that DOES end is exactly as unbounded as one that never does.
+        # Past the cap: the record is dropped from where it crossed. Checked with and without
+        # a terminator, because a 3 MB record that DOES end is exactly as unbounded as one
+        # that never does.
         # The clipped prefix comes back BEHIND its marker, as one line: a prefix of an
         # oversized record can be valid JSON by accident, and must never be parsed as a
         # complete record. The bytes are still all there.
@@ -9340,6 +9340,22 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIsNone(wc._classify_leaf_infra_error(newest[-1]))
         wc._bound_failure_events(newest)
         self.assertIn("the end", newest[-1])
+        # Among EQUALLY severe events the OLDEST is the victim. Load-bearing: the classifier
+        # takes the last matching line, so which usage-limit line survives is which reset
+        # instant `--wait-usage-reset` sleeps to. Evicting the newest instead would resume
+        # against an earlier reset — straight back into a throttled quota.
+        equal = [json.dumps({"type": "error",
+                             "message": f"You've hit your usage limit. Resets 5:{m}pm "
+                                        "(Asia/Tokyo)"})
+                 for m in range(30, 30 + wc.LEAF_FAILURE_EVENTS_MAX + 4)]
+        kept: list[str] = []
+        for event in equal:
+            kept.append(event)
+            wc._bound_failure_events(kept)
+        # Index 0 is the notice, so MAX-1 real events survive: the newest ones.
+        oldest_kept = 30 + len(equal) - (wc.LEAF_FAILURE_EVENTS_MAX - 1)
+        self.assertIn(f"5:{oldest_kept}pm", kept[1])   # the OLDEST went, not the newest
+        self.assertIn(f"5:{30 + len(equal) - 1}pm", kept[-1])
         # Exactly at the bound nothing is dropped and no notice appears — the same rule the
         # stream captures follow.
         exact = [json.dumps({"type": "error", "message": f"e{i}"})
