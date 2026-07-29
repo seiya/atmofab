@@ -1373,8 +1373,8 @@ LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS = 4_000_000
 # counts LINES, and one JSONL record can be a whole tool result — 2048 records of a megabyte
 # each is ~2 GB held before the capture budget above ever applies, i.e. the driver OOMs before
 # the cap can terminalize the leaf. This is the byte-aware half of that backpressure, and it
-# doubles as the cap on a SINGLE record: a record that reaches this size with no newline in it
-# is clipped where it stands and the rest discarded to the next newline (see `_LineReassembler`),
+# doubles as the cap on a SINGLE record: a record that exceeds this size is clipped where it
+# stands and the rest discarded to the next newline (see `_LineReassembler`),
 # so no one record can be held whole ahead of the budget that would otherwise bound it.
 LEAF_STREAM_QUEUE_MAX_CHARS = 2_000_000
 
@@ -1518,26 +1518,41 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
     the capture rather than an exception nobody is positioned to catch.
     """
     captured = 0
+    notified = False
+
+    def _notice() -> None:
+        nonlocal notified
+        if not notified:
+            notified = True
+            chunks.append(
+                f"\n[conductor] {truncated_label}: kept the first {budget} "
+                "characters; the leaf went on writing")
+
     try:
         for block in _iter_stream_blocks(
                 stream, stop_reading=stop_reading, encoding=encoding):
             if captured >= budget:
+                _notice()
                 continue
-            # Clipped, not appended whole: a block that crosses the budget would otherwise
-            # overshoot it by its own size.
             room = budget - captured
-            chunks.append(block[:room])
-            captured += min(len(block), room)
-            if captured >= budget:
-                chunks.append(
-                    f"\n[conductor] {truncated_label}: kept the first {budget} "
-                    "characters; the leaf went on writing")
+            if len(block) > room:
+                # Clipped, not appended whole: a block that crosses the budget would
+                # otherwise overshoot it by its own size.
+                chunks.append(block[:room])
+                captured = budget
+                _notice()
+            else:
+                chunks.append(block)
+                captured += len(block)
+            # The notice is emitted where data is actually DROPPED, never merely on reaching
+            # the budget: a leaf that writes exactly the budget and stops has lost nothing,
+            # and telling an operator it "went on writing" sends them looking for output that
+            # does not exist.
     except Exception as exc:  # noqa: BLE001 — a dying pipe must not raise in a thread
         error_chunks.append(f"\n[conductor] {error_label}: {exc}")
 
 
-# Appended in band when ONE record grew past `LEAF_STREAM_QUEUE_MAX_CHARS` with no newline in
-# it. Deliberately NOT a reuse of `leaf_stdout_capture_truncated`, which says something else:
+# Appended in band when ONE record grew beyond `LEAF_STREAM_QUEUE_MAX_CHARS`. Deliberately NOT a reuse of `leaf_stdout_capture_truncated`, which says something else:
 # that one reports the TOTAL budget spent and the capture over, this one reports a single
 # oversized record clipped while the capture goes on. Reading an operator's `leaf.stdout.jsonl`
 # depends on being able to tell those apart. Like every other `[conductor]` marker it must
@@ -1548,8 +1563,7 @@ LEAF_STDOUT_RECORD_TRUNCATED_LABEL = "leaf_stdout_record_truncated"
 def _leaf_stdout_record_truncated_marker(limit: int) -> str:
     """The in-band note for one clipped record. Reports the limit ACTUALLY applied."""
     return (f"[conductor] {LEAF_STDOUT_RECORD_TRUNCATED_LABEL}: kept the first {limit} "
-            "characters of a single record with no newline; the rest of the record was "
-            "discarded\n")
+            "characters of an oversized record; the rest of that record was discarded\n")
 
 
 class _LineReassembler:
@@ -1562,10 +1576,12 @@ class _LineReassembler:
 
     The bound is the point. Without it a single newline-free record is read whole before any
     budget can apply to it — one JSONL record can carry an entire tool result, and a leaf in an
-    output loop can make one that never ends. Past `LEAF_STREAM_QUEUE_MAX_CHARS` the prefix is
-    emitted (newline-terminated, so downstream framing still holds), a marker line follows it,
-    and everything up to the next newline is DISCARDED. The stream resynchronizes at that
-    newline: a clipped record costs its own contents, never the rest of the turn.
+    output loop can make one that never ends. A record that EXCEEDS `LEAF_STREAM_QUEUE_MAX_CHARS`
+    — terminated or not, since a 3 MB record that does end is exactly as unbounded as one that
+    does not — has its prefix emitted (newline-terminated, so downstream framing still holds),
+    a marker line appended after it, and everything up to the next newline DISCARDED. The
+    stream resynchronizes at that newline: a clipped record costs its own contents, never the
+    rest of the turn. A record of exactly the cap fits and passes through untouched.
     """
 
     def __init__(self, limit: int = 0) -> None:
@@ -1584,10 +1600,15 @@ class _LineReassembler:
                 continue
             head, sep, rest = block.partition("\n")
             room = self._limit - len(self._pending)
-            if len(head) >= room:
-                # The record crosses the cap. Checked whether or not this block ends it: a
-                # 3 MB record that DOES arrive newline-terminated is exactly as unbounded as
+            if len(head) > room:
+                # The record EXCEEDS the cap. Checked whether or not this block ends it: a
+                # 3 MB record that does arrive newline-terminated is exactly as unbounded as
                 # one that never ends, and a cap applied only to the latter would miss it.
+                #
+                # Strictly greater, not `>=`: a record of exactly the cap fits, and clipping
+                # it would append a marker saying its remainder was discarded to a record
+                # sitting whole in `leaf.stdout.jsonl` — a false report of lost evidence in
+                # the artifact an operator reads to find out what a leaf did.
                 self._pending += head[:room]
                 lines.extend(self._clip())
                 if sep:
@@ -1596,6 +1617,8 @@ class _LineReassembler:
                 continue
             self._pending += head
             if not sep:
+                # At most the cap is held, so an unterminated record is bounded without
+                # deciding here that it is over it — the newline may be the next byte.
                 return lines
             lines.append(self._pending + sep)
             self._pending = ""

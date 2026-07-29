@@ -8748,6 +8748,72 @@ class LeafSpawnTest(unittest.TestCase):
         r = wc._LineReassembler(limit=10)
         out = [line for _ in range(25) for line in r.feed("x")]
         self.assertEqual(out, ["x" * 10 + "\n", marker])
+        # THE BOUNDARY. A record of exactly the cap fits and must pass through whole: marking
+        # it would tell an operator that a record sitting complete in `leaf.stdout.jsonl` had
+        # its remainder discarded — a false report of lost evidence in the artifact they read
+        # to find out what a leaf did. Only the record that EXCEEDS the cap is clipped.
+        for split in (None, 4, 10):          # whole, mid-record, and exactly at the cap
+            for size, clipped in ((9, False), (10, False), (11, True)):
+                with self.subTest(size=size, split=split):
+                    r = wc._LineReassembler(limit=10)
+                    body = "x" * size + "\n"
+                    blocks = ([body] if split is None
+                              else [body[:split], body[split:]])
+                    out = [line for b in blocks for line in r.feed(b)]
+                    if clipped:
+                        self.assertEqual(out, ["x" * 10 + "\n", marker])
+                    else:
+                        self.assertEqual(out, [body])   # whole, and no marker
+        # ...and an UNTERMINATED record at exactly the cap is still held whole, because the
+        # newline may be the very next byte.
+        r = wc._LineReassembler(limit=10)
+        self.assertEqual(r.feed("x" * 10), [])
+        self.assertEqual(r.feed("\n"), ["x" * 10 + "\n"])
+
+    def test_the_line_reassembler_output_does_not_depend_on_where_blocks_split(self) -> None:
+        """The core property, and the one no hand-picked case can establish: a block boundary
+        falls wherever the kernel put it, so the SAME byte stream must reassemble identically
+        however it is chopped up. Below the cap the result must also equal a plain keepends
+        split — the block reads must not change framing at all."""
+        import random
+        rng = random.Random(20260729)            # seeded: a flake here is unreproducible
+        for case in range(600):
+            limit = rng.randint(1, 8)
+            stream = "".join(rng.choice("ab\n") for _ in range(rng.randint(0, 40)))
+            with self.subTest(case=case):
+                runs = []
+                for _ in range(5):
+                    r = wc._LineReassembler(limit=limit)
+                    rest, out = stream, []
+                    while rest:
+                        cut = rng.randint(1, len(rest))
+                        out.extend(r.feed(rest[:cut]))
+                        rest = rest[cut:]
+                    out.extend(r.flush())
+                    runs.append(out)
+                self.assertEqual(runs[1:], runs[:-1], (limit, stream))
+                # ...and when nothing was long enough to clip, it IS a plain keepends split.
+                if all(len(rec) <= limit for rec in stream.split("\n")):
+                    self.assertEqual(runs[0], stream.splitlines(keepends=True),
+                                     (limit, stream))
+
+    def test_the_capture_notice_marks_dropped_output_not_a_budget_reached(self) -> None:
+        """`*_capture_truncated` tells an operator the leaf "went on writing", which sends
+        them looking for output that was dropped. A leaf that wrote exactly the budget and
+        stopped dropped nothing, so the notice must not appear — it is emitted where data is
+        actually discarded, never merely on reaching the bound."""
+        for size, truncated in ((999, False), (1000, False), (1001, True)):
+            with self.subTest(size=size):
+                chunks: list[str] = []
+                stream = self._stream(("write", "y" * size))
+                wc._drain_capped_stream(
+                    stream.reader, chunks, budget=1000,
+                    truncated_label="leaf_stderr_capture_truncated",
+                    error_label="leaf_stderr_read_error", error_chunks=chunks,
+                    stop_reading=threading.Event(), encoding="utf-8")
+                captured = "".join(chunks)
+                self.assertEqual(("leaf_stderr_capture_truncated" in captured), truncated)
+                self.assertEqual(captured.count("y"), min(size, 1000))
 
     def test_the_pump_holds_a_bounded_number_of_BYTES_not_lines(self) -> None:
         """The queue bounds LINES, and one JSONL record can be a whole tool result: 2048 slots
