@@ -1802,6 +1802,41 @@ def _parse_codex_line(line: str) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+def _leaf_failure_events_marker() -> str:
+    """The in-band note for a bounded failure-event list."""
+    return (f"[conductor] {LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}: kept "
+            f"{LEAF_FAILURE_EVENTS_MAX - 1} terminal events; the leaf went on failing")
+
+
+def _bound_failure_events(failure_events: list[str]) -> None:
+    """Hold a codex leaf's terminal events to `LEAF_FAILURE_EVENTS_MAX`, tagged ones first.
+
+    The victim is the oldest event that carries NO infra tag. `_classify_leaf_infra_error` is
+    most-severe-wins, so dropping a TAGGED event in order to keep an untagged newer one can
+    turn a usage limit into a transport flake — which burns every retry against a throttled
+    API and leaves `--wait-usage-reset` disarmed, the most expensive misroute this conductor
+    has. A plain "keep the most recent N" cannot make that guarantee.
+
+    Index 0 is reserved for the notice once anything has been dropped, so the truncation is
+    never silent and the list length stays stable.
+    """
+    if len(failure_events) <= LEAF_FAILURE_EVENTS_MAX:
+        return
+    marker = _leaf_failure_events_marker()
+    if not failure_events[0].startswith(f"[conductor] {LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}"):
+        failure_events.insert(0, marker)
+    while len(failure_events) > LEAF_FAILURE_EVENTS_MAX:
+        # Never the newest (index -1): that is the terminal event, the one that routes the
+        # attempt. Never index 0: that is the notice.
+        victim = next(
+            (i for i, event in enumerate(failure_events[1:-1], start=1)
+             if _classify_leaf_infra_error(event) is None),
+            None)
+        if victim is None:
+            victim = 1          # every older event is tagged; the oldest of them goes
+        del failure_events[victim]
+
+
 def _absorb_codex_event(
     event: dict[str, Any], usage: dict[str, Any] | None, model: str | None,
     final_text: str | None, turn_failed: bool, failure_events: list[str],
@@ -1835,14 +1870,7 @@ def _absorb_codex_event(
         # The retry and usage-reset classifiers operate on the process diagnostics. Preserve
         # Codex's structured terminal event there even when the CLI left stderr empty.
         failure_events.append(json.dumps(event, ensure_ascii=False)[:2000])
-        if len(failure_events) > LEAF_FAILURE_EVENTS_MAX:
-            # Bounded like every stream capture, and for the same reason — see
-            # `LEAF_FAILURE_EVENTS_MAX`. The oldest goes, and the slot it vacates carries the
-            # notice, so the list length is stable and the truncation is never silent.
-            del failure_events[:-LEAF_FAILURE_EVENTS_MAX]
-            failure_events[0] = (
-                f"[conductor] {LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}: kept the most recent "
-                f"{LEAF_FAILURE_EVENTS_MAX - 1} terminal events; the leaf went on failing")
+        _bound_failure_events(failure_events)
     item = event.get("item")
     if kind == "item.completed" and isinstance(item, dict):
         if str(item.get("type") or "") == "agent_message":

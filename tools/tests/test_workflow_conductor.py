@@ -7888,6 +7888,10 @@ class LeafSpawnTest(unittest.TestCase):
         # `0` would ship the head-only capture — a flooding leaf's terminal cause discarded and
         # the run terminalized untagged — with the whole suite still green.
         self.assertEqual(wc.LEAF_STDERR_CAPTURE_TAIL_CHARS, 65_536)
+        # At least 2: index 0 is the notice and index -1 the terminal event, so the bound
+        # has to hold both before it holds anything else.
+        self.assertEqual(wc.LEAF_FAILURE_EVENTS_MAX, 20)
+        self.assertGreaterEqual(wc.LEAF_FAILURE_EVENTS_MAX, 2)
         # The ceiling is a real platform limit, not a policy: one second above it, a
         # `select`-based wait in `subprocess` raises OverflowError instead of waiting. Both
         # leaf paths hand the whole remaining cap to `Popen.wait`, which does not overflow, so
@@ -9265,6 +9269,42 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIn("529 overloaded", proc.stderr)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_overloaded")
 
+    def test_bounding_the_failure_events_never_drops_a_tagged_one_for_an_untagged_one(
+            self) -> None:
+        """`_classify_leaf_infra_error` is most-severe-wins, so WHICH events the bound keeps
+        decides how the attempt routes. A plain "keep the most recent N" would let a usage
+        limit be pushed out by later generic errors — burning every retry against a throttled
+        API and leaving `--wait-usage-reset` disarmed, the most expensive misroute there is."""
+        events: list[str] = []
+        limit = json.dumps({"type": "error",
+                            "message": "You've hit your usage limit. Resets 10:20pm (Asia/Tokyo)"})
+        # The usage limit arrives FIRST, then far more generic errors than the bound holds.
+        events.append(limit)
+        wc._bound_failure_events(events)
+        for i in range(wc.LEAF_FAILURE_EVENTS_MAX * 5):
+            events.append(json.dumps({"type": "error", "message": f"tool blew up {i}"}))
+            wc._bound_failure_events(events)
+        self.assertEqual(len(events), wc.LEAF_FAILURE_EVENTS_MAX)
+        self.assertIn(limit, events, "the tagged event was pushed out by untagged ones")
+        # ...so the stream still routes as a usage limit rather than a generic failure.
+        self.assertEqual(wc._classify_leaf_infra_error("\n".join(events))[0],
+                         "llm_usage_limit")
+        # The notice is at index 0, exactly once, and the newest event is always retained.
+        self.assertTrue(events[0].startswith(
+            f"[conductor] {wc.LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}"))
+        self.assertEqual(sum(1 for e in events if e.startswith("[conductor]")), 1)
+        self.assertIn(f"tool blew up {wc.LEAF_FAILURE_EVENTS_MAX * 5 - 1}", events[-1])
+        # When EVERY event is tagged the list is still bounded — it cannot grow to keep them.
+        allt: list[str] = []
+        for i in range(wc.LEAF_FAILURE_EVENTS_MAX * 3):
+            allt.append(json.dumps({"type": "error", "message": f"429 rate limit {i}"}))
+            wc._bound_failure_events(allt)
+        self.assertEqual(len(allt), wc.LEAF_FAILURE_EVENTS_MAX)
+        # Under the bound nothing is touched and no notice appears.
+        few = [limit]
+        wc._bound_failure_events(few)
+        self.assertEqual(few, [limit])
+
     def test_no_conductor_marker_can_be_claimed_as_an_infra_tag_by_a_leaf(self) -> None:
         """Every `[conductor]` line the capture layer writes is LEAF-VISIBLE: it lands in a
         stream a leaf also writes to, and `docs/RUNBOOK.md` tells an operator to grep for it.
@@ -9274,10 +9314,11 @@ class LeafSpawnTest(unittest.TestCase):
         markers = [wc.LEAF_STREAM_ABANDONED_MARKER,
                    wc._leaf_timeout_marker(7200, 7201.0),
                    wc._leaf_stdout_record_truncated_marker(2_000_000)]
+        markers.append(wc._leaf_failure_events_marker())
         for label in wc._LEAF_CONDUCTOR_MARKER_LABELS:
             markers.append(f"[conductor] {label}: kept the first 1000 characters; "
                            "the leaf went on writing")
-        self.assertGreaterEqual(len(markers), 9)
+        self.assertGreaterEqual(len(markers), 10)
         for marker in markers:
             with self.subTest(marker=marker[:60]):
                 self.assertIsNone(wc._classify_leaf_infra_error(marker))
