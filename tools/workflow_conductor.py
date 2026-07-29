@@ -1580,6 +1580,14 @@ class _StreamTail:
         The marker and the tail go in as ONE element: the reader may be appending head
         chunks to this same list concurrently, and two appends could be interleaved by one
         of them.
+
+        A block the reader is already inside `os.read` for when the conductor gives up can
+        land after this, and is then lost — the latch will not publish twice. That is not a
+        gap the latch introduces: the caller snapshots `chunks` immediately after, so a late
+        HEAD chunk is lost in exactly the same way and at exactly the same instant. Closing
+        it would mean waiting on a reader that may be parked on a pipe nothing will ever
+        close, which is the hang this whole layer exists to avoid. The loss is what
+        `LEAF_STREAM_ABANDONED_MARKER` reports.
         """
         with self._lock:
             if self._published or not self.dropped:
