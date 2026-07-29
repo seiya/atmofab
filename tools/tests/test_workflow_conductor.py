@@ -8860,31 +8860,42 @@ class LeafSpawnTest(unittest.TestCase):
         # Past the cap: the prefix is emitted newline-terminated, the marker follows it, and
         # the rest of that record is dropped. Checked with and without a terminator, because
         # a 3 MB record that DOES end is exactly as unbounded as one that never does.
-        marker = wc._leaf_stdout_record_truncated_marker(10)
+        # The clipped prefix comes back BEHIND its marker, as one line: a prefix of an
+        # oversized record can be valid JSON by accident, and must never be parsed as a
+        # complete record. The bytes are still all there.
+        clipped = (wc._leaf_stdout_record_truncated_marker(10).rstrip("\n")
+                   + " :: " + "x" * 10 + "\n")
         r = wc._LineReassembler(limit=10)
-        self.assertEqual(r.feed("x" * 25), ["x" * 10 + "\n", marker])
+        self.assertEqual(r.feed("x" * 25), [clipped])
         self.assertEqual(r.feed("dropped\nnext\n"), ["next\n"])   # resynced at the newline
         r = wc._LineReassembler(limit=10)
-        self.assertEqual(r.feed("x" * 25 + "\nnext\n"), ["x" * 10 + "\n", marker, "next\n"])
+        self.assertEqual(r.feed("x" * 25 + "\nnext\n"), [clipped, "next\n"])
         # The cap is not a per-block accident: a record assembled from many small blocks is
         # clipped at exactly the same place.
         r = wc._LineReassembler(limit=10)
         out = [line for _ in range(25) for line in r.feed("x")]
-        self.assertEqual(out, ["x" * 10 + "\n", marker])
+        self.assertEqual(out, [clipped])
+        # ...and a clipped record that WOULD have been valid JSON is not parsed as one.
+        r = wc._LineReassembler(limit=44)
+        record = '{"type":"thread.started","thread_id":"t-1"}'
+        out = r.feed(record + " " * 200 + "garbage\n")
+        self.assertEqual(len(out), 1)
+        self.assertIn(record, out[0])                  # the evidence is retained verbatim...
+        self.assertIsNone(wc._parse_codex_line(out[0]))   # ...but it is not an event
         # THE BOUNDARY. A record of exactly the cap fits and must pass through whole: marking
         # it would tell an operator that a record sitting complete in `leaf.stdout.jsonl` had
         # its remainder discarded — a false report of lost evidence in the artifact they read
         # to find out what a leaf did. Only the record that EXCEEDS the cap is clipped.
         for split in (None, 4, 10):          # whole, mid-record, and exactly at the cap
-            for size, clipped in ((9, False), (10, False), (11, True)):
+            for size, is_clipped in ((9, False), (10, False), (11, True)):
                 with self.subTest(size=size, split=split):
                     r = wc._LineReassembler(limit=10)
                     body = "x" * size + "\n"
                     blocks = ([body] if split is None
                               else [body[:split], body[split:]])
                     out = [line for b in blocks for line in r.feed(b)]
-                    if clipped:
-                        self.assertEqual(out, ["x" * 10 + "\n", marker])
+                    if is_clipped:
+                        self.assertEqual(out, [clipped])
                     else:
                         self.assertEqual(out, [body])   # whole, and no marker
         # ...and an UNTERMINATED record at exactly the cap is still held whole, because the
@@ -9295,11 +9306,47 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(sum(1 for e in events if e.startswith("[conductor]")), 1)
         self.assertIn(f"tool blew up {wc.LEAF_FAILURE_EVENTS_MAX * 5 - 1}", events[-1])
         # When EVERY event is tagged the list is still bounded — it cannot grow to keep them.
+        # (`overloaded_error` really does tag; a plausible-looking string like "429 rate
+        # limit 0" does NOT, so a flood built from one of those would exercise the untagged
+        # path while claiming to exercise this one.)
+        tagged = json.dumps({"type": "error", "message": "overloaded_error"})
+        self.assertIsNotNone(wc._classify_leaf_infra_error(tagged))
         allt: list[str] = []
-        for i in range(wc.LEAF_FAILURE_EVENTS_MAX * 3):
-            allt.append(json.dumps({"type": "error", "message": f"429 rate limit {i}"}))
+        for _ in range(wc.LEAF_FAILURE_EVENTS_MAX * 3):
+            allt.append(tagged)
             wc._bound_failure_events(allt)
         self.assertEqual(len(allt), wc.LEAF_FAILURE_EVENTS_MAX)
+        # ...and the axis is SEVERITY, not merely "has a tag". A quota-stopped CLI's later
+        # errors are far more often 429- or disconnect-shaped than untagged, so a rule that
+        # only survived an untagged flood would lose the usage limit in the likely case.
+        for flood in ('{"type":"error","message":"API Error: 429 rate_limit_error"}',
+                      '{"type":"error","message":"stream disconnected before completion"}',
+                      '{"type":"error","message":"overloaded_error"}'):
+            with self.subTest(flood=flood[:44]):
+                mixed = [limit]
+                wc._bound_failure_events(mixed)
+                for _ in range(wc.LEAF_FAILURE_EVENTS_MAX * 3):
+                    mixed.append(flood)
+                    wc._bound_failure_events(mixed)
+                self.assertEqual(len(mixed), wc.LEAF_FAILURE_EVENTS_MAX)
+                self.assertIn(limit, mixed, "a less severe flood evicted the usage limit")
+                self.assertEqual(
+                    wc._classify_leaf_infra_error("\n".join(mixed))[0], "llm_usage_limit")
+        # The newest is never the victim: it is the terminal event that routes the attempt.
+        # Every OLDER event is genuinely tagged and the newest is not, so a scan that could
+        # reach the newest would pick it as the least severe.
+        newest = [tagged for _ in range(wc.LEAF_FAILURE_EVENTS_MAX)]
+        newest.append(json.dumps({"type": "turn.failed", "error": {"message": "the end"}}))
+        self.assertIsNone(wc._classify_leaf_infra_error(newest[-1]))
+        wc._bound_failure_events(newest)
+        self.assertIn("the end", newest[-1])
+        # Exactly at the bound nothing is dropped and no notice appears — the same rule the
+        # stream captures follow.
+        exact = [json.dumps({"type": "error", "message": f"e{i}"})
+                 for i in range(wc.LEAF_FAILURE_EVENTS_MAX)]
+        wc._bound_failure_events(exact)
+        self.assertEqual(len(exact), wc.LEAF_FAILURE_EVENTS_MAX)
+        self.assertNotIn("[conductor]", "".join(exact))
         # Under the bound nothing is touched and no notice appears.
         few = [limit]
         wc._bound_failure_events(few)

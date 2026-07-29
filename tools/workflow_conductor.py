@@ -1680,10 +1680,11 @@ LEAF_STDOUT_RECORD_TRUNCATED_LABEL = "leaf_stdout_record_truncated"
 # retain. These are spliced into `stderr` AFTER every stream budget has been applied, so
 # without a bound of their own they are the one capture on either backend that a leaf can
 # still grow without limit: a leaf in an error loop was measured adding ~290 KB/s, which the
-# 7200s cap projects to gigabytes, written whole to `dialogs/leaf.stderr.log`. The most
-# RECENT are kept, because the classifier reads the last matching line and the terminal event
-# is the last one — and because the full event stream is retained in `leaf.stdout.jsonl`
-# anyway, up to its own budget, for an operator who needs the earliest.
+# 7200s cap projects to gigabytes, written whole to `dialogs/leaf.stderr.log`. What is kept
+# is decided by SEVERITY rather than by recency — see `_bound_failure_events` — with the
+# newest always retained because it is the terminal event. The full event stream is retained
+# in `leaf.stdout.jsonl` anyway, up to its own budget, for an operator who needs the rest.
+# At least 2: index 0 holds the notice and index -1 the terminal event.
 LEAF_FAILURE_EVENTS_MAX = 20
 LEAF_FAILURE_EVENTS_TRUNCATED_LABEL = "leaf_failure_events_truncated"
 LEAF_STDERR_CAPTURE_TRUNCATED_LABEL = "leaf_stderr_capture_truncated"
@@ -1775,9 +1776,19 @@ class _LineReassembler:
         return lines
 
     def _clip(self) -> list[str]:
+        """The clipped prefix, behind its marker, as ONE unparseable line.
+
+        Marker FIRST and joined, so `json.loads` can never accept it. A prefix of an
+        oversized record can be valid JSON by accident — or by construction: a complete
+        record, then padding out to the cap, then garbage — and parsing it would let a
+        clipped `thread.started` bind a host identity, or a clipped `item.completed` supply
+        the turn's answer, from a record whose real content was never seen. The bytes are
+        still retained verbatim for an operator; they are just no longer a record.
+        """
         clipped, self._pending = self._pending, ""
         self._discarding = True
-        return [clipped + "\n", _leaf_stdout_record_truncated_marker(self._limit)]
+        marker = _leaf_stdout_record_truncated_marker(self._limit).rstrip("\n")
+        return [f"{marker} :: {clipped}\n"]
 
     def flush(self) -> list[str]:
         """Whatever is left at EOF: a final record the leaf never newline-terminated."""
@@ -1802,6 +1813,26 @@ def _parse_codex_line(line: str) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+# Worse than any real tag, and independent of where `_LEAF_INFRA_ERROR_PATTERNS` is defined
+# in this module (it is defined below this point).
+_LEAF_INFRA_UNTAGGED_RANK = 1 << 30
+
+
+def _leaf_infra_rank(text: str) -> int:
+    """How severe the infra tag in `text` is. LOWER is more severe; untagged is the bottom.
+
+    The rank IS the position in `_LEAF_INFRA_ERROR_PATTERNS`, which is ordered by severity,
+    so this cannot drift from what `_classify_leaf_infra_error` would decide.
+    """
+    tagged = _classify_leaf_infra_error(text)
+    if tagged is None:
+        return _LEAF_INFRA_UNTAGGED_RANK
+    for rank, (name, _pattern) in enumerate(_LEAF_INFRA_ERROR_PATTERNS):
+        if name == tagged[0]:
+            return rank
+    return _LEAF_INFRA_UNTAGGED_RANK
+
+
 def _leaf_failure_events_marker() -> str:
     """The in-band note for a bounded failure-event list."""
     return (f"[conductor] {LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}: kept "
@@ -1811,29 +1842,36 @@ def _leaf_failure_events_marker() -> str:
 def _bound_failure_events(failure_events: list[str]) -> None:
     """Hold a codex leaf's terminal events to `LEAF_FAILURE_EVENTS_MAX`, tagged ones first.
 
-    The victim is the oldest event that carries NO infra tag. `_classify_leaf_infra_error` is
-    most-severe-wins, so dropping a TAGGED event in order to keep an untagged newer one can
-    turn a usage limit into a transport flake — which burns every retry against a throttled
-    API and leaves `--wait-usage-reset` disarmed, the most expensive misroute this conductor
-    has. A plain "keep the most recent N" cannot make that guarantee.
+    The victim is the LEAST SEVERE event, oldest first among equals — not merely the oldest
+    untagged one, and not the oldest outright. `_classify_leaf_infra_error` is
+    most-severe-wins, so which events survive decides how the attempt routes: a usage limit
+    followed by twenty `429`s must still route as a usage limit, or every retry is burned
+    against a throttled API and `--wait-usage-reset` is left disarmed — the most expensive
+    misroute this conductor has. Ranking by "has a tag" only defends against an UNTAGGED
+    flood, and a quota-stopped CLI's subsequent errors are far more often 429- or
+    disconnect-shaped, i.e. tagged.
 
     Index 0 is reserved for the notice once anything has been dropped, so the truncation is
     never silent and the list length stays stable.
     """
     if len(failure_events) <= LEAF_FAILURE_EVENTS_MAX:
         return
-    marker = _leaf_failure_events_marker()
     if not failure_events[0].startswith(f"[conductor] {LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}"):
-        failure_events.insert(0, marker)
+        failure_events.insert(0, _leaf_failure_events_marker())
     while len(failure_events) > LEAF_FAILURE_EVENTS_MAX:
         # Never the newest (index -1): that is the terminal event, the one that routes the
         # attempt. Never index 0: that is the notice.
-        victim = next(
-            (i for i, event in enumerate(failure_events[1:-1], start=1)
-             if _classify_leaf_infra_error(event) is None),
-            None)
+        ranked: list[tuple[int, int]] = []
+        victim: int | None = None
+        for i, event in enumerate(failure_events[1:-1], start=1):
+            rank = _leaf_infra_rank(event)
+            if rank == _LEAF_INFRA_UNTAGGED_RANK:
+                victim = i          # nothing can be less severe — stop scanning
+                break
+            ranked.append((rank, -i))
         if victim is None:
-            victim = 1          # every older event is tagged; the oldest of them goes
+            # Every candidate is tagged: drop the least severe, oldest among equals.
+            victim = -max(ranked)[1] if ranked else 1
         del failure_events[victim]
 
 
