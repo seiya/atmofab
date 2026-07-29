@@ -10423,14 +10423,16 @@ end program shallow_water2d_runner
         ):
             self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
 
-    def test_undefined_binding_remedy_is_stated_once_not_per_token(self) -> None:
-        """Every offending token still gets its own line, but the ~500-char remedy is stated
-        once. A real IR offends in bulk — the canonical 2d example yields 17 undefined
-        bindings — and the conductor renders a 50-LINE tail of these into the warm-resume
-        repair prompt with no character cap (`_compile_static_inproc`), unlike its
-        `validate.execute` sibling which caps at 4000. Repeating the remedy per token pushed
-        that excerpt to ~11KB of near-identical text and buried the one thing that differs:
-        which token."""
+    def test_every_undefined_binding_line_carries_its_own_remedy(self) -> None:
+        """Each violation must be self-sufficient, and the remedy must stay SHORT.
+
+        A real IR offends in bulk — the canonical 2d example yields 17 undefined bindings.
+        An earlier draft stated the full ~500-char remedy on every line (~11KB of
+        near-identical text, burying the one thing that differs: which token); the next
+        stated it once, on the first line. Both are wrong, and the second is worse:
+        `_compile_static_inproc` excerpts the LAST 50 lines, so a remedy carried only by
+        the first occurrence is precisely what a long violation list drops — leaving the
+        repair turn 50 diagnoses and no fix. Keep it short and on every line."""
         from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
         contract = {
             "algorithm_id": "alg_test",
@@ -10473,11 +10475,22 @@ end program shallow_water2d_runner
             self.assertTrue(
                 any(token in v for v in undefined), f"{token} lost its own line: {undefined}"
             )
-        # ... and the remedy is carried by exactly one of them, the first.
-        with_remedy = [v for v in undefined if "io_contract.inputs/outputs" in v]
-        self.assertEqual(len(with_remedy), 1, f"remedy must appear once; got {len(with_remedy)}")
-        self.assertEqual(with_remedy[0], undefined[0], "the remedy must be on the FIRST line")
-        self.assertIn("stated once", undefined[0])
+        # ... and EVERY line stands on its own: truncating to any window of these lines
+        # must still hand the leaf a fix.
+        for line in undefined:
+            self.assertIn("io_contract.inputs/outputs", line)
+            self.assertIn("algorithm.temporaries", line)
+            self.assertIn("algorithm.derived_field_rules", line)
+            self.assertIn("state_snapshots schema.variables", line)
+            self.assertIn("algorithm.state_variables does NOT", line)
+        # Budget: the sibling `validate.execute` excerpt caps at 4000 chars and
+        # `_compile_static_inproc` does not cap at all, so keep the per-line cost bounded.
+        # 17 such lines (the canonical 2d example) must stay well inside that budget.
+        self.assertLess(
+            max(len(v) for v in undefined), 400,
+            "the undefined-binding line grew past its excerpt budget; shorten the remedy "
+            "and put the detail in phase_01_compile.md V3",
+        )
 
     def test_state_variables_alone_does_not_authorize_a_step_token(self) -> None:
         """Issue #12 item 3 pins the message; this pins the DECISION the message describes.
