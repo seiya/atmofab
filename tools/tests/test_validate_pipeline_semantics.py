@@ -10289,6 +10289,24 @@ end program shallow_water2d_runner
             ok, _, _ = _parse_shape_expr(expr)
             self.assertTrue(ok, f"{expr!r} should be accepted")
 
+    def test_shape_expr_rejection_names_the_dim_token_grammar(self) -> None:
+        """Issue #12 item 1: a rejected `shape_expr` must NAME the rule it broke.
+
+        The 2026-07-25 billed E2E lost a warm retry to `[nx + 2*ng]`: the message
+        listed the 3 outer forms and the function-call ban, neither of which tells
+        the leaf that a dim token may not be an arithmetic expression, so the repair
+        turn had to guess. Pin that the message states the per-token grammar and the
+        remedy (introduce a named dimension symbol)."""
+        from tools.validate_pipeline_semantics import _parse_shape_expr
+        for expr in ("[nx + 2*ng]", "[n-1]", "(nx*2, ny)"):
+            ok, _, err = _parse_shape_expr(expr)
+            self.assertFalse(ok, f"{expr!r} should be rejected, got ok=True")
+            self.assertIn("integer literal or an identifier", err, f"expr={expr!r} err={err!r}")
+            self.assertIn("named dimension symbol", err, f"expr={expr!r} err={err!r}")
+            # The pre-existing halves of the message must survive the extension.
+            self.assertIn("shape_expr.schema.json", err)
+            self.assertIn("function-call notations", err)
+
     def test_object_form_temporaries_must_include_shape_expr(self) -> None:
         """Regression: phase_01_plan.md L26 mandates that object-form temporaries
         entries carry both `name` and `shape_expr` (canonical source:

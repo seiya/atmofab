@@ -6118,6 +6118,9 @@ def _parse_shape_expr(expr: str) -> tuple[bool, list[str], str]:
             False,
             [],
             "shape_expr must be scalar or [dim1,dim2,...] or (dim1,dim2,...). "
+            "Each dimension token must be an integer literal or an identifier; "
+            "arithmetic inside a dimension token (e.g. [nx + 2*ng], [n-1]) is not "
+            "accepted — introduce a named dimension symbol and use it as the token. "
             "See spec/schema/ir/shape_expr.schema.json for canonical forms; "
             "function-call notations such as vector(N), matrix(M,N), tensor are forbidden.",
         )

@@ -28137,7 +28137,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # bullet (V8b; this leaf authors it and does not read the validator), and the component-dep
         # `operations` bullet gains the membership obligation (copy VERBATIM from the injected
         # published-operations catalog; a fabricated name is a Compile fail). Compile-failing rules.
-        "skills/workflow-compile-generate/SKILL.md": 23600,
+        # Bumped 23600->24800: issue #12 — the three Compile-failing rules the 2026-07-25 billed
+        # closure's warm retries broke while reading this SKILL. (1) the shape_expr dim-token
+        # grammar (integer literal or identifier; arithmetic like `[nx + 2*ng]` fails), (2)
+        # `algorithm.state_variables` is NOT a provenance source for step tokens, (3) the
+        # non-snapshot half of the `raw_variables` rule (every outputs[] entry needs one once
+        # state_snapshots is required). This leaf authors the IR and does not read the validator,
+        # so each rule is only knowable from here.
+        "skills/workflow-compile-generate/SKILL.md": 24800,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
