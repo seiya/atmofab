@@ -8619,6 +8619,7 @@ class LeafSpawnTest(unittest.TestCase):
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ChattyStderrPopen), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 10_000), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 1_000), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
@@ -8630,7 +8631,8 @@ class LeafSpawnTest(unittest.TestCase):
                          "a drain that stopped at the budget would wedge this writer")
         self.assertEqual(proc.stdout, "done")            # ...so the leaf still gets to answer
         self.assertIs(proc.timed_out, False)
-        self.assertLess(len(proc.stderr), 12_000)        # kept: bounded, clip and all
+        # Bounded: the head budget, the retained tail, and the two notices.
+        self.assertLess(len(proc.stderr), 10_000 + 1_000 + 500)
         self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
 
     def test_a_newline_free_stderr_flood_is_captured_within_the_budget(self) -> None:
@@ -8857,6 +8859,71 @@ class LeafSpawnTest(unittest.TestCase):
                 if all(len(rec) <= limit for rec in stream.split("\n")):
                     self.assertEqual(runs[0], stream.splitlines(keepends=True),
                                      (limit, stream))
+
+    def test_a_flooding_leafs_terminal_cause_survives_the_stderr_budget(self) -> None:
+        """The budget must not cost the run its TAG. Every consumer of a leaf's stderr reads
+        the END of it — `_classify_leaf_infra_error` takes the last matching line as the
+        terminal cause, and `_leaf_failure_summary` takes the last 400 characters — so a
+        head-only capture spends the budget on a chatty leaf's progress log and discards the
+        `API Error:` it died of. The run then fail_closes untagged: no transient retry, and
+        `--wait-usage-reset` silently disarmed. The measurement behind this very budget is a
+        leaf that wrote 1.1 MB of progress to stderr, so the case is the expected one."""
+        from unittest.mock import patch
+
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend):
+                cause = "API Error: Connection closed mid-response.\n"
+                noise = "progress line that says nothing useful\n"
+                stderr_body = noise * 4000 + cause          # far past the patched budget
+                answer = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                          '{"type":"item.completed","item":'
+                          '{"type":"agent_message","text":"done"}}\n')
+                pipes = (self._pipe(answer if backend == "codex" else "out\n"),
+                         self._pipe(stderr_body))
+
+                class _Popen:
+                    pid = 424242
+                    returncode = 1
+
+                    def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                        self.stdout, self.stderr = pipes
+
+                    def poll(self):  # type: ignore[no-untyped-def]
+                        return 1
+
+                    def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                        return 1
+
+                    def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                        return None
+
+                c = self._c(backend=backend, agent_model="gpt-5.6-codex")
+                c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+                c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+                with patch.object(wc.subprocess, "Popen", _Popen), \
+                        patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 5_000), \
+                        patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
+                        patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                        patch.object(wc.os, "getpgid", lambda pid: 999), \
+                        patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                        redirect_stdout(io.StringIO()):
+                    proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A") \
+                        if backend == "codex" else \
+                        c.spawn_leaf("P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                # Still bounded — this is not a licence to keep the whole stream...
+                self.assertLess(len(proc.stderr), 5_000 + 2_000 + 500, len(proc.stderr))
+                self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+                self.assertIn("leaf_stderr_capture_tail", proc.stderr)
+                # ...and the head is still there, so the leaf's opening context is not lost.
+                self.assertTrue(proc.stderr.startswith(noise))
+                # THE POINT: the cause survived, so the leaf still routes and still retries.
+                self.assertIn("Connection closed mid-response", proc.stderr)
+                self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_transport_flake")
+                self.assertIn("Connection closed", c._leaf_failure_summary(proc))
+                # The conductor's own tail marker must not be claimable as a tag by a leaf.
+                self.assertIsNone(wc._classify_leaf_infra_error(
+                    "[conductor] leaf_stderr_capture_tail: 10 characters dropped; "
+                    "the last 5 follow"))
 
     def test_the_capture_notice_marks_dropped_output_not_a_budget_reached(self) -> None:
         """`*_capture_truncated` tells an operator the leaf "went on writing", which sends

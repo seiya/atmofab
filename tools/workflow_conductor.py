@@ -1364,6 +1364,15 @@ LEAF_STREAM_READ_BLOCK_BYTES = 65536
 # ProcResult whose stderr is persisted, tail-sliced and regex-scanned. Measured on a flooding
 # descendant: 770 MB returned and still climbing.
 LEAF_STDERR_CAPTURE_MAX_CHARS = 1_000_000
+# ...and how much of the END of that stream is kept as well. Keeping only the head is wrong for
+# stderr specifically, because every consumer reads the TAIL: `_classify_leaf_infra_error` takes
+# the LAST matching line as the terminal cause, `_stream_terminal_usage_limit_line` takes the last
+# usage-limit line, and `_leaf_failure_summary` takes the last 400 characters. A leaf that logs a
+# megabyte of progress and THEN dies with `API Error: …` would otherwise have its budget spent on
+# the progress and its cause discarded — the run fail_closes untagged, with no transient retry and
+# `--wait-usage-reset` silently disarmed. That is not hypothetical: the measurement behind this
+# very budget is "a healthy leaf that wrote 1.1 MB of progress to stderr".
+LEAF_STDERR_CAPTURE_TAIL_CHARS = 65_536
 # The same budget for a leaf's stdout capture — the codex JSONL (`raw_stdout` →
 # `leaf.stdout.jsonl`) and the claude leaf's answer alike. Both are persisted the same way and
 # a leaf in an output loop grows either just as fast. Larger because stdout is the leaf's
@@ -1503,8 +1512,14 @@ def _iter_stream_blocks(stream: Any, *, stop_reading: threading.Event,
 def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
                          truncated_label: str, error_label: str,
                          error_chunks: list[str], stop_reading: threading.Event,
-                         encoding: str) -> None:
-    """Read one leaf stream to its end, keeping at most `budget` characters of it.
+                         encoding: str, tail_budget: int = 0,
+                         tail_label: str = "") -> None:
+    """Read one leaf stream to its end, keeping at most `budget` characters of its head.
+
+    With `tail_budget`, the last `tail_budget` characters are kept as well and appended after
+    the head, because a stream whose consumers read its END (see
+    `LEAF_STDERR_CAPTURE_TAIL_CHARS`) is useless truncated to its beginning. The retained
+    memory is then `budget + tail_budget` plus one block.
 
     The thread body behind every stream capture on both backends, so the two cannot drift.
 
@@ -1519,6 +1534,11 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
     """
     captured = 0
     notified = False
+    # Held by THIS thread alone until it publishes them below, so the main thread's
+    # `list(chunks)` snapshot can never observe a half-built tail.
+    tail: list[str] = []
+    tail_chars = 0
+    past_budget = 0
 
     def _notice() -> None:
         nonlocal notified
@@ -1528,11 +1548,23 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
                 f"\n[conductor] {truncated_label}: kept the first {budget} "
                 "characters; the leaf went on writing")
 
+    def _retain(text: str) -> None:
+        """Keep the most recent `tail_budget` characters of what the budget dropped."""
+        nonlocal tail_chars, past_budget
+        past_budget += len(text)
+        if not tail_budget:
+            return
+        tail.append(text)
+        tail_chars += len(text)
+        while tail and tail_chars - len(tail[0]) >= tail_budget:
+            tail_chars -= len(tail.pop(0))
+
     try:
         for block in _iter_stream_blocks(
                 stream, stop_reading=stop_reading, encoding=encoding):
             if captured >= budget:
                 _notice()
+                _retain(block)
                 continue
             room = budget - captured
             if len(block) > room:
@@ -1541,6 +1573,7 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
                 chunks.append(block[:room])
                 captured = budget
                 _notice()
+                _retain(block[room:])
             else:
                 chunks.append(block)
                 captured += len(block)
@@ -1550,6 +1583,15 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
             # does not exist.
     except Exception as exc:  # noqa: BLE001 — a dying pipe must not raise in a thread
         error_chunks.append(f"\n[conductor] {error_label}: {exc}")
+    finally:
+        # Published as ONE append, and last, so the terminal cause sits where every consumer
+        # looks for it: at the end of the stream.
+        if tail_budget and past_budget:
+            kept = "".join(tail)[-tail_budget:]
+            chunks.append(
+                f"\n[conductor] {tail_label or truncated_label}: "
+                f"{past_budget - len(kept)} characters dropped; the last {len(kept)} "
+                "follow\n" + kept)
 
 
 # Appended in band when ONE record grew beyond `LEAF_STREAM_QUEUE_MAX_CHARS`. Deliberately NOT a reuse of `leaf_stdout_capture_truncated`, which says something else:
@@ -1693,6 +1735,20 @@ def _absorb_codex_event(
             if isinstance(text, str):
                 final_text = text
     return usage, model, final_text, turn_failed
+
+
+def _join_readers(threads: tuple[threading.Thread, ...], grace: float) -> None:
+    """Join every reader against ONE shared deadline.
+
+    Shared, never one grace each. A reader parked on a pipe a leaked descendant holds can
+    only ever time out — `stop_reading` cannot wake a thread blocked in `os.read`, and the
+    pipe is deliberately not closed under it — so per-thread graces multiply the cost of
+    exactly the case they cannot help. On the interrupt paths that cost is paid directly as
+    Ctrl-C latency, on a driver that is trying to exit.
+    """
+    deadline = time.monotonic() + grace
+    for thread in threads:
+        _join_thread(thread, max(deadline - time.monotonic(), 0.0))
 
 
 def _join_thread(thread: threading.Thread, timeout: float) -> None:
@@ -3349,7 +3405,9 @@ class Conductor:
                 budget=LEAF_STDERR_CAPTURE_MAX_CHARS,
                 truncated_label="leaf_stderr_capture_truncated",
                 error_label="leaf_stderr_read_error", error_chunks=stderr_chunks,
-                stop_reading=stop_reading, encoding=stream_encoding), daemon=True)
+                stop_reading=stop_reading, encoding=stream_encoding,
+                tail_budget=LEAF_STDERR_CAPTURE_TAIL_CHARS,
+                tail_label="leaf_stderr_capture_tail"), daemon=True)
 
         def _finish_streams() -> None:
             """Retire both readers against ONE shared grace, then give up on what is left.
@@ -3366,16 +3424,22 @@ class Conductor:
             internal lock, trading a leaked fd for a hung driver.
             """
             nonlocal stream_abandoned
-            grace_deadline = time.monotonic() + LEAF_TERMINATE_GRACE_SECONDS
             for _pass in range(2):
-                for thread in (stdout_thread, stderr_thread):
-                    _join_thread(thread, max(grace_deadline - time.monotonic(), 0.0))
+                _join_readers((stdout_thread, stderr_thread), LEAF_TERMINATE_GRACE_SECONDS)
                 if not (stdout_thread.is_alive() or stderr_thread.is_alive()):
+                    # Both readers reached EOF, so NOTHING is blocked on these fds and
+                    # releasing them is safe — the one case where it is. Deterministic
+                    # rather than left to the `Popen` being garbage collected.
+                    for pipe in (process.stdout, process.stderr):
+                        try:
+                            if pipe is not None:
+                                pipe.close()
+                        except (OSError, ValueError):
+                            pass
                     return
                 if _pass == 0:
                     _terminate_leaf_process_group(process, pgid=leaf_pgid,
                                                   pgid_start_ticks=leaf_start_ticks)
-                    grace_deadline = time.monotonic() + LEAF_TERMINATE_GRACE_SECONDS
             stream_abandoned = True
             stop_reading.set()
 
@@ -3446,8 +3510,7 @@ class Conductor:
             # Bounded, and tolerant of a thread that never started (`Thread.start()` itself can
             # fail under resource exhaustion, and a bare `join` would then raise from inside
             # this handler and replace the real cause).
-            _join_thread(stdout_thread, LEAF_TERMINATE_GRACE_SECONDS)
-            _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
+            _join_readers((stdout_thread, stderr_thread), LEAF_TERMINATE_GRACE_SECONDS)
             raise
         stdout = "".join(list(stdout_chunks))
         stderr = "".join(list(stderr_chunks))
@@ -3640,7 +3703,9 @@ class Conductor:
                 budget=LEAF_STDERR_CAPTURE_MAX_CHARS,
                 truncated_label="leaf_stderr_capture_truncated",
                 error_label="leaf_stderr_read_error", error_chunks=stderr_chunks,
-                stop_reading=stop_reading, encoding=stream_encoding)
+                stop_reading=stop_reading, encoding=stream_encoding,
+                tail_budget=LEAF_STDERR_CAPTURE_TAIL_CHARS,
+                tail_label="leaf_stderr_capture_tail")
 
         # The stdout pump: the ONLY job of this thread is to move lines off the pipe so the main
         # thread's wait can have a deadline. Parsing stays in the main thread, so the registration
@@ -3959,8 +4024,7 @@ class Conductor:
             # inside this handler and replace the real cause). BOTH readers, as the claude
             # path does: a pump left behind here is the same leak the abandon path takes
             # care to avoid.
-            _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
-            _join_thread(stdout_thread, LEAF_TERMINATE_GRACE_SECONDS)
+            _join_readers((stderr_thread, stdout_thread), LEAF_TERMINATE_GRACE_SECONDS)
             raise
         # `list(...)` first: an abandoned drain thread may still be appending, and `str.join`
         # walks the list's raw item array — a concurrent append that reallocates it under the

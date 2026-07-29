@@ -175,8 +175,8 @@ thinking.
   and do not read its `elapsed` at all (trap 6).
 - **A leaf can be KILLED at the per-leaf cap.** Such a leaf reports the same
   `reason_code=leaf_transport_error`, and its `elapsed` is slightly ABOVE
-  `METDSL_LEAF_TIMEOUT_SECONDS` (7200 s by default — the cap plus the poll slice, the
-  SIGTERM/SIGKILL grace and the post-kill drain). Filter on `>=` the cap, never on equality.
+  `METDSL_LEAF_TIMEOUT_SECONDS` (7200 s by default — the cap plus the
+  SIGTERM/SIGKILL grace and the bounded stream teardown). Filter on `>=` the cap, never on equality.
   The discriminators are the `leaf_timeout` event on the node's event stream and the
   `[conductor] leaf_timeout:` line at the end of the leaf's captured stderr; the tag is also
   carried in the fail_closed reason as `(tag: leaf_timeout; …)`. Two consequences for the
