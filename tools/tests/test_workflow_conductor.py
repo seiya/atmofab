@@ -7044,6 +7044,67 @@ class LeafSpawnTest(unittest.TestCase):
                         "P", {"HOME": "/h"}, session_id="A", child_arid="A")
         self.assertIn((424242, signal.SIGTERM), signalled)
 
+    def test_an_interrupted_claude_leaf_stops_draining_a_leaked_descendant(self) -> None:
+        """The interrupt handler's obligation, matching the codex path's. Under bwrap a
+        descendant the leaf leaked survives the group signal, and readers left running keep
+        its pipe DRAINED — which is exactly what lets it go on writing, instead of blocking on
+        a full pipe, into the artifact directory the driver is on its way to deleting."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        flood = "x" * 4096 + "\n"
+        # The leaked descendant floods once the driver is already unwinding.
+        leaked = self._stream(("write", "leaf: started\n"), ("wait", held),
+                              *[("write", flood) for _ in range(1000)], ("hold_open",))
+        pipes = (leaked.reader,
+                 self._stream(("wait", held), ("hold_open",)).reader)
+
+        interrupted: list[int] = []
+
+        class _InterruptedPopen:
+            pid = 424242
+            returncode = None
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                # ONCE: the teardown waits on the leaf too, and a double that interrupts
+                # that wait as well would unwind the handler itself rather than exercise it.
+                if not interrupted:
+                    interrupted.append(1)
+                    raise KeyboardInterrupt      # where the conductor waits for the leaf
+                return -int(signal.SIGTERM)
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._profile_repo(tmp)
+            with patch.object(wc.subprocess, "Popen", _InterruptedPopen), \
+                    patch.object(wc.os, "getpgid", lambda pid: 999), \
+                    patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                    patch.object(wc, "_leaf_timeout_seconds", lambda: 3600):
+                with self.assertRaises(KeyboardInterrupt):
+                    self._c(repo_root=repo, env={}).spawn_leaf(
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+        # A plateau in what the flood gets through, the same observable the abandon and codex
+        # interrupt paths use: a reader parked on a SILENT pipe stays parked either way, so
+        # what the flag buys is that a reader still being delivered to stops within one block.
+        held.set()
+        deadline = time.monotonic() + 5.0
+        while leaked.bytes_written == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.3)
+        ceiling = wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024
+        self.assertLess(leaked.bytes_written, ceiling,
+                        "the readers must stop draining once the driver is unwinding")
+        settled = leaked.bytes_written
+        time.sleep(0.2)
+        self.assertEqual(leaked.bytes_written, settled)
+
     def test_a_recycled_pid_is_never_signalled(self) -> None:
         """The teardown must not signal a group that merely INHERITED the leaf's pid.
 

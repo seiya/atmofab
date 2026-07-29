@@ -3433,6 +3433,14 @@ class Conductor:
             # when an orphan is worst — the driver goes on to revoke this leaf's authority and
             # delete its TMPDIR while it keeps writing. The codex path carries the same
             # obligation for the same reason; `subprocess.run`'s own cleanup used to cover both.
+            # Nobody is listening from here on: this frame is unwinding and the captures go
+            # with it. FIRST, ahead of the kill — a descendant the leaf leaked survives the
+            # group signal under bwrap, and readers left running keep its pipe DRAINED, which
+            # is what lets it go on writing (rather than blocking on a full pipe) into the
+            # artifact directory the driver is on its way to deleting. Setting a flag cannot
+            # fail, where the teardown below can (a second interrupt lands in its own bounded
+            # wait), and the readers must stop whatever becomes of the kill.
+            stop_reading.set()
             _terminate_leaf_process_group(process, pgid=leaf_pgid,
                                               pgid_start_ticks=leaf_start_ticks)
             # Bounded, and tolerant of a thread that never started (`Thread.start()` itself can
@@ -3938,13 +3946,14 @@ class Conductor:
             # leaf spawn used to be a `subprocess.run`, whose own bare `except:` kills the
             # child; the claude path in `spawn_leaf` now carries the same obligation, since
             # it too is a raw Popen.
+            # Nobody is listening from here on: this frame is unwinding and the queue goes
+            # with it. FIRST, ahead of the kill, for the reason the claude path sets it
+            # first: the pump otherwise goes on draining the leaf's pipe and appending into
+            # a capture that will never be read — and, on a full queue, parks in `put` for
+            # the driver's whole remaining life.
+            stop_reading.set()
             _terminate_leaf_process_group(process, pgid=leaf_pgid,
                                               pgid_start_ticks=leaf_start_ticks)
-            # Nobody is listening from here on: this frame is unwinding and the queue goes
-            # with it. Told to stop BEFORE the joins, or the pump goes on draining the
-            # leaf's pipe and appending into a capture that will never be read — and, on a
-            # full queue, parks in `put` for the driver's whole remaining life.
-            stop_reading.set()
             # Bounded, and tolerant of a thread that never started (`Thread.start()` itself
             # can fail under resource exhaustion, and a bare `join` would then raise from
             # inside this handler and replace the real cause). BOTH readers, as the claude
