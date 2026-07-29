@@ -104,6 +104,10 @@ PINNED: dict[str, str] = {
     # pure-14: pure prompts and their line-0 sentinel now describe the Codex read-only,
     # structured-output approximation accurately instead of promising tool-free isolation.
     "pure-14": "f15dc94b346844b2523bd38ed6a374abc8073114c103a080db2c6f90e8a6bb87",
+    # pure-15: rule (1) states the C131 pair symmetrically — a `public ::` list without the bare
+    # `private` fails the lint gate, just as the bare `private` without the list fails the syntax
+    # gate. Only the private-alone direction was stated before (issue #12 item 5).
+    "pure-15": "2b1c56474c820653bd59681e23a631c2104aea9547569e530f2705b9699a217d",
 }
 
 
