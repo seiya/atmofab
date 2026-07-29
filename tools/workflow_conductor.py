@@ -3398,6 +3398,12 @@ class Conductor:
                     returncode, "".join(list(stdout_chunks)), stderr,
                     timeout_seconds=timeout_seconds, started=started,
                     context=timeout_context)
+            # The leaf exited on its own, so its status is authoritative. Only a descendant it
+            # leaked can still hold the pipes, and that gets the teardown grace, not the cap.
+            # INSIDE the try: an interrupt arriving during these joins still has to reach the
+            # handler below, or a descendant the leaf leaked outlives a driver that is on its
+            # way to revoking this leaf's authority and deleting its TMPDIR.
+            _finish_streams()
         except BaseException:
             # BaseException, not Exception: `SystemExit` (run_workflow's SIGTERM converter) and
             # `KeyboardInterrupt` unwind the driver while the leaf is mid-turn, which is exactly
@@ -3412,9 +3418,6 @@ class Conductor:
             _join_thread(stdout_thread, LEAF_TERMINATE_GRACE_SECONDS)
             _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
             raise
-        # The leaf exited on its own, so its status is authoritative. Only a descendant it
-        # leaked can still hold the pipes, and that gets the teardown grace, not the cap.
-        _finish_streams()
         stdout = "".join(list(stdout_chunks))
         stderr = "".join(list(stderr_chunks))
         if stream_abandoned:

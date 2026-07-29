@@ -6997,6 +6997,53 @@ class LeafSpawnTest(unittest.TestCase):
                 # The whole GROUP, not just the direct child (which under bwrap is the wrapper).
                 self.assertEqual(signalled[0], (424242, signal.SIGTERM))
 
+    def test_an_interrupt_during_the_post_exit_stream_teardown_still_kills_the_group(self) -> None:
+        """The leaf has exited, but a descendant it leaked still holds the pipes, so the call is
+        inside the bounded joins when the driver is interrupted. The leaf itself is beyond
+        saving; the DESCENDANT is not, and the driver is on its way to revoking this leaf's
+        authority and deleting its TMPDIR. A teardown placed after the handler would leave it
+        running."""
+        from unittest.mock import patch
+
+        signalled: list[tuple[int, int]] = []
+        held = threading.Event()
+        self.addCleanup(held.set)
+        held_pipes = (self._stream(("wait", held), ("hold_open",)).reader,
+                      self._stream(("wait", held), ("hold_open",)).reader)
+
+        class _ExitedWithHolderPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = held_pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                signalled.append((-1, sig))
+
+        def _interrupt(thread, timeout):  # type: ignore[no-untyped-def]
+            raise KeyboardInterrupt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._profile_repo(tmp)
+            with patch.object(wc.subprocess, "Popen", _ExitedWithHolderPopen), \
+                    patch.object(wc, "_join_thread", _interrupt), \
+                    patch.object(wc.os, "getpgid", lambda pid: 999), \
+                    patch.object(wc.os, "killpg",
+                                 lambda pgid, sig: signalled.append((pgid, sig))), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
+                    patch.object(wc, "_leaf_timeout_seconds", lambda: 3):
+                with self.assertRaises(KeyboardInterrupt):
+                    self._c(repo_root=repo, env={}).spawn_leaf(
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+        self.assertIn((424242, signal.SIGTERM), signalled)
+
     def test_a_recycled_pid_is_never_signalled(self) -> None:
         """The teardown must not signal a group that merely INHERITED the leaf's pid.
 
