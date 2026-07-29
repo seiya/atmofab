@@ -1532,27 +1532,33 @@ class _StreamTail:
         self._published = False
 
     def add(self, text: str) -> None:
-        """Record `text` as dropped, keeping the most recent `budget` characters of it."""
-        self.dropped += len(text)
-        if not self.budget:
-            return
-        self._parts.append(text)
-        self._chars += len(text)
-        while self._parts and self._chars - len(self._parts[0]) >= self.budget:
-            self._chars -= len(self._parts.pop(0))
+        """Record `text` as dropped, keeping the most recent `budget` characters of it.
 
-    def text(self) -> str:
-        """A snapshot, safe to take while the reader is still appending.
+        Under the lock, because `publish` runs on the MAIN thread while this runs on the
+        reader's. Without it a publication landing between the counter and the append
+        reports characters as dropped that the tail does not contain — and, since
+        publication is a one-shot latch, that block can never be published afterwards.
+        The lock costs one uncontended acquire per block read, against a 64 KiB pipe read.
+        """
+        with self._lock:
+            self.dropped += len(text)
+            if not self.budget:
+                return
+            self._parts.append(text)
+            self._chars += len(text)
+            while self._parts and self._chars - len(self._parts[0]) >= self.budget:
+                self._chars -= len(self._parts.pop(0))
 
-        `list(...)` first — the reader may be trimming the front concurrently, and copying
-        the list is atomic under the GIL where iterating it is not. Assembled from the END
-        so no intermediate larger than the budget is ever built.
+    def _kept(self) -> str:
+        """The retained tail. Caller holds the lock.
+
+        Assembled from the END, so no intermediate larger than the budget is ever built.
         """
         if not self.budget:
             return ""
         kept: list[str] = []
         need = self.budget
-        for part in reversed(list(self._parts)):
+        for part in reversed(self._parts):
             if need <= 0:
                 break
             take = part if len(part) <= need else part[-need:]
@@ -1561,17 +1567,27 @@ class _StreamTail:
         kept.reverse()
         return "".join(kept)
 
+    def text(self) -> str:
+        """A consistent snapshot, safe to take while the reader is still appending."""
+        with self._lock:
+            return self._kept()
+
     def publish(self, chunks: list[str]) -> None:
-        """Append the tail to `chunks`, at most once, ordered after the head."""
+        """Append the tail to `chunks`, at most once, ordered after the head.
+
+        The marker and the tail go in as ONE element: the reader may be appending head
+        chunks to this same list concurrently, and two appends could be interleaved by one
+        of them.
+        """
         with self._lock:
             if self._published or not self.dropped:
                 return
             self._published = True
-        kept = self.text()
+            kept = self._kept()
+            dropped = max(self.dropped - len(kept), 0)
         chunks.append(
-            f"\n[conductor] {self.label}: {max(self.dropped - len(kept), 0)} "
-            f"characters dropped; the last {len(kept)} follow\n")
-        chunks.append(kept)
+            f"\n[conductor] {self.label}: {dropped} characters dropped; "
+            f"the last {len(kept)} follow\n" + kept)
 
 
 def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,

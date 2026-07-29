@@ -9034,6 +9034,63 @@ class LeafSpawnTest(unittest.TestCase):
         # Published exactly once, whichever of the two racing publishers got there first.
         self.assertEqual(proc.stderr.count("leaf_stderr_capture_tail"), 1)
 
+    def test_the_stream_tail_is_consistent_under_a_concurrent_publisher(self) -> None:
+        """`add` runs on the reader thread while `publish`/`text` run on the main thread, so
+        the two must not see each other half-done. An unsynchronized version increments the
+        dropped counter before appending the text, and a publication landing in that window
+        reports characters as dropped that the tail does not contain — permanently, since
+        publication is a one-shot latch."""
+        tail = wc._StreamTail(200, "leaf_stderr_capture_tail")
+        stop = threading.Event()
+        torn: list[str] = []
+
+        def _writer() -> None:
+            i = 0
+            while not stop.is_set():
+                tail.add(f"[{i:06d}]")
+                i += 1
+
+        t = threading.Thread(target=_writer, daemon=True)
+        t.start()
+        self.addCleanup(t.join, 5.0)
+        self.addCleanup(stop.set)
+        import re
+
+        def _is_torn(seen: str) -> bool:
+            """A snapshot is a SUFFIX of everything written, clipped to the budget: it may
+            OPEN mid-record, but from there on it must be whole, consecutive records."""
+            if len(seen) > tail.budget:
+                return True
+            body = seen[seen.index("["):] if "[" in seen else ""
+            if not re.fullmatch(r"(\[\d{6}\])*", body):
+                return True
+            found = [int(n) for n in re.findall(r"\[(\d{6})\]", body)]
+            return bool(found) and found != list(range(found[0], found[0] + len(found)))
+
+        try:
+            for _ in range(4000):
+                seen = tail.text()
+                if _is_torn(seen):
+                    torn.append(seen)
+                    break
+        finally:
+            stop.set()
+        self.assertEqual(torn, [], "the tail was observed mid-update")
+        # ...and the published record is internally consistent: what it says it dropped plus
+        # what it carries accounts for everything the writer added.
+        chunks: list[str] = []
+        t.join(timeout=5.0)
+        total = tail.dropped
+        tail.publish(chunks)
+        published = "".join(chunks)
+        kept = published.split("follow\n", 1)[1]
+        stated = int(published.split(": ", 1)[1].split(" characters", 1)[0])
+        self.assertEqual(stated + len(kept), total)
+        self.assertLessEqual(len(kept), tail.budget)
+        # Published once, whoever calls it and however often.
+        tail.publish(chunks)
+        self.assertEqual("".join(chunks), published)
+
     def test_the_capture_notice_marks_dropped_output_not_a_budget_reached(self) -> None:
         """`*_capture_truncated` tells an operator the leaf "went on writing", which sends
         them looking for output that was dropped. A leaf that wrote exactly the budget and
