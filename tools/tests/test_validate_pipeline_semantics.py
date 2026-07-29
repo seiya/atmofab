@@ -4816,6 +4816,12 @@ end program shallow_water2d_runner
             self.assertIn("algorithm.temporaries", offending[0])
             self.assertIn("algorithm.derived_field_rules", offending[0])
             self.assertIn("algorithm.state_variables does NOT", offending[0])
+            # The remedy must list ALL the routes that actually clear the binding. Naming
+            # only temporaries/derived_field_rules contradicted the SKILL and, for the
+            # prognostic-state case the sentence itself raises, sent the leaf to the wrong
+            # fix: `_extract_spec_var_names` folds the snapshot schema's variables into
+            # `direct_spec_vars`, so declaring it there works and is usually what is meant.
+            self.assertIn("state_snapshots schema.variables", offending[0])
 
     def test_detects_makefile_missing_fortran_module_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10366,7 +10372,10 @@ end program shallow_water2d_runner
 
         canonical = spec_vars("state_snapshots")
         self.assertEqual(canonical, {"q_in", "q_out", "u"})
-        for spelling in ("raw/state_snapshots", "State_Snapshots", "raw/state_snapshots/"):
+        for spelling in (
+            "raw/state_snapshots", "State_Snapshots", "raw/state_snapshots/",
+            "raw\\state_snapshots",  # the normalizer's backslash fold, otherwise unpinned
+        ):
             with self.subTest(artifact=spelling):
                 self.assertEqual(
                     spec_vars(spelling), canonical,

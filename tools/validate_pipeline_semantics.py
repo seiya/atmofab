@@ -6128,8 +6128,13 @@ def _parse_shape_expr(expr: str) -> tuple[bool, list[str], str]:
     body_match = _SHAPE_EXPR_DIM_SPLIT.fullmatch(token)
     if body_match is None:
         # NOT unreachable, despite what this branch used to claim: the schema's `\s*`
-        # matches a newline but the splitter's `(.+?)` does not, so an expression broken
-        # across lines (a folded/multi-line YAML scalar) lands here. Name that, because
+        # matches a newline but the splitter's `(.+?)` does not, so an expression carrying
+        # a newline BETWEEN its first and last non-space character lands here. Reaching it
+        # from YAML takes a form that PRESERVES the newline: a literal `|` block scalar, a
+        # double-quoted scalar with a `\n` escape, or a folded `>` block whose continuation
+        # line is MORE-INDENTED than the first (YAML keeps those breaks literally). An
+        # evenly-indented `>` block and a single-quoted multi-line scalar both fold to a
+        # space and parse fine, so they do NOT reach here. Name the cause, because
         # "internal parse error" told the leaf to report a tool bug rather than rewrite
         # its own value.
         return (
@@ -7269,11 +7274,13 @@ def _validate_algorithm_contract_file(
                             f"{contract_path}:steps[{step_idx}].{field_name}[{tok_idx}]"
                             f" token '{stripped}' is not traceable to direct spec I/O,"
                             f" temporaries, or derived_field_rules (undefined binding)"
-                            f" — declare '{stripped}' in algorithm.temporaries or"
-                            f" algorithm.derived_field_rules; declaring it in"
-                            f" algorithm.state_variables does NOT make it a provenance"
-                            f" source, so a prognostic state field used as a step token"
-                            f" still needs one of those two declarations"
+                            f" — give '{stripped}' provenance by declaring it in"
+                            f" algorithm.temporaries or algorithm.derived_field_rules,"
+                            f" or, for a prognostic state field, by listing it in the"
+                            f" state_snapshots schema.variables of"
+                            f" io_contract.raw_requirements (usually the right fix for"
+                            f" state); declaring it in algorithm.state_variables does NOT"
+                            f" make it a provenance source on its own"
                         )
 
     invariants = contract.get("invariants")
