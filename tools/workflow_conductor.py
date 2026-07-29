@@ -1509,17 +1509,81 @@ def _iter_stream_blocks(stream: Any, *, stop_reading: threading.Event,
             yield text
 
 
+class _StreamTail:
+    """The most recent characters of a stream whose capture budget is spent.
+
+    Held where the MAIN thread can read it at any moment, rather than published by the
+    reader when it finishes. The reader may never finish: a descendant the leaf leaked
+    holds the pipe open and nothing can close it, which is exactly the case the conductor
+    abandons the stream in — and exactly the case whose terminal cause the tail exists to
+    preserve. A tail only published at EOF is missing from every abandoned capture.
+
+    Whoever reaches `publish` first appends it; the other is a no-op, so a reader that
+    outlives the call cannot append a second copy behind the result.
+    """
+
+    def __init__(self, budget: int, label: str) -> None:
+        self.budget = budget
+        self.label = label
+        self.dropped = 0
+        self._parts: list[str] = []
+        self._chars = 0
+        self._lock = threading.Lock()
+        self._published = False
+
+    def add(self, text: str) -> None:
+        """Record `text` as dropped, keeping the most recent `budget` characters of it."""
+        self.dropped += len(text)
+        if not self.budget:
+            return
+        self._parts.append(text)
+        self._chars += len(text)
+        while self._parts and self._chars - len(self._parts[0]) >= self.budget:
+            self._chars -= len(self._parts.pop(0))
+
+    def text(self) -> str:
+        """A snapshot, safe to take while the reader is still appending.
+
+        `list(...)` first — the reader may be trimming the front concurrently, and copying
+        the list is atomic under the GIL where iterating it is not. Assembled from the END
+        so no intermediate larger than the budget is ever built.
+        """
+        if not self.budget:
+            return ""
+        kept: list[str] = []
+        need = self.budget
+        for part in reversed(list(self._parts)):
+            if need <= 0:
+                break
+            take = part if len(part) <= need else part[-need:]
+            kept.append(take)
+            need -= len(take)
+        kept.reverse()
+        return "".join(kept)
+
+    def publish(self, chunks: list[str]) -> None:
+        """Append the tail to `chunks`, at most once, ordered after the head."""
+        with self._lock:
+            if self._published or not self.dropped:
+                return
+            self._published = True
+        kept = self.text()
+        chunks.append(
+            f"\n[conductor] {self.label}: {max(self.dropped - len(kept), 0)} "
+            f"characters dropped; the last {len(kept)} follow\n")
+        chunks.append(kept)
+
+
 def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
                          truncated_label: str, error_label: str,
                          error_chunks: list[str], stop_reading: threading.Event,
-                         encoding: str, tail_budget: int = 0,
-                         tail_label: str = "") -> None:
+                         encoding: str, tail: "_StreamTail | None" = None) -> None:
     """Read one leaf stream to its end, keeping at most `budget` characters of its head.
 
-    With `tail_budget`, the last `tail_budget` characters are kept as well and appended after
-    the head, because a stream whose consumers read its END (see
-    `LEAF_STDERR_CAPTURE_TAIL_CHARS`) is useless truncated to its beginning. The retained
-    memory is then `budget + tail_budget` plus one block.
+    With `tail`, the most recent characters are retained as well and appended after the head,
+    because a stream whose consumers read its END (see `LEAF_STDERR_CAPTURE_TAIL_CHARS`) is
+    useless truncated to its beginning. Retained memory is then `budget + tail.budget` plus
+    one block, and one further copy of at most `tail.budget` while the tail is published.
 
     The thread body behind every stream capture on both backends, so the two cannot drift.
 
@@ -1534,11 +1598,6 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
     """
     captured = 0
     notified = False
-    # Held by THIS thread alone until it publishes them below, so the main thread's
-    # `list(chunks)` snapshot can never observe a half-built tail.
-    tail: list[str] = []
-    tail_chars = 0
-    past_budget = 0
 
     def _notice() -> None:
         nonlocal notified
@@ -1549,15 +1608,8 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
                 "characters; the leaf went on writing")
 
     def _retain(text: str) -> None:
-        """Keep the most recent `tail_budget` characters of what the budget dropped."""
-        nonlocal tail_chars, past_budget
-        past_budget += len(text)
-        if not tail_budget:
-            return
-        tail.append(text)
-        tail_chars += len(text)
-        while tail and tail_chars - len(tail[0]) >= tail_budget:
-            tail_chars -= len(tail.pop(0))
+        if tail is not None:
+            tail.add(text)
 
     try:
         for block in _iter_stream_blocks(
@@ -1582,16 +1634,15 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
             # and telling an operator it "went on writing" sends them looking for output that
             # does not exist.
     except Exception as exc:  # noqa: BLE001 — a dying pipe must not raise in a thread
+        # The tail goes in FIRST: it was read BEFORE this error, and the read error is the
+        # terminal event. Reversed, the failure summary's last-400-characters window shows
+        # stale leaf output and the reason the stream died disappears from it.
+        if tail is not None:
+            tail.publish(chunks)
         error_chunks.append(f"\n[conductor] {error_label}: {exc}")
-    finally:
-        # Published as ONE append, and last, so the terminal cause sits where every consumer
-        # looks for it: at the end of the stream.
-        if tail_budget and past_budget:
-            kept = "".join(tail)[-tail_budget:]
-            chunks.append(
-                f"\n[conductor] {tail_label or truncated_label}: "
-                f"{past_budget - len(kept)} characters dropped; the last {len(kept)} "
-                "follow\n" + kept)
+    else:
+        if tail is not None:
+            tail.publish(chunks)
 
 
 # Appended in band when ONE record grew beyond `LEAF_STREAM_QUEUE_MAX_CHARS`. Deliberately NOT a reuse of `leaf_stdout_capture_truncated`, which says something else:
@@ -3400,14 +3451,15 @@ class Conductor:
                 # as part of that answer.
                 error_label="leaf_stdout_read_error", error_chunks=stderr_chunks,
                 stop_reading=stop_reading, encoding=stream_encoding), daemon=True)
+        stderr_tail = _StreamTail(LEAF_STDERR_CAPTURE_TAIL_CHARS,
+                                  "leaf_stderr_capture_tail")
         stderr_thread = threading.Thread(target=_drain_capped_stream, args=(
             process.stderr, stderr_chunks), kwargs=dict(
                 budget=LEAF_STDERR_CAPTURE_MAX_CHARS,
                 truncated_label="leaf_stderr_capture_truncated",
                 error_label="leaf_stderr_read_error", error_chunks=stderr_chunks,
                 stop_reading=stop_reading, encoding=stream_encoding,
-                tail_budget=LEAF_STDERR_CAPTURE_TAIL_CHARS,
-                tail_label="leaf_stderr_capture_tail"), daemon=True)
+                tail=stderr_tail), daemon=True)
 
         def _finish_streams() -> None:
             """Retire both readers against ONE shared grace, then give up on what is left.
@@ -3420,8 +3472,9 @@ class Conductor:
             ends only reaches one that writes (it gets an EPIPE), while a silent one — a stuck
             `sleep`, a wedged tool child — would keep running under an authority the driver is
             about to revoke, writing into the very artifact directory the next substep reads.
-            The pipes are never closed: a `close()` racing a blocked reader waits on the same
-            internal lock, trading a leaked fd for a hung driver.
+            The pipes are closed ONLY where both readers have finished, which is the one
+            state in which nothing is blocked on them; under a reader that is still parked a
+            `close()` waits on the same internal lock, trading a leaked fd for a hung driver.
             """
             nonlocal stream_abandoned
             for _pass in range(2):
@@ -3469,6 +3522,10 @@ class Conductor:
                 except subprocess.TimeoutExpired:
                     returncode = -int(signal.SIGKILL)
                 _finish_streams()
+                # Publish the tail if the abandoned drain never reached its own exit (see
+                # the codex twin): the terminal cause it had already read must not be lost
+                # with the thread.
+                stderr_tail.publish(stderr_chunks)
                 # `list(...)` first: an abandoned reader may still be appending, and
                 # `str.join` walks the list's raw item array — a concurrent append that
                 # reallocates it under the walk is a crash, not a lost chunk. Copying is
@@ -3491,6 +3548,7 @@ class Conductor:
             # handler below, or a descendant the leaf leaked outlives a driver that is on its
             # way to revoking this leaf's authority and deleting its TMPDIR.
             _finish_streams()
+            stderr_tail.publish(stderr_chunks)
         except BaseException:
             # BaseException, not Exception: `SystemExit` (run_workflow's SIGTERM converter) and
             # `KeyboardInterrupt` unwind the driver while the leaf is mid-turn, which is exactly
@@ -3696,6 +3754,8 @@ class Conductor:
         # the trouble of harvesting off `TimeoutExpired`. Appending per block makes whatever
         # arrived before the kill available to a join that expires.
         stream_encoding = _leaf_stream_encoding()
+        stderr_tail = _StreamTail(LEAF_STDERR_CAPTURE_TAIL_CHARS,
+                                  "leaf_stderr_capture_tail")
 
         def _drain_stderr() -> None:
             _drain_capped_stream(
@@ -3703,9 +3763,7 @@ class Conductor:
                 budget=LEAF_STDERR_CAPTURE_MAX_CHARS,
                 truncated_label="leaf_stderr_capture_truncated",
                 error_label="leaf_stderr_read_error", error_chunks=stderr_chunks,
-                stop_reading=stop_reading, encoding=stream_encoding,
-                tail_budget=LEAF_STDERR_CAPTURE_TAIL_CHARS,
-                tail_label="leaf_stderr_capture_tail")
+                stop_reading=stop_reading, encoding=stream_encoding, tail=stderr_tail)
 
         # The stdout pump: the ONLY job of this thread is to move lines off the pipe so the main
         # thread's wait can have a deadline. Parsing stays in the main thread, so the registration
@@ -4026,6 +4084,10 @@ class Conductor:
             # care to avoid.
             _join_readers((stderr_thread, stdout_thread), LEAF_TERMINATE_GRACE_SECONDS)
             raise
+        # The tail is published HERE if the drain has not got to it: a drain the conductor
+        # abandoned never reaches its own exit, and the terminal cause it had already read
+        # would otherwise be missing from the one capture that needs it most.
+        stderr_tail.publish(stderr_chunks)
         # `list(...)` first: an abandoned drain thread may still be appending, and `str.join`
         # walks the list's raw item array — a concurrent append that reallocates it under the
         # walk is a crash, not a lost chunk. Copying is atomic under the GIL; whatever the

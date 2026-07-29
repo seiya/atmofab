@@ -5792,20 +5792,18 @@ class _ScriptedStream:
 
     _BLOCK = 65536
 
-    def __init__(self, script, *, encoding: str = "utf-8", binary: bool = False) -> None:
+    def __init__(self, script, *, encoding: str = "utf-8") -> None:
         read_fd, self._write_fd = os.pipe()
         self.encoding = encoding
         self._written = [0]
         self._aborted = threading.Event()
         self.finished = threading.Event()
         self._hold_open = False
-        if binary:
-            self.reader = os.fdopen(read_fd, "rb")
-        else:
-            # What `Popen(text=True, errors="backslashreplace")` hands the reader today:
-            # a TextIOWrapper carrying the codec the conductor reads off `.encoding`.
-            self.reader = os.fdopen(
-                read_fd, "r", encoding=encoding, errors="backslashreplace")
+        # BINARY, because that is what `Popen(stdout=PIPE)` hands the conductor now that it
+        # decodes for itself. A text-mode read end would be a shape production no longer
+        # produces — and the conductor only ever takes `fileno()` off this, so a text wrapper
+        # would hide any accidental dependence on the stream object itself.
+        self.reader = os.fdopen(read_fd, "rb")
         self._thread = threading.Thread(
             target=self._run, args=(list(script),), daemon=True)
         self._thread.start()
@@ -7416,17 +7414,33 @@ class LeafSpawnTest(unittest.TestCase):
         blocking on a pipe the conductor stopped draining."""
         from unittest.mock import patch
 
+        import tracemalloc
+
         budget, blob = 20_000, 2_000_000
         leaf = ("import sys;"
                 f"sys.stdout.write('o' * {blob}); sys.stdout.flush();"
                 f"sys.stderr.write('e' * {blob}); sys.stderr.flush()")
         c = self._c(repo_root=Path("/tmp"), env={}, llm_command=f"python3 -c {leaf!r}")
         c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        wc._pid_start_ticks(os.getpid())        # warm the lazy import (see the codex twin)
+        tracemalloc.start()
+        self.addCleanup(tracemalloc.stop)
+        tracemalloc.reset_peak()
+        baseline, _ = tracemalloc.get_traced_memory()
         with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
                 patch.object(wc, "LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS", budget), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 0), \
                 redirect_stdout(io.StringIO()):
             proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+        _current, peak = tracemalloc.get_traced_memory()
+        growth = peak - baseline
+        # PEAK MEMORY is the acceptance, not the size of what came back: this path used to
+        # buffer inside `communicate` and was measured at 4.2 GB captured / 16 GB peak RSS.
+        # A reader that clipped the capture but still held the flood would satisfy every
+        # other assertion here.
+        self.assertLess(growth, 500_000,
+                        f"grew {growth} bytes: the flood was held rather than streamed")
         self.assertEqual(proc.returncode, 0)             # it finished; it was never blocked
         self.assertIs(proc.timed_out, False)
         ceiling = budget + wc.LEAF_STREAM_READ_BLOCK_BYTES + 500
@@ -7521,16 +7535,19 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
         self.assertEqual(events[0]["backend"], "codex")
 
-    def test_the_claude_path_checks_the_exit_before_the_deadline(self) -> None:
-        """The ordering `docs/ORCHESTRATION.md` calls exact for this backend. A leaf that
-        completes inside the FINAL slice while a leaked tool subprocess still holds the pipe:
-        `communicate` cannot return (no EOF), the deadline has passed, and only checking the
-        exit FIRST turns this into the success it is instead of a non-retryable `leaf_timeout`
-        fail_closed for a leaf that produced its answer."""
+    def test_a_claude_leaf_that_exits_late_beats_the_pipe_that_never_closes(self) -> None:
+        """What used to need an explicit exit-before-deadline CHECK is now structural, and
+        this pins that it stays so. The leaf finishes while a leaked tool subprocess still
+        holds its pipes open. A wait that ended at stream EOF could not return at all here —
+        which is why the old code sliced `communicate` and inspected the exit first — whereas
+        `Popen.wait` ends at the EXIT, so the success is reported as one with no ordering rule
+        to get wrong. The double HONOURS its deadline, so a wait that was somehow given the
+        cap's remainder rather than ending at the exit would time out and fail this."""
         from unittest.mock import patch
 
         held = threading.Event()
         self.addCleanup(held.set)
+        waited: list[float | None] = []
         # The leaked holder keeps stdout open past the deadline; the answer is already in it.
         last_slice_pipes = (
             self._stream(("write", "THE ANSWER\n"), ("wait", held), ("hold_open",)).reader,
@@ -7547,9 +7564,13 @@ class LeafSpawnTest(unittest.TestCase):
                 return self.returncode
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
-                # It finishes just inside the deadline. `wait` ends at the EXIT, so this is
-                # the ordinary success it is — where a wait that ended at stream EOF could
-                # not return at all while the holder kept the pipe.
+                # It finishes 10ms in. The deadline is HONOURED rather than ignored, so this
+                # double behaves like `Popen.wait`: a caller that passed a spent deadline
+                # gets `TimeoutExpired`, and the test would report the wedge it is asserting
+                # does not happen.
+                waited.append(timeout)
+                if timeout is not None and timeout < 0.01:
+                    raise subprocess.TimeoutExpired("claude", timeout)
                 time.sleep(0.01)
                 self.returncode = 0
                 return 0
@@ -7573,6 +7594,11 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "THE ANSWER\n")
         self.assertNotIn("leaf_timeout", out.getvalue())
+        # The leaf itself was waited on ONCE, carrying the cap's remaining time — not polled
+        # around a stream that was never going to reach EOF. Everything after it belongs to
+        # the teardown and is bounded by the grace.
+        self.assertGreater(waited[0], 0.01, waited)
+        self.assertTrue(all(t <= 0.05 for t in waited[1:]), waited)
 
     def test_the_exited_leaf_drain_pins_the_pgid_too(self) -> None:
         """The pin matters MOST here: the leaf was just reaped, so the live `os.getpgid` lookup
@@ -7857,9 +7883,15 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(wc.LEAF_STDERR_CAPTURE_MAX_CHARS, 1_000_000)
         self.assertEqual(wc.LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS, 4_000_000)
         self.assertEqual(wc.LEAF_STREAM_QUEUE_MAX_CHARS, 2_000_000)
-        # The ceiling is a real platform limit, not a policy: one second above it,
-        # `communicate(timeout=…)` raises OverflowError instead of waiting — which on the
-        # claude path escapes `spawn_leaf` as a generic conductor_error before any leaf runs.
+        self.assertEqual(wc.LEAF_STREAM_READ_BLOCK_BYTES, 65536)
+        # NONZERO above all: every test that exercises the tail patches this, so a default of
+        # `0` would ship the head-only capture — a flooding leaf's terminal cause discarded and
+        # the run terminalized untagged — with the whole suite still green.
+        self.assertEqual(wc.LEAF_STDERR_CAPTURE_TAIL_CHARS, 65_536)
+        # The ceiling is a real platform limit, not a policy: one second above it, a
+        # `select`-based wait in `subprocess` raises OverflowError instead of waiting. Both
+        # leaf paths hand the whole remaining cap to `Popen.wait`, which does not overflow, so
+        # this guards a future deadline placed on a selecting wait rather than a live path.
         proc = subprocess.Popen(["python3", "-c", "import time; time.sleep(0.05)"],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -8642,8 +8674,12 @@ class LeafSpawnTest(unittest.TestCase):
         must do so without becoming a bound on the leaf: the writer still reaches EOF."""
         from unittest.mock import patch
 
+        import tracemalloc
+
         budget = 20_000
-        blob = "z" * 4_000_000            # 200x the budget, and not one newline in it
+        # Pre-encoded, so the fixture's own 4 MB allocation happens OUTSIDE the measured
+        # region and cannot be mistaken for the conductor holding the flood.
+        blob = ("z" * 4_000_000).encode()   # 200x the budget, and not one newline in it
         flood = self._stream(("write", blob))
         answered = self._pipe(
             '{"type":"thread.started","thread_id":"t-1"}\n'
@@ -8667,13 +8703,33 @@ class LeafSpawnTest(unittest.TestCase):
 
         c = self._c(backend="codex", agent_model="gpt-5.6-codex")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        # Warm the lazy import behind `_pid_start_ticks` (it pulls in `tools.run_workflow`
+        # and its dependents, ~1 MB of module objects on first call): one-time import cost
+        # charged to the first leaf would swamp the measurement below.
+        wc._pid_start_ticks(os.getpid())
+        tracemalloc.start()
+        self.addCleanup(tracemalloc.stop)
+        tracemalloc.reset_peak()
+        # A DELTA: `get_traced_memory` reports absolute totals, so the fixture's own
+        # allocations would otherwise be charged to the conductor.
+        baseline, _ = tracemalloc.get_traced_memory()
         with patch.object(wc.subprocess, "Popen", _FloodingPopen), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 0), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
             proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        _current, peak = tracemalloc.get_traced_memory()
+        growth = peak - baseline
+        # THE ACCEPTANCE, and the only assertion here a line-based reader cannot also satisfy:
+        # PEAK MEMORY, not the size of what came back. A reader that buffers until a newline
+        # returns a capture clipped to exactly the same size while holding the whole flood —
+        # which is the defect, measured in the field at 1.35 GB against a 4 MB budget. The
+        # bound is far below the 4 MB flood and far above budget + one block.
+        self.assertLess(growth, 500_000,
+                        f"grew {growth} bytes: the flood was held rather than streamed")
         # Budget, plus at most the one block that crossed it, plus the notice.
         self.assertLess(len(proc.stderr), budget + wc.LEAF_STREAM_READ_BLOCK_BYTES + 500)
         self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
@@ -8924,6 +8980,59 @@ class LeafSpawnTest(unittest.TestCase):
                 self.assertIsNone(wc._classify_leaf_infra_error(
                     "[conductor] leaf_stderr_capture_tail: 10 characters dropped; "
                     "the last 5 follow"))
+
+    def test_the_stderr_tail_survives_a_stream_the_conductor_abandons(self) -> None:
+        """The abandon path is where the tail matters MOST, and the one a reader can never
+        publish for itself: a descendant the leaf leaked holds the pipe open, so the drain
+        never reaches its own exit. Its terminal cause has already been READ — it is sitting
+        in the tail — and losing it with the thread would mean the capture that most needs a
+        cause is the one guaranteed not to have one."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        cause = "API Error: Connection closed mid-response.\n"
+        # Past the budget, then the cause, then silence with the pipe still open: the
+        # conductor gives up on this stream, and the drain thread never finishes.
+        stderr_pipe = self._stream(
+            ("write", "noise\n" * 2000), ("write", cause),
+            ("wait", held), ("hold_open",)).reader
+        stdout_pipe = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n')
+
+        class _ExitedPopen:
+            pid = 424242
+            returncode = 1
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = stdout_pipe, stderr_pipe
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 1                      # the leaf is gone; only the holder remains
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 1
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 3_000), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 2_000), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertIn("leaf_stream_abandoned", proc.stderr)   # it DID give up on the stream
+        # ...and the cause it had already read came back with it, so the attempt still routes.
+        self.assertIn("Connection closed mid-response", proc.stderr)
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_transport_flake")
+        # Published exactly once, whichever of the two racing publishers got there first.
+        self.assertEqual(proc.stderr.count("leaf_stderr_capture_tail"), 1)
 
     def test_the_capture_notice_marks_dropped_output_not_a_budget_reached(self) -> None:
         """`*_capture_truncated` tells an operator the leaf "went on writing", which sends
