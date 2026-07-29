@@ -1671,10 +1671,21 @@ def _drain_capped_stream(stream: Any, chunks: list[str], *, budget: int,
 # match no `_LEAF_INFRA_ERROR_PATTERNS` entry, or a leaf could claim a tag by writing the line.
 LEAF_STDOUT_RECORD_TRUNCATED_LABEL = "leaf_stdout_record_truncated"
 # Every other in-band label the conductor writes into a leaf's captured streams. Named
-# rather than spelled at each call site because `docs/RUNBOOK.md` tells an operator to grep
-# for exactly these, and because NONE of them may match a `_LEAF_INFRA_ERROR_PATTERNS` entry
-# — a leaf that could write one would be able to claim an infra tag it did not earn. The set
-# is what `_LEAF_CONDUCTOR_MARKER_LABELS` below makes testable in one place.
+# rather than spelled at each call site because an operator greps for them (the capture and
+# tail markers are named in `docs/RUNBOOK.md`; the read-error ones are diagnostics that only
+# show up in a post-mortem), and because NONE of them may match a `_LEAF_INFRA_ERROR_PATTERNS`
+# entry — a leaf able to write one could claim an infra tag it did not earn. The set is what
+# `_LEAF_CONDUCTOR_MARKER_LABELS` below makes testable in one place.
+# How many structured terminal events (`error` / `turn.failed`) a codex leaf's diagnostics
+# retain. These are spliced into `stderr` AFTER every stream budget has been applied, so
+# without a bound of their own they are the one capture on either backend that a leaf can
+# still grow without limit: a leaf in an error loop was measured adding ~290 KB/s, which the
+# 7200s cap projects to gigabytes, written whole to `dialogs/leaf.stderr.log`. The most
+# RECENT are kept, because the classifier reads the last matching line and the terminal event
+# is the last one — and because the full event stream is retained in `leaf.stdout.jsonl`
+# anyway, up to its own budget, for an operator who needs the earliest.
+LEAF_FAILURE_EVENTS_MAX = 20
+LEAF_FAILURE_EVENTS_TRUNCATED_LABEL = "leaf_failure_events_truncated"
 LEAF_STDERR_CAPTURE_TRUNCATED_LABEL = "leaf_stderr_capture_truncated"
 LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL = "leaf_stdout_capture_truncated"
 LEAF_STDERR_CAPTURE_TAIL_LABEL = "leaf_stderr_capture_tail"
@@ -1684,6 +1695,7 @@ _LEAF_CONDUCTOR_MARKER_LABELS = (
     LEAF_STDOUT_RECORD_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TRUNCATED_LABEL,
     LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL, LEAF_STDERR_CAPTURE_TAIL_LABEL,
     LEAF_STDERR_READ_ERROR_LABEL, LEAF_STDOUT_READ_ERROR_LABEL,
+    LEAF_FAILURE_EVENTS_TRUNCATED_LABEL,
 )
 
 
@@ -1697,9 +1709,15 @@ class _LineReassembler:
     """Blocks in, whole lines out — with a bound on how long one line may get.
 
     The codex JSONL parse is per RECORD, so the block reads have to be reassembled before
-    anything downstream sees them; `keepends` semantics are preserved so the queue, the raw
-    capture and `_parse_codex_line` all see byte-identical lines to what the line-based reader
-    delivered.
+    anything downstream sees them, `keepends` style, so the queue, the raw capture and
+    `_parse_codex_line` all see the lines a `\n`-framed stream is made of.
+
+    ONE deliberate difference from the `text=True` reader this replaced: universal-newline
+    translation is gone with the text wrapper, so a bare `\r` is retained rather than treated
+    as a line break. JSONL is `\n`-framed and JSON escapes a carriage return inside a string,
+    so no record is split or joined differently by this; what changes is that a leaf writing
+    `\r`-overwritten progress gets it preserved verbatim in the capture instead of split into
+    lines, which is what an operator reading the raw artifact should see anyway.
 
     The bound is the point. Without it a single newline-free record is read whole before any
     budget can apply to it — one JSONL record can carry an entire tool result, and a leaf in an
@@ -1817,6 +1835,14 @@ def _absorb_codex_event(
         # The retry and usage-reset classifiers operate on the process diagnostics. Preserve
         # Codex's structured terminal event there even when the CLI left stderr empty.
         failure_events.append(json.dumps(event, ensure_ascii=False)[:2000])
+        if len(failure_events) > LEAF_FAILURE_EVENTS_MAX:
+            # Bounded like every stream capture, and for the same reason — see
+            # `LEAF_FAILURE_EVENTS_MAX`. The oldest goes, and the slot it vacates carries the
+            # notice, so the list length is stable and the truncation is never silent.
+            del failure_events[:-LEAF_FAILURE_EVENTS_MAX]
+            failure_events[0] = (
+                f"[conductor] {LEAF_FAILURE_EVENTS_TRUNCATED_LABEL}: kept the most recent "
+                f"{LEAF_FAILURE_EVENTS_MAX - 1} terminal events; the leaf went on failing")
     item = event.get("item")
     if kind == "item.completed" and isinstance(item, dict):
         if str(item.get("type") or "") == "agent_message":

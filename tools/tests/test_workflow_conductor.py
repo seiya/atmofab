@@ -9097,6 +9097,14 @@ class LeafSpawnTest(unittest.TestCase):
                 writer = threading.Thread(target=_write, daemon=True)
                 writer.start()
                 try:
+                    # Wait for the writer to be RUNNING before racing it. `Thread.start()`
+                    # does not guarantee the target has executed, and `publish` correctly
+                    # no-ops on an empty tail — so without this the race is sometimes not a
+                    # race at all, and under load the trial has nothing to parse.
+                    deadline = time.monotonic() + 5.0
+                    while not racing.dropped and time.monotonic() < deadline:
+                        time.sleep(0)
+                    self.assertTrue(racing.dropped, "the writer never started")
                     out: list[str] = []
                     racing.publish(out)
                 finally:
@@ -9210,6 +9218,52 @@ class LeafSpawnTest(unittest.TestCase):
         # accounted for, and the result is still something a UTF-8 artifact can hold.
         self.assertIn("\\x", proc.stderr)
         proc.stderr.encode("utf-8")
+
+    def test_a_codex_leaf_in_an_error_loop_cannot_grow_the_captured_stderr(self) -> None:
+        """The one capture a leaf could still grow without limit. Codex's structured terminal
+        events are spliced into `stderr` AFTER every stream budget has been applied, so a leaf
+        in an error loop added them at ~290 KB/s — gigabytes at the production cap, written
+        whole to `dialogs/leaf.stderr.log`. Bounding the streams is not bounding the capture
+        unless this is bounded too."""
+        from unittest.mock import patch
+
+        errors = 400
+        body = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                + '{"type":"error","message":"%s"}\n' % ("e" * 1500) * errors
+                + '{"type":"turn.failed","error":{"message":"API Error: 529 overloaded"}}\n')
+        pipes = (self._pipe(body), self._pipe())
+
+        class _Popen:
+            pid = 424242
+            returncode = 1
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 1
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 1
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # Bounded by the retained event count, not by how long the leaf kept failing.
+        self.assertLess(len(proc.stderr), wc.LEAF_FAILURE_EVENTS_MAX * 2100)
+        self.assertIn("leaf_failure_events_truncated", proc.stderr)
+        # The TERMINAL event is what survives — the classifier reads the last matching line,
+        # so keeping the oldest would route the attempt on a stale cause.
+        self.assertIn("529 overloaded", proc.stderr)
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_overloaded")
 
     def test_no_conductor_marker_can_be_claimed_as_an_infra_tag_by_a_leaf(self) -> None:
         """Every `[conductor]` line the capture layer writes is LEAF-VISIBLE: it lands in a
