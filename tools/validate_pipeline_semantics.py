@@ -6126,8 +6126,19 @@ def _parse_shape_expr(expr: str) -> tuple[bool, list[str], str]:
             "function-call notations such as vector(N), matrix(M,N), tensor are forbidden.",
         )
     body_match = _SHAPE_EXPR_DIM_SPLIT.fullmatch(token)
-    if body_match is None:  # pragma: no cover - schema pattern guarantees match
-        return False, [], "shape_expr internal parse error"
+    if body_match is None:
+        # NOT unreachable, despite what this branch used to claim: the schema's `\s*`
+        # matches a newline but the splitter's `(.+?)` does not, so an expression broken
+        # across lines (a folded/multi-line YAML scalar) lands here. Name that, because
+        # "internal parse error" told the leaf to report a tool bug rather than rewrite
+        # its own value.
+        return (
+            False,
+            [],
+            "shape_expr matched a list/tuple form but its dimension tokens could not be "
+            "split; write the whole expression on ONE line (a line break inside the "
+            "brackets or parens is the usual cause).",
+        )
     dims: list[str] = []
     # Per-token grammar is owned by the schema's regex (the list-form
     # branch already encodes which dim-token forms are accepted). The

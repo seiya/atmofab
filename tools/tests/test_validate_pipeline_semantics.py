@@ -10399,6 +10399,15 @@ end program shallow_water2d_runner
                 message, source,
                 f"SKILL quotes {message!r} but no validator message emits it any more",
             )
+        # The other two rules this SKILL carries are paraphrases, not quotes, so they have
+        # no emitter to pin against — but the doc-size ceiling is a MAXIMUM, so deleting
+        # them passes every other test in the suite. Anchor them here: they are the rules
+        # the 2026-07-25 warm retries broke, and the leaf can learn them nowhere else.
+        for rule in (
+            "unsigned integer literal or an identifier",   # the shape_expr dim-token grammar
+            "is NOT one of the provenance sources",        # algorithm.state_variables
+        ):
+            self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
 
     def test_state_variables_alone_does_not_authorize_a_step_token(self) -> None:
         """Issue #12 item 3 pins the message; this pins the DECISION the message describes.
@@ -10408,7 +10417,13 @@ end program shallow_water2d_runner
         provenance from it would authorize a field nothing has checked. Without this test
         someone could "fix" the issue-#12 false-positive complaint by adding state
         variable names to `allowed_tokens`, and the message assertion alone would still
-        pass while the gate silently weakened."""
+        pass while the gate silently weakened.
+
+        Both node-key shapes are exercised deliberately. The compile stage always passes a
+        REAL `multidim_node_key` alongside `direct_spec_vars`, so a weakening written as
+        "grant provenance only where the state contract IS validated" (i.e. guarded on
+        `multidim_node_key`) would slip past a `None`-only fixture — which is exactly the
+        reasoning the paragraph above invites."""
         from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
         contract = {
             "algorithm_id": "alg_test",
@@ -10435,25 +10450,29 @@ end program shallow_water2d_runner
             "invariants": ["dummy"],
             "splitting_policy": {"kind": "none"},
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _seed_shape_expr_schema_into(repo_root)
-            contract_path = repo_root / "spec.ir.yaml"
-            contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
-            violations: list[str] = []
-            _validate_algorithm_contract_file(
-                repo_root,
-                contract_path,
-                violations,
-                multidim_node_key=None,
-                direct_spec_vars={"q_in", "q_out"},
-            )
-        offending = [v for v in violations if "undefined binding" in v and "'u'" in v]
-        self.assertTrue(
-            offending,
-            f"a token declared only in algorithm.state_variables must remain an "
-            f"undefined binding; got: {violations}",
-        )
+        for node_key in (None, "problem/shallow_water2d@0.3.0"):
+            with self.subTest(multidim_node_key=node_key):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    _seed_shape_expr_schema_into(repo_root)
+                    contract_path = repo_root / "spec.ir.yaml"
+                    contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+                    violations: list[str] = []
+                    _validate_algorithm_contract_file(
+                        repo_root,
+                        contract_path,
+                        violations,
+                        multidim_node_key=node_key,
+                        direct_spec_vars={"q_in", "q_out"},
+                    )
+                offending = [
+                    v for v in violations if "undefined binding" in v and "'u'" in v
+                ]
+                self.assertTrue(
+                    offending,
+                    f"a token declared only in algorithm.state_variables must remain an "
+                    f"undefined binding; got: {violations}",
+                )
 
     def test_parse_shape_expr_error_is_empty_exactly_when_it_succeeds(self) -> None:
         """The `temporaries` / `state_variables` guards read the REASON, not the boolean
@@ -10465,9 +10484,14 @@ end program shallow_water2d_runner
         from tools.validate_pipeline_semantics import _parse_shape_expr
         exprs = [
             "scalar", "SCALAR", "[3]", "[nx]", "[nx, ny]", "(nx)", "(d1, d2)", "(tensor)",
-            "", "   ", "[]", "()", "[3, ]", "[a,,b]", "[nx + 2*ng]", "[n-1]", "[3.0]",
-            "[-3]", "vector(3)", "matrix(3,3)", "tensor", "[vector(3)]", "(d1, matrix(2,2))",
-            "[3", "3]", "scalar[3]", "[nx][ny]", "{nx}", "[nx;ny]",
+            "", "   ", "\t", "\n", "[]", "()", "[3, ]", "[a,,b]", "[nx + 2*ng]", "[n-1]",
+            "[3.0]", "[-3]", "vector(3)", "matrix(3,3)", "tensor", "[vector(3)]",
+            "(d1, matrix(2,2))", "[3", "3]", "scalar[3]", "[nx][ny]", "{nx}", "[nx;ny]",
+            # Reaches the dim-split failure: the schema's `\s*` matches a newline but the
+            # splitter's `(.+?)` does not. A folded YAML scalar produces exactly this, so
+            # this is the input class that makes the invariant load-bearing rather than
+            # theoretical — without it no test touches that return at all.
+            "[nx,\n ny]", "(a,\nb)", "[\n nx]",
         ]
         for expr in exprs:
             ok, _, err = _parse_shape_expr(expr)
