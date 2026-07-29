@@ -7298,6 +7298,121 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
         self.assertGreaterEqual(events[0]["elapsed_seconds"], 1.0)
 
+    def test_a_real_claude_leaf_flooding_without_newlines_is_captured_within_budget(self) -> None:
+        """Issue #18's acceptance, on the claude path, against a REAL subprocess.
+
+        A leaf writes megabytes to both streams with no newline terminator in any of it and
+        then exits 0. Before the block reads there was no budget on this path at all and the
+        whole flood was buffered inside `communicate` (4.2 GB captured, 16 GB peak RSS). The
+        leaf still SUCCEEDS: reading continues past the budget, so nothing here is the leaf
+        blocking on a pipe the conductor stopped draining."""
+        from unittest.mock import patch
+
+        budget, blob = 20_000, 2_000_000
+        leaf = ("import sys;"
+                f"sys.stdout.write('o' * {blob}); sys.stdout.flush();"
+                f"sys.stderr.write('e' * {blob}); sys.stderr.flush()")
+        c = self._c(repo_root=Path("/tmp"), env={}, llm_command=f"python3 -c {leaf!r}")
+        c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+        with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
+                patch.object(wc, "LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
+                redirect_stdout(io.StringIO()):
+            proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+        self.assertEqual(proc.returncode, 0)             # it finished; it was never blocked
+        self.assertIs(proc.timed_out, False)
+        ceiling = budget + wc.LEAF_STREAM_READ_BLOCK_BYTES + 500
+        self.assertLess(len(proc.stdout), ceiling, len(proc.stdout))
+        self.assertLess(len(proc.stderr), ceiling, len(proc.stderr))
+        self.assertIn("leaf_stdout_capture_truncated", proc.stdout)
+        self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+        # Nothing was abandoned: the leaf closed its pipes, so this is a bounded capture of a
+        # COMPLETE read, not a capture cut short.
+        self.assertNotIn("leaf_stream_abandoned", proc.stderr)
+
+    def test_a_real_codex_leaf_flooding_without_newlines_still_lands_its_turn(self) -> None:
+        """The same acceptance on the codex path, and the property that makes it safe: the
+        oversized record is clipped, but the reader carries on and the TURN AFTER IT still
+        lands. A reader that stopped at the budget would wedge this leaf on a full pipe and it
+        would never get to emit its answer — the regression the keep-reading invariant exists
+        to prevent, measured against a real leaf that died at the cap with 1.1 MB of progress
+        written and no answer."""
+        from unittest.mock import patch
+
+        limit = 50_000
+        source = (
+            "import sys\n"
+            "w = sys.stdout.write\n"
+            "w('{\"junk\":\"' + 'q' * 3000000 + '\"}')\n"
+            "w('\\n')\n"
+            "w('{\"type\":\"thread.started\",\"thread_id\":\"t-1\"}\\n')\n"
+            "w('{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",'\n"
+            "  '\"text\":\"done\"}}\\n')\n"
+            "sys.stdout.flush()\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            # From a FILE, not `python3 -c`: the leaf command is shlex-split, and a program
+            # carrying both quote characters cannot survive that round trip.
+            script = Path(tmp) / "leaf.py"
+            script.write_text(source, encoding="utf-8")
+            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
+                        env={}, llm_command=f"python3 {script}")
+            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+            with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
+                    patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
+                    redirect_stdout(io.StringIO()):
+                proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+        self.assertEqual(proc.returncode, 0)
+        self.assertIs(proc.timed_out, False)
+        self.assertEqual(proc.stdout, "done")            # the turn behind the flood lands
+        self.assertIn("leaf_stdout_record_truncated", proc.raw_stdout)
+        self.assertLess(len(proc.raw_stdout), limit * 2)
+
+    def test_a_real_wedged_codex_leaf_is_killed_and_its_jsonl_kept(self) -> None:
+        """The codex twin of `test_a_real_wedged_leaf_is_killed_and_harvested`, which had no
+        counterpart on this backend: every other codex test drives a hand-written `Popen`
+        double. Emits a valid turn, then wedges holding its stream open."""
+        from unittest.mock import patch
+
+        source = (
+            "import sys, time\n"
+            "sys.stdout.write('{\"type\":\"thread.started\",\"thread_id\":\"t-1\"}\\n')\n"
+            "sys.stdout.flush()\n"
+            "sys.stderr.write('codex: thinking\\n')\n"
+            "sys.stderr.flush()\n"
+            "time.sleep(300)\n")
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            # From a FILE: see the sibling flood test — the leaf command is shlex-split.
+            script = Path(tmp) / "leaf.py"
+            script.write_text(source, encoding="utf-8")
+            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
+                        env={}, llm_command=f"python3 {script}")
+            c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+            with patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
+                    redirect_stdout(out):
+                started = time.monotonic()
+                proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A",
+                                    timeout_context={"node_key": "n", "step": "generate",
+                                                     "substep": "generate",
+                                                     "agent_run_id": "A"})
+                elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 20.0)
+        self.assertIs(proc.timed_out, True)
+        self.assertNotEqual(proc.returncode, 0)
+        # A wedge's last words are the whole evidence, on both streams.
+        self.assertIn('"thread.started"', proc.raw_stdout)
+        self.assertIn("codex: thinking", proc.stderr)
+        self.assertEqual(proc.stderr.splitlines()[-1][:26], "[conductor] leaf_timeout: ")
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
+        events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
+        self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
+        self.assertEqual(events[0]["backend"], "codex")
+
     def test_the_claude_path_checks_the_exit_before_the_deadline(self) -> None:
         """The ordering `docs/ORCHESTRATION.md` calls exact for this backend. A leaf that
         completes inside the FINAL slice while a leaked tool subprocess still holds the pipe:
