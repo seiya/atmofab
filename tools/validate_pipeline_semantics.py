@@ -7193,12 +7193,19 @@ def _validate_algorithm_contract_file(
                 )
             else:
                 shape_expr = item.get("shape_expr")
-                if (
-                    not isinstance(shape_expr, str)
-                    or not shape_expr.strip()
-                    or not _parse_shape_expr(shape_expr)[0]
-                ):
-                    violations.append(f"{contract_path}:temporaries[{idx}].shape_expr invalid")
+                # Carry the parser's reason into the message: the leaf that has to
+                # repair this only sees the violation string, and "invalid" alone
+                # does not name the rule it broke (issue #12 item 2).
+                if not isinstance(shape_expr, str):
+                    shape_err = "shape_expr must be a string"
+                elif not shape_expr.strip():
+                    shape_err = "shape_expr must be non-empty"
+                else:
+                    shape_err = _parse_shape_expr(shape_expr)[2]
+                if shape_err:
+                    violations.append(
+                        f"{contract_path}:temporaries[{idx}].shape_expr invalid ({shape_err})"
+                    )
 
     derived_field_rules = contract.get("derived_field_rules")
     if not isinstance(derived_field_rules, list):
@@ -7300,10 +7307,14 @@ def _validate_algorithm_contract_file(
                     violations.append(
                         f"{contract_path}:state_contract.state_variables[{idx}].shape_expr must be non-empty string"
                     )
-                elif not _parse_shape_expr(shape_expr)[0]:
-                    violations.append(
-                        f"{contract_path}:state_contract.state_variables[{idx}].shape_expr invalid"
-                    )
+                else:
+                    # Same as temporaries above: keep the parser's reason (issue #12 item 2).
+                    shape_err = _parse_shape_expr(shape_expr)[2]
+                    if shape_err:
+                        violations.append(
+                            f"{contract_path}:state_contract.state_variables[{idx}]"
+                            f".shape_expr invalid ({shape_err})"
+                        )
 
         update_paths = state_contract.get("required_update_paths")
         # `not update_paths` is load-bearing: `all()` over an empty list is True, so without it an

@@ -8032,6 +8032,22 @@ end program shallow_water2d_runner
                 f"the membership check must not cascade off an invalid declared set; got: {v}",
             )
 
+    def test_state_variable_shape_rejection_keeps_the_parser_reason(self) -> None:
+        """Issue #12 item 2: this path called `_parse_shape_expr(...)[0]` and dropped the reason,
+        so a leaf repairing `state_variables[].shape_expr` was told only "invalid". The
+        io_contract sites already interpolate it; this one must too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), {
+                "state_variables": [
+                    {"name": "h", "shape_expr": "[nx + 2*ng]"},  # arithmetic dim token
+                    {"name": "hu", "shape_expr": "[nx, ny]"},
+                    {"name": "hv", "shape_expr": "[nx, ny]"},
+                ],
+            })
+        offending = [x for x in v if "state_variables[0].shape_expr invalid" in x]
+        self.assertTrue(offending, f"expected a shape_expr violation; got: {v}")
+        self.assertIn("integer literal or an identifier", offending[0])
+
     def test_update_semantics_shadows_the_flat_contract(self) -> None:
         """`_algorithm_state_contract` resolves `state_contract` -> `update_semantics` (when THAT
         holds any contract key) -> the flat direct children. So a single contract key mislaid under
@@ -10357,6 +10373,59 @@ end program shallow_water2d_runner
             offending,
             f"Expected required-shape_expr violation, got: {violations}",
         )
+
+    def test_temporaries_shape_rejection_keeps_the_parser_reason(self) -> None:
+        """Issue #12 item 2, the temporaries twin: the three failure causes (non-string, empty,
+        unparseable) shared one bare "invalid" line. Each must now name its own reason."""
+        from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
+        cases = [
+            ("[nx + 2*ng]", "integer literal or an identifier"),
+            ("", "shape_expr must be non-empty"),
+            (3, "shape_expr must be a string"),
+        ]
+        for shape_expr, expected in cases:
+            with self.subTest(shape_expr=shape_expr):
+                contract = {
+                    "algorithm_id": "alg_test",
+                    "execution_mode": "sequence",
+                    "steps": [
+                        {
+                            "step_id": "s1",
+                            "step_kind": "flux_compute",
+                            "operation_ref": "op_dummy",
+                            "inputs": ["U_L", "U_R"],
+                            "outputs": ["F_h"],
+                        }
+                    ],
+                    "ordering": ["s1"],
+                    "control_condition": "",
+                    "iteration_contract": {},
+                    "update_semantics": {
+                        "target_variables": ["F_h"], "update_order": "sequential",
+                    },
+                    "temporaries": [{"name": "work", "shape_expr": shape_expr}],
+                    "derived_field_rules": [],
+                    "invariants": ["dummy"],
+                    "splitting_policy": {"kind": "none"},
+                }
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    _seed_shape_expr_schema_into(repo_root)
+                    contract_path = repo_root / "spec.ir.yaml"
+                    contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+                    violations: list[str] = []
+                    _validate_algorithm_contract_file(
+                        repo_root,
+                        contract_path,
+                        violations,
+                        multidim_node_key=None,
+                        direct_spec_vars=None,
+                    )
+                offending = [
+                    x for x in violations if "temporaries[0].shape_expr invalid (" in x
+                ]
+                self.assertTrue(offending, f"expected a shape_expr violation; got: {violations}")
+                self.assertIn(expected, offending[0])
 
     def test_object_form_temporaries_with_shape_expr_passes(self) -> None:
         """Negative regression of the previous test: a complete object-form
