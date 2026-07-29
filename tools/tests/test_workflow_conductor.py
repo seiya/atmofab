@@ -14,6 +14,7 @@ import io
 import json
 import os
 import queue
+import select
 import signal
 import subprocess
 import tempfile
@@ -5791,6 +5792,119 @@ class _FakePipe:
             self._log.append(self.name)
 
 
+class _ScriptedStream:
+    """A REAL OS pipe whose write end is driven by a scripted writer thread.
+
+    The conductor's stream readers are the thing under test, so what they read has to be a
+    real fd. An iterable fake cannot reproduce the two properties every guarantee in this
+    layer rests on: flow control (a reader that stops draining wedges its writer, which is
+    why the budget stops KEEPING and never stops READING) and partial delivery (a producer
+    that writes megabytes without a newline). It also has no `fileno()`.
+
+    The script is a sequence of ops, run in order by a daemon writer thread:
+
+    - `("write", text_or_bytes)` — hand it to the pipe, blocking while the pipe is full.
+    - `("sleep", seconds)` — pause before the next op.
+    - `("wait", event)` — block until a `threading.Event` is set.
+    - `("hold_open",)` — do not close the write end, modelling the descendant a leaf leaks.
+
+    The write end is closed once the last op has run, unless `hold_open` was among them.
+    Every blocking step is polled against `release()`'s abort flag, so no script can wedge
+    the test run itself — including a `write` whose reader has walked away.
+    """
+
+    _BLOCK = 65536
+
+    def __init__(self, script, *, encoding: str = "utf-8", binary: bool = False) -> None:
+        read_fd, self._write_fd = os.pipe()
+        self.encoding = encoding
+        self._written = [0]
+        self._aborted = threading.Event()
+        self.finished = threading.Event()
+        self._hold_open = False
+        if binary:
+            self.reader = os.fdopen(read_fd, "rb")
+        else:
+            # What `Popen(text=True, errors="backslashreplace")` hands the reader today:
+            # a TextIOWrapper carrying the codec the conductor reads off `.encoding`.
+            self.reader = os.fdopen(
+                read_fd, "r", encoding=encoding, errors="backslashreplace")
+        self._thread = threading.Thread(
+            target=self._run, args=(list(script),), daemon=True)
+        self._thread.start()
+
+    @property
+    def bytes_written(self) -> int:
+        """Bytes the writer has actually handed to the pipe, readable while it runs."""
+        return self._written[0]
+
+    def _run(self, script) -> None:
+        try:
+            for op in script:
+                if self._aborted.is_set():
+                    return
+                kind = op[0]
+                if kind == "write":
+                    self._write(op[1])
+                elif kind == "sleep":
+                    self._pause(op[1])
+                elif kind == "wait":
+                    while not op[1].wait(timeout=0.02):
+                        if self._aborted.is_set():
+                            return
+                elif kind == "hold_open":
+                    self._hold_open = True
+                else:                                   # pragma: no cover - test bug
+                    raise AssertionError(f"unknown scripted stream op {kind!r}")
+        except (BrokenPipeError, OSError, ValueError):
+            pass                                        # the reader walked away
+        finally:
+            self.finished.set()
+            if not self._hold_open:
+                self._close_write()
+
+    def _write(self, payload) -> None:
+        data = (payload if isinstance(payload, bytes)
+                else payload.encode(self.encoding))
+        sent = 0
+        while sent < len(data) and not self._aborted.is_set():
+            # `select` rather than a bare blocking `os.write`: a script whose reader has
+            # stopped draining must still be abortable, or an assertion failure would hang
+            # the suite instead of failing it.
+            if not select.select([], [self._write_fd], [], 0.05)[1]:
+                continue
+            pushed = os.write(self._write_fd, data[sent:sent + self._BLOCK])
+            sent += pushed
+            self._written[0] += pushed
+
+    def _pause(self, seconds: float) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline and not self._aborted.is_set():
+            time.sleep(0.01)
+
+    def _close_write(self) -> None:
+        try:
+            os.close(self._write_fd)
+        except OSError:
+            pass
+
+    def release(self) -> None:
+        """Abort the script and let go of both ends. Registered as test cleanup.
+
+        Order matters: the write end goes first, so any conductor reader still parked on
+        this pipe — including one the conductor deliberately abandoned — sees EOF and
+        returns before the read end is taken out from under it.
+        """
+        self._aborted.set()
+        self._thread.join(timeout=5.0)
+        self._close_write()
+        time.sleep(0.01)
+        try:
+            self.reader.close()
+        except (OSError, ValueError):
+            pass
+
+
 class LeafSpawnTest(unittest.TestCase):
     """Codex follow-ups: honor custom llm_command; gate substep on leaf returncode."""
 
@@ -5800,6 +5914,16 @@ class LeafSpawnTest(unittest.TestCase):
                     orchestration_agent_run_id="O", backend="claude", env={})
         base.update(kw)
         return wc.Conductor(**base)
+
+    def _stream(self, *script, **kw) -> _ScriptedStream:
+        """A scripted pipe released when the test ends (see `_ScriptedStream`)."""
+        stream = _ScriptedStream(script, **kw)
+        self.addCleanup(stream.release)
+        return stream
+
+    def _pipe(self, text: str = "", **kw):
+        """The read end of a pipe carrying `text` and then EOF — the common case."""
+        return self._stream(("write", text), **kw).reader
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
@@ -5852,19 +5976,19 @@ class LeafSpawnTest(unittest.TestCase):
                              resume: bool = False, register=None,
                              returncode: int = 0, wait_recorder=None,
                              timeout_context=None) -> wc.ProcResult:
-        """Drive `_spawn_codex_json_leaf` over a canned JSONL stdout stream."""
-        import io
+        """Drive `_spawn_codex_json_leaf` over a scripted JSONL stdout stream."""
         from unittest.mock import patch
 
         popen_kwargs: dict[str, Any] = {}
+        pipes = (self._stream(("write", lines)), self._stream())
 
         class _FakePopen:
             pid = 424242
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                 popen_kwargs.update(kw)
-                self.stdout = io.StringIO(lines)
-                self.stderr = io.StringIO("")
+                self.stdout = pipes[0].reader
+                self.stderr = pipes[1].reader
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 if wait_recorder is not None:
