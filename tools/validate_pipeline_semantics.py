@@ -7017,7 +7017,16 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
             for ev in evidence_list:
                 if not isinstance(ev, dict):
                     continue
-                if ev.get("artifact") != "state_snapshots":
+                # Normalize like every other reader of this field
+                # (`_state_snapshot_required`, the required_evidence validator). A raw
+                # equality test here made provenance depend on the SPELLING: `raw/
+                # state_snapshots` is a documented, unflagged form, but it dropped every
+                # snapshot variable and turned each prognostic step token into an
+                # `undefined binding` naming no cause the leaf could act on.
+                raw_artifact = ev.get("artifact")
+                if not isinstance(raw_artifact, str):
+                    continue
+                if _normalize_raw_evidence_artifact(raw_artifact) != "state_snapshots":
                     continue
                 schema = ev.get("schema")
                 if not isinstance(schema, dict):

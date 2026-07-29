@@ -10332,6 +10332,50 @@ end program shallow_water2d_runner
             self.assertIn("shape_expr.schema.json", err)
             self.assertIn("function-call notations", err)
 
+    def test_snapshot_provenance_does_not_depend_on_the_artifact_spelling(self) -> None:
+        """`raw/state_snapshots` is a documented spelling that `_normalize_raw_evidence_artifact`
+        accepts and no gate flags. `_extract_spec_var_names` used raw equality, so that spelling
+        silently contributed NO provenance and every prognostic step token became an
+        `undefined binding` — the false-positive class this whole change exists to remove, and
+        one whose message would send the leaf to the wrong fix. Every spelling the normalizer
+        accepts must yield the same provenance set."""
+        from tools.validate_pipeline_semantics import _extract_spec_var_names
+
+        def spec_vars(artifact: str) -> set[str] | None:
+            doc = {
+                "io_contract": {
+                    "inputs": [{"name": "q_in"}],
+                    "outputs": [{"name": "q_out"}],
+                    "raw_requirements": {
+                        "required_evidence": [
+                            {
+                                "artifact": artifact,
+                                "schema": {
+                                    "variables": [{"name": "u"}],
+                                    "time_variable": "t",
+                                },
+                            }
+                        ]
+                    },
+                }
+            }
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "spec.ir.yaml"
+                path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+                return _extract_spec_var_names(path)
+
+        canonical = spec_vars("state_snapshots")
+        self.assertEqual(canonical, {"q_in", "q_out", "u"})
+        for spelling in ("raw/state_snapshots", "State_Snapshots", "raw/state_snapshots/"):
+            with self.subTest(artifact=spelling):
+                self.assertEqual(
+                    spec_vars(spelling), canonical,
+                    f"artifact spelling {spelling!r} must carry the same provenance",
+                )
+        # `time_variable` is deliberately NOT a provenance source — pin that the fix
+        # widened the spelling only, not the set of contributing schema keys.
+        self.assertNotIn("t", canonical or set())
+
     def test_compile_generate_skill_quotes_live_gate_messages(self) -> None:
         """The Compile.generate SKILL quotes gate messages verbatim so the leaf can
         recognize them. A quote is only useful while it matches the emitting code, and
