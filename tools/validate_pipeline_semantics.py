@@ -7258,6 +7258,12 @@ def _validate_algorithm_contract_file(
                     if isinstance(n, str) and n.strip():
                         dfr_names.add(n.strip())
         allowed_tokens = direct_spec_vars | tmp_names | dfr_names
+        # The remedy is identical for every offending token, and a real IR offends in bulk
+        # (the canonical 2d example yields 17). Repeating ~500 chars of boilerplate per
+        # token buries the one thing that differs — WHICH token — and inflates the repair
+        # excerpt the conductor renders into the warm-resume prompt. Say it once, on the
+        # first occurrence; the rest carry the short form and point back at it.
+        remedy_emitted = False
         for step_idx, item in enumerate(steps):
             if not isinstance(item, dict):
                 continue
@@ -7270,20 +7276,29 @@ def _validate_algorithm_contract_file(
                         continue
                     stripped = token.strip()
                     if stripped and stripped not in allowed_tokens:
-                        violations.append(
+                        head = (
                             f"{contract_path}:steps[{step_idx}].{field_name}[{tok_idx}]"
                             f" token '{stripped}' is not traceable to direct spec I/O,"
                             f" temporaries, or derived_field_rules (undefined binding)"
-                            f" — give '{stripped}' provenance by naming it in"
-                            f" io_contract.inputs/outputs (a spec-boundary variable), in"
-                            f" algorithm.temporaries, or in algorithm.derived_field_rules;"
-                            f" a prognostic state field also qualifies via the"
-                            f" state_snapshots schema.variables of"
-                            f" io_contract.raw_requirements, but only add that evidence"
-                            f" entry if this node already requires state_snapshots"
-                            f" (adding it obliges every io_contract.outputs entry to carry"
-                            f" raw_variables). Declaring it in algorithm.state_variables"
-                            f" does NOT make it a provenance source on its own"
+                        )
+                        if remedy_emitted:
+                            violations.append(head)
+                            continue
+                        remedy_emitted = True
+                        violations.append(
+                            head
+                            + " — give an undefined token provenance by naming it in"
+                            " io_contract.inputs/outputs (a spec-boundary variable), in"
+                            " algorithm.temporaries, or in algorithm.derived_field_rules;"
+                            " a prognostic state field also qualifies via the"
+                            " state_snapshots schema.variables of"
+                            " io_contract.raw_requirements, but only add that evidence"
+                            " entry if this node already requires state_snapshots — a"
+                            " required entry (i.e. not `required: false`) obliges every"
+                            " io_contract.outputs entry to carry raw_variables. Declaring"
+                            " it in algorithm.state_variables does NOT make it a"
+                            " provenance source on its own. This remedy applies to every"
+                            " undefined binding below; it is stated once."
                         )
 
     invariants = contract.get("invariants")

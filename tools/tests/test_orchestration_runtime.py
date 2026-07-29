@@ -28086,7 +28086,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (unsigned integer literal or identifier). It listed only the 3 outer forms and the
         # function-call ban, which is what let `[nx + 2*ng]` look legal — and as the doc the
         # SKILL names canonical, it was the least complete of the three statements of the rule.
-        "docs/workflow/phases/phase_01_compile.md": 43800,
+        # Bumped 43800->44400: V3 gains the non-snapshot half of the `raw_variables` rule.
+        # The SKILL bullet that carries it defers to V3 as canonical, so the force-read doc
+        # was the one place a leaf could look up the rule and not find it.
+        "docs/workflow/phases/phase_01_compile.md": 44400,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

@@ -50,5 +50,5 @@
   ],
   "x-forbidden-examples-note": "Single-element paren tuples such as (tensor) or (d1) are NOT forbidden; they are valid 1-D paren-tuple shapes whose single dimension token is an identifier. Forbidden cases above all involve function-call notation (vector(N), matrix(M,N)), float/arithmetic literals, or empty/malformed tokens.",
   "x-canonical-validator": "tools/validate_pipeline_semantics.py:_parse_shape_expr",
-  "x-canonical-doc": "docs/workflow/phases/phase_01_plan.md"
+  "x-canonical-doc": "docs/workflow/phases/phase_01_compile.md"
 }

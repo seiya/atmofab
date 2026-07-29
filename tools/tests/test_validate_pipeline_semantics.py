@@ -10423,6 +10423,62 @@ end program shallow_water2d_runner
         ):
             self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
 
+    def test_undefined_binding_remedy_is_stated_once_not_per_token(self) -> None:
+        """Every offending token still gets its own line, but the ~500-char remedy is stated
+        once. A real IR offends in bulk — the canonical 2d example yields 17 undefined
+        bindings — and the conductor renders a 50-LINE tail of these into the warm-resume
+        repair prompt with no character cap (`_compile_static_inproc`), unlike its
+        `validate.execute` sibling which caps at 4000. Repeating the remedy per token pushed
+        that excerpt to ~11KB of near-identical text and buried the one thing that differs:
+        which token."""
+        from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
+        contract = {
+            "algorithm_id": "alg_test",
+            "execution_mode": "sequence",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "step_kind": "flux_compute",
+                    "operation_ref": "op",
+                    "inputs": ["a", "b", "c"],
+                    "outputs": ["d", "e"],
+                }
+            ],
+            "ordering": ["s1"],
+            "control_condition": "",
+            "iteration_contract": {},
+            "update_semantics": {"target_variables": ["d"], "update_order": "sequential"},
+            "temporaries": [],
+            "derived_field_rules": [],
+            "invariants": ["dummy"],
+            "splitting_policy": {"kind": "none"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            contract_path = repo_root / "spec.ir.yaml"
+            contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+            violations: list[str] = []
+            _validate_algorithm_contract_file(
+                repo_root,
+                contract_path,
+                violations,
+                multidim_node_key=None,
+                direct_spec_vars={"q_in"},
+            )
+        undefined = [v for v in violations if "undefined binding" in v]
+        # Every token is still reported individually — dedup must not hide offenders.
+        self.assertEqual(len(undefined), 5, undefined)
+        for token in ("'a'", "'b'", "'c'", "'d'", "'e'"):
+            self.assertTrue(
+                any(token in v for v in undefined), f"{token} lost its own line: {undefined}"
+            )
+        # ... and the remedy is carried by exactly one of them, the first.
+        with_remedy = [v for v in undefined if "io_contract.inputs/outputs" in v]
+        self.assertEqual(len(with_remedy), 1, f"remedy must appear once; got {len(with_remedy)}")
+        self.assertEqual(with_remedy[0], undefined[0], "the remedy must be on the FIRST line")
+        self.assertIn("stated once", undefined[0])
+
     def test_state_variables_alone_does_not_authorize_a_step_token(self) -> None:
         """Issue #12 item 3 pins the message; this pins the DECISION the message describes.
 
