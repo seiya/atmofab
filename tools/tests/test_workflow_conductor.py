@@ -8869,6 +8869,155 @@ class LeafSpawnTest(unittest.TestCase):
         # records the line-count bound alone would have allowed.
         self.assertLess(max(in_flight), 200_000 + 2 * len(record), max(in_flight))
 
+    def test_the_pump_cannot_park_forever_once_the_conductor_stops_listening(self) -> None:
+        """The main thread frees a parked pump exactly ONCE, by draining the queue as it
+        abandons the stream. A pump that reaches a blocking `put` after that drain has run can
+        never be freed — nothing will ever take another item — so it holds the queue's
+        contents, its thread and its pipe for the driver's whole remaining life.
+
+        One block can carry thousands of records, so honouring the stop flag only between
+        READS is not enough: the pump must honour it between records, and its `put` must be
+        abortable. The interleaving is injected rather than raced for — the reassembler is
+        held between its read and its puts until the conductor has given up — because the
+        window is real but narrow, and a test that waits for it to happen is a flake."""
+        from unittest.mock import patch
+
+        abandoned = threading.Event()
+        self.addCleanup(abandoned.set)
+        # More records than the queue has slots (2048), so a pump that keeps pushing after
+        # the drain WILL fill it and block.
+        record = '{"type":"item.started","item":{"type":"tool_call"}}\n'
+
+        class _StalledReassembler:
+            def __init__(self, limit: int = 0) -> None:
+                pass
+
+            def feed(self, block):  # type: ignore[no-untyped-def]
+                abandoned.wait(10)
+                return [record] * 5000
+
+            def flush(self):  # type: ignore[no-untyped-def]
+                return []
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        pipes = (self._stream(("write", record), ("wait", held), ("hold_open",)).reader,
+                 self._stream(("wait", held), ("hold_open",)).reader)
+        made: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def _named(*a, **kw):  # type: ignore[no-untyped-def]
+            kw["name"] = getattr(kw.get("target"), "__name__", "reader")
+            made.append(real_thread(*a, **kw))
+            return made[-1]
+
+        class _ExitedPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0                        # exited; only the leaked holder remains
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
+                patch.object(wc, "_LineReassembler", _StalledReassembler), \
+                patch.object(wc.threading, "Thread", _named), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertIn("leaf_stream_abandoned", proc.stderr)   # it did give up on the stream
+        abandoned.set()                                        # ...now let the pump resume
+        pump = [t for t in made if "pump" in t.name][0]
+        pump.join(timeout=5.0)
+        self.assertFalse(pump.is_alive(),
+                         "the pump must stop, not park in put() on a queue nobody drains")
+
+    def test_an_interrupted_codex_leaf_does_not_leave_its_pump_running(self) -> None:
+        """The interrupt path's obligation is the abandon path's: the frame is unwinding and
+        the queue goes with it, so a pump left behind drains the leaf's pipe into a capture
+        nobody will read — and parks in `put` once that queue fills. It is told to stop and
+        joined, both readers, exactly as the claude path does."""
+        from unittest.mock import patch
+
+        held = threading.Event()
+        self.addCleanup(held.set)
+        # After the interrupt the leaked descendant floods stdout. A pump still running
+        # drains all 4 MB of it; a pump told to stop takes at most one more block.
+        flood = "x" * 4096 + "\n"
+        stdout_stream = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t"}\n'), ("wait", held),
+            *[("write", flood) for _ in range(1000)], ("hold_open",))
+        pipes = (stdout_stream.reader,
+                 self._stream(("wait", held), ("hold_open",)).reader)
+        made: list[threading.Thread] = []
+        real_thread = threading.Thread
+
+        def _named(*a, **kw):  # type: ignore[no-untyped-def]
+            kw["name"] = getattr(kw.get("target"), "__name__", "reader")
+            made.append(real_thread(*a, **kw))
+            return made[-1]
+
+        class _InterruptedQueue(queue.Queue):
+            def get(self, *a, **kw):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        class _Popen:
+            pid = 424242
+            returncode = None
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return None
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return -int(signal.SIGTERM)
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc.queue, "Queue", _InterruptedQueue), \
+                patch.object(wc.threading, "Thread", _named), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05):
+            with self.assertRaises(KeyboardInterrupt):
+                c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # Measured as a PLATEAU in what the flood gets through, the same way the abandoned
+        # drain is: a reader parked on a pipe that has gone SILENT stays parked until the
+        # process exits (nothing can close a pipe a descendant holds), so what is observable
+        # is that a reader still being DELIVERED to stops within one block.
+        self.assertEqual(len(made), 2)
+        held.set()                              # ...let the flood loose
+        deadline = time.monotonic() + 5.0
+        while stdout_stream.bytes_written == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.3)
+        ceiling = wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024
+        self.assertLess(stdout_stream.bytes_written, ceiling,
+                        "the pump must stop draining once the driver is unwinding")
+        settled = stdout_stream.bytes_written
+        time.sleep(0.2)
+        self.assertEqual(stdout_stream.bytes_written, settled)
+
     def test_a_whole_turn_left_in_the_queue_is_accepted_and_its_identity_bound(self) -> None:
         """The reader can fall behind by the ENTIRE turn: the leaf answers and exits with its
         stream — `thread.started` included — still queued when the deadline expires. The

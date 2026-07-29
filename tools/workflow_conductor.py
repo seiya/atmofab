@@ -3654,24 +3654,38 @@ class Conductor:
                     queued_chars[0] -= len(line)
             return line
 
-        def _queue_line(line: str) -> None:
-            # Byte-aware backpressure. `Queue(maxsize=…)` bounds the number of lines,
-            # not their size, so a leaf emitting large records could park megabytes per
-            # slot in front of a reader that had not yet applied any budget. Waiting
-            # here lets the pipe fill instead, which is the flow control the OS already
-            # provides — and the pipe is what the leaf itself blocks on, so nothing is
-            # lost. Polled rather than condition-signalled: the consumer is the same
-            # thread that decides to abandon the stream, and a missed notify there
-            # would be a hang.
-            #
-            # PER LINE, not per block: one block can complete several records, and admitting
-            # them as a batch would let the queue hold a whole block past the byte bound.
-            while (_queued_chars() >= LEAF_STREAM_QUEUE_MAX_CHARS
-                   and not stop_reading.is_set()):
+        def _queue_line(line: str) -> bool:
+            """Hand one line to the reader. False once the conductor has stopped listening.
+
+            Byte-aware backpressure. `Queue(maxsize=…)` bounds the number of lines, not
+            their size, so a leaf emitting large records could park megabytes per slot in
+            front of a reader that had not yet applied any budget. Waiting here lets the
+            pipe fill instead, which is the flow control the OS already provides — and the
+            pipe is what the leaf itself blocks on, so nothing is lost. Polled rather than
+            condition-signalled: the consumer is the same thread that decides to abandon the
+            stream, and a missed notify there would be a hang.
+
+            EVERY wait here is abortable, including the `put` itself. The main thread frees a
+            parked pump exactly once, by draining the queue as it abandons the stream; a pump
+            that parks in an UNBOUNDED `put` after that drain has run can never be freed,
+            because nothing will ever take another item — it would hold the queue's contents,
+            its thread and its pipe for the driver's whole remaining life.
+            """
+            while _queued_chars() >= LEAF_STREAM_QUEUE_MAX_CHARS:
+                if stop_reading.is_set():
+                    return False
                 time.sleep(0.01)
             with queued_lock:
                 queued_chars[0] += len(line)
-            stdout_lines.put(line)
+            while True:
+                try:
+                    stdout_lines.put(line, timeout=0.05)
+                    return True
+                except queue.Full:
+                    if stop_reading.is_set():
+                        with queued_lock:
+                            queued_chars[0] -= len(line)   # nobody will ever take it
+                        return False
 
         def _pump_stdout() -> None:
             reassembler = _LineReassembler()
@@ -3680,14 +3694,30 @@ class Conductor:
                         process.stdout, stop_reading=stop_reading,
                         encoding=stream_encoding):
                     for line in reassembler.feed(block):
-                        _queue_line(line)
+                        # PER LINE, for two reasons. One block can complete several records,
+                        # and admitting them as a batch would let the queue hold a whole
+                        # block past the byte bound. And the stop flag has to be honoured
+                        # between records, not merely between reads: a block can carry
+                        # thousands, and pushing them all at a reader that has already gone
+                        # is what fills the queue the pump then cannot get past.
+                        if stop_reading.is_set() or not _queue_line(line):
+                            return
                 # Whatever the leaf never newline-terminated is still evidence.
                 for line in reassembler.flush():
-                    _queue_line(line)
+                    if stop_reading.is_set() or not _queue_line(line):
+                        return
             except Exception as exc:  # noqa: BLE001 — same reasoning as the stderr drain
                 stderr_chunks.append(f"\n[conductor] leaf_stdout_read_error: {exc}")
             finally:
-                stdout_lines.put(None)          # EOF sentinel
+                # EOF sentinel — bounded, and abandoned once nobody is listening, for the
+                # same reason the line puts are: an unbounded `put` on a queue whose reader
+                # has gone parks this thread forever.
+                while not stop_reading.is_set():
+                    try:
+                        stdout_lines.put(None, timeout=0.05)
+                        break
+                    except queue.Full:
+                        continue
 
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
         stdout_thread = threading.Thread(target=_pump_stdout, daemon=True)
@@ -3910,10 +3940,18 @@ class Conductor:
             # it too is a raw Popen.
             _terminate_leaf_process_group(process, pgid=leaf_pgid,
                                               pgid_start_ticks=leaf_start_ticks)
+            # Nobody is listening from here on: this frame is unwinding and the queue goes
+            # with it. Told to stop BEFORE the joins, or the pump goes on draining the
+            # leaf's pipe and appending into a capture that will never be read — and, on a
+            # full queue, parks in `put` for the driver's whole remaining life.
+            stop_reading.set()
             # Bounded, and tolerant of a thread that never started (`Thread.start()` itself
             # can fail under resource exhaustion, and a bare `join` would then raise from
-            # inside this handler and replace the real cause).
+            # inside this handler and replace the real cause). BOTH readers, as the claude
+            # path does: a pump left behind here is the same leak the abandon path takes
+            # care to avoid.
             _join_thread(stderr_thread, LEAF_TERMINATE_GRACE_SECONDS)
+            _join_thread(stdout_thread, LEAF_TERMINATE_GRACE_SECONDS)
             raise
         # `list(...)` first: an abandoned drain thread may still be appending, and `str.join`
         # walks the list's raw item array — a concurrent append that reallocates it under the
