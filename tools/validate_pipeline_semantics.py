@@ -7248,6 +7248,11 @@ def _validate_algorithm_contract_file(
                             f"{contract_path}:steps[{step_idx}].{field_name}[{tok_idx}]"
                             f" token '{stripped}' is not traceable to direct spec I/O,"
                             f" temporaries, or derived_field_rules (undefined binding)"
+                            f" — declare '{stripped}' in algorithm.temporaries or"
+                            f" algorithm.derived_field_rules; declaring it in"
+                            f" algorithm.state_variables does NOT make it a provenance"
+                            f" source, so a prognostic state field used as a step token"
+                            f" still needs one of those two declarations"
                         )
 
     invariants = contract.get("invariants")

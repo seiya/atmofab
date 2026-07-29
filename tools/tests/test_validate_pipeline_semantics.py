@@ -4807,6 +4807,15 @@ end program shallow_water2d_runner
                 any("bogus_var" in v and "undefined binding" in v for v in violations),
                 f"expected undefined-binding violation for bogus_var; got: {violations}",
             )
+            # Issue #12 item 3: the message must also name the REMEDY. Three warm retries in
+            # the 2026-07-25 billed closure re-emitted the same token because the diagnosis
+            # said what was wrong and not what to declare — and because `state_variables`
+            # looks like a declaration, a leaf that had already declared its state there read
+            # the violation as a false positive.
+            offending = [v for v in violations if "bogus_var" in v and "undefined binding" in v]
+            self.assertIn("algorithm.temporaries", offending[0])
+            self.assertIn("algorithm.derived_field_rules", offending[0])
+            self.assertIn("algorithm.state_variables does NOT", offending[0])
 
     def test_detects_makefile_missing_fortran_module_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
