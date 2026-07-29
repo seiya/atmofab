@@ -9076,20 +9076,40 @@ class LeafSpawnTest(unittest.TestCase):
         finally:
             stop.set()
         self.assertEqual(torn, [], "the tail was observed mid-update")
-        # ...and the published record is internally consistent: what it says it dropped plus
-        # what it carries accounts for everything the writer added.
-        chunks: list[str] = []
-        t.join(timeout=5.0)
-        total = tail.dropped
-        tail.publish(chunks)
-        published = "".join(chunks)
-        kept = published.split("follow\n", 1)[1]
-        stated = int(published.split(": ", 1)[1].split(" characters", 1)[0])
-        self.assertEqual(stated + len(kept), total)
-        self.assertLessEqual(len(kept), tail.budget)
-        # Published once, whoever calls it and however often.
-        tail.publish(chunks)
-        self.assertEqual("".join(chunks), published)
+
+        # ...and PUBLICATION races `add` too, which is the half that actually loses evidence:
+        # a publish landing between the dropped counter and the append reports characters as
+        # dropped that the tail does not contain, and the latch means that block — the leaf's
+        # terminal cause — can never be published afterwards. Published MID-FLIGHT here, not
+        # after the writer stops, or the window is never opened at all.
+        width = 8                                   # len("[000000]")
+        for trial in range(300):
+            with self.subTest(trial=trial):
+                racing = wc._StreamTail(200, "leaf_stderr_capture_tail")
+                halt = threading.Event()
+
+                def _write(target=racing, stop_at=halt) -> None:
+                    i = 0
+                    while not stop_at.is_set():
+                        target.add(f"[{i:06d}]")
+                        i += 1
+
+                writer = threading.Thread(target=_write, daemon=True)
+                writer.start()
+                try:
+                    out: list[str] = []
+                    racing.publish(out)
+                finally:
+                    halt.set()
+                    writer.join(timeout=5.0)
+                text = "".join(out)
+                kept = text.split("follow\n", 1)[1]
+                stated = int(text.split(": ", 1)[1].split(" characters", 1)[0])
+                # The tail must be the tail: its LAST record is the last one accounted for.
+                accounted = stated + len(kept)
+                self.assertEqual(accounted % width, 0, text[:120])
+                self.assertTrue(kept.endswith(f"[{accounted // width - 1:06d}]"),
+                                f"tail ends {kept[-9:]!r}, accounted {accounted}")
 
     def test_the_claude_stderr_tail_survives_an_abandoned_stream_too(self) -> None:
         """The claude twin of the codex abandon test, and the more important of the two: this

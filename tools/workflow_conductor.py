@@ -3876,7 +3876,8 @@ class Conductor:
                     if stop_reading.is_set() or not _queue_line(line):
                         return
             except Exception as exc:  # noqa: BLE001 — same reasoning as the stderr drain
-                stderr_chunks.append(f"\n[conductor] leaf_stdout_read_error: {exc}")
+                stderr_chunks.append(
+                    f"\n[conductor] {LEAF_STDOUT_READ_ERROR_LABEL}: {exc}")
             finally:
                 # EOF sentinel — bounded, and abandoned once nobody is listening, for the
                 # same reason the line puts are: an unbounded `put` on a queue whose reader
@@ -3901,6 +3902,12 @@ class Conductor:
             nonlocal raw_notified
             if not raw_notified:
                 raw_notified = True
+                if raw_lines and not raw_lines[-1].endswith("\n"):
+                    # The last record was CLIPPED mid-way, so it has no terminator of its
+                    # own. Without this the marker is glued to truncated JSON and no line of
+                    # `leaf.stdout.jsonl` begins with `[conductor]` — which is exactly how
+                    # `docs/RUNBOOK.md` tells an operator to find it.
+                    raw_lines.append("\n")
                 raw_lines.append(
                     f"[conductor] {LEAF_STDOUT_CAPTURE_TRUNCATED_LABEL}: kept the first "
                     f"{LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS} characters; the leaf went on "
