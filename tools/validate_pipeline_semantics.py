@@ -6118,12 +6118,32 @@ def _parse_shape_expr(expr: str) -> tuple[bool, list[str], str]:
             False,
             [],
             "shape_expr must be scalar or [dim1,dim2,...] or (dim1,dim2,...). "
+            "Each dimension token must be an unsigned integer literal or an identifier: "
+            "arithmetic (e.g. [nx + 2*ng], [n-1]), decimals (e.g. [3.0]) and signs "
+            "(e.g. [-3]) are all rejected — for a computed extent, introduce a named "
+            "dimension symbol and use that name as the token. "
             "See spec/schema/ir/shape_expr.schema.json for canonical forms; "
             "function-call notations such as vector(N), matrix(M,N), tensor are forbidden.",
         )
     body_match = _SHAPE_EXPR_DIM_SPLIT.fullmatch(token)
-    if body_match is None:  # pragma: no cover - schema pattern guarantees match
-        return False, [], "shape_expr internal parse error"
+    if body_match is None:
+        # NOT unreachable, despite what this branch used to claim: the schema's `\s*`
+        # matches a newline but the splitter's `(.+?)` does not, so an expression carrying
+        # a newline BETWEEN its first and last non-space character lands here. Reaching it
+        # from YAML takes a form that PRESERVES the newline: a literal `|` block scalar, a
+        # double-quoted scalar with a `\n` escape, or a folded `>` block whose continuation
+        # line is MORE-INDENTED than the first (YAML keeps those breaks literally). An
+        # evenly-indented `>` block and a single-quoted multi-line scalar both fold to a
+        # space and parse fine, so they do NOT reach here. Name the cause, because
+        # "internal parse error" told the leaf to report a tool bug rather than rewrite
+        # its own value.
+        return (
+            False,
+            [],
+            "shape_expr matched a list/tuple form but its dimension tokens could not be "
+            "split; write the whole expression on ONE line (a line break inside the "
+            "brackets or parens is the usual cause).",
+        )
     dims: list[str] = []
     # Per-token grammar is owned by the schema's regex (the list-form
     # branch already encodes which dim-token forms are accepted). The
@@ -7013,7 +7033,16 @@ def _extract_spec_var_names(derived_path: Path) -> set[str] | None:
             for ev in evidence_list:
                 if not isinstance(ev, dict):
                     continue
-                if ev.get("artifact") != "state_snapshots":
+                # Normalize like every other reader of this field
+                # (`_state_snapshot_required`, the required_evidence validator). A raw
+                # equality test here made provenance depend on the SPELLING: `raw/
+                # state_snapshots` is a documented, unflagged form, but it dropped every
+                # snapshot variable and turned each prognostic step token into an
+                # `undefined binding` naming no cause the leaf could act on.
+                raw_artifact = ev.get("artifact")
+                if not isinstance(raw_artifact, str):
+                    continue
+                if _normalize_raw_evidence_artifact(raw_artifact) != "state_snapshots":
                     continue
                 schema = ev.get("schema")
                 if not isinstance(schema, dict):
@@ -7190,12 +7219,19 @@ def _validate_algorithm_contract_file(
                 )
             else:
                 shape_expr = item.get("shape_expr")
-                if (
-                    not isinstance(shape_expr, str)
-                    or not shape_expr.strip()
-                    or not _parse_shape_expr(shape_expr)[0]
-                ):
-                    violations.append(f"{contract_path}:temporaries[{idx}].shape_expr invalid")
+                # Carry the parser's reason into the message: the leaf that has to
+                # repair this only sees the violation string, and "invalid" alone
+                # does not name the rule it broke (issue #12 item 2).
+                # (A non-string cannot reach the parser, which calls .strip(); an empty
+                # or blank string can, and the parser already reports it.)
+                if not isinstance(shape_expr, str):
+                    shape_err = "shape_expr must be a string"
+                else:
+                    shape_err = _parse_shape_expr(shape_expr)[2]
+                if shape_err:
+                    violations.append(
+                        f"{contract_path}:temporaries[{idx}].shape_expr invalid ({shape_err})"
+                    )
 
     derived_field_rules = contract.get("derived_field_rules")
     if not isinstance(derived_field_rules, list):
@@ -7222,6 +7258,18 @@ def _validate_algorithm_contract_file(
                     if isinstance(n, str) and n.strip():
                         dfr_names.add(n.strip())
         allowed_tokens = direct_spec_vars | tmp_names | dfr_names
+        # The remedy is identical for every offending token and a real IR offends in bulk
+        # (the canonical 2d example yields 17), so it is kept SHORT — the detail lives in
+        # phase_01_compile.md V3 and the two compile SKILLs. It is deliberately repeated on
+        # every line rather than stated once: `_compile_static_inproc` excerpts the LAST 50
+        # lines, so a remedy carried only by the first occurrence is exactly what a long
+        # violation list drops, leaving the leaf 50 diagnoses and no fix.
+        remedy = (
+            " — give it provenance in io_contract.inputs/outputs,"
+            " algorithm.temporaries, algorithm.derived_field_rules, or the"
+            " state_snapshots schema.variables of io_contract.raw_requirements;"
+            " algorithm.state_variables does NOT grant it"
+        )
         for step_idx, item in enumerate(steps):
             if not isinstance(item, dict):
                 continue
@@ -7238,6 +7286,7 @@ def _validate_algorithm_contract_file(
                             f"{contract_path}:steps[{step_idx}].{field_name}[{tok_idx}]"
                             f" token '{stripped}' is not traceable to direct spec I/O,"
                             f" temporaries, or derived_field_rules (undefined binding)"
+                            + remedy
                         )
 
     invariants = contract.get("invariants")
@@ -7297,10 +7346,14 @@ def _validate_algorithm_contract_file(
                     violations.append(
                         f"{contract_path}:state_contract.state_variables[{idx}].shape_expr must be non-empty string"
                     )
-                elif not _parse_shape_expr(shape_expr)[0]:
-                    violations.append(
-                        f"{contract_path}:state_contract.state_variables[{idx}].shape_expr invalid"
-                    )
+                else:
+                    # Same as temporaries above: keep the parser's reason (issue #12 item 2).
+                    shape_err = _parse_shape_expr(shape_expr)[2]
+                    if shape_err:
+                        violations.append(
+                            f"{contract_path}:state_contract.state_variables[{idx}]"
+                            f".shape_expr invalid ({shape_err})"
+                        )
 
         update_paths = state_contract.get("required_update_paths")
         # `not update_paths` is load-bearing: `all()` over an empty list is True, so without it an

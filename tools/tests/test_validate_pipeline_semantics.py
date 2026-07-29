@@ -4807,6 +4807,26 @@ end program shallow_water2d_runner
                 any("bogus_var" in v and "undefined binding" in v for v in violations),
                 f"expected undefined-binding violation for bogus_var; got: {violations}",
             )
+            # Issue #12 item 3: the message must also name the REMEDY. Three warm retries in
+            # the 2026-07-25 billed closure re-emitted the same token because the diagnosis
+            # said what was wrong and not what to declare — and because `state_variables`
+            # looks like a declaration, a leaf that had already declared its state there read
+            # the violation as a false positive.
+            offending = [v for v in violations if "bogus_var" in v and "undefined binding" in v]
+            self.assertIn("algorithm.temporaries", offending[0])
+            self.assertIn("algorithm.derived_field_rules", offending[0])
+            self.assertIn("algorithm.state_variables does NOT", offending[0])
+            # The remedy must list ALL the routes that actually clear the binding. Naming
+            # only temporaries/derived_field_rules contradicted the SKILL and, for the
+            # prognostic-state case the sentence itself raises, sent the leaf to the wrong
+            # fix: `_extract_spec_var_names` folds the snapshot schema's variables into
+            # `direct_spec_vars`, so declaring it there works and is usually what is meant.
+            self.assertIn("state_snapshots schema.variables", offending[0])
+            # ... and the io_contract route, which the first draft of this remedy omitted.
+            # For a spec-boundary variable simply missing from io_contract.inputs, none of
+            # the other three routes is the right fix, and the cheapest of them
+            # (temporaries) reclassifies a spec input as an intermediate.
+            self.assertIn("io_contract.inputs/outputs", offending[0])
 
     def test_detects_makefile_missing_fortran_module_dependency(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -8032,6 +8052,22 @@ end program shallow_water2d_runner
                 f"the membership check must not cascade off an invalid declared set; got: {v}",
             )
 
+    def test_state_variable_shape_rejection_keeps_the_parser_reason(self) -> None:
+        """Issue #12 item 2: this path called `_parse_shape_expr(...)[0]` and dropped the reason,
+        so a leaf repairing `state_variables[].shape_expr` was told only "invalid". The
+        io_contract sites already interpolate it; this one must too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            v = self._compile_with_flat_contract(Path(tmp), {
+                "state_variables": [
+                    {"name": "h", "shape_expr": "[nx + 2*ng]"},  # arithmetic dim token
+                    {"name": "hu", "shape_expr": "[nx, ny]"},
+                    {"name": "hv", "shape_expr": "[nx, ny]"},
+                ],
+            })
+        offending = [x for x in v if "state_variables[0].shape_expr invalid" in x]
+        self.assertTrue(offending, f"expected a shape_expr violation; got: {v}")
+        self.assertIn("integer literal or an identifier", offending[0])
+
     def test_update_semantics_shadows_the_flat_contract(self) -> None:
         """`_algorithm_state_contract` resolves `state_contract` -> `update_semantics` (when THAT
         holds any contract key) -> the flat direct children. So a single contract key mislaid under
@@ -10289,6 +10325,265 @@ end program shallow_water2d_runner
             ok, _, _ = _parse_shape_expr(expr)
             self.assertTrue(ok, f"{expr!r} should be accepted")
 
+    def test_shape_expr_rejection_names_the_dim_token_grammar(self) -> None:
+        """Issue #12 item 1: a rejected `shape_expr` must NAME the rule it broke.
+
+        The 2026-07-25 billed E2E lost a warm retry to `[nx + 2*ng]`: the message
+        listed the 3 outer forms and the function-call ban, neither of which tells
+        the leaf that a dim token may not be an arithmetic expression, so the repair
+        turn had to guess. Pin that the message states the per-token grammar and the
+        remedy (introduce a named dimension symbol)."""
+        from tools.validate_pipeline_semantics import _parse_shape_expr
+        for expr in ("[nx + 2*ng]", "[n-1]", "(nx*2, ny)"):
+            ok, _, err = _parse_shape_expr(expr)
+            self.assertFalse(ok, f"{expr!r} should be rejected, got ok=True")
+            self.assertIn("integer literal or an identifier", err, f"expr={expr!r} err={err!r}")
+            self.assertIn("named dimension symbol", err, f"expr={expr!r} err={err!r}")
+            # The pre-existing halves of the message must survive the extension.
+            self.assertIn("shape_expr.schema.json", err)
+            self.assertIn("function-call notations", err)
+
+    def test_snapshot_provenance_does_not_depend_on_the_artifact_spelling(self) -> None:
+        """`raw/state_snapshots` is a documented spelling that `_normalize_raw_evidence_artifact`
+        accepts and no gate flags. `_extract_spec_var_names` used raw equality, so that spelling
+        silently contributed NO provenance and every prognostic step token became an
+        `undefined binding` — the false-positive class this whole change exists to remove, and
+        one whose message would send the leaf to the wrong fix. Every spelling the normalizer
+        accepts must yield the same provenance set."""
+        from tools.validate_pipeline_semantics import _extract_spec_var_names
+
+        def spec_vars(artifact: str) -> set[str] | None:
+            doc = {
+                "io_contract": {
+                    "inputs": [{"name": "q_in"}],
+                    "outputs": [{"name": "q_out"}],
+                    "raw_requirements": {
+                        "required_evidence": [
+                            {
+                                "artifact": artifact,
+                                "schema": {
+                                    "variables": [{"name": "u"}],
+                                    "time_variable": "t",
+                                },
+                            }
+                        ]
+                    },
+                }
+            }
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "spec.ir.yaml"
+                path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+                return _extract_spec_var_names(path)
+
+        canonical = spec_vars("state_snapshots")
+        self.assertEqual(canonical, {"q_in", "q_out", "u"})
+        for spelling in (
+            "raw/state_snapshots", "State_Snapshots", "raw/state_snapshots/",
+            "raw\\state_snapshots",  # the normalizer's backslash fold, otherwise unpinned
+        ):
+            with self.subTest(artifact=spelling):
+                self.assertEqual(
+                    spec_vars(spelling), canonical,
+                    f"artifact spelling {spelling!r} must carry the same provenance",
+                )
+        # `time_variable` is deliberately NOT a provenance source — pin that the fix
+        # widened the spelling only, not the set of contributing schema keys.
+        self.assertNotIn("t", canonical or set())
+
+    def test_compile_generate_skill_quotes_live_gate_messages(self) -> None:
+        """The Compile.generate SKILL quotes gate messages verbatim so the leaf can
+        recognize them. A quote is only useful while it matches the emitting code, and
+        doc<->gate drift is this repo's recurring failure class — the size ceiling is the
+        only other thing watching this file, and it would not notice a reword. Pin every
+        message the SKILL quotes against the validator source."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        skill = (repo_root / "skills/workflow-compile-generate/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        source = (repo_root / "tools/validate_pipeline_semantics.py").read_text(
+            encoding="utf-8"
+        )
+        quoted = [
+            "raw_variables must be non-empty list when evidence_ref is non-snapshot "
+            "and state_snapshots is required",
+        ]
+        for message in quoted:
+            self.assertIn(message, skill, f"SKILL no longer quotes {message!r}")
+            self.assertIn(
+                message, source,
+                f"SKILL quotes {message!r} but no validator message emits it any more",
+            )
+        # The other two rules this SKILL carries are paraphrases, not quotes, so they have
+        # no emitter to pin against — but the doc-size ceiling is a MAXIMUM, so deleting
+        # them passes every other test in the suite. Anchor them here: they are the rules
+        # the 2026-07-25 warm retries broke, and the leaf can learn them nowhere else.
+        for rule in (
+            "unsigned integer literal or an identifier",   # the shape_expr dim-token grammar
+            "is NOT one of the provenance sources",        # algorithm.state_variables
+        ):
+            self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
+
+    def test_every_undefined_binding_line_carries_its_own_remedy(self) -> None:
+        """Each violation must be self-sufficient, and the remedy must stay SHORT.
+
+        A real IR offends in bulk — the canonical 2d example yields 17 undefined bindings.
+        An earlier draft stated the full ~500-char remedy on every line (~11KB of
+        near-identical text, burying the one thing that differs: which token); the next
+        stated it once, on the first line. Both are wrong, and the second is worse:
+        `_compile_static_inproc` excerpts the LAST 50 lines, so a remedy carried only by
+        the first occurrence is precisely what a long violation list drops — leaving the
+        repair turn 50 diagnoses and no fix. Keep it short and on every line."""
+        from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
+        contract = {
+            "algorithm_id": "alg_test",
+            "execution_mode": "sequence",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "step_kind": "flux_compute",
+                    "operation_ref": "op",
+                    "inputs": ["a", "b", "c"],
+                    "outputs": ["d", "e"],
+                }
+            ],
+            "ordering": ["s1"],
+            "control_condition": "",
+            "iteration_contract": {},
+            "update_semantics": {"target_variables": ["d"], "update_order": "sequential"},
+            "temporaries": [],
+            "derived_field_rules": [],
+            "invariants": ["dummy"],
+            "splitting_policy": {"kind": "none"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            contract_path = repo_root / "spec.ir.yaml"
+            contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+            violations: list[str] = []
+            _validate_algorithm_contract_file(
+                repo_root,
+                contract_path,
+                violations,
+                multidim_node_key=None,
+                direct_spec_vars={"q_in"},
+            )
+        undefined = [v for v in violations if "undefined binding" in v]
+        # Every token is still reported individually — dedup must not hide offenders.
+        self.assertEqual(len(undefined), 5, undefined)
+        for token in ("'a'", "'b'", "'c'", "'d'", "'e'"):
+            self.assertTrue(
+                any(token in v for v in undefined), f"{token} lost its own line: {undefined}"
+            )
+        # ... and EVERY line stands on its own: truncating to any window of these lines
+        # must still hand the leaf a fix.
+        for line in undefined:
+            self.assertIn("io_contract.inputs/outputs", line)
+            self.assertIn("algorithm.temporaries", line)
+            self.assertIn("algorithm.derived_field_rules", line)
+            self.assertIn("state_snapshots schema.variables", line)
+            self.assertIn("algorithm.state_variables does NOT", line)
+        # Budget: the sibling `validate.execute` excerpt caps at 4000 chars and
+        # `_compile_static_inproc` does not cap at all, so keep the per-line cost bounded.
+        # 17 such lines (the canonical 2d example) must stay well inside that budget.
+        self.assertLess(
+            max(len(v) for v in undefined), 400,
+            "the undefined-binding line grew past its excerpt budget; shorten the remedy "
+            "and put the detail in phase_01_compile.md V3",
+        )
+
+    def test_state_variables_alone_does_not_authorize_a_step_token(self) -> None:
+        """Issue #12 item 3 pins the message; this pins the DECISION the message describes.
+
+        `allowed_tokens` deliberately excludes `algorithm.state_variables` — its own
+        validation block runs only for multidimensional problem nodes, so granting
+        provenance from it would authorize a field nothing has checked. Without this test
+        someone could "fix" the issue-#12 false-positive complaint by adding state
+        variable names to `allowed_tokens`, and the message assertion alone would still
+        pass while the gate silently weakened.
+
+        Both node-key shapes are exercised deliberately. The compile stage always passes a
+        REAL `multidim_node_key` alongside `direct_spec_vars`, so a weakening written as
+        "grant provenance only where the state contract IS validated" (i.e. guarded on
+        `multidim_node_key`) would slip past a `None`-only fixture — which is exactly the
+        reasoning the paragraph above invites."""
+        from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
+        contract = {
+            "algorithm_id": "alg_test",
+            "execution_mode": "sequence",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "step_kind": "time_integrate",
+                    "operation_ref": "op_step",
+                    "inputs": ["u"],
+                    "outputs": ["u"],
+                }
+            ],
+            "ordering": ["s1"],
+            "control_condition": "",
+            "iteration_contract": {},
+            "update_semantics": {"target_variables": ["u"], "update_order": "sequential"},
+            # `u` is declared HERE and nowhere else — no temporaries, no derived_field_rules,
+            # and not among the direct spec vars passed below.
+            "state_variables": [{"name": "u", "shape_expr": "[nx]"}],
+            "required_update_paths": ["u"],
+            "temporaries": [],
+            "derived_field_rules": [],
+            "invariants": ["dummy"],
+            "splitting_policy": {"kind": "none"},
+        }
+        for node_key in (None, "problem/shallow_water2d@0.3.0"):
+            with self.subTest(multidim_node_key=node_key):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    _seed_shape_expr_schema_into(repo_root)
+                    contract_path = repo_root / "spec.ir.yaml"
+                    contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+                    violations: list[str] = []
+                    _validate_algorithm_contract_file(
+                        repo_root,
+                        contract_path,
+                        violations,
+                        multidim_node_key=node_key,
+                        direct_spec_vars={"q_in", "q_out"},
+                    )
+                offending = [
+                    v for v in violations if "undefined binding" in v and "'u'" in v
+                ]
+                self.assertTrue(
+                    offending,
+                    f"a token declared only in algorithm.state_variables must remain an "
+                    f"undefined binding; got: {violations}",
+                )
+
+    def test_parse_shape_expr_error_is_empty_exactly_when_it_succeeds(self) -> None:
+        """The `temporaries` / `state_variables` guards read the REASON, not the boolean
+        (`if shape_err:` rather than `if not ok:`). Those are the same test only while
+        `err` is empty exactly when `ok` is True. Nothing pinned that, so a future
+        rejection path returning `(False, [], "")` — the shape of the `# pragma: no cover`
+        internal-parse-error return — would make both gates silently ACCEPT an invalid
+        shape_expr with the whole suite still green. Pin the invariant itself."""
+        from tools.validate_pipeline_semantics import _parse_shape_expr
+        exprs = [
+            "scalar", "SCALAR", "[3]", "[nx]", "[nx, ny]", "(nx)", "(d1, d2)", "(tensor)",
+            "", "   ", "\t", "\n", "[]", "()", "[3, ]", "[a,,b]", "[nx + 2*ng]", "[n-1]",
+            "[3.0]", "[-3]", "vector(3)", "matrix(3,3)", "tensor", "[vector(3)]",
+            "(d1, matrix(2,2))", "[3", "3]", "scalar[3]", "[nx][ny]", "{nx}", "[nx;ny]",
+            # Reaches the dim-split failure: the schema's `\s*` matches a newline but the
+            # splitter's `(.+?)` does not. A folded YAML scalar produces exactly this, so
+            # this is the input class that makes the invariant load-bearing rather than
+            # theoretical — without it no test touches that return at all.
+            "[nx,\n ny]", "(a,\nb)", "[\n nx]",
+        ]
+        for expr in exprs:
+            ok, _, err = _parse_shape_expr(expr)
+            self.assertEqual(
+                ok, err == "",
+                f"{expr!r}: ok={ok} but err={err!r} — the reason must be empty exactly "
+                f"when the parse succeeds, or the err-based gates fail open",
+            )
+
     def test_object_form_temporaries_must_include_shape_expr(self) -> None:
         """Regression: phase_01_plan.md L26 mandates that object-form temporaries
         entries carry both `name` and `shape_expr` (canonical source:
@@ -10339,6 +10634,59 @@ end program shallow_water2d_runner
             offending,
             f"Expected required-shape_expr violation, got: {violations}",
         )
+
+    def test_temporaries_shape_rejection_keeps_the_parser_reason(self) -> None:
+        """Issue #12 item 2, the temporaries twin: the three failure causes (non-string, empty,
+        unparseable) shared one bare "invalid" line. Each must now name its own reason."""
+        from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
+        cases = [
+            ("[nx + 2*ng]", "integer literal or an identifier"),
+            ("", "shape_expr must be non-empty"),
+            (3, "shape_expr must be a string"),
+        ]
+        for shape_expr, expected in cases:
+            with self.subTest(shape_expr=shape_expr):
+                contract = {
+                    "algorithm_id": "alg_test",
+                    "execution_mode": "sequence",
+                    "steps": [
+                        {
+                            "step_id": "s1",
+                            "step_kind": "flux_compute",
+                            "operation_ref": "op_dummy",
+                            "inputs": ["U_L", "U_R"],
+                            "outputs": ["F_h"],
+                        }
+                    ],
+                    "ordering": ["s1"],
+                    "control_condition": "",
+                    "iteration_contract": {},
+                    "update_semantics": {
+                        "target_variables": ["F_h"], "update_order": "sequential",
+                    },
+                    "temporaries": [{"name": "work", "shape_expr": shape_expr}],
+                    "derived_field_rules": [],
+                    "invariants": ["dummy"],
+                    "splitting_policy": {"kind": "none"},
+                }
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    _seed_shape_expr_schema_into(repo_root)
+                    contract_path = repo_root / "spec.ir.yaml"
+                    contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+                    violations: list[str] = []
+                    _validate_algorithm_contract_file(
+                        repo_root,
+                        contract_path,
+                        violations,
+                        multidim_node_key=None,
+                        direct_spec_vars=None,
+                    )
+                offending = [
+                    x for x in violations if "temporaries[0].shape_expr invalid (" in x
+                ]
+                self.assertTrue(offending, f"expected a shape_expr violation; got: {violations}")
+                self.assertIn(expected, offending[0])
 
     def test_object_form_temporaries_with_shape_expr_passes(self) -> None:
         """Negative regression of the previous test: a complete object-form

@@ -15,9 +15,13 @@
 #
 # Binding convention: each token appearing in steps[*].inputs/outputs must be
 # traceable to one of:
-#   - a direct input/output variable of controlled_spec.md (e.g. U_L, U_R, g), or
+#   - a name in io_contract.inputs[]/outputs[] (a direct spec-boundary variable), or
+#   - a name in the state_snapshots schema.variables of io_contract.raw_requirements
+#     (this is how a prognostic state field such as h/hu/hv usually qualifies), or
 #   - an intermediate variable listed in temporaries (e.g. guard_pass), or
 #   - a derived quantity defined in derived_field_rules.
+# Declaring a name in algorithm.state_variables does NOT grant provenance on its own:
+# that field serves the state contract, not the dataflow trace.
 # A name derived from component decomposition (e.g. h_L ← U_L[0]) becomes valid only
 # once it is declared in temporaries.
 # This sample does not perform decomposition and uses the input variable names of

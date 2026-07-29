@@ -40,8 +40,8 @@ The loader (`_load_shape_expr_patterns_cached`) of `tools/validate_pipeline_sema
 In other words, the schema can declare the grammar of shape_expr that the validator accepts as the **single source of truth**. The grammar can be expanded/contracted by just updating the schema, with no need to edit the validator code (if you want to introduce a new structural form — e.g. a brace form — it is outside the coverage of the validator's structure-classification probes `"[1]" / "(1)"`, so the loader needs to be extended).
 
 ## Reference rules
-- Cross-reference this schema as the canonical source from documents such as `docs/workflow/phases/phase_01_plan.md`.
-- Also reference it from SKILL documents such as `skills/workflow-plan-generate/SKILL.md`.
+- Cross-reference this schema as the canonical source from documents such as `docs/workflow/phases/phase_01_compile.md`.
+- Also reference it from SKILL documents such as `skills/workflow-compile-generate/SKILL.md`.
 - The only legitimate reference targets when an agent derives a rule are `docs/` / `spec/` / `skill_must_read_refs` (the validator code is under `tools/`, so referencing it is forbidden). `spec/schema/` is under `spec/`, so it can be referenced.
 
 ## Current schema

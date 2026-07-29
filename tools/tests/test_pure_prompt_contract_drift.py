@@ -85,7 +85,8 @@ _TEMPLATE_FILES = (
 # current-schema digest — so they do NOT detect a future REVERT of the template to the pre-pure-8
 # (pure-6/pure-7) contract. Revert detection holds only among versions sharing the CURRENT schema
 # (pure-8 onward); the empty-bump guard across all pinned versions is unaffected. Only the CURRENT
-# version's pin (pure-11, below) is a live equality target for `_digest()`.
+# version's pin (whichever `PURE_PROMPT_CONTRACT_VERSION` names, below) is a live equality
+# target for `_digest()` — naming a specific version here just goes stale on every bump.
 PINNED: dict[str, str] = {
     "pure-6": "b614072bcaad7ffe61f48d54256305b89982457d2ef6c3b5126e09598e5e7067",
     "pure-7": "14c7db85579eeb5f0dd21af2a7321edfcc9bcd647bcb735f511e0d3f80aa2eda",
@@ -104,6 +105,10 @@ PINNED: dict[str, str] = {
     # pure-14: pure prompts and their line-0 sentinel now describe the Codex read-only,
     # structured-output approximation accurately instead of promising tool-free isolation.
     "pure-14": "f15dc94b346844b2523bd38ed6a374abc8073114c103a080db2c6f90e8a6bb87",
+    # pure-15: rule (1) states the C131 pair symmetrically — a `public ::` list without the bare
+    # `private` fails the lint gate, just as the bare `private` without the list fails the syntax
+    # gate. Only the private-alone direction was stated before (issue #12 item 5).
+    "pure-15": "2b1c56474c820653bd59681e23a631c2104aea9547569e530f2705b9699a217d",
 }
 
 
