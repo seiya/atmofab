@@ -10332,6 +10332,107 @@ end program shallow_water2d_runner
             self.assertIn("shape_expr.schema.json", err)
             self.assertIn("function-call notations", err)
 
+    def test_compile_generate_skill_quotes_live_gate_messages(self) -> None:
+        """The Compile.generate SKILL quotes gate messages verbatim so the leaf can
+        recognize them. A quote is only useful while it matches the emitting code, and
+        doc<->gate drift is this repo's recurring failure class — the size ceiling is the
+        only other thing watching this file, and it would not notice a reword. Pin every
+        message the SKILL quotes against the validator source."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        skill = (repo_root / "skills/workflow-compile-generate/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        source = (repo_root / "tools/validate_pipeline_semantics.py").read_text(
+            encoding="utf-8"
+        )
+        quoted = [
+            "raw_variables must be non-empty list when evidence_ref is non-snapshot "
+            "and state_snapshots is required",
+        ]
+        for message in quoted:
+            self.assertIn(message, skill, f"SKILL no longer quotes {message!r}")
+            self.assertIn(
+                message, source,
+                f"SKILL quotes {message!r} but no validator message emits it any more",
+            )
+
+    def test_state_variables_alone_does_not_authorize_a_step_token(self) -> None:
+        """Issue #12 item 3 pins the message; this pins the DECISION the message describes.
+
+        `allowed_tokens` deliberately excludes `algorithm.state_variables` — its own
+        validation block runs only for multidimensional problem nodes, so granting
+        provenance from it would authorize a field nothing has checked. Without this test
+        someone could "fix" the issue-#12 false-positive complaint by adding state
+        variable names to `allowed_tokens`, and the message assertion alone would still
+        pass while the gate silently weakened."""
+        from tools.validate_pipeline_semantics import _validate_algorithm_contract_file
+        contract = {
+            "algorithm_id": "alg_test",
+            "execution_mode": "sequence",
+            "steps": [
+                {
+                    "step_id": "s1",
+                    "step_kind": "time_integrate",
+                    "operation_ref": "op_step",
+                    "inputs": ["u"],
+                    "outputs": ["u"],
+                }
+            ],
+            "ordering": ["s1"],
+            "control_condition": "",
+            "iteration_contract": {},
+            "update_semantics": {"target_variables": ["u"], "update_order": "sequential"},
+            # `u` is declared HERE and nowhere else — no temporaries, no derived_field_rules,
+            # and not among the direct spec vars passed below.
+            "state_variables": [{"name": "u", "shape_expr": "[nx]"}],
+            "required_update_paths": ["u"],
+            "temporaries": [],
+            "derived_field_rules": [],
+            "invariants": ["dummy"],
+            "splitting_policy": {"kind": "none"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            contract_path = repo_root / "spec.ir.yaml"
+            contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+            violations: list[str] = []
+            _validate_algorithm_contract_file(
+                repo_root,
+                contract_path,
+                violations,
+                multidim_node_key=None,
+                direct_spec_vars={"q_in", "q_out"},
+            )
+        offending = [v for v in violations if "undefined binding" in v and "'u'" in v]
+        self.assertTrue(
+            offending,
+            f"a token declared only in algorithm.state_variables must remain an "
+            f"undefined binding; got: {violations}",
+        )
+
+    def test_parse_shape_expr_error_is_empty_exactly_when_it_succeeds(self) -> None:
+        """The `temporaries` / `state_variables` guards read the REASON, not the boolean
+        (`if shape_err:` rather than `if not ok:`). Those are the same test only while
+        `err` is empty exactly when `ok` is True. Nothing pinned that, so a future
+        rejection path returning `(False, [], "")` — the shape of the `# pragma: no cover`
+        internal-parse-error return — would make both gates silently ACCEPT an invalid
+        shape_expr with the whole suite still green. Pin the invariant itself."""
+        from tools.validate_pipeline_semantics import _parse_shape_expr
+        exprs = [
+            "scalar", "SCALAR", "[3]", "[nx]", "[nx, ny]", "(nx)", "(d1, d2)", "(tensor)",
+            "", "   ", "[]", "()", "[3, ]", "[a,,b]", "[nx + 2*ng]", "[n-1]", "[3.0]",
+            "[-3]", "vector(3)", "matrix(3,3)", "tensor", "[vector(3)]", "(d1, matrix(2,2))",
+            "[3", "3]", "scalar[3]", "[nx][ny]", "{nx}", "[nx;ny]",
+        ]
+        for expr in exprs:
+            ok, _, err = _parse_shape_expr(expr)
+            self.assertEqual(
+                ok, err == "",
+                f"{expr!r}: ok={ok} but err={err!r} — the reason must be empty exactly "
+                f"when the parse succeeds, or the err-based gates fail open",
+            )
+
     def test_object_form_temporaries_must_include_shape_expr(self) -> None:
         """Regression: phase_01_plan.md L26 mandates that object-form temporaries
         entries carry both `name` and `shape_expr` (canonical source:

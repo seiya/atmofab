@@ -28144,7 +28144,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # non-snapshot half of the `raw_variables` rule (every outputs[] entry needs one once
         # state_snapshots is required). This leaf authors the IR and does not read the validator,
         # so each rule is only knowable from here.
-        "skills/workflow-compile-generate/SKILL.md": 24800,
+        # Bumped 24800->25200: review correction to the same three rules — (2) had claimed a
+        # prognostic field is always an undefined binding, but `_extract_spec_var_names` folds
+        # the `state_snapshots` `schema.variables` into `direct_spec_vars`, so it usually is
+        # traceable; stating the real source list costs more words than the wrong shortcut.
+        "skills/workflow-compile-generate/SKILL.md": 25200,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity

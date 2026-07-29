@@ -6118,9 +6118,10 @@ def _parse_shape_expr(expr: str) -> tuple[bool, list[str], str]:
             False,
             [],
             "shape_expr must be scalar or [dim1,dim2,...] or (dim1,dim2,...). "
-            "Each dimension token must be an integer literal or an identifier; "
-            "arithmetic inside a dimension token (e.g. [nx + 2*ng], [n-1]) is not "
-            "accepted — introduce a named dimension symbol and use it as the token. "
+            "Each dimension token must be an unsigned integer literal or an identifier: "
+            "arithmetic (e.g. [nx + 2*ng], [n-1]), decimals (e.g. [3.0]) and signs "
+            "(e.g. [-3]) are all rejected — for a computed extent, introduce a named "
+            "dimension symbol and use that name as the token. "
             "See spec/schema/ir/shape_expr.schema.json for canonical forms; "
             "function-call notations such as vector(N), matrix(M,N), tensor are forbidden.",
         )
@@ -7196,10 +7197,10 @@ def _validate_algorithm_contract_file(
                 # Carry the parser's reason into the message: the leaf that has to
                 # repair this only sees the violation string, and "invalid" alone
                 # does not name the rule it broke (issue #12 item 2).
+                # (A non-string cannot reach the parser, which calls .strip(); an empty
+                # or blank string can, and the parser already reports it.)
                 if not isinstance(shape_expr, str):
                     shape_err = "shape_expr must be a string"
-                elif not shape_expr.strip():
-                    shape_err = "shape_expr must be non-empty"
                 else:
                     shape_err = _parse_shape_expr(shape_expr)[2]
                 if shape_err:
