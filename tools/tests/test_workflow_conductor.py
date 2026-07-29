@@ -6011,13 +6011,12 @@ class LeafSpawnTest(unittest.TestCase):
             result = c._spawn_codex_json_leaf(
                 ["codex", "exec"], {}, child_arid, resume=resume,
                 timeout_context=timeout_context)
-        # The stream must be decoded LENIENTLY. With the default strict handler a single
-        # malformed byte raises mid-iteration, escaping spawn_leaf as a conductor_error
-        # and discarding the stderr already drained — a leaf's own output must never be
-        # able to kill the conductor. Asserted on every case here because no canned
-        # `io.StringIO` stream can reach the real decoder.
-        self.assertEqual(popen_kwargs.get("errors"), "backslashreplace")
-        self.assertIs(popen_kwargs.get("text"), True)
+        # The pipes are BINARY: the conductor reads fixed-size blocks off the raw fd and
+        # decodes them itself, because a text-mode stream can only be read a line at a time
+        # and a line is not a bound on anything. (That the decode is lenient is pinned
+        # behaviourally, on a real malformed byte, rather than by inspecting a kwarg.)
+        self.assertIsNone(popen_kwargs.get("errors"))
+        self.assertIsNone(popen_kwargs.get("text"))
         # Own process group: `terminate()` reaches only the direct child, and the CLI
         # (or the bwrap wrapper in front of it) spawns tool subprocesses that would
         # otherwise outlive a cancelled orchestration.
@@ -7456,6 +7455,9 @@ class LeafSpawnTest(unittest.TestCase):
         for backend in ("claude", "codex"):
             with self.subTest(backend=backend):
                 signalled: list[tuple[int, int]] = []
+                # A wedged JSONL stream: open, silent, never reaching EOF.
+                wedged_pipes = (self._stream(("wait", wedged), ("hold_open",)).reader,
+                                self._stream(("wait", wedged), ("hold_open",)).reader)
 
                 def _killpg(pgid, sig):  # type: ignore[no-untyped-def]
                     if sig == 0:
@@ -7474,17 +7476,10 @@ class LeafSpawnTest(unittest.TestCase):
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                         if backend == "codex":
-                            # A wedged JSONL stream: open, silent, never reaching EOF.
-                            self.stdout = self._silent()
-                            self.stderr = io.StringIO("")
+                            self.stdout, self.stderr = wedged_pipes
                         else:
                             self.stdout = _FakePipe("stdout")
                             self.stderr = _FakePipe("stderr")
-
-                    def _silent(self):  # type: ignore[no-untyped-def]
-                        wedged.wait(30)
-                        return
-                        yield  # pragma: no cover - generator marker
 
                     def poll(self):  # type: ignore[no-untyped-def]
                         return None
@@ -8166,18 +8161,28 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         dying_stderr = self._pipe()
+        # A real pipe that carries one record and then fails at the READ, which is where a
+        # dying pipe actually fails. Injected on the fd rather than modelled by a fake
+        # stream object, so the pump is exercised exactly as production drives it.
+        dying_stdout = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("hold_open",)).reader
+        dying_fd = dying_stdout.fileno()
+        real_read, reads = os.read, [0]
 
-        class _RaisingStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                raise OSError(5, "Input/output error")
+        def _read(fd, size):  # type: ignore[no-untyped-def]
+            if fd == dying_fd:
+                reads[0] += 1
+                if reads[0] > 1:        # the record lands, and the NEXT read is the failure
+                    raise OSError(5, "Input/output error")
+            return real_read(fd, size)
 
         class _DyingPipePopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _RaisingStdout()
+                self.stdout = dying_stdout
                 self.stderr = dying_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
@@ -8195,6 +8200,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="codex", agent_model="gpt-5.6-codex")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _DyingPipePopen), \
+                patch.object(wc.os, "read", _read), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
@@ -8350,10 +8356,19 @@ class LeafSpawnTest(unittest.TestCase):
             '{"type":"thread.started","thread_id":"t-1"}\n'
             '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 
-        class _RaisingStderr:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield "codex: starting\n"
-                raise OSError(5, "Input/output error")
+        # One line through a real pipe, and then the read itself fails — where a dying pipe
+        # actually fails.
+        dying_stderr = self._stream(
+            ("write", "codex: starting\n"), ("hold_open",)).reader
+        dying_fd = dying_stderr.fileno()
+        real_read, reads = os.read, [0]
+
+        def _read(fd, size):  # type: ignore[no-untyped-def]
+            if fd == dying_fd:
+                reads[0] += 1
+                if reads[0] > 1:        # the line lands, and the NEXT read is the failure
+                    raise OSError(5, "Input/output error")
+            return real_read(fd, size)
 
         class _Popen:
             pid = 424242
@@ -8361,7 +8376,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                 self.stdout = answered
-                self.stderr = _RaisingStderr()
+                self.stderr = dying_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
@@ -8375,6 +8390,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="codex", agent_model="gpt-5.6-codex")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc.os, "read", _read), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
@@ -8439,6 +8455,183 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIs(proc.timed_out, False)
         self.assertLess(len(proc.stderr), 12_000)        # kept: bounded, clip and all
         self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+
+    def test_a_newline_free_stderr_flood_is_captured_within_the_budget(self) -> None:
+        """Issue #18's stderr half. The budget used to be checked per DELIVERED LINE, and a
+        producer that never writes one delivered nothing to check — measured at 1.35 GB against
+        a 4 MB budget. Reading in fixed-size blocks makes the budget a bound on MEMORY, and it
+        must do so without becoming a bound on the leaf: the writer still reaches EOF."""
+        from unittest.mock import patch
+
+        budget = 20_000
+        blob = "z" * 4_000_000            # 200x the budget, and not one newline in it
+        flood = self._stream(("write", blob))
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+
+        class _FloodingPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = answered, flood.reader
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _FloodingPopen), \
+                patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # Budget, plus at most the one block that crossed it, plus the notice.
+        self.assertLess(len(proc.stderr), budget + wc.LEAF_STREAM_READ_BLOCK_BYTES + 500)
+        self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
+        # ...and the leaf was never blocked by the conductor's own bookkeeping.
+        self.assertTrue(flood.finished.is_set())
+        self.assertEqual(flood.bytes_written, len(blob))
+        self.assertEqual(proc.stdout, "done")
+
+    def test_one_oversized_record_is_clipped_and_the_stream_resynchronizes(self) -> None:
+        """The other half: the JSONL capture is reassembled from blocks, so a record with no
+        newline in it would otherwise be held WHOLE before any budget could apply — one codex
+        tool result can be arbitrarily large, and a leaf in an output loop can make one that
+        never ends. It is clipped where it stands, said so in band, and the read resumes at the
+        next newline: a clipped record costs its own contents, never the rest of the turn."""
+        from unittest.mock import patch
+
+        limit = 30_000
+        pipes = (self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            + '{"junk":"' + "q" * 1_000_000 + '"}\n'          # 33x the record cap
+            + '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'),
+            self._pipe())
+
+        class _BigRecordPopen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _BigRecordPopen), \
+                patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        # The turn on the far side of the oversized record still lands: the read resynchronized
+        # at the newline rather than discarding what followed.
+        self.assertEqual(proc.stdout, "done")
+        self.assertIn("leaf_stdout_record_truncated", proc.raw_stdout)
+        self.assertNotIn("q" * (limit + 1), proc.raw_stdout)
+        self.assertLess(len(proc.raw_stdout), limit * 2)
+        # The marker is the conductor's, so no classifier may match it — otherwise a leaf
+        # could claim an infra tag by writing the line itself.
+        self.assertIsNone(wc._classify_leaf_infra_error(
+            wc._leaf_stdout_record_truncated_marker(limit)))
+
+    def test_a_leaf_stream_is_decoded_leniently_and_across_block_boundaries(self) -> None:
+        """Two properties of the conductor's own decode, which used to be `Popen(text=True)`'s.
+
+        A malformed byte must not raise: under a strict codec it escapes `spawn_leaf` as a
+        conductor_error AND discards every diagnostic already drained. And a multi-byte
+        character straddling a block boundary must decode WHOLE — the boundary falls wherever
+        the kernel put it, so a per-block `bytes.decode` would escape both halves of it."""
+        from unittest.mock import patch
+
+        block = wc.LEAF_STREAM_READ_BLOCK_BYTES
+        # A 3-byte character positioned so the block boundary splits it, then a byte that is
+        # not valid UTF-8 at all, then the turn.
+        payload = (b'{"type":"thread.started","thread_id":"t-1"}\n'
+                   + b"#" * (block - 46) + "あ".encode()
+                   + b"\xff"
+                   + b'\n{"type":"item.completed","item":'
+                     b'{"type":"agent_message","text":"done"}}\n')
+        pipes = (self._stream(("write", payload)).reader, self._pipe())
+
+        class _Popen:
+            pid = 424242
+            returncode = 0
+
+            def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
+                self.stdout, self.stderr = pipes
+
+            def poll(self):  # type: ignore[no-untyped-def]
+                return 0
+
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+                return 0
+
+            def send_signal(self, sig):  # type: ignore[no-untyped-def]
+                return None
+
+        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc, "_leaf_stream_encoding", lambda: "utf-8"), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
+                patch.object(wc.os, "getpgid", lambda pid: 999), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+        self.assertEqual(proc.stdout, "done")          # nothing raised, the turn still lands
+        self.assertIn("あ", proc.raw_stdout)       # ...whole, not two escaped halves
+        self.assertIn("\\xff", proc.raw_stdout)        # ...and the bad byte is escaped
+        # `backslashreplace`, never `surrogateescape`: a lone surrogate crashes the UTF-8
+        # write that persists this capture.
+        proc.raw_stdout.encode("utf-8")
+
+    def test_the_line_reassembler_preserves_framing_and_bounds_one_record(self) -> None:
+        """Unit-level, because the block boundaries a pipe happens to produce are not the ones
+        worth pinning: the reassembler has to be correct for EVERY split."""
+        r = wc._LineReassembler()
+        self.assertEqual(r.feed("a\nb"), ["a\n"])       # keepends, and a partial line waits
+        self.assertEqual(r.feed("c\n"), ["bc\n"])       # ...and is completed by the next block
+        self.assertEqual(r.feed(""), [])
+        self.assertEqual(r.flush(), [])
+        # A line the leaf never terminated is still evidence.
+        r = wc._LineReassembler()
+        self.assertEqual(r.feed("tail"), [])
+        self.assertEqual(r.flush(), ["tail"])
+        self.assertEqual(r.flush(), [])                # ...once
+        # Past the cap: the prefix is emitted newline-terminated, the marker follows it, and
+        # the rest of that record is dropped. Checked with and without a terminator, because
+        # a 3 MB record that DOES end is exactly as unbounded as one that never does.
+        marker = wc._leaf_stdout_record_truncated_marker(10)
+        r = wc._LineReassembler(limit=10)
+        self.assertEqual(r.feed("x" * 25), ["x" * 10 + "\n", marker])
+        self.assertEqual(r.feed("dropped\nnext\n"), ["next\n"])   # resynced at the newline
+        r = wc._LineReassembler(limit=10)
+        self.assertEqual(r.feed("x" * 25 + "\nnext\n"), ["x" * 10 + "\n", marker, "next\n"])
+        # The cap is not a per-block accident: a record assembled from many small blocks is
+        # clipped at exactly the same place.
+        r = wc._LineReassembler(limit=10)
+        out = [line for _ in range(25) for line in r.feed("x")]
+        self.assertEqual(out, ["x" * 10 + "\n", marker])
 
     def test_the_pump_holds_a_bounded_number_of_BYTES_not_lines(self) -> None:
         """The queue bounds LINES, and one JSONL record can be a whole tool result: 2048 slots
