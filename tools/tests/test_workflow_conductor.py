@@ -6069,6 +6069,7 @@ class LeafSpawnTest(unittest.TestCase):
                               exits_on_sigterm=exits_on_sigterm):
                 signalled: list[tuple[int, int]] = []
                 start_new_session: list[Any] = []
+                interrupt_pipes = (self._pipe(), self._pipe())
 
                 class _InterruptedQueue(queue.Queue):
                     """The driver's interrupt, arriving while the conductor waits for the
@@ -6082,8 +6083,7 @@ class LeafSpawnTest(unittest.TestCase):
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                         start_new_session.append(kw.get("start_new_session"))
-                        self.stdout = io.StringIO("")
-                        self.stderr = io.StringIO("")
+                        self.stdout, self.stderr = interrupt_pipes
 
                     def poll(self):  # type: ignore[no-untyped-def]
                         return None
@@ -6146,13 +6146,13 @@ class LeafSpawnTest(unittest.TestCase):
         """
         from unittest.mock import patch
 
+        pipes = (self._pipe('{"type":"thread.started","thread_id":"t-1"}\n'), self._pipe())
+
         class _NeverExitsPopen:
             pid = 424242
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n')
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -6744,14 +6744,18 @@ class LeafSpawnTest(unittest.TestCase):
                 # dedicated coverage elsewhere).
                 captured.clear()
                 from unittest.mock import patch
+                # One pair per launch: a pipe is read to EOF once, and this block spawns
+                # two leaves (the recorded one and the diagnostician).
+                codex_pipes = [
+                    (self._pipe('{"type":"thread.started","thread_id":"t"}\n'), self._pipe())
+                    for _ in range(2)]
+
                 class _FakePopen:
                     pid = 424242
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                        import io
                         captured["argv"] = argv
-                        self.stdout = io.StringIO('{"type":"thread.started","thread_id":"t"}\n')
-                        self.stderr = io.StringIO("")
+                        self.stdout, self.stderr = codex_pipes.pop(0)
                     def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                         return 0
                     def poll(self):  # type: ignore[no-untyped-def]
@@ -7700,18 +7704,18 @@ class LeafSpawnTest(unittest.TestCase):
         finishes on its own (EOF) shortly after the leaf, so only the join can make it in."""
         from unittest.mock import patch
 
-        class _SlowStderr:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                time.sleep(0.15)          # arrives AFTER the main thread reaches the join
-                yield "Claude AI usage limit reached\n"
+        # Arrives AFTER the main thread reaches the join, then reaches EOF on its own.
+        stdout_pipe = self._pipe('{"type":"thread.started","thread_id":"t-1"}\n')
+        stderr_pipe = self._stream(
+            ("sleep", 0.15), ("write", "Claude AI usage limit reached\n")).reader
 
         class _QuickPopen:
             pid = 424242
             returncode = 1
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO('{"type":"thread.started","thread_id":"t-1"}\n')
-                self.stderr = _SlowStderr()
+                self.stdout = stdout_pipe
+                self.stderr = stderr_pipe
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 1
@@ -7747,27 +7751,20 @@ class LeafSpawnTest(unittest.TestCase):
         usage_line = ('{"type":"turn.started","turn":{"usage":{"input_tokens":11},'
                       '"model":"gpt-5.6-codex"}}\n')
 
-        class _WedgedStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield usage_line
-                # Then nothing, exactly like a wedged leaf, until the kill lands.
-                released.wait(10)
-
-        class _WedgedStderr:
-            """Iterated, not `read()`: the drain appends per LINE so that a join which
-            expires still carries whatever the leaf managed to write."""
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield "codex: waiting for model response\n"
-                released.wait(10)
+        # One line each, then nothing at all — exactly like a wedged leaf — until the kill
+        # lands. The pipes stay OPEN meanwhile, which is what makes this a wedge rather
+        # than an EOF: the drain must still carry whatever arrived before it.
+        wedged_stdout = self._stream(("write", usage_line), ("wait", released)).reader
+        wedged_stderr = self._stream(
+            ("write", "codex: waiting for model response\n"), ("wait", released)).reader
 
         class _WedgedPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _WedgedStdout()
-                self.stderr = _WedgedStderr()
+                self.stdout = wedged_stdout
+                self.stderr = wedged_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return self.returncode      # alive until the kill lands
@@ -7847,18 +7844,19 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         waits: list = []
+        # WITH an answer: the clean-finish guard's other terms then hold, so the pre-kill
+        # status is the only thing that can keep this a timeout.
+        pipes = (self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'),
+            self._pipe("codex: done streaming\n"))
 
         class _NeverExitsPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                # WITH an answer: the clean-finish guard's other terms then hold, so the
-                # pre-kill status is the only thing that can keep this a timeout.
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = io.StringIO("codex: done streaming\n")
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return self.returncode
@@ -7909,20 +7907,19 @@ class LeafSpawnTest(unittest.TestCase):
 
         never_closes = threading.Event()
         self.addCleanup(never_closes.set)
+        # The whole turn, and then the leaked descendant holding the write end open.
+        pipes = (self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'
+                      '{"type":"item.completed","item":'
+                      '{"type":"agent_message","text":"done"}}\n'),
+            ("wait", never_closes)).reader, self._pipe("codex: fine\n"))
 
         class _ExitedWithOpenPipePopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("codex: fine\n")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                yield ('{"type":"item.completed","item":'
-                       '{"type":"agent_message","text":"done"}}\n')
-                never_closes.wait(30)       # the leaked descendant, holding the write end
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0                    # the leaf itself is already gone
@@ -7960,21 +7957,21 @@ class LeafSpawnTest(unittest.TestCase):
         past) the deadline is exactly how that gets hit."""
         from unittest.mock import patch
 
-        chatty = threading.Event()
-        self.addCleanup(chatty.set)
+        # A line every 10ms for far longer than the 50ms cap below, so the stream is still
+        # delivering when the deadline lands. `release()` aborts whatever is left.
+        chatty_pipe = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[op for _ in range(500) for op in (
+                ("write", '{"type":"item.started","item":{"type":"tool_call"}}\n'),
+                ("sleep", 0.01))]).reader
+        chatty_stderr = self._pipe()
 
         class _ChattyPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not chatty.wait(0.01):     # a line every 10ms, straddling the deadline
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
+                self.stdout, self.stderr = chatty_pipe, chatty_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8008,18 +8005,16 @@ class LeafSpawnTest(unittest.TestCase):
 
         wedged = threading.Event()
         self.addCleanup(wedged.set)
+        pipes = (self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("wait", wedged)).reader, self._pipe())
 
         class _WedgedAfterRegistrationPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                wedged.wait(30)
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8056,21 +8051,20 @@ class LeafSpawnTest(unittest.TestCase):
         runaway shape that is more likely than total silence."""
         from unittest.mock import patch
 
-        chatty = threading.Event()
-        self.addCleanup(chatty.set)
+        # Never a quiet moment: back-to-back records, no pauses, for far longer than the
+        # 0.2s cap below. `release()` aborts whatever the reader never got to.
+        chatty_pipe = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[("write", '{"type":"item.started","item":{"type":"tool_call"}}\n')
+              for _ in range(200_000)]).reader
+        chatty_stderr = self._pipe()
 
         class _ChattyPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not chatty.is_set():          # never a quiet moment
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
+                self.stdout, self.stderr = chatty_pipe, chatty_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8115,13 +8109,14 @@ class LeafSpawnTest(unittest.TestCase):
                     '"model":"gpt-5.6-codex"}}\n',
                     '{"type":"turn.failed","error":{"message":"boom"}}\n'])
 
+        pipes = (self._pipe("".join(lines)), self._pipe())
+
         class _BacklogPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = iter(lines)
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = pipes
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None                     # still running when the cap expires
@@ -8137,8 +8132,12 @@ class LeafSpawnTest(unittest.TestCase):
         c._register_codex_thread = (  # type: ignore[method-assign]
             lambda *a: registrations.append(a))
         # A cap so small that the read loop gives up before consuming the stream, leaving the
-        # pump's backlog behind: the drain after the break is what must recover it.
+        # pump's backlog behind: the drain after the break is what must recover it. The
+        # reader is silenced rather than merely raced — with a real pipe the pump can fill
+        # the queue before the first deadline check, and "the read loop consumed nothing"
+        # has to be the premise of this test, not a scheduling accident.
         with patch.object(wc.subprocess, "Popen", _BacklogPopen), \
+                patch.object(wc.queue, "Queue", _SilentQueue), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 0.001), \
                 patch.object(wc, "LEAF_STREAM_POLL_SECONDS", 0.001), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
@@ -8166,6 +8165,8 @@ class LeafSpawnTest(unittest.TestCase):
         indefinite block moved one step later. The failure must also be visible."""
         from unittest.mock import patch
 
+        dying_stderr = self._pipe()
+
         class _RaisingStdout:
             def __iter__(self):  # type: ignore[no-untyped-def]
                 yield '{"type":"thread.started","thread_id":"t-1"}\n'
@@ -8177,7 +8178,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                 self.stdout = _RaisingStdout()
-                self.stderr = io.StringIO("")
+                self.stderr = dying_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 # STILL RUNNING as far as the conductor can see: without this the exited-leaf
@@ -8235,27 +8236,21 @@ class LeafSpawnTest(unittest.TestCase):
         persisted, tail-sliced and regex-scanned — 770 MB in the measured case."""
         from unittest.mock import patch
 
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
+        def _flood(payload: str):
+            """The leaked descendant: it writes far more than the reader will take, and
+            never closes the write end (`hold_open`) — so nothing here reaches EOF."""
+            return self._stream(
+                *[("write", payload) for _ in range(50_000)], ("hold_open",)).reader
 
-        class _FloodingHolder:
-            """The leaked descendant: it never stops writing and never closes."""
-
-            def __init__(self, payload: str) -> None:
-                self.payload = payload
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                while not flooding.is_set():
-                    yield self.payload
+        flood_stdout = _flood('{"type":"item.started","item":{"type":"tool_call"}}\n')
+        flood_stderr = _flood("x" * 4096 + "\n")
 
         class _ExitedFloodedPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _FloodingHolder(
-                    '{"type":"item.started","item":{"type":"tool_call"}}\n')
-                self.stderr = _FloodingHolder("x" * 4096 + "\n")
+                self.stdout, self.stderr = flood_stdout, flood_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0                     # the leaf itself exited immediately
@@ -8293,24 +8288,22 @@ class LeafSpawnTest(unittest.TestCase):
         that only checks its deadline on an empty queue would never end."""
         from unittest.mock import patch
 
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
-
-        class _SlowThenFloodingStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                time.sleep(0.15)             # in flight at the break: the drain must wait
-                yield '{"type":"item.completed","item":{"type":"agent_message","text":"late"}}\n'
-                while not flooding.is_set():  # ...and then never stop
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
+        slow_then_flooding = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("sleep", 0.15),              # in flight at the break: the drain must wait
+            ("write",
+             '{"type":"item.completed","item":{"type":"agent_message","text":"late"}}\n'),
+            # ...and then never stop, and never close.
+            *[("write", '{"type":"item.started","item":{"type":"tool_call"}}\n')
+              for _ in range(200_000)], ("hold_open",)).reader
+        flooding_stderr = self._pipe()
 
         class _NeverExitsPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _SlowThenFloodingStdout()
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = slow_then_flooding, flooding_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8353,6 +8346,10 @@ class LeafSpawnTest(unittest.TestCase):
         in the capture, exactly as the stdout pump's is."""
         from unittest.mock import patch
 
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+
         class _RaisingStderr:
             def __iter__(self):  # type: ignore[no-untyped-def]
                 yield "codex: starting\n"
@@ -8363,9 +8360,7 @@ class LeafSpawnTest(unittest.TestCase):
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
+                self.stdout = answered
                 self.stderr = _RaisingStderr()
 
             def poll(self):  # type: ignore[no-untyped-def]
@@ -8398,30 +8393,25 @@ class LeafSpawnTest(unittest.TestCase):
         `LEAF_STDERR_CAPTURE_MAX_CHARS`, and say where the capture stops."""
         from unittest.mock import patch
 
-        consumed = []
-
-        class _CountingStderr:
-            """A writer the conductor must keep reading to the end."""
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                for i in range(60):
-                    consumed.append(i)
-                    yield "e" * 1000 + "\n"
-                # ...and one blob with no newline in it at all: the iterator yields it whole,
-                # so a budget checked only AFTER the append would keep all of it. That string
-                # is returned, persisted, tail-sliced and regex-scanned.
-                consumed.append("blob")
-                yield "b" * 100_000
+        # 60 KB of lines, then a blob with no newline in it at all — far more than the
+        # 10 KB budget below and far more than a pipe will hold, so a drain that stopped
+        # reading at the budget would leave this writer WEDGED with its script unfinished.
+        # That is the property, and only a real pipe can carry it: the writer's own progress
+        # is the evidence, where a counter incremented by the fake was the fake's own claim.
+        chatty_stderr = self._stream(
+            *[("write", "e" * 1000 + "\n") for _ in range(60)],
+            ("write", "b" * 100_000))
+        stderr_total = 60 * 1001 + 100_000
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 
         class _ChattyStderrPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = _CountingStderr()
+                self.stdout, self.stderr = answered, chatty_stderr.reader
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
@@ -8441,7 +8431,10 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
             proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
-        self.assertEqual(len(consumed), 61, "the drain must read to EOF, not stop at the budget")
+        self.assertTrue(chatty_stderr.finished.is_set(),
+                        "the drain must read to EOF, not stop at the budget")
+        self.assertEqual(chatty_stderr.bytes_written, stderr_total,
+                         "a drain that stopped at the budget would wedge this writer")
         self.assertEqual(proc.stdout, "done")            # ...so the leaf still gets to answer
         self.assertIs(proc.timed_out, False)
         self.assertLess(len(proc.stderr), 12_000)        # kept: bounded, clip and all
@@ -8456,21 +8449,17 @@ class LeafSpawnTest(unittest.TestCase):
 
         record = '{"type":"item.completed","item":{"type":"tool_call","out":"%s"}}\n' % ("x" * 50_000)
         in_flight: list[int] = []
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
+        big_records = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[("write", record) for _ in range(10_000)], ("hold_open",)).reader
+        big_record_stderr = self._pipe()
 
         class _BigRecordPopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not flooding.is_set():
-                    yield record
+                self.stdout, self.stderr = big_records, big_record_stderr
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None
@@ -8524,6 +8513,7 @@ class LeafSpawnTest(unittest.TestCase):
         def _drive_stream(body: str) -> tuple[wc.ProcResult, list]:
             never = threading.Event()
             self.addCleanup(never.set)
+            pipes = (self._stream(("write", body), ("wait", never)).reader, self._pipe())
 
             class _QueuedTurnPopen:
                 """Exited before the kill, with its whole stream still in the queue."""
@@ -8532,14 +8522,8 @@ class LeafSpawnTest(unittest.TestCase):
                 returncode = None
 
                 def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                    self.stdout = self._lines()
-                    self.stderr = io.StringIO("")
+                    self.stdout, self.stderr = pipes
                     self.polls = 0
-
-                def _lines(self):  # type: ignore[no-untyped-def]
-                    for line in body.splitlines(keepends=True):
-                        yield line
-                    never.wait(30)
 
                 def poll(self):  # type: ignore[no-untyped-def]
                     if self.returncode is not None:
@@ -8598,18 +8582,19 @@ class LeafSpawnTest(unittest.TestCase):
         from unittest.mock import patch
 
         line = '{"type":"item.started","item":{"type":"tool_call"}}\n'
+        body = ('{"type":"thread.started","thread_id":"t-1"}\n'
+                + line * 2000
+                + '{"type":"item.completed","item":'
+                  '{"type":"agent_message","text":"done"}}\n')
+        # One pair per drive: this test runs the same leaf twice, at two budgets.
+        pipes = [(self._pipe(body), self._pipe()) for _ in range(2)]
 
         class _ChattyPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = iter(
-                    ['{"type":"thread.started","thread_id":"t-1"}\n']
-                    + [line] * 2000
-                    + ['{"type":"item.completed","item":'
-                       '{"type":"agent_message","text":"done"}}\n'])
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = pipes.pop(0)
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return 0
@@ -8651,22 +8636,21 @@ class LeafSpawnTest(unittest.TestCase):
         after it and hold the run to the cap."""
         from unittest.mock import patch
 
-        flooding = threading.Event()
-        self.addCleanup(flooding.set)
+        # Never idle, and never closed: the descendant keeps the stream busy for as long as
+        # the conductor is willing to read it.
+        busy = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            *[("write", '{"type":"item.started","item":{"type":"tool_call"}}\n')
+              for _ in range(200_000)], ("hold_open",)).reader
+        busy_stderr = self._pipe()
 
         class _ExitsLatePopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = self._lines()
-                self.stderr = io.StringIO("")
+                self.stdout, self.stderr = busy, busy_stderr
                 self.polls = 0
-
-            def _lines(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                while not flooding.is_set():     # never idle
-                    yield '{"type":"item.started","item":{"type":"tool_call"}}\n'
 
             def poll(self):  # type: ignore[no-untyped-def]
                 self.polls += 1
@@ -8753,19 +8737,21 @@ class LeafSpawnTest(unittest.TestCase):
         never_closes = threading.Event()
         self.addCleanup(never_closes.set)
 
-        class _NeverClosingStdout:
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                yield '{"type":"thread.started","thread_id":"t-1"}\n'
-                never_closes.wait(30)   # the leaked descendant, holding the write end open
-                yield '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}\n'
+        # The leaked descendant holds the write end open right through the kill.
+        never_closing = self._stream(
+            ("write", '{"type":"thread.started","thread_id":"t-1"}\n'),
+            ("wait", never_closes),
+            ("write",
+             '{"type":"item.completed","item":{"type":"agent_message","text":"x"}}\n'),
+            ("hold_open",)).reader
+        still_working = self._pipe("codex: still working\n")
 
         class _UnkillablePopen:
             pid = 424242
             returncode = None
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = _NeverClosingStdout()
-                self.stderr = io.StringIO("codex: still working\n")
+                self.stdout, self.stderr = never_closing, still_working
 
             def poll(self):  # type: ignore[no-untyped-def]
                 return None                  # never exits, never killable
@@ -8810,30 +8796,24 @@ class LeafSpawnTest(unittest.TestCase):
         released = threading.Event()
         signalled: list[int] = []
 
-        chunks_read = [0]
-
-        class _LeakedPipeStderr:
-            """A descendant that kept the write end: one line arrives, then nothing for long
-            enough that both bounded joins expire — and then a flood the abandoned reader must
-            NOT go on consuming."""
-
-            def __iter__(self):  # type: ignore[no-untyped-def]
-                chunks_read[0] += 1
-                yield "codex: partial diagnostics\n"
-                released.wait(10)
-                while True:
-                    chunks_read[0] += 1
-                    yield "codex: this arrives after the conductor has given up\n"
+        # A descendant that kept the write end: one line arrives, then nothing for long
+        # enough that both bounded joins expire — and then a 4 MB flood the abandoned
+        # reader must NOT go on consuming.
+        flood_line = "codex: this arrives after the conductor has given up\n"
+        leaked_stderr = self._stream(
+            ("write", "codex: partial diagnostics\n"),
+            ("wait", released),
+            *[("write", flood_line) for _ in range(80_000)], ("hold_open",))
+        answered = self._pipe(
+            '{"type":"thread.started","thread_id":"t-1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
 
         class _ExitedPopen:
             pid = 424242
             returncode = 0
 
             def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                self.stdout = io.StringIO(
-                    '{"type":"thread.started","thread_id":"t-1"}\n'
-                    '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n')
-                self.stderr = _LeakedPipeStderr()
+                self.stdout, self.stderr = answered, leaked_stderr.reader
 
             def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 return 0
@@ -8874,13 +8854,23 @@ class LeafSpawnTest(unittest.TestCase):
         # the driver's whole remaining life, and it keeps the leaked descendant's pipe drained
         # so that descendant goes on writing into the artifact directory the next substep
         # reads, instead of blocking on a full pipe.
-        released.set()                       # ...let the next chunk through
+        # Measured as a PLATEAU in what the flood managed to push rather than as a chunk
+        # count: with a real pipe the reader stopping is what wedges the writer, so the
+        # writer's own progress is the evidence. A reader that went on draining would let
+        # all 4 MB through.
+        released.set()                       # ...let the flood loose
         deadline = time.monotonic() + 5.0
-        while chunks_read[-1] < 2 and time.monotonic() < deadline:
+        while leaked_stderr.bytes_written == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
-        self.assertEqual(chunks_read[-1], 2, "the reader should have taken one more chunk")
-        time.sleep(0.1)
-        self.assertEqual(chunks_read[-1], 2, "...and then stopped, without draining the rest")
+        time.sleep(0.3)
+        # One in-flight read plus whatever the kernel pipe itself holds, and then nothing.
+        ceiling = 65536 * 2 + 64 * 1024
+        self.assertLess(leaked_stderr.bytes_written, ceiling,
+                        "the abandoned reader must stop, not drain the rest")
+        settled = leaked_stderr.bytes_written
+        time.sleep(0.2)
+        self.assertEqual(leaked_stderr.bytes_written, settled,
+                         "...and stay stopped: the writer is wedged on a full pipe")
 
     def test_codex_timeout_race_with_a_clean_finish_is_not_a_timeout(self) -> None:
         """The boundary case the cap cannot avoid: the leaf is still running when the deadline
@@ -8894,6 +8884,10 @@ class LeafSpawnTest(unittest.TestCase):
             body = stream + ('{"type":"turn.failed","error":{"message":"boom"}}\n'
                              if turn_failed else "")
 
+            # The whole turn, and then a stream that never reaches EOF.
+            pipes = (self._stream(("write", body), ("wait", never_closes),
+                                  ("hold_open",)).reader, self._pipe())
+
             class _FinishingPopen:
                 """Finished at the instant the cap expired, with its stream still open."""
 
@@ -8901,14 +8895,8 @@ class LeafSpawnTest(unittest.TestCase):
                 returncode = None
 
                 def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
-                    self.stdout = self._lines()
-                    self.stderr = io.StringIO("")
+                    self.stdout, self.stderr = pipes
                     self.polls = 0
-
-                def _lines(self):  # type: ignore[no-untyped-def]
-                    for line in body.splitlines(keepends=True):
-                        yield line
-                    never_closes.wait(30)   # the stream never reaches EOF
 
                 def poll(self):  # type: ignore[no-untyped-def]
                     # The cap and the poll slice are equal here, so the read makes exactly two
