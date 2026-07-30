@@ -5235,8 +5235,7 @@ def _fortran_logical_lines(text: str) -> list[str]:
     open such lines are skipped rather than flushing a truncated logical line. This matters: the
     §5.1 ``write_perf`` header exceeds the 132-column free-form limit and must be wrapped, so a
     legally-formatted source with a comment inside that wrap must still join to one logical line.
-    (The one exception is a wrap inside an open character literal, where the standard requires the
-    continuation to be immediate and such a line is literal content, not a gap.)
+    (That holds inside an open character literal too — F2008 3.3.2.4.)
 
     Unlike ``_iter_fortran_logical_lines`` this does NOT split on ``;`` — the interface-stanza
     parser wants the header as written — and it drops the line numbers. The scanning itself is the

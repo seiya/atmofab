@@ -5,24 +5,31 @@ Several deterministic, fail-closed gates have to read generated Fortran the way 
 does: a `!` comment is not code, a `&` continuation is one statement across several physical
 lines, and a `;` separates statements on one line. Three hand-rolled scanners used to do that
 independently (`validate_pipeline_semantics._iter_fortran_logical_lines` and
-`._fortran_logical_lines`, `orchestration_runtime._fortran_logical_lines`), and all three
-mis-read the SAME four inputs (issue #23). Each defect's harm direction is a false
-`Generate fail` / `Compile fail` on a source gfortran and fortitude both accept:
+`._fortran_logical_lines`, `orchestration_runtime._fortran_logical_lines`), and between them
+they mis-read four inputs (issue #23) — two that all three get wrong, one where the copies are
+wrong in OPPOSITE directions, and one only the statement scanner gets wrong. Each defect's harm
+direction is a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both
+accept:
 
 * **`str.splitlines()`** breaks on eight separators Fortran does not treat as line ends
   (`\\f`, `\\v`, `\\x85`, `\\u2028`, …), so a form feed inside a comment ended the comment early
   and re-admitted its tail AS CODE — a commented-out `use harness_…` becoming live, a phantom
-  §5.1 stanza. Splitting on `\\n` alone is the language's own rule.
+  §5.1 stanza. Splitting on `\\n` alone is the language's own rule. (All three.)
 * A **`!` inside a CONTINUED character literal** read as a comment, because quote state was
   tracked per physical line. The rest of the line was dropped and, if what survived ended in
-  `&`, the buffer stayed open and swallowed the next statement.
+  `&`, the buffer stayed open and swallowed the next statement; the two that flushed instead
+  simply lost the rest of the literal. (All three.)
 * A continuation line that does **not** start with `&` must join with a **SPACE**: the line
   break is then a token separator (F2008). Concatenating turned `do&` / `i = 1, n` into
   `doi = 1, n`. Only a `&`-led line splits a token, and that one joins tight — joining THAT
-  with a space is the mirror error.
+  with a space is the mirror error, and the copies committed one error each in OPPOSITE
+  directions, which is why comparing them against each other never flagged it. Inside a
+  character context the join is always tight: a line break cannot insert a blank into a
+  literal.
 * A **lone-`&` continuation line** (`&`, or `&! note`): testing the trailing `&` before
   consuming the leading one read the single ampersand as both markers, so the buffer stayed
-  open and glued the next statement on. gfortran terminates the statement there.
+  open and glued the next statement on. gfortran terminates the statement there. (Only the
+  statement scanner; the other two consumed the leading `&` first.)
 
 The scanner below is recovered from commit `166946a` (`_fortran_code_statements` +
 `_strip_fortran_comment_tracking_quotes`, built and verified for the issue #22 OpenMP floor,
@@ -116,6 +123,7 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
                 continue
         # Quote state is threaded across physical lines, so a `!` inside a CONTINUED literal
         # stays content.
+        resumes_literal = quote is not None
         code, quote = strip_fortran_comment_tracking_quotes(raw_line, quote)
         # `.rstrip()` matters beyond tidiness: a legal `do i &   ` (trailing blanks after the
         # continuation marker) would otherwise not register as continued. (A CRLF source cannot
@@ -129,7 +137,14 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         # And a continuation line that does NOT begin with `&` joins with a SPACE, because the
         # line break is then a token separator. Only a `&`-led line splits a token, and that one
         # joins tight.
-        joins_tight = False
+        #
+        # Inside a character context the join is ALWAYS tight: a line break cannot insert a blank
+        # into a literal. That covers the conforming `&`-led resume and also gfortran's extension
+        # of accepting a resume line with no `&` at all — which matters because it is only a
+        # `-Wampersand` warning, so such a source passes `Generate.syntax` and reaches a gate.
+        # (Verified: `'abc&` / `      def'` compiles with `len == 6`, i.e. `abcdef`, not
+        # `abc def`.) The leading blanks are column padding either way, never content.
+        joins_tight = resumes_literal
         if buffer:
             code = code.lstrip()
             if code.startswith("&"):

@@ -14853,9 +14853,15 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # domain — not, as before, only the shapes a code generator emits. The pathological
         # inputs the old restriction carved out are the point of the list below: mid-token
         # splits through the `subroutine` keyword and through the name identifier, `&`-led and
-        # not, plus each of the four defects that made the two scanners disagree. They must
-        # agree on WRONG-looking source too, because a gate's answer on a source no generator
-        # emits is still a `Generate fail` someone has to explain.
+        # not, plus all four defects. They must agree on WRONG-looking source too, because a
+        # gate's answer on a source no generator emits is still a `Generate fail` someone has
+        # to explain.
+        #
+        # Worth knowing what this test can and cannot do: of the four defects, only the join
+        # separator ever made the two scanners DISAGREE. On the other three they agreed on the
+        # same wrong answer — both invented the same phantom subroutine — so parity was never
+        # going to catch them, and it is the per-defect fixtures elsewhere in these suites that
+        # do. This guards drift between the two compositions, not correctness of the scanner.
         # Each case carries its own spec_id: deriving it from the source text is how the real
         # certified-source case below silently degenerated to `[] == []`.
         from tools.orchestration_runtime import _list_prefixed_subroutines
@@ -14900,7 +14906,7 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             ("lone-`&` wrap line carrying a comment", "dep_base",
              "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &! note\n"
              "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
-            # The blank/comment-inside-a-wrap rule, and its mid-literal exception.
+            # The blank/comment-inside-a-wrap rule, which holds inside an open literal too.
             ("blank and comment lines inside a wrap", "dep_base",
              "  subroutine dep_base__scale( &\n    ! wrap note\n\n      & x, n)\n"
              "  end subroutine\n"),

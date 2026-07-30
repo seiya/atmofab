@@ -1337,9 +1337,9 @@ def _fortran_logical_lines(source_text: str) -> list[str]:
     or a character literal can no longer be read one way here and another way there. A line
     that is blank or comment-only is skipped whether or not a continuation is in progress (a
     full-line comment is permitted between continuation lines and must not flush the buffer,
-    or a wrapped header ``(...)`` would terminate early) — except inside an open character
-    literal, where the standard requires the continuation to be immediate and a "blank" line is
-    literal content, not a wrap gap."""
+    or a wrapped header ``(...)`` would terminate early). That holds inside an open character
+    literal too — F2008 3.3.2.4 resumes a continued character context on the next line that is
+    not a comment line."""
     try:
         if not isinstance(source_text, str):
             return []

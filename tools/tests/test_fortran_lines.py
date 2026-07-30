@@ -166,6 +166,18 @@ class FortranLogicalLinesTests(unittest.TestCase):
             fortran_logical_lines("    do con&\n      &current (i = 1:n)\n"),
             [(1, "    do concurrent (i = 1:n)")])
 
+    def test_a_literal_always_joins_tight(self) -> None:
+        # A line break cannot insert a blank into a character literal, so the space-join rule
+        # stops at the quote. The second form omits the resuming `&` — non-conforming, but
+        # gfortran accepts it with only a `-Wampersand` WARNING, so a source written that way
+        # passes `Generate.syntax` and reaches a gate. Both compile to `abcdef` (pinned with a
+        # compile-time `1/(len(s) - N)` probe against gfortran 14.2 at `-std=f2008`).
+        for resume, label in (("      &def'", "conforming `&`-led resume"),
+                              ("      def'", "gfortran's missing-`&` extension")):
+            with self.subTest(resume=label):
+                self.assertEqual(fortran_logical_lines("s = 'abc&\n" + resume + "\n"),
+                                 [(1, "s = 'abcdef'")])
+
     def test_trailing_blanks_after_the_continuation_marker(self) -> None:
         # This, not CRLF, is what makes the `.rstrip()` load-bearing: `do i &   ` is legal and
         # its `&` must still register. (A CRLF source cannot exercise it — `read_text`
