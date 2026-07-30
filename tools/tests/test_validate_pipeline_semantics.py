@@ -14898,6 +14898,35 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             v = self._run(counted, impl=impl)
             self.assertEqual(len(v), want, f"{label}: {v}")
 
+    def test_mapping_form_claim_reads_only_the_model_member(self) -> None:
+        """A claim lives in the mapping's MODEL member, not in any of its prose.
+
+        Reading every value made `{method: none, apply_to: parallelizable_loops}` — a correctly
+        serial legacy mapping — license the floor to reject its own source, and a sibling like
+        `reduction_policy: serial_deterministic_acc` did the same. `method`/`scheme`/`kind` are the
+        spellings the live corpus uses (each carrying `openmp`); anything else yields no claim, which
+        fails the floor open."""
+        base = {"target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"}}
+        for abstract, label, want in (
+            ({"parallelization": {"method": "none", "apply_to": "parallelizable_loops"}},
+             "model says none, sibling is prose", 0),
+            ({"parallelization": {"scheme": "none", "default_schedule": "static"}},
+             "model says none, sibling is a schedule", 0),
+            ({"parallelization": {"apply_to": "parallelizable_loops"}},
+             "no model member at all", 0),
+            ({"reduction_policy": "serial_deterministic_acc"},
+             "an unrelated knob whose value merely reads serial-ish", 0),
+            ({"parallelization": {"method": "openmp", "apply_to": "loops"}}, "method", 1),
+            ({"parallelization": {"scheme": "openmp", "apply_to": "loops"}}, "scheme", 1),
+            ({"parallelization": {"kind": "openmp", "scope": "loops"}}, "kind", 1),
+            ({"parallelization": {"Method": "OpenMP"}}, "model key and value wrong-cased", 1),
+            ({"parallelization": "openmp", "reduction_policy": "serial_deterministic_acc"},
+             "a flat claim is unaffected by a serial-ish sibling", 1),
+        ):
+            v = self._run(self._COUNTED, impl={**base, "abstract": abstract})
+            self.assertEqual(len(v), want, f"{label}: {v}")
+
     def test_ir_declaring_no_parallelism_is_exempt(self) -> None:
         # `_validate_impl_defaults_knobs` blesses `parallelization: none`, so the floor MUST honor
         # it — otherwise the two gates contradict and a serial node cannot pass either one.

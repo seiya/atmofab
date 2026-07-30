@@ -4492,6 +4492,13 @@ _OMP_DIRECTIVE_RE = re.compile(rf"^{_BLANK}*!\$omp\b", re.IGNORECASE | re.MULTIL
 # leaving the node unsatisfiable. Read generously — this direction only ever fails the floor OPEN.
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
 
+# Inside the mapping form of the parallelization knob, the members that name the execution MODEL.
+# Taken from the live corpus, where each carries `openmp`: the sibling members are scope / schedule /
+# granularity / reduction prose (`apply_to`, `default_schedule`, `reduction_policy`, …) and must not
+# be read as a model, or a correctly serial `{method: none, apply_to: parallelizable_loops}` licenses
+# the floor to reject its own source.
+_IMPL_PARALLELIZATION_MODEL_KEYS = frozenset({"method", "scheme", "kind"})
+
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
 # parallelize (the same reason `_validate_local_operation_lowering` exempts it), and `profile/`
@@ -4534,9 +4541,17 @@ def _impl_claims_parallelism(impl: dict[str, Any]) -> bool:
             token = value.strip().lower()
             return bool(token) and token not in _NO_PARALLELISM_VALUES
         if isinstance(value, dict):
-            # The mapping form carries the model under `method` / `scheme` / similar; any member
-            # naming a non-serial model is a claim.
-            return any(names_a_model(v) for v in value.values())
+            # ONLY the model-bearing members. Reading every value made any prose member a claim, so
+            # `{method: none, apply_to: parallelizable_loops}` — a correctly serial legacy mapping —
+            # licensed the floor to reject its source, and `reduction_policy:
+            # serial_deterministic_acc` did the same. The three keys are the ones the live corpus
+            # actually uses to name the model (each with the value `openmp`); a mapping using some
+            # other spelling yields no claim, which fails the floor OPEN.
+            return any(
+                names_a_model(v)
+                for k, v in value.items()
+                if str(k).strip().lower() in _IMPL_PARALLELIZATION_MODEL_KEYS
+            )
         return False
 
     return any(
