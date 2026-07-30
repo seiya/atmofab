@@ -14984,6 +14984,12 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         v = self._run(self._model(
             "    do , i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
         self.assertEqual(len(v), 1, v)
+        # A WRAPPED comma-form header must also be recognized as wrapped: missing it leaves the file
+        # in scope, so a counted loop beside it fires even though the header might be a
+        # `do concurrent` — the false-positive direction.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do,&\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
         # The comma must not become a new way to over-match a `do`-prefixed identifier.
         self.assertEqual(self._run(self._model(
             "    domain, extent = 1\n    u = 0.0_dp\n")), [])

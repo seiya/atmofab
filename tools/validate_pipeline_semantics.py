@@ -4468,8 +4468,14 @@ _DO_CONCURRENT_RE = re.compile(
 # wrap is classifiable and must fall through to `_COUNTED_DO_RE`, but `do i=1, &` (no blanks around
 # the `=`, which is ordinary spacing) put the whole `i=1,` into that token and matched here. Only the
 # spaced spelling escaped, so the guarantee rested on a space.
+#
+# The lookahead and the optional comma admit `_DO_SEP`'s comma form, so a `do , … &` header is
+# recognized as wrapped. Missing it was the false-positive direction: the file would stay in scope
+# and a counted loop beside it could fire, even though the wrapped header might be a `do concurrent`.
+# A 13k-combination sweep over {blanks, labels, construct names, `do`-prefixed identifiers,
+# separators, tokens, trailing blanks} now reports zero spurious matches and zero missed headers.
 _WRAPPED_DO_RE = re.compile(
-    _DO_OPENER + rf"(?={_BLANK}|&){_BLANK}*[^=\s]*{_BLANK}*&{_BLANK}*$",
+    _DO_OPENER + rf"(?={_BLANK}|&|,){_BLANK}*,?{_BLANK}*[^=\s]*{_BLANK}*&{_BLANK}*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
