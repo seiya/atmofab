@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 import tools.validate_pipeline_semantics as vps
+from tools.fortran_lines import strip_fortran_comment_tracking_quotes
 from tools.lang_backend_fortran import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
     _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
@@ -13540,6 +13541,27 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         # a top-level `parameter` declaration is not a stanza
         self.assertNotIn("dp", ops)
 
+    def test_commented_out_stanza_behind_an_exotic_separator_is_not_parsed(self) -> None:
+        # issue #23, defect A, at `_parse_interface_stanzas` — which the generated-signature
+        # gate runs over the MODEL SOURCE to compare each pinned §5.1 signature within its own
+        # procedure stanza. A form feed inside a comment ended the comment early under
+        # `str.splitlines()` and re-admitted its tail AS CODE, conjuring a stanza header out of
+        # prose: it never closes, so it is reported unterminated and fails Generate closed on a
+        # source gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         (" ", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = ("module hx_model\ncontains\n"
+                       f"  ! removed: {ch} subroutine hx__ghost(a)\n"
+                       "  subroutine hx__real(a)\n"
+                       "    real, intent(in) :: a\n"
+                       "  end subroutine\n"
+                       "end module\n")
+                ops, types, errors = vps._parse_interface_stanzas(src)
+                self.assertEqual(errors, [], f"a {name} must not end the comment")
+                self.assertEqual(sorted(ops), ["hx__real"])
+                self.assertEqual(types, {})
+
     def test_missing_fence_errors(self) -> None:
         _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
         self.assertIsNotNone(err)
@@ -13666,7 +13688,10 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             vps._normalize_fortran_line(joined[0]), "subroutinehx__foo(a,b)")
 
     def test_comment_strip_honors_strings(self) -> None:
-        line = vps._strip_fortran_comment("s = '! not a comment' ! real comment")
+        # The stripper is now the shared one (issue #23); `None` is the "this physical line does
+        # not start inside a character literal" state, and the returned state is discarded here.
+        line = strip_fortran_comment_tracking_quotes(
+            "s = '! not a comment' ! real comment", None)[0]
         self.assertEqual(vps._normalize_fortran_line(line), "s='!notacomment'")
 
 
@@ -14127,6 +14152,21 @@ class ChecksSourceGateTests(unittest.TestCase):
                "use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n"
                "  implicit none\n  private\n" + body + "end module\n")
         self.assertTrue(any("harness" in v for v in self._run(src)), self._run(src))
+
+    def test_commented_out_harness_use_behind_an_exotic_separator_is_not_live(self) -> None:
+        # issue #23, defect A: the false-REJECT direction of this gate. `str.splitlines()` broke
+        # on eight separators Fortran does not treat as line ends, so a form feed inside a
+        # comment ended the comment early and re-admitted its tail AS CODE — a commented-out
+        # `use harness_...` became a live isolation breach and failed Generate on a source
+        # gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         (" ", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = _CHECKS_OK.replace(
+                    "  private\n",
+                    f"  private\n  ! dropped this: {ch} use harness_fortran_cpu_model\n")
+                self.assertEqual([v for v in self._run(src) if "harness" in v], [],
+                                 f"a {name} must not end the comment")
 
     def _exec(self, tmp: Path) -> NodeExecution:
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
@@ -14726,6 +14766,47 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             model_text=self._GOOD_MODEL)
         self.assertTrue(any("does not publish component public_api operation 'dep_base__shift'"
                             in x for x in v), v)
+
+    def test_commented_out_declaration_behind_an_exotic_separator_is_not_published(self) -> None:
+        # issue #23, defect A, in the "extra subroutine" direction: a form feed inside a comment
+        # ended the comment early under `str.splitlines()` and re-admitted its tail AS CODE, so
+        # a commented-out declaration was reported as a surface the IR does not declare — a
+        # `Generate fail` on a source gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         (" ", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                model = (
+                    "module dep_base_model\ncontains\n"
+                    f"  ! removed: {ch} subroutine dep_base__extra(y)\n"
+                    "  subroutine dep_base__scale(x, n, y)\n  end subroutine\n"
+                    "end module\n")
+                self.assertEqual(
+                    self._run(public_api={"published_operations": [
+                        {"operation_id": "dep_base__scale"}]}, model_text=model), [],
+                    f"a {name} must not end the comment")
+
+    def test_wrapped_declaration_keyword_does_not_hide_a_declaration(self) -> None:
+        # issue #23, defect C, in the "missing operation" direction. A continuation line that
+        # does NOT start with `&` must join with a SPACE — the line break is a token separator.
+        # Joining tight turned `pure &` / `subroutine dep_base__shift(x)` into
+        # `puresubroutine dep_base__shift(x)`, which the anchored declaration pattern cannot
+        # match: the gate reported a published operation as absent from a source that declares
+        # it, in legal free-form Fortran. `orchestration_runtime` joined with a space and found
+        # it, which is precisely the divergence the parity test used to have to exclude.
+        for header, label in (
+            ("  pure&\n  subroutine dep_base__shift(x)\n", "through the `pure` prefix"),
+            ("  subroutine&\n  dep_base__shift(x)\n", "between keyword and name"),
+        ):
+            with self.subTest(split=label):
+                model = (
+                    "module dep_base_model\ncontains\n"
+                    "  subroutine dep_base__scale(x, n, y)\n  end subroutine\n"
+                    + header + "  end subroutine\n"
+                    "end module\n")
+                self.assertEqual(
+                    self._run(public_api={"published_operations": [
+                        {"operation_id": "dep_base__scale"},
+                        {"operation_id": "dep_base__shift"}]}, model_text=model), [])
 
     def test_extra_prefixed_subroutine_flagged(self) -> None:
         model = (
