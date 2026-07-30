@@ -4500,29 +4500,50 @@ _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "fals
 _OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
 
 
-def _impl_declares_no_parallelism(impl: dict[str, Any]) -> bool:
-    """True when the ``impl_defaults`` knob layer says this node runs serially.
+def _impl_claims_parallelism(impl: dict[str, Any]) -> bool:
+    """True when the ``impl_defaults`` knob layer AFFIRMATIVELY claims a parallel execution model.
 
-    Read under EVERY known spelling of the parallelization knob, canonical and aliased. The alias
-    table is enforced on the Compile side, but a node carrying an alias is still a node whose intent
-    is legible, and this direction only ever fails the floor open — being generous here cannot
-    produce a false positive, while being strict would make a serial node unsatisfiable."""
+    This is the floor's licence to fail a source, and it replaced a weaker test (fire whenever the
+    FIXED layer resolves to OpenMP) that could demand the impossible. A `post_generate` violation
+    reopens ``generate.generate``, whose leaf authors source and cannot touch the certified IR — so
+    when a node's only counted loops are inherently serial (a recurrence), a floor keyed on the fixed
+    layer alone rejected every correct source it could produce and the documented escape
+    (``parallelization: none``) lay on the far side of a boundary that leaf cannot cross. That is the
+    failure-attribution bug class: a gate whose violation routes to someone who cannot fix it.
+
+    Requiring the IR's own claim makes the reopen fair. A source that ignores a model the IR names is
+    a real defect the leaf can repair; a node whose knob is SILENT is out of scope, and the
+    "cpu defaults to OpenMP" rule stays where a soft rule belongs, with ``Generate.verify`` G6. The
+    residual — an IR that claims OpenMP over loops that cannot be parallelized — is a contradiction
+    in the IR rather than a legitimate source being rejected, and the violation says so.
+
+    Read under EVERY spelling, canonical and aliased, and through the mapping form
+    (``{method: openmp, …}``), because this decides whether to fire: a claim missed here fails the
+    floor open, which is the safe direction, but a claim invented here would not be."""
     abstract = impl.get("abstract")
     if not isinstance(abstract, dict):
         return False
-    canonical_scope_keys = {"parallelization"} | {
+    model_keys = {"parallelization"} | {
         alias
         for alias, canonical in _IMPL_ABSTRACT_KNOB_ALIASES.items()
         if canonical == "parallelization"
     }
-    for key, value in abstract.items():
-        if str(key).strip().lower() not in canonical_scope_keys:
-            continue
-        if isinstance(value, str) and value.strip().lower() in _NO_PARALLELISM_VALUES:
-            return True
-        if value is False:
-            return True
-    return False
+
+    def names_a_model(value: Any) -> bool:
+        if isinstance(value, str):
+            token = value.strip().lower()
+            return bool(token) and token not in _NO_PARALLELISM_VALUES
+        if isinstance(value, dict):
+            # The mapping form carries the model under `method` / `scheme` / similar; any member
+            # naming a non-serial model is a claim.
+            return any(names_a_model(v) for v in value.values())
+        return False
+
+    return any(
+        names_a_model(value)
+        for key, value in abstract.items()
+        if str(key).strip().lower() in model_keys
+    )
 
 
 def _validate_openmp_presence_floor(
@@ -4550,13 +4571,18 @@ def _validate_openmp_presence_floor(
     wraps before it can be classified passes, a loop reached only through a ``;`` or a joined
     continuation is not counted, and only `component/` / `problem/` nodes are in scope at all.
 
-    KNOWN LIMITATION, and the escape hatch for it. A file whose only counted loops are genuinely
-    non-parallelizable — a strict recurrence such as a Thomas forward sweep — is flagged, and no
-    directive can honestly satisfy it. That node must say so in the IR: ``abstract.parallelization:
-    none`` is a blessed value on the Compile side and takes the node out of this floor entirely
-    (`_impl_declares_no_parallelism`). The escape is deliberately at the IR level rather than a
-    source-level marker, so the claim "this node is serial" is reviewable where every other
-    implementation obligation lives instead of hidden in a comment."""
+    The floor fires only when the IR AFFIRMATIVELY claims a parallel model
+    (`_impl_claims_parallelism`), not merely because the fixed layer resolves to OpenMP. That is what
+    keeps the reopen fair: a violation routes to ``generate.generate``, whose leaf authors source and
+    cannot touch the certified IR, so a demand it can only satisfy by editing the IR would be
+    unrepairable. With the claim required, the source is failing an obligation the IR itself states —
+    something the leaf can fix — and a node whose knob is silent or says ``none`` is out of scope,
+    leaving the soft "cpu defaults to OpenMP" rule with ``Generate.verify`` G6 where it belongs.
+
+    The residual case is an IR that claims OpenMP over loops that cannot be parallelized (a strict
+    recurrence). That is a contradiction inside the IR rather than a legitimate source being
+    rejected, and the violation names it: the fix is ``abstract.parallelization: none`` on the
+    Compile side, which this predicate then takes out of scope."""
     if not execution.node_key.startswith(_OPENMP_FLOOR_NODE_KINDS):
         return
     if not model_files:
@@ -4572,8 +4598,8 @@ def _validate_openmp_presence_floor(
     language = str(tc.get("language") or "").strip().lower()
     if hw_class != "cpu" or backend != "openmp" or language != "fortran":
         return
-    if _impl_declares_no_parallelism(impl):
-        return  # the IR itself says this node is serial — honoring it must not be a violation
+    if not _impl_claims_parallelism(impl):
+        return  # the IR claims no parallel model here, so there is no stated obligation to enforce
 
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
@@ -4593,8 +4619,9 @@ def _validate_openmp_presence_floor(
             "directive — the impl_defaults.abstract / backend_overrides knobs are binding, so add "
             "`!$omp parallel do` to the parallelizable loops the abstract parallel-scope knob names "
             "(a `do concurrent` loop already counts as parallel; when NO loop here is "
-            "parallelizable, do not force a directive — the IR must say so with "
-            "`impl_defaults.abstract.parallelization: none`, which exempts the node)"
+            "parallelizable the IR's own claim is the defect — it must say "
+            "`impl_defaults.abstract.parallelization: none`, which is a Compile-side fix and exempts "
+            "the node — so never force a directive you believe is wrong)"
         )
 
 
@@ -10168,10 +10195,18 @@ def _validate_impl_defaults_knobs(
             ir_path, "impl_defaults.abstract", abstract,
             _IMPL_ABSTRACT_KNOB_ALIASES, _IMPL_ABSTRACT_KNOB_TYPES, violations,
         )
-        parallelization = abstract.get("parallelization")
+        # Resolve the key case-insensitively, and report the path as WRITTEN. An exact lookup let a
+        # `Parallelization` or a space-padded key be reported for its spelling and nothing else, so a
+        # mapping form or prose value under it survived until the producer had done the rename — a
+        # second `Compile.static` remand out of a bounded repair budget for one defect.
+        par_key = next(
+            (k for k in abstract if str(k).strip().lower() == "parallelization"), None)
+        par_path = f"impl_defaults.abstract.{par_key}" if par_key is not None else (
+            "impl_defaults.abstract.parallelization")
+        parallelization = abstract.get(par_key) if par_key is not None else None
         if isinstance(parallelization, dict):
             violations.append(
-                f"{ir_path}: impl_defaults.abstract.parallelization must be a flat string, not a "
+                f"{ir_path}: {par_path} must be a flat string, not a "
                 "mapping — decompose it: the execution model goes in `parallelization`, the loops "
                 "it covers in `parallel_scope`, the nesting level in `parallel_granularity`, and "
                 "any schedule/thread override in `backend_overrides.openmp`"
@@ -10186,14 +10221,14 @@ def _validate_impl_defaults_knobs(
             # model key, and multi-word text can never be a model identifier.
             if parallelization.strip() and len(parallelization.split()) > 1:
                 violations.append(
-                    f"{ir_path}: impl_defaults.abstract.parallelization is "
+                    f"{ir_path}: {par_path} is "
                     f"{parallelization.strip()!r} — this knob carries the execution-model TOKEN "
                     "only (e.g. `openmp`, `none`); move the prose describing which loops it "
                     "applies to into `parallel_scope`"
                 )
         elif parallelization is not None:
             violations.append(
-                f"{ir_path}: impl_defaults.abstract.parallelization must be a string, got "
+                f"{ir_path}: {par_path} must be a string, got "
                 f"{type(parallelization).__name__} ({parallelization!r}) — the parallelization "
                 "knob types are pinned by spec/schema/ir/impl_defaults.schema.json"
             )
@@ -10235,6 +10270,17 @@ def _validate_impl_defaults_knobs(
             continue
         if isinstance(overrides[key], dict):
             openmp_sections.append((raw, overrides[key]))
+        elif overrides[key] is not None:
+            # A scalar or list where a mapping belongs. The renderer reads `.num_threads` off this
+            # section, so a non-mapping loses every override in it and falls back to one thread —
+            # and the exact-`openmp` early return below meant the canonical spelling was the ONE
+            # case where that went unreported.
+            violations.append(
+                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} must be a mapping of override "
+                f"names to values, got {type(overrides[key]).__name__} "
+                f"({overrides[key]!r}) — the runner renderer reads `num_threads` off this section, "
+                "so a non-mapping silently loses every override it should carry"
+            )
         if raw == "openmp":
             continue
         # More than one OpenMP-meaning section: renaming any of them collides, so say merge.

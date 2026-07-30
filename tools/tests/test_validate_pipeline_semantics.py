@@ -10458,7 +10458,8 @@ end program shallow_water2d_runner
             "_validate_openmp_presence_floor",          # which slice is deterministic
             # ... and the floor's SCOPE. This was the last place stating the punishment
             # unconditionally, and it is read by exactly the agentic leaves the floor exempts.
-            "The floor does not run on an `infrastructure`/`profile` node",
+            "The floor runs only where the `abstract` knobs affirmatively claim a parallel model",
+            "not on an `infrastructure`/`profile` node",
         ):
             self.assertIn(
                 rule, generate_skill,
@@ -14796,8 +14797,13 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             ir_dir = repo_root / ir_ref
             ir_dir.mkdir(parents=True)
             if impl is None:
+                # The default fixture CLAIMS a parallel model, because that claim is the floor's
+                # licence to fail a source: a violation reopens `generate.generate`, whose leaf
+                # cannot edit the IR, so the gate may only demand what the IR itself states. Every
+                # node the floor fires on in the live corpus carries such a claim.
                 impl = {"target": {"class": hw_class, "backend": backend},
-                        "toolchain": {"language": language}}
+                        "toolchain": {"language": language},
+                        "abstract": {"parallelization": "openmp"}}
             ir: dict = {"meta": {"spec_kind": node_key.split("/", 1)[0], "spec_id": "dep_base"}}
             if impl is not _OMIT:
                 ir["impl_defaults"] = impl
@@ -14862,6 +14868,35 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._model(
             "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
             "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_floor_needs_an_affirmative_ir_claim(self) -> None:
+        """The floor may only demand what the IR itself states.
+
+        A violation reopens `generate.generate`, whose leaf authors source and cannot touch the
+        certified IR. Keyed on the FIXED layer alone, a node whose only counted loops are inherently
+        serial had no repairable change available — the documented escape
+        (`parallelization: none`) lay on the Compile side of a boundary that leaf cannot cross, so the
+        run burned its retries and failed closed. With the claim required, a firing source is
+        ignoring an obligation its own IR states, which the leaf CAN fix."""
+        counted = self._COUNTED
+        base = {"target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"}}
+        for abstract, label, want in (
+            (None, "no abstract section at all", 0),
+            ({}, "an empty abstract section", 0),
+            ({"memory_layout": "column_major", "tiling": "none"},
+             "other knobs but no parallelization claim", 0),
+            ({"parallelization": "openmp"}, "a claim", 1),
+            ({"loop_parallelization": "openmp"}, "a claim under an alias", 1),
+            ({"parallelization": {"method": "openmp", "apply_to": "loops"}},
+             "a claim in the live mapping form", 1),
+            ({"parallelization": "openmp+simd"}, "a claim naming a novel model", 1),
+        ):
+            impl = dict(base)
+            if abstract is not None:
+                impl["abstract"] = abstract
+            v = self._run(counted, impl=impl)
+            self.assertEqual(len(v), want, f"{label}: {v}")
 
     def test_ir_declaring_no_parallelism_is_exempt(self) -> None:
         # `_validate_impl_defaults_knobs` blesses `parallelization: none`, so the floor MUST honor
@@ -15071,7 +15106,8 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
                 "meta": {"spec_kind": "component", "spec_id": "dep_base"},
                 "impl_defaults": {"target": {"class": "cpu", "backend": "openmp"},
-                                  "toolchain": {"language": "fortran"}}}), encoding="utf-8")
+                                  "toolchain": {"language": "fortran"},
+                                  "abstract": {"parallelization": "openmp"}}}), encoding="utf-8")
             pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
             src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
             src_dir.mkdir(parents=True)
@@ -15474,6 +15510,42 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
             abstract={"parallel_scope": "the face loop", "parallel_loops": ["s1"]}))
         self.assertEqual(len(v), 1, v)
         self.assertNotIn("into `parallel_scope`, not into `parallel_scope`", v[0])
+
+    def test_non_mapping_openmp_section_flagged(self) -> None:
+        # The renderer reads `.num_threads` off this section, so a scalar or list loses every
+        # override in it and falls back to one thread. The exact-`openmp` early return meant the
+        # CANONICAL spelling was the one case where that went unreported.
+        import tools.runner_renderer as rr
+        for value in (4, "static", ["a"], {"num_threads": 4}.items().__class__.__name__):
+            impl = self._impl(overrides={"openmp": value})
+            v = self._run(impl)
+            self.assertEqual(len(v), 1, f"{value!r}: {v}")
+            self.assertIn("must be a mapping of override names to values", v[0])
+            self.assertEqual(rr._threads({"impl_defaults": impl}), 1, repr(value))
+        # A mis-named section with a non-mapping body reports both its name and its shape.
+        v = self._run(self._impl(overrides={"cpu_openmp": 4}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("non-canonical section name" in x for x in v), v)
+        self.assertTrue(any("must be a mapping" in x for x in v), v)
+        # A null section is a V7 plug-hole, not a name/shape defect — same rule as a null member.
+        self.assertEqual(self._run(self._impl(overrides={"openmp": None})), [])
+
+    def test_inexact_canonical_key_is_also_shape_checked(self) -> None:
+        # Reporting only the spelling meant a mapping form, prose, or wrong type under that key
+        # survived until the producer had done the rename — a second remand for one defect.
+        for abstract, expected in (
+            ({"Parallelization": {"method": "openmp"}}, "must be a flat string, not a mapping"),
+            ({"parallelization ": "OpenMP applied to loops"}, "execution-model TOKEN"),
+            ({"PARALLELIZATION": 4}, "must be a string, got int"),
+        ):
+            v = self._run(self._impl(abstract=abstract))
+            self.assertEqual(len(v), 2, f"{abstract}: {v}")
+            self.assertTrue(any("spelled inexactly" in x for x in v), v)
+            self.assertTrue(any(expected in x for x in v), v)
+            # The shape line names the key AS WRITTEN, so the reported path exists.
+            written = list(abstract)[0]
+            self.assertTrue(
+                any(f"impl_defaults.abstract.{written}" in x for x in v if expected in x), v)
 
     def test_other_backend_sections_are_untouched(self) -> None:
         self.assertEqual(self._run(self._impl(
