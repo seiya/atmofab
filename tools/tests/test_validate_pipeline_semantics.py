@@ -15259,9 +15259,10 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
     def test_comment_and_literal_mentions_cannot_reach_a_line_start(self) -> None:
         """The anchor, not a parser, is what closes the comment/literal evasions.
 
-        A comment line begins with `!` and a continued character literal must resume with `&`, so
-        neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each of these
-        defeated an earlier, cleverer scanner."""
+        A comment line begins with `!` and a CONFORMING continued character literal resumes with
+        `&`, so neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each
+        of these defeated an earlier, cleverer scanner. (gfortran's warning-only resume-without-`&`
+        extension can reach a line start; that residual is recorded at the floor itself.)"""
         loop = "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"
         for body, label in (
             ("    ! not real code; do concurrent (i=1:1) is what we would write\n",
