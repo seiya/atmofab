@@ -10423,6 +10423,31 @@ end program shallow_water2d_runner
         ):
             self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
 
+    def test_openmp_floor_rule_is_stated_in_both_docs(self) -> None:
+        """Issue #22: the reflection rule failed because only the PUNISHING side stated it.
+        The fix is symmetry, and nothing else watches for its loss — both files are under a
+        size ceiling, which is a MAXIMUM, so deleting either statement stays green. Anchor
+        both: the `Generate.verify` SKILL must say the zero-directive slice is already
+        deterministic (so the verify leaf does not re-derive a settled verdict), and
+        phase_02 must document the floor beside the G6 band above it."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        verify_skill = (repo_root / "skills/workflow-generate-verify/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        phase_02 = (
+            repo_root / "docs/workflow/phases/phase_02_generate.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "enforced deterministically by the `Generate.gate` static check", verify_skill,
+            "the verify SKILL no longer says the zero-`!$omp` slice is gate-settled",
+        )
+        self.assertIn("`!$omp` presence floor", phase_02,
+                      "phase_02 no longer documents the Generate.gate presence floor")
+        self.assertIn(
+            "_validate_openmp_presence_floor", phase_02,
+            "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
+        )
+
     def test_every_undefined_binding_line_carries_its_own_remedy(self) -> None:
         """Each violation must be self-sufficient, and the remedy must stay SHORT.
 
@@ -14734,6 +14759,159 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
                 vps._list_component_published_subroutines(src, spec_id),
                 _list_prefixed_subroutines(src, f"{spec_id}__"),
                 f"scanner drift on prefix {spec_id}__")
+
+
+class OpenmpPresenceFloorGateTests(unittest.TestCase):
+    """`_validate_openmp_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
+    node whose impl_defaults resolve to OpenMP-on-CPU Fortran, a model source with counted `do`
+    loops must carry at least one `!$omp` directive. Presence floor only — which loops and which
+    schedule stay a Generate.verify G6 `major`. Fail-open in every ambiguous direction."""
+
+    _FIRED = "counted `do` loop(s) and not one"
+
+    def _run(self, model_text: str, *, node_key: str = "component/dep_base@0.1.0",
+             hw_class: str = "cpu", backend: str = "openmp", language: str = "fortran",
+             impl: object = None, extra_models: dict[str, str] | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            repo_root = Path(t)
+            ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
+            ir_dir = repo_root / ir_ref
+            ir_dir.mkdir(parents=True)
+            if impl is None:
+                impl = {"target": {"class": hw_class, "backend": backend},
+                        "toolchain": {"language": language}}
+            ir: dict = {"meta": {"spec_kind": node_key.split("/", 1)[0], "spec_id": "dep_base"}}
+            if impl is not _OMIT:
+                ir["impl_defaults"] = impl
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
+            src_dir.mkdir(parents=True)
+            (pipeline_dir / "lineage.json").write_text(
+                json.dumps({"node_key": node_key, "ir_ref": ir_ref}), encoding="utf-8")
+            model = src_dir / "dep_base_model.f90"
+            model.write_text(model_text, encoding="utf-8")
+            models = [model]
+            for name, text in (extra_models or {}).items():
+                extra = src_dir / name
+                extra.write_text(text, encoding="utf-8")
+                models.append(extra)
+            execution = vps._stub_execution(pipeline_dir, node_key)
+            v: list[str] = []
+            vps._validate_openmp_presence_floor(repo_root, execution, models, v)
+            return v
+
+    @staticmethod
+    def _model(body: str) -> str:
+        return ("module dep_base_model\ncontains\n"
+                "  subroutine dep_base__scale(u, n)\n" + body + "  end subroutine\n"
+                "end module\n")
+
+    _COUNTED = _model.__func__("    do i = 1, n\n      u(i) = 2.0_dp * u(i)\n    end do\n")
+
+    def test_counted_loops_without_directive_flagged(self) -> None:
+        v = self._run(self._COUNTED)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(self._FIRED, v[0])
+        self.assertIn("1 counted `do` loop(s)", v[0])
+        # Self-contained line: the rule it broke AND the remedy, on the same line (issue #12).
+        self.assertIn("impl_defaults.abstract / backend_overrides knobs are binding", v[0])
+        self.assertIn("!$omp parallel do", v[0])
+        self.assertIn("dep_base_model.f90", v[0])
+
+    def test_directive_present_passes(self) -> None:
+        self.assertEqual(self._run(self._model(
+            "    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_uppercase_directive_passes(self) -> None:
+        # Fortran directives are case-insensitive; `!$OMP` is the same directive.
+        self.assertEqual(self._run(self._model(
+            "    !$OMP PARALLEL DO\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_do_concurrent_only_passes(self) -> None:
+        # `do concurrent` IS the parallel construct — demanding `!$omp` beside it is wrong.
+        self.assertEqual(self._run(self._model(
+            "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_do_while_only_passes(self) -> None:
+        # No trip count to distribute across threads.
+        self.assertEqual(self._run(self._model(
+            "    do while (i < n)\n      i = i + 1\n    end do\n")), [])
+
+    def test_whole_array_syntax_passes(self) -> None:
+        # The sw2d flux node's real shape: no counted loop, so nothing for the floor to demand.
+        # Whether the whole-array form honors the knobs is Generate.verify G6's call.
+        self.assertEqual(self._run(self._model("    u = 2.0_dp * u\n")), [])
+
+    def test_labeled_do_counts(self) -> None:
+        v = self._run(self._model("100 do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_omp_substring_identifier_is_not_a_directive(self) -> None:
+        # `component` / `compute` / `compile` all contain `omp`; only `!$omp` is a directive.
+        v = self._run(self._model(
+            "    ! compute the component totals, then compile the sum\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_gpu_class_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, hw_class="gpu"), [])
+
+    def test_non_openmp_backend_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, backend="serial"), [])
+
+    def test_non_fortran_language_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, language="c"), [])
+
+    def test_absent_impl_defaults_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, impl=_OMIT), [])
+
+    def test_non_mapping_impl_defaults_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, impl="openmp"), [])
+
+    def test_problem_node_in_scope(self) -> None:
+        v = self._run(self._COUNTED, node_key="problem/dep_base@0.1.0")
+        self.assertEqual(len(v), 1, v)
+
+    def test_infrastructure_node_exempt(self) -> None:
+        # The real harness shape: ~20 counted loops, zero directives. This is host measurement
+        # code (timing/reduction bookkeeping) that must not be forced to parallelize — the same
+        # exemption `_validate_local_operation_lowering` makes.
+        body = "".join(
+            f"    do i = 1, n\n      acc{k} = acc{k} + u(i)\n    end do\n" for k in range(20))
+        self.assertEqual(
+            self._run(self._model(body), node_key="infrastructure/harness_fortran_cpu@0.7.0"), [])
+
+    def test_profile_node_exempt(self) -> None:
+        # The real profile shape: trivial zero-fill init loops around a component composition.
+        self.assertEqual(self._run(self._model(
+            "    do i = 1, nx\n      u(i) = 0.0_dp\n    end do\n"),
+            node_key="profile/dep_base@0.1.0"), [])
+
+    def test_unknown_node_kind_fails_open(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, node_key="harness/dep_base@0.1.0"), [])
+
+    def test_no_model_files_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            execution = vps._stub_execution(Path(t), "component/dep_base@0.1.0")
+            v: list[str] = []
+            vps._validate_openmp_presence_floor(Path(t), execution, [], v)
+            self.assertEqual(v, [])
+
+    def test_one_violation_per_offending_file(self) -> None:
+        # Each line names its own file, so no line depends on a neighbor surviving truncation.
+        v = self._run(self._COUNTED, extra_models={"dep_base_extra_model.f90": self._COUNTED})
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all(self._FIRED in x for x in v), v)
+        self.assertEqual({x.split(":")[0].rsplit("/", 1)[1] for x in v},
+                         {"dep_base_model.f90", "dep_base_extra_model.f90"})
+
+    def test_clean_file_beside_offending_file_is_not_flagged(self) -> None:
+        clean = self._model(
+            "    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")
+        v = self._run(self._COUNTED, extra_models={"dep_base_extra_model.f90": clean})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("dep_base_model.f90", v[0])
 
 
 class LocalOperationLoweringGateTests(unittest.TestCase):

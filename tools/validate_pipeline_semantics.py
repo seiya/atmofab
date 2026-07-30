@@ -4289,6 +4289,12 @@ def _validate_generate_outputs_for_generation(
     _validate_component_generated_surface(
         repo_root, execution, model_files, violations
     )
+    # Issue #22: a presence floor for the impl-defaults reflection rule — an OpenMP-on-CPU Fortran
+    # profile with counted `do` loops and zero `!$omp` directives. Everything above that floor
+    # (which loops, which schedule) stays with Generate.verify G6.
+    _validate_openmp_presence_floor(
+        repo_root, execution, model_files, violations
+    )
 
 
 # `subroutine` declaration opener mirroring orchestration_runtime._FORTRAN_SUBROUTINE_RE (the
@@ -4404,6 +4410,83 @@ def _validate_component_generated_surface(
             "is NOT in the IR public_api.published_operations — a component's published surface "
             "must match its IR public_api exactly (rename an internal helper without the "
             f"`{spec_id}__` prefix, or add it to the published operations)")
+
+
+# A COUNTED `do` opener: `do <var> =`, including the labeled form (`10 do i = 1, n`). The `=` tail
+# is what makes this counted, so `do concurrent (...)` and `do while (...)` are excluded by
+# construction — no negative lookahead needed. `do concurrent` is already a parallel construct and
+# `do while` has no trip count to distribute, so neither belongs in the floor's trigger.
+_COUNTED_DO_RE = re.compile(
+    r"^[ \t]*(?:\d+[ \t]+)?do[ \t]+[a-z_]\w*[ \t]*=", re.IGNORECASE | re.MULTILINE
+)
+
+# The OpenMP sentinel is the FULL directive prefix. A bare `omp` is a substring of
+# `component` / `compute` / `compile`, so scanning for it would report a directive in almost any
+# source file; `!$` is what makes it a directive rather than three letters of an identifier.
+_OMP_DIRECTIVE_RE = re.compile(r"!\$omp", re.IGNORECASE)
+
+# The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
+# harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
+# parallelize (the same reason `_validate_local_operation_lowering` exempts it), and `profile/`
+# nodes compose components around trivial zero-fill init loops, where an `!$omp` demand is a pure
+# false positive. Restricting to a positive list also keeps a future spec_kind fail-open.
+_OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
+
+
+def _validate_openmp_presence_floor(
+    repo_root: Path,
+    execution: NodeExecution,
+    model_files: list[Path],
+    violations: list[str],
+) -> None:
+    """Issue #22 deterministic floor: on a node whose ``impl_defaults`` resolve to OpenMP-on-CPU
+    Fortran, a generated model source that contains counted ``do`` loops must contain at least one
+    ``!$omp`` directive.
+
+    This is a PRESENCE FLOOR only: it never inspects WHICH loops carry a directive, whether the
+    schedule matches ``backend_overrides.openmp.schedule``, or whether the parallelization is
+    correct. A present-but-wrong or present-but-partial reflection of the knobs stays the province
+    of ``Generate.verify`` G6 (the ``major`` remand for an unreflected impl-defaults profile). Only
+    the unambiguous case — the profile says OpenMP, the source has loops to parallelize, and there
+    is not one directive anywhere — is decided here, where it costs no judgment and no tokens.
+
+    The floor exists because the rule was asymmetric: ``Generate.verify`` has always remanded on it
+    while the producer prompt never stated it, so whether a node passed depended on which loops the
+    verify leaf happened to look at. Fail-open by design in every ambiguous direction: whole-array
+    sources (zero counted loops) pass, non-OpenMP / non-CPU / non-Fortran profiles pass, an
+    unresolvable IR passes, and only `component/` / `problem/` nodes are in scope at all."""
+    if not execution.node_key.startswith(_OPENMP_FLOOR_NODE_KINDS):
+        return
+    if not model_files:
+        return  # missing model already flagged upstream
+
+    impl = _impl_contract_for_execution(repo_root, execution)
+    if not isinstance(impl, dict):
+        return
+    target = impl.get("target") if isinstance(impl.get("target"), dict) else {}
+    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
+    hw_class = str(target.get("class") or "").strip().lower()
+    backend = str(target.get("backend") or "").strip().lower()
+    language = str(tc.get("language") or "").strip().lower()
+    if hw_class != "cpu" or backend != "openmp" or language != "fortran":
+        return
+
+    for model_file in model_files:
+        text = model_file.read_text(encoding="utf-8", errors="ignore")
+        if _OMP_DIRECTIVE_RE.search(text):
+            continue
+        counted = len(_COUNTED_DO_RE.findall(text))
+        if counted < 1:
+            continue  # whole-array syntax: nothing to parallelize, verify G6's province
+        violations.append(
+            f"{model_file}: impl_defaults resolve to OpenMP on CPU "
+            "(target.class=cpu, target.backend=openmp, toolchain.language=fortran) but this "
+            f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
+            "directive — the impl_defaults.abstract / backend_overrides knobs are binding, so add "
+            "`!$omp parallel do` to the parallelizable loops the abstract parallel-scope knob names "
+            "(a `do concurrent` loop already counts as parallel; a genuinely non-parallelizable "
+            "loop must not be forced)"
+        )
 
 
 def _read_dependency_graph_sidecar(repo_root: Path, ir_ref: str | None) -> dict[str, Any] | None:
