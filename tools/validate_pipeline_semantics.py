@@ -4433,32 +4433,43 @@ _BLANK = r"[ \t\f]"
 # A `do` opener at a line start, with the spellings a generator plausibly emits: a statement label
 # before it (`10 do i = 1, n`), a named construct (`loop_i: do ...`).
 _DO_OPENER = rf"^{_BLANK}*(?:\d+{_BLANK}+)?(?:[a-z_]\w*{_BLANK}*:{_BLANK}*)?do"
+# The separator between `do` and its loop-control. F2008 permits a LEADING COMMA there
+# (`do , i = 1, n`), which gfortran accepts under `-std=f2008`, so a comma form must classify
+# like the plain one — otherwise `do , concurrent (...)` went unrecognized and a genuinely
+# parallel file could be flagged.
+_DO_SEP = rf"(?:{_BLANK}+|{_BLANK}*,{_BLANK}*)"
 
 # A COUNTED loop: `do <var> =`, also accepting an obsolescent branch-target label (`do 10 i = 1, n`).
 # The `=` tail is what makes it counted, so `do concurrent (...)` and `do while (...)` are excluded by
 # construction, and `do_it = 1` cannot match because `do` must be followed by a blank.
 _COUNTED_DO_RE = re.compile(
-    _DO_OPENER + rf"{_BLANK}+(?:\d+{_BLANK}+)?[a-z_]\w*{_BLANK}*=", re.IGNORECASE | re.MULTILINE
+    _DO_OPENER + rf"{_DO_SEP}(?:\d+{_BLANK}+)?[a-z_]\w*{_BLANK}*=", re.IGNORECASE | re.MULTILINE
 )
 
 # `do concurrent` anywhere in the file is a declaration of parallel intent and takes the file out of
 # the floor's reach even when counted loops sit beside it — without this, an accumulator reset beside
 # `do concurrent` work was reported as unparallelized, contradicting the floor's own message.
 _DO_CONCURRENT_RE = re.compile(
-    _DO_OPENER + rf"{_BLANK}+concurrent\b", re.IGNORECASE | re.MULTILINE
+    _DO_OPENER + rf"{_DO_SEP}concurrent\b", re.IGNORECASE | re.MULTILINE
 )
 
 # A `do` header that wraps before it can be classified (`do &`, `do i &`, `do&`). Such a header might
 # be a `do concurrent`, so its presence fails the WHOLE FILE open rather than risk the false positive.
-# A header whose BOUNDS wrap (`do i = 1, &`) is already classified by `_COUNTED_DO_RE` and unaffected.
 #
-# The lookahead is load-bearing and belongs to THIS pattern alone: the two above are separated from
-# their operand by `{_BLANK}+`, but this one may see `do&` with nothing between, so without a
-# boundary it matched any wrapped line whose first token merely STARTS with `do` — `domain, &`,
-# `double &`, `dot_product(a,b) &`. A continued argument list is this repo's idiomatic style, so that
-# silently voided the floor for the whole file on ordinary code.
+# Two guards keep it from swallowing a file it has no business in — this pattern takes the WHOLE FILE
+# out of scope, so an over-match here does not miss a loop, it silently disables the gate.
+#
+# The lookahead belongs to THIS pattern alone: the two above are separated from their operand by
+# `{_BLANK}+`, but this one may see `do&` with nothing between, so without a boundary it matched any
+# wrapped line whose first token merely STARTS with `do` — `domain, &`, `double &`,
+# `dot_product(a,b) &`. A continued argument list is this repo's idiomatic style.
+#
+# And the wrapped token excludes `=`, because `\S*` is one blank-free token: a header whose BOUNDS
+# wrap is classifiable and must fall through to `_COUNTED_DO_RE`, but `do i=1, &` (no blanks around
+# the `=`, which is ordinary spacing) put the whole `i=1,` into that token and matched here. Only the
+# spaced spelling escaped, so the guarantee rested on a space.
 _WRAPPED_DO_RE = re.compile(
-    _DO_OPENER + rf"(?={_BLANK}|&){_BLANK}*\S*{_BLANK}*&{_BLANK}*$",
+    _DO_OPENER + rf"(?={_BLANK}|&){_BLANK}*[^=\s]*{_BLANK}*&{_BLANK}*$",
     re.IGNORECASE | re.MULTILINE,
 )
 

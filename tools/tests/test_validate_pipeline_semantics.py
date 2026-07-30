@@ -14957,6 +14957,37 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                 wrapped + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
             self.assertEqual(len(v), 1, f"{label} must not take the file out of scope: {v}")
 
+    def test_wrapped_bounds_stay_classified_whatever_the_spacing(self) -> None:
+        # `\S*` is one blank-free token, so `do i=1, &` — ordinary spacing — put the whole `i=1,`
+        # into the wrapped-header token and took the file out of scope. Only the SPACED spelling
+        # escaped, meaning the guarantee rested on a space. A classifiable header must fall through
+        # to the counted pattern under every spacing.
+        for header, label in (
+            ("    do i = 1, &\n      n\n", "spaces around `=`"),
+            ("    do i=1, &\n      n\n", "no spaces around `=`"),
+            ("    do i=1,&\n      n\n", "no blank before the marker either"),
+            ("    do i=1,n,&\n      1\n", "a stride that wraps"),
+            ("    do i=&\n      1, n\n", "the bound itself wraps"),
+        ):
+            v = self._run(self._model(
+                header + "      u(i) = 0.0_dp\n    end do\n"
+                "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"{label} must stay in scope: {v}")
+
+    def test_leading_comma_loop_control(self) -> None:
+        # F2008 permits a leading comma in loop-control (`do , i = 1, n`) and gfortran accepts it
+        # under `-std=f2008`, so both classifiers must read it. Unrecognized, `do , concurrent (...)`
+        # made a genuinely parallel file a violation.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do , concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+        v = self._run(self._model(
+            "    do , i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+        # The comma must not become a new way to over-match a `do`-prefixed identifier.
+        self.assertEqual(self._run(self._model(
+            "    domain, extent = 1\n    u = 0.0_dp\n")), [])
+
     def test_wrapped_header_fails_the_whole_file_open(self) -> None:
         # An unclassifiable wrapped header might be a `do concurrent`, so it must not merely fail to
         # count — it has to take the file out of scope, or a classified counted loop beside it would
