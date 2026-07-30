@@ -186,7 +186,7 @@ class FortranLogicalLinesTests(unittest.TestCase):
         # `\v&def'` compiles (with only `-Wampersand`) to `abc<VT>&def`, length 8, pinned with
         # `1/merge(0, 1, (len(sa) == 8) .and. (sa == 'abc'//achar(11)//'&def'))`.
         for ch, name in (("\x0b", "vertical tab"), ("\x1c", "FS"), ("\x85", "NEL"),
-                         ("\xa0", "NBSP"), (" ", "LINE SEPARATOR")):
+                         ("\xa0", "NBSP"), ("\u2028", "LINE SEPARATOR")):
             with self.subTest(blank_candidate=name):
                 self.assertEqual(fortran_logical_lines(f"sa = 'abc&\n{ch}&def'\n"),
                                  [(1, f"sa = 'abc{ch}&def'")], f"{name} is not a Fortran blank")

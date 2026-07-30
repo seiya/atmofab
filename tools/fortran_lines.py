@@ -16,9 +16,10 @@ fortitude both accept:
   and re-admitted its tail AS CODE — a commented-out `use harness_…` becoming live, a phantom
   §5.1 stanza. Splitting on `\\n` alone is the language's own rule. (All three.)
 * **`str.strip()`'s blank set is not Fortran's**, and it is the same character class from the
-  other end: free form has exactly three blanks (space, tab, form feed) while `strip()` also folds
-  `\v`, `\x85`, `\xa0`, `\u2028`, …. Those are ordinary CONTENT to the compiler, so stripping them
-  re-admits literal content as code — a `\v` before a resuming `&` made the scanner eat an `&`
+  other end: gfortran's free-form blank set is exactly three characters (space, tab — a
+  `-Wtabs` extension — and form feed) while `strip()` also folds
+  `\\v`, `\\x85`, `\\xa0`, `\\u2028`, …. Those are ordinary CONTENT to the compiler, so stripping
+  them re-admits literal content as code — a `\\v` before a resuming `&` made the scanner eat an `&`
   gfortran reads as part of the string, and the rest of the literal spilled out as declarations.
   (All three; found in review of the consolidation, in the consolidated scanner itself.)
 * A **`!` inside a CONTINUED character literal** read as a comment, because quote state was
@@ -148,18 +149,6 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         # (`'abc&` / blank or `! note` / `      &def'` compiles to a string of length 6).
         # Guarding this skip on `quote is None` made the statement flush early and spilled the
         # rest of the literal out as code, which is how a quoted `open(` became a file-I/O
-        # violation. A comment line is a property of the PHYSICAL line — blank, or first
-        # nonblank `!` — so the probe deliberately reads from a clean state: that is exactly
-        # the predicate, not an approximation of it. (A continuation line inside a literal
-        # cannot be mistaken for one: its first nonblank must be the resuming `&`.)
-        # Free form permits comment lines BETWEEN a `&`-terminated line and its continuation;
-        # they are ignored, not terminators. Flushing on one truncates the statement.
-        #
-        # This holds INSIDE an open character literal too — F2008 3.3.2.4 resumes a continued
-        # character context on "the next line that is not a comment line", and gfortran agrees
-        # (`'abc&` / blank or `! note` / `      &def'` compiles to a string of length 6).
-        # Guarding this skip on `quote is None` made the statement flush early and spilled the
-        # rest of the literal out as code, which is how a quoted `open(` became a file-I/O
         # violation. A comment line is a property of the PHYSICAL line — all blanks, or first
         # nonblank `!` — so the probe deliberately reads from a clean state: that is exactly the
         # predicate, not an approximation of it. (A continuation line inside a literal cannot be
@@ -172,8 +161,11 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         # stays content.
         resumes_literal = quote is not None
         code, quote = strip_fortran_comment_tracking_quotes(raw_line, quote)
-        # Trailing blanks go, so a legal `do i &   ` still registers as continued. (A CRLF source
-        # cannot exercise this — `read_text` universal-newline-translates first.)
+        # Trailing blanks go, so a legal `do i &   ` still registers as continued. A `\r` is NOT
+        # a blank here: every caller reads its Fortran through `read_text`, which universal-
+        # newline-translates before the scanner sees it, so a CR does not reach this line from a
+        # file. Text that arrives another way (a §5.1 block through PyYAML) could carry one, and
+        # it would then be content — which is what gfortran does with it too.
         code = _rstrip_blanks(code)
         # ORDER MATTERS, in both directions.
         #

@@ -14853,7 +14853,9 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # domain — not, as before, only the shapes a code generator emits. The pathological
         # inputs the old restriction carved out are the point of the list below: mid-token
         # splits through the `subroutine` keyword and through the name identifier, `&`-led and
-        # not, plus all six defects. They must agree on WRONG-looking source too, because a
+        # not, plus five of the six defects. The blank-set one has no case here: on it the two
+        # scanners agreed (both wrong), so parity could not have seen it either. They must agree
+        # on WRONG-looking source too, because a
         # gate's answer on a source no generator emits is still a `Generate fail` someone has
         # to explain.
         #

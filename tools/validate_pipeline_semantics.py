@@ -4356,9 +4356,10 @@ def _validate_component_generated_surface(
 # The residual, measured while consolidating the scanners (issue #23) and stated here rather than
 # left implied: gfortran also ACCEPTS a literal resumed with no `&` at all (`-Wampersand`, a warning,
 # rc=0 — so such a source passes `Generate.syntax`), and then `'start&` / `do i = 1, n suffix'` does
-# put a counted-`do` spelling at a physical line start, inside a string. The floor would count it.
-# Left as-is deliberately: it is one warning-carrying non-conforming shape, no source in the tree has
-# it, and the alternative is the stateful scanner this floor exists without.
+# put a counted-`do` spelling at a physical line start, inside a string. The floor would count it —
+# a false REJECT on a source `Generate.syntax` passed. ACCEPTED rather than fixed: it is one
+# warning-carrying non-conforming shape, no source in the tree has it, and the alternative is the
+# stateful scanner this floor exists without.
 #
 # That joining scanner does live in the tree again, as `tools/fortran_lines` (issue #23) — but for
 # consumers this floor is not: they read the JOINED logical line and compare it against a declared

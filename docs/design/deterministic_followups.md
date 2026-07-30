@@ -3392,8 +3392,12 @@ return shapes and add only their own composition — the validator's keeps the l
 tolerate, the runtime's strips because `_FORTRAN_SUBROUTINE_RE` carries no leading `\s*`.
 
 **Not the OpenMP floor.** `_validate_openmp_presence_floor` (issue #22) answers the same question with four anchored
-physical-line patterns and no state, and it stays that way. A presence check can anchor its way out of comments and
-literals; these consumers read the JOINED logical line and compare it against a declared surface, so they cannot.
+physical-line patterns and no state, and it stays that way. A presence check can anchor its way out of comments and out
+of every CONFORMING literal; these consumers read the JOINED logical line and compare it against a declared surface, so
+they cannot. The residual, measured here and recorded at the floor: gfortran also accepts a literal resumed with no `&`
+(`-Wampersand`, `rc=0`), and a counted-`do` spelling inside such a literal does reach a physical line start and would be
+counted — a false reject on a source `Generate.syntax` passed. Accepted rather than fixed: one warning-carrying
+non-conforming shape, absent from the tree, against re-introducing the state the floor exists without.
 
 **Acceptance.** Every defect was latent: over all 823 `.f90` files in the tree, the pre-change modules (`0bd007e`) and
 these agree EXACTLY on `_list_component_published_subroutines`, `_list_prefixed_subroutines` and
