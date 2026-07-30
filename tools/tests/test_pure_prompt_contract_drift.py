@@ -109,6 +109,12 @@ PINNED: dict[str, str] = {
     # `private` fails the lint gate, just as the bare `private` without the list fails the syntax
     # gate. Only the private-alone direction was stated before (issue #12 item 5).
     "pure-15": "2b1c56474c820653bd59681e23a631c2104aea9547569e530f2705b9699a217d",
+    # pure-16: new rule (7) states the impl_defaults reflection obligation the producer was
+    # punished by but never told (issue #22) — the `abstract` / `backend_overrides` knobs bind, read
+    # by MEANING because their spelling varies per node, with the deterministic zero-`!$omp` floor
+    # named. The two headers are reworded to match (rules are no longer all deterministic gates;
+    # the Target profile is an obligation, not data).
+    "pure-16": "f521dddaf5ffed52de974ab651292a8e781f57e27696719b28e4b2f288409a2c",
 }
 
 

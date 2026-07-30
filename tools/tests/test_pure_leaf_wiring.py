@@ -409,6 +409,15 @@ class PureRenderTests(unittest.TestCase):
             "associate (unused_<name> => <name>)",  # the unused-dummy bind form
             "intent(out)",            # Generate.static dataflow
             "INERT",                  # the inert dependency-call rule
+            # Rule (7), the impl_defaults reflection obligation (issue #22). These three are
+            # PROSE literals on purpose: the rendered prompt also inlines the IR and the target
+            # profile, so `impl_defaults` / `backend_overrides` / `openmp` all appear here even
+            # with rule (7) deleted and pin nothing. Each of these appears ONLY in rule (7) or
+            # in the Target-profile header it binds (mutation-checked: reverting either text
+            # fails this test).
+            "Read the knobs by MEANING, not by key name",
+            "not one `!$omp` directive anywhere",
+            "binding obligations rule (7) holds you to",
         ):
             self.assertIn(token, prompt)
         # `<name>` is not a substitution key, so the single-pass renderer must leave the

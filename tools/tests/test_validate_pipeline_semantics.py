@@ -10447,6 +10447,21 @@ end program shallow_water2d_runner
             "_validate_openmp_presence_floor", phase_02,
             "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
         )
+        # The agentic residual producer reads this SKILL instead of the pure prompt, so the
+        # obligation must be stated on BOTH producer paths or the asymmetry simply moves.
+        generate_skill = (
+            repo_root / "skills/workflow-generate-generate/SKILL.md"
+        ).read_text(encoding="utf-8")
+        for rule in (
+            "are **obligations**, not description",     # the knobs bind
+            "Read them by MEANING, not by key name",    # the spellings vary per node
+            "_validate_openmp_presence_floor",          # which slice is deterministic
+        ):
+            self.assertIn(
+                rule, generate_skill,
+                f"the generate.generate SKILL no longer states {rule!r} — the agentic producer "
+                "path would be punished by a rule only the reviewer is told (issue #22)",
+            )
 
     def test_every_undefined_binding_line_carries_its_own_remedy(self) -> None:
         """Each violation must be self-sufficient, and the remedy must stay SHORT.

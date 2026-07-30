@@ -2778,6 +2778,20 @@ ahead of the variable context):
 4. **The dependency-dataflow gate** (`Generate.gate` static check, §79) and the **inert dependency-call rule** (§60): sink-in-IR ⇒
    load-bearing, *uncertain correspondence ⇒ load-bearing too*; no sink ⇒ inert, with no invented purpose.
 
+**Addendum 2026-07-30 (issue #22, `pure-16`) — the scope now admits one PARTLY-deterministic rule.** The closure rule
+above ("exactly the rules a gate will fail the bundle on") had a failure mode it did not anticipate: a rule can be
+enforced on the producer without any gate enforcing it, because `Generate.verify` remands on it. The `impl_defaults`
+reflection rule was exactly that — `skills/workflow-generate-verify/SKILL.md`, `phase_02_generate.md` G6, and
+`pure_generate_verify.txt` all stated it, while `pure_generate_generate.txt` contained no occurrence of
+`impl_defaults`, `parallel`, or `openmp`. The 2026-07-29 `shallow_water2d` closure died `fail_closed` on it. A rule that
+punishes must be a rule that is stated, so rule **(7)** joins the paragraph and the scope sentence is amended: the
+closure is the rules a gate fails the bundle on, PLUS a rule the producer is remanded for, and for that one the
+statement must say which slice is deterministic. Here the zero-`!$omp` presence floor is
+(`_validate_openmp_presence_floor`, `Generate.gate` static check) and the coverage/schedule band above it is G6's. The
+knobs are referenced by MEANING rather than by key name, because the live certified IRs spell the same knob four
+different ways and remain PRIOR-ART exemplars — pinning the canonical spellings is a separate change on the `Compile`
+side, not something the producer prompt can assume.
+
 **Distillation is a correctness surface, not editing.** The first cut of the paragraph was reviewed against the gate
 CODE (not against its own prose) and three of its five compressed rules were wrong (the bullets below number against the TEMPLATE's `(1)`-`(5)`, not the four groups above) in ways that would have re-run the
 defect-C failure under a new name — the compression, not the research, was the defect:
