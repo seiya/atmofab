@@ -14942,6 +14942,21 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
                 self._run(self._model(body)), [],
                 f"this is a documented fail-open, not a catch: {label}")
 
+    def test_an_identifier_starting_with_do_does_not_void_the_floor(self) -> None:
+        # `_WRAPPED_DO_RE` takes the WHOLE FILE out of scope, so an over-match there is not a missed
+        # loop — it silently disables the gate. Without a boundary after `do` it matched any wrapped
+        # line whose first token merely starts with `do`, and a continued argument list is this
+        # repo's idiomatic style, so ordinary compiling code voided the floor.
+        for wrapped, label in (
+            ("    call helper( &\n      domain, &\n      nx)\n", "continued argument list"),
+            ("    double &\n      precision, intent(in) :: dt\n", "wrapped declaration"),
+            ("    x = dot_product(a,b) &\n      + 1.0_dp\n", "wrapped expression"),
+            ("    dose &\n      = 1\n", "identifier that starts with `do`"),
+        ):
+            v = self._run(self._model(
+                wrapped + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"{label} must not take the file out of scope: {v}")
+
     def test_wrapped_header_fails_the_whole_file_open(self) -> None:
         # An unclassifiable wrapped header might be a `do concurrent`, so it must not merely fail to
         # count — it has to take the file out of scope, or a classified counted loop beside it would

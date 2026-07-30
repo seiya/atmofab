@@ -4451,8 +4451,15 @@ _DO_CONCURRENT_RE = re.compile(
 # A `do` header that wraps before it can be classified (`do &`, `do i &`, `do&`). Such a header might
 # be a `do concurrent`, so its presence fails the WHOLE FILE open rather than risk the false positive.
 # A header whose BOUNDS wrap (`do i = 1, &`) is already classified by `_COUNTED_DO_RE` and unaffected.
+#
+# The lookahead is load-bearing and belongs to THIS pattern alone: the two above are separated from
+# their operand by `{_BLANK}+`, but this one may see `do&` with nothing between, so without a
+# boundary it matched any wrapped line whose first token merely STARTS with `do` — `domain, &`,
+# `double &`, `dot_product(a,b) &`. A continued argument list is this repo's idiomatic style, so that
+# silently voided the floor for the whole file on ordinary code.
 _WRAPPED_DO_RE = re.compile(
-    _DO_OPENER + rf"{_BLANK}*\S*{_BLANK}*&{_BLANK}*$", re.IGNORECASE | re.MULTILINE
+    _DO_OPENER + rf"(?={_BLANK}|&){_BLANK}*\S*{_BLANK}*&{_BLANK}*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 # The OpenMP sentinel, anchored the same way. A bare `omp` is a substring of `component` / `compute` /
