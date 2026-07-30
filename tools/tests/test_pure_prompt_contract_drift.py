@@ -112,9 +112,13 @@ PINNED: dict[str, str] = {
     # pure-16: new rule (7) states the impl_defaults reflection obligation the producer was
     # punished by but never told (issue #22) — the `abstract` / `backend_overrides` knobs bind, read
     # by MEANING because their spelling varies per node, with the deterministic zero-`!$omp` floor
-    # named. The two headers are reworded to match (rules are no longer all deterministic gates;
-    # the Target profile is an obligation, not data).
-    "pure-16": "f521dddaf5ffed52de974ab651292a8e781f57e27696719b28e4b2f288409a2c",
+    # named (scoped to its real trigger) plus the `-fopenmp` and directive-continuation traps. The
+    # two headers are reworded to match (rules are no longer all deterministic gates; the Target
+    # profile is an obligation, not data). The VERIFY template moves in the same bump: it is the
+    # only text the pure reviewer reads, so leaving its G6 unamended would have reproduced issue
+    # #22's asymmetry on the reviewer side — it now scopes the floor's guarantee instead of
+    # assuming a directive always exists.
+    "pure-16": "2a379e4330ec66479f52981fbf91200e01c8beb97d13ec2cff300c676a93dc4a",
 }
 
 

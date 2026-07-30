@@ -28100,7 +28100,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # keys inline (a skeleton reading `abstract: {...}` taught the authoring leaf nothing about
         # the names it is now gated on) in addition to the boundary-section table of forbidden
         # alias spellings.
-        "docs/workflow/phases/phase_01_compile.md": 47000,
+        # Bumped 47000->47600 (review): the canonical-names paragraph gained the section-name
+        # axis (`backend_overrides.cpu_openmp` -> the literal `openmp`), which is where the live
+        # 4-threads-measured-as-1 defect actually sits, plus the "closed table, not exhaustive"
+        # correction. 47000 left 2 bytes of headroom, which is not a ceiling, it is a tripwire.
+        "docs/workflow/phases/phase_01_compile.md": 47600,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28173,7 +28177,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 25900->26300: same correction as phase_01 — 25900 was estimated before the bullet
         # existed. Naming each forbidden spelling costs the bytes; a bullet that said only "use the
         # canonical names" would leave the leaf to guess which of its five habits is canonical.
-        "skills/workflow-compile-generate/SKILL.md": 26300,
+        # Bumped 26300->26700 (review): same two additions as phase_01 — the `cpu_openmp`
+        # section-name alias and the case-insensitive matching note. The IR author is gated on both.
+        "skills/workflow-compile-generate/SKILL.md": 26700,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -28323,7 +28329,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `Generate.gate` static check already rejected before verify runs (counted `do` loops with
         # zero `!$omp`), so the verify leaf spends its judgment on the band above that floor instead
         # of re-deriving a verdict the gate had settled.
-        "skills/workflow-generate-verify/SKILL.md": 27800,
+        # Bumped 27800->28200 (review): the floor's guarantee had been stated unconditionally,
+        # which told the reviewer to stop checking for directives on the node kinds and source
+        # shapes where the floor never runs — turning a caught defect into a fail-open. Scoping it
+        # correctly costs words, and a shorter sentence that is wrong is not a saving.
+        "skills/workflow-generate-verify/SKILL.md": 28200,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer

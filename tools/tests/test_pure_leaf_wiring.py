@@ -416,14 +416,35 @@ class PureRenderTests(unittest.TestCase):
             # in the Target-profile header it binds (mutation-checked: reverting either text
             # fails this test).
             "Read the knobs by MEANING, not by key name",
-            "not one `!$omp` directive anywhere",
+            "not one `!$omp` directive at the start of a line",
             "binding obligations rule (7) holds you to",
+            # The floor's real scope, and the two traps a mandated directive introduces. Stating
+            # the punishment without its exemptions asserted a rule that does not exist on the
+            # node kinds where complying is itself the defect.
+            "It does NOT run on an `infrastructure` or `profile` node",
+            "the syntax gate passes `-fopenmp` on an openmp target",
         ):
             self.assertIn(token, prompt)
         # `<name>` is not a substitution key, so the single-pass renderer must leave the
         # `associate` form intact — the assertion above is also this pin.
         # Static prefix first (byte-stable order): rules precede the variable documents.
         self.assertLess(prompt.index("Authoring rules"), prompt.index("Harness capabilities"))
+
+    def test_pure_verify_prompt_scopes_the_deterministic_floor(self) -> None:
+        # Issue #22 was an asymmetry between the producer prompt and the reviewer's rule. This
+        # template is the ONLY text the pure `generate.verify` leaf reads — it reads no SKILL — so
+        # an amendment landing in the verify SKILL and phase_02 but not here re-creates the same
+        # asymmetry with the roles swapped, which is exactly what happened until this pin existed.
+        prompt = ort.prepare_launch_request_payload(_pure_request("verify"))["launch_prompt_full"]
+        for token in (
+            "G6 — impl_defaults reflection",
+            # the floor exists ...
+            "already settled deterministically by the `Generate.gate` static check",
+            # ... and its guarantee is SCOPED, so the reviewer is not told to stop looking where
+            # the floor never ran.
+            "That floor does not run on any other node kind",
+        ):
+            self.assertIn(token, prompt)
 
     def test_pure_launch_prompt_renders_exemplar_block(self) -> None:
         # Complements the fence/scan test below with the CONTENT assertion: an injected exemplar

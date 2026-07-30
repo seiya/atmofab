@@ -2789,8 +2789,11 @@ closure is the rules a gate fails the bundle on, PLUS a rule the producer is rem
 statement must say which slice is deterministic. Here the zero-`!$omp` presence floor is
 (`_validate_openmp_presence_floor`, `Generate.gate` static check) and the coverage/schedule band above it is G6's. The
 knobs are referenced by MEANING rather than by key name, because the live certified IRs spell the same knob four
-different ways and remain PRIOR-ART exemplars — pinning the canonical spellings is a separate change on the `Compile`
-side, not something the producer prompt can assume.
+different ways and remain PRIOR-ART exemplars. The canonical spellings landed alongside this, as
+`_validate_impl_defaults_knobs` on `Compile.static`, but that does not let the prompt assume them: certified IRs already
+on disk keep their aliases (the compile gate does not re-run on resume), so a MEANING-based reading is still what a
+producer shown an aliased exemplar needs. The reviewer side of the same rule moved in the same bump — leaving
+`pure_generate_verify.txt` unamended would have re-created issue #22's asymmetry with the roles swapped.
 
 **Distillation is a correctness surface, not editing.** The first cut of the paragraph was reviewed against the gate
 CODE (not against its own prose) and three of its five compressed rules were wrong (the bullets below number against the TEMPLATE's `(1)`-`(5)`, not the four groups above) in ways that would have re-run the
