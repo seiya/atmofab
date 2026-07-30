@@ -4469,13 +4469,17 @@ _DO_CONCURRENT_RE = re.compile(
 # the `=`, which is ordinary spacing) put the whole `i=1,` into that token and matched here. Only the
 # spaced spelling escaped, so the guarantee rested on a space.
 #
+# A trailing comment after the marker is allowed (`do & ! parallel loop`), which free form permits
+# and gfortran accepts: requiring only blanks after the `&` left such a header unrecognized, so a
+# counted loop beside it fired on a source whose wrapped header may well have been a `do concurrent`.
+#
 # The lookahead and the optional comma admit `_DO_SEP`'s comma form, so a `do , … &` header is
 # recognized as wrapped. Missing it was the false-positive direction: the file would stay in scope
 # and a counted loop beside it could fire, even though the wrapped header might be a `do concurrent`.
 # A 13k-combination sweep over {blanks, labels, construct names, `do`-prefixed identifiers,
 # separators, tokens, trailing blanks} now reports zero spurious matches and zero missed headers.
 _WRAPPED_DO_RE = re.compile(
-    _DO_OPENER + rf"(?={_BLANK}|&|,){_BLANK}*,?{_BLANK}*[^=\s]*{_BLANK}*&{_BLANK}*$",
+    _DO_OPENER + rf"(?={_BLANK}|&|,){_BLANK}*,?{_BLANK}*[^=\s]*{_BLANK}*&{_BLANK}*(?:!.*)?$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -10388,11 +10392,23 @@ def _append_impl_alias_violations(
             # the rest are pinned so that they can have one, which is exactly the property an
             # inexact spelling destroys.
             if name.lower() in canonical_names and raw != name.lower():
+                canonical_exact = name.lower()
+                if any(str(k) == canonical_exact for k in section):
+                    # The exact key is present too, so "rename it" would collide into a duplicate
+                    # YAML key and `yaml.safe_load` would keep the last, silently discarding a value.
+                    # The alias and section paths already say merge for this shape; a canonical
+                    # VARIANT is the same collision one spelling further in.
+                    remedy = (
+                        f"the exact `{canonical_exact}` is already present, so MERGE this key's "
+                        "value into it and delete this one; renaming would collide into a "
+                        "duplicate key"
+                    )
+                else:
+                    remedy = f"rename it to the bare lowercase `{canonical_exact}`"
                 violations.append(
-                    f"{ir_path}: {prefix}.{raw!r} is the canonical knob `{name.lower()}` spelled "
-                    f"inexactly — rename it to the bare lowercase `{name.lower()}` (a consumer "
-                    "looks up the literal key, so any casing or surrounding whitespace makes this "
-                    f"knob unread){extra_why}"
+                    f"{ir_path}: {prefix}.{raw!r} is the canonical knob `{canonical_exact}` spelled "
+                    f"inexactly — {remedy} (a consumer looks up the literal key, so any casing or "
+                    f"surrounding whitespace makes this knob unread){extra_why}"
                 )
             continue
         # Case-insensitive, like every other comparison here: a `Threads` beside a `NUM_THREADS`

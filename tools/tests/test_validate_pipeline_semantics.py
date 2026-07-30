@@ -15058,6 +15058,27 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(self._run(self._model(
             "    domain, extent = 1\n    u = 0.0_dp\n")), [])
 
+    def test_wrapped_header_may_carry_a_trailing_comment(self) -> None:
+        # Free form permits a comment after the continuation marker and gfortran accepts it
+        # (verified). Requiring only blanks left `do & ! parallel loop` unrecognized, so a counted
+        # loop beside it fired on a source whose wrapped header may well have been a `do concurrent`.
+        for wrap, label in (
+            ("    do & ! parallel loop\n      concurrent (i = 1:n)\n",
+             "blank then comment after the marker"),
+            ("    do &! tight\n      concurrent (i = 1:n)\n", "comment abutting the marker"),
+            ("    do i & ! note\n      = 1, n\n", "a counted header wrapped with a comment"),
+        ):
+            self.assertEqual(
+                self._run(self._model(
+                    "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+                    + wrap + "      u(i) = 0.0_dp\n    end do\n")), [],
+                f"{label} must take the file out of scope")
+        # The guards still hold with a comment present.
+        v = self._run(self._model(
+            "    call helper( & ! wrap\n      domain, &\n      nx)\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
     def test_wrapped_header_fails_the_whole_file_open(self) -> None:
         # An unclassifiable wrapped header might be a `do concurrent`, so it must not merely fail to
         # count — it has to take the file out of scope, or a classified counted loop beside it would
@@ -15481,6 +15502,24 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         # Each line names the OTHER sections, so a line read alone is still actionable.
         self.assertTrue(any("'cpu_openmp_x86_64'" in x for x in v), v)
         self.assertTrue(any("'cpu_openmp'" in x for x in v), v)
+
+    def test_canonical_variant_beside_the_exact_key_says_merge(self) -> None:
+        # "Rename it to `num_threads`" collides into a duplicate YAML key when the exact key is
+        # already there, and `yaml.safe_load` keeps the last — silently discarding a value. The alias
+        # and section paths already say merge for this shape; a canonical VARIANT is the same
+        # collision one spelling further in.
+        for section, keys in (("overrides", {"num_threads": 4, "NUM_THREADS": 8}),
+                              ("abstract", {"parallelization": "openmp",
+                                            "PARALLELIZATION": "openmp"})):
+            impl = (self._impl(overrides={"openmp": keys}) if section == "overrides"
+                    else self._impl(abstract=keys))
+            v = self._run(impl)
+            self.assertTrue(any("is already present, so MERGE" in x for x in v), f"{section}: {v}")
+            self.assertFalse(any("rename it to the bare lowercase" in x for x in v), v)
+        # Alone, the variant still gets the rename remedy.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("rename it to the bare lowercase `num_threads`", v[0])
 
     def test_two_member_aliases_of_one_canonical_say_merge(self) -> None:
         # The member-level twin of the section-level collision: told to rename separately, both
