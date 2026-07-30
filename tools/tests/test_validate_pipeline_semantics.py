@@ -15073,6 +15073,14 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         self.assertIn("already present, so DELETE this key", v[0])
         self.assertNotIn("rename it to", v[0])
 
+    def test_alias_beside_a_case_different_canonical_also_says_delete(self) -> None:
+        # `Threads` beside `NUM_THREADS` is still an alias beside its canonical key. A
+        # case-sensitive presence test told it to "rename to num_threads", which would leave the
+        # section holding the same knob under two spellings.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 4, "Threads": 8}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("already present, so DELETE this key", v[0])
+
     def test_list_valued_alias_remedy_names_the_type_change(self) -> None:
         # 15 live IRs carry `parallel_loops` as a LIST while `parallel_scope` is pinned to a string,
         # so a bare rename trades a name violation for a type violation on the next turn.

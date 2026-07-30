@@ -10220,12 +10220,16 @@ def _append_impl_alias_violations(
     non-string key (``2:``, ``true:``, ``~:``), and comparing those against a string raised an
     unhandled ``TypeError`` that replaced the whole ``FAIL - <violation>`` report with a traceback,
     losing every violation already collected in that run."""
+    present_lowered = {str(k).strip().lower() for k in section}
     for key in sorted(section, key=str):
         name = str(key).strip()
         canonical = aliases.get(name.lower())
         if canonical is None:
             continue
-        if canonical in section:
+        # Case-insensitive, like every other comparison here: a `Threads` beside a `NUM_THREADS`
+        # is still an alias beside its canonical key, and telling it to "rename to num_threads"
+        # would leave the section holding the same knob twice.
+        if canonical in present_lowered:
             remedy = (
                 f"the canonical `{canonical}` is already present, so DELETE this key — move any "
                 f"detail it carries into `parallel_scope` rather than into `{canonical}`"
