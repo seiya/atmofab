@@ -14830,18 +14830,20 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
                 spec_kind="profile", node_key="profile/dep_base@0.1.0"), [])
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
-        # Drift guard: the validator's self-contained scanner must agree with
-        # orchestration_runtime._list_prefixed_subroutines (which it may not import) over the
-        # domain a code generator emits — one-line declarations and TOKEN-boundary continuations
-        # (the `subroutine __op( &` argument-list wrap below), plus comment / interface-block /
-        # parenless / case / mixed-prefix edge cases and a real committed certified source. A
-        # pathological split THROUGH the `subroutine` keyword or the name identifier is out of
-        # scope (the two shared logical-line helpers join continuations with different whitespace;
-        # no generator emits a mid-token split — see `_list_component_published_subroutines`).
+        # Drift guard: the validator's published-surface scanner must agree with
+        # orchestration_runtime._list_prefixed_subroutines (which it may not import). Both now
+        # read `fortran_lines.fortran_logical_lines` (issue #23), so this runs over the FULL
+        # domain — not, as before, only the shapes a code generator emits. The pathological
+        # inputs the old restriction carved out are the point of the list below: mid-token
+        # splits through the `subroutine` keyword and through the name identifier, `&`-led and
+        # not, plus each of the four defects that made the two scanners disagree. They must
+        # agree on WRONG-looking source too, because a gate's answer on a source no generator
+        # emits is still a `Generate fail` someone has to explain.
         from tools.orchestration_runtime import _list_prefixed_subroutines
-        sources = [
-            self._GOOD_MODEL,
-            ("module m\ncontains\n"
+        cases = [
+            ("the shared good model", self._GOOD_MODEL),
+            ("comment / interface-block / parenless / case / mixed-prefix edges",
+             "module m\ncontains\n"
              "  ! a comment mentioning subroutine dep_base__ghost\n"
              "  PURE subroutine dep_base__Scale( &\n      x, n, y)\n  end subroutine\n"
              "  subroutine dep_base__ping\n  end subroutine\n"
@@ -14850,15 +14852,53 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
              "  subroutine helper_internal(z)\n  end subroutine\n"
              "  function dep_base__notasub(x)\n  end function\n"
              "end module\n"),
-            Path("tools/tests/data/sw2d_call_only_unext_model.f90").read_text(encoding="utf-8"),
+            # C: a split THROUGH a token, in every combination of `&`-led and not.
+            ("mid-token split through the `pure` prefix",
+             "  pure&\n  subroutine dep_base__scale(x)\n  end subroutine\n"),
+            ("mid-token split, `&`-led resume",
+             "  pu&\n  &re subroutine dep_base__scale(x)\n  end subroutine\n"),
+            ("mid-token split through the name",
+             "  subroutine dep_base__sc&\n  &ale(x)\n  end subroutine\n"),
+            ("split between keyword and name, no leading `&`",
+             "  subroutine&\n  dep_base__scale(x)\n  end subroutine\n"),
+            # A: exotic separators, in a comment and before a declaration.
+            ("form feed inside a comment",
+             "  ! removed \x0c subroutine dep_base__ghost(y)\n"
+             "  subroutine dep_base__scale(x)\n  end subroutine\n"),
+            ("NEL and the unicode separators inside a comment",
+             "  ! a \x85 b   c   subroutine dep_base__ghost(y)\n"
+             "  subroutine dep_base__scale(x)\n  end subroutine\n"),
+            # B: a `!` inside a continued character literal.
+            ("`!` inside a continued literal",
+             "  subroutine dep_base__scale(x)\n"
+             "    character(len=*), parameter :: m = 'a&\n      &!b'\n"
+             "  end subroutine\n"
+             "  subroutine dep_base__ping\n  end subroutine\n"),
+            # D: the lone-`&` continuation line, bare and with a comment.
+            ("lone-`&` wrap line",
+             "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &\n"
+             "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
+            ("lone-`&` wrap line carrying a comment",
+             "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &! note\n"
+             "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
+            # The blank/comment-inside-a-wrap rule, and its mid-literal exception.
+            ("blank and comment lines inside a wrap",
+             "  subroutine dep_base__scale( &\n    ! wrap note\n\n      & x, n)\n"
+             "  end subroutine\n"),
+            ("`;`-packed declaration",
+             "module m\ncontains; subroutine dep_base__ping()\nend subroutine\nend module\n"),
+            ("a real committed certified source",
+             Path("tools/tests/data/sw2d_call_only_unext_model.f90").read_text(
+                 encoding="utf-8")),
         ]
-        prefixes = ["dep_base__", "dep_base__", "dynamics_shallow_water"]
-        for src, pfx in zip(sources, prefixes):
-            spec_id = pfx[:-2] if pfx.endswith("__") else pfx
-            self.assertEqual(
-                vps._list_component_published_subroutines(src, spec_id),
-                _list_prefixed_subroutines(src, f"{spec_id}__"),
-                f"scanner drift on prefix {spec_id}__")
+        for label, src in cases:
+            spec_id = ("dynamics_shallow_water" if "dynamics_shallow_water" in src
+                       else "dep_base")
+            with self.subTest(case=label):
+                self.assertEqual(
+                    vps._list_component_published_subroutines(src, spec_id),
+                    _list_prefixed_subroutines(src, f"{spec_id}__"),
+                    f"scanner drift on prefix {spec_id}__")
 
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
