@@ -4420,9 +4420,11 @@ def _validate_component_generated_surface(
 # The `=` tail is what makes the loop counted, so `do concurrent (...)` and `do while (...)` are
 # excluded by construction — no negative lookahead needed. `do while` has no trip count to
 # distribute; `do concurrent` is itself the parallel construct (see `_DO_CONCURRENT_RE`).
+# Matched against ONE STATEMENT at a time (`_fortran_code_statements` has already split on `;`),
+# so `^` is the real statement start rather than a guess at one.
 _COUNTED_DO_RE = re.compile(
-    r"(?:^|;)[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?[a-z_]\w*[ \t]*=",
-    re.IGNORECASE | re.MULTILINE,
+    r"^[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?[a-z_]\w*[ \t]*=",
+    re.IGNORECASE,
 )
 
 # `do concurrent` anywhere in the file is a declaration of parallel intent, which takes the file out
@@ -4434,8 +4436,8 @@ _COUNTED_DO_RE = re.compile(
 # post-semicolon), because a named `do concurrent` construct is legal f2008 and a file using one is
 # just as parallel as a file using the bare form.
 _DO_CONCURRENT_RE = re.compile(
-    r"(?:^|;)[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?concurrent\b",
-    re.IGNORECASE | re.MULTILINE,
+    r"^[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?concurrent\b",
+    re.IGNORECASE,
 )
 
 # The OpenMP sentinel, anchored at the start of its line. Two reasons for the anchor. A bare `omp`
@@ -4455,20 +4457,56 @@ _OMP_DIRECTIVE_RE = re.compile(r"^[ \t]*!\$omp\b", re.IGNORECASE | re.MULTILINE)
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
 
 
-def _fortran_code_only_text(text: str) -> str:
-    """``text`` with comment tails dropped and string CONTENTS masked, line structure preserved.
+def _fortran_code_statements(text: str) -> list[str]:
+    """``text`` reduced to one entry per Fortran STATEMENT, comments dropped and string contents
+    masked. Both loop scans run over this rather than over raw text.
 
-    Both loop scans run over this rather than the raw source. Scanning raw text made the floor
-    trivially evadable in the worst possible direction: because the loop patterns accept a `;` as a
-    statement separator, a single COMMENT line mentioning `do concurrent` — or a `;` inside a string
-    literal followed by it — exempted the whole file and disabled a `fail_closed` gate. The
-    mirror-image blindness inflated the counted-loop tally from prose. The directive scan
-    deliberately does NOT use this view: an `!$omp` sentinel IS a Fortran comment, so stripping
-    comments would erase exactly what it looks for (its line anchor is what keeps it honest)."""
-    return "\n".join(
-        _mask_fortran_string_contents(_strip_fortran_inline_comment(line))
-        for line in text.splitlines()
-    )
+    Three defects motivated each part, all of them reproduced on real sources:
+
+    * Scanning raw text let a single COMMENT line mentioning `do concurrent` exempt a whole file and
+      disable a `fail_closed` gate — the patterns accept `;` as a statement separator, and prose
+      supplies semicolons freely. Comment stripping and string masking close that, and the mirror
+      case where prose inflated the counted-loop tally.
+    * ``str.splitlines()`` breaks on eight separators Fortran does not treat as line ends (``\\f``,
+      ``\\v``, ``\\x85``, ``\\u2028`` …), so a form feed inside a comment ended the comment early
+      and re-admitted its tail AS CODE — reopening the same hole through a file gfortran and
+      fortitude both accept. Splitting on ``\\n`` alone is the language's own rule.
+    * Free-form ``&`` continuations were not joined, so ``do &``/``  concurrent (...)`` read as two
+      unrecognizable fragments: an evasion for counted loops and, worse, a FALSE POSITIVE on a
+      genuinely parallel file.
+
+    The directive scan deliberately does NOT use this view: an ``!$omp`` sentinel IS a Fortran
+    comment, so stripping comments would erase exactly what it looks for. Its line anchor is what
+    keeps it honest, and a ``\\f`` cannot help an evader there — gfortran does not end the line at
+    one either, so such an ``!$omp`` is genuinely not a directive."""
+    statements: list[str] = []
+    buffer = ""
+    for raw_line in text.split("\n"):
+        # The trailing `.rstrip()` also removes a CRLF file's `\r`, so a trailing `&` stays visible.
+        code = _strip_fortran_inline_comment(raw_line).rstrip()
+        continued = code.endswith("&")
+        if continued:
+            code = code[:-1]
+        if buffer:
+            stripped = code.lstrip()
+            buffer += stripped[1:] if stripped.startswith("&") else stripped
+        else:
+            buffer = code
+        if continued:
+            continue
+        statements.extend(
+            _mask_fortran_string_contents(part)
+            for part in _split_fortran_statements(buffer)
+            if part.strip()
+        )
+        buffer = ""
+    if buffer.strip():
+        statements.extend(
+            _mask_fortran_string_contents(part)
+            for part in _split_fortran_statements(buffer)
+            if part.strip()
+        )
+    return statements
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
@@ -4556,10 +4594,10 @@ def _validate_openmp_presence_floor(
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         if _OMP_DIRECTIVE_RE.search(text):
             continue
-        code = _fortran_code_only_text(text)
-        if _DO_CONCURRENT_RE.search(code):
+        statements = _fortran_code_statements(text)
+        if any(_DO_CONCURRENT_RE.match(s) for s in statements):
             continue  # already parallel by construct, whatever else the file contains
-        counted = len(_COUNTED_DO_RE.findall(code))
+        counted = sum(1 for s in statements if _COUNTED_DO_RE.match(s))
         if counted < 1:
             continue  # whole-array syntax: nothing to parallelize, verify G6's province
         violations.append(
@@ -4568,8 +4606,9 @@ def _validate_openmp_presence_floor(
             f"generated model source has {counted} counted `do` loop(s) and not one `!$omp` "
             "directive — the impl_defaults.abstract / backend_overrides knobs are binding, so add "
             "`!$omp parallel do` to the parallelizable loops the abstract parallel-scope knob names "
-            "(a `do concurrent` loop already counts as parallel; a genuinely non-parallelizable "
-            "loop must not be forced)"
+            "(a `do concurrent` loop already counts as parallel; when NO loop here is "
+            "parallelizable, do not force a directive — the IR must say so with "
+            "`impl_defaults.abstract.parallelization: none`, which exempts the node)"
         )
 
 
@@ -10190,7 +10229,17 @@ def _validate_impl_defaults_knobs(
     # and is invisible to `_dget`). Every section that MEANS OpenMP is collected, so a mis-named one
     # still gets its members checked: reporting only the section name would hide a `threads` alias
     # inside it until the author fixed the name and came back for a second remand.
-    canonical_present = any(str(k) == "openmp" for k in overrides)
+    # Every key that MEANS OpenMP, canonical or not. A rename remedy is only followable when this
+    # node has exactly one such key: with two, "key it by the literal `openmp`" told twice produces
+    # a duplicate YAML key, and PyYAML keeps the last — silently dropping one section's overrides,
+    # which is the harm this gate exists to prevent. `cpu_openmp` and `cpu_openmp_x86_64` are both
+    # real `selected.backend_key` spellings, so the pair is plausible rather than synthetic.
+    openmp_keys = [
+        k for k in overrides
+        if str(k).strip().lower() == "openmp"
+        or str(k).strip().lower() in _IMPL_OPENMP_SECTION_ALIASES
+    ]
+    must_merge = len(openmp_keys) > 1
     openmp_sections: list[tuple[str, dict[str, Any]]] = []
     for key in sorted(overrides, key=str):
         raw = str(key)
@@ -10202,14 +10251,16 @@ def _validate_impl_defaults_knobs(
             openmp_sections.append((raw, overrides[key]))
         if raw == "openmp":
             continue
-        # When the canonical section already exists beside this one, renaming would collide; say so
-        # rather than issuing a remedy that cannot be followed.
-        if canonical_present:
+        # More than one OpenMP-meaning section: renaming any of them collides, so say merge.
+        if must_merge:
+            others = ", ".join(
+                sorted(repr(str(k)) for k in openmp_keys if str(k) != raw))
             violations.append(
-                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} duplicates the canonical "
-                "`openmp` section, which is already present — MERGE its entries into `openmp` and "
-                "delete it (the runner renderer reads only `backend_overrides.openmp`, so this "
-                "section's overrides are not applied)"
+                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} is one of several sections "
+                f"that all mean OpenMP ({others}) — MERGE their entries into a single section "
+                "keyed by the literal `openmp` and delete the rest; renaming each of them "
+                "separately collides into a duplicate key, and the runner renderer reads only "
+                "`backend_overrides.openmp`"
             )
         elif lowered == "openmp":
             violations.append(

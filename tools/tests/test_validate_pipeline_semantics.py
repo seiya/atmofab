@@ -14836,6 +14836,11 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertIn("impl_defaults.abstract / backend_overrides knobs are binding", v[0])
         self.assertIn("!$omp parallel do", v[0])
         self.assertIn("dep_base_model.f90", v[0])
+        # The line must also name its own ESCAPE HATCH. The generate leaf cannot edit the IR, so a
+        # node whose loops genuinely cannot be parallelized needs to be told where the exemption
+        # lives, or the only readings of this line are "emit a directive you believe is wrong" and
+        # "fail forever".
+        self.assertIn("`impl_defaults.abstract.parallelization: none`", v[0])
 
     def test_directive_present_passes(self) -> None:
         self.assertEqual(self._run(self._model(
@@ -14937,6 +14942,51 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
         self.assertEqual(len(v), 1, v)
         self.assertIn("1 counted `do` loop(s)", v[0])
+
+    def test_exotic_line_separators_in_a_comment_do_not_exempt(self) -> None:
+        # `str.splitlines()` breaks on eight separators Fortran does not treat as line ends, so a
+        # form feed inside a comment ended the comment early and re-admitted its tail AS CODE —
+        # reopening the comment-evasion hole through a file gfortran and fortitude both accept.
+        for ch, name in ((
+            "\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+            (" ", "LINE SEPARATOR"), (" ", "PARAGRAPH SEPARATOR"), ("\x1c", "FS"),
+        ):
+            v = self._run(self._model(
+                f"    ! prose {ch} do concurrent (i=1:n) not written\n"
+                "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"a {name} must not end the comment: {v}")
+
+    def test_form_feed_before_a_directive_is_not_a_directive(self) -> None:
+        # The mirror direction, and the gate is right to fire: gfortran does not end the line at a
+        # form feed either, so that `!$omp` is genuinely inside the preceding statement's comment.
+        v = self._run(self._model(
+            "    n = n\x0c!$omp parallel do\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_continuation_split_loop_headers(self) -> None:
+        # Free-form `&` continuations were not joined, so a split header read as two unrecognizable
+        # fragments — an evasion for counted loops and a FALSE POSITIVE on a parallel file.
+        for body, label, want in (
+            ("    do i &\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "`do i &` / `= 1, n` is a counted loop", 1),
+            ("    do &\n      i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "`do &` / `i = 1, n` is a counted loop", 1),
+            ("    do i &\n      &= 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "a continuation line may repeat the `&`", 1),
+            ("    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+             "    do &\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n",
+             "a split `do concurrent` still exempts", 0),
+        ):
+            v = self._run(self._model(body))
+            self.assertEqual(len(v), want, f"{label}: {v}")
+
+    def test_crlf_source_is_scanned(self) -> None:
+        # A CRLF file leaves `\r` at each line end, which would make a trailing `&` invisible and
+        # so break continuation joining on exactly the sources a Windows-side editor produces.
+        v = self._run(self._model(
+            "    do i &\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n").replace("\n", "\r\n"))
+        self.assertEqual(len(v), 1, v)
 
     def test_named_and_labeled_do_concurrent_also_exempt(self) -> None:
         # A named `do concurrent` construct is legal f2008 and just as parallel as the bare form.
@@ -15264,8 +15314,20 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
             v = self._run(self._impl(
                 overrides={"openmp": {"num_threads": 4}, name: {"num_threads": 8}}))
             self.assertEqual(len(v), 1, f"{name}: {v}")
-            self.assertIn("duplicates the canonical `openmp` section", v[0])
-            self.assertIn("MERGE its entries", v[0])
+            self.assertIn("several sections that all mean OpenMP", v[0])
+            self.assertIn("MERGE their entries", v[0])
+
+    def test_two_misnamed_sections_without_a_canonical_one_say_merge(self) -> None:
+        # Both are real `selected.backend_key` spellings. Telling each separately to "key it by the
+        # literal `openmp`" produces a duplicate key, and PyYAML keeps the last — silently dropping
+        # one section's overrides, which is the harm this gate exists to prevent.
+        v = self._run(self._impl(overrides={
+            "cpu_openmp": {"num_threads": 4}, "cpu_openmp_x86_64": {"num_threads": 8}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE their entries" in x for x in v), v)
+        # Each line names the OTHER sections, so a line read alone is still actionable.
+        self.assertTrue(any("'cpu_openmp_x86_64'" in x for x in v), v)
+        self.assertTrue(any("'cpu_openmp'" in x for x in v), v)
 
     def test_members_of_a_misnamed_section_are_still_checked(self) -> None:
         # Reporting only the section name would hide the alias inside it until the author fixed the
