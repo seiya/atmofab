@@ -15248,8 +15248,10 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         # case-sensitive presence test told it to "rename to num_threads", which would leave the
         # section holding the same knob under two spellings.
         v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 4, "Threads": 8}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("already present, so DELETE this key", v[0])
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("already present, so DELETE this key" in x for x in v), v)
+        # ... and the canonical key itself is still reported for its inexact spelling.
+        self.assertTrue(any("spelled inexactly" in x for x in v), v)
 
     def test_list_valued_alias_remedy_names_the_type_change(self) -> None:
         # 15 live IRs carry `parallel_loops` as a LIST while `parallel_scope` is pinned to a string,
@@ -15326,10 +15328,45 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, f"{key}: {v}")
             self.assertIn("non-canonical spelling", v[0])
 
-    def test_wrong_cased_num_threads_is_type_checked(self) -> None:
+    def test_wrong_cased_canonical_key_is_flagged_and_still_type_checked(self) -> None:
+        # Two distinct defects, so two lines: the spelling the renderer cannot read, and the type.
+        # Normalizing for the ALIAS lookup is right (`Threads` must still be caught), but
+        # normalizing the CANONICAL side let a wrong-cased key pass as canonical — which is the
+        # silent one-thread degradation this table exists to prevent, since
+        # `runner_renderer._threads` reads the literal `num_threads`.
         v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": "default"}}))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("must be int, got str", v[0])
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("spelled inexactly" in x for x in v), v)
+        self.assertTrue(any("must be int, got str" in x for x in v), v)
+
+    def test_canonical_keys_must_be_spelled_exactly(self) -> None:
+        # Correctly TYPED but inexactly spelled: the type check alone reports nothing, so before
+        # this the gate was silent while the renderer returned 1.
+        import tools.runner_renderer as rr
+        for key in ("NUM_THREADS", "Num_Threads", "num_threads ", " num_threads"):
+            impl = self._impl(overrides={"openmp": {key: 4}})
+            v = self._run(impl)
+            self.assertEqual(len(v), 1, f"{key!r}: {v}")
+            self.assertIn("spelled inexactly", v[0])
+            self.assertIn("`num_threads`", v[0])
+            # The gate's verdict must agree with what the consumer actually reads.
+            self.assertEqual(rr._threads({"impl_defaults": impl}), 1, key)
+        # And the exact spelling stays clean, with the renderer reading it.
+        impl = self._impl(overrides={"openmp": {"num_threads": 4}})
+        self.assertEqual(self._run(impl), [])
+        self.assertEqual(rr._threads({"impl_defaults": impl}), 4)
+
+    def test_abstract_canonical_keys_must_be_spelled_exactly(self) -> None:
+        for key in ("PARALLELIZATION", "Parallel_Scope", "parallel_granularity "):
+            v = self._run(self._impl(abstract={key: "openmp"}))
+            self.assertEqual(len(v), 1, f"{key!r}: {v}")
+            self.assertIn("spelled inexactly", v[0])
+
+    def test_a_novel_knob_name_is_not_a_spelling_violation(self) -> None:
+        # The exact-spelling rule applies ONLY to the pinned family; the knob layer stays open.
+        self.assertEqual(self._run(self._impl(
+            abstract={"Wavefront_Depth": 3, "MEMORY_LAYOUT": "column_major"},
+            overrides={"openmp": {"Proc_Bind": "spread"}})), [])
 
     def test_backend_key_named_override_section_flagged(self) -> None:
         # The motivating harm itself: three live IRs request 4 threads under `cpu_openmp` and run on

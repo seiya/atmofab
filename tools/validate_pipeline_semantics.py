@@ -10304,6 +10304,8 @@ def _append_impl_alias_violations(
     unhandled ``TypeError`` that replaced the whole ``FAIL - <violation>`` report with a traceback,
     losing every violation already collected in that run."""
     present_lowered = {str(k).strip().lower() for k in section}
+    # Every name this table pins, as a canonical target or as a type-checked key.
+    canonical_names = set(pinned) | set(aliases.values())
     # Aliases grouped by the canonical key they all mean, so a colliding set can be told to merge.
     siblings: dict[str, list[str]] = {}
     for key in sorted(section, key=str):
@@ -10312,9 +10314,25 @@ def _append_impl_alias_violations(
         if canonical is not None:
             siblings.setdefault(canonical, []).append(name)
     for key in sorted(section, key=str):
-        name = str(key).strip()
+        raw = str(key)
+        name = raw.strip()
         canonical = aliases.get(name.lower())
         if canonical is None:
+            # A key that IS a canonical knob but is not spelled exactly. Normalizing for the alias
+            # lookup is right — `Threads` must still be caught as an alias — but normalizing the
+            # CANONICAL side let a wrong-cased or space-padded key pass as canonical, which is the
+            # silent degradation this whole table exists to prevent: `runner_renderer._threads`
+            # (`tools/runner_renderer.py`) reads the literal `num_threads` and returns 1 for
+            # `NUM_THREADS` or `"num_threads "`. Only `num_threads` has a machine consumer today;
+            # the rest are pinned so that they can have one, which is exactly the property an
+            # inexact spelling destroys.
+            if name.lower() in canonical_names and raw != name.lower():
+                violations.append(
+                    f"{ir_path}: {prefix}.{raw!r} is the canonical knob `{name.lower()}` spelled "
+                    f"inexactly — rename it to the bare lowercase `{name.lower()}` (a consumer "
+                    "looks up the literal key, so any casing or surrounding whitespace makes this "
+                    f"knob unread){extra_why}"
+                )
             continue
         # Case-insensitive, like every other comparison here: a `Threads` beside a `NUM_THREADS`
         # is still an alias beside its canonical key, and telling it to "rename to num_threads"
