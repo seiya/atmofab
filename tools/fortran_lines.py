@@ -84,8 +84,8 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     preceded a consumed marker (``x = 1 &`` flushes as ``x = 1 ``) — what the rstrip guarantees
     is that a trailing ``&`` is still recognized behind blanks, not a trimmed result. This
     deliberately does NOT split on ``;`` and does NOT mask string contents — see
-    ``split_fortran_statements`` and the callers' own maskers, so each gate composes the view
-    it needs.
+    ``split_fortran_statements`` and the validator's ``_mask_fortran_string_contents``, so each
+    gate composes the view it needs.
 
     The four defects this shape exists to close are documented at module level; the load-bearing
     lines below are marked."""
@@ -98,12 +98,19 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     # Fortran does not treat as line ends, ending a comment early and re-admitting its tail as
     # code. `\n` alone is the language's rule.
     for lineno, raw_line in enumerate(text.split("\n"), 1):
-        # Free form permits blank and comment-only lines BETWEEN a `&`-terminated line and its
-        # continuation; they are ignored, not terminators. Flushing on one truncates the
-        # statement. Not applicable mid-literal: inside a character context the continuation
-        # must be immediate, so the `quote is None` guard is part of the rule, not an
-        # optimization — the probe strips from a CLEAN state and would misread literal content.
-        if buffer and quote is None:
+        # Free form permits comment lines BETWEEN a `&`-terminated line and its continuation;
+        # they are ignored, not terminators. Flushing on one truncates the statement.
+        #
+        # This holds INSIDE an open character literal too — F2008 3.3.2.4 resumes a continued
+        # character context on "the next line that is not a comment line", and gfortran agrees
+        # (`'abc&` / blank or `! note` / `      &def'` compiles to a string of length 6).
+        # Guarding this skip on `quote is None` made the statement flush early and spilled the
+        # rest of the literal out as code, which is how a quoted `open(` became a file-I/O
+        # violation. A comment line is a property of the PHYSICAL line — blank, or first
+        # nonblank `!` — so the probe deliberately reads from a clean state: that is exactly
+        # the predicate, not an approximation of it. (A continuation line inside a literal
+        # cannot be mistaken for one: its first nonblank must be the resuming `&`.)
+        if buffer:
             probe, _ = strip_fortran_comment_tracking_quotes(raw_line, None)
             if not probe.strip():
                 continue
@@ -156,7 +163,12 @@ def split_fortran_statements(line: str) -> list[str]:
     Semicolons inside quotes or parentheses are ignored, so a line such as
     ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements. Parts are returned as-is —
     neither stripped nor filtered for emptiness — because the callers differ on both (one keeps
-    the ``^\\s*`` its patterns anchor on, another wants stripped statements)."""
+    the ``^\\s*`` its patterns anchor on, another wants stripped statements).
+
+    An unbalanced ``)`` clamps the depth at zero rather than driving it negative. Only
+    unparseable source gets there, but a stuck-negative depth would silence every later ``;``
+    on the line, and the harm direction of that is a declaration after a ``;`` going
+    unseen — a published operation reported absent."""
     parts: list[str] = []
     current: list[str] = []
     depth = 0
@@ -181,7 +193,7 @@ def split_fortran_statements(line: str) -> list[str]:
             depth += 1
             current.append(ch)
         elif ch == ")":
-            depth -= 1
+            depth = max(0, depth - 1)
             current.append(ch)
         elif ch == ";" and depth == 0:
             parts.append("".join(current))

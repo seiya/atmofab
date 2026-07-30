@@ -123,23 +123,27 @@ class FortranLogicalLinesTests(unittest.TestCase):
             fortran_logical_lines("    msg = 'a&\n      &!b'\n    x = 1\n"),
             [(1, "    msg = 'a!b'"), (3, "    x = 1")])
 
-    def test_mid_literal_wrap_requires_an_immediate_continuation(self) -> None:
-        # Inside an open literal there is no blank/comment skip: those lines ARE literal
-        # content, so the join must take them verbatim rather than probing them as comments.
+    def test_a_resuming_line_is_never_mistaken_for_a_comment_line(self) -> None:
+        # A `!` on a continuation line inside a literal is content, and the line is NOT a
+        # comment line — its first nonblank is the resuming `&`, which is what the skip probe
+        # keys on. Getting this wrong drops literal content.
         self.assertEqual(
             fortran_logical_lines("    msg = 'a&\n      &  ! still literal&\n      &b'\n"),
             [(1, "    msg = 'a  ! still literalb'")])
 
-    def test_blank_line_inside_an_open_literal_is_not_skipped(self) -> None:
-        # What the `quote is None` guard on the blank/comment skip buys. Mid-literal a blank line
-        # is not a wrap gap — the standard requires the continuation to be immediate (its first
-        # nonblank must be `&`), so this source is illegal either way. The guard decides WHICH
-        # illegal reading: terminate here (and let the next line be its own statement), or skip
-        # and let the open literal swallow `x = 1` as literal content. Swallowing following code
-        # is the harmful one — it is how a live statement disappears from a gate's view.
-        self.assertEqual(
-            fortran_logical_lines("    msg = 'a&\n\n    x = 1\n"),
-            [(1, "    msg = 'a "), (3, "    x = 1")])
+    def test_comment_lines_inside_an_open_literal_are_skipped_too(self) -> None:
+        # F2008 3.3.2.4 resumes a continued character context on "the next line that is not a
+        # comment line" — and a blank line IS a comment line (3.3.2.3). Verified against
+        # gfortran 14.2 with a substring-bounds probe: `'abc&` / blank (or `! note`) /
+        # `      &def'` compiles at `-std=f2008` with `s(6:6)` legal and `s(7:7)` out of range,
+        # i.e. one string `abcdef`. Terminating the statement at the gap instead spills the
+        # rest of the literal out AS CODE, which is how a quoted `open(` became a file-I/O
+        # violation and a `;` inside a literal invented a published subroutine.
+        for gap, label in (("\n", "blank line"), ("  ! note\n", "comment line")):
+            with self.subTest(gap=label):
+                self.assertEqual(
+                    fortran_logical_lines("s = 'abc&\n" + gap + "      &def'\n"),
+                    [(1, "s = 'abcdef'")])
 
     def test_unterminated_literal_does_not_leak_into_the_next_line(self) -> None:
         # Only reachable from source no compiler accepts, but without the per-line reset a
@@ -214,6 +218,13 @@ class SplitFortranStatementsTests(unittest.TestCase):
         # Paren depth matters for the `[1:n; 2]`-shaped text a malformed source can produce; no
         # legal Fortran puts a statement separator inside parentheses.
         self.assertEqual(split_fortran_statements("call f(a; b)"), ["call f(a; b)"])
+
+    def test_unbalanced_close_paren_does_not_silence_later_separators(self) -> None:
+        # Depth clamps at zero. Left negative it would stay negative for the rest of the line
+        # and no later `;` would split — and the statement a `;` hides is often a declaration,
+        # so the harm direction is "published operation reported absent".
+        self.assertEqual(split_fortran_statements("end subroutine); x = 1"),
+                         ["end subroutine)", " x = 1"])
 
     def test_parts_are_neither_stripped_nor_filtered(self) -> None:
         # The non-stripping contract: one caller anchors patterns at `^\s*` on these parts, so

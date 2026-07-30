@@ -19139,6 +19139,24 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
                 self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__go"],
                                  f"a {name} must not end the comment")
 
+    def test_comment_line_inside_a_wrapped_literal_does_not_invent_a_subroutine(self) -> None:
+        # A continued character context resumes at "the next line that is not a comment line"
+        # (F2008 3.3.2.4; a blank line is one, 3.3.2.3) — gfortran 14.2 compiles the fixture
+        # below clean at `-std=f2008`. Terminating the statement at the gap flushes a truncated
+        # literal, so the rest of the string is read as code: the `;` inside it then separates
+        # a "statement" and the prose after it is published as an operation that does not
+        # exist. `<dependency_facts>` would tell a consumer leaf to call it.
+        from tools.orchestration_runtime import _list_prefixed_subroutines
+        for gap, label in (("\n", "blank line"), ("      ! wrap note\n", "comment line")):
+            with self.subTest(gap=label):
+                src = ("  subroutine dep__scale(x)\n"
+                       "    real, intent(inout) :: x\n"
+                       "    character(len=*), parameter :: note = 'scale&\n"
+                       + gap +
+                       "      &s x; subroutine dep__ghost(y)'\n"
+                       "  end subroutine\n")
+                self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__scale"])
+
     def test_garbage_and_empty_prefix_return_empty(self) -> None:
         from tools.orchestration_runtime import _list_prefixed_subroutines
         self.assertEqual(_list_prefixed_subroutines("not fortran at all", "dep__"), [])

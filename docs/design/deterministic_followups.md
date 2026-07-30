@@ -3344,3 +3344,49 @@ Reading a failure: a `structural_violation` on `l0_metric_leaf_pass` at the HARN
 regenerated writer (a `Generate` repair), whereas an IR whose `step_10_write_diagnostics` description reads "empty
 metrics" — the shape the `0.6.0` IR carried — is a Compile transcription defect (a `Compile` reopen), not a writer
 defect. The detection gap is not declared closed before both acceptance conditions hold. _orch id + result pending._
+
+## Three Fortran scanners, one reading — the same four mis-reads fed three deterministic gates (LANDED 2026-07-30, issue #23)
+
+Reading generated Fortran the way the compiler does — a `!` comment is not code, a `&` continuation is one statement
+across several physical lines, a `;` separates statements — was implemented three times independently
+(`validate_pipeline_semantics._iter_fortran_logical_lines` and `._fortran_logical_lines`,
+`orchestration_runtime._fortran_logical_lines`). All three got the same four things wrong, and every one of them errs
+toward a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both accept:
+
+- **`str.splitlines()`** breaks on eight separators Fortran does not treat as line ends (`\f`, `\v`, `\x85`, `U+2028`,
+  …), so a form feed inside a comment ends the comment early and re-admits its tail AS CODE — a commented-out
+  `use harness_…` becoming a live isolation breach, a phantom §5.1 stanza that is then reported unterminated.
+  Splitting on `\n` alone is the language's own rule.
+- A **`!` inside a CONTINUED character literal** read as a comment, because quote state was tracked per physical line.
+  The rest of the line is dropped and, if what survives ends in `&`, the buffer stays open and swallows the next
+  statement — in the reproducer, a dummy argument's `real(8), intent(in)` declaration, which is exactly the type the
+  dependency facts publish for the call site.
+- A continuation line that does **not** start with `&` must join with a **SPACE** (the line break is a token
+  separator). Joining tight turns legal `pure&` / `subroutine dep__shift(x)` into `puresubroutine dep__shift(x)`, and
+  the anchored declaration pattern then reports a published operation as absent from the source that declares it.
+- A **lone-`&` continuation line** must terminate the statement (gfortran: `'&' not allowed by itself`); testing the
+  trailing `&` before consuming the leading one read the single ampersand as both markers and glued the next
+  statement on.
+
+**One implementation, three adapters.** `tools/fortran_lines.py` is stdlib-only and imports nothing from the package,
+because no existing module is a home: the validator may not import `orchestration_runtime`; `lang_backend_fortran`
+imports the validator at module level, so hosting it there would put the validator in a cycle; and hosting it in the
+validator would force `orchestration_runtime` to import a module that requires PyYAML unconditionally, while the
+runtime defers PyYAML so its recovery commands stay usable without it. The three sites keep their names, signatures and
+return shapes and add only their own composition — the validator's keeps the leading whitespace its `^\s*` anchors
+tolerate, the runtime's strips because `_FORTRAN_SUBROUTINE_RE` is unanchored.
+
+**Not the OpenMP floor.** `_validate_openmp_presence_floor` (issue #22) answers the same question with four anchored
+physical-line patterns and no state, and it stays that way. A presence check can anchor its way out of comments and
+literals; these consumers read the JOINED logical line and compare it against a declared surface, so they cannot.
+
+**Acceptance.** Every defect was latent: over all 823 `.f90` files in the tree, the pre-change modules (`0bd007e`) and
+these agree on every consumer surface — `_list_component_published_subroutines`, `_list_prefixed_subroutines`,
+`_extract_subroutine_interface`'s `argument_order` / `arguments`, `_parse_interface_stanzas` and `_fortran_statements`.
+Two raw-text deltas underlie that and are accounted for rather than hidden: the statement view no longer emits an entry
+for a blank or comment-only line, and a non-`&`-led joint contributes one space (reaching the stanza view and the
+`interface` string of 333 procedures, whitespace-only in every case). Each consumer normalizes whitespace away or
+skips empties before comparing, which is why no verdict moves. The cross-scanner parity test
+(`test_cross_scanner_parity_with_runtime`) dropped its "only the domain a generator emits" restriction and now runs
+over the pathological inputs the restriction existed to exclude, asserting per case that the scanners agree on
+something rather than agreeing on nothing.

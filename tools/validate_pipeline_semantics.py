@@ -21,10 +21,7 @@ try:
     # copies mis-read the same four inputs (issue #23), each one a false `Generate fail` on a
     # source gfortran accepts. `fortran_lines` is stdlib-only, so importing it here introduces
     # no cycle — and it is not `orchestration_runtime`, which this module may not import.
-    from tools.fortran_lines import (
-        fortran_logical_lines,
-        split_fortran_statements as _split_fortran_statements,
-    )
+    from tools import fortran_lines
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -47,10 +44,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
 
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    from tools.fortran_lines import (
-        fortran_logical_lines,
-        split_fortran_statements as _split_fortran_statements,
-    )
+    from tools import fortran_lines
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -2121,8 +2115,8 @@ def _iter_fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     longer be read one way here and another way there. This adapter adds only the ``;`` split.
     """
     logical: list[tuple[int, str]] = []
-    for lineno, joined in fortran_logical_lines(text):
-        for statement in _split_fortran_statements(joined):
+    for lineno, joined in fortran_lines.fortran_logical_lines(text):
+        for statement in fortran_lines.split_fortran_statements(joined):
             if statement.strip():
                 logical.append((lineno, statement))
     return logical
@@ -3903,7 +3897,7 @@ def _fortran_statements(text: str) -> list[str]:
     `^\\s*use\\b` rule silently sees one statement and misses the other. Both halves of the M3c
     checks gate go through here so they cannot drift apart on that."""
     return [stmt for line in _fortran_logical_lines(text)
-            for stmt in _split_fortran_statements(line)]
+            for stmt in fortran_lines.split_fortran_statements(line)]
 
 
 def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str], set[str]]:
@@ -4358,6 +4352,11 @@ def _validate_component_generated_surface(
 # requires a continued character literal to resume with `&` — so neither can present a `do` or a
 # `!$omp` at the start of a line. The earlier comment-mention and literal-mention evasions are closed
 # by the anchor rather than by parsing.
+#
+# That joining scanner does live in the tree again, as `tools/fortran_lines` (issue #23) — but for
+# consumers this floor is not: they read the JOINED logical line and compare it against a declared
+# surface, so they cannot anchor their way out of the state. A presence check can, so this one still
+# must not take the dependency. The two answers are not in conflict; the question differs.
 #
 # `[ \t\f]` is gfortran's blank set: a form feed is a blank it accepts, both before a `do` and as a
 # token separator (verified against the compiler, and the reason the previous scanner leaked).
@@ -5242,7 +5241,7 @@ def _fortran_logical_lines(text: str) -> list[str]:
     Unlike ``_iter_fortran_logical_lines`` this does NOT split on ``;`` — the interface-stanza
     parser wants the header as written — and it drops the line numbers. The scanning itself is the
     same ``fortran_lines.fortran_logical_lines`` (issue #23)."""
-    return [joined for _lineno, joined in fortran_logical_lines(text)]
+    return [joined for _lineno, joined in fortran_lines.fortran_logical_lines(text)]
 
 
 def _normalize_fortran_line(logical_line: str) -> str:

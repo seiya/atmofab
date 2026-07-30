@@ -14168,6 +14168,23 @@ class ChecksSourceGateTests(unittest.TestCase):
                 self.assertEqual([v for v in self._run(src) if "harness" in v], [],
                                  f"a {name} must not end the comment")
 
+    def test_comment_line_inside_a_wrapped_literal_does_not_spill_it_as_code(self) -> None:
+        # A continued character context resumes at "the next line that is not a comment line"
+        # (F2008 3.3.2.4), and a blank line is a comment line (3.3.2.3) — verified against
+        # gfortran 14.2, which compiles the fixture below at `-std=f2008` with no diagnostic.
+        # Terminating the statement at the gap instead flushes a truncated literal and lets the
+        # REST of it be read as code: the `open(` here is prose inside a string, and the gate
+        # would report file I/O in a module that does none.
+        for gap, label in (("\n", "blank line"), ("    ! wrap note\n", "comment line")):
+            with self.subTest(gap=label):
+                src = _CHECKS_OK.replace(
+                    "  private\n",
+                    "  private\n"
+                    "  character(len=*), parameter :: hint = 'fill the state in the runner&\n"
+                    + gap +
+                    "    & with open(unit=...), never here'\n")
+                self.assertEqual([v for v in self._run(src) if "file I/O" in v], [])
+
     def _exec(self, tmp: Path) -> NodeExecution:
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
                              exec_dir=tmp, pipeline_dir=tmp)
@@ -14868,7 +14885,7 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
              "  ! removed \x0c subroutine dep_base__ghost(y)\n"
              "  subroutine dep_base__scale(x)\n  end subroutine\n"),
             ("NEL and the unicode separators inside a comment", "dep_base",
-             "  ! a \x85 b   c   subroutine dep_base__ghost(y)\n"
+             "  ! a \x85 b \u2028 c \u2029 subroutine dep_base__ghost(y)\n"
              "  subroutine dep_base__scale(x)\n  end subroutine\n"),
             # B: a `!` inside a continued character literal.
             ("`!` inside a continued literal", "dep_base",

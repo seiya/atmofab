@@ -62,10 +62,7 @@ def _require_yaml() -> Any:
     return _yaml_mod
 
 try:
-    from tools.fortran_lines import (
-        fortran_logical_lines,
-        split_fortran_statements,
-    )
+    from tools import fortran_lines
     from tools.hooks.common import (
         _normalize_rel_posix,
         _utc_now_iso,
@@ -93,10 +90,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     _REPO_ROOT = _THIS_FILE.parent.parent
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    from tools.fortran_lines import (
-        fortran_logical_lines,
-        split_fortran_statements,
-    )
+    from tools import fortran_lines
     from tools.hooks.common import (
         _normalize_rel_posix,
         _utc_now_iso,
@@ -1318,7 +1312,9 @@ def _split_fortran_statements(logical_line: str) -> list[str]:
     try:
         if not isinstance(logical_line, str):
             return []
-        return [part.strip() for part in split_fortran_statements(logical_line) if part.strip()]
+        return [part.strip()
+                for part in fortran_lines.split_fortran_statements(logical_line)
+                if part.strip()]
     except Exception:
         return []
 
@@ -1348,7 +1344,7 @@ def _fortran_logical_lines(source_text: str) -> list[str]:
         if not isinstance(source_text, str):
             return []
         logical: list[str] = []
-        for _lineno, joined in fortran_logical_lines(source_text):
+        for _lineno, joined in fortran_lines.fortran_logical_lines(source_text):
             logical.extend(_split_fortran_statements(joined))
         return logical
     except Exception:
