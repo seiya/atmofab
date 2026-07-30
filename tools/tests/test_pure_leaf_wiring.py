@@ -443,6 +443,10 @@ class PureRenderTests(unittest.TestCase):
             # ... and its guarantee is SCOPED, so the reviewer is not told to stop looking where
             # the floor never ran.
             "That floor does not run on any other node kind",
+            # Every exemption the floor actually has must appear here: three separate review
+            # rounds found this list telling the reviewer to stop checking existence on a
+            # node shape where no floor runs.
+            "wraps before it can be classified",
         ):
             self.assertIn(token, prompt)
 

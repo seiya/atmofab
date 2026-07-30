@@ -10223,39 +10223,43 @@ def _validate_impl_defaults_knobs(
         # `Parallelization` or a space-padded key be reported for its spelling and nothing else, so a
         # mapping form or prose value under it survived until the producer had done the rename — a
         # second `Compile.static` remand out of a bounded repair budget for one defect.
-        par_key = next(
-            (k for k in abstract if str(k).strip().lower() == "parallelization"), None)
-        par_path = f"impl_defaults.abstract.{par_key}" if par_key is not None else (
-            "impl_defaults.abstract.parallelization")
-        parallelization = abstract.get(par_key) if par_key is not None else None
-        if isinstance(parallelization, dict):
-            violations.append(
-                f"{ir_path}: {par_path} must be a flat string, not a "
-                "mapping — decompose it: the execution model goes in `parallelization`, the loops "
-                "it covers in `parallel_scope`, the nesting level in `parallel_granularity`, and "
-                "any schedule/thread override in `backend_overrides.openmp`"
-            )
-        elif isinstance(parallelization, str):
-            # STRUCTURAL check only, not a vocabulary whitelist. An earlier draft required the value
-            # to be `openmp` or `none`, which rejected a legitimate novel model (`openmp+simd`,
-            # `openmp_tasks`) on the one knob whose whole purpose is exploration — a value
-            # constraint the schema's own `additionalProperties: true` contradicts. What is
-            # unambiguously wrong is PROSE in a slot that carries a token: the live
-            # `'OpenMP applied to parallelizable loops'` is a scope description filed under the
-            # model key, and multi-word text can never be a model identifier.
-            if parallelization.strip() and len(parallelization.split()) > 1:
+        # EVERY key that normalizes to `parallelization`, not just the first. Picking one made the
+        # result depend on YAML insertion order: with a variant listed before the exact key, the
+        # exact key's mapping-form defect went unreported and only surfaced on the NEXT
+        # `Compile.static` attempt, spending a second turn of a bounded repair budget on a defect
+        # already visible here.
+        for par_key in [k for k in abstract if str(k).strip().lower() == "parallelization"]:
+            par_path = f"impl_defaults.abstract.{par_key}"
+            parallelization = abstract[par_key]
+            if isinstance(parallelization, dict):
                 violations.append(
-                    f"{ir_path}: {par_path} is "
-                    f"{parallelization.strip()!r} — this knob carries the execution-model TOKEN "
-                    "only (e.g. `openmp`, `none`); move the prose describing which loops it "
-                    "applies to into `parallel_scope`"
+                    f"{ir_path}: {par_path} must be a flat string, not a "
+                    "mapping — decompose it: the execution model goes in `parallelization`, the "
+                    "loops it covers in `parallel_scope`, the nesting level in "
+                    "`parallel_granularity`, and any schedule/thread override in "
+                    "`backend_overrides.openmp`"
                 )
-        elif parallelization is not None:
-            violations.append(
-                f"{ir_path}: {par_path} must be a string, got "
-                f"{type(parallelization).__name__} ({parallelization!r}) — the parallelization "
-                "knob types are pinned by spec/schema/ir/impl_defaults.schema.json"
-            )
+            elif isinstance(parallelization, str):
+                # STRUCTURAL check only, not a vocabulary whitelist. An earlier draft required the
+                # value to be `openmp` or `none`, which rejected a legitimate novel model
+                # (`openmp+simd`, `openmp_tasks`) on the one knob whose whole purpose is
+                # exploration — a value constraint the schema's own `additionalProperties: true`
+                # contradicts. What is unambiguously wrong is PROSE in a slot that carries a token:
+                # the live `'OpenMP applied to parallelizable loops'` is a scope description filed
+                # under the model key, and multi-word text can never be a model identifier.
+                if parallelization.strip() and len(parallelization.split()) > 1:
+                    violations.append(
+                        f"{ir_path}: {par_path} is "
+                        f"{parallelization.strip()!r} — this knob carries the execution-model TOKEN "
+                        "only (e.g. `openmp`, `none`); move the prose describing which loops it "
+                        "applies to into `parallel_scope`"
+                    )
+            elif parallelization is not None:
+                violations.append(
+                    f"{ir_path}: {par_path} must be a string, got "
+                    f"{type(parallelization).__name__} ({parallelization!r}) — the parallelization "
+                    "knob types are pinned by spec/schema/ir/impl_defaults.schema.json"
+                )
         _append_impl_knob_type_violations(
             ir_path, "impl_defaults.abstract", abstract,
             _IMPL_ABSTRACT_KNOB_TYPES, violations,

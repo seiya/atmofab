@@ -15540,6 +15540,30 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("rename it to the bare lowercase `num_threads`", v[0])
 
+    def test_every_parallelization_spelling_is_shape_checked(self) -> None:
+        # Checking only the first key that normalized made the result depend on YAML insertion
+        # order: with a variant listed before the exact key, the exact key's mapping-form defect went
+        # unreported and cost a second `Compile.static` turn to discover.
+        for text, label in (
+            ("    Parallelization: openmp\n    parallelization: {method: openmp}\n",
+             "variant listed first"),
+            ("    parallelization: {method: openmp}\n    Parallelization: openmp\n",
+             "exact listed first"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                (d / "spec.ir.yaml").write_text(
+                    "meta:\n  spec_kind: component\nimpl_defaults:\n"
+                    "  target: {class: cpu, backend: openmp}\n"
+                    "  toolchain: {language: fortran}\n  abstract:\n" + text,
+                    encoding="utf-8")
+                v: list[str] = []
+                vps._validate_impl_defaults_knobs(d.parent, d, v)
+            self.assertTrue(any("spelled inexactly" in x for x in v), f"{label}: {v}")
+            self.assertTrue(
+                any("must be a flat string, not a mapping" in x for x in v),
+                f"{label}: the mapping-form defect must be reported whatever the key order: {v}")
+
     def test_two_canonical_variants_without_an_exact_key_say_merge(self) -> None:
         # Two inexact spellings of one canonical key collide on rename exactly as two aliases do,
         # and PyYAML keeps only one value.

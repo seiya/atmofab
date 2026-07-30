@@ -118,7 +118,7 @@ PINNED: dict[str, str] = {
     # only text the pure reviewer reads, so leaving its G6 unamended would have reproduced issue
     # #22's asymmetry on the reviewer side — it now scopes the floor's guarantee instead of
     # assuming a directive always exists.
-    "pure-16": "50bd75133b9f50bbe88fac8bae37485ce9390bec2ff492768919780f5987224c",
+    "pure-16": "ad11bb930dad02cf74d16e01e79e37804e05683b7e7281281eec41964cc5f018",
 }
 
 
