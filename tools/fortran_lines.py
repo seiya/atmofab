@@ -6,7 +6,7 @@ does: a `!` comment is not code, a `&` continuation is one statement across seve
 lines, and a `;` separates statements on one line. Three hand-rolled scanners used to do that
 independently (`validate_pipeline_semantics._iter_fortran_logical_lines` and
 `._fortran_logical_lines`, `orchestration_runtime._fortran_logical_lines`), and between them
-they mis-read five inputs (issue #23) — two that all three get wrong, one where the copies are
+they mis-read six inputs (issue #23) — three that all three get wrong, one where the copies are
 wrong in opposite directions, and two that only `_iter_fortran_logical_lines` gets wrong. Each
 defect's harm direction is a false `Generate fail` / `Compile fail` on a source gfortran and
 fortitude both accept:
@@ -15,10 +15,17 @@ fortitude both accept:
   (`\\f`, `\\v`, `\\x85`, `\\u2028`, …), so a form feed inside a comment ended the comment early
   and re-admitted its tail AS CODE — a commented-out `use harness_…` becoming live, a phantom
   §5.1 stanza. Splitting on `\\n` alone is the language's own rule. (All three.)
+* **`str.strip()`'s blank set is not Fortran's**, and it is the same character class from the
+  other end: free form has exactly three blanks (space, tab, form feed) while `strip()` also folds
+  `\v`, `\x85`, `\xa0`, `\u2028`, …. Those are ordinary CONTENT to the compiler, so stripping them
+  re-admits literal content as code — a `\v` before a resuming `&` made the scanner eat an `&`
+  gfortran reads as part of the string, and the rest of the literal spilled out as declarations.
+  (All three; found in review of the consolidation, in the consolidated scanner itself.)
 * A **`!` inside a CONTINUED character literal** read as a comment, because quote state was
   tracked per physical line. The rest of the line was dropped and, if what survived ended in
-  `&`, the buffer stayed open and swallowed the next statement; the two that flushed instead
-  simply lost the rest of the literal. (All three.)
+  `&`, the buffer stayed open and swallowed the next statement; where it did not, the statement
+  flushed and simply lost the rest of the literal. Which of the two happens is a property of the
+  input, not of the copy. (All three, in both shapes.)
 * A continuation line that does **not** start with `&` must join with a **SPACE**: the line
   break is then a token separator (F2008). Concatenating turned `do&` / `i = 1, n` into
   `doi = 1, n`. Only a `&`-led line splits a token, and that one joins tight — joining THAT
@@ -34,8 +41,8 @@ fortitude both accept:
 * A **blank or comment line INSIDE a wrap** flushed a truncated logical line, so a legally
   wrapped `subroutine foo(a, &` / `! note` / `     & b)` header arrived at the gates as the
   fragments `subroutine foo(a, ` and `& b)`. (Only `_iter_fortran_logical_lines`; the other two
-  skipped such lines — although both then got the mid-literal case wrong in the other
-  direction, which is the second bullet.)
+  skipped such lines, and the runtime copy then space-joined the resume, which is the third
+  bullet.)
 
 The scanner below is recovered from commit `166946a` (`_fortran_code_statements` +
 `_strip_fortran_comment_tracking_quotes`, built and verified for the issue #22 OpenMP floor,
@@ -55,6 +62,27 @@ without it. Same precedent as `tools/pure_leaf.py`.
 """
 
 from __future__ import annotations
+
+# gfortran's blank set for free-form source: space, tab, form feed. NOT Python's `str.strip()`
+# set, which also folds `\v`, `\x85`, `\xa0`, `\u2028` and friends. That difference is the same
+# one `str.splitlines()` introduced at the other end: those characters are ordinary content to
+# the compiler, so stripping them here re-admits literal content as code — a `\v` before a
+# resuming `&` made the scanner eat an `&` the compiler reads as part of the string, and the rest
+# of the literal spilled out as declarations. Every blank decision in this module goes through
+# these three helpers so the set is stated once.
+_BLANKS = " \t\f"
+
+
+def _lstrip_blanks(line: str) -> str:
+    return line.lstrip(_BLANKS)
+
+
+def _rstrip_blanks(line: str) -> str:
+    return line.rstrip(_BLANKS)
+
+
+def _is_all_blank(line: str) -> bool:
+    return not line.strip(_BLANKS)
 
 
 def strip_fortran_comment_tracking_quotes(
@@ -124,18 +152,29 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         # nonblank `!` — so the probe deliberately reads from a clean state: that is exactly
         # the predicate, not an approximation of it. (A continuation line inside a literal
         # cannot be mistaken for one: its first nonblank must be the resuming `&`.)
+        # Free form permits comment lines BETWEEN a `&`-terminated line and its continuation;
+        # they are ignored, not terminators. Flushing on one truncates the statement.
+        #
+        # This holds INSIDE an open character literal too — F2008 3.3.2.4 resumes a continued
+        # character context on "the next line that is not a comment line", and gfortran agrees
+        # (`'abc&` / blank or `! note` / `      &def'` compiles to a string of length 6).
+        # Guarding this skip on `quote is None` made the statement flush early and spilled the
+        # rest of the literal out as code, which is how a quoted `open(` became a file-I/O
+        # violation. A comment line is a property of the PHYSICAL line — all blanks, or first
+        # nonblank `!` — so the probe deliberately reads from a clean state: that is exactly the
+        # predicate, not an approximation of it. (A continuation line inside a literal cannot be
+        # mistaken for one: its first nonblank must be the resuming `&`.)
         if buffer:
             probe, _ = strip_fortran_comment_tracking_quotes(raw_line, None)
-            if not probe.strip():
+            if _is_all_blank(probe):
                 continue
         # Quote state is threaded across physical lines, so a `!` inside a CONTINUED literal
         # stays content.
         resumes_literal = quote is not None
         code, quote = strip_fortran_comment_tracking_quotes(raw_line, quote)
-        # `.rstrip()` matters beyond tidiness: a legal `do i &   ` (trailing blanks after the
-        # continuation marker) would otherwise not register as continued. (A CRLF source cannot
-        # exercise this — `read_text` universal-newline-translates before the scanner sees it.)
-        code = code.rstrip()
+        # Trailing blanks go, so a legal `do i &   ` still registers as continued. (A CRLF source
+        # cannot exercise this — `read_text` universal-newline-translates first.)
+        code = _rstrip_blanks(code)
         # ORDER MATTERS, in both directions.
         #
         # The continuation's LEADING `&` is consumed BEFORE asking whether this line continues,
@@ -157,10 +196,13 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         # In `'ab'&` / `'cd'` the literal looks closed at end of line, but gfortran's lookahead
         # reads the two quotes as one escaped quote and compiles `ab'cd` (`len == 5`, pinned) —
         # with no diagnostic at all, so such a source passes `Generate.syntax`. A space there
-        # would produce `'ab' 'cd'`, which is not Fortran at all.
+        # would produce `'ab' 'cd'`, which is not Fortran at all. The lookahead is over the next
+        # CONTRIBUTED character, not the next physical line: a wrap line that contributes nothing
+        # (`&&`) must not clear it, which is why the memo is only reassigned when this line
+        # contributed something.
         joins_tight = resumes_literal or pending_quote_escape is not None
         if buffer:
-            code = code.lstrip()
+            code = _lstrip_blanks(code)
             if pending_quote_escape is not None and not code.startswith(pending_quote_escape):
                 joins_tight = resumes_literal
             if code.startswith("&"):
@@ -169,11 +211,13 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         continued = code.endswith("&")
         if continued:
             code = code[:-1]
-        # The shape a wrap-split doubled-quote escape takes: a continued line whose last code
-        # character is a quote. No `quote is None` guard — if the line ended INSIDE a literal
-        # the join is already tight via `resumes_literal`, so the guard could not change an
-        # answer, and this module does not keep conditions its tests cannot pin.
-        pending_quote_escape = code[-1] if continued and code[-1:] in ("'", '"') else None
+        if code:
+            # The shape a wrap-split doubled-quote escape takes: a continued line whose last
+            # contributed character is a quote. No `quote is None` guard — if the line ended
+            # INSIDE a literal the join is already tight via `resumes_literal`, so the guard
+            # could not change an answer, and this module does not keep conditions its tests
+            # cannot pin.
+            pending_quote_escape = code[-1] if continued and code[-1] in ("'", '"') else None
         if buffer:
             buffer += code if joins_tight else f" {code}"
         else:
@@ -181,14 +225,14 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
             buffer = code
         if continued:
             continue
-        if buffer.strip():
+        if not _is_all_blank(buffer):
             logical.append((start_lineno, buffer))
         buffer = ""
         # Reset the literal state with the logical line. Only reachable from source no compiler
         # accepts (an unterminated literal), but without it a leaked open quote makes the NEXT
         # line's text read as literal content.
         quote = None
-    if buffer.strip():
+    if not _is_all_blank(buffer):
         logical.append((start_lineno, buffer))
     return logical
 

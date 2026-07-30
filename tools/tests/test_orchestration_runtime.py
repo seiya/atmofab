@@ -19157,6 +19157,21 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
                        "  end subroutine\n")
                 self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__scale"])
 
+    def test_a_non_blank_control_character_does_not_end_a_literal(self) -> None:
+        # `str.strip()` folds characters free-form Fortran treats as ordinary content, so a `\v`
+        # before a resuming `&` made the scanner eat an `&` the compiler reads as part of the
+        # string — and the rest of the literal spilled out as declarations, publishing an
+        # operation that exists only inside a string. gfortran compiles the fixture below at
+        # `-std=f2008` with only a `-Wampersand` warning, so it reaches a gate.
+        from tools.orchestration_runtime import _list_prefixed_subroutines
+        src = ("module dep_mod\n  implicit none\n"
+               "  character(*), parameter :: note = 'see &\n"
+               "\x0b&\n"
+               "subroutine dep__ghost(y)'\n"
+               "contains\n  subroutine dep__real(x)\n    real :: x\n  end subroutine\n"
+               "end module\n")
+        self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__real"])
+
     def test_garbage_and_empty_prefix_return_empty(self) -> None:
         from tools.orchestration_runtime import _list_prefixed_subroutines
         self.assertEqual(_list_prefixed_subroutines("not fortran at all", "dep__"), [])

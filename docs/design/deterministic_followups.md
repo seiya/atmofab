@@ -3345,12 +3345,12 @@ regenerated writer (a `Generate` repair), whereas an IR whose `step_10_write_dia
 metrics" — the shape the `0.6.0` IR carried — is a Compile transcription defect (a `Compile` reopen), not a writer
 defect. The detection gap is not declared closed before both acceptance conditions hold. _orch id + result pending._
 
-## Three Fortran scanners, one reading — five mis-reads spread across three deterministic gates (LANDED 2026-07-30, issue #23)
+## Three Fortran scanners, one reading — six mis-reads spread across three deterministic gates (LANDED 2026-07-30, issue #23)
 
 Reading generated Fortran the way the compiler does — a `!` comment is not code, a `&` continuation is one statement
 across several physical lines, a `;` separates statements — was implemented three times independently
 (`validate_pipeline_semantics._iter_fortran_logical_lines` and `._fortran_logical_lines`,
-`orchestration_runtime._fortran_logical_lines`). Between them they got five things wrong — two that all three share,
+`orchestration_runtime._fortran_logical_lines`). Between them they got six things wrong — three that all three share,
 one where the copies are wrong in opposite directions, and two that only `_iter_fortran_logical_lines` has — and every
 one of them errs toward a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both accept:
 
@@ -3358,6 +3358,12 @@ one of them errs toward a false `Generate fail` / `Compile fail` on a source gfo
   …), so a form feed inside a comment ends the comment early and re-admits its tail AS CODE — a commented-out
   `use harness_…` becoming a live isolation breach, a phantom §5.1 stanza that is then reported unterminated.
   Splitting on `\n` alone is the language's own rule. All three.
+- **Python's `str.strip()` blank set is not Fortran's.** Free form has exactly three blanks — space, tab, form feed —
+  and `strip()` also folds `\v`, `\x85`, `\xa0`, `U+2028` and more. Those are ordinary CONTENT to the compiler, so
+  stripping them re-admits literal content as code: a `\v` before a resuming `&` made the scanner eat an `&` gfortran
+  reads as part of the string, and the rest of the literal spilled out as declarations — a published operation invented
+  from inside a quoted note, on a source gfortran accepts. This one was found during review of the consolidation, in
+  the consolidated scanner itself; the three originals shared it.
 - A **`!` inside a CONTINUED character literal** read as a comment, because quote state was tracked per physical line.
   The rest of the line is dropped and, if what survives ends in `&`, the buffer stays open and swallows the next
   statement — in the reproducer, a dummy argument's `real(8), intent(in)` declaration, which is exactly the type the
@@ -3374,8 +3380,8 @@ one of them errs toward a false `Generate fail` / `Compile fail` on a source gfo
   `_iter_fortran_logical_lines`; the other two consumed the leading `&` first.
 - A **blank or comment line inside a wrap** flushed a truncated logical line, so a legally wrapped
   `subroutine foo(a, &` / `! note` / `     & b)` header reached the gates as two fragments. Only
-  `_iter_fortran_logical_lines`; the other two skipped such lines, though both then mishandled the same gap inside an
-  open character literal, which is the second bullet.
+  `_iter_fortran_logical_lines`; the other two skipped such lines, and the runtime copy then space-joined the resume,
+  which is the third bullet.
 
 **One implementation, three adapters.** `tools/fortran_lines.py` is stdlib-only and imports nothing from the package,
 because no existing module is a home: the validator may not import `orchestration_runtime`; `lang_backend_fortran`

@@ -178,6 +178,38 @@ class FortranLogicalLinesTests(unittest.TestCase):
                 self.assertEqual(fortran_logical_lines("s = 'abc&\n" + resume + "\n"),
                                  [(1, "s = 'abcdef'")])
 
+    def test_blanks_are_gfortrans_set_not_pythons(self) -> None:
+        # `str.strip()` folds far more than free-form Fortran calls a blank. The characters it
+        # adds are ordinary CONTENT to the compiler — the same difference `str.splitlines()`
+        # made at the other end of the line. Stripping a `\v` here let the `&` behind it be read
+        # as a continuation marker, where gfortran reads both as part of the string: `'abc&` /
+        # `\v&def'` compiles (with only `-Wampersand`) to `abc<VT>&def`, length 8, pinned with
+        # `1/merge(0, 1, (len(sa) == 8) .and. (sa == 'abc'//achar(11)//'&def'))`.
+        for ch, name in (("\x0b", "vertical tab"), ("\x1c", "FS"), ("\x85", "NEL"),
+                         ("\xa0", "NBSP"), (" ", "LINE SEPARATOR")):
+            with self.subTest(blank_candidate=name):
+                self.assertEqual(fortran_logical_lines(f"sa = 'abc&\n{ch}&def'\n"),
+                                 [(1, f"sa = 'abc{ch}&def'")], f"{name} is not a Fortran blank")
+        # The three that ARE gfortran blanks still behave as blanks.
+        self.assertEqual(fortran_logical_lines("x = 1 \t\f\n"), [(1, "x = 1")])
+        self.assertEqual(fortran_logical_lines("s = 'ab&\n \t\f&cd'\n"), [(1, "s = 'abcd'")])
+
+    def test_the_blank_set_is_the_same_at_all_three_decision_points(self) -> None:
+        # The set is used to decide a comment line, a trailing continuation marker, and a
+        # resume's column padding. Only the third is reachable on source the compiler accepts
+        # (the test above); these two are the same rule at the other two points, and they are
+        # pinned so the three cannot drift apart — a set that is correct in one place and
+        # Python's default in another is how this class of defect got in.
+        # A `\v`-only line is not all-blank, so it is a continuation line, not a comment line:
+        # the statement it interrupts ends there rather than joining across it.
+        # (The second space is the token-separator join: the resume is not `&`-led.)
+        self.assertEqual(fortran_logical_lines("x = 1 + &\n\x0b\n2\n"),
+                         [(1, "x = 1 +  \x0b"), (3, "2")])
+        # And a `&` is the continuation marker only when it is the LAST non-blank: a `\v` behind
+        # it is content, so this line does not continue.
+        self.assertEqual(fortran_logical_lines("x = 1 + &\x0b\n2\n"),
+                         [(1, "x = 1 + &\x0b"), (2, "2")])
+
     def test_doubled_quote_escape_split_by_the_wrap(self) -> None:
         # The compiler's character context outlives this scanner's here: in `'ab'&` / `'cd'` the
         # literal looks closed at end of line, but gfortran's lookahead reads the two quotes as
@@ -197,6 +229,20 @@ class FortranLogicalLinesTests(unittest.TestCase):
         # literal really did close and the line break is an ordinary token separator.
         self.assertEqual(fortran_logical_lines("call f('ab'&\n, 'cd')\n"),
                          [(1, "call f('ab' , 'cd')")])
+        # The lookahead is quote-SPECIFIC, not "whatever character ended the line". Without that
+        # restriction `do&` would memo an `o` and tight-join `of x` into `doof x`.
+        self.assertEqual(fortran_logical_lines("do&\nof x\n"), [(1, "do of x")])
+
+    def test_escape_lookahead_crosses_a_wrap_line_that_contributes_nothing(self) -> None:
+        # The lookahead is over the next CONTRIBUTED character, not the next physical line. A
+        # `&&` wrap line contributes none — it is all marker — so it must not clear the memo.
+        # gfortran compiles `'ab'&` / `      &&` / `'cd'` to `ab'cd` (length 5, pinned, and with
+        # no diagnostic at all). Clearing there resurrects the exact `'ab' 'cd'` the escape rule
+        # exists to prevent, one wrap line further out.
+        self.assertEqual(fortran_logical_lines("sa = 'ab'&\n      &&\n'cd'\n"),
+                         [(1, "sa = 'ab''cd'")])
+        self.assertEqual(fortran_logical_lines("sa = 'ab'&\n  &&\n  &&\n'cd'\n"),
+                         [(1, "sa = 'ab''cd'")])
 
     def test_trailing_blanks_after_the_continuation_marker(self) -> None:
         # This, not CRLF, is what makes the `.rstrip()` load-bearing: `do i &   ` is legal and

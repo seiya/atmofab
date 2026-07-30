@@ -14853,15 +14853,16 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # domain — not, as before, only the shapes a code generator emits. The pathological
         # inputs the old restriction carved out are the point of the list below: mid-token
         # splits through the `subroutine` keyword and through the name identifier, `&`-led and
-        # not, plus all four defects. They must agree on WRONG-looking source too, because a
+        # not, plus all six defects. They must agree on WRONG-looking source too, because a
         # gate's answer on a source no generator emits is still a `Generate fail` someone has
         # to explain.
         #
-        # Worth knowing what this test can and cannot do: of the four defects, only the join
-        # separator ever made the two scanners DISAGREE. On the other three they agreed on the
-        # same wrong answer — both invented the same phantom subroutine — so parity was never
-        # going to catch them, and it is the per-defect fixtures elsewhere in these suites that
-        # do. This guards drift between the two compositions, not correctness of the scanner.
+        # Worth knowing what this test can and cannot do: of the six defects, only the join
+        # separator ever made the two scanners DISAGREE. On the others they agreed — on the
+        # same phantom subroutine for the two `splitlines()` shapes, and on the right answer for
+        # the rest — so parity was never going to catch them, and it is the per-defect fixtures
+        # elsewhere in these suites that do. This guards drift between the two compositions, not
+        # correctness of the shared scanner.
         # Each case carries its own spec_id: deriving it from the source text is how the real
         # certified-source case below silently degenerated to `[] == []`.
         from tools.orchestration_runtime import _list_prefixed_subroutines

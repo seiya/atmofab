@@ -18,7 +18,7 @@ from typing import Any, Iterator
 
 try:
     # The Fortran logical-line scanner is IMPORTED, not copy-pasted: three hand-rolled
-    # copies mis-read the same four inputs (issue #23), each one a false `Generate fail` on a
+    # copies mis-read six inputs (issue #23), each one a false `Generate fail` on a
     # source gfortran accepts. `fortran_lines` is stdlib-only, so importing it here introduces
     # no cycle — and it is not `orchestration_runtime`, which this module may not import.
     from tools import fortran_lines
@@ -4348,10 +4348,17 @@ def _validate_component_generated_surface(
 # no `do concurrent`, no labelled or named `do`, and no `do` after a `;`).
 #
 # The insight that makes the state unnecessary: anchoring at a PHYSICAL line start puts comments and
-# string literals structurally out of reach. A comment line begins with `!`, and free-form Fortran
-# requires a continued character literal to resume with `&` — so neither can present a `do` or a
-# `!$omp` at the start of a line. The earlier comment-mention and literal-mention evasions are closed
-# by the anchor rather than by parsing.
+# almost all string literals out of reach. A comment line begins with `!`, so an `!$omp` inside one
+# is never at a line start; and a CONFORMING continued character literal resumes with `&`, so its
+# content is not either. The earlier comment-mention and literal-mention evasions are closed by the
+# anchor rather than by parsing.
+#
+# The residual, measured while consolidating the scanners (issue #23) and stated here rather than
+# left implied: gfortran also ACCEPTS a literal resumed with no `&` at all (`-Wampersand`, a warning,
+# rc=0 — so such a source passes `Generate.syntax`), and then `'start&` / `do i = 1, n suffix'` does
+# put a counted-`do` spelling at a physical line start, inside a string. The floor would count it.
+# Left as-is deliberately: it is one warning-carrying non-conforming shape, no source in the tree has
+# it, and the alternative is the stateful scanner this floor exists without.
 #
 # That joining scanner does live in the tree again, as `tools/fortran_lines` (issue #23) — but for
 # consumers this floor is not: they read the JOINED logical line and compare it against a declared
