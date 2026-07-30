@@ -62,6 +62,10 @@ def _require_yaml() -> Any:
     return _yaml_mod
 
 try:
+    from tools.fortran_lines import (
+        fortran_logical_lines,
+        split_fortran_statements,
+    )
     from tools.hooks.common import (
         _normalize_rel_posix,
         _utc_now_iso,
@@ -89,6 +93,10 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     _REPO_ROOT = _THIS_FILE.parent.parent
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
+    from tools.fortran_lines import (
+        fortran_logical_lines,
+        split_fortran_statements,
+    )
     from tools.hooks.common import (
         _normalize_rel_posix,
         _utc_now_iso,
@@ -1298,32 +1306,19 @@ _FORTRAN_SUBROUTINE_RE = re.compile(
 def _split_fortran_statements(logical_line: str) -> list[str]:
     """Split one comment-stripped, continuation-joined Fortran logical line into its
     individual statements at top-level ``;`` separators — a ``;`` inside a ``'``/``"`` string
-    literal is NOT a separator. Returns stripped, non-empty statements (``[]`` for blank).
-    Fortran permits several statements on one line (``contains; subroutine foo()``); scanning
-    at the statement level, not the raw line, keeps the declaration discovery robust to that
-    form. NEVER raises. For the common one-statement-per-line source this returns the single
-    stripped line unchanged."""
+    literal or inside parentheses is NOT a separator. Returns stripped, non-empty statements
+    (``[]`` for blank). Fortran permits several statements on one line
+    (``contains; subroutine foo()``); scanning at the statement level, not the raw line, keeps
+    the declaration discovery robust to that form. NEVER raises. For the common
+    one-statement-per-line source this returns the single stripped line unchanged.
+
+    The split itself is ``fortran_lines.split_fortran_statements`` (shared with the validator,
+    issue #23); this wrapper is what adds the strip, the empty-drop and the fail-soft envelope
+    this module's callers rely on."""
     try:
         if not isinstance(logical_line, str):
             return []
-        out: list[str] = []
-        quote: str | None = None
-        start = 0
-        for i, ch in enumerate(logical_line):
-            if quote is not None:
-                if ch == quote:
-                    quote = None
-            elif ch in ("'", '"'):
-                quote = ch
-            elif ch == ";":
-                seg = logical_line[start:i].strip()
-                if seg:
-                    out.append(seg)
-                start = i + 1
-        seg = logical_line[start:].strip()
-        if seg:
-            out.append(seg)
-        return out
+        return [part.strip() for part in split_fortran_statements(logical_line) if part.strip()]
     except Exception:
         return []
 
@@ -1333,35 +1328,28 @@ def _fortran_logical_lines(source_text: str) -> list[str]:
     join ``&`` continuations, split each joined line at top-level ``;`` separators
     (``_split_fortran_statements``), and drop lines that are blank / comment-only.
 
-    A trailing ``&`` continues onto the next non-comment line; a leading ``&`` on the
-    continuation is dropped. A line that is blank or comment-only after the strip is
-    skipped WHETHER OR NOT a continuation is in progress — a full-line comment is
-    permitted between continuation lines and must not flush the buffer (otherwise a
-    wrapped header ``(...)`` would terminate early). Semicolon-packed statements
-    (``contains; subroutine foo()``) are separated so a declaration after a ``;`` is still
-    seen. NEVER raises (``[]`` on non-str / error). Shared by
+    Statements come back STRIPPED — ``_FORTRAN_SUBROUTINE_RE`` is not ``^``-anchored, so the
+    leading whitespace the shared scanner preserves is removed here rather than carried.
+    Semicolon-packed statements (``contains; subroutine foo()``) are separated so a declaration
+    after a ``;`` is still seen. NEVER raises (``[]`` on non-str / error). Shared by
     ``_extract_subroutine_interface`` and ``_list_prefixed_subroutines`` so both see the
-    identical statement view. For one-statement-per-line source the result is unchanged
-    from a plain strip+join.
-    """
+    identical statement view. For one-statement-per-line source the result is unchanged from a
+    plain strip+join.
+
+    The scanning itself is ``fortran_lines.fortran_logical_lines`` (issue #23) — one
+    implementation shared with the validator's two Fortran gates, so a comment, a continuation
+    or a character literal can no longer be read one way here and another way there. A line
+    that is blank or comment-only is skipped whether or not a continuation is in progress (a
+    full-line comment is permitted between continuation lines and must not flush the buffer,
+    or a wrapped header ``(...)`` would terminate early) — except inside an open character
+    literal, where the standard requires the continuation to be immediate and a "blank" line is
+    literal content, not a wrap gap."""
     try:
         if not isinstance(source_text, str):
             return []
         logical: list[str] = []
-        buf = ""
-        for raw in source_text.splitlines():
-            code = _strip_fortran_comment(raw)
-            if not code.strip():
-                continue
-            stripped = code.strip()
-            piece = stripped[1:].lstrip() if (buf and stripped.startswith("&")) else stripped
-            if piece.endswith("&"):
-                buf += piece[:-1].rstrip() + " "
-                continue
-            buf += piece
-            logical.extend(_split_fortran_statements(buf))
-            buf = ""
-        logical.extend(_split_fortran_statements(buf))
+        for _lineno, joined in fortran_logical_lines(source_text):
+            logical.extend(_split_fortran_statements(joined))
         return logical
     except Exception:
         return []
@@ -1423,9 +1411,10 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
     try:
         if not isinstance(source_text, str) or not op_name:
             return None
-        # 1) Strip `!` comments line-by-line, then join `&` continuations into logical
-        #    lines so a wrapped header `(...)` parses as one unit (see
-        #    `_fortran_logical_lines` for the continuation rules).
+        # 1) Strip `!` comments and join `&` continuations into logical lines, so a wrapped
+        #    header `(...)` parses as one unit (see `_fortran_logical_lines` for the
+        #    continuation rules; the comment strip carries character-literal state ACROSS
+        #    physical lines, so a `!` inside a continued literal stays content).
         logical = _fortran_logical_lines(source_text)
         # 2) Find the `subroutine <op_name>(...)` header among possibly several.
         for idx, line in enumerate(logical):
@@ -1478,20 +1467,6 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
         return None
     except Exception:
         return None
-
-
-def _strip_fortran_comment(line: str) -> str:
-    """Drop a free-form Fortran `!` comment, respecting `'`/`"` string literals."""
-    quote = None
-    for i, ch in enumerate(line):
-        if quote is not None:
-            if ch == quote:
-                quote = None
-        elif ch in ("'", '"'):
-            quote = ch
-        elif ch == "!":
-            return line[:i]
-    return line
 
 
 # Type keywords that open a Fortran declaration. `double precision` is two words and must be

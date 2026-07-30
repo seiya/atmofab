@@ -19124,6 +19124,21 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
                          ["just one statement"])
         self.assertEqual(_split_fortran_statements("   "), [])
 
+    def test_exotic_separator_does_not_resurrect_a_commented_out_declaration(self) -> None:
+        # issue #23, defect A, at the consumer. `str.splitlines()` breaks on eight separators
+        # Fortran does not treat as line ends, so a form feed inside a comment ended the
+        # comment early and re-admitted its tail AS CODE — here inventing a published
+        # operation that does not exist in the certified source, which the dependency facts
+        # would then tell a leaf to call.
+        from tools.orchestration_runtime import _list_prefixed_subroutines
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         (" ", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = (f"! removed for now {ch} subroutine dep__ghost(a)\n"
+                       "subroutine dep__go(a)\nend subroutine\n")
+                self.assertEqual(_list_prefixed_subroutines(src, "dep__"), ["dep__go"],
+                                 f"a {name} must not end the comment")
+
     def test_garbage_and_empty_prefix_return_empty(self) -> None:
         from tools.orchestration_runtime import _list_prefixed_subroutines
         self.assertEqual(_list_prefixed_subroutines("not fortran at all", "dep__"), [])
@@ -19187,6 +19202,34 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
              "argument_order": ["a", "b", "c"],
              "arguments": self._unknown("a", "b", "c")})
 
+    def test_commented_out_header_behind_an_exotic_separator_is_not_selected(self) -> None:
+        # issue #23, defect A, at the consumer that pins the CALL SITE. A form feed inside a
+        # comment used to end the comment early, so the stale argument order of a commented-out
+        # header was published — a leaf told to call the dependency in the wrong positional
+        # order builds against a type/rank mismatch.
+        from tools.orchestration_runtime import _extract_subroutine_interface
+        src = ("! old signature \x0c subroutine foo__bar(c, b, a)\n"
+               "subroutine foo__bar(a, b, c)\nend subroutine\n")
+        self.assertEqual(
+            _extract_subroutine_interface(src, "foo__bar")["argument_order"], ["a", "b", "c"])
+
+    def test_bang_inside_a_continued_literal_does_not_eat_a_declaration(self) -> None:
+        # issue #23, defect B, at the consumer. The `!` below sits inside a CONTINUED character
+        # literal, so a per-physical-line comment strip dropped the rest of that line; what
+        # survived ended in `&`, the buffer stayed open, and it swallowed the NEXT statement —
+        # here `a`'s declaration, which is exactly the type/intent the dependency facts publish
+        # for the call site. Legal free-form Fortran throughout.
+        from tools.orchestration_runtime import _extract_subroutine_interface
+        src = ("subroutine foo__bar(a, b)\n"
+               "  character(len=*), parameter :: msg = 'x&\n"
+               "    &y& ! not a comment'\n"
+               "  real(8), intent(in) :: a\n"
+               "  real(8), intent(in) :: b\n"
+               "end subroutine\n")
+        args = _extract_subroutine_interface(src, "foo__bar")["arguments"]
+        self.assertEqual([(d["name"], d["type"], d["intent"]) for d in args],
+                         [("a", "real(8)", "in"), ("b", "real(8)", "in")])
+
     def test_zero_arg_subroutine_without_parens(self) -> None:
         # A zero-argument subroutine may be declared without a parameter list (legal Fortran);
         # the extractor returns an empty argument_order rather than None (Codex round-3 P2).
@@ -19223,9 +19266,15 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
             "       & b, c)\n"
             "  end subroutine\n"
         )
+        # The double space is the shared scanner's `&`-led join (issue #23): a continuation
+        # that starts with `&` resumes the statement VERBATIM, because that is the only form
+        # that may split a token (`do con&` / `&current`). Here the wrapped line happens to
+        # write `& b`, so the space after the `&` is part of the statement. `argument_order`
+        # is the load-bearing datum and is unaffected; `interface` is only rendered into the
+        # `<dependency_facts>` prompt lines, where the extra space is inert.
         self.assertEqual(
             _extract_subroutine_interface(src, "foo__bar"),
-            {"interface": "subroutine foo__bar(a, b, c)",
+            {"interface": "subroutine foo__bar(a,  b, c)",
              "argument_order": ["a", "b", "c"],
              "arguments": self._unknown("a", "b", "c")})
 
