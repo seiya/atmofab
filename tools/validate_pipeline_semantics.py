@@ -17,6 +17,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 try:
+    # The Fortran logical-line scanner is IMPORTED, not copy-pasted: three hand-rolled
+    # copies mis-read six inputs (issue #23), each one a false `Generate fail` on a
+    # source gfortran accepts. `fortran_lines` is stdlib-only, so importing it here introduces
+    # no cycle — and it is not `orchestration_runtime`, which this module may not import.
+    from tools import fortran_lines
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -39,6 +44,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
 
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
+    from tools import fortran_lines
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -2092,110 +2098,27 @@ _FORTRAN_UNIT_OPEN = re.compile(
 _FORTRAN_FUNCTION_OPEN = re.compile(r"(?<![a-z0-9_])function\s+[a-z][a-z0-9_]*\s*\(")
 
 
-def _strip_fortran_inline_comment(line: str) -> str:
-    """Drop a trailing ``!`` comment, honoring single/double quoted strings."""
-    in_single = False
-    in_double = False
-    i = 0
-    n = len(line)
-    while i < n:
-        ch = line[i]
-        if in_single:
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-        elif ch == '"':
-            in_double = True
-        elif ch == "!":
-            return line[:i]
-        i += 1
-    return line
-
-
-def _split_fortran_statements(line: str) -> list[str]:
-    """Split a logical line on top-level ``;`` statement separators.
-
-    Semicolons inside quotes or parentheses are ignored, so a line such as
-    ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements.
-    """
-    parts: list[str] = []
-    current: list[str] = []
-    depth = 0
-    in_single = False
-    in_double = False
-    for ch in line:
-        if in_single:
-            current.append(ch)
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            current.append(ch)
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-            current.append(ch)
-        elif ch == '"':
-            in_double = True
-            current.append(ch)
-        elif ch == "(":
-            depth += 1
-            current.append(ch)
-        elif ch == ")":
-            depth -= 1
-            current.append(ch)
-        elif ch == ";" and depth == 0:
-            parts.append("".join(current))
-            current = []
-        else:
-            current.append(ch)
-    parts.append("".join(current))
-    return parts
-
-
 def _iter_fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     """Merge free-form continuation lines and split ``;``-separated statements.
 
-    Returns ``(start_lineno, statement)`` pairs, where ``start_lineno`` is the
-    physical line on which the statement began. Trailing ``&`` continuations are
-    merged, inline ``!`` comments stripped, an optional leading ``&`` on a
-    continuation line dropped, and a logical line carrying multiple ``;``-joined
-    statements is expanded into one entry per statement (all sharing the line).
+    Returns ``(start_lineno, statement)`` pairs, where ``start_lineno`` is the physical line on
+    which the statement began. A logical line carrying multiple ``;``-joined statements is
+    expanded into one entry per statement, all sharing that line, in source order — the
+    reaching-definition index and the scope assignment both walk this list positionally.
+    Indentation is left on: what keeps a ``call`` or ``end subroutine`` line from matching is
+    that ``_COMPONENT_PUBLISHED_SUB_RE`` and friends anchor at the START of a whole logical
+    line, and the ``\\s*`` in that anchor is there to tolerate the indentation this preserves.
+
+    The scanning itself is ``fortran_lines.fortran_logical_lines`` (issue #23) — one
+    implementation shared with ``_fortran_logical_lines`` below and with
+    ``orchestration_runtime``, so a comment, a continuation or a character literal can no
+    longer be read one way here and another way there. This adapter adds only the ``;`` split.
     """
     logical: list[tuple[int, str]] = []
-    buffer = ""
-    start_lineno: int | None = None
-
-    def flush() -> None:
-        if start_lineno is None:
-            return
-        for statement in _split_fortran_statements(buffer):
+    for lineno, joined in fortran_lines.fortran_logical_lines(text):
+        for statement in fortran_lines.split_fortran_statements(joined):
             if statement.strip():
-                logical.append((start_lineno, statement))
-
-    for lineno, raw_line in enumerate(text.splitlines(), 1):
-        code = _strip_fortran_inline_comment(raw_line).rstrip()
-        continued = code.endswith("&")
-        if continued:
-            code = code[:-1]
-        if buffer:
-            stripped = code.lstrip()
-            if stripped.startswith("&"):
-                stripped = stripped[1:]
-            buffer += stripped
-        else:
-            start_lineno = lineno
-            buffer = code
-        if continued:
-            continue
-        flush()
-        buffer = ""
-        start_lineno = None
-    flush()
+                logical.append((lineno, statement))
     return logical
 
 
@@ -3974,7 +3897,7 @@ def _fortran_statements(text: str) -> list[str]:
     `^\\s*use\\b` rule silently sees one statement and misses the other. Both halves of the M3c
     checks gate go through here so they cannot drift apart on that."""
     return [stmt for line in _fortran_logical_lines(text)
-            for stmt in _split_fortran_statements(line)]
+            for stmt in fortran_lines.split_fortran_statements(line)]
 
 
 def checks_module_abi_facts(text: str, spec_id: str) -> tuple[set[str], set[str], set[str]]:
@@ -4301,7 +4224,7 @@ def _validate_generate_outputs_for_generation(
 # published-surface scanner the resolver uses): optional pure/impure/elemental/recursive/module
 # prefixes, then `subroutine <name>`. `^\s*` anchors at the (comment-stripped, continuation-
 # joined) logical-line start, so `end subroutine` / `call` lines never match. Kept in lock-step
-# with the runtime regex by the cross-scanner parity test (ComponentGeneratedSurfaceTests).
+# with the runtime regex by the cross-scanner parity test (ComponentGeneratedSurfaceGateTests).
 _COMPONENT_PUBLISHED_SUB_RE = re.compile(
     r"^\s*(?:(?:pure|impure|elemental|recursive|module)\s+)*"
     r"subroutine\s+(?P<name>[A-Za-z]\w*)",
@@ -4313,15 +4236,18 @@ def _list_component_published_subroutines(text: str, spec_id: str) -> list[str]:
     """Distinct, first-appearance-ordered ``subroutine`` names in ``text`` whose name begins
     (case-insensitive) with ``<spec_id>__`` — the component's published operation surface. The
     validator may NOT import ``orchestration_runtime`` (module-boundary rule), so this is a
-    self-contained mirror of that module's ``_list_prefixed_subroutines``; the cross-scanner
-    parity test pins the two implementations to the same result over the domain a code generator
-    emits — declarations on one logical line and continuations broken at a TOKEN boundary (the
-    ``subroutine __op( &`` argument-list wrap). The two scanners' shared-helper continuation joins
-    differ in whitespace (``_iter_fortran_logical_lines`` here joins with no separator,
-    ``orchestration_runtime._fortran_logical_lines`` with a space), so a pathological split
-    THROUGH the ``subroutine`` keyword or through the name identifier (``pure&``/``dep__fo&\\no``)
-    resolves differently — but no generator emits that, so it is out of the pinned domain. Uses
-    this file's ``_iter_fortran_logical_lines`` (comment-strip + continuation-join). NEVER raises."""
+    separate mirror of that module's ``_list_prefixed_subroutines``; the cross-scanner parity
+    test pins the two implementations to the same result.
+
+    The two used to be pinned only over the domain a code generator emits, because their
+    hand-rolled scanners joined continuations with different whitespace and so resolved a
+    pathological split THROUGH the ``subroutine`` keyword or through the name identifier
+    (``pure&`` / ``dep__fo&``/``&o``) differently. That divergence is gone: both now scan with
+    ``fortran_lines.fortran_logical_lines`` (issue #23), the single shared implementation, so the
+    parity test runs over the FULL domain — mid-token splits, exotic line separators, a ``!``
+    inside a continued literal, a lone-``&`` wrap line. What remains local to each side is only
+    the composition (this one keeps leading whitespace for the ``^\\s*`` anchor above; the runtime
+    strips). NEVER raises."""
     try:
         prefix = f"{spec_id}__".lower()
         out: list[str] = []
@@ -4422,10 +4348,23 @@ def _validate_component_generated_surface(
 # no `do concurrent`, no labelled or named `do`, and no `do` after a `;`).
 #
 # The insight that makes the state unnecessary: anchoring at a PHYSICAL line start puts comments and
-# string literals structurally out of reach. A comment line begins with `!`, and free-form Fortran
-# requires a continued character literal to resume with `&` — so neither can present a `do` or a
-# `!$omp` at the start of a line. The earlier comment-mention and literal-mention evasions are closed
-# by the anchor rather than by parsing.
+# almost all string literals out of reach. A comment line begins with `!`, so an `!$omp` inside one
+# is never at a line start; and a CONFORMING continued character literal resumes with `&`, so its
+# content is not either. The earlier comment-mention and literal-mention evasions are closed by the
+# anchor rather than by parsing.
+#
+# The residual, measured while consolidating the scanners (issue #23) and stated here rather than
+# left implied: gfortran also ACCEPTS a literal resumed with no `&` at all (`-Wampersand`, a warning,
+# rc=0 — so such a source passes `Generate.syntax`), and then `'start&` / `do i = 1, n suffix'` does
+# put a counted-`do` spelling at a physical line start, inside a string. The floor would count it —
+# a false REJECT on a source `Generate.syntax` passed. ACCEPTED rather than fixed: it is one
+# warning-carrying non-conforming shape, no source in the tree has it, and the alternative is the
+# stateful scanner this floor exists without.
+#
+# That joining scanner does live in the tree again, as `tools/fortran_lines` (issue #23) — but for
+# consumers this floor is not: they read the JOINED logical line and compare it against a declared
+# surface, so they cannot anchor their way out of the state. A presence check can, so this one still
+# must not take the dependency. The two answers are not in conflict; the question differs.
 #
 # `[ \t\f]` is gfortran's blank set: a form feed is a blank it accepts, both before a `do` and as a
 # token separator (verified against the compiler, and the reason the previous scanner leaked).
@@ -5291,54 +5230,26 @@ def _mask_fortran_string_contents(line: str) -> str:
     return "".join(out)
 
 
-def _strip_fortran_comment(line: str) -> str:
-    """Drop a trailing ``!`` comment, honoring single/double-quoted strings (so a ``!`` inside a
-    string literal is not treated as a comment)."""
-    quote: str | None = None
-    for i, ch in enumerate(line):
-        if quote is not None:
-            if ch == quote:
-                quote = None
-        elif ch in ("'", '"'):
-            quote = ch
-        elif ch == "!":
-            return line[:i]
-    return line
-
-
 def _fortran_logical_lines(text: str) -> list[str]:
     """Split Fortran source/interface text into logical lines: comments stripped and ``&``
-    continuation lines joined (a leading ``&`` on a continued line is consumed). Whitespace and
-    case are preserved here (normalization happens per-line in ``_normalize_fortran_line``).
+    continuation lines joined (a leading ``&`` on a continued line is consumed). Case and
+    indentation are preserved (normalization happens per-line in ``_normalize_fortran_line``);
+    per-physical-line trailing whitespace is not, and a continuation that does not begin with
+    ``&`` joins with a space — except inside an open character literal, where the join is always
+    tight because a line break cannot insert a blank into a literal. Blank and comment-only lines produce no entry, so every element is
+    real Fortran.
 
     Free-form Fortran permits blank and full-line-comment lines *between* a ``&``-terminated line
     and its continuation — they are ignored, not statement terminators — so while a continuation is
     open such lines are skipped rather than flushing a truncated logical line. This matters: the
     §5.1 ``write_perf`` header exceeds the 132-column free-form limit and must be wrapped, so a
-    legally-formatted source with a comment inside that wrap must still join to one logical line."""
-    logical: list[str] = []
-    buf: str | None = None  # None: not continuing; str: accumulated continuation (trailing & removed)
-    for raw in text.splitlines():
-        piece = _strip_fortran_comment(raw)
-        if buf is not None:
-            # Mid-continuation: a blank / pure-comment line does not terminate the statement.
-            if not piece.strip():
-                continue
-            stripped = piece.lstrip()
-            if stripped.startswith("&"):
-                stripped = stripped[1:]
-            combined = buf + stripped
-        else:
-            combined = piece
-        rstripped = combined.rstrip()
-        if rstripped.endswith("&"):
-            buf = rstripped[:-1]
-            continue
-        buf = None
-        logical.append(combined)
-    if buf is not None:
-        logical.append(buf)
-    return logical
+    legally-formatted source with a comment inside that wrap must still join to one logical line.
+    (That holds inside an open character literal too — F2008 3.3.2.4.)
+
+    Unlike ``_iter_fortran_logical_lines`` this does NOT split on ``;`` — the interface-stanza
+    parser wants the header as written — and it drops the line numbers. The scanning itself is the
+    same ``fortran_lines.fortran_logical_lines`` (issue #23)."""
+    return [joined for _lineno, joined in fortran_lines.fortran_logical_lines(text)]
 
 
 def _normalize_fortran_line(logical_line: str) -> str:

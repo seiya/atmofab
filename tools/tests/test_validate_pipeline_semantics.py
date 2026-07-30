@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 
 import tools.validate_pipeline_semantics as vps
+from tools.fortran_lines import strip_fortran_comment_tracking_quotes
 from tools.lang_backend_fortran import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
     _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
@@ -13540,6 +13541,27 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         # a top-level `parameter` declaration is not a stanza
         self.assertNotIn("dp", ops)
 
+    def test_commented_out_stanza_behind_an_exotic_separator_is_not_parsed(self) -> None:
+        # issue #23, defect A, at `_parse_interface_stanzas` — which the generated-signature
+        # gate runs over the MODEL SOURCE to compare each pinned §5.1 signature within its own
+        # procedure stanza. A form feed inside a comment ended the comment early under
+        # `str.splitlines()` and re-admitted its tail AS CODE, conjuring a stanza header out of
+        # prose: it never closes, so it is reported unterminated and fails Generate closed on a
+        # source gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = ("module hx_model\ncontains\n"
+                       f"  ! removed: {ch} subroutine hx__ghost(a)\n"
+                       "  subroutine hx__real(a)\n"
+                       "    real, intent(in) :: a\n"
+                       "  end subroutine\n"
+                       "end module\n")
+                ops, types, errors = vps._parse_interface_stanzas(src)
+                self.assertEqual(errors, [], f"a {name} must not end the comment")
+                self.assertEqual(sorted(ops), ["hx__real"])
+                self.assertEqual(types, {})
+
     def test_missing_fence_errors(self) -> None:
         _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
         self.assertIsNotNone(err)
@@ -13666,7 +13688,10 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             vps._normalize_fortran_line(joined[0]), "subroutinehx__foo(a,b)")
 
     def test_comment_strip_honors_strings(self) -> None:
-        line = vps._strip_fortran_comment("s = '! not a comment' ! real comment")
+        # The stripper is now the shared one (issue #23); `None` is the "this physical line does
+        # not start inside a character literal" state, and the returned state is discarded here.
+        line = strip_fortran_comment_tracking_quotes(
+            "s = '! not a comment' ! real comment", None)[0]
         self.assertEqual(vps._normalize_fortran_line(line), "s='!notacomment'")
 
 
@@ -14127,6 +14152,38 @@ class ChecksSourceGateTests(unittest.TestCase):
                "use harness_fortran_cpu_model, only: harness_fortran_cpu__box\n"
                "  implicit none\n  private\n" + body + "end module\n")
         self.assertTrue(any("harness" in v for v in self._run(src)), self._run(src))
+
+    def test_commented_out_harness_use_behind_an_exotic_separator_is_not_live(self) -> None:
+        # issue #23, defect A: the false-REJECT direction of this gate. `str.splitlines()` broke
+        # on eight separators Fortran does not treat as line ends, so a form feed inside a
+        # comment ended the comment early and re-admitted its tail AS CODE — a commented-out
+        # `use harness_...` became a live isolation breach and failed Generate on a source
+        # gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = _CHECKS_OK.replace(
+                    "  private\n",
+                    f"  private\n  ! dropped this: {ch} use harness_fortran_cpu_model\n")
+                self.assertEqual([v for v in self._run(src) if "harness" in v], [],
+                                 f"a {name} must not end the comment")
+
+    def test_comment_line_inside_a_wrapped_literal_does_not_spill_it_as_code(self) -> None:
+        # A continued character context resumes at "the next line that is not a comment line"
+        # (F2008 3.3.2.4), and a blank line is a comment line (3.3.2.3) — verified against
+        # gfortran 14.2, which compiles the fixture below at `-std=f2008` with no diagnostic.
+        # Terminating the statement at the gap instead flushes a truncated literal and lets the
+        # REST of it be read as code: the `open(` here is prose inside a string, and the gate
+        # would report file I/O in a module that does none.
+        for gap, label in (("\n", "blank line"), ("    ! wrap note\n", "comment line")):
+            with self.subTest(gap=label):
+                src = _CHECKS_OK.replace(
+                    "  private\n",
+                    "  private\n"
+                    "  character(len=*), parameter :: hint = 'fill the state in the runner&\n"
+                    + gap +
+                    "    & with open(unit=...), never here'\n")
+                self.assertEqual([v for v in self._run(src) if "file I/O" in v], [])
 
     def _exec(self, tmp: Path) -> NodeExecution:
         return NodeExecution(node_key="component/bx@0.1.0", node_dir=tmp,
@@ -14727,6 +14784,47 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertTrue(any("does not publish component public_api operation 'dep_base__shift'"
                             in x for x in v), v)
 
+    def test_commented_out_declaration_behind_an_exotic_separator_is_not_published(self) -> None:
+        # issue #23, defect A, in the "extra subroutine" direction: a form feed inside a comment
+        # ended the comment early under `str.splitlines()` and re-admitted its tail AS CODE, so
+        # a commented-out declaration was reported as a surface the IR does not declare — a
+        # `Generate fail` on a source gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                model = (
+                    "module dep_base_model\ncontains\n"
+                    f"  ! removed: {ch} subroutine dep_base__extra(y)\n"
+                    "  subroutine dep_base__scale(x, n, y)\n  end subroutine\n"
+                    "end module\n")
+                self.assertEqual(
+                    self._run(public_api={"published_operations": [
+                        {"operation_id": "dep_base__scale"}]}, model_text=model), [],
+                    f"a {name} must not end the comment")
+
+    def test_wrapped_declaration_keyword_does_not_hide_a_declaration(self) -> None:
+        # issue #23, defect C, in the "missing operation" direction. A continuation line that
+        # does NOT start with `&` must join with a SPACE — the line break is a token separator.
+        # Joining tight turned `pure &` / `subroutine dep_base__shift(x)` into
+        # `puresubroutine dep_base__shift(x)`, which the anchored declaration pattern cannot
+        # match: the gate reported a published operation as absent from a source that declares
+        # it, in legal free-form Fortran. `orchestration_runtime` joined with a space and found
+        # it, which is precisely the divergence the parity test used to have to exclude.
+        for header, label in (
+            ("  pure&\n  subroutine dep_base__shift(x)\n", "through the `pure` prefix"),
+            ("  subroutine&\n  dep_base__shift(x)\n", "between keyword and name"),
+        ):
+            with self.subTest(split=label):
+                model = (
+                    "module dep_base_model\ncontains\n"
+                    "  subroutine dep_base__scale(x, n, y)\n  end subroutine\n"
+                    + header + "  end subroutine\n"
+                    "end module\n")
+                self.assertEqual(
+                    self._run(public_api={"published_operations": [
+                        {"operation_id": "dep_base__scale"},
+                        {"operation_id": "dep_base__shift"}]}, model_text=model), [])
+
     def test_extra_prefixed_subroutine_flagged(self) -> None:
         model = (
             "module dep_base_model\ncontains\n"
@@ -14749,18 +14847,31 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
                 spec_kind="profile", node_key="profile/dep_base@0.1.0"), [])
 
     def test_cross_scanner_parity_with_runtime(self) -> None:
-        # Drift guard: the validator's self-contained scanner must agree with
-        # orchestration_runtime._list_prefixed_subroutines (which it may not import) over the
-        # domain a code generator emits — one-line declarations and TOKEN-boundary continuations
-        # (the `subroutine __op( &` argument-list wrap below), plus comment / interface-block /
-        # parenless / case / mixed-prefix edge cases and a real committed certified source. A
-        # pathological split THROUGH the `subroutine` keyword or the name identifier is out of
-        # scope (the two shared logical-line helpers join continuations with different whitespace;
-        # no generator emits a mid-token split — see `_list_component_published_subroutines`).
+        # Drift guard: the validator's published-surface scanner must agree with
+        # orchestration_runtime._list_prefixed_subroutines (which it may not import). Both now
+        # read `fortran_lines.fortran_logical_lines` (issue #23), so this runs over the FULL
+        # domain — not, as before, only the shapes a code generator emits. The pathological
+        # inputs the old restriction carved out are the point of the list below: mid-token
+        # splits through the `subroutine` keyword and through the name identifier, `&`-led and
+        # not, plus five of the six defects. The blank-set one has no case here: on it the two
+        # scanners agreed (both wrong), so parity could not have seen it either. They must agree
+        # on WRONG-looking source too, because a
+        # gate's answer on a source no generator emits is still a `Generate fail` someone has
+        # to explain.
+        #
+        # Worth knowing what this test can and cannot do: of the six defects, only the join
+        # separator ever made the two scanners DISAGREE. On the others they agreed — on the
+        # same phantom subroutine for the two `splitlines()` shapes, and on the right answer for
+        # the rest — so parity was never going to catch them, and it is the per-defect fixtures
+        # elsewhere in these suites that do. This guards drift between the two compositions, not
+        # correctness of the shared scanner.
+        # Each case carries its own spec_id: deriving it from the source text is how the real
+        # certified-source case below silently degenerated to `[] == []`.
         from tools.orchestration_runtime import _list_prefixed_subroutines
-        sources = [
-            self._GOOD_MODEL,
-            ("module m\ncontains\n"
+        cases = [
+            ("the shared good model", "dep_base", self._GOOD_MODEL),
+            ("comment / interface-block / parenless / case / mixed-prefix edges", "dep_base",
+             "module m\ncontains\n"
              "  ! a comment mentioning subroutine dep_base__ghost\n"
              "  PURE subroutine dep_base__Scale( &\n      x, n, y)\n  end subroutine\n"
              "  subroutine dep_base__ping\n  end subroutine\n"
@@ -14769,15 +14880,54 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
              "  subroutine helper_internal(z)\n  end subroutine\n"
              "  function dep_base__notasub(x)\n  end function\n"
              "end module\n"),
-            Path("tools/tests/data/sw2d_call_only_unext_model.f90").read_text(encoding="utf-8"),
+            # C: a split THROUGH a token, in every combination of `&`-led and not.
+            ("mid-token split through the `pure` prefix", "dep_base",
+             "  pure&\n  subroutine dep_base__scale(x)\n  end subroutine\n"),
+            ("mid-token split, `&`-led resume", "dep_base",
+             "  pu&\n  &re subroutine dep_base__scale(x)\n  end subroutine\n"),
+            ("mid-token split through the name", "dep_base",
+             "  subroutine dep_base__sc&\n  &ale(x)\n  end subroutine\n"),
+            ("split between keyword and name, no leading `&`", "dep_base",
+             "  subroutine&\n  dep_base__scale(x)\n  end subroutine\n"),
+            # A: exotic separators, in a comment and before a declaration.
+            ("form feed inside a comment", "dep_base",
+             "  ! removed \x0c subroutine dep_base__ghost(y)\n"
+             "  subroutine dep_base__scale(x)\n  end subroutine\n"),
+            ("NEL and the unicode separators inside a comment", "dep_base",
+             "  ! a \x85 b \u2028 c \u2029 subroutine dep_base__ghost(y)\n"
+             "  subroutine dep_base__scale(x)\n  end subroutine\n"),
+            # B: a `!` inside a continued character literal.
+            ("`!` inside a continued literal", "dep_base",
+             "  subroutine dep_base__scale(x)\n"
+             "    character(len=*), parameter :: m = 'a&\n      &!b'\n"
+             "  end subroutine\n"
+             "  subroutine dep_base__ping\n  end subroutine\n"),
+            # D: the lone-`&` continuation line, bare and with a comment.
+            ("lone-`&` wrap line", "dep_base",
+             "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &\n"
+             "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
+            ("lone-`&` wrap line carrying a comment", "dep_base",
+             "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &! note\n"
+             "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
+            # The blank/comment-inside-a-wrap rule, which holds inside an open literal too.
+            ("blank and comment lines inside a wrap", "dep_base",
+             "  subroutine dep_base__scale( &\n    ! wrap note\n\n      & x, n)\n"
+             "  end subroutine\n"),
+            ("`;`-packed declaration", "dep_base",
+             "module m\ncontains; subroutine dep_base__ping()\nend subroutine\nend module\n"),
+            ("a real committed certified source", "shallow_water2d",
+             Path("tools/tests/data/sw2d_call_only_unext_model.f90").read_text(
+                 encoding="utf-8")),
         ]
-        prefixes = ["dep_base__", "dep_base__", "dynamics_shallow_water"]
-        for src, pfx in zip(sources, prefixes):
-            spec_id = pfx[:-2] if pfx.endswith("__") else pfx
-            self.assertEqual(
-                vps._list_component_published_subroutines(src, spec_id),
-                _list_prefixed_subroutines(src, f"{spec_id}__"),
-                f"scanner drift on prefix {spec_id}__")
+        for label, spec_id, src in cases:
+            with self.subTest(case=label):
+                published = vps._list_component_published_subroutines(src, spec_id)
+                self.assertEqual(
+                    published,
+                    _list_prefixed_subroutines(src, f"{spec_id}__"),
+                    f"scanner drift on prefix {spec_id}__")
+                # Agreeing on nothing is not agreement: every case must exercise the scanners.
+                self.assertNotEqual(published, [], f"case {label!r} pins nothing")
 
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
@@ -15109,9 +15259,10 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
     def test_comment_and_literal_mentions_cannot_reach_a_line_start(self) -> None:
         """The anchor, not a parser, is what closes the comment/literal evasions.
 
-        A comment line begins with `!` and a continued character literal must resume with `&`, so
-        neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each of these
-        defeated an earlier, cleverer scanner."""
+        A comment line begins with `!` and a CONFORMING continued character literal resumes with
+        `&`, so neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each
+        of these defeated an earlier, cleverer scanner. (gfortran's warning-only resume-without-`&`
+        extension can reach a line start; that residual is recorded at the floor itself.)"""
         loop = "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"
         for body, label in (
             ("    ! not real code; do concurrent (i=1:1) is what we would write\n",

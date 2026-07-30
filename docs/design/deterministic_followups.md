@@ -1547,7 +1547,8 @@ source of truth. `tests.md`/catalog bumped to 0.2.0 (in-place respec — no cons
 
 **Gates (`tools/validate_pipeline_semantics.py`).** A §5.1 parser
 (`_parse_canonical_interface_from_controlled_spec` → per-symbol *stanzas*; `_parse_interface_stanzas`,
-`_fortran_logical_lines`, `_normalize_fortran_line`, `_strip_fortran_comment`) normalizes away
+`_fortran_logical_lines`, `_normalize_fortran_line`, and the comment stripper — since issue #23 the
+shared `tools/fortran_lines.strip_fortran_comment_tracking_quotes`) normalizes away
 comments, `&` continuations (spanning interleaved blank/comment lines — the §5.1 `write_perf`
 header is >132 cols and MUST wrap), case, and whitespace. Three deterministic pins:
 - **Compile** (`_validate_infrastructure_public_api` + `_validate_ir_signatures_against_section51`):
@@ -3023,8 +3024,8 @@ defined nowhere) stays with the `Generate.gate` syntax check, which reports it p
 Sharing the parser also surfaced two FALSE POSITIVES that predate this work and had been sitting in the `Generate.gate` static check
 alone (both confirmed legal with `gfortran -fsyntax-only -std=f2008`, both now fixed in the shared function, so both
 gates improve at once): a logical line was never split at its `;` statement separators, so `public :: a; public :: b`
-lost `a` (its token was `a;`) and invented a name `public` — the repo's existing string- and paren-aware
-`_split_fortran_statements` now runs first; and `proc_start`'s type-spec prefix was greedy enough to run from a
+lost `a` (its token was `a;`) and invented a name `public` — the repo's existing string- and paren-aware statement
+splitter (since issue #23, `tools/fortran_lines.split_fortran_statements`) now runs first; and `proc_start`'s type-spec prefix was greedy enough to run from a
 declaration's type keyword into a string literal, so
 `character(len=*), parameter :: note = 'run subroutine case_setup first'` registered a phantom definition AND
 incremented `proc_depth`, suppressing every later `public ::` and real definition — the whole ABI reported unpublished
@@ -3343,3 +3344,69 @@ Reading a failure: a `structural_violation` on `l0_metric_leaf_pass` at the HARN
 regenerated writer (a `Generate` repair), whereas an IR whose `step_10_write_diagnostics` description reads "empty
 metrics" — the shape the `0.6.0` IR carried — is a Compile transcription defect (a `Compile` reopen), not a writer
 defect. The detection gap is not declared closed before both acceptance conditions hold. _orch id + result pending._
+
+## Three Fortran scanners, one reading — six mis-reads spread across three deterministic gates (LANDED 2026-07-30, issue #23)
+
+Reading generated Fortran the way the compiler does — a `!` comment is not code, a `&` continuation is one statement
+across several physical lines, a `;` separates statements — was implemented three times independently
+(`validate_pipeline_semantics._iter_fortran_logical_lines` and `._fortran_logical_lines`,
+`orchestration_runtime._fortran_logical_lines`). Between them they got six things wrong — three that all three share,
+one where the copies are wrong in opposite directions, and two that only `_iter_fortran_logical_lines` has — and every
+one of them errs toward a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both accept:
+
+- **`str.splitlines()`** breaks on eight separators Fortran does not treat as line ends (`\f`, `\v`, `\x85`, `U+2028`,
+  …), so a form feed inside a comment ends the comment early and re-admits its tail AS CODE — a commented-out `use
+  harness_…` becoming a live isolation breach, a phantom §5.1 stanza that is then reported unterminated. Splitting on
+  `\n` alone is the language's own rule. All three.
+- **Python's `str.strip()` blank set is not Fortran's.** gfortran's free-form blank set is exactly three characters —
+  space, tab (a `-Wtabs` extension) and form feed — and `strip()` also folds `\v`, `\x85`, `\xa0`, `U+2028` and more.
+  Those are ordinary CONTENT to the compiler, so stripping them re-admits literal content as code: a `\v` before a
+  resuming `&` made the scanner eat an `&` gfortran reads as part of the string, and the rest of the literal spilled
+  out as declarations — a published operation invented from inside a quoted note, on a source gfortran accepts. This
+  one was found during review of the consolidation, in the consolidated scanner itself; the three originals shared it.
+- A **`!` inside a CONTINUED character literal** read as a comment, because quote state was tracked per physical line.
+  The rest of the line is dropped and, if what survives ends in `&`, the buffer stays open and swallows the next
+  statement — in the reproducer, a dummy argument's `real(8), intent(in)` declaration, which is exactly the type the
+  dependency facts publish for the call site. All three, in two different shapes.
+- A continuation line that does **not** start with `&` must join with a **SPACE** (the line break is a token
+  separator). Joining tight turns legal `pure&` / `subroutine dep__shift(x)` into `puresubroutine dep__shift(x)`, and
+  the anchored declaration pattern then reports a published operation as absent from the source that declares it. The
+  runtime copy made the mirror error (`do con&` / `&current` → `do con current`) — both validator copies the first,
+  the runtime copy the second, so each was wrong in the direction the other was right — which is why comparing the two
+  against each other never flagged it. Inside a character context the join is always tight, including for gfortran's
+  warning-only extension of omitting the resuming `&`.
+- A **lone-`&` continuation line** must terminate the statement (gfortran: `'&' not allowed by itself`); testing the
+  trailing `&` before consuming the leading one read the single ampersand as both markers and glued the next statement
+  on — and gfortran only WARNS (`'&' not allowed by itself`), so the source reaches a gate. Only
+  `_iter_fortran_logical_lines`; the other two consumed the leading `&` first.
+- A **blank or comment line inside a wrap** flushed a truncated logical line, so a legally wrapped `subroutine foo(a,
+  &` / `! note` / `     & b)` header reached the gates as two fragments. Only `_iter_fortran_logical_lines`; the other
+  two skipped such lines, and the runtime copy then space-joined the resume, which is the third bullet.
+
+**One implementation, three adapters.** `tools/fortran_lines.py` is stdlib-only and imports nothing from the package,
+because no existing module is a home: the validator may not import `orchestration_runtime`; `lang_backend_fortran`
+imports the validator at module level, so hosting it there would put the validator in a cycle; and hosting it in the
+validator would force `orchestration_runtime` to import a module that requires PyYAML unconditionally, while the
+runtime defers PyYAML so its recovery commands stay usable without it. The three sites keep their names, signatures
+and return shapes and add only their own composition — the validator's keeps the leading whitespace its `^\s*` anchors
+tolerate, the runtime's strips because `_FORTRAN_SUBROUTINE_RE` carries no leading `\s*`.
+
+**Not the OpenMP floor.** `_validate_openmp_presence_floor` (issue #22) answers the same question with four anchored
+physical-line patterns and no state, and it stays that way. A presence check can anchor its way out of comments and
+out of every CONFORMING literal; these consumers read the JOINED logical line and compare it against a declared
+surface, so they cannot. The residual, measured here and recorded at the floor: gfortran also accepts a literal
+resumed with no `&` (`-Wampersand`, `rc=0`), and a counted-`do` spelling inside such a literal does reach a physical
+line start and would be counted — a false reject on a source `Generate.syntax` passed. Accepted rather than fixed: one
+warning-carrying non-conforming shape, absent from the tree, against re-introducing the state the floor exists
+without.
+
+**Acceptance.** Every defect was latent: over all 823 `.f90` files in the tree, the pre-change modules (`0bd007e`) and
+these agree EXACTLY on `_list_component_published_subroutines`, `_list_prefixed_subroutines` and
+`_extract_subroutine_interface`'s `argument_order` / `arguments`, and agree on `_parse_interface_stanzas` (412 files
+carry a raw delta) and `_fortran_statements` (804) once the whitespace and empty entries each consumer already
+normalizes away are removed. Those two raw deltas are accounted for rather than hidden: the statement view no longer
+emits an entry for a blank or comment-only line, and a non-`&`-led joint outside a literal contributes one space,
+which also reaches the `interface` string of 335 procedures — whitespace-only in every one. No verdict moves. The
+cross-scanner parity test (`test_cross_scanner_parity_with_runtime`) dropped its "only the domain a generator emits"
+restriction and now runs over the pathological inputs the restriction existed to exclude, asserting per case that the
+scanners agree on something rather than agreeing on nothing.

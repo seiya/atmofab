@@ -1,0 +1,320 @@
+#!/usr/bin/env python3
+"""Unit tests for tools/fortran_lines — the shared free-form Fortran logical-line scanner.
+
+These pin the scanner directly. Most of them are the tests written for the issue #22 OpenMP
+floor (commit `166946a`) and deleted with it in `5f3ccf6`, re-targeted from floor verdicts to
+scanner output: the inputs are the same compiling sources, but the assertion is now on the
+logical lines themselves, which is what the issue #23 consumers read. Consumer-level
+reproducers live with their gates in `test_orchestration_runtime` /
+`test_validate_pipeline_semantics`.
+"""
+
+from __future__ import annotations
+
+import unittest
+
+from tools.fortran_lines import (
+    fortran_logical_lines,
+    split_fortran_statements,
+    strip_fortran_comment_tracking_quotes,
+)
+
+
+class StripFortranCommentTrackingQuotesTests(unittest.TestCase):
+    """The observable contract of the quote-carrying comment stripper.
+
+    Doubled-quote escapes are deliberately NOT a separate case: read as close-then-reopen they
+    leave the same state for any run of quotes, so an explicit escape branch was provably
+    unobservable (it survived every mutation) and was removed rather than left unpinnable. These
+    assertions still cover the escaped forms — they must simply behave, not be special."""
+
+    def test_doubled_quote_escapes_behave(self) -> None:
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes("msg = 'a'''", None), ("msg = 'a'''", None))
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes('msg = "x"""', None), ('msg = "x"""', None))
+
+    def test_bang_inside_a_literal_is_not_a_comment(self) -> None:
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes("msg = 'a'' ! keep'", None),
+            ("msg = 'a'' ! keep'", None))
+
+    def test_unterminated_literal_reports_its_open_quote(self) -> None:
+        # So the next physical line continues inside the literal.
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes("msg = 'a&", None), ("msg = 'a&", "'"))
+
+    def test_entering_mid_literal_the_bang_is_content(self) -> None:
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes("      &!b'", "'"), ("      &!b'", None))
+
+    def test_real_trailing_comment_is_dropped(self) -> None:
+        # Trailing whitespace survives here — the scanner, not the stripper, rstrips.
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes("x = 1  ! note", None), ("x = 1  ", None))
+
+    def test_double_quoted_string_can_hold_a_bang(self) -> None:
+        self.assertEqual(
+            strip_fortran_comment_tracking_quotes('s = "! not a comment" ! real', None),
+            ('s = "! not a comment" ', None))
+
+
+class FortranLogicalLinesTests(unittest.TestCase):
+    """`fortran_logical_lines`: one `(start_lineno, joined_text)` per logical line."""
+
+    def test_lineno_and_whitespace_contract(self) -> None:
+        # Leading whitespace of the FIRST physical line survives (callers anchor at `^\s*`);
+        # trailing whitespace does not; blank and comment-only lines produce no entry; the
+        # lineno is where the logical line STARTED.
+        self.assertEqual(
+            fortran_logical_lines("\n  ! header\n  x = 1   \n\n  y = 2\n"),
+            [(3, "  x = 1"), (5, "  y = 2")])
+
+    def test_semicolons_are_not_split_here(self) -> None:
+        # `;`-splitting is the caller's composition step, not the scanner's.
+        self.assertEqual(
+            fortran_logical_lines("contains; subroutine foo()\n"),
+            [(1, "contains; subroutine foo()")])
+
+    def test_text_ending_mid_continuation_still_flushes(self) -> None:
+        # The post-loop flush. A file whose last statement is left continued (a truncated write,
+        # or an interface stanza sliced out of a larger source) must not lose that statement —
+        # dropping it silently shrinks what a gate examines.
+        self.assertEqual(fortran_logical_lines("y = 0\nx = 1 &\n"), [(1, "y = 0"), (2, "x = 1 ")])
+        self.assertEqual(fortran_logical_lines("x = 1 &"), [(1, "x = 1 ")])
+
+    def test_trailing_newline_yields_no_empty_entry(self) -> None:
+        # `split("\n")` produces a trailing "" for every `\n`-terminated file; it must not
+        # become a logical line.
+        self.assertEqual(fortran_logical_lines("x = 1\n"), [(1, "x = 1")])
+        self.assertEqual(fortran_logical_lines(""), [])
+
+    # --- defect A: exotic line separators -------------------------------------------------
+
+    def test_exotic_line_separators_do_not_end_a_comment(self) -> None:
+        # `str.splitlines()` breaks on eight separators Fortran does not treat as line ends, so
+        # a form feed inside a comment ended the comment early and re-admitted its tail AS CODE.
+        for ch, name in (
+            ("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x1c", "FS"), ("\x1d", "GS"),
+            ("\x1e", "RS"), ("\x85", "NEL"), ("\u2028", "LINE SEPARATOR"),
+            ("\u2029", "PARAGRAPH SEPARATOR"),
+        ):
+            with self.subTest(separator=name):
+                self.assertEqual(
+                    fortran_logical_lines(f"    ! prose {ch} use harness_mod\n    x = 1\n"),
+                    [(2, "    x = 1")],
+                    f"a {name} must not end the comment")
+
+    def test_exotic_separator_before_a_sentinel_leaves_it_inside_the_comment(self) -> None:
+        # The mirror direction, and dropping the tail is right: gfortran does not end the line at
+        # a form feed either, so that `!$omp` is genuinely inside this statement's comment. The
+        # separator line counts once, so the next statement's lineno is 2.
+        self.assertEqual(
+            fortran_logical_lines("    n = n\x0c!$omp parallel do\n    x = 1\n"),
+            [(1, "    n = n"), (2, "    x = 1")])
+
+    # --- defect B: `!` inside a continued literal ------------------------------------------
+
+    def test_bang_inside_a_continued_character_literal(self) -> None:
+        # Quote state must cross physical lines. Stripping per line could not know the `!` sat
+        # inside a CONTINUED literal, so the rest of the line was dropped and — because what
+        # survived ended in `&` — the buffer stayed open and swallowed the next statement.
+        self.assertEqual(
+            fortran_logical_lines("    msg = 'a&\n      &!b'\n    x = 1\n"),
+            [(1, "    msg = 'a!b'"), (3, "    x = 1")])
+
+    def test_a_resuming_line_is_never_mistaken_for_a_comment_line(self) -> None:
+        # A `!` on a continuation line inside a literal is content, and the line is NOT a
+        # comment line — its first nonblank is the resuming `&`, which is what the skip probe
+        # keys on. Getting this wrong drops literal content.
+        self.assertEqual(
+            fortran_logical_lines("    msg = 'a&\n      &  ! still literal&\n      &b'\n"),
+            [(1, "    msg = 'a  ! still literalb'")])
+
+    def test_comment_lines_inside_an_open_literal_are_skipped_too(self) -> None:
+        # F2008 3.3.2.4 resumes a continued character context on "the next line that is not a
+        # comment line" — and a blank line IS a comment line (3.3.2.3). Verified against
+        # gfortran 14.2 with a substring-bounds probe: `'abc&` / blank (or `! note`) /
+        # `      &def'` compiles at `-std=f2008` with `s(6:6)` legal and `s(7:7)` out of range,
+        # i.e. one string `abcdef`. Terminating the statement at the gap instead spills the
+        # rest of the literal out AS CODE, which is how a quoted `open(` became a file-I/O
+        # violation and a `;` inside a literal invented a published subroutine.
+        for gap, label in (("\n", "blank line"), ("  ! note\n", "comment line")):
+            with self.subTest(gap=label):
+                self.assertEqual(
+                    fortran_logical_lines("s = 'abc&\n" + gap + "      &def'\n"),
+                    [(1, "s = 'abcdef'")])
+
+    def test_unterminated_literal_does_not_leak_into_the_next_line(self) -> None:
+        # Only reachable from source no compiler accepts, but without the per-line reset a
+        # leaked open quote makes the following text read as literal content.
+        self.assertEqual(
+            fortran_logical_lines("    msg = 'oops\n    x = 1  ! note\n"),
+            [(1, "    msg = 'oops"), (2, "    x = 1")])
+
+    # --- defect C: the join separator ------------------------------------------------------
+
+    def test_continuation_without_a_leading_ampersand_joins_with_a_space(self) -> None:
+        # The line break is a token separator unless the next line starts with `&`.
+        # Concatenating turned `do&` / `i = 1, n` into `doi = 1, n`.
+        self.assertEqual(
+            fortran_logical_lines("    do&\n      i = 1, n\n"), [(1, "    do i = 1, n")])
+
+    def test_ampersand_led_continuation_joins_tight(self) -> None:
+        # The one case that DOES split a token keeps joining without a separator.
+        self.assertEqual(
+            fortran_logical_lines("    do con&\n      &current (i = 1:n)\n"),
+            [(1, "    do concurrent (i = 1:n)")])
+
+    def test_a_literal_always_joins_tight(self) -> None:
+        # A line break cannot insert a blank into a character literal, so the space-join rule
+        # stops at the quote. The second form omits the resuming `&` — non-conforming, but
+        # gfortran accepts it with only a `-Wampersand` WARNING, so a source written that way
+        # passes `Generate.syntax` and reaches a gate. Both compile to `abcdef` (pinned with a
+        # compile-time `1/(len(s) - N)` probe against gfortran 14.2 at `-std=f2008`).
+        for resume, label in (("      &def'", "conforming `&`-led resume"),
+                              ("      def'", "gfortran's missing-`&` extension")):
+            with self.subTest(resume=label):
+                self.assertEqual(fortran_logical_lines("s = 'abc&\n" + resume + "\n"),
+                                 [(1, "s = 'abcdef'")])
+
+    def test_blanks_are_gfortrans_set_not_pythons(self) -> None:
+        # `str.strip()` folds far more than free-form Fortran calls a blank. The characters it
+        # adds are ordinary CONTENT to the compiler — the same difference `str.splitlines()`
+        # made at the other end of the line. Stripping a `\v` here let the `&` behind it be read
+        # as a continuation marker, where gfortran reads both as part of the string: `'abc&` /
+        # `\v&def'` compiles (with only `-Wampersand`) to `abc<VT>&def`, length 8, pinned with
+        # `1/merge(0, 1, (len(sa) == 8) .and. (sa == 'abc'//achar(11)//'&def'))`.
+        for ch, name in (("\x0b", "vertical tab"), ("\x1c", "FS"), ("\x85", "NEL"),
+                         ("\xa0", "NBSP"), ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(blank_candidate=name):
+                self.assertEqual(fortran_logical_lines(f"sa = 'abc&\n{ch}&def'\n"),
+                                 [(1, f"sa = 'abc{ch}&def'")], f"{name} is not a Fortran blank")
+        # The three that ARE gfortran blanks still behave as blanks.
+        self.assertEqual(fortran_logical_lines("x = 1 \t\f\n"), [(1, "x = 1")])
+        self.assertEqual(fortran_logical_lines("s = 'ab&\n \t\f&cd'\n"), [(1, "s = 'abcd'")])
+
+    def test_the_blank_set_is_the_same_at_all_three_decision_points(self) -> None:
+        # The set is used to decide a comment line, a trailing continuation marker, and a
+        # resume's column padding. Only the third is reachable on source the compiler accepts
+        # (the test above); these two are the same rule at the other two points, and they are
+        # pinned so the three cannot drift apart — a set that is correct in one place and
+        # Python's default in another is how this class of defect got in.
+        # A `\v`-only line is not all-blank, so it is a continuation line, not a comment line:
+        # the statement it interrupts ends there rather than joining across it.
+        # (The second space is the token-separator join: the resume is not `&`-led.)
+        self.assertEqual(fortran_logical_lines("x = 1 + &\n\x0b\n2\n"),
+                         [(1, "x = 1 +  \x0b"), (3, "2")])
+        # And a `&` is the continuation marker only when it is the LAST non-blank: a `\v` behind
+        # it is content, so this line does not continue.
+        self.assertEqual(fortran_logical_lines("x = 1 + &\x0b\n2\n"),
+                         [(1, "x = 1 + &\x0b"), (2, "2")])
+
+    def test_doubled_quote_escape_split_by_the_wrap(self) -> None:
+        # The compiler's character context outlives this scanner's here: in `'ab'&` / `'cd'` the
+        # literal looks closed at end of line, but gfortran's lookahead reads the two quotes as
+        # one escaped quote. Pinned at `-std=f2008` with `1/merge(0, 1, (len(sa) == 5) .and.
+        # (sa == 'ab''cd'))`, which fires — and gfortran emits NO diagnostic, so a source
+        # written this way passes `Generate.syntax`. A space join would emit `'ab' 'cd'`, which
+        # is not Fortran at all.
+        for resume, label in (("'cd'", "resume in column 1"),
+                              ("     'cd'", "resume indented")):
+            with self.subTest(resume=label):
+                self.assertEqual(fortran_logical_lines("sa = 'ab'&\n" + resume + "\n"),
+                                 [(1, "sa = 'ab''cd'")])
+        self.assertEqual(fortran_logical_lines('sa = "ab"&\n"cd"\n'), [(1, 'sa = "ab""cd"')])
+        self.assertEqual(fortran_logical_lines("sa = 'ab'&\n'cd'&\n'ef'\n"),
+                         [(1, "sa = 'ab''cd''ef'")])
+        # And it must not fire when the resume does not start with that same quote: there the
+        # literal really did close and the line break is an ordinary token separator.
+        self.assertEqual(fortran_logical_lines("call f('ab'&\n, 'cd')\n"),
+                         [(1, "call f('ab' , 'cd')")])
+        # The lookahead is quote-SPECIFIC, not "whatever character ended the line". Without that
+        # restriction `do&` would memo an `o` and tight-join `of x` into `doof x`.
+        self.assertEqual(fortran_logical_lines("do&\nof x\n"), [(1, "do of x")])
+
+    def test_escape_lookahead_crosses_a_wrap_line_that_contributes_nothing(self) -> None:
+        # The lookahead is over the next CONTRIBUTED character, not the next physical line. A
+        # `&&` wrap line contributes none — it is all marker — so it must not clear the memo.
+        # gfortran compiles `'ab'&` / `      &&` / `'cd'` to `ab'cd` (length 5, pinned, and with
+        # no diagnostic at all). Clearing there resurrects the exact `'ab' 'cd'` the escape rule
+        # exists to prevent, one wrap line further out.
+        self.assertEqual(fortran_logical_lines("sa = 'ab'&\n      &&\n'cd'\n"),
+                         [(1, "sa = 'ab''cd'")])
+        self.assertEqual(fortran_logical_lines("sa = 'ab'&\n  &&\n  &&\n'cd'\n"),
+                         [(1, "sa = 'ab''cd'")])
+
+    def test_trailing_blanks_after_the_continuation_marker(self) -> None:
+        # This, not CRLF, is what makes the `.rstrip()` load-bearing: `do i &   ` is legal and
+        # its `&` must still register. (A CRLF source cannot exercise it — `read_text`
+        # universal-newline-translates `\r\n` before the scanner ever sees it.)
+        self.assertEqual(
+            fortran_logical_lines("    do i &   \n      = 1, n\n"), [(1, "    do i  = 1, n")])
+
+    # --- defect D: the lone-`&` continuation line ------------------------------------------
+
+    def test_continuation_line_that_is_only_its_leading_ampersand(self) -> None:
+        # The single `&` of a `&`-only line (or `&! note`) was read as BOTH the leading and the
+        # trailing marker, so the buffer stayed open and glued the next statement on. gfortran
+        # terminates the statement there.
+        for wrap, label in (("      &\n", "bare"), ("      &! wrap note\n", "with a comment")):
+            with self.subTest(wrap=label):
+                self.assertEqual(
+                    fortran_logical_lines("    msg = 'x' &\n" + wrap + "    x = 1\n"),
+                    [(1, "    msg = 'x' "), (3, "    x = 1")])
+
+    # --- the blank/comment skip inside a wrap ----------------------------------------------
+
+    def test_comment_or_blank_line_inside_a_continuation_is_skipped(self) -> None:
+        # Free form permits blank and comment-only lines BETWEEN a `&` line and its
+        # continuation; they are ignored, not terminators. The §5.1 `write_perf` header exceeds
+        # the 132-column limit and MUST wrap, so this is a live shape, not a curiosity. The
+        # start lineno stays at the line the statement opened on.
+        self.assertEqual(
+            fortran_logical_lines(
+                "subroutine hx__wp(a, &\n"
+                "  ! a comment inside the wrap\n"
+                "\n"
+                "    b, c)\n"),
+            [(1, "subroutine hx__wp(a,  b, c)")])
+
+    def test_a_continuation_may_repeat_the_ampersand_after_a_skipped_line(self) -> None:
+        self.assertEqual(
+            fortran_logical_lines("  subroutine f(a, &\n    ! note\n\n       & b, c)\n"),
+            [(1, "  subroutine f(a,  b, c)")])
+
+
+class SplitFortranStatementsTests(unittest.TestCase):
+    """`split_fortran_statements`: top-level `;` only, parts returned as-is."""
+
+    def test_semicolon_inside_a_string_is_not_a_separator(self) -> None:
+        self.assertEqual(
+            split_fortran_statements("write(*,*) 'a;b'; x = 1"),
+            ["write(*,*) 'a;b'", " x = 1"])
+
+    def test_semicolon_inside_parens_is_not_a_separator(self) -> None:
+        # Paren depth matters for the `[1:n; 2]`-shaped text a malformed source can produce; no
+        # legal Fortran puts a statement separator inside parentheses.
+        self.assertEqual(split_fortran_statements("call f(a; b)"), ["call f(a; b)"])
+
+    def test_unbalanced_close_paren_does_not_silence_later_separators(self) -> None:
+        # Depth clamps at zero. Left negative it would stay negative for the rest of the line
+        # and no later `;` would split — and the statement a `;` hides is often a declaration,
+        # so the harm direction is "published operation reported absent".
+        self.assertEqual(split_fortran_statements("end subroutine); x = 1"),
+                         ["end subroutine)", " x = 1"])
+
+    def test_parts_are_neither_stripped_nor_filtered(self) -> None:
+        # The non-stripping contract: one caller anchors patterns at `^\s*` on these parts, so
+        # trimming here would silently break it. Empty parts survive too — callers decide.
+        self.assertEqual(split_fortran_statements("  a = 1 ;; b = 2"),
+                         ["  a = 1 ", "", " b = 2"])
+        self.assertEqual(split_fortran_statements("   "), ["   "])
+
+    def test_single_statement_passes_through(self) -> None:
+        self.assertEqual(split_fortran_statements("just one statement"),
+                         ["just one statement"])
+
+
+if __name__ == "__main__":  # pragma: no cover - manual invocation
+    unittest.main()
