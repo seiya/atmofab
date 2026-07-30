@@ -14913,13 +14913,79 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             v = self._run(self._model(body))
             self.assertEqual(len(v), 1, f"{label} is a counted loop and must count: {v}")
 
+    def test_do_concurrent_exemption_ignores_comments_and_strings(self) -> None:
+        # The dangerous direction. Both loop patterns accept `;` as a statement separator, so a
+        # single COMMENT line mentioning `do concurrent` exempted the whole file and disabled a
+        # fail_closed gate. Reproduced end-to-end on the real sw2d source before the fix.
+        for body, label in (
+            ("    ! not real code; do concurrent (i=1:1) is what we would write\n",
+             "mention inside a comment"),
+            ("    !> doc: do concurrent (i=1:1)\n", "mention inside a doc comment"),
+            ("    if (.false.) write(*,*) 'x; do concurrent (i=1:1)'\n",
+             "mention inside a string literal"),
+        ):
+            v = self._run(self._model(
+                body + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"{label} must not exempt the file: {v}")
+
+    def test_counted_loop_count_ignores_comments_and_strings(self) -> None:
+        # Mirror-image blindness: prose inflated the tally. Only inflates, never exempts, but the
+        # count is quoted in the violation, so a wrong number is a wrong diagnosis.
+        v = self._run(self._model(
+            "    ! reminder; do k = 1, 3 was removed\n"
+            "    print *, 'x; do j = 1, 3'\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("1 counted `do` loop(s)", v[0])
+
+    def test_named_and_labeled_do_concurrent_also_exempt(self) -> None:
+        # A named `do concurrent` construct is legal f2008 and just as parallel as the bare form.
+        # The counted-loop regex learned these spellings; this one had not.
+        for body, label in (
+            ("    gloop: do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do gloop\n",
+             "named construct"),
+            ("10  do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n", "labeled"),
+        ):
+            v = self._run(self._model(
+                "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n" + body))
+            self.assertEqual(v, [], f"{label} `do concurrent` must exempt the file: {v}")
+
+    def test_directive_scan_still_sees_a_real_directive(self) -> None:
+        # Guard against "fixing" the comment blindness by stripping comments before the DIRECTIVE
+        # scan too: an `!$omp` sentinel IS a Fortran comment, so that would erase what it looks for.
+        self.assertEqual(self._run(self._model(
+            "    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
     def test_reaches_the_post_generate_sibling_list(self) -> None:
-        # Wiring pin. Replacing the call with `pass` left the whole file green, so the floor could
-        # have gone dormant undetected — the failure this repo has hit three times before.
-        source = Path(vps.__file__).read_text(encoding="utf-8")
-        start = source.index("def _validate_generate_outputs_for_generation")
-        end = source.index("\ndef ", start + 1)
-        self.assertIn("_validate_openmp_presence_floor(", source[start:end])
+        """BEHAVIORAL wiring pin: drive the real caller and require the floor's line to come out.
+
+        A textual pin (asserting the call appears in the caller's source) was the first attempt and
+        it is not enough — wrapping the call site in `if False:` left the whole file green, which is
+        precisely the dormant-gate state the pin exists to rule out."""
+        with tempfile.TemporaryDirectory() as t:
+            repo_root = Path(t)
+            ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
+            ir_dir = repo_root / ir_ref
+            ir_dir.mkdir(parents=True)
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_kind": "component", "spec_id": "dep_base"},
+                "impl_defaults": {"target": {"class": "cpu", "backend": "openmp"},
+                                  "toolchain": {"language": "fortran"}}}), encoding="utf-8")
+            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
+            src_dir.mkdir(parents=True)
+            (pipeline_dir / "lineage.json").write_text(
+                json.dumps({"node_key": "component/dep_base@0.1.0", "ir_ref": ir_ref}),
+                encoding="utf-8")
+            (src_dir / "dep_base_model.f90").write_text(self._COUNTED, encoding="utf-8")
+            execution = vps._stub_execution(pipeline_dir, "component/dep_base@0.1.0")
+            violations: list[str] = []
+            vps._validate_generate_outputs_for_generation(
+                repo_root, execution, "src_20260601_001", violations)
+            self.assertTrue(
+                any(self._FIRED in v for v in violations),
+                f"the floor is not reached from _validate_generate_outputs_for_generation: "
+                f"{violations}")
 
     def test_do_while_only_passes(self) -> None:
         # No trip count to distribute across threads.
@@ -15179,8 +15245,58 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         # Both the section casing AND the member alias inside it are reported — the section is
         # still descended into, so obeying only the first remedy does not hide the second.
         self.assertEqual(len(v), 2, v)
-        self.assertTrue(any("literal lowercase key `openmp`" in x for x in v), v)
-        self.assertTrue(any("non-canonical spelling" in x for x in v), v)
+        self.assertTrue(any("must be spelled as the bare literal `openmp`" in x for x in v), v)
+        # The member line names the key AS WRITTEN, so the reported path is one that exists.
+        self.assertTrue(
+            any("backend_overrides.OpenMP.threads is a non-canonical spelling" in x for x in v), v)
+
+    def test_padded_section_key_flagged(self) -> None:
+        # A quoted `" openmp "` looks canonical to a reader and is invisible to the renderer's
+        # literal lookup, so its overrides are dropped — the harm this gate exists to catch.
+        v = self._run(self._impl(overrides={" openmp ": {"num_threads": 4}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be spelled as the bare literal `openmp`", v[0])
+
+    def test_duplicate_openmp_section_says_merge_not_rename(self) -> None:
+        # Renaming into a key that already exists produces a duplicate YAML key, so the remedy is
+        # a merge. Both mis-named shapes take this branch.
+        for name in ("OpenMP", "cpu_openmp"):
+            v = self._run(self._impl(
+                overrides={"openmp": {"num_threads": 4}, name: {"num_threads": 8}}))
+            self.assertEqual(len(v), 1, f"{name}: {v}")
+            self.assertIn("duplicates the canonical `openmp` section", v[0])
+            self.assertIn("MERGE its entries", v[0])
+
+    def test_members_of_a_misnamed_section_are_still_checked(self) -> None:
+        # Reporting only the section name would hide the alias inside it until the author fixed the
+        # name and came back for a second remand.
+        v = self._run(self._impl(overrides={"cpu_openmp": {"threads": 4}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("non-canonical section name" in x for x in v), v)
+        self.assertTrue(
+            any("backend_overrides.cpu_openmp.threads is a non-canonical spelling" in x
+                for x in v), v)
+
+    def test_bool_valued_alias_remedy_names_the_type_change(self) -> None:
+        # `bool` is an `int` subclass, so `threads: true` looked type-valid for the int-pinned
+        # `num_threads` and the remedy shipped without its conversion note — then the renamed key
+        # failed the type check on the next turn. `int(True)` is 1: the silent degradation itself.
+        v = self._run(self._impl(overrides={"openmp": {"threads": True}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("rename it to `num_threads`", v[0])
+        self.assertIn("must be int", v[0])
+        self.assertIn("convert the value in the same edit", v[0])
+
+    def test_alias_beside_canonical_remedy_names_a_usable_destination(self) -> None:
+        # In the openmp section `parallel_scope` does not exist, and when the alias IS the scope
+        # alias the old wording read "move it into `parallel_scope` rather than `parallel_scope`".
+        v = self._run(self._impl(overrides={"openmp": {"num_threads": 4, "threads": 8}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertNotIn("`parallel_scope`", v[0])
+        v = self._run(self._impl(
+            abstract={"parallel_scope": "the face loop", "parallel_loops": ["s1"]}))
+        self.assertEqual(len(v), 1, v)
+        self.assertNotIn("into `parallel_scope`, not into `parallel_scope`", v[0])
 
     def test_other_backend_sections_are_untouched(self) -> None:
         self.assertEqual(self._run(self._impl(

@@ -4429,7 +4429,14 @@ _COUNTED_DO_RE = re.compile(
 # of the floor's reach even when counted loops sit beside it. Without this, a source whose real work
 # is `do concurrent` but which also resets a 3-element accumulator with a counted loop was reported
 # as unparallelized — a false positive that flatly contradicted the floor's own message.
-_DO_CONCURRENT_RE = re.compile(r"(?:^|;)[ \t]*do[ \t]+concurrent\b", re.IGNORECASE | re.MULTILINE)
+#
+# Same spelling coverage as `_COUNTED_DO_RE` (statement label, branch label, named construct,
+# post-semicolon), because a named `do concurrent` construct is legal f2008 and a file using one is
+# just as parallel as a file using the bare form.
+_DO_CONCURRENT_RE = re.compile(
+    r"(?:^|;)[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?concurrent\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 # The OpenMP sentinel, anchored at the start of its line. Two reasons for the anchor. A bare `omp`
 # is a substring of `component` / `compute` / `compile`, so `!$` is what makes it a directive; and
@@ -4446,6 +4453,22 @@ _OMP_DIRECTIVE_RE = re.compile(r"^[ \t]*!\$omp\b", re.IGNORECASE | re.MULTILINE)
 # accepted `parallelization: none` and Generate then hard-failed every source that honored it,
 # leaving the node unsatisfiable. Read generously — this direction only ever fails the floor OPEN.
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
+
+
+def _fortran_code_only_text(text: str) -> str:
+    """``text`` with comment tails dropped and string CONTENTS masked, line structure preserved.
+
+    Both loop scans run over this rather than the raw source. Scanning raw text made the floor
+    trivially evadable in the worst possible direction: because the loop patterns accept a `;` as a
+    statement separator, a single COMMENT line mentioning `do concurrent` — or a `;` inside a string
+    literal followed by it — exempted the whole file and disabled a `fail_closed` gate. The
+    mirror-image blindness inflated the counted-loop tally from prose. The directive scan
+    deliberately does NOT use this view: an `!$omp` sentinel IS a Fortran comment, so stripping
+    comments would erase exactly what it looks for (its line anchor is what keeps it honest)."""
+    return "\n".join(
+        _mask_fortran_string_contents(_strip_fortran_inline_comment(line))
+        for line in text.splitlines()
+    )
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
@@ -4533,9 +4556,10 @@ def _validate_openmp_presence_floor(
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         if _OMP_DIRECTIVE_RE.search(text):
             continue
-        if _DO_CONCURRENT_RE.search(text):
+        code = _fortran_code_only_text(text)
+        if _DO_CONCURRENT_RE.search(code):
             continue  # already parallel by construct, whatever else the file contains
-        counted = len(_COUNTED_DO_RE.findall(text))
+        counted = len(_COUNTED_DO_RE.findall(code))
         if counted < 1:
             continue  # whole-array syntax: nothing to parallelize, verify G6's province
         violations.append(
@@ -10161,20 +10185,39 @@ def _validate_impl_defaults_knobs(
     # `openmp` key, so a section keyed by `selected.backend_key` (`cpu_openmp`,
     # `cpu_openmp_x86_64`) is read by nobody — three live IRs file overrides that way, two of them
     # asking for 4 threads and running on 1. Pinning only the member names left the exact harm this gate exists to prevent wide open.
-    openmp: dict[str, Any] | None = None
+    # `openmp` is the ONLY key the renderer reads, so it must be spelled exactly — no casing
+    # variation, and no surrounding whitespace (a quoted `" openmp "` looks canonical to a reader
+    # and is invisible to `_dget`). Every section that MEANS OpenMP is collected, so a mis-named one
+    # still gets its members checked: reporting only the section name would hide a `threads` alias
+    # inside it until the author fixed the name and came back for a second remand.
+    canonical_present = any(str(k) == "openmp" for k in overrides)
+    openmp_sections: list[tuple[str, dict[str, Any]]] = []
     for key in sorted(overrides, key=str):
-        name = str(key).strip()
+        raw = str(key)
+        name = raw.strip()
         lowered = name.lower()
-        if lowered == "openmp":
-            if isinstance(overrides[key], dict):
-                openmp = overrides[key]
-            if name != "openmp":
-                violations.append(
-                    f"{ir_path}: impl_defaults.backend_overrides.{name} must be spelled with the "
-                    "literal lowercase key `openmp` — the runner renderer looks up that exact key "
-                    "and silently ignores any other casing, so its overrides would not be applied"
-                )
-        elif lowered in _IMPL_OPENMP_SECTION_ALIASES:
+        if lowered != "openmp" and lowered not in _IMPL_OPENMP_SECTION_ALIASES:
+            continue
+        if isinstance(overrides[key], dict):
+            openmp_sections.append((raw, overrides[key]))
+        if raw == "openmp":
+            continue
+        # When the canonical section already exists beside this one, renaming would collide; say so
+        # rather than issuing a remedy that cannot be followed.
+        if canonical_present:
+            violations.append(
+                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} duplicates the canonical "
+                "`openmp` section, which is already present — MERGE its entries into `openmp` and "
+                "delete it (the runner renderer reads only `backend_overrides.openmp`, so this "
+                "section's overrides are not applied)"
+            )
+        elif lowered == "openmp":
+            violations.append(
+                f"{ir_path}: impl_defaults.backend_overrides.{raw!r} must be spelled as the bare "
+                "literal `openmp` — the runner renderer looks up that exact key, so any casing or "
+                "surrounding whitespace makes its overrides silently unread"
+            )
+        else:
             violations.append(
                 f"{ir_path}: impl_defaults.backend_overrides.{name} is a non-canonical section "
                 "name — key the OpenMP overrides by the literal `openmp`, never by "
@@ -10183,18 +10226,19 @@ def _validate_impl_defaults_knobs(
                 "name is ignored and the run degrades to one thread)"
             )
 
-    if isinstance(openmp, dict):
+    for raw, section in openmp_sections:
+        prefix = f"impl_defaults.backend_overrides.{raw}"
         _append_impl_alias_violations(
-            ir_path, "impl_defaults.backend_overrides.openmp", openmp,
+            ir_path, prefix, section,
             _IMPL_OPENMP_OVERRIDE_ALIASES, _IMPL_OPENMP_OVERRIDE_TYPES, violations,
+            destination="the canonical key",
             extra_why=(
                 " (only `num_threads` is read when the runner is rendered, so an aliased thread "
                 "count is silently ignored and the run degrades to one thread)"
             ),
         )
         _append_impl_knob_type_violations(
-            ir_path, "impl_defaults.backend_overrides.openmp", openmp,
-            _IMPL_OPENMP_OVERRIDE_TYPES, violations,
+            ir_path, prefix, section, _IMPL_OPENMP_OVERRIDE_TYPES, violations,
         )
 
 
@@ -10205,6 +10249,7 @@ def _append_impl_alias_violations(
     aliases: dict[str, str],
     pinned: dict[str, tuple[type, ...]],
     violations: list[str],
+    destination: str = "`parallel_scope`",
     extra_why: str = "",
 ) -> None:
     """Report each aliased knob name in ``section``, with a remedy that survives being obeyed.
@@ -10231,15 +10276,24 @@ def _append_impl_alias_violations(
         # is still an alias beside its canonical key, and telling it to "rename to num_threads"
         # would leave the section holding the same knob twice.
         if canonical in present_lowered:
+            where = (
+                f"into {destination}"
+                if destination != f"`{canonical}`"
+                else "into the key that should carry it"
+            )
             remedy = (
                 f"the canonical `{canonical}` is already present, so DELETE this key — move any "
-                f"detail it carries into `parallel_scope` rather than into `{canonical}`"
+                f"detail it carries {where}, not into `{canonical}`"
             )
         else:
             remedy = f"rename it to `{canonical}`"
             expected = pinned.get(canonical)
             value = section[key]
-            if expected and value is not None and not isinstance(value, expected):
+            # Same bool/int subtlety `_append_impl_knob_type_violations` handles: `bool` is an `int`
+            # subclass, so `threads: true` looked type-valid for an int-pinned `num_threads` and the
+            # remedy shipped without its conversion note — then the renamed key failed the type
+            # check on the next turn, which is the second remand this branch exists to avoid.
+            if expected and value is not None and not _value_matches_pinned_type(value, expected):
                 names = " or ".join(t.__name__ for t in expected)
                 remedy += (
                     f", whose value must be {names} — this key holds "
@@ -10250,6 +10304,18 @@ def _append_impl_alias_violations(
             "parallelization knob names are pinned by "
             f"spec/schema/ir/impl_defaults.schema.json){extra_why}"
         )
+
+
+def _value_matches_pinned_type(value: Any, expected: tuple[type, ...]) -> bool:
+    """Whether ``value`` satisfies a pinned knob type.
+
+    Shared by the type checker and the alias remedy so the two cannot disagree — they did, and the
+    disagreement shipped a remedy that failed on the next turn. `bool` is an `int` subclass, so an
+    int-pinned key needs it excluded explicitly (`num_threads: true` is not a thread count, and
+    `int(True)` is 1, which is the silent degradation this family of checks exists to catch)."""
+    if not isinstance(value, expected):
+        return False
+    return not (bool not in expected and isinstance(value, bool))
 
 
 def _append_impl_knob_type_violations(
@@ -10271,11 +10337,7 @@ def _append_impl_knob_type_violations(
         value = section[actual_key]
         if value is None:
             continue  # a null plug-hole is Compile.verify V7's finding, not a name/type one
-        # `bool` is an `int` subclass, so an explicit exclusion is needed for the numeric keys.
-        ok = isinstance(value, expected) and not (
-            bool not in expected and isinstance(value, bool)
-        )
-        if ok:
+        if _value_matches_pinned_type(value, expected):
             continue
         names = " or ".join(t.__name__ for t in expected)
         violations.append(
