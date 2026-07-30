@@ -28291,7 +28291,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (the `impl_defaults.abstract` / `backend_overrides` knobs are binding, and the zero-`!$omp`
         # slice is now a deterministic `Generate.gate` floor). `Generate.verify` has always remanded
         # on this rule; the authoring side never stated it, which is the asymmetry issue #22 names.
-        "skills/workflow-generate-generate/SKILL.md": 36800,
+        # Bumped 36800->37400 (review): this was the last statement of the `!$omp` floor still
+        # written as unconditional, and it is read by exactly the agentic leaves the floor exempts —
+        # including the `infrastructure` harness node, where adding directives to the timing loops
+        # is itself the defect. Scoping it is the same correction rule (7) and the verify side got.
+        "skills/workflow-generate-generate/SKILL.md": 37400,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare

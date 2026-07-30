@@ -10109,9 +10109,10 @@ def _validate_impl_defaults_knobs(
     if not isinstance(impl, dict):
         return
 
-    target = impl.get("target") if isinstance(impl.get("target"), dict) else {}
-    backend = str(target.get("backend") or "").strip().lower()
-
+    # Deliberately NOT gated on `target.backend`: four live IRs still carry a legacy
+    # `cpu_fortran_reference` backend alongside real `backend_overrides`, and a name defect is a
+    # name defect whatever backend the node targets. (The `!$omp` presence floor IS
+    # backend-gated — that one is about generated code, not about key spellings.)
     abstract = impl.get("abstract")
     if isinstance(abstract, dict):
         _append_impl_alias_violations(
@@ -10158,8 +10159,8 @@ def _validate_impl_defaults_knobs(
 
     # The SECTION name is pinned too, not just its members. The runner renderer looks up the literal
     # `openmp` key, so a section keyed by `selected.backend_key` (`cpu_openmp`,
-    # `cpu_openmp_x86_64`) is read by nobody — three live IRs request 4 threads that way and run on
-    # 1. Pinning only the member names left the exact harm this gate exists to prevent wide open.
+    # `cpu_openmp_x86_64`) is read by nobody — three live IRs file overrides that way, two of them
+    # asking for 4 threads and running on 1. Pinning only the member names left the exact harm this gate exists to prevent wide open.
     openmp: dict[str, Any] | None = None
     for key in sorted(overrides, key=str):
         name = str(key).strip()

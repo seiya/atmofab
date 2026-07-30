@@ -23,7 +23,7 @@ This structure satisfies the following.
 `spec.ir.yaml.impl_defaults` requires the following.
 
 - `target.class` (cpu/gpu etc.)
-- `target.backend` — the parallel-backend token, e.g. `openmp`, `cuda`, `mpi` (canonical list: `docs/workflow/phases/phase_01_compile.md`). The composite identifier such as `cpu_openmp_x86_64` belongs in `selected.backend_key`, NOT here: the `Generate.gate` `!$omp` floor and the knob-name gate both key off `target.backend == "openmp"`, so a composite value here silently disables them
+- `target.backend` — the parallel-backend token, e.g. `openmp`, `cuda`, `mpi` (canonical field definition: `docs/workflow/phases/phase_01_compile.md`). The composite identifier such as `cpu_openmp_x86_64` belongs in `selected.backend_key`, NOT here: the `Generate.gate` `!$omp` floor keys off `target.backend == "openmp"`, so a composite value here silently disables it (the knob-name gate is backend-agnostic by design)
 - `target.architecture` (e.g. `x86_64`, `aarch64`, `nvidia_sm80`)
 - `toolchain.language` (e.g. `fortran`, `cpp`, `cuda_fortran`)
 - `toolchain.standard` (the language standard spelled the way the compiler names it — e.g. `f2008`, `c++17`; it is passed verbatim as `-std=<value>`, so `2008` is rejected by the compiler driver)

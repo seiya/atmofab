@@ -10456,6 +10456,9 @@ end program shallow_water2d_runner
             "are **obligations**, not description",     # the knobs bind
             "Read them by MEANING, not by key name",    # the spellings vary per node
             "_validate_openmp_presence_floor",          # which slice is deterministic
+            # ... and the floor's SCOPE. This was the last place stating the punishment
+            # unconditionally, and it is read by exactly the agentic leaves the floor exempts.
+            "The floor does not run on an `infrastructure`/`profile` node",
         ):
             self.assertIn(
                 rule, generate_skill,
