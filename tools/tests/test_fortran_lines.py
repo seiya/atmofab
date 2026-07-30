@@ -76,6 +76,13 @@ class FortranLogicalLinesTests(unittest.TestCase):
             fortran_logical_lines("contains; subroutine foo()\n"),
             [(1, "contains; subroutine foo()")])
 
+    def test_text_ending_mid_continuation_still_flushes(self) -> None:
+        # The post-loop flush. A file whose last statement is left continued (a truncated write,
+        # or an interface stanza sliced out of a larger source) must not lose that statement —
+        # dropping it silently shrinks what a gate examines.
+        self.assertEqual(fortran_logical_lines("y = 0\nx = 1 &\n"), [(1, "y = 0"), (2, "x = 1 ")])
+        self.assertEqual(fortran_logical_lines("x = 1 &"), [(1, "x = 1 ")])
+
     def test_trailing_newline_yields_no_empty_entry(self) -> None:
         # `split("\n")` produces a trailing "" for every `\n`-terminated file; it must not
         # become a logical line.
@@ -89,8 +96,8 @@ class FortranLogicalLinesTests(unittest.TestCase):
         # a form feed inside a comment ended the comment early and re-admitted its tail AS CODE.
         for ch, name in (
             ("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x1c", "FS"), ("\x1d", "GS"),
-            ("\x1e", "RS"), ("\x85", "NEL"), (" ", "LINE SEPARATOR"),
-            (" ", "PARAGRAPH SEPARATOR"),
+            ("\x1e", "RS"), ("\x85", "NEL"), ("\u2028", "LINE SEPARATOR"),
+            ("\u2029", "PARAGRAPH SEPARATOR"),
         ):
             with self.subTest(separator=name):
                 self.assertEqual(

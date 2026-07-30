@@ -1547,7 +1547,8 @@ source of truth. `tests.md`/catalog bumped to 0.2.0 (in-place respec — no cons
 
 **Gates (`tools/validate_pipeline_semantics.py`).** A §5.1 parser
 (`_parse_canonical_interface_from_controlled_spec` → per-symbol *stanzas*; `_parse_interface_stanzas`,
-`_fortran_logical_lines`, `_normalize_fortran_line`, `_strip_fortran_comment`) normalizes away
+`_fortran_logical_lines`, `_normalize_fortran_line`, and the comment stripper — since issue #23 the
+shared `tools/fortran_lines.strip_fortran_comment_tracking_quotes`) normalizes away
 comments, `&` continuations (spanning interleaved blank/comment lines — the §5.1 `write_perf`
 header is >132 cols and MUST wrap), case, and whitespace. Three deterministic pins:
 - **Compile** (`_validate_infrastructure_public_api` + `_validate_ir_signatures_against_section51`):

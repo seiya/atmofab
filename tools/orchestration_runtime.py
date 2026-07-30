@@ -1395,11 +1395,13 @@ def _list_prefixed_subroutines(source_text: str, prefix: str) -> list[str]:
 def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, Any] | None:
     """Extract the published interface of subroutine ``op_name`` from Fortran source.
 
-    Returns ``{"interface": <verbatim header collapsed to one line>, "argument_order":
+    Returns ``{"interface": <the header as written, collapsed to one line>, "argument_order":
     [<dummy names in order>]}`` or ``None`` when the subroutine is absent / unparseable.
     The load-bearing datum is ``argument_order`` (Fortran is positional; a consumer that
-    swaps args builds against a type/rank mismatch). ``interface`` is the authoritative
-    header verbatim (no re-rendering risk).
+    swaps args builds against a type/rank mismatch). ``interface`` carries the author's own
+    tokens — nothing is re-rendered — but it is not byte-verbatim across a wrap: joining a
+    continuation that does not begin with ``&`` contributes one space at the joint. It is
+    rendered into the ``<dependency_facts>`` prompt lines, where that is inert.
 
     Robust to the real shapes Generate emits: free-form ``&`` continuations on the header
     (the generate SKILL forces wrapping at <=100 cols for fortitude S001), ``!`` comments

@@ -2111,8 +2111,9 @@ def _iter_fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     which the statement began. A logical line carrying multiple ``;``-joined statements is
     expanded into one entry per statement, all sharing that line, in source order — the
     reaching-definition index and the scope assignment both walk this list positionally.
-    Leading whitespace is preserved: ``_COMPONENT_PUBLISHED_SUB_RE`` and friends anchor at
-    ``^\\s*`` so a ``call`` or ``end subroutine`` line can never match.
+    Indentation is left on: what keeps a ``call`` or ``end subroutine`` line from matching is
+    that ``_COMPONENT_PUBLISHED_SUB_RE`` and friends anchor at the START of a whole logical
+    line, and the ``\\s*`` in that anchor is there to tolerate the indentation this preserves.
 
     The scanning itself is ``fortran_lines.fortran_logical_lines`` (issue #23) — one
     implementation shared with ``_fortran_logical_lines`` below and with
@@ -5224,9 +5225,11 @@ def _mask_fortran_string_contents(line: str) -> str:
 
 def _fortran_logical_lines(text: str) -> list[str]:
     """Split Fortran source/interface text into logical lines: comments stripped and ``&``
-    continuation lines joined (a leading ``&`` on a continued line is consumed). Whitespace and
-    case are preserved here (normalization happens per-line in ``_normalize_fortran_line``);
-    blank and comment-only lines produce no entry, so every element is real Fortran.
+    continuation lines joined (a leading ``&`` on a continued line is consumed). Case and
+    indentation are preserved (normalization happens per-line in ``_normalize_fortran_line``);
+    per-physical-line trailing whitespace is not, and a continuation that does not begin with
+    ``&`` joins with a space. Blank and comment-only lines produce no entry, so every element is
+    real Fortran.
 
     Free-form Fortran permits blank and full-line-comment lines *between* a ``&``-terminated line
     and its continuation — they are ignored, not statement terminators — so while a continuation is

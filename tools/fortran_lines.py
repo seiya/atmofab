@@ -32,10 +32,13 @@ never join anything, while these consumers read the JOINED logical line and comp
 a declared surface. So the logic returns here, restructured from statement level to
 logical-line level, with `;`-splitting and string masking factored out into the caller's hands.
 
-Stdlib only and importing nothing from this package, so every site can depend on it: the
-validator may not import `orchestration_runtime` (module-boundary rule) and
-`lang_backend_fortran` imports the validator at module level, which leaves neither a legal
-home. Same precedent as `tools/pure_leaf.py`.
+Stdlib only and importing nothing from this package, so every site can depend on it. No
+existing module is a home: the validator may not import `orchestration_runtime`
+(module-boundary rule); `lang_backend_fortran` imports the validator at module level, so
+hosting it there would put the validator in a cycle; and hosting it in the validator would
+force `orchestration_runtime` to import that module at module level, which imports PyYAML
+unconditionally — the runtime deliberately defers PyYAML so its recovery commands stay usable
+without it. Same precedent as `tools/pure_leaf.py`.
 """
 
 from __future__ import annotations
@@ -75,8 +78,11 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     LOGICAL LINE, comments stripped and ``&`` continuations joined.
 
     ``start_lineno`` is the 1-based physical line on which the logical line began. A line that
-    is blank or comment-only produces NO entry. Leading whitespace of the first physical line
-    is preserved (callers anchor patterns at ``^\\s*``); trailing whitespace is stripped. This
+    is blank or comment-only produces NO entry. Leading whitespace of the first physical line is
+    preserved (callers anchor patterns at ``^\\s*``). Trailing whitespace is stripped from each
+    PHYSICAL line before its ``&`` is consumed, so a joined line can still end in the blank that
+    preceded a consumed marker (``x = 1 &`` flushes as ``x = 1 ``) — what the rstrip guarantees
+    is that a trailing ``&`` is still recognized behind blanks, not a trimmed result. This
     deliberately does NOT split on ``;`` and does NOT mask string contents — see
     ``split_fortran_statements`` and the callers' own maskers, so each gate composes the view
     it needs.

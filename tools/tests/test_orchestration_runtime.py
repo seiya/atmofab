@@ -19132,7 +19132,7 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         # would then tell a leaf to call.
         from tools.orchestration_runtime import _list_prefixed_subroutines
         for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-                         (" ", "LINE SEPARATOR")):
+                         ("\u2028", "LINE SEPARATOR")):
             with self.subTest(separator=name):
                 src = (f"! removed for now {ch} subroutine dep__ghost(a)\n"
                        "subroutine dep__go(a)\nend subroutine\n")

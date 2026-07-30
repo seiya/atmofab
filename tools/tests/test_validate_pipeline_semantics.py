@@ -13549,7 +13549,7 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         # prose: it never closes, so it is reported unterminated and fails Generate closed on a
         # source gfortran and fortitude both accept.
         for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-                         (" ", "LINE SEPARATOR")):
+                         ("\u2028", "LINE SEPARATOR")):
             with self.subTest(separator=name):
                 src = ("module hx_model\ncontains\n"
                        f"  ! removed: {ch} subroutine hx__ghost(a)\n"
@@ -14160,7 +14160,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # `use harness_...` became a live isolation breach and failed Generate on a source
         # gfortran and fortitude both accept.
         for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-                         (" ", "LINE SEPARATOR")):
+                         ("\u2028", "LINE SEPARATOR")):
             with self.subTest(separator=name):
                 src = _CHECKS_OK.replace(
                     "  private\n",
@@ -14773,7 +14773,7 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # a commented-out declaration was reported as a surface the IR does not declare — a
         # `Generate fail` on a source gfortran and fortitude both accept.
         for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-                         (" ", "LINE SEPARATOR")):
+                         ("\u2028", "LINE SEPARATOR")):
             with self.subTest(separator=name):
                 model = (
                     "module dep_base_model\ncontains\n"
@@ -14839,10 +14839,12 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         # not, plus each of the four defects that made the two scanners disagree. They must
         # agree on WRONG-looking source too, because a gate's answer on a source no generator
         # emits is still a `Generate fail` someone has to explain.
+        # Each case carries its own spec_id: deriving it from the source text is how the real
+        # certified-source case below silently degenerated to `[] == []`.
         from tools.orchestration_runtime import _list_prefixed_subroutines
         cases = [
-            ("the shared good model", self._GOOD_MODEL),
-            ("comment / interface-block / parenless / case / mixed-prefix edges",
+            ("the shared good model", "dep_base", self._GOOD_MODEL),
+            ("comment / interface-block / parenless / case / mixed-prefix edges", "dep_base",
              "module m\ncontains\n"
              "  ! a comment mentioning subroutine dep_base__ghost\n"
              "  PURE subroutine dep_base__Scale( &\n      x, n, y)\n  end subroutine\n"
@@ -14853,52 +14855,53 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
              "  function dep_base__notasub(x)\n  end function\n"
              "end module\n"),
             # C: a split THROUGH a token, in every combination of `&`-led and not.
-            ("mid-token split through the `pure` prefix",
+            ("mid-token split through the `pure` prefix", "dep_base",
              "  pure&\n  subroutine dep_base__scale(x)\n  end subroutine\n"),
-            ("mid-token split, `&`-led resume",
+            ("mid-token split, `&`-led resume", "dep_base",
              "  pu&\n  &re subroutine dep_base__scale(x)\n  end subroutine\n"),
-            ("mid-token split through the name",
+            ("mid-token split through the name", "dep_base",
              "  subroutine dep_base__sc&\n  &ale(x)\n  end subroutine\n"),
-            ("split between keyword and name, no leading `&`",
+            ("split between keyword and name, no leading `&`", "dep_base",
              "  subroutine&\n  dep_base__scale(x)\n  end subroutine\n"),
             # A: exotic separators, in a comment and before a declaration.
-            ("form feed inside a comment",
+            ("form feed inside a comment", "dep_base",
              "  ! removed \x0c subroutine dep_base__ghost(y)\n"
              "  subroutine dep_base__scale(x)\n  end subroutine\n"),
-            ("NEL and the unicode separators inside a comment",
+            ("NEL and the unicode separators inside a comment", "dep_base",
              "  ! a \x85 b   c   subroutine dep_base__ghost(y)\n"
              "  subroutine dep_base__scale(x)\n  end subroutine\n"),
             # B: a `!` inside a continued character literal.
-            ("`!` inside a continued literal",
+            ("`!` inside a continued literal", "dep_base",
              "  subroutine dep_base__scale(x)\n"
              "    character(len=*), parameter :: m = 'a&\n      &!b'\n"
              "  end subroutine\n"
              "  subroutine dep_base__ping\n  end subroutine\n"),
             # D: the lone-`&` continuation line, bare and with a comment.
-            ("lone-`&` wrap line",
+            ("lone-`&` wrap line", "dep_base",
              "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &\n"
              "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
-            ("lone-`&` wrap line carrying a comment",
+            ("lone-`&` wrap line carrying a comment", "dep_base",
              "  subroutine dep_base__scale(x)\n    m = 'x' &\n      &! note\n"
              "  end subroutine\n  subroutine dep_base__ping\n  end subroutine\n"),
             # The blank/comment-inside-a-wrap rule, and its mid-literal exception.
-            ("blank and comment lines inside a wrap",
+            ("blank and comment lines inside a wrap", "dep_base",
              "  subroutine dep_base__scale( &\n    ! wrap note\n\n      & x, n)\n"
              "  end subroutine\n"),
-            ("`;`-packed declaration",
+            ("`;`-packed declaration", "dep_base",
              "module m\ncontains; subroutine dep_base__ping()\nend subroutine\nend module\n"),
-            ("a real committed certified source",
+            ("a real committed certified source", "shallow_water2d",
              Path("tools/tests/data/sw2d_call_only_unext_model.f90").read_text(
                  encoding="utf-8")),
         ]
-        for label, src in cases:
-            spec_id = ("dynamics_shallow_water" if "dynamics_shallow_water" in src
-                       else "dep_base")
+        for label, spec_id, src in cases:
             with self.subTest(case=label):
+                published = vps._list_component_published_subroutines(src, spec_id)
                 self.assertEqual(
-                    vps._list_component_published_subroutines(src, spec_id),
+                    published,
                     _list_prefixed_subroutines(src, f"{spec_id}__"),
                     f"scanner drift on prefix {spec_id}__")
+                # Agreeing on nothing is not agreement: every case must exercise the scanners.
+                self.assertNotEqual(published, [], f"case {label!r} pins nothing")
 
 
 class OpenmpPresenceFloorGateTests(unittest.TestCase):
