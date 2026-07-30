@@ -11,7 +11,7 @@ This document set is organized so that "the reading order = the way to proceed".
 6. `WORKFLOW.md` (entry point for the 5-phase `Spec → Compile → Generate → Build → Validate`; the body is split into `workflow/WORKFLOW_CORE.md` and `workflow/phases/`)
 7. `ORCHESTRATION.md` (execution conventions for `orchestration agent -> substep agent` and `orchestration agent -> step agent`)
 8. `RUNBOOK.md` (minimal operational procedures for running trials)
-9. `IMPL_PLAN_SPEC.md` (default-value rules for the `spec.ir.yaml.impl_defaults` section)
+9. `IMPL_PLAN_SPEC.md` (default-value rules for the `spec.ir.yaml.impl_defaults` section; canonical key names of its parallelization knobs: `spec/schema/ir/impl_defaults.schema.json`)
 10. `PERFORMANCE_DIAGNOSTICS.md` (`perf.json` specification)
 11. `TUNING_WORKFLOW.md` (optional flow: operational guidance for performance exploration)
 

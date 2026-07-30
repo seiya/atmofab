@@ -21,6 +21,8 @@ The range `Tune` can override via `tuning.spec` is **limited to the knob layer o
 | `toolchain.language` / `toolchain.standard` / `toolchain.build_system` | `backend_overrides.<key>.*` (backend-specific values such as thread count / block size / vector width) |
 | `selected.backend_key` | |
 
+The knob layer is override-allowed but **not free-form in its key names**: the parallelization family is pinned to `abstract.parallelization` / `parallel_scope` / `parallel_granularity` and `backend_overrides.openmp.num_threads` / `schedule` / `chunk_size` / `collapse` / `nested`, using `spec/schema/ir/impl_defaults.schema.json` as the canonical source. A variant that renames one of those keys (e.g. writing `threads` instead of `num_threads`) fails the `Compile.static` gate, and a thread count under an aliased name is ignored by the runner renderer, so the variant would silently measure one thread. Introducing a NEW knob name outside that family is unrestricted — that is the exploration space.
+
 When `tuning.spec` includes an entry that overrides a fixed sub-key, `Tune` shall **stop with fail_closed at launch**, and must not generate a variant inside `Tune`. This guarantees that Tune does not break the structure of `spec.ir.yaml`.
 
 To change the fixed layer for new hardware/compiler, redo `Compile` from the core workflow and issue a new `ir_id`. This is not the responsibility of Tune.

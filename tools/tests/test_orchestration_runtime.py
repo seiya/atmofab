@@ -28095,7 +28095,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # vocabularies, and the host reads only `num_threads`, so an aliased thread count silently
         # degraded to 1; the compile leaf authors this section and can only learn the pinned
         # spellings from here.
-        "docs/workflow/phases/phase_01_compile.md": 45500,
+        # Bumped 45500->47000: the 45500 estimate was made before the text was written and was
+        # short by ~900 B. The `impl_defaults` skeleton now spells the canonical parallelization
+        # keys inline (a skeleton reading `abstract: {...}` taught the authoring leaf nothing about
+        # the names it is now gated on) in addition to the boundary-section table of forbidden
+        # alias spellings.
+        "docs/workflow/phases/phase_01_compile.md": 47000,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28165,7 +28170,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # knob spellings plus a pointer to spec/schema/ir/impl_defaults.schema.json, and the live
         # alias spellings are named as forbidden. `Compile.static` now rejects the aliases, so a
         # leaf reading only this SKILL would otherwise author a rejected IR and burn a warm retry.
-        "skills/workflow-compile-generate/SKILL.md": 25900,
+        # Bumped 25900->26300: same correction as phase_01 — 25900 was estimated before the bullet
+        # existed. Naming each forbidden spelling costs the bytes; a bullet that said only "use the
+        # canonical names" would leave the leaf to guess which of its five habits is canonical.
+        "skills/workflow-compile-generate/SKILL.md": 26300,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity

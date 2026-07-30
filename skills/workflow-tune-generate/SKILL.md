@@ -17,6 +17,7 @@ Fix the candidate-generation responsibility of the Tune stage, and create perfor
 - Generate candidates by changing **only the knob layer** of `spec.ir.yaml.impl_defaults` (`abstract.*` / `backend_overrides.*`). Crossing into the fixed layer (`target.*` / `toolchain.*` / `selected.*`) is forbidden (canonical boundary: the "fixed / knob boundary of impl_defaults" section of `docs/workflow/phases/phase_01_compile.md`).
 - When `tuning.spec` includes an entry that overrides a fixed sub-key, do not launch Tune and stop with `fail_closed`.
 - Prioritize safe knobs such as `tile`, `fuse`, `vectorize`, and `layout`.
+- Keep the **canonical key names** of the parallelization family when overriding it (`abstract.parallelization` / `parallel_scope` / `parallel_granularity`, `backend_overrides.openmp.num_threads` / `schedule` / `chunk_size` / `collapse` / `nested`; canonical source: `spec/schema/ir/impl_defaults.schema.json`). A renamed key fails the `Compile.static` gate, and an aliased thread count is ignored by the runner renderer — the variant would measure one thread and report it as the candidate's result. A brand-new knob name outside that family is fine.
 - When proposing a new implementation pattern, record the basis for adding it to the `search_space` of `tuning.spec`.
 - When using the `LLM`, apply the `LLM` conventions of `SPEC.md` and output `<stage>_meta.json`.
 

@@ -9954,8 +9954,185 @@ def _validate_compile_stage_impl(
     _validate_component_public_api(repo_root, ir_dir, violations)
     _validate_harness_dependency_consistency(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
+    _validate_impl_defaults_knobs(repo_root, ir_dir, violations)
 
     return violations
+
+
+# The canonical parallelization-family knob names, and the CLOSED table of live misspellings that
+# map onto them. Declarative copy of `spec/schema/ir/impl_defaults.schema.json` (SCHEMA.md's
+# codegen_bundle mode): the names are held here as constants so an unreadable schema cannot
+# fail-open a running gate, and `test_impl_defaults_schema_agrees_with_constants` pins the two
+# copies together. The alias->canonical direction is the load-bearing part and can live ONLY here —
+# draft-07 has no way to say "this misspelling means that key".
+#
+# Every entry was observed in a real workspace IR. Four recompiles of one harness spec produced four
+# vocabularies for the same knobs, and `runner_renderer` reads only `num_threads`, so an aliased
+# thread count degraded a 4-thread request to 1 with nothing reporting it.
+_IMPL_ABSTRACT_KNOB_ALIASES = {
+    "loop_parallelization": "parallelization",
+    "parallelization_model": "parallelization",
+    "parallel_loop_scope": "parallel_scope",
+    "parallelization_scope": "parallel_scope",
+    "parallel_loops": "parallel_scope",
+    "parallelization_granularity": "parallel_granularity",
+}
+# NOTE `threads_per_rank` is ALSO a legitimate, unrelated field name — `perf.json`'s `parallelism`
+# object and the harness's `__write_perf` signature both use it (RUNNER_OUTPUT_CONTRACT.md §58,
+# PERFORMANCE_DIAGNOSTICS.md §2). It is an alias only HERE, under
+# `impl_defaults.backend_overrides.openmp`. That is why this table is applied to that one section by
+# key lookup and never as a repository-wide search: renaming the perf.json field would break the
+# runner-output contract.
+_IMPL_OPENMP_OVERRIDE_ALIASES = {
+    "threads": "num_threads",
+    "threads_per_rank": "num_threads",
+}
+# Pinned types on the canonical keys. A knob name this table does not mention is NOT type-checked:
+# the knob layer stays open for Tune, so only the pinned family is constrained.
+# `parallelization` is absent on purpose: it carries its own dedicated messages below (the mapping
+# form names the decomposition remedy, which a generic type line cannot), and listing it here too
+# reported one defect twice.
+_IMPL_ABSTRACT_KNOB_TYPES: dict[str, tuple[type, ...]] = {
+    "parallel_scope": (str,),
+    "parallel_granularity": (str,),
+}
+_IMPL_OPENMP_OVERRIDE_TYPES: dict[str, tuple[type, ...]] = {
+    "num_threads": (int,),
+    "schedule": (str,),
+    "chunk_size": (int,),
+    "collapse": (int,),
+    "nested": (bool,),
+}
+_IMPL_PARALLELIZATION_VALUES = ("openmp", "none")
+
+
+def _validate_impl_defaults_knobs(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """The parallelization family of the ``impl_defaults`` knob layer uses its CANONICAL key names.
+
+    The knob layer was un-pinned, and an unpinned name is not a contract: the same spec recompiled
+    produced ``parallelization`` as a flat string and as a mapping, and spelled the scope knob and
+    the thread count five and three ways respectively. Nothing downstream can key off a name that
+    changes every regeneration — and the one consumer that does (``runner_renderer`` reads exactly
+    ``backend_overrides.openmp.num_threads``) silently ignored every alias, so a node asking for 4
+    threads ran on 1.
+
+    Deliberately NARROW, per the deterministic-gate scope doctrine. Flagged: a name in the closed
+    alias table (with the rename as the remedy), a pinned key carrying the wrong type, and the
+    mapping form of ``parallelization``. Everything else PASSES — an absent ``impl_defaults`` /
+    ``abstract`` / ``backend_overrides``, a novel knob name (Tune's exploration space is the point
+    of a knob layer), and any value of a non-pinned key. This checker runs inside every existing
+    compile-stage test, so fail-open outside the closed table is a correctness requirement, not
+    caution.
+
+    Certified dependencies never re-run this gate on resume, so tightening it does not invalidate
+    the alias-carrying IRs already on disk."""
+    ir_path = ir_dir / "spec.ir.yaml"
+    if not ir_path.is_file():
+        return  # absence is reported by the caller
+    try:
+        ir = _read_yaml(ir_path)
+    except yaml.YAMLError:
+        return  # malformed YAML is reported by the syntax gate
+    if not isinstance(ir, dict):
+        return
+    impl = ir.get("impl_defaults")
+    if not isinstance(impl, dict):
+        return
+
+    target = impl.get("target") if isinstance(impl.get("target"), dict) else {}
+    backend = str(target.get("backend") or "").strip().lower()
+
+    abstract = impl.get("abstract")
+    if isinstance(abstract, dict):
+        for key in sorted(abstract):
+            canonical = _IMPL_ABSTRACT_KNOB_ALIASES.get(str(key))
+            if canonical is not None:
+                violations.append(
+                    f"{ir_path}: impl_defaults.abstract.{key} is a non-canonical spelling — rename "
+                    f"it to `{canonical}` (the parallelization knob names are pinned by "
+                    "spec/schema/ir/impl_defaults.schema.json; a consumer cannot key off a name "
+                    "that changes every regeneration)"
+                )
+        parallelization = abstract.get("parallelization")
+        if isinstance(parallelization, dict):
+            violations.append(
+                f"{ir_path}: impl_defaults.abstract.parallelization must be a flat string, not a "
+                "mapping — decompose it: the execution model goes in `parallelization`, the loops "
+                "it covers in `parallel_scope`, the nesting level in `parallel_granularity`, and "
+                "any schedule/thread override in `backend_overrides.<backend>`"
+            )
+        elif isinstance(parallelization, str):
+            # Compared case-insensitively: a live certified IR carries `OpenMP`. The membership
+            # check is scoped to an OpenMP target — on any other backend this knob's vocabulary
+            # is not something this gate knows.
+            if (
+                backend == "openmp"
+                and parallelization.strip().lower() not in _IMPL_PARALLELIZATION_VALUES
+            ):
+                allowed = " / ".join(f"`{v}`" for v in _IMPL_PARALLELIZATION_VALUES)
+                violations.append(
+                    f"{ir_path}: impl_defaults.abstract.parallelization is "
+                    f"{parallelization.strip()!r}, which is not one of {allowed} — this knob "
+                    "carries the execution model only; prose about which loops it applies to "
+                    "belongs in `parallel_scope`"
+                )
+        elif parallelization is not None:
+            violations.append(
+                f"{ir_path}: impl_defaults.abstract.parallelization must be a string, got "
+                f"{type(parallelization).__name__} ({parallelization!r}) — the parallelization "
+                "knob types are pinned by spec/schema/ir/impl_defaults.schema.json"
+            )
+        _append_impl_knob_type_violations(
+            ir_path, "impl_defaults.abstract", abstract,
+            _IMPL_ABSTRACT_KNOB_TYPES, violations,
+        )
+
+    overrides = impl.get("backend_overrides")
+    openmp = overrides.get("openmp") if isinstance(overrides, dict) else None
+    if isinstance(openmp, dict):
+        for key in sorted(openmp):
+            canonical = _IMPL_OPENMP_OVERRIDE_ALIASES.get(str(key))
+            if canonical is not None:
+                violations.append(
+                    f"{ir_path}: impl_defaults.backend_overrides.openmp.{key} is a non-canonical "
+                    f"spelling — rename it to `{canonical}` (only `num_threads` is read when the "
+                    "runner is rendered, so an aliased thread count is silently ignored and the "
+                    "run degrades to one thread)"
+                )
+        _append_impl_knob_type_violations(
+            ir_path, "impl_defaults.backend_overrides.openmp", openmp,
+            _IMPL_OPENMP_OVERRIDE_TYPES, violations,
+        )
+
+
+def _append_impl_knob_type_violations(
+    ir_path: Path,
+    prefix: str,
+    section: dict[str, Any],
+    pinned: dict[str, tuple[type, ...]],
+    violations: list[str],
+) -> None:
+    """Type-check only the PINNED knob names in ``section``; leave every other key alone."""
+    for key, expected in pinned.items():
+        if key not in section:
+            continue
+        value = section[key]
+        if value is None:
+            continue  # a null plug-hole is Compile.verify V7's finding, not a name/type one
+        # `bool` is an `int` subclass, so an explicit exclusion is needed for the numeric keys.
+        ok = isinstance(value, expected) and not (
+            bool not in expected and isinstance(value, bool)
+        )
+        if ok:
+            continue
+        names = " or ".join(t.__name__ for t in expected)
+        violations.append(
+            f"{ir_path}: {prefix}.{key} must be {names}, got "
+            f"{type(value).__name__} ({value!r}) — the parallelization knob types are pinned by "
+            "spec/schema/ir/impl_defaults.schema.json"
+        )
 
 
 def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:

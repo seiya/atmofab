@@ -28,8 +28,8 @@ This structure satisfies the following.
 - `toolchain.language` (e.g. `fortran`, `cpp`, `cuda_fortran`)
 - `toolchain.standard` (the language standard spelled the way the compiler names it — e.g. `f2008`, `c++17`; it is passed verbatim as `-std=<value>`, so `2008` is rejected by the compiler driver)
 - `toolchain.build_system` (e.g. `make`, `cmake`, `meson`, `ninja`)
-- `abstract` (language-independent knobs)
-- `backend_overrides` (language/backend-dependent knobs)
+- `abstract` (language-independent knobs; the parallelization family has canonical key names — `parallelization` / `parallel_scope` / `parallel_granularity`, per `spec/schema/ir/impl_defaults.schema.json`)
+- `backend_overrides` (language/backend-dependent knobs; under `openmp`: `num_threads` / `schedule` / `chunk_size` / `collapse` / `nested`, same canonical source)
 - `selected.backend_key`
 
 Rules:

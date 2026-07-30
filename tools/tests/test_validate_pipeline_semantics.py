@@ -14929,6 +14929,203 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         self.assertIn("dep_base_model.f90", v[0])
 
 
+class ImplDefaultsKnobNameGateTests(unittest.TestCase):
+    """`_validate_impl_defaults_knobs` (compile stage): the parallelization family of the
+    `impl_defaults` knob layer uses its canonical key names. Closed-table check — aliases, pinned-key
+    type violations, and the mapping form of `parallelization` are flagged; absent sections and novel
+    knob names pass, because the knob layer stays open for Tune."""
+
+    def _run(self, impl: object) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            ir_dir = Path(t)
+            ir: dict = {"meta": {"spec_kind": "component", "spec_id": "dep_base"}}
+            if impl is not _OMIT:
+                ir["impl_defaults"] = impl
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            v: list[str] = []
+            vps._validate_impl_defaults_knobs(ir_dir.parent, ir_dir, v)
+            return v
+
+    @staticmethod
+    def _impl(*, abstract: object = None, overrides: object = None,
+              backend: str = "openmp") -> dict:
+        impl: dict = {"target": {"class": "cpu", "backend": backend},
+                      "toolchain": {"language": "fortran"}}
+        if abstract is not None:
+            impl["abstract"] = abstract
+        if overrides is not None:
+            impl["backend_overrides"] = overrides
+        return impl
+
+    _CANONICAL = {"parallelization": "openmp", "parallel_scope": "the face loop i = 1..nf",
+                  "parallel_granularity": "loop_level"}
+
+    def test_canonical_knobs_pass(self) -> None:
+        self.assertEqual(self._run(self._impl(
+            abstract=self._CANONICAL,
+            overrides={"openmp": {"num_threads": 4, "schedule": "static",
+                                  "chunk_size": 0, "collapse": 1, "nested": False}})), [])
+
+    def test_abstract_alias_flagged_with_rename_remedy(self) -> None:
+        # Every alias here was observed in a real workspace IR.
+        for alias, canonical in (
+            ("loop_parallelization", "parallelization"),
+            ("parallelization_model", "parallelization"),
+            ("parallel_loop_scope", "parallel_scope"),
+            ("parallelization_scope", "parallel_scope"),
+            ("parallel_loops", "parallel_scope"),
+            ("parallelization_granularity", "parallel_granularity"),
+        ):
+            v = self._run(self._impl(abstract={alias: "openmp"}))
+            self.assertEqual(len(v), 1, f"{alias}: {v}")
+            self.assertIn(f"impl_defaults.abstract.{alias} is a non-canonical spelling", v[0])
+            self.assertIn(f"rename it to `{canonical}`", v[0])
+
+    def test_openmp_override_alias_flagged_with_rename_remedy(self) -> None:
+        for alias in ("threads", "threads_per_rank"):
+            v = self._run(self._impl(overrides={"openmp": {alias: 4}}))
+            self.assertEqual(len(v), 1, f"{alias}: {v}")
+            self.assertIn(
+                f"impl_defaults.backend_overrides.openmp.{alias} is a non-canonical spelling", v[0])
+            self.assertIn("rename it to `num_threads`", v[0])
+            # The remedy must say WHY, since the alias is otherwise harmless-looking.
+            self.assertIn("degrades to one thread", v[0])
+
+    def test_mapping_form_parallelization_flagged_once_with_decomposition(self) -> None:
+        # The live mapping spellings: {method, apply_to} / {scheme, default_schedule} /
+        # {method, applied_to, granularity}. One defect, one line — an earlier draft also ran the
+        # generic type check on this key and reported it twice.
+        v = self._run(self._impl(abstract={
+            "parallelization": {"method": "openmp", "apply_to": "parallelizable_loops"}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be a flat string, not a mapping", v[0])
+        self.assertIn("`parallel_scope`", v[0])
+
+    def test_wrong_type_num_threads_flagged(self) -> None:
+        # A live profile IR carries `num_threads: "default"`, which the host cannot read as a count.
+        v = self._run(self._impl(overrides={"openmp": {"num_threads": "default"}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be int, got str", v[0])
+
+    def test_bool_is_not_an_integer_thread_count(self) -> None:
+        # `bool` is an `int` subclass in Python; `num_threads: true` must not slip through.
+        v = self._run(self._impl(overrides={"openmp": {"num_threads": True}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be int, got bool", v[0])
+
+    def test_nested_accepts_a_bool(self) -> None:
+        self.assertEqual(self._run(self._impl(overrides={"openmp": {"nested": False}})), [])
+
+    def test_openmp_casing_passes(self) -> None:
+        # A live certified IR carries `OpenMP`; the enum is compared case-insensitively.
+        self.assertEqual(self._run(self._impl(abstract={"parallelization": "OpenMP"})), [])
+
+    def test_prose_parallelization_value_flagged_on_openmp_target(self) -> None:
+        v = self._run(self._impl(
+            abstract={"parallelization": "OpenMP applied to parallelizable loops"}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("which is not one of", v[0])
+        self.assertIn("`parallel_scope`", v[0])
+
+    def test_value_membership_only_checked_on_an_openmp_target(self) -> None:
+        # On another backend this gate does not know the vocabulary.
+        self.assertEqual(self._run(self._impl(
+            abstract={"parallelization": "cuda_streams"}, backend="cuda")), [])
+
+    def test_non_string_non_mapping_parallelization_flagged(self) -> None:
+        v = self._run(self._impl(abstract={"parallelization": 4}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be a string, got int", v[0])
+
+    def test_null_knob_left_to_verify_v7(self) -> None:
+        # A `null` plug-hole is Compile.verify V7's finding; reporting it here would double up.
+        self.assertEqual(self._run(self._impl(
+            abstract={"parallel_scope": None},
+            overrides={"openmp": {"num_threads": None}})), [])
+
+    def test_novel_knob_name_passes(self) -> None:
+        # Tune's exploration space stays open — only the pinned family is constrained.
+        self.assertEqual(self._run(self._impl(
+            abstract={"memory_layout": "column_major", "wavefront_depth": 3},
+            overrides={"openmp": {"proc_bind": "spread"}, "cuda": {"block": 256}})), [])
+
+    def test_absent_sections_pass(self) -> None:
+        self.assertEqual(self._run(self._impl()), [])
+        self.assertEqual(self._run(_OMIT), [])
+        self.assertEqual(self._run("openmp"), [])
+        self.assertEqual(self._run(self._impl(abstract="openmp", overrides="openmp")), [])
+
+    def test_missing_ir_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            v: list[str] = []
+            vps._validate_impl_defaults_knobs(Path(t), Path(t), v)
+            self.assertEqual(v, [])
+
+    def test_reaches_the_compile_stage_checker_list(self) -> None:
+        # Wiring pin: the checker must be reached through `validate_compile_stage`, not only by
+        # direct call — a gate nothing invokes is the dormant-gate failure this repo has hit before.
+        source = Path(vps.__file__).read_text(encoding="utf-8")
+        impl = source.index("def _validate_compile_stage_impl")
+        tail = source.index("\ndef ", impl + 1)
+        self.assertIn("_validate_impl_defaults_knobs(repo_root, ir_dir, violations)",
+                      source[impl:tail])
+
+    def test_schema_agrees_with_the_validator_constants(self) -> None:
+        """Declarative-copy mode (SCHEMA.md): the schema and the validator constants hold the same
+        facts, so the grammar changes only by editing both."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        schema = json.loads(
+            (repo_root / "spec/schema/ir/impl_defaults.schema.json").read_text(encoding="utf-8"))
+        abstract = schema["properties"]["abstract"]["properties"]
+        openmp = (schema["properties"]["backend_overrides"]["properties"]["openmp"]["properties"])
+        # Canonical names: the schema declares exactly the keys the validator pins or names as a
+        # rename target.
+        self.assertEqual(
+            set(abstract),
+            set(vps._IMPL_ABSTRACT_KNOB_TYPES) | set(vps._IMPL_ABSTRACT_KNOB_ALIASES.values()))
+        self.assertEqual(
+            set(openmp),
+            set(vps._IMPL_OPENMP_OVERRIDE_TYPES) | set(vps._IMPL_OPENMP_OVERRIDE_ALIASES.values()))
+        # No alias may also be a declared canonical key — that would make the rename a no-op.
+        self.assertEqual(set(abstract) & set(vps._IMPL_ABSTRACT_KNOB_ALIASES), set())
+        self.assertEqual(set(openmp) & set(vps._IMPL_OPENMP_OVERRIDE_ALIASES), set())
+        # The knob layer stays open on both sides.
+        self.assertTrue(schema["properties"]["abstract"]["additionalProperties"])
+        self.assertTrue(schema["properties"]["backend_overrides"]["additionalProperties"])
+        # Types agree with the pinned table.
+        json_type = {"string": str, "integer": int, "boolean": bool}
+        for key, expected in vps._IMPL_OPENMP_OVERRIDE_TYPES.items():
+            self.assertEqual((json_type[openmp[key]["type"]],), expected, key)
+        for key, expected in vps._IMPL_ABSTRACT_KNOB_TYPES.items():
+            self.assertEqual((json_type[abstract[key]["type"]],), expected, key)
+        # Every alias the validator knows is documented as a forbidden example, so the schema
+        # teaches the same closed table the gate enforces.
+        forbidden = "\n".join(schema["x-forbidden-examples"])
+        for alias in (*vps._IMPL_ABSTRACT_KNOB_ALIASES, *vps._IMPL_OPENMP_OVERRIDE_ALIASES):
+            self.assertIn(alias, forbidden, f"{alias} is enforced but undocumented")
+        self.assertEqual(
+            schema["x-canonical-validator"],
+            "tools/validate_pipeline_semantics.py:_validate_impl_defaults_knobs")
+
+    def test_canonical_knob_names_are_stated_in_both_authoring_docs(self) -> None:
+        """A tightened gate with a silent SKILL burns retries — R6-lite freshness re-runs Compile on
+        a dependency bump, so the IR author must be able to look the pinned spellings up. Both files
+        are size-ceilinged, and a ceiling is a MAXIMUM, so deleting these sentences stays green
+        without an anchor."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        for rel, needles in (
+            ("skills/workflow-compile-generate/SKILL.md",
+             ("canonical key names**", "spec/schema/ir/impl_defaults.schema.json",
+              "threads_per_rank")),
+            ("docs/workflow/phases/phase_01_compile.md",
+             ("CANONICAL key names", "spec/schema/ir/impl_defaults.schema.json",
+              "_validate_impl_defaults_knobs")),
+        ):
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            for needle in needles:
+                self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
+
+
 class LocalOperationLoweringGateTests(unittest.TestCase):
     """`_validate_local_operation_lowering` (compile stage): a LOCAL op (one an
     `algorithm.steps[].operation_ref` names but no `dependency.direct_deps[].operations[]`
