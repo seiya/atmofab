@@ -14981,11 +14981,61 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             v = self._run(self._model(body))
             self.assertEqual(len(v), want, f"{label}: {v}")
 
-    def test_crlf_source_is_scanned(self) -> None:
-        # A CRLF file leaves `\r` at each line end, which would make a trailing `&` invisible and
-        # so break continuation joining on exactly the sources a Windows-side editor produces.
+    def test_trailing_blanks_after_the_continuation_marker(self) -> None:
+        # This, not CRLF, is what makes the `.rstrip()` load-bearing: `do i &   ` is legal and its
+        # `&` must still register as a continuation. (A CRLF source cannot exercise it — `read_text`
+        # universal-newline-translates `\r\n` before the scanner ever sees it, which is why the
+        # earlier CRLF test here was vacuous: deleting the `.rstrip()` left it green.)
         v = self._run(self._model(
-            "    do i &\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n").replace("\n", "\r\n"))
+            "    do i &   \n      = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_comment_or_blank_line_inside_a_continuation(self) -> None:
+        # Free form permits blank and comment-only lines BETWEEN a `&` line and its continuation;
+        # they are ignored, not terminators. Flushing on one truncated the statement — hiding a
+        # counted loop, and splitting a `do concurrent` into unrecognizable halves, which is the
+        # false-positive direction.
+        for body, label, want in (
+            ("    do i &\n      ! wrap note\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "comment inside a counted-loop wrap", 1),
+            ("    do i &\n\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "blank line inside a counted-loop wrap", 1),
+            ("    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+             "    do &\n      ! note\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n",
+             "comment inside a do-concurrent wrap still exempts", 0),
+        ):
+            v = self._run(self._model(body))
+            self.assertEqual(len(v), want, f"{label}: {v}")
+
+    def test_quote_tracker_carries_literal_state_across_lines(self) -> None:
+        """The observable contract of `_strip_fortran_comment_tracking_quotes`.
+
+        Doubled-quote escapes are deliberately NOT a separate case here: read as close-then-reopen
+        they leave the same state for any run of quotes, so an explicit escape branch was provably
+        unobservable (it survived every mutation) and was removed rather than left unpinnable. These
+        assertions still cover the escaped forms — they must simply behave, not be special."""
+        strip = vps._strip_fortran_comment_tracking_quotes
+        self.assertEqual(strip("msg = 'a'''", None), ("msg = 'a'''", None))
+        self.assertEqual(strip('msg = "x"""', None), ('msg = "x"""', None))
+        # A `!` inside a literal is not a comment.
+        self.assertEqual(strip("msg = 'a'' ! keep'", None), ("msg = 'a'' ! keep'", None))
+        # An unterminated literal reports its open quote so the next line continues it.
+        self.assertEqual(strip("msg = 'a&", None), ("msg = 'a&", "'"))
+        # Entering mid-literal, a `!` is content and the closing quote ends the state.
+        self.assertEqual(strip("      &!b'", "'"), ("      &!b'", None))
+        # A real trailing comment is dropped.
+        self.assertEqual(strip("x = 1  ! note", None), ("x = 1  ", None))
+
+    def test_bang_inside_a_continued_character_literal(self) -> None:
+        # Quote state must cross physical lines. Stripping comments per line could not know the `!`
+        # sat inside a CONTINUED literal, so the rest of the line was dropped and — because what
+        # survived ended in `&` — the buffer stayed open and swallowed the next statement, turning a
+        # correct parallel source into a violation. A regression this branch introduced and fixed.
+        literal = "    msg = 'a&\n      &!b'\n"
+        self.assertEqual(self._run(self._model(
+            literal + "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+        v = self._run(self._model(
+            literal + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
         self.assertEqual(len(v), 1, v)
 
     def test_named_and_labeled_do_concurrent_also_exempt(self) -> None:
@@ -15328,6 +15378,18 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         # Each line names the OTHER sections, so a line read alone is still actionable.
         self.assertTrue(any("'cpu_openmp_x86_64'" in x for x in v), v)
         self.assertTrue(any("'cpu_openmp'" in x for x in v), v)
+
+    def test_two_member_aliases_of_one_canonical_say_merge(self) -> None:
+        # The member-level twin of the section-level collision: told to rename separately, both
+        # become `num_threads` and `yaml.safe_load` keeps the last silently — the 4-threads-on-1
+        # harm again.
+        v = self._run(self._impl(overrides={"openmp": {"threads": 4, "threads_per_rank": 8}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE them into a single `num_threads`" in x for x in v), v)
+        v = self._run(self._impl(abstract={
+            "loop_parallelization": "openmp", "parallelization_model": "openmp"}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE them into a single `parallelization`" in x for x in v), v)
 
     def test_members_of_a_misnamed_section_are_still_checked(self) -> None:
         # Reporting only the section name would hide the alias inside it until the author fixed the

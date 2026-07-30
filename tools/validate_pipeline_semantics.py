@@ -4481,9 +4481,33 @@ def _fortran_code_statements(text: str) -> list[str]:
     one either, so such an ``!$omp`` is genuinely not a directive."""
     statements: list[str] = []
     buffer = ""
+    quote: str | None = None  # set while the buffer ends INSIDE a character literal
+
+    def flush(text_to_split: str) -> None:
+        statements.extend(
+            _mask_fortran_string_contents(part)
+            for part in _split_fortran_statements(text_to_split)
+            if part.strip()
+        )
+
     for raw_line in text.split("\n"):
-        # The trailing `.rstrip()` also removes a CRLF file's `\r`, so a trailing `&` stays visible.
-        code = _strip_fortran_inline_comment(raw_line).rstrip()
+        # Free form permits blank and comment-only lines BETWEEN a `&`-terminated line and its
+        # continuation; they are ignored, not terminators. Flushing on one truncated the statement,
+        # which both hid a counted loop and split a `do concurrent` into unrecognizable halves.
+        # `_fortran_logical_lines` documents this same rule — the guard was simply missing here.
+        # Not applicable mid-literal: inside a character context the continuation must be immediate.
+        if buffer and quote is None:
+            probe, _ = _strip_fortran_comment_tracking_quotes(raw_line, None)
+            if not probe.strip():
+                continue
+        # Quote state is threaded across physical lines. Stripping comments per line could not know
+        # it, so a `!` inside a CONTINUED character literal read as a comment: the rest of the line
+        # was dropped and, if what survived ended in `&`, the buffer stayed open and swallowed the
+        # next statement — turning a correct parallel source into a violation.
+        code, quote = _strip_fortran_comment_tracking_quotes(raw_line, quote)
+        # `.rstrip()` matters beyond tidiness: a legal `do i &   ` (trailing blanks after the
+        # continuation marker) would otherwise not register as continued.
+        code = code.rstrip()
         continued = code.endswith("&")
         if continued:
             code = code[:-1]
@@ -4494,19 +4518,41 @@ def _fortran_code_statements(text: str) -> list[str]:
             buffer = code
         if continued:
             continue
-        statements.extend(
-            _mask_fortran_string_contents(part)
-            for part in _split_fortran_statements(buffer)
-            if part.strip()
-        )
+        flush(buffer)
         buffer = ""
+        quote = None
     if buffer.strip():
-        statements.extend(
-            _mask_fortran_string_contents(part)
-            for part in _split_fortran_statements(buffer)
-            if part.strip()
-        )
+        flush(buffer)
     return statements
+
+
+def _strip_fortran_comment_tracking_quotes(
+    line: str, quote: str | None
+) -> tuple[str, str | None]:
+    """Drop a trailing ``!`` comment, carrying character-literal state IN and OUT.
+
+    ``quote`` is the open quote character when this physical line begins inside a literal (a literal
+    continued from the previous line), or ``None``. Returns the comment-free text plus the state at
+    end of line. The module's other comment strippers are per-line and therefore cannot know that a
+    ``!`` sits inside a continued literal, which is the whole reason this one exists.
+
+    The Fortran doubled-quote escape (``''`` / ``""``) needs no special case: reading it as
+    close-then-reopen leaves the inside/outside state identical for any run of quotes, so an
+    explicit escape branch was provably unobservable — it survived every mutation because it could
+    not change an answer. Dropping it keeps this function to what its tests can pin."""
+    out: list[str] = []
+    for ch in line:
+        if quote is not None:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "!":
+            break
+        out.append(ch)
+    return "".join(out), quote
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
@@ -10318,6 +10364,13 @@ def _append_impl_alias_violations(
     unhandled ``TypeError`` that replaced the whole ``FAIL - <violation>`` report with a traceback,
     losing every violation already collected in that run."""
     present_lowered = {str(k).strip().lower() for k in section}
+    # Aliases grouped by the canonical key they all mean, so a colliding set can be told to merge.
+    siblings: dict[str, list[str]] = {}
+    for key in sorted(section, key=str):
+        name = str(key).strip()
+        canonical = aliases.get(name.lower())
+        if canonical is not None:
+            siblings.setdefault(canonical, []).append(name)
     for key in sorted(section, key=str):
         name = str(key).strip()
         canonical = aliases.get(name.lower())
@@ -10335,6 +10388,15 @@ def _append_impl_alias_violations(
             remedy = (
                 f"the canonical `{canonical}` is already present, so DELETE this key — move any "
                 f"detail it carries {where}, not into `{canonical}`"
+            )
+        elif len(siblings[canonical]) > 1:
+            # Several aliases of the SAME canonical key with the canonical absent. Told to rename
+            # separately they collide into a duplicate YAML key, and `yaml.safe_load` keeps the last
+            # silently — the same argument the section-level check makes, one level down.
+            others = ", ".join(f"`{s}`" for s in siblings[canonical] if s != name)
+            remedy = (
+                f"it and {others} all mean `{canonical}` — MERGE them into a single `{canonical}` "
+                "and delete the rest; renaming each separately collides into a duplicate key"
             )
         else:
             remedy = f"rename it to `{canonical}`"
