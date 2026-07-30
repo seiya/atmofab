@@ -4511,8 +4511,8 @@ _IMPL_PARALLELIZATION_MODEL_KEYS = frozenset({"method", "scheme", "kind"})
 _OPENMP_FLOOR_NODE_KINDS = ("component/", "problem/")
 
 
-def _impl_claims_parallelism(impl: dict[str, Any]) -> bool:
-    """True when the ``impl_defaults`` knob layer AFFIRMATIVELY claims a parallel execution model.
+def _impl_claims_openmp(impl: dict[str, Any]) -> bool:
+    """True when the ``impl_defaults`` knob layer AFFIRMATIVELY claims OPENMP as its model.
 
     This is the floor's licence to fail a source, and it replaced a weaker test (fire whenever the
     FIXED layer resolves to OpenMP) that could demand the impossible. A `post_generate` violation
@@ -4543,7 +4543,12 @@ def _impl_claims_parallelism(impl: dict[str, Any]) -> bool:
     def names_a_model(value: Any) -> bool:
         if isinstance(value, str):
             token = value.strip().lower()
-            return bool(token) and token not in _NO_PARALLELISM_VALUES
+            # OPENMP specifically, not merely "some parallelism". The compile gate deliberately
+            # accepts a novel model token, so a node claiming `cuda_streams` or `mpi` on an
+            # openmp-backed target would otherwise be told to add `!$omp` — a demand that
+            # contradicts its own IR and that the reopened producer leaf cannot resolve. Substring,
+            # so `openmp+simd` / `openmp_tasks` / `cpu_openmp` all count.
+            return "openmp" in token and token not in _NO_PARALLELISM_VALUES
         if isinstance(value, dict):
             # ONLY the model-bearing members. Reading every value made any prose member a claim, so
             # `{method: none, apply_to: parallelizable_loops}` — a correctly serial legacy mapping —
@@ -4591,7 +4596,7 @@ def _validate_openmp_presence_floor(
     continuation is not counted, and only `component/` / `problem/` nodes are in scope at all.
 
     The floor fires only when the IR AFFIRMATIVELY claims a parallel model
-    (`_impl_claims_parallelism`), not merely because the fixed layer resolves to OpenMP. That is what
+    (`_impl_claims_openmp`), not merely because the fixed layer resolves to OpenMP. That is what
     keeps the reopen fair: a violation routes to ``generate.generate``, whose leaf authors source and
     cannot touch the certified IR, so a demand it can only satisfy by editing the IR would be
     unrepairable. With the claim required, the source is failing an obligation the IR itself states —
@@ -4617,7 +4622,7 @@ def _validate_openmp_presence_floor(
     language = str(tc.get("language") or "").strip().lower()
     if hw_class != "cpu" or backend != "openmp" or language != "fortran":
         return
-    if not _impl_claims_parallelism(impl):
+    if not _impl_claims_openmp(impl):
         return  # the IR claims no parallel model here, so there is no stated obligation to enforce
 
     for model_file in model_files:
@@ -10373,11 +10378,18 @@ def _append_impl_alias_violations(
     canonical_names = set(pinned) | set(aliases.values())
     # Aliases grouped by the canonical key they all mean, so a colliding set can be told to merge.
     siblings: dict[str, list[str]] = {}
+    # Every key that normalizes to a canonical name, exact or not, grouped the same way. Two inexact
+    # variants of one canonical key (`NUM_THREADS` and `"num_threads "`) collide on rename exactly as
+    # two aliases do, and PyYAML keeps only one value.
+    canonical_variants: dict[str, list[str]] = {}
     for key in sorted(section, key=str):
-        name = str(key).strip()
+        raw = str(key)
+        name = raw.strip()
         canonical = aliases.get(name.lower())
         if canonical is not None:
             siblings.setdefault(canonical, []).append(name)
+        elif name.lower() in canonical_names:
+            canonical_variants.setdefault(name.lower(), []).append(raw)
     for key in sorted(section, key=str):
         raw = str(key)
         name = raw.strip()
@@ -10393,15 +10405,25 @@ def _append_impl_alias_violations(
             # inexact spelling destroys.
             if name.lower() in canonical_names and raw != name.lower():
                 canonical_exact = name.lower()
+                group = canonical_variants.get(canonical_exact, [])
+                # "Rename it" is followable only when this spelling would land on a free key. With
+                # the exact key already present, or with a second variant of the same canonical name,
+                # renaming collides into a duplicate that `yaml.safe_load` resolves by keeping the
+                # last — silently discarding a value. Both the alias path and the section path say
+                # merge for this shape; a canonical VARIANT is the same collision one spelling in.
+                others = [k for k in group if k != raw]
                 if any(str(k) == canonical_exact for k in section):
-                    # The exact key is present too, so "rename it" would collide into a duplicate
-                    # YAML key and `yaml.safe_load` would keep the last, silently discarding a value.
-                    # The alias and section paths already say merge for this shape; a canonical
-                    # VARIANT is the same collision one spelling further in.
                     remedy = (
                         f"the exact `{canonical_exact}` is already present, so MERGE this key's "
                         "value into it and delete this one; renaming would collide into a "
                         "duplicate key"
+                    )
+                elif others:
+                    listed = ", ".join(sorted(repr(o) for o in others))
+                    remedy = (
+                        f"it and {listed} are all `{canonical_exact}` spelled differently — MERGE "
+                        f"them into a single bare lowercase `{canonical_exact}` and delete the rest; "
+                        "renaming each separately collides into a duplicate key"
                     )
                 else:
                     remedy = f"rename it to the bare lowercase `{canonical_exact}`"

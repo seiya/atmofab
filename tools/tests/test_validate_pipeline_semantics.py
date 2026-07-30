@@ -10458,7 +10458,7 @@ end program shallow_water2d_runner
             "_validate_openmp_presence_floor",          # which slice is deterministic
             # ... and the floor's SCOPE. This was the last place stating the punishment
             # unconditionally, and it is read by exactly the agentic leaves the floor exempts.
-            "The floor runs only where the `abstract` knobs affirmatively claim a parallel model",
+            "The floor runs only where the `abstract` knobs affirmatively claim OpenMP as the model",
             "not on an `infrastructure`/`profile` node",
         ):
             self.assertIn(
@@ -14869,6 +14869,25 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
             "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
 
+    def test_floor_needs_an_openmp_claim_specifically(self) -> None:
+        """The claim must name OPENMP, not merely some parallelism.
+
+        `Compile.static` deliberately accepts a novel model token, so a node claiming `cuda_streams`
+        or `mpi` on an openmp-backed target would otherwise be told to add `!$omp` — a demand that
+        contradicts its own IR and that the reopened producer cannot resolve."""
+        base = {"target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"}}
+        for token, want in (("openmp", 1), ("OpenMP", 1), ("openmp+simd", 1), ("openmp_tasks", 1),
+                            ("cuda_streams", 0), ("acc", 0), ("mpi", 0), ("", 0)):
+            v = self._run(self._COUNTED,
+                          impl={**base, "abstract": {"parallelization": token}})
+            self.assertEqual(len(v), want, f"parallelization={token!r}: {v}")
+        # Same rule through the mapping form.
+        self.assertEqual(self._run(self._COUNTED, impl={
+            **base, "abstract": {"parallelization": {"method": "cuda_streams"}}}), [])
+        self.assertEqual(len(self._run(self._COUNTED, impl={
+            **base, "abstract": {"parallelization": {"method": "openmp"}}})), 1)
+
     def test_floor_needs_an_affirmative_ir_claim(self) -> None:
         """The floor may only demand what the IR itself states.
 
@@ -15520,6 +15539,17 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8}}))
         self.assertEqual(len(v), 1, v)
         self.assertIn("rename it to the bare lowercase `num_threads`", v[0])
+
+    def test_two_canonical_variants_without_an_exact_key_say_merge(self) -> None:
+        # Two inexact spellings of one canonical key collide on rename exactly as two aliases do,
+        # and PyYAML keeps only one value.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8, "num_threads ": 4}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE" in x for x in v), v)
+        self.assertFalse(any("rename it to the bare lowercase" in x for x in v), v)
+        # Each line names the OTHER spelling, so a line read alone is still actionable.
+        self.assertTrue(any("'num_threads '" in x for x in v), v)
+        self.assertTrue(any("'NUM_THREADS'" in x for x in v), v)
 
     def test_two_member_aliases_of_one_canonical_say_merge(self) -> None:
         # The member-level twin of the section-level collision: told to rename separately, both
