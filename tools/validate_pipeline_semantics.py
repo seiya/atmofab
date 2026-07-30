@@ -4412,172 +4412,61 @@ def _validate_component_generated_surface(
             f"`{spec_id}__` prefix, or add it to the published operations)")
 
 
-# A COUNTED `do` opener: `do <var> =`, in every spelling a generator plausibly emits — a statement
-# label before `do` (`10 do i = 1, n`), a branch-target label after it (`do 10 i = 1, n`, obsolescent
-# in f2008 but legal), a named construct (`loop_i: do i = 1, n`), and a `do` that opens a
-# semicolon-separated statement (`if (n > 0) then; do i = 1, n`).
+# The floor's whole Fortran surface: four anchored patterns over PHYSICAL lines, no state.
 #
-# The `=` tail is what makes the loop counted, so `do concurrent (...)` and `do while (...)` are
-# excluded by construction — no negative lookahead needed. `do while` has no trip count to
-# distribute; `do concurrent` is itself the parallel construct (see `_DO_CONCURRENT_RE`).
-# Matched against ONE STATEMENT at a time (`_fortran_code_statements` has already split on `;`),
-# so `^` is the real statement start rather than a guess at one.
+# Rounds of review found six defects in a previous, cleverer scanner that joined `&` continuations,
+# tracked character-literal state across lines, and split statements on `;`. Each fix introduced the
+# next defect, and four of the six were FALSE POSITIVES on a `fail_closed` gate. Measured over every
+# `.f90` file in the tree, that machinery produced verdicts identical to these four patterns — it was
+# priced entirely for inputs that have never occurred (the corpus contains no continued `do` header,
+# no `do concurrent`, no labelled or named `do`, and no `do` after a `;`).
+#
+# The insight that makes the state unnecessary: anchoring at a PHYSICAL line start puts comments and
+# string literals structurally out of reach. A comment line begins with `!`, and free-form Fortran
+# requires a continued character literal to resume with `&` — so neither can present a `do` or a
+# `!$omp` at the start of a line. The earlier comment-mention and literal-mention evasions are closed
+# by the anchor rather than by parsing.
+#
+# `[ \t\f]` is gfortran's blank set: a form feed is a blank it accepts, both before a `do` and as a
+# token separator (verified against the compiler, and the reason the previous scanner leaked).
+_BLANK = r"[ \t\f]"
+# A `do` opener at a line start, with the spellings a generator plausibly emits: a statement label
+# before it (`10 do i = 1, n`), a named construct (`loop_i: do ...`).
+_DO_OPENER = rf"^{_BLANK}*(?:\d+{_BLANK}+)?(?:[a-z_]\w*{_BLANK}*:{_BLANK}*)?do"
+
+# A COUNTED loop: `do <var> =`, also accepting an obsolescent branch-target label (`do 10 i = 1, n`).
+# The `=` tail is what makes it counted, so `do concurrent (...)` and `do while (...)` are excluded by
+# construction, and `do_it = 1` cannot match because `do` must be followed by a blank.
 _COUNTED_DO_RE = re.compile(
-    r"^[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?[a-z_]\w*[ \t]*=",
-    re.IGNORECASE,
+    _DO_OPENER + rf"{_BLANK}+(?:\d+{_BLANK}+)?[a-z_]\w*{_BLANK}*=", re.IGNORECASE | re.MULTILINE
 )
 
-# `do concurrent` anywhere in the file is a declaration of parallel intent, which takes the file out
-# of the floor's reach even when counted loops sit beside it. Without this, a source whose real work
-# is `do concurrent` but which also resets a 3-element accumulator with a counted loop was reported
-# as unparallelized — a false positive that flatly contradicted the floor's own message.
-#
-# Same spelling coverage as `_COUNTED_DO_RE` (statement label, branch label, named construct,
-# post-semicolon), because a named `do concurrent` construct is legal f2008 and a file using one is
-# just as parallel as a file using the bare form.
+# `do concurrent` anywhere in the file is a declaration of parallel intent and takes the file out of
+# the floor's reach even when counted loops sit beside it — without this, an accumulator reset beside
+# `do concurrent` work was reported as unparallelized, contradicting the floor's own message.
 _DO_CONCURRENT_RE = re.compile(
-    r"^[ \t]*(?:\d+[ \t]+)?(?:[a-z_]\w*[ \t]*:[ \t]*)?do[ \t]+(?:\d+[ \t]+)?concurrent\b",
-    re.IGNORECASE,
+    _DO_OPENER + rf"{_BLANK}+concurrent\b", re.IGNORECASE | re.MULTILINE
 )
 
-# The OpenMP sentinel, anchored at the start of its line. Two reasons for the anchor. A bare `omp`
-# is a substring of `component` / `compute` / `compile`, so `!$` is what makes it a directive; and
-# free-form Fortran requires the sentinel to be preceded by nothing but whitespace, so anchoring is
-# exactly the language rule. Without the anchor, a doc comment reading "the `!$omp parallel do`
-# directives would go here (not added)" satisfied the floor — the precise shape issue #22 exists to
-# catch, and one real generated source already writes `!$omp` inside a `!>` comment. A commented-out
-# `!!$omp parallel do` is likewise not a directive. Verified to cost zero false positives: no live
-# model source carries a directive anywhere but at line start.
-# `\f` is in the prefix class because gfortran accepts a form feed as leading blank and parses the
-# sentinel after it as a REAL directive (verified: the matching `!$omp end` errors as a directive).
-# `^` still anchors after `\n` only, so `n = n\fBANG$omp ...` — prose then a sentinel — stays
-# correctly unmatched: there the `!$omp` is inside the preceding statement's comment.
-_OMP_DIRECTIVE_RE = re.compile(r"^[ \t\f]*!\$omp\b", re.IGNORECASE | re.MULTILINE)
+# A `do` header that wraps before it can be classified (`do &`, `do i &`, `do&`). Such a header might
+# be a `do concurrent`, so its presence fails the WHOLE FILE open rather than risk the false positive.
+# A header whose BOUNDS wrap (`do i = 1, &`) is already classified by `_COUNTED_DO_RE` and unaffected.
+_WRAPPED_DO_RE = re.compile(
+    _DO_OPENER + rf"{_BLANK}*\S*{_BLANK}*&{_BLANK}*$", re.IGNORECASE | re.MULTILINE
+)
+
+# The OpenMP sentinel, anchored the same way. A bare `omp` is a substring of `component` / `compute` /
+# `compile`, so `!$` is what makes it a directive; and free form requires the sentinel to be preceded
+# by blanks only, so the anchor IS the language rule. It is what keeps a doc comment reading "the
+# `!$omp parallel do` directives would go here (not added)" — a shape a real generated source
+# contains — from satisfying the floor, and likewise a commented-out `!!$omp`.
+_OMP_DIRECTIVE_RE = re.compile(rf"^{_BLANK}*!\$omp\b", re.IGNORECASE | re.MULTILINE)
 
 # Values of the parallelization knob that mean "no parallelism here". `_validate_impl_defaults_knobs`
 # blesses `none` explicitly, so without this the two new gates contradicted each other: Compile
 # accepted `parallelization: none` and Generate then hard-failed every source that honored it,
 # leaving the node unsatisfiable. Read generously — this direction only ever fails the floor OPEN.
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
-
-
-def _fortran_code_statements(text: str) -> list[str]:
-    """``text`` reduced to one entry per Fortran STATEMENT, comments dropped and string contents
-    masked. Both loop scans run over this rather than over raw text.
-
-    Three defects motivated each part, all of them reproduced on real sources:
-
-    * Scanning raw text let a single COMMENT line mentioning `do concurrent` exempt a whole file and
-      disable a `fail_closed` gate — the patterns accept `;` as a statement separator, and prose
-      supplies semicolons freely. Comment stripping and string masking close that, and the mirror
-      case where prose inflated the counted-loop tally.
-    * ``str.splitlines()`` breaks on eight separators Fortran does not treat as line ends (``\\f``,
-      ``\\v``, ``\\x85``, ``\\u2028`` …), so a form feed inside a comment ended the comment early
-      and re-admitted its tail AS CODE — reopening the same hole through a file gfortran and
-      fortitude both accept. Splitting on ``\\n`` alone is the language's own rule.
-    * Free-form ``&`` continuations were not joined, so ``do &``/``  concurrent (...)`` read as two
-      unrecognizable fragments: an evasion for counted loops and, worse, a FALSE POSITIVE on a
-      genuinely parallel file.
-
-    The directive scan deliberately does NOT use this view: an ``!$omp`` sentinel IS a Fortran
-    comment, so stripping comments would erase exactly what it looks for. Its line anchor is what
-    keeps it honest, and a ``\\f`` cannot help an evader there — gfortran does not end the line at
-    one either, so such an ``!$omp`` is genuinely not a directive."""
-    statements: list[str] = []
-    buffer = ""
-    quote: str | None = None  # set while the buffer ends INSIDE a character literal
-
-    def flush(text_to_split: str) -> None:
-        statements.extend(
-            _mask_fortran_string_contents(part)
-            for part in _split_fortran_statements(text_to_split)
-            if part.strip()
-        )
-
-    for raw_line in text.split("\n"):
-        # Free form permits blank and comment-only lines BETWEEN a `&`-terminated line and its
-        # continuation; they are ignored, not terminators. Flushing on one truncated the statement,
-        # which both hid a counted loop and split a `do concurrent` into unrecognizable halves.
-        # `_fortran_logical_lines` documents this same rule — the guard was simply missing here.
-        # Not applicable mid-literal: inside a character context the continuation must be immediate.
-        if buffer and quote is None:
-            probe, _ = _strip_fortran_comment_tracking_quotes(raw_line, None)
-            if not probe.strip():
-                continue
-        # Quote state is threaded across physical lines. Stripping comments per line could not know
-        # it, so a `!` inside a CONTINUED character literal read as a comment: the rest of the line
-        # was dropped and, if what survived ended in `&`, the buffer stayed open and swallowed the
-        # next statement — turning a correct parallel source into a violation.
-        code, quote = _strip_fortran_comment_tracking_quotes(raw_line, quote)
-        # `.rstrip()` matters beyond tidiness: a legal `do i &   ` (trailing blanks after the
-        # continuation marker) would otherwise not register as continued.
-        code = code.rstrip()
-        # ORDER MATTERS, in both directions.
-        #
-        # The continuation's LEADING `&` is consumed BEFORE asking whether this line continues.
-        # Testing first read the single ampersand of a `&`-only line (or `&! note`) as both the
-        # leading and the trailing marker, so the buffer stayed open and glued the NEXT statement
-        # on: an evasion when that statement was a counted loop, a false positive when it was a
-        # `do concurrent`. gfortran terminates the statement there, and `_fortran_logical_lines`
-        # already strips before testing — this order matches both.
-        #
-        # And a continuation line that does NOT begin with `&` is joined with a SPACE, because the
-        # line break is then a token separator: concatenating turned `do&` / `i = 1, n` into
-        # `doi = 1, n` (evasion) and `do&` / `concurrent (...)` into `doconcurrent (...)` (false
-        # positive). Only a `&`-led line splits a token, and that one still joins tight.
-        joins_tight = False
-        if buffer:
-            code = code.lstrip()
-            if code.startswith("&"):
-                joins_tight = True
-                code = code[1:]
-        continued = code.endswith("&")
-        if continued:
-            code = code[:-1]
-        if buffer:
-            buffer += code if joins_tight else f" {code}"
-        else:
-            buffer = code
-        if continued:
-            continue
-        flush(buffer)
-        buffer = ""
-        # Reset the literal state with the statement. Only reachable from source no compiler
-        # accepts (an unterminated literal), but without it a leaked open quote makes the NEXT
-        # statement's text read as literal content and can hide a loop.
-        quote = None
-    if buffer.strip():
-        flush(buffer)
-    return statements
-
-
-def _strip_fortran_comment_tracking_quotes(
-    line: str, quote: str | None
-) -> tuple[str, str | None]:
-    """Drop a trailing ``!`` comment, carrying character-literal state IN and OUT.
-
-    ``quote`` is the open quote character when this physical line begins inside a literal (a literal
-    continued from the previous line), or ``None``. Returns the comment-free text plus the state at
-    end of line. The module's other comment strippers are per-line and therefore cannot know that a
-    ``!`` sits inside a continued literal, which is the whole reason this one exists.
-
-    The Fortran doubled-quote escape (``''`` / ``""``) needs no special case: reading it as
-    close-then-reopen leaves the inside/outside state identical for any run of quotes, so an
-    explicit escape branch was provably unobservable — it survived every mutation because it could
-    not change an answer. Dropping it keeps this function to what its tests can pin."""
-    out: list[str] = []
-    for ch in line:
-        if quote is not None:
-            out.append(ch)
-            if ch == quote:
-                quote = None
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-        elif ch == "!":
-            break
-        out.append(ch)
-    return "".join(out), quote
 
 # The floor applies to leaf-authored physics only. `infrastructure/` is the host's measurement
 # harness — its ~20 counted loops are timing/reduction bookkeeping that must not be forced to
@@ -4633,8 +4522,9 @@ def _validate_openmp_presence_floor(
     while the producer prompt never stated it, so whether a node passed depended on which loops the
     verify leaf happened to look at. Fail-open by design in every ambiguous direction: whole-array
     sources (zero counted loops) pass, non-OpenMP / non-CPU / non-Fortran profiles pass, an
-    unresolvable IR passes, a file containing a ``do concurrent`` passes, and only `component/` /
-    `problem/` nodes are in scope at all.
+    unresolvable IR passes, a file containing a ``do concurrent`` passes, a file whose ``do`` header
+    wraps before it can be classified passes, a loop reached only through a ``;`` or a joined
+    continuation is not counted, and only `component/` / `problem/` nodes are in scope at all.
 
     KNOWN LIMITATION, and the escape hatch for it. A file whose only counted loops are genuinely
     non-parallelizable — a strict recurrence such as a Thomas forward sweep — is flagged, and no
@@ -4665,10 +4555,11 @@ def _validate_openmp_presence_floor(
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         if _OMP_DIRECTIVE_RE.search(text):
             continue
-        statements = _fortran_code_statements(text)
-        if any(_DO_CONCURRENT_RE.match(s) for s in statements):
+        if _DO_CONCURRENT_RE.search(text):
             continue  # already parallel by construct, whatever else the file contains
-        counted = sum(1 for s in statements if _COUNTED_DO_RE.match(s))
+        if _WRAPPED_DO_RE.search(text):
+            continue  # an unclassifiable wrapped header might be a `do concurrent` — fail open
+        counted = len(_COUNTED_DO_RE.findall(text))
         if counted < 1:
             continue  # whole-array syntax: nothing to parallelize, verify G6's province
         violations.append(

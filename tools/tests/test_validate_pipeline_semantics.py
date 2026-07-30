@@ -14905,56 +14905,73 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, f"{label} must not satisfy the floor: {v}")
 
     def test_counted_do_spellings_all_count(self) -> None:
-        # Every form a generator plausibly emits. Each is f2008-legal.
+        # Every form a generator plausibly emits, each f2008-legal and each opening its own line.
         for body, label in (
             ("    do 10 i = 1, n\n      u(i) = 0.0_dp\n10  continue\n", "branch label after `do`"),
             ("100 do i = 1, n\n      u(i) = 0.0_dp\n    end do\n", "statement label before `do`"),
             ("    loop_i: do i = 1, n\n      u(i) = 0.0_dp\n    end do loop_i\n",
              "named construct"),
-            ("    if (n > 0) then; do i = 1, n; u(i) = 0.0_dp; end do; end if\n",
-             "`do` after a semicolon"),
             ("    DO I = 1, N\n      U(I) = 0.0_dp\n    END DO\n", "uppercase"),
+            ("\x0c    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "form feed as leading blank"),
+            ("    do\x0ci = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "form feed as token separator"),
+            ("    do i = 1, &\n      n\n      u(i) = 0.0_dp\n    end do\n",
+             "wrapped BOUNDS are still a classified counted loop"),
         ):
             v = self._run(self._model(body))
             self.assertEqual(len(v), 1, f"{label} is a counted loop and must count: {v}")
 
-    def test_do_concurrent_exemption_ignores_comments_and_strings(self) -> None:
-        # The dangerous direction. Both loop patterns accept `;` as a statement separator, so a
-        # single COMMENT line mentioning `do concurrent` exempted the whole file and disabled a
-        # fail_closed gate. Reproduced end-to-end on the real sw2d source before the fix.
+    def test_documented_fail_opens(self) -> None:
+        """Shapes the floor deliberately does NOT catch, recorded so the weakening stays a choice.
+
+        The scanner is four anchored patterns over physical lines. It replaced a stateful one that
+        joined continuations, tracked literal state and split on `;` — machinery six review rounds
+        found six defects in, four of them FALSE POSITIVES on a fail_closed gate, and which produced
+        verdicts identical to these patterns on every `.f90` file in the tree. These three shapes are
+        the price, all of them fail-open (the safe direction) and none present in the corpus."""
+        for body, label in (
+            ("    if (n > 0) then; do i = 1, n; u(i) = 0.0_dp; end do; end if\n",
+             "a `do` reached through a `;` does not open its line"),
+            ("    do i &\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "a `do` header that wraps before it can be classified"),
+            ("    do&\n      i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "a `do` whose keyword itself is split"),
+        ):
+            self.assertEqual(
+                self._run(self._model(body)), [],
+                f"this is a documented fail-open, not a catch: {label}")
+
+    def test_wrapped_header_fails_the_whole_file_open(self) -> None:
+        # An unclassifiable wrapped header might be a `do concurrent`, so it must not merely fail to
+        # count — it has to take the file out of scope, or a classified counted loop beside it would
+        # make the gate fire on a source that is very possibly parallel.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do &\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_comment_and_literal_mentions_cannot_reach_a_line_start(self) -> None:
+        """The anchor, not a parser, is what closes the comment/literal evasions.
+
+        A comment line begins with `!` and a continued character literal must resume with `&`, so
+        neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each of these
+        defeated an earlier, cleverer scanner."""
+        loop = "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"
         for body, label in (
             ("    ! not real code; do concurrent (i=1:1) is what we would write\n",
              "mention inside a comment"),
             ("    !> doc: do concurrent (i=1:1)\n", "mention inside a doc comment"),
+            ("    ! prose \x0c do concurrent (i=1:n) not written\n",
+             "mention after a form feed inside a comment"),
             ("    if (.false.) write(*,*) 'x; do concurrent (i=1:1)'\n",
              "mention inside a string literal"),
+            ("    ! TODO: the !$omp parallel do directives would go here\n",
+             "directive named inside a comment"),
+            ("    !!$omp parallel do\n", "commented-out directive"),
+            ("    msg = 'a&\n      &!b'\n", "a `!` inside a continued literal"),
         ):
-            v = self._run(self._model(
-                body + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+            v = self._run(self._model(body + loop))
             self.assertEqual(len(v), 1, f"{label} must not exempt the file: {v}")
-
-    def test_counted_loop_count_ignores_comments_and_strings(self) -> None:
-        # Mirror-image blindness: prose inflated the tally. Only inflates, never exempts, but the
-        # count is quoted in the violation, so a wrong number is a wrong diagnosis.
-        v = self._run(self._model(
-            "    ! reminder; do k = 1, 3 was removed\n"
-            "    print *, 'x; do j = 1, 3'\n"
-            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
-        self.assertEqual(len(v), 1, v)
-        self.assertIn("1 counted `do` loop(s)", v[0])
-
-    def test_exotic_line_separators_in_a_comment_do_not_exempt(self) -> None:
-        # `str.splitlines()` breaks on eight separators Fortran does not treat as line ends, so a
-        # form feed inside a comment ended the comment early and re-admitted its tail AS CODE —
-        # reopening the comment-evasion hole through a file gfortran and fortitude both accept.
-        for ch, name in ((
-            "\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-            (" ", "LINE SEPARATOR"), (" ", "PARAGRAPH SEPARATOR"), ("\x1c", "FS"),
-        ):
-            v = self._run(self._model(
-                f"    ! prose {ch} do concurrent (i=1:n) not written\n"
-                "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
-            self.assertEqual(len(v), 1, f"a {name} must not end the comment: {v}")
 
     def test_form_feed_before_a_directive_is_not_a_directive(self) -> None:
         # The mirror direction, and the gate is right to fire: gfortran does not end the line at a
@@ -14964,127 +14981,11 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
             "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
         self.assertEqual(len(v), 1, v)
 
-    def test_continuation_split_loop_headers(self) -> None:
-        # Free-form `&` continuations were not joined, so a split header read as two unrecognizable
-        # fragments — an evasion for counted loops and a FALSE POSITIVE on a parallel file.
-        for body, label, want in (
-            ("    do i &\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
-             "`do i &` / `= 1, n` is a counted loop", 1),
-            ("    do &\n      i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
-             "`do &` / `i = 1, n` is a counted loop", 1),
-            ("    do i &\n      &= 1, n\n      u(i) = 0.0_dp\n    end do\n",
-             "a continuation line may repeat the `&`", 1),
-            ("    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
-             "    do &\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n",
-             "a split `do concurrent` still exempts", 0),
-        ):
-            v = self._run(self._model(body))
-            self.assertEqual(len(v), want, f"{label}: {v}")
-
-    def test_trailing_blanks_after_the_continuation_marker(self) -> None:
-        # This, not CRLF, is what makes the `.rstrip()` load-bearing: `do i &   ` is legal and its
-        # `&` must still register as a continuation. (A CRLF source cannot exercise it — `read_text`
-        # universal-newline-translates `\r\n` before the scanner ever sees it, which is why the
-        # earlier CRLF test here was vacuous: deleting the `.rstrip()` left it green.)
-        v = self._run(self._model(
-            "    do i &   \n      = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
-        self.assertEqual(len(v), 1, v)
-
-    def test_comment_or_blank_line_inside_a_continuation(self) -> None:
-        # Free form permits blank and comment-only lines BETWEEN a `&` line and its continuation;
-        # they are ignored, not terminators. Flushing on one truncated the statement — hiding a
-        # counted loop, and splitting a `do concurrent` into unrecognizable halves, which is the
-        # false-positive direction.
-        for body, label, want in (
-            ("    do i &\n      ! wrap note\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
-             "comment inside a counted-loop wrap", 1),
-            ("    do i &\n\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
-             "blank line inside a counted-loop wrap", 1),
-            ("    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
-             "    do &\n      ! note\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n",
-             "comment inside a do-concurrent wrap still exempts", 0),
-        ):
-            v = self._run(self._model(body))
-            self.assertEqual(len(v), want, f"{label}: {v}")
-
-    def test_quote_tracker_carries_literal_state_across_lines(self) -> None:
-        """The observable contract of `_strip_fortran_comment_tracking_quotes`.
-
-        Doubled-quote escapes are deliberately NOT a separate case here: read as close-then-reopen
-        they leave the same state for any run of quotes, so an explicit escape branch was provably
-        unobservable (it survived every mutation) and was removed rather than left unpinnable. These
-        assertions still cover the escaped forms — they must simply behave, not be special."""
-        strip = vps._strip_fortran_comment_tracking_quotes
-        self.assertEqual(strip("msg = 'a'''", None), ("msg = 'a'''", None))
-        self.assertEqual(strip('msg = "x"""', None), ('msg = "x"""', None))
-        # A `!` inside a literal is not a comment.
-        self.assertEqual(strip("msg = 'a'' ! keep'", None), ("msg = 'a'' ! keep'", None))
-        # An unterminated literal reports its open quote so the next line continues it.
-        self.assertEqual(strip("msg = 'a&", None), ("msg = 'a&", "'"))
-        # Entering mid-literal, a `!` is content and the closing quote ends the state.
-        self.assertEqual(strip("      &!b'", "'"), ("      &!b'", None))
-        # A real trailing comment is dropped.
-        self.assertEqual(strip("x = 1  ! note", None), ("x = 1  ", None))
-
-    def test_continuation_line_that_is_only_its_leading_ampersand(self) -> None:
-        # The single `&` of a `&`-only line (or `&! note`) was read as BOTH the leading and the
-        # trailing marker, so the buffer stayed open and glued the next statement on. gfortran
-        # terminates the statement there. Both directions were reproducible on compiling sources.
-        for tail, label, want in (
-            ("    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
-             "the glued-on statement is a counted loop", 1),
-            ("    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n",
-             "the glued-on statement is a `do concurrent`", 0),
-        ):
-            for wrap in ("      &! wrap note\n", "      &\n"):
-                v = self._run(self._model(
-                    "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
-                    "    msg = 'x' &\n" + wrap + tail))
-                self.assertEqual(len(v), 1 if want else 0, f"{label} / {wrap!r}: {v}")
-
-    def test_continuation_without_a_leading_ampersand_joins_with_a_space(self) -> None:
-        # The line break is a token separator unless the next line starts with `&`. Concatenating
-        # turned `do&` / `i = 1, n` into `doi = 1, n` — invisible to both patterns, so an evasion
-        # for a counted loop and a false positive for a `do concurrent`.
-        v = self._run(self._model("    do&\n      i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
-        self.assertEqual(len(v), 1, v)
-        self.assertEqual(self._run(self._model(
-            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
-            "    do&\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
-
-    def test_ampersand_led_continuation_still_joins_tight(self) -> None:
-        # The one case that DOES split a token keeps joining without a separator. A counted loop
-        # sits beside it so the assertion depends on the `do concurrent` being RECOGNIZED — without
-        # it the file would fail open on zero counted loops and pass either way.
-        self.assertEqual(self._run(self._model(
-            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
-            "    do con&\n      &current (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
-
     def test_form_feed_before_the_sentinel_is_a_directive(self) -> None:
         # gfortran accepts a form feed as leading blank and parses the sentinel after it as a real
         # directive, so the floor must not demand another one.
         self.assertEqual(self._run(self._model(
             "\x0c    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
-
-    def test_unterminated_literal_does_not_leak_into_the_next_statement(self) -> None:
-        # Only reachable from source no compiler accepts, but the per-statement reset of the literal
-        # state is what keeps a leaked open quote from making the following text read as literal
-        # content — which would hide the loop.
-        v = self._run(self._model(
-            "    msg = 'oops\n    ! note &\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
-        self.assertEqual(len(v), 1, v)
-
-    def test_bang_inside_a_continued_character_literal(self) -> None:
-        # Quote state must cross physical lines. Stripping comments per line could not know the `!`
-        # sat inside a CONTINUED literal, so the rest of the line was dropped and — because what
-        # survived ended in `&` — the buffer stayed open and swallowed the next statement, turning a
-        # correct parallel source into a violation. A regression this branch introduced and fixed.
-        literal = "    msg = 'a&\n      &!b'\n"
-        self.assertEqual(self._run(self._model(
-            literal + "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
-        v = self._run(self._model(
-            literal + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
-        self.assertEqual(len(v), 1, v)
 
     def test_named_and_labeled_do_concurrent_also_exempt(self) -> None:
         # A named `do concurrent` construct is legal f2008 and just as parallel as the bare form.
