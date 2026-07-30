@@ -78,8 +78,18 @@ impl_defaults:
     build_system: "<make|cmake|setuptools|...>"
   selected:
     backend_key: "<key>"
-  abstract: {...}              # the intent of parallelization, layout, fusion, tiling, etc. (knob area)
-  backend_overrides: {...}     # overrides per backend (knob area)
+  abstract:                    # the intent of parallelization, layout, fusion, tiling, etc. (knob area)
+    parallelization: "<openmp|none|...>"  # execution-model TOKEN, flat (never a mapping, never prose)
+    parallel_scope: "<which loops it covers>"
+    parallel_granularity: "<loop_level|...>"   # optional
+    # ... any other knob (layout, fusion, tiling, vectorization, precision): open vocabulary
+  backend_overrides:           # overrides per backend (knob area)
+    openmp:
+      num_threads: <int>       # canonical — the runner renderer reads exactly this key
+      schedule: "<static|dynamic|guided|auto>"
+      chunk_size: <int>
+      collapse: <int>
+      nested: <bool>
 
 io_contract:
   # integrates and holds the IO contract and verification contract: inputs / outputs / semantic_dependency / raw_requirements / test_evidence_requirements / diagnostics_contract
@@ -313,6 +323,7 @@ These deterministic gates run in the conductor's `Compile.static` substep (`_com
   - **infrastructure public_api surface** (`_validate_infrastructure_public_api`, infra nodes only): `public_api.published_operations`/`published_types` must equal the controlled_spec §5 surface, and `public_api.signatures`/`public_api.module_parameters` must equal the §5.1 canonical interface block (signatures by rendered stanza, module_parameters by value). A missing controlled_spec ref, a §5 parsing to zero ops, an absent `public_api`, or a set/value mismatch is a `Compile fail` to `Compile.generate` (V8a).
   - **component public_api surface** (`_validate_component_public_api`, component nodes only, V8b): `public_api.published_operations[].operation_id`/`published_types` must equal the controlled_spec §5 name surface (names only); a `signatures`/`module_parameters` key is forbidden. A missing controlled_spec ref, a §5 parsing to zero ops, an absent `public_api`, or a forbidden key is a `Compile fail` to `Compile.generate`.
   - **component dep operations ⊆ published** (`_validate_component_dep_operations_membership`, V4c-ii): each `component/` dep's non-empty `operations` must be a subset of that dep's published surface in the conductor-authored `<ir_ref>/dependency_surface.json` sidecar; a fabricated name is a `Compile fail` to `Compile.generate` carrying the full certified catalog + `source` tag. Inert when the sidecar/entry is absent or `unresolved`; a malformed sidecar entry is fail-closed.
+  - **impl_defaults knob names** (`_validate_impl_defaults_knobs`): the parallelization family of the knob layer uses its canonical key names (see "fixed / knob boundary of `impl_defaults`" below for the table and the forbidden spellings). A closed-table check — an alias, a pinned key with the wrong type, or the mapping form of `parallelization` is a `Compile fail` routed to `Compile.generate` with the rename as the remedy; an absent section, a novel knob name, and a `null` plug-hole (V7's finding) all pass.
   - **harness render preconditions** (`_validate_harness_render_preconditions`, M3c physics nodes only — `make` + `fortran` with exactly one `infrastructure` dependency): the node's `<spec_id>_runner.f90` is host-rendered from this IR alone, so IR *content* the renderer cannot render is caught here instead of at the render backstop (which terminates the workflow rather than retrying). The gate delegates to `tools/runner_renderer.ir_content_violations`, which invokes `render_runner` itself, so it cannot drift. Each violation is a `Compile fail` routed to `Compile.generate`:
     - `raw_requirements.required_evidence` holds a `state_snapshots` entry with a non-empty `schema.variables[]`, and its `schema.time_variable` is `t` (the harness's fixed snapshot-time key);
     - no snapshot variable is named `t` / `case_id` / `step` (harness-reserved snapshot keys);
@@ -349,7 +360,9 @@ The `impl_defaults` section is clearly separated into a **fixed layer that the c
 | `toolchain.build_system` | **fixed** | build tool (`make` / `cmake` etc.) |
 | `selected.backend_key` | **fixed** | an identifier consistent with `target` |
 | `abstract` | **knob** | the intent of parallelization granularity / layout / fusion / tiling etc. The main exploration area of Tune |
-| `backend_overrides.<key>` | **knob** | backend-specific override values (thread count, block size, vector width, etc.) |
+| `backend_overrides.<key>` | **knob** | backend-specific override values (thread count, block size, vector width, etc.). The OpenMP block is keyed by the literal `openmp` — never by `selected.backend_key` (see below) |
+
+**The parallelization family inside the knob layer has CANONICAL key names** (the shape above; canonical schema [spec/schema/ir/impl_defaults.schema.json](../../../spec/schema/ir/impl_defaults.schema.json), gate `_validate_impl_defaults_knobs`). Explorable values do not make key names free: a name that changes every regeneration is no contract, and `runner_renderer.py` reads exactly `backend_overrides.openmp.num_threads`, so an aliased thread count is ignored and the run degrades to one thread. Forbidden spellings the closed table enforces (a real misspelling outside it passes — the table is closed, not exhaustive over every spelling ever authored), each a `Compile.static` violation naming its rename: `loop_parallelization` / `parallelization_model` → `parallelization`; `parallel_loop_scope` / `parallelization_scope` / `parallel_loops` → `parallel_scope`; `parallelization_granularity` → `parallel_granularity`; `loop_parallelism` → `parallelization`; `threads` / `threads_per_rank` → `num_threads`; a MAPPING `parallelization` (`{method: openmp, apply_to: ...}`) → the three flat keys; multi-word PROSE in `parallelization` → the token, with the prose moved to `parallel_scope`; and a `backend_overrides` section named for the backend KEY (`cpu_openmp`, `cpu_openmp_x86_64`, `openmp_cpu`, `omp`) → the literal `openmp`, since the renderer reads no other section. Alias detection is case-insensitive; a canonical key must also be spelled EXACTLY (bare lowercase, no surrounding whitespace), since a consumer looks up the literal key. No key's VALUE vocabulary is whitelisted — a novel model token such as `openmp+simd` passes. Every other knob name stays free and an absent section passes — a closed table, not a whitelist.
 
 Each phase of the core workflow **treats the fixed layer as an immutable premise, and treats the values of the knob layer as read-only, respecting the IR's default values**. Only the `Tune` optional flow can specify override candidates for the knob layer via `tuning.spec` and generate a variant pipeline.
 
@@ -357,7 +370,7 @@ Each phase of the core workflow **treats the fixed layer as an immutable premise
 - V6: All fixed sub-keys of `impl_defaults` have a value (no omission).
 - V7: Each leaf value of `abstract` and `backend_overrides` is finalized as a "default value" (no plug-hole such as `null` / `<TBD>`).
 
-The detailed knob schema and the Tune variant constraints use `docs/TUNING_WORKFLOW.md` as the canonical source.
+The Tune variant constraints use `docs/TUNING_WORKFLOW.md` as the canonical source; the parallelization-family key names use `spec/schema/ir/impl_defaults.schema.json` (above).
 
 ## Design trade-offs
 - By having the IR **self-check only the structural invariants**, the bloat of the verification contract is avoided. Semantic correctness is delegated to the `Validate` execution result (the "hybrid verification" principle).

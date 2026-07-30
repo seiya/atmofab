@@ -10423,6 +10423,50 @@ end program shallow_water2d_runner
         ):
             self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
 
+    def test_openmp_floor_rule_is_stated_in_both_docs(self) -> None:
+        """Issue #22: the reflection rule failed because only the PUNISHING side stated it.
+        The fix is symmetry, and nothing else watches for its loss — both files are under a
+        size ceiling, which is a MAXIMUM, so deleting either statement stays green. Anchor
+        both: the `Generate.verify` SKILL must say the zero-directive slice is already
+        deterministic (so the verify leaf does not re-derive a settled verdict), and
+        phase_02 must document the floor beside the G6 band above it."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        verify_skill = (repo_root / "skills/workflow-generate-verify/SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        phase_02 = (
+            repo_root / "docs/workflow/phases/phase_02_generate.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "enforced deterministically by the `Generate.gate` static check", verify_skill,
+            "the verify SKILL no longer says the zero-`!$omp` slice is gate-settled",
+        )
+        self.assertIn("`!$omp` presence floor", phase_02,
+                      "phase_02 no longer documents the Generate.gate presence floor")
+        self.assertIn(
+            "_validate_openmp_presence_floor", phase_02,
+            "phase_02 no longer names the emitting checker (doc<->gate drift guard)",
+        )
+        # The agentic residual producer reads this SKILL instead of the pure prompt, so the
+        # obligation must be stated on BOTH producer paths or the asymmetry simply moves.
+        generate_skill = (
+            repo_root / "skills/workflow-generate-generate/SKILL.md"
+        ).read_text(encoding="utf-8")
+        for rule in (
+            "are **obligations**, not description",     # the knobs bind
+            "Read them by MEANING, not by key name",    # the spellings vary per node
+            "_validate_openmp_presence_floor",          # which slice is deterministic
+            # ... and the floor's SCOPE. This was the last place stating the punishment
+            # unconditionally, and it is read by exactly the agentic leaves the floor exempts.
+            "The floor runs only where the `abstract` knobs affirmatively claim OpenMP as the model",
+            "not on an `infrastructure`/`profile` node",
+        ):
+            self.assertIn(
+                rule, generate_skill,
+                f"the generate.generate SKILL no longer states {rule!r} — the agentic producer "
+                "path would be punished by a rule only the reviewer is told (issue #22)",
+            )
+
     def test_every_undefined_binding_line_carries_its_own_remedy(self) -> None:
         """Each violation must be self-sufficient, and the remedy must stay SHORT.
 
@@ -14734,6 +14778,1042 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
                 vps._list_component_published_subroutines(src, spec_id),
                 _list_prefixed_subroutines(src, f"{spec_id}__"),
                 f"scanner drift on prefix {spec_id}__")
+
+
+class OpenmpPresenceFloorGateTests(unittest.TestCase):
+    """`_validate_openmp_presence_floor` (issue #22, generate stage): on a `component/`/`problem/`
+    node whose impl_defaults resolve to OpenMP-on-CPU Fortran, a model source with counted `do`
+    loops must carry at least one `!$omp` directive. Presence floor only — which loops and which
+    schedule stay a Generate.verify G6 `major`. Fail-open in every ambiguous direction."""
+
+    _FIRED = "counted `do` loop(s) and not one"
+
+    def _run(self, model_text: str, *, node_key: str = "component/dep_base@0.1.0",
+             hw_class: str = "cpu", backend: str = "openmp", language: str = "fortran",
+             impl: object = None, extra_models: dict[str, str] | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            repo_root = Path(t)
+            ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
+            ir_dir = repo_root / ir_ref
+            ir_dir.mkdir(parents=True)
+            if impl is None:
+                # The default fixture CLAIMS a parallel model, because that claim is the floor's
+                # licence to fail a source: a violation reopens `generate.generate`, whose leaf
+                # cannot edit the IR, so the gate may only demand what the IR itself states. Every
+                # node the floor fires on in the live corpus carries such a claim.
+                impl = {"target": {"class": hw_class, "backend": backend},
+                        "toolchain": {"language": language},
+                        "abstract": {"parallelization": "openmp"}}
+            ir: dict = {"meta": {"spec_kind": node_key.split("/", 1)[0], "spec_id": "dep_base"}}
+            if impl is not _OMIT:
+                ir["impl_defaults"] = impl
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
+            src_dir.mkdir(parents=True)
+            (pipeline_dir / "lineage.json").write_text(
+                json.dumps({"node_key": node_key, "ir_ref": ir_ref}), encoding="utf-8")
+            model = src_dir / "dep_base_model.f90"
+            model.write_text(model_text, encoding="utf-8")
+            models = [model]
+            for name, text in (extra_models or {}).items():
+                extra = src_dir / name
+                extra.write_text(text, encoding="utf-8")
+                models.append(extra)
+            execution = vps._stub_execution(pipeline_dir, node_key)
+            v: list[str] = []
+            vps._validate_openmp_presence_floor(repo_root, execution, models, v)
+            return v
+
+    @staticmethod
+    def _model(body: str) -> str:
+        return ("module dep_base_model\ncontains\n"
+                "  subroutine dep_base__scale(u, n)\n" + body + "  end subroutine\n"
+                "end module\n")
+
+    _COUNTED = _model.__func__("    do i = 1, n\n      u(i) = 2.0_dp * u(i)\n    end do\n")
+
+    def test_counted_loops_without_directive_flagged(self) -> None:
+        v = self._run(self._COUNTED)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(self._FIRED, v[0])
+        self.assertIn("1 counted `do` loop(s)", v[0])
+        # Self-contained line: the rule it broke AND the remedy, on the same line (issue #12).
+        self.assertIn("impl_defaults.abstract / backend_overrides knobs are binding", v[0])
+        self.assertIn("!$omp parallel do", v[0])
+        self.assertIn("dep_base_model.f90", v[0])
+        # The line must also name its own ESCAPE HATCH. The generate leaf cannot edit the IR, so a
+        # node whose loops genuinely cannot be parallelized needs to be told where the exemption
+        # lives, or the only readings of this line are "emit a directive you believe is wrong" and
+        # "fail forever".
+        self.assertIn("`impl_defaults.abstract.parallelization: none`", v[0])
+
+    def test_directive_present_passes(self) -> None:
+        self.assertEqual(self._run(self._model(
+            "    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_uppercase_directive_passes(self) -> None:
+        # Fortran directives are case-insensitive; `!$OMP` is the same directive.
+        self.assertEqual(self._run(self._model(
+            "    !$OMP PARALLEL DO\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_do_concurrent_only_passes(self) -> None:
+        # `do concurrent` IS the parallel construct — demanding `!$omp` beside it is wrong.
+        self.assertEqual(self._run(self._model(
+            "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_do_concurrent_beside_a_counted_loop_passes(self) -> None:
+        # The file is parallel; a counted accumulator reset beside it does not make it serial.
+        # Flagging this contradicted the floor's own "`do concurrent` counts as parallel" clause.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_floor_needs_an_openmp_claim_specifically(self) -> None:
+        """The claim must name OPENMP, not merely some parallelism.
+
+        `Compile.static` deliberately accepts a novel model token, so a node claiming `cuda_streams`
+        or `mpi` on an openmp-backed target would otherwise be told to add `!$omp` — a demand that
+        contradicts its own IR and that the reopened producer cannot resolve."""
+        base = {"target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"}}
+        for token, want in (("openmp", 1), ("OpenMP", 1), ("openmp+simd", 1), ("openmp_tasks", 1),
+                            ("cuda_streams", 0), ("acc", 0), ("mpi", 0), ("", 0)):
+            v = self._run(self._COUNTED,
+                          impl={**base, "abstract": {"parallelization": token}})
+            self.assertEqual(len(v), want, f"parallelization={token!r}: {v}")
+        # Same rule through the mapping form.
+        self.assertEqual(self._run(self._COUNTED, impl={
+            **base, "abstract": {"parallelization": {"method": "cuda_streams"}}}), [])
+        self.assertEqual(len(self._run(self._COUNTED, impl={
+            **base, "abstract": {"parallelization": {"method": "openmp"}}})), 1)
+
+    def test_floor_needs_an_affirmative_ir_claim(self) -> None:
+        """The floor may only demand what the IR itself states.
+
+        A violation reopens `generate.generate`, whose leaf authors source and cannot touch the
+        certified IR. Keyed on the FIXED layer alone, a node whose only counted loops are inherently
+        serial had no repairable change available — the documented escape
+        (`parallelization: none`) lay on the Compile side of a boundary that leaf cannot cross, so the
+        run burned its retries and failed closed. With the claim required, a firing source is
+        ignoring an obligation its own IR states, which the leaf CAN fix."""
+        counted = self._COUNTED
+        base = {"target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"}}
+        for abstract, label, want in (
+            (None, "no abstract section at all", 0),
+            ({}, "an empty abstract section", 0),
+            ({"memory_layout": "column_major", "tiling": "none"},
+             "other knobs but no parallelization claim", 0),
+            ({"parallelization": "openmp"}, "a claim", 1),
+            ({"loop_parallelization": "openmp"}, "a claim under an alias", 1),
+            ({"parallelization": {"method": "openmp", "apply_to": "loops"}},
+             "a claim in the live mapping form", 1),
+            ({"parallelization": "openmp+simd"}, "a claim naming a novel model", 1),
+        ):
+            impl = dict(base)
+            if abstract is not None:
+                impl["abstract"] = abstract
+            v = self._run(counted, impl=impl)
+            self.assertEqual(len(v), want, f"{label}: {v}")
+
+    def test_mapping_form_claim_reads_only_the_model_member(self) -> None:
+        """A claim lives in the mapping's MODEL member, not in any of its prose.
+
+        Reading every value made `{method: none, apply_to: parallelizable_loops}` — a correctly
+        serial legacy mapping — license the floor to reject its own source, and a sibling like
+        `reduction_policy: serial_deterministic_acc` did the same. `method`/`scheme`/`kind` are the
+        spellings the live corpus uses (each carrying `openmp`); anything else yields no claim, which
+        fails the floor open."""
+        base = {"target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"}}
+        for abstract, label, want in (
+            ({"parallelization": {"method": "none", "apply_to": "parallelizable_loops"}},
+             "model says none, sibling is prose", 0),
+            ({"parallelization": {"scheme": "none", "default_schedule": "static"}},
+             "model says none, sibling is a schedule", 0),
+            ({"parallelization": {"apply_to": "parallelizable_loops"}},
+             "no model member at all", 0),
+            ({"reduction_policy": "serial_deterministic_acc"},
+             "an unrelated knob whose value merely reads serial-ish", 0),
+            ({"parallelization": {"method": "openmp", "apply_to": "loops"}}, "method", 1),
+            ({"parallelization": {"scheme": "openmp", "apply_to": "loops"}}, "scheme", 1),
+            ({"parallelization": {"kind": "openmp", "scope": "loops"}}, "kind", 1),
+            ({"parallelization": {"Method": "OpenMP"}}, "model key and value wrong-cased", 1),
+            ({"parallelization": "openmp", "reduction_policy": "serial_deterministic_acc"},
+             "a flat claim is unaffected by a serial-ish sibling", 1),
+        ):
+            v = self._run(self._COUNTED, impl={**base, "abstract": abstract})
+            self.assertEqual(len(v), want, f"{label}: {v}")
+
+    def test_ir_declaring_no_parallelism_is_exempt(self) -> None:
+        # `_validate_impl_defaults_knobs` blesses `parallelization: none`, so the floor MUST honor
+        # it — otherwise the two gates contradict and a serial node cannot pass either one.
+        for value in ("none", "None", "serial", "sequential", "off", "disabled"):
+            self.assertEqual(
+                self._run(self._COUNTED, impl={
+                    "target": {"class": "cpu", "backend": "openmp"},
+                    "toolchain": {"language": "fortran"},
+                    "abstract": {"parallelization": value}}),
+                [], f"parallelization={value!r} must exempt the node")
+
+    def test_no_parallelism_read_under_an_alias_too(self) -> None:
+        # The alias is a Compile-side violation, but the node's INTENT is still legible, and this
+        # direction only ever fails open — a serial node must not be trapped by a spelling.
+        self.assertEqual(
+            self._run(self._COUNTED, impl={
+                "target": {"class": "cpu", "backend": "openmp"},
+                "toolchain": {"language": "fortran"},
+                "abstract": {"loop_parallelization": "none"}}), [])
+
+    def test_openmp_parallelization_knob_still_fires(self) -> None:
+        self.assertEqual(len(self._run(self._COUNTED, impl={
+            "target": {"class": "cpu", "backend": "openmp"},
+            "toolchain": {"language": "fortran"},
+            "abstract": {"parallelization": "openmp"}})), 1)
+
+    def test_directive_must_start_its_line(self) -> None:
+        # A whole-file substring scan let a doc comment mentioning the directive satisfy the floor —
+        # the exact shape issue #22 exists to catch, and real generated sources do write `!$omp`
+        # inside `!>` comments. Free-form Fortran requires the sentinel at line start, so anchoring
+        # is the language rule, not a heuristic.
+        for body, label in (
+            ("    ! TODO: the !$omp parallel do directives would go here (not added)\n",
+             "mention inside a trailing comment"),
+            ("    print *, '!$omp parallel do'\n", "inside a string literal"),
+            ("    !!$omp parallel do\n", "commented-out directive"),
+        ):
+            v = self._run(self._model(
+                body + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"{label} must not satisfy the floor: {v}")
+
+    def test_counted_do_spellings_all_count(self) -> None:
+        # Every form a generator plausibly emits, each f2008-legal and each opening its own line.
+        for body, label in (
+            ("    do 10 i = 1, n\n      u(i) = 0.0_dp\n10  continue\n", "branch label after `do`"),
+            ("100 do i = 1, n\n      u(i) = 0.0_dp\n    end do\n", "statement label before `do`"),
+            ("    loop_i: do i = 1, n\n      u(i) = 0.0_dp\n    end do loop_i\n",
+             "named construct"),
+            ("    DO I = 1, N\n      U(I) = 0.0_dp\n    END DO\n", "uppercase"),
+            ("\x0c    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "form feed as leading blank"),
+            ("    do\x0ci = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "form feed as token separator"),
+            ("    do i = 1, &\n      n\n      u(i) = 0.0_dp\n    end do\n",
+             "wrapped BOUNDS are still a classified counted loop"),
+        ):
+            v = self._run(self._model(body))
+            self.assertEqual(len(v), 1, f"{label} is a counted loop and must count: {v}")
+
+    def test_documented_fail_opens(self) -> None:
+        """Shapes the floor deliberately does NOT catch, recorded so the weakening stays a choice.
+
+        The scanner is four anchored patterns over physical lines. It replaced a stateful one that
+        joined continuations, tracked literal state and split on `;` — machinery six review rounds
+        found six defects in, four of them FALSE POSITIVES on a fail_closed gate, and which produced
+        verdicts identical to these patterns on every `.f90` file in the tree. These three shapes are
+        the price, all of them fail-open (the safe direction) and none present in the corpus."""
+        for body, label in (
+            ("    if (n > 0) then; do i = 1, n; u(i) = 0.0_dp; end do; end if\n",
+             "a `do` reached through a `;` does not open its line"),
+            ("    do i &\n      = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "a `do` header that wraps before it can be classified"),
+            ("    do&\n      i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "a `do` whose keyword itself is split"),
+        ):
+            self.assertEqual(
+                self._run(self._model(body)), [],
+                f"this is a documented fail-open, not a catch: {label}")
+
+    def test_an_identifier_starting_with_do_does_not_void_the_floor(self) -> None:
+        # `_WRAPPED_DO_RE` takes the WHOLE FILE out of scope, so an over-match there is not a missed
+        # loop — it silently disables the gate. Without a boundary after `do` it matched any wrapped
+        # line whose first token merely starts with `do`, and a continued argument list is this
+        # repo's idiomatic style, so ordinary compiling code voided the floor.
+        for wrapped, label in (
+            ("    call helper( &\n      domain, &\n      nx)\n", "continued argument list"),
+            ("    double &\n      precision, intent(in) :: dt\n", "wrapped declaration"),
+            ("    x = dot_product(a,b) &\n      + 1.0_dp\n", "wrapped expression"),
+            ("    dose &\n      = 1\n", "identifier that starts with `do`"),
+        ):
+            v = self._run(self._model(
+                wrapped + "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"{label} must not take the file out of scope: {v}")
+
+    def test_wrapped_bounds_stay_classified_whatever_the_spacing(self) -> None:
+        # `\S*` is one blank-free token, so `do i=1, &` — ordinary spacing — put the whole `i=1,`
+        # into the wrapped-header token and took the file out of scope. Only the SPACED spelling
+        # escaped, meaning the guarantee rested on a space. A classifiable header must fall through
+        # to the counted pattern under every spacing.
+        for header, label in (
+            ("    do i = 1, &\n      n\n", "spaces around `=`"),
+            ("    do i=1, &\n      n\n", "no spaces around `=`"),
+            ("    do i=1,&\n      n\n", "no blank before the marker either"),
+            ("    do i=1,n,&\n      1\n", "a stride that wraps"),
+            ("    do i=&\n      1, n\n", "the bound itself wraps"),
+        ):
+            v = self._run(self._model(
+                header + "      u(i) = 0.0_dp\n    end do\n"
+                "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"))
+            self.assertEqual(len(v), 1, f"{label} must stay in scope: {v}")
+
+    def test_leading_comma_loop_control(self) -> None:
+        # F2008 permits a leading comma in loop-control (`do , i = 1, n`) and gfortran accepts it
+        # under `-std=f2008`, so both classifiers must read it. Unrecognized, `do , concurrent (...)`
+        # made a genuinely parallel file a violation.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do , concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+        v = self._run(self._model(
+            "    do , i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+        # A WRAPPED comma-form header must also be recognized as wrapped: missing it leaves the file
+        # in scope, so a counted loop beside it fires even though the header might be a
+        # `do concurrent` — the false-positive direction.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do,&\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+        # The comma must not become a new way to over-match a `do`-prefixed identifier.
+        self.assertEqual(self._run(self._model(
+            "    domain, extent = 1\n    u = 0.0_dp\n")), [])
+
+    def test_wrapped_header_may_carry_a_trailing_comment(self) -> None:
+        # Free form permits a comment after the continuation marker and gfortran accepts it
+        # (verified). Requiring only blanks left `do & ! parallel loop` unrecognized, so a counted
+        # loop beside it fired on a source whose wrapped header may well have been a `do concurrent`.
+        for wrap, label in (
+            ("    do & ! parallel loop\n      concurrent (i = 1:n)\n",
+             "blank then comment after the marker"),
+            ("    do &! tight\n      concurrent (i = 1:n)\n", "comment abutting the marker"),
+            ("    do i & ! note\n      = 1, n\n", "a counted header wrapped with a comment"),
+        ):
+            self.assertEqual(
+                self._run(self._model(
+                    "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+                    + wrap + "      u(i) = 0.0_dp\n    end do\n")), [],
+                f"{label} must take the file out of scope")
+        # The guards still hold with a comment present.
+        v = self._run(self._model(
+            "    call helper( & ! wrap\n      domain, &\n      nx)\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_wrapped_header_fails_the_whole_file_open(self) -> None:
+        # An unclassifiable wrapped header might be a `do concurrent`, so it must not merely fail to
+        # count — it has to take the file out of scope, or a classified counted loop beside it would
+        # make the gate fire on a source that is very possibly parallel.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do &\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_comment_and_literal_mentions_cannot_reach_a_line_start(self) -> None:
+        """The anchor, not a parser, is what closes the comment/literal evasions.
+
+        A comment line begins with `!` and a continued character literal must resume with `&`, so
+        neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each of these
+        defeated an earlier, cleverer scanner."""
+        loop = "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"
+        for body, label in (
+            ("    ! not real code; do concurrent (i=1:1) is what we would write\n",
+             "mention inside a comment"),
+            ("    !> doc: do concurrent (i=1:1)\n", "mention inside a doc comment"),
+            ("    ! prose \x0c do concurrent (i=1:n) not written\n",
+             "mention after a form feed inside a comment"),
+            ("    if (.false.) write(*,*) 'x; do concurrent (i=1:1)'\n",
+             "mention inside a string literal"),
+            ("    ! TODO: the !$omp parallel do directives would go here\n",
+             "directive named inside a comment"),
+            ("    !!$omp parallel do\n", "commented-out directive"),
+            ("    msg = 'a&\n      &!b'\n", "a `!` inside a continued literal"),
+        ):
+            v = self._run(self._model(body + loop))
+            self.assertEqual(len(v), 1, f"{label} must not exempt the file: {v}")
+
+    def test_form_feed_before_a_directive_is_not_a_directive(self) -> None:
+        # The mirror direction, and the gate is right to fire: gfortran does not end the line at a
+        # form feed either, so that `!$omp` is genuinely inside the preceding statement's comment.
+        v = self._run(self._model(
+            "    n = n\x0c!$omp parallel do\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_form_feed_before_the_sentinel_is_a_directive(self) -> None:
+        # gfortran accepts a form feed as leading blank and parses the sentinel after it as a real
+        # directive, so the floor must not demand another one.
+        self.assertEqual(self._run(self._model(
+            "\x0c    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_named_and_labeled_do_concurrent_also_exempt(self) -> None:
+        # A named `do concurrent` construct is legal f2008 and just as parallel as the bare form.
+        # The counted-loop regex learned these spellings; this one had not.
+        for body, label in (
+            ("    gloop: do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do gloop\n",
+             "named construct"),
+            ("10  do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n", "labeled"),
+        ):
+            v = self._run(self._model(
+                "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n" + body))
+            self.assertEqual(v, [], f"{label} `do concurrent` must exempt the file: {v}")
+
+    def test_directive_scan_still_sees_a_real_directive(self) -> None:
+        # Guard against "fixing" the comment blindness by stripping comments before the DIRECTIVE
+        # scan too: an `!$omp` sentinel IS a Fortran comment, so that would erase what it looks for.
+        self.assertEqual(self._run(self._model(
+            "    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_reaches_the_post_generate_sibling_list(self) -> None:
+        """BEHAVIORAL wiring pin: drive the real caller and require the floor's line to come out.
+
+        A textual pin (asserting the call appears in the caller's source) was the first attempt and
+        it is not enough — wrapping the call site in `if False:` left the whole file green, which is
+        precisely the dormant-gate state the pin exists to rule out."""
+        with tempfile.TemporaryDirectory() as t:
+            repo_root = Path(t)
+            ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
+            ir_dir = repo_root / ir_ref
+            ir_dir.mkdir(parents=True)
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_kind": "component", "spec_id": "dep_base"},
+                "impl_defaults": {"target": {"class": "cpu", "backend": "openmp"},
+                                  "toolchain": {"language": "fortran"},
+                                  "abstract": {"parallelization": "openmp"}}}), encoding="utf-8")
+            pipeline_dir = repo_root / "workspace/pipelines/component__dep_base__0.1.0/p1"
+            src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
+            src_dir.mkdir(parents=True)
+            (pipeline_dir / "lineage.json").write_text(
+                json.dumps({"node_key": "component/dep_base@0.1.0", "ir_ref": ir_ref}),
+                encoding="utf-8")
+            (src_dir / "dep_base_model.f90").write_text(self._COUNTED, encoding="utf-8")
+            execution = vps._stub_execution(pipeline_dir, "component/dep_base@0.1.0")
+            violations: list[str] = []
+            vps._validate_generate_outputs_for_generation(
+                repo_root, execution, "src_20260601_001", violations)
+            self.assertTrue(
+                any(self._FIRED in v for v in violations),
+                f"the floor is not reached from _validate_generate_outputs_for_generation: "
+                f"{violations}")
+
+    def test_do_while_only_passes(self) -> None:
+        # No trip count to distribute across threads.
+        self.assertEqual(self._run(self._model(
+            "    do while (i < n)\n      i = i + 1\n    end do\n")), [])
+
+    def test_whole_array_syntax_passes(self) -> None:
+        # The sw2d flux node's real shape: no counted loop, so nothing for the floor to demand.
+        # Whether the whole-array form honors the knobs is Generate.verify G6's call.
+        self.assertEqual(self._run(self._model("    u = 2.0_dp * u\n")), [])
+
+    def test_labeled_do_counts(self) -> None:
+        v = self._run(self._model("100 do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_omp_substring_identifier_is_not_a_directive(self) -> None:
+        # `component` / `compute` / `compile` all contain `omp`; only `!$omp` is a directive.
+        v = self._run(self._model(
+            "    ! compute the component totals, then compile the sum\n"
+            "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
+    def test_gpu_class_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, hw_class="gpu"), [])
+
+    def test_non_openmp_backend_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, backend="serial"), [])
+
+    def test_non_fortran_language_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, language="c"), [])
+
+    def test_absent_impl_defaults_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, impl=_OMIT), [])
+
+    def test_non_mapping_impl_defaults_passes(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, impl="openmp"), [])
+
+    def test_problem_node_in_scope(self) -> None:
+        v = self._run(self._COUNTED, node_key="problem/dep_base@0.1.0")
+        self.assertEqual(len(v), 1, v)
+
+    def test_infrastructure_node_exempt(self) -> None:
+        # The real harness shape: ~20 counted loops, zero directives. This is host measurement
+        # code (timing/reduction bookkeeping) that must not be forced to parallelize — the same
+        # exemption `_validate_local_operation_lowering` makes.
+        body = "".join(
+            f"    do i = 1, n\n      acc{k} = acc{k} + u(i)\n    end do\n" for k in range(20))
+        self.assertEqual(
+            self._run(self._model(body), node_key="infrastructure/harness_fortran_cpu@0.7.0"), [])
+
+    def test_profile_node_exempt(self) -> None:
+        # The real profile shape: trivial zero-fill init loops around a component composition.
+        self.assertEqual(self._run(self._model(
+            "    do i = 1, nx\n      u(i) = 0.0_dp\n    end do\n"),
+            node_key="profile/dep_base@0.1.0"), [])
+
+    def test_unknown_node_kind_fails_open(self) -> None:
+        self.assertEqual(self._run(self._COUNTED, node_key="harness/dep_base@0.1.0"), [])
+
+    def test_no_model_files_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            execution = vps._stub_execution(Path(t), "component/dep_base@0.1.0")
+            v: list[str] = []
+            vps._validate_openmp_presence_floor(Path(t), execution, [], v)
+            self.assertEqual(v, [])
+
+    def test_one_violation_per_offending_file(self) -> None:
+        # Each line names its own file, so no line depends on a neighbor surviving truncation.
+        v = self._run(self._COUNTED, extra_models={"dep_base_extra_model.f90": self._COUNTED})
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all(self._FIRED in x for x in v), v)
+        self.assertEqual({x.split(":")[0].rsplit("/", 1)[1] for x in v},
+                         {"dep_base_model.f90", "dep_base_extra_model.f90"})
+
+    def test_clean_file_beside_offending_file_is_not_flagged(self) -> None:
+        clean = self._model(
+            "    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")
+        v = self._run(self._COUNTED, extra_models={"dep_base_extra_model.f90": clean})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("dep_base_model.f90", v[0])
+
+
+class ImplDefaultsKnobNameGateTests(unittest.TestCase):
+    """`_validate_impl_defaults_knobs` (compile stage): the parallelization family of the
+    `impl_defaults` knob layer uses its canonical key names. Closed-table check — aliases, pinned-key
+    type violations, and the mapping form of `parallelization` are flagged; absent sections and novel
+    knob names pass, because the knob layer stays open for Tune."""
+
+    def _run(self, impl: object) -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            ir_dir = Path(t)
+            ir: dict = {"meta": {"spec_kind": "component", "spec_id": "dep_base"}}
+            if impl is not _OMIT:
+                ir["impl_defaults"] = impl
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir), encoding="utf-8")
+            v: list[str] = []
+            vps._validate_impl_defaults_knobs(ir_dir.parent, ir_dir, v)
+            return v
+
+    @staticmethod
+    def _impl(*, abstract: object = None, overrides: object = None,
+              backend: str = "openmp") -> dict:
+        impl: dict = {"target": {"class": "cpu", "backend": backend},
+                      "toolchain": {"language": "fortran"}}
+        if abstract is not None:
+            impl["abstract"] = abstract
+        if overrides is not None:
+            impl["backend_overrides"] = overrides
+        return impl
+
+    _CANONICAL = {"parallelization": "openmp", "parallel_scope": "the face loop i = 1..nf",
+                  "parallel_granularity": "loop_level"}
+
+    def test_canonical_knobs_pass(self) -> None:
+        self.assertEqual(self._run(self._impl(
+            abstract=self._CANONICAL,
+            overrides={"openmp": {"num_threads": 4, "schedule": "static",
+                                  "chunk_size": 0, "collapse": 1, "nested": False}})), [])
+
+    def test_abstract_alias_flagged_with_rename_remedy(self) -> None:
+        # Every alias here was observed in a real workspace IR.
+        for alias, canonical in (
+            ("loop_parallelization", "parallelization"),
+            ("loop_parallelism", "parallelization"),
+            ("parallelization_model", "parallelization"),
+            ("parallel_loop_scope", "parallel_scope"),
+            ("parallelization_scope", "parallel_scope"),
+            ("parallel_loops", "parallel_scope"),
+            ("parallelization_granularity", "parallel_granularity"),
+        ):
+            v = self._run(self._impl(abstract={alias: "openmp"}))
+            self.assertEqual(len(v), 1, f"{alias}: {v}")
+            self.assertIn(f"impl_defaults.abstract.{alias} is a non-canonical spelling", v[0])
+            self.assertIn(f"rename it to `{canonical}`", v[0])
+
+    def test_openmp_override_alias_flagged_with_rename_remedy(self) -> None:
+        for alias in ("threads", "threads_per_rank"):
+            v = self._run(self._impl(overrides={"openmp": {alias: 4}}))
+            self.assertEqual(len(v), 1, f"{alias}: {v}")
+            self.assertIn(
+                f"impl_defaults.backend_overrides.openmp.{alias} is a non-canonical spelling", v[0])
+            self.assertIn("rename it to `num_threads`", v[0])
+            # The remedy must say WHY, since the alias is otherwise harmless-looking.
+            self.assertIn("degrades to one thread", v[0])
+
+    def test_alias_beside_canonical_says_delete_not_rename(self) -> None:
+        # Two live IRs carry `parallelization: openmp` AND `loop_parallelization: "<prose>"`.
+        # Obeying a bare "rename it" there produces a duplicate YAML key, so the repair turn fails
+        # again — a remedy must survive being followed.
+        v = self._run(self._impl(abstract={
+            "parallelization": "openmp",
+            "loop_parallelization": "OpenMP applied to parallelizable loops"}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("already present, so DELETE this key", v[0])
+        self.assertNotIn("rename it to", v[0])
+
+    def test_alias_beside_a_case_different_canonical_also_says_delete(self) -> None:
+        # `Threads` beside `NUM_THREADS` is still an alias beside its canonical key. A
+        # case-sensitive presence test told it to "rename to num_threads", which would leave the
+        # section holding the same knob under two spellings.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 4, "Threads": 8}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("already present, so DELETE this key" in x for x in v), v)
+        # ... and the canonical key itself is still reported for its inexact spelling.
+        self.assertTrue(any("spelled inexactly" in x for x in v), v)
+
+    def test_list_valued_alias_remedy_names_the_type_change(self) -> None:
+        # 15 live IRs carry `parallel_loops` as a LIST while `parallel_scope` is pinned to a string,
+        # so a bare rename trades a name violation for a type violation on the next turn.
+        v = self._run(self._impl(abstract={"parallel_loops": ["step_03_forward_euler_update"]}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("rename it to `parallel_scope`", v[0])
+        self.assertIn("must be str", v[0])
+        self.assertIn("convert the value in the same edit", v[0])
+
+    def test_correctly_typed_alias_remedy_stays_short(self) -> None:
+        # The type clause appears only when it is needed; issue #12's lesson is that a remedy
+        # repeated at full length on every line buries the one thing that differs.
+        v = self._run(self._impl(abstract={"parallel_loop_scope": "the face loop"}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("rename it to `parallel_scope`", v[0])
+        self.assertNotIn("convert the value", v[0])
+
+    def test_mapping_form_parallelization_flagged_once_with_decomposition(self) -> None:
+        # The live mapping spellings: {method, apply_to} / {scheme, default_schedule} /
+        # {method, applied_to, granularity}. One defect, one line — an earlier draft also ran the
+        # generic type check on this key and reported it twice.
+        v = self._run(self._impl(abstract={
+            "parallelization": {"method": "openmp", "apply_to": "parallelizable_loops"}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be a flat string, not a mapping", v[0])
+        self.assertIn("`parallel_scope`", v[0])
+
+    def test_wrong_type_num_threads_flagged(self) -> None:
+        # A live profile IR carries `num_threads: "default"`, which the host cannot read as a count.
+        v = self._run(self._impl(overrides={"openmp": {"num_threads": "default"}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be int, got str", v[0])
+
+    def test_abstract_pinned_keys_are_type_checked(self) -> None:
+        # The abstract type-check limb had no test at all: replacing its call with `pass` left the
+        # whole file green. Reachable in reality — a list-valued scope knob is what a `parallel_loops`
+        # rename produces.
+        v = self._run(self._impl(abstract={"parallel_scope": ["step_03"]}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("impl_defaults.abstract.parallel_scope must be str, got list", v[0])
+        v = self._run(self._impl(abstract={"parallel_granularity": 3}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be str, got int", v[0])
+
+    def test_bool_is_not_an_integer_thread_count(self) -> None:
+        # `bool` is an `int` subclass in Python; `num_threads: true` must not slip through.
+        v = self._run(self._impl(overrides={"openmp": {"num_threads": True}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be int, got bool", v[0])
+
+    def test_nested_accepts_a_bool(self) -> None:
+        self.assertEqual(self._run(self._impl(overrides={"openmp": {"nested": False}})), [])
+
+    def test_non_string_keys_do_not_crash(self) -> None:
+        # A YAML mapping may carry a non-string key (`2:`, `true:`, `~:`). `sorted()` over mixed
+        # types raised TypeError, which replaced the whole `FAIL - <violation>` report with a
+        # traceback and DISCARDED every violation already collected in that run — the structured
+        # output the orchestration gate parses.
+        v = self._run(self._impl(
+            abstract={2: "legacy", True: "x", None: "y", "loop_parallelization": "openmp"},
+            overrides={"openmp": {3: "legacy", "threads": 4}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("non-canonical spelling" in x for x in v), v)
+
+    def test_key_matching_is_case_insensitive(self) -> None:
+        # `Threads` degrades a run exactly as silently as `threads`; a capital letter must not buy
+        # an exemption from a gate whose whole subject is unreliable spellings.
+        for section, key in (("abstract", "Loop_Parallelization"),
+                             ("overrides", "THREADS"), ("overrides", "Threads")):
+            kwargs = ({"abstract": {key: "openmp"}} if section == "abstract"
+                      else {"overrides": {"openmp": {key: 4}}})
+            v = self._run(self._impl(**kwargs))
+            self.assertEqual(len(v), 1, f"{key}: {v}")
+            self.assertIn("non-canonical spelling", v[0])
+
+    def test_wrong_cased_canonical_key_is_flagged_and_still_type_checked(self) -> None:
+        # Two distinct defects, so two lines: the spelling the renderer cannot read, and the type.
+        # Normalizing for the ALIAS lookup is right (`Threads` must still be caught), but
+        # normalizing the CANONICAL side let a wrong-cased key pass as canonical — which is the
+        # silent one-thread degradation this table exists to prevent, since
+        # `runner_renderer._threads` reads the literal `num_threads`.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": "default"}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("spelled inexactly" in x for x in v), v)
+        self.assertTrue(any("must be int, got str" in x for x in v), v)
+
+    def test_canonical_keys_must_be_spelled_exactly(self) -> None:
+        # Correctly TYPED but inexactly spelled: the type check alone reports nothing, so before
+        # this the gate was silent while the renderer returned 1.
+        import tools.runner_renderer as rr
+        for key in ("NUM_THREADS", "Num_Threads", "num_threads ", " num_threads"):
+            impl = self._impl(overrides={"openmp": {key: 4}})
+            v = self._run(impl)
+            self.assertEqual(len(v), 1, f"{key!r}: {v}")
+            self.assertIn("spelled inexactly", v[0])
+            self.assertIn("`num_threads`", v[0])
+            # The gate's verdict must agree with what the consumer actually reads.
+            self.assertEqual(rr._threads({"impl_defaults": impl}), 1, key)
+        # And the exact spelling stays clean, with the renderer reading it.
+        impl = self._impl(overrides={"openmp": {"num_threads": 4}})
+        self.assertEqual(self._run(impl), [])
+        self.assertEqual(rr._threads({"impl_defaults": impl}), 4)
+
+    def test_abstract_canonical_keys_must_be_spelled_exactly(self) -> None:
+        for key in ("PARALLELIZATION", "Parallel_Scope", "parallel_granularity "):
+            v = self._run(self._impl(abstract={key: "openmp"}))
+            self.assertEqual(len(v), 1, f"{key!r}: {v}")
+            self.assertIn("spelled inexactly", v[0])
+
+    def test_a_novel_knob_name_is_not_a_spelling_violation(self) -> None:
+        # The exact-spelling rule applies ONLY to the pinned family; the knob layer stays open.
+        self.assertEqual(self._run(self._impl(
+            abstract={"Wavefront_Depth": 3, "MEMORY_LAYOUT": "column_major"},
+            overrides={"openmp": {"Proc_Bind": "spread"}})), [])
+
+    def test_backend_key_named_override_section_flagged(self) -> None:
+        # The motivating harm itself: three live IRs request 4 threads under `cpu_openmp` and run on
+        # one, because the renderer reads only the literal `openmp`. Pinning the member names while
+        # leaving the SECTION name free left that wide open.
+        for name in ("cpu_openmp", "cpu_openmp_x86_64", "openmp_cpu", "omp"):
+            v = self._run(self._impl(overrides={name: {"num_threads": 4}}))
+            self.assertEqual(len(v), 1, f"{name}: {v}")
+            self.assertIn("non-canonical section name", v[0])
+            self.assertIn("literal `openmp`", v[0])
+
+    def test_wrong_cased_override_section_flagged_and_still_inspected(self) -> None:
+        v = self._run(self._impl(overrides={"OpenMP": {"threads": 4}}))
+        # Both the section casing AND the member alias inside it are reported — the section is
+        # still descended into, so obeying only the first remedy does not hide the second.
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("must be spelled as the bare literal `openmp`" in x for x in v), v)
+        # The member line names the key AS WRITTEN, so the reported path is one that exists.
+        self.assertTrue(
+            any("backend_overrides.OpenMP.threads is a non-canonical spelling" in x for x in v), v)
+
+    def test_padded_section_key_flagged(self) -> None:
+        # A quoted `" openmp "` looks canonical to a reader and is invisible to the renderer's
+        # literal lookup, so its overrides are dropped — the harm this gate exists to catch.
+        v = self._run(self._impl(overrides={" openmp ": {"num_threads": 4}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be spelled as the bare literal `openmp`", v[0])
+
+    def test_duplicate_openmp_section_says_merge_not_rename(self) -> None:
+        # Renaming into a key that already exists produces a duplicate YAML key, so the remedy is
+        # a merge. Both mis-named shapes take this branch.
+        for name in ("OpenMP", "cpu_openmp"):
+            v = self._run(self._impl(
+                overrides={"openmp": {"num_threads": 4}, name: {"num_threads": 8}}))
+            self.assertEqual(len(v), 1, f"{name}: {v}")
+            self.assertIn("several sections that all mean OpenMP", v[0])
+            self.assertIn("MERGE their entries", v[0])
+
+    def test_two_misnamed_sections_without_a_canonical_one_say_merge(self) -> None:
+        # Both are real `selected.backend_key` spellings. Telling each separately to "key it by the
+        # literal `openmp`" produces a duplicate key, and PyYAML keeps the last — silently dropping
+        # one section's overrides, which is the harm this gate exists to prevent.
+        v = self._run(self._impl(overrides={
+            "cpu_openmp": {"num_threads": 4}, "cpu_openmp_x86_64": {"num_threads": 8}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE their entries" in x for x in v), v)
+        # Each line names the OTHER sections, so a line read alone is still actionable.
+        self.assertTrue(any("'cpu_openmp_x86_64'" in x for x in v), v)
+        self.assertTrue(any("'cpu_openmp'" in x for x in v), v)
+
+    def test_canonical_variant_beside_the_exact_key_says_merge(self) -> None:
+        # "Rename it to `num_threads`" collides into a duplicate YAML key when the exact key is
+        # already there, and `yaml.safe_load` keeps the last — silently discarding a value. The alias
+        # and section paths already say merge for this shape; a canonical VARIANT is the same
+        # collision one spelling further in.
+        for section, keys in (("overrides", {"num_threads": 4, "NUM_THREADS": 8}),
+                              ("abstract", {"parallelization": "openmp",
+                                            "PARALLELIZATION": "openmp"})):
+            impl = (self._impl(overrides={"openmp": keys}) if section == "overrides"
+                    else self._impl(abstract=keys))
+            v = self._run(impl)
+            self.assertTrue(any("is already present, so MERGE" in x for x in v), f"{section}: {v}")
+            self.assertFalse(any("rename it to the bare lowercase" in x for x in v), v)
+        # Alone, the variant still gets the rename remedy.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("rename it to the bare lowercase `num_threads`", v[0])
+
+    def test_every_parallelization_spelling_is_shape_checked(self) -> None:
+        # Checking only the first key that normalized made the result depend on YAML insertion
+        # order: with a variant listed before the exact key, the exact key's mapping-form defect went
+        # unreported and cost a second `Compile.static` turn to discover.
+        for text, label in (
+            ("    Parallelization: openmp\n    parallelization: {method: openmp}\n",
+             "variant listed first"),
+            ("    parallelization: {method: openmp}\n    Parallelization: openmp\n",
+             "exact listed first"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                d = Path(tmp)
+                (d / "spec.ir.yaml").write_text(
+                    "meta:\n  spec_kind: component\nimpl_defaults:\n"
+                    "  target: {class: cpu, backend: openmp}\n"
+                    "  toolchain: {language: fortran}\n  abstract:\n" + text,
+                    encoding="utf-8")
+                v: list[str] = []
+                vps._validate_impl_defaults_knobs(d.parent, d, v)
+            self.assertTrue(any("spelled inexactly" in x for x in v), f"{label}: {v}")
+            self.assertTrue(
+                any("must be a flat string, not a mapping" in x for x in v),
+                f"{label}: the mapping-form defect must be reported whatever the key order: {v}")
+
+    def test_two_canonical_variants_without_an_exact_key_say_merge(self) -> None:
+        # Two inexact spellings of one canonical key collide on rename exactly as two aliases do,
+        # and PyYAML keeps only one value.
+        v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": 8, "num_threads ": 4}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE" in x for x in v), v)
+        self.assertFalse(any("rename it to the bare lowercase" in x for x in v), v)
+        # Each line names the OTHER spelling, so a line read alone is still actionable.
+        self.assertTrue(any("'num_threads '" in x for x in v), v)
+        self.assertTrue(any("'NUM_THREADS'" in x for x in v), v)
+
+    def test_two_member_aliases_of_one_canonical_say_merge(self) -> None:
+        # The member-level twin of the section-level collision: told to rename separately, both
+        # become `num_threads` and `yaml.safe_load` keeps the last silently — the 4-threads-on-1
+        # harm again.
+        v = self._run(self._impl(overrides={"openmp": {"threads": 4, "threads_per_rank": 8}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE them into a single `num_threads`" in x for x in v), v)
+        v = self._run(self._impl(abstract={
+            "loop_parallelization": "openmp", "parallelization_model": "openmp"}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(all("MERGE them into a single `parallelization`" in x for x in v), v)
+
+    def test_sibling_merge_remedy_also_names_the_type_change(self) -> None:
+        # Either remedy ends with the value living under the canonical key, so the type note belongs
+        # to BOTH — the merge branch shipped without it and the merged key then failed the type check
+        # on the next turn, the second-remand class this function exists to avoid.
+        v = self._run(self._impl(overrides={"openmp": {"threads": "4", "threads_per_rank": 8}}))
+        self.assertEqual(len(v), 2, v)
+        offending = [x for x in v if ".threads is a non-canonical" in x]
+        self.assertEqual(len(offending), 1, v)
+        self.assertIn("MERGE them into a single `num_threads`", offending[0])
+        self.assertIn("must be int", offending[0])
+        self.assertIn("convert the value in the same edit", offending[0])
+        # The correctly-typed sibling keeps the short form.
+        other = [x for x in v if ".threads_per_rank is a non-canonical" in x][0]
+        self.assertNotIn("convert the value", other)
+
+    def test_members_of_a_misnamed_section_are_still_checked(self) -> None:
+        # Reporting only the section name would hide the alias inside it until the author fixed the
+        # name and came back for a second remand.
+        v = self._run(self._impl(overrides={"cpu_openmp": {"threads": 4}}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("non-canonical section name" in x for x in v), v)
+        self.assertTrue(
+            any("backend_overrides.cpu_openmp.threads is a non-canonical spelling" in x
+                for x in v), v)
+
+    def test_bool_valued_alias_remedy_names_the_type_change(self) -> None:
+        # `bool` is an `int` subclass, so `threads: true` looked type-valid for the int-pinned
+        # `num_threads` and the remedy shipped without its conversion note — then the renamed key
+        # failed the type check on the next turn. `int(True)` is 1: the silent degradation itself.
+        v = self._run(self._impl(overrides={"openmp": {"threads": True}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("rename it to `num_threads`", v[0])
+        self.assertIn("must be int", v[0])
+        self.assertIn("convert the value in the same edit", v[0])
+
+    def test_alias_beside_canonical_remedy_names_a_usable_destination(self) -> None:
+        # In the openmp section `parallel_scope` does not exist, and when the alias IS the scope
+        # alias the old wording read "move it into `parallel_scope` rather than `parallel_scope`".
+        v = self._run(self._impl(overrides={"openmp": {"num_threads": 4, "threads": 8}}))
+        self.assertEqual(len(v), 1, v)
+        self.assertNotIn("`parallel_scope`", v[0])
+        v = self._run(self._impl(
+            abstract={"parallel_scope": "the face loop", "parallel_loops": ["s1"]}))
+        self.assertEqual(len(v), 1, v)
+        self.assertNotIn("into `parallel_scope`, not into `parallel_scope`", v[0])
+
+    def test_non_mapping_openmp_section_flagged(self) -> None:
+        # The renderer reads `.num_threads` off this section, so a scalar or list loses every
+        # override in it and falls back to one thread. The exact-`openmp` early return meant the
+        # CANONICAL spelling was the one case where that went unreported.
+        import tools.runner_renderer as rr
+        for value in (4, "static", ["a"], {"num_threads": 4}.items().__class__.__name__):
+            impl = self._impl(overrides={"openmp": value})
+            v = self._run(impl)
+            self.assertEqual(len(v), 1, f"{value!r}: {v}")
+            self.assertIn("must be a mapping of override names to values", v[0])
+            self.assertEqual(rr._threads({"impl_defaults": impl}), 1, repr(value))
+        # A mis-named section with a non-mapping body reports both its name and its shape.
+        v = self._run(self._impl(overrides={"cpu_openmp": 4}))
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("non-canonical section name" in x for x in v), v)
+        self.assertTrue(any("must be a mapping" in x for x in v), v)
+        # A null section is a V7 plug-hole, not a name/shape defect — same rule as a null member.
+        self.assertEqual(self._run(self._impl(overrides={"openmp": None})), [])
+
+    def test_inexact_canonical_key_is_also_shape_checked(self) -> None:
+        # Reporting only the spelling meant a mapping form, prose, or wrong type under that key
+        # survived until the producer had done the rename — a second remand for one defect.
+        for abstract, expected in (
+            ({"Parallelization": {"method": "openmp"}}, "must be a flat string, not a mapping"),
+            ({"parallelization ": "OpenMP applied to loops"}, "execution-model TOKEN"),
+            ({"PARALLELIZATION": 4}, "must be a string, got int"),
+        ):
+            v = self._run(self._impl(abstract=abstract))
+            self.assertEqual(len(v), 2, f"{abstract}: {v}")
+            self.assertTrue(any("spelled inexactly" in x for x in v), v)
+            self.assertTrue(any(expected in x for x in v), v)
+            # The shape line names the key AS WRITTEN, so the reported path exists.
+            written = list(abstract)[0]
+            self.assertTrue(
+                any(f"impl_defaults.abstract.{written}" in x for x in v if expected in x), v)
+
+    def test_other_backend_sections_are_untouched(self) -> None:
+        self.assertEqual(self._run(self._impl(
+            overrides={"cuda": {"block": 256}, "mpi": {"ranks": 4}})), [])
+
+    def test_prose_parallelization_value_flagged(self) -> None:
+        # The live shape: a scope description filed under the model key.
+        v = self._run(self._impl(
+            abstract={"parallelization": "OpenMP applied to parallelizable loops"}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("execution-model TOKEN", v[0])
+        self.assertIn("`parallel_scope`", v[0])
+
+    def test_novel_parallel_model_tokens_pass(self) -> None:
+        # NOT a vocabulary whitelist. An earlier draft required `openmp`/`none` and rejected these,
+        # which is a value constraint on the one knob whose purpose is exploration — the schema's
+        # own `additionalProperties: true` says otherwise, and the gate-scope doctrine ranks a false
+        # positive above a fail-open.
+        for value in ("openmp", "none", "openmp+simd", "openmp_tasks", "cuda_streams", "OpenMP"):
+            self.assertEqual(
+                self._run(self._impl(abstract={"parallelization": value})), [],
+                f"{value!r} is a single model token and must pass")
+
+    def test_value_check_is_backend_agnostic(self) -> None:
+        # The structural rule (a token, not prose) holds on every backend.
+        self.assertEqual(self._run(self._impl(
+            abstract={"parallelization": "cuda_streams"}, backend="cuda")), [])
+        self.assertEqual(len(self._run(self._impl(
+            abstract={"parallelization": "CUDA streams over the flux loops"}, backend="cuda"))), 1)
+
+    def test_non_string_non_mapping_parallelization_flagged(self) -> None:
+        v = self._run(self._impl(abstract={"parallelization": 4}))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be a string, got int", v[0])
+
+    def test_null_knob_left_to_verify_v7(self) -> None:
+        # A `null` plug-hole is Compile.verify V7's finding; reporting it here would double up.
+        self.assertEqual(self._run(self._impl(
+            abstract={"parallel_scope": None},
+            overrides={"openmp": {"num_threads": None}})), [])
+
+    def test_novel_knob_name_passes(self) -> None:
+        # Tune's exploration space stays open — only the pinned family is constrained.
+        self.assertEqual(self._run(self._impl(
+            abstract={"memory_layout": "column_major", "wavefront_depth": 3},
+            overrides={"openmp": {"proc_bind": "spread"}, "cuda": {"block": 256}})), [])
+
+    def test_absent_sections_pass(self) -> None:
+        self.assertEqual(self._run(self._impl()), [])
+        self.assertEqual(self._run(_OMIT), [])
+        self.assertEqual(self._run("openmp"), [])
+        self.assertEqual(self._run(self._impl(abstract="openmp", overrides="openmp")), [])
+
+    def test_missing_ir_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            v: list[str] = []
+            vps._validate_impl_defaults_knobs(Path(t), Path(t), v)
+            self.assertEqual(v, [])
+
+    def test_reaches_the_compile_stage_checker_list(self) -> None:
+        # Wiring pin: the checker must be reached through `validate_compile_stage`, not only by
+        # direct call — a gate nothing invokes is the dormant-gate failure this repo has hit before.
+        source = Path(vps.__file__).read_text(encoding="utf-8")
+        impl = source.index("def _validate_compile_stage_impl")
+        tail = source.index("\ndef ", impl + 1)
+        self.assertIn("_validate_impl_defaults_knobs(repo_root, ir_dir, violations)",
+                      source[impl:tail])
+
+    def test_schema_agrees_with_the_validator_constants(self) -> None:
+        """Declarative-copy mode (SCHEMA.md): the schema and the validator constants hold the same
+        facts, so the grammar changes only by editing both."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        schema = json.loads(
+            (repo_root / "spec/schema/ir/impl_defaults.schema.json").read_text(encoding="utf-8"))
+        abstract = schema["properties"]["abstract"]["properties"]
+        openmp = (schema["properties"]["backend_overrides"]["properties"]["openmp"]["properties"])
+        # Canonical names: the schema declares exactly the keys the validator pins or names as a
+        # rename target.
+        self.assertEqual(
+            set(abstract),
+            set(vps._IMPL_ABSTRACT_KNOB_TYPES) | set(vps._IMPL_ABSTRACT_KNOB_ALIASES.values()))
+        self.assertEqual(
+            set(openmp),
+            set(vps._IMPL_OPENMP_OVERRIDE_TYPES) | set(vps._IMPL_OPENMP_OVERRIDE_ALIASES.values()))
+        # No alias may also be a declared canonical key — that would make the rename a no-op.
+        self.assertEqual(set(abstract) & set(vps._IMPL_ABSTRACT_KNOB_ALIASES), set())
+        self.assertEqual(set(openmp) & set(vps._IMPL_OPENMP_OVERRIDE_ALIASES), set())
+        # The knob layer stays open on both sides.
+        self.assertTrue(schema["properties"]["abstract"]["additionalProperties"])
+        self.assertTrue(schema["properties"]["backend_overrides"]["additionalProperties"])
+        # Types agree with the pinned table.
+        json_type = {"string": str, "integer": int, "boolean": bool}
+        for key, expected in vps._IMPL_OPENMP_OVERRIDE_TYPES.items():
+            self.assertEqual((json_type[openmp[key]["type"]],), expected, key)
+        for key, expected in vps._IMPL_ABSTRACT_KNOB_TYPES.items():
+            self.assertEqual((json_type[abstract[key]["type"]],), expected, key)
+        # Every alias the validator knows is documented as a forbidden example, so the schema
+        # teaches the same closed table the gate enforces. Matched as `<name>:` and anchored to its
+        # section: a bare `assertIn("threads", ...)` was satisfied by the `threads_per_rank` line,
+        # so deleting the `threads` example left this pin green.
+        forbidden = schema["x-forbidden-examples"]
+        for alias in vps._IMPL_ABSTRACT_KNOB_ALIASES:
+            self.assertTrue(
+                any(x.startswith(f"abstract.{alias}:") for x in forbidden),
+                f"abstract.{alias} is enforced but undocumented")
+        for alias in vps._IMPL_OPENMP_OVERRIDE_ALIASES:
+            self.assertTrue(
+                any(x.startswith(f"backend_overrides.openmp.{alias}:") for x in forbidden),
+                f"backend_overrides.openmp.{alias} is enforced but undocumented")
+        for section in vps._IMPL_OPENMP_SECTION_ALIASES:
+            self.assertTrue(
+                any(x.startswith(f"backend_overrides.{section}:") for x in forbidden),
+                f"backend_overrides.{section} is enforced but undocumented")
+        # No alias may collide with a canonical name in the other direction either.
+        self.assertEqual(
+            vps._IMPL_OPENMP_SECTION_ALIASES & {"openmp"}, set(),
+            "`openmp` cannot be its own alias")
+        self.assertEqual(
+            schema["x-canonical-validator"],
+            "tools/validate_pipeline_semantics.py:_validate_impl_defaults_knobs")
+
+    def test_canonical_knob_names_are_stated_in_both_authoring_docs(self) -> None:
+        """A tightened gate with a silent SKILL burns retries — R6-lite freshness re-runs Compile on
+        a dependency bump, so the IR author must be able to look the pinned spellings up. Both files
+        are size-ceilinged, and a ceiling is a MAXIMUM, so deleting these sentences stays green
+        without an anchor."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        for rel, needles in (
+            ("skills/workflow-compile-generate/SKILL.md",
+             ("canonical key names**", "spec/schema/ir/impl_defaults.schema.json",
+              "threads_per_rank")),
+            ("docs/workflow/phases/phase_01_compile.md",
+             ("CANONICAL key names", "spec/schema/ir/impl_defaults.schema.json",
+              # The `Compile.static` gate-list bullet, anchored on text unique to it: the bare
+              # checker name occurs twice in this file, so the boundary paragraph alone satisfied
+              # it and deleting the gate bullet stayed green.
+              "**impl_defaults knob names** (`_validate_impl_defaults_knobs`)",
+              # The IR skeleton. Reverting it to `abstract: {...}` also stayed green, yet spelling
+              # the canonical keys there is the stated justification for this file's ceiling bump —
+              # a leaf reading a `{...}` placeholder learns nothing about names it is gated on.
+              "parallel_scope: \"<which loops it covers>\"",
+              "num_threads: <int>")),
+        ):
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            for needle in needles:
+                self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
 
 
 class LocalOperationLoweringGateTests(unittest.TestCase):

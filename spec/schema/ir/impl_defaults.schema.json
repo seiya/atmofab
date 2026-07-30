@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "spec/schema/ir/impl_defaults.schema.json",
+  "title": "impl_defaults parallelization knob names",
+  "description": "The CANONICAL key names of the parallelization family inside spec.ir.yaml's impl_defaults knob layer (`abstract` and `backend_overrides`), applied by the Compile.static deterministic gate at --stage compile. This exists because the knob layer was un-pinned: four recompiles of one spec produced four different spellings of the same knob (`parallelization` as both a flat string and a mapping; the model knob also as `loop_parallelization` / `loop_parallelism` / `parallelization_model`; the scope knob as `parallel_loop_scope` / `parallel_scope` / `parallelization_scope` / `parallel_loops`; the thread count as `num_threads` / `threads` / `threads_per_rank`; and the whole OpenMP override SECTION as `openmp` or as a `selected.backend_key` such as `cpu_openmp`), and only `backend_overrides.openmp.num_threads` is read by the host renderer — so an aliased thread count, or a correctly-named one under a mis-named section, silently degraded to 1 thread. Consumers of a knob cannot key off a name that changes every regeneration. This schema is a DECLARATIVE COPY: the validator holds the same names as constants and enforces them without file I/O, so an unreadable schema cannot fail-open a running gate. The alias -> canonical table is the load-bearing artifact and lives in the validator, because draft-07 cannot express `this misspelling means that key`. The knob layer stays OPEN (`additionalProperties: true`) — Tune's exploration space is the whole point of a knob, and only the parallelization family is pinned.",
+  "type": "object",
+  "properties": {
+    "abstract": {
+      "type": "object",
+      "description": "Language-independent knobs. Open by design; only the parallelization family below is pinned.",
+      "additionalProperties": true,
+      "properties": {
+        "parallelization": {
+          "type": "string",
+          "description": "The parallel execution model as a single FLAT token (`openmp`, `none`, or a novel model such as `openmp+simd` — the vocabulary is deliberately NOT a whitelist, since this is an exploration knob). Two shapes are rejected by the canonical validator: the mapping form (`{method: openmp, apply_to: parallelizable_loops}`), which decomposes into this key plus `parallel_scope` / `parallel_granularity`; and multi-word PROSE such as `OpenMP applied to parallelizable loops`, which is a scope description filed under the model key. `none` is the SANCTIONED way to declare a serial node, and it additionally exempts the node from the `Generate.gate` `!$omp` presence floor (the floor reads that intent generously — `off` / `serial` / `sequential` / `false` / `disabled` and a boolean `false` count too, under the canonical key or any of its aliases — because that direction only ever fails open) — that is the IR-level escape hatch for a node whose only loops are non-parallelizable.",
+          "pattern": "^[A-Za-z][A-Za-z0-9_+-]*(?![\\s\\S])"
+        },
+        "parallel_scope": {
+          "type": "string",
+          "description": "Which loops the parallelization covers — prose naming them (e.g. `the ghost-fill loops of periodic_copy_x and periodic_copy_y`) or a symbolic value such as `parallelizable_loops`. This is the knob the Generate producer reads to decide where directives go."
+        },
+        "parallel_granularity": {
+          "type": "string",
+          "description": "Optional. The nesting level parallelism is applied at (e.g. `loop_level`, `interface_loop`)."
+        }
+      }
+    },
+    "backend_overrides": {
+      "type": "object",
+      "description": "Per-backend override values. The OpenMP section MUST be keyed by the literal lowercase `openmp` — never by `selected.backend_key` (`cpu_openmp`, `cpu_openmp_x86_64`) — because `tools/runner_renderer.py` looks up that exact key and reads nothing else, so overrides filed under any other section name are silently dropped. Three live IRs file their OpenMP overrides under `cpu_openmp`; two of them request 4 threads and run on 1. Sections for other backends are unconstrained.",
+      "additionalProperties": true,
+      "properties": {
+        "openmp": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "num_threads": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Thread count. CANONICAL — `tools/runner_renderer.py` reads exactly this key, so `threads` / `threads_per_rank` are silently ignored and the run degrades to 1 thread."
+            },
+            "schedule": {
+              "type": "string",
+              "description": "OpenMP loop schedule (`static` / `dynamic` / `guided` / `auto`)."
+            },
+            "chunk_size": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Schedule chunk size; 0 means the implementation default."
+            },
+            "collapse": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of nested loops to collapse into one iteration space."
+            },
+            "nested": {
+              "type": "boolean",
+              "description": "Whether nested parallelism is enabled."
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true,
+  "x-canonical-validator": "tools/validate_pipeline_semantics.py:_validate_impl_defaults_knobs",
+  "x-canonical-doc": "docs/workflow/phases/phase_01_compile.md",
+  "x-forbidden-examples-note": "draft-07 rejects only the TYPE violations on the pinned keys (a string `num_threads`, a mapping `parallelization`). Every alias below is rejected by the canonical validator alone, since a rename remedy cannot be expressed as a schema constraint. Absent sections and novel (non-alias) knob names PASS both, and no key's VALUE vocabulary is whitelisted — the gate is a closed table of misspellings, not an allowlist of knobs or values. Alias DETECTION is case-insensitive, so `Threads` is the same violation as `threads`; a CANONICAL key must additionally be spelled exactly (bare lowercase, no surrounding whitespace), because a consumer looks up the literal key — `NUM_THREADS` and a space-padded `num_threads` are read by nobody and degrade the run to one thread just as an alias does. The `pattern` on `parallelization` and the `minimum` bounds on the integer members are advisory: the canonical validator checks names and TYPES, not ranges, so only the type half of this schema is covered by the agreement test.",
+  "x-forbidden-examples": [
+    "abstract.parallelization: {method: openmp, apply_to: parallelizable_loops}  -> flat token + abstract.parallel_scope",
+    "abstract.parallelization: {scheme: openmp, default_schedule: static}  -> flat token + abstract.parallel_scope + backend_overrides.openmp.schedule",
+    "abstract.parallelization: OpenMP applied to parallelizable loops  -> the token `openmp`; the prose belongs in abstract.parallel_scope",
+    "abstract.loop_parallelization: openmp  -> abstract.parallelization",
+    "abstract.loop_parallelism: openmp  -> abstract.parallelization",
+    "abstract.parallelization_model: openmp  -> abstract.parallelization",
+    "abstract.parallel_loop_scope: ...  -> abstract.parallel_scope",
+    "abstract.parallelization_scope: ...  -> abstract.parallel_scope",
+    "abstract.parallel_loops: [step_03_forward_euler_update]  -> abstract.parallel_scope, as a STRING",
+    "abstract.parallelization_granularity: loop  -> abstract.parallel_granularity",
+    "backend_overrides.cpu_openmp: {num_threads: 4}  -> backend_overrides.openmp (the literal key; a selected.backend_key section is read by nobody)",
+    "backend_overrides.cpu_openmp_x86_64: {num_threads: 4}  -> backend_overrides.openmp",
+    "backend_overrides.openmp_cpu: {num_threads: 4}  -> backend_overrides.openmp",
+    "backend_overrides.omp: {num_threads: 4}  -> backend_overrides.openmp",
+    "backend_overrides.openmp.threads: 4  -> backend_overrides.openmp.num_threads",
+    "backend_overrides.openmp.threads_per_rank: 1  -> backend_overrides.openmp.num_threads",
+    "backend_overrides.openmp.num_threads: \"8\"  -> an integer, not a string"
+  ]
+}

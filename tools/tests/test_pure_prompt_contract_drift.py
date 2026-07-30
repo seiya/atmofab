@@ -109,6 +109,16 @@ PINNED: dict[str, str] = {
     # `private` fails the lint gate, just as the bare `private` without the list fails the syntax
     # gate. Only the private-alone direction was stated before (issue #12 item 5).
     "pure-15": "2b1c56474c820653bd59681e23a631c2104aea9547569e530f2705b9699a217d",
+    # pure-16: new rule (7) states the impl_defaults reflection obligation the producer was
+    # punished by but never told (issue #22) — the `abstract` / `backend_overrides` knobs bind, read
+    # by MEANING because their spelling varies per node, with the deterministic zero-`!$omp` floor
+    # named (scoped to its real trigger) plus the `-fopenmp` and directive-continuation traps. The
+    # two headers are reworded to match (rules are no longer all deterministic gates; the Target
+    # profile is an obligation, not data). The VERIFY template moves in the same bump: it is the
+    # only text the pure reviewer reads, so leaving its G6 unamended would have reproduced issue
+    # #22's asymmetry on the reviewer side — it now scopes the floor's guarantee instead of
+    # assuming a directive always exists.
+    "pure-16": "ad11bb930dad02cf74d16e01e79e37804e05683b7e7281281eec41964cc5f018",
 }
 
 
