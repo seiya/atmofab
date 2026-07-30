@@ -3345,14 +3345,14 @@ regenerated writer (a `Generate` repair), whereas an IR whose `step_10_write_dia
 metrics" — the shape the `0.6.0` IR carried — is a Compile transcription defect (a `Compile` reopen), not a writer
 defect. The detection gap is not declared closed before both acceptance conditions hold. _orch id + result pending._
 
-## Three Fortran scanners, one reading — four mis-reads spread across three deterministic gates (LANDED 2026-07-30, issue #23)
+## Three Fortran scanners, one reading — five mis-reads spread across three deterministic gates (LANDED 2026-07-30, issue #23)
 
 Reading generated Fortran the way the compiler does — a `!` comment is not code, a `&` continuation is one statement
 across several physical lines, a `;` separates statements — was implemented three times independently
 (`validate_pipeline_semantics._iter_fortran_logical_lines` and `._fortran_logical_lines`,
-`orchestration_runtime._fortran_logical_lines`). Between them they got four things wrong — two that all three share,
-one where the copies are wrong in OPPOSITE directions, one that only the statement scanner has — and every one of them
-errs toward a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both accept:
+`orchestration_runtime._fortran_logical_lines`). Between them they got five things wrong — two that all three share,
+one where the copies are wrong in opposite directions, and two that only `_iter_fortran_logical_lines` has — and every
+one of them errs toward a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both accept:
 
 - **`str.splitlines()`** breaks on eight separators Fortran does not treat as line ends (`\f`, `\v`, `\x85`, `U+2028`,
   …), so a form feed inside a comment ends the comment early and re-admits its tail AS CODE — a commented-out
@@ -3365,12 +3365,17 @@ errs toward a false `Generate fail` / `Compile fail` on a source gfortran and fo
 - A continuation line that does **not** start with `&` must join with a **SPACE** (the line break is a token
   separator). Joining tight turns legal `pure&` / `subroutine dep__shift(x)` into `puresubroutine dep__shift(x)`, and
   the anchored declaration pattern then reports a published operation as absent from the source that declares it. The
-  runtime copy made the mirror error (`do con&` / `&current` → `do con current`), so each was wrong in the direction the
-  other was right — which is why comparing the two against each other never flagged it. Inside a character context the
+  runtime copy made the mirror error (`do con&` / `&current` → `do con current`) — both validator copies the first,
+  the runtime copy the second, so each was wrong in the direction the other was right — which is why comparing the two against each other never flagged it. Inside a character context the
   join is always tight, including for gfortran's warning-only extension of omitting the resuming `&`.
 - A **lone-`&` continuation line** must terminate the statement (gfortran: `'&' not allowed by itself`); testing the
   trailing `&` before consuming the leading one read the single ampersand as both markers and glued the next
-  statement on. Only the statement scanner; the other two consumed the leading `&` first.
+  statement on — and gfortran only WARNS (`'&' not allowed by itself`), so the source reaches a gate. Only
+  `_iter_fortran_logical_lines`; the other two consumed the leading `&` first.
+- A **blank or comment line inside a wrap** flushed a truncated logical line, so a legally wrapped
+  `subroutine foo(a, &` / `! note` / `     & b)` header reached the gates as two fragments. Only
+  `_iter_fortran_logical_lines`; the other two skipped such lines, though both then mishandled the same gap inside an
+  open character literal, which is the second bullet.
 
 **One implementation, three adapters.** `tools/fortran_lines.py` is stdlib-only and imports nothing from the package,
 because no existing module is a home: the validator may not import `orchestration_runtime`; `lang_backend_fortran`
@@ -3378,7 +3383,7 @@ imports the validator at module level, so hosting it there would put the validat
 validator would force `orchestration_runtime` to import a module that requires PyYAML unconditionally, while the
 runtime defers PyYAML so its recovery commands stay usable without it. The three sites keep their names, signatures and
 return shapes and add only their own composition — the validator's keeps the leading whitespace its `^\s*` anchors
-tolerate, the runtime's strips because `_FORTRAN_SUBROUTINE_RE` is unanchored.
+tolerate, the runtime's strips because `_FORTRAN_SUBROUTINE_RE` carries no leading `\s*`.
 
 **Not the OpenMP floor.** `_validate_openmp_presence_floor` (issue #22) answers the same question with four anchored
 physical-line patterns and no state, and it stays that way. A presence check can anchor its way out of comments and
@@ -3390,7 +3395,7 @@ these agree EXACTLY on `_list_component_published_subroutines`, `_list_prefixed_
 carry a raw delta) and `_fortran_statements` (804) once the whitespace and empty entries each consumer already
 normalizes away are removed. Those two raw deltas are accounted for rather than hidden: the statement view no longer
 emits an entry for a blank or comment-only line, and a non-`&`-led joint outside a literal contributes one space, which
-also reaches the `interface` string of 333 procedures — whitespace-only in every one. No verdict moves. The cross-scanner parity test
-(`test_cross_scanner_parity_with_runtime`) dropped its "only the domain a generator emits" restriction and now runs
+also reaches the `interface` string of 335 procedures — whitespace-only in every one. No verdict moves.
+The cross-scanner parity test (`test_cross_scanner_parity_with_runtime`) dropped its "only the domain a generator emits" restriction and now runs
 over the pathological inputs the restriction existed to exclude, asserting per case that the scanners agree on
 something rather than agreeing on nothing.

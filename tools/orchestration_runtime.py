@@ -1324,8 +1324,9 @@ def _fortran_logical_lines(source_text: str) -> list[str]:
     join ``&`` continuations, split each joined line at top-level ``;`` separators
     (``_split_fortran_statements``), and drop lines that are blank / comment-only.
 
-    Statements come back STRIPPED — ``_FORTRAN_SUBROUTINE_RE`` is not ``^``-anchored, so the
-    leading whitespace the shared scanner preserves is removed here rather than carried.
+    Statements come back STRIPPED — ``_FORTRAN_SUBROUTINE_RE`` is applied with ``.match()``,
+    which anchors at position 0, and it carries no leading ``\s*``; the indentation the shared
+    scanner preserves would therefore block it, so it is removed here rather than carried.
     Semicolon-packed statements (``contains; subroutine foo()``) are separated so a declaration
     after a ``;`` is still seen. NEVER raises (``[]`` on non-str / error). Shared by
     ``_extract_subroutine_interface`` and ``_list_prefixed_subroutines`` so both see the
@@ -1422,7 +1423,7 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
             if m.group("lparen") is None:
                 # Zero-argument subroutine declared WITHOUT a parameter list
                 # (`subroutine dep__ping`, legal Fortran). No argument order to pin — a
-                # `call <name>` / `call <name>()` needs none. Emit the header verbatim.
+                # `call <name>` / `call <name>()` needs none. Emit the joined header as scanned.
                 return {
                     "interface": line[: m.end()].rstrip(),
                     "argument_order": [],

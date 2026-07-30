@@ -178,6 +178,26 @@ class FortranLogicalLinesTests(unittest.TestCase):
                 self.assertEqual(fortran_logical_lines("s = 'abc&\n" + resume + "\n"),
                                  [(1, "s = 'abcdef'")])
 
+    def test_doubled_quote_escape_split_by_the_wrap(self) -> None:
+        # The compiler's character context outlives this scanner's here: in `'ab'&` / `'cd'` the
+        # literal looks closed at end of line, but gfortran's lookahead reads the two quotes as
+        # one escaped quote. Pinned at `-std=f2008` with `1/merge(0, 1, (len(sa) == 5) .and.
+        # (sa == 'ab''cd'))`, which fires — and gfortran emits NO diagnostic, so a source
+        # written this way passes `Generate.syntax`. A space join would emit `'ab' 'cd'`, which
+        # is not Fortran at all.
+        for resume, label in (("'cd'", "resume in column 1"),
+                              ("     'cd'", "resume indented")):
+            with self.subTest(resume=label):
+                self.assertEqual(fortran_logical_lines("sa = 'ab'&\n" + resume + "\n"),
+                                 [(1, "sa = 'ab''cd'")])
+        self.assertEqual(fortran_logical_lines('sa = "ab"&\n"cd"\n'), [(1, 'sa = "ab""cd"')])
+        self.assertEqual(fortran_logical_lines("sa = 'ab'&\n'cd'&\n'ef'\n"),
+                         [(1, "sa = 'ab''cd''ef'")])
+        # And it must not fire when the resume does not start with that same quote: there the
+        # literal really did close and the line break is an ordinary token separator.
+        self.assertEqual(fortran_logical_lines("call f('ab'&\n, 'cd')\n"),
+                         [(1, "call f('ab' , 'cd')")])
+
     def test_trailing_blanks_after_the_continuation_marker(self) -> None:
         # This, not CRLF, is what makes the `.rstrip()` load-bearing: `do i &   ` is legal and
         # its `&` must still register. (A CRLF source cannot exercise it — `read_text`

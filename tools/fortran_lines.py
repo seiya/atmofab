@@ -6,10 +6,10 @@ does: a `!` comment is not code, a `&` continuation is one statement across seve
 lines, and a `;` separates statements on one line. Three hand-rolled scanners used to do that
 independently (`validate_pipeline_semantics._iter_fortran_logical_lines` and
 `._fortran_logical_lines`, `orchestration_runtime._fortran_logical_lines`), and between them
-they mis-read four inputs (issue #23) — two that all three get wrong, one where the copies are
-wrong in OPPOSITE directions, and one only the statement scanner gets wrong. Each defect's harm
-direction is a false `Generate fail` / `Compile fail` on a source gfortran and fortitude both
-accept:
+they mis-read five inputs (issue #23) — two that all three get wrong, one where the copies are
+wrong in opposite directions, and two that only `_iter_fortran_logical_lines` gets wrong. Each
+defect's harm direction is a false `Generate fail` / `Compile fail` on a source gfortran and
+fortitude both accept:
 
 * **`str.splitlines()`** breaks on eight separators Fortran does not treat as line ends
   (`\\f`, `\\v`, `\\x85`, `\\u2028`, …), so a form feed inside a comment ended the comment early
@@ -22,14 +22,20 @@ accept:
 * A continuation line that does **not** start with `&` must join with a **SPACE**: the line
   break is then a token separator (F2008). Concatenating turned `do&` / `i = 1, n` into
   `doi = 1, n`. Only a `&`-led line splits a token, and that one joins tight — joining THAT
-  with a space is the mirror error, and the copies committed one error each in OPPOSITE
-  directions, which is why comparing them against each other never flagged it. Inside a
-  character context the join is always tight: a line break cannot insert a blank into a
-  literal.
+  with a space is the mirror error. Both validator copies made the first error and the runtime
+  copy made the second, so each was wrong exactly where the other was right, which is why
+  comparing them against each other never flagged it. Inside a character context the join is
+  always tight: a line break cannot insert a blank into a literal.
 * A **lone-`&` continuation line** (`&`, or `&! note`): testing the trailing `&` before
   consuming the leading one read the single ampersand as both markers, so the buffer stayed
-  open and glued the next statement on. gfortran terminates the statement there. (Only the
-  statement scanner; the other two consumed the leading `&` first.)
+  open and glued the next statement on. gfortran terminates the statement there, with only a
+  `'&' not allowed by itself` WARNING — so such a source reaches a gate. (Only
+  `_iter_fortran_logical_lines`; the other two consumed the leading `&` first.)
+* A **blank or comment line INSIDE a wrap** flushed a truncated logical line, so a legally
+  wrapped `subroutine foo(a, &` / `! note` / `     & b)` header arrived at the gates as the
+  fragments `subroutine foo(a, ` and `& b)`. (Only `_iter_fortran_logical_lines`; the other two
+  skipped such lines — although both then got the mid-literal case wrong in the other
+  direction, which is the second bullet.)
 
 The scanner below is recovered from commit `166946a` (`_fortran_code_statements` +
 `_strip_fortran_comment_tracking_quotes`, built and verified for the issue #22 OpenMP floor,
@@ -94,12 +100,13 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     ``split_fortran_statements`` and the validator's ``_mask_fortran_string_contents``, so each
     gate composes the view it needs.
 
-    The four defects this shape exists to close are documented at module level; the load-bearing
+    The defects this shape exists to close are documented at module level; the load-bearing
     lines below are marked."""
     logical: list[tuple[int, str]] = []
     buffer = ""
     start_lineno = 0
     quote: str | None = None  # set while the buffer ends INSIDE a character literal
+    pending_quote_escape: str | None = None  # see the join comment below
 
     # `text.split("\n")`, never `str.splitlines()`: the latter breaks on eight separators
     # Fortran does not treat as line ends, ending a comment early and re-admitting its tail as
@@ -144,15 +151,29 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         # `-Wampersand` warning, so such a source passes `Generate.syntax` and reaches a gate.
         # (Verified: `'abc&` / `      def'` compiles with `len == 6`, i.e. `abcdef`, not
         # `abc def`.) The leading blanks are column padding either way, never content.
-        joins_tight = resumes_literal
+        #
+        # `pending_quote_escape` covers the one case where the compiler's notion of "inside a
+        # character context" outlives this scanner's: a doubled-quote escape SPLIT BY THE WRAP.
+        # In `'ab'&` / `'cd'` the literal looks closed at end of line, but gfortran's lookahead
+        # reads the two quotes as one escaped quote and compiles `ab'cd` (`len == 5`, pinned) —
+        # with no diagnostic at all, so such a source passes `Generate.syntax`. A space there
+        # would produce `'ab' 'cd'`, which is not Fortran at all.
+        joins_tight = resumes_literal or pending_quote_escape is not None
         if buffer:
             code = code.lstrip()
+            if pending_quote_escape is not None and not code.startswith(pending_quote_escape):
+                joins_tight = resumes_literal
             if code.startswith("&"):
                 joins_tight = True
                 code = code[1:]
         continued = code.endswith("&")
         if continued:
             code = code[:-1]
+        # The shape a wrap-split doubled-quote escape takes: a continued line whose last code
+        # character is a quote. No `quote is None` guard — if the line ended INSIDE a literal
+        # the join is already tight via `resumes_literal`, so the guard could not change an
+        # answer, and this module does not keep conditions its tests cannot pin.
+        pending_quote_escape = code[-1] if continued and code[-1:] in ("'", '"') else None
         if buffer:
             buffer += code if joins_tight else f" {code}"
         else:

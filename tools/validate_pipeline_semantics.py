@@ -5227,7 +5227,8 @@ def _fortran_logical_lines(text: str) -> list[str]:
     continuation lines joined (a leading ``&`` on a continued line is consumed). Case and
     indentation are preserved (normalization happens per-line in ``_normalize_fortran_line``);
     per-physical-line trailing whitespace is not, and a continuation that does not begin with
-    ``&`` joins with a space. Blank and comment-only lines produce no entry, so every element is
+    ``&`` joins with a space — except inside an open character literal, where the join is always
+    tight because a line break cannot insert a blank into a literal. Blank and comment-only lines produce no entry, so every element is
     real Fortran.
 
     Free-form Fortran permits blank and full-line-comment lines *between* a ``&``-terminated line
