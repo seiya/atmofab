@@ -28089,7 +28089,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 43800->44400: V3 gains the non-snapshot half of the `raw_variables` rule.
         # The SKILL bullet that carries it defers to V3 as canonical, so the force-read doc
         # was the one place a leaf could look up the rule and not find it.
-        "docs/workflow/phases/phase_01_compile.md": 44400,
+        # Bumped 44400->45500: issue #22 — the `impl_defaults` knob family gains canonical key
+        # names (`abstract.parallelization` / `parallel_scope`, `backend_overrides.openmp.num_threads`)
+        # with the forbidden alias spellings named inline. Four recompiles of one spec produced four
+        # vocabularies, and the host reads only `num_threads`, so an aliased thread count silently
+        # degraded to 1; the compile leaf authors this section and can only learn the pinned
+        # spellings from here.
+        "docs/workflow/phases/phase_01_compile.md": 45500,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28155,7 +28161,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # prognostic field is always an undefined binding, but `_extract_spec_var_names` folds
         # the `state_snapshots` `schema.variables` into `direct_spec_vars`, so it usually is
         # traceable; stating the real source list costs more words than the wrong shortcut.
-        "skills/workflow-compile-generate/SKILL.md": 25200,
+        # Bumped 25200->25900: issue #22 — the impl-defaults bullets are restated with the canonical
+        # knob spellings plus a pointer to spec/schema/ir/impl_defaults.schema.json, and the live
+        # alias spellings are named as forbidden. `Compile.static` now rejects the aliases, so a
+        # leaf reading only this SKILL would otherwise author a rejected IR and burn a warm retry.
+        "skills/workflow-compile-generate/SKILL.md": 25900,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -28263,7 +28273,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # IR public_api, the generated `<spec_id>__` set must equal public_api.published_operations
         # (`_validate_component_generated_surface`, Generate.gate). A doc-reading agentic component
         # leaf must know this exact-set obligation, not just "prefix io_contract.outputs".
-        "skills/workflow-generate-generate/SKILL.md": 36100,
+        # Bumped 36100->36800: issue #22 — the default-OpenMP bullet gains the reflection obligation
+        # (the `impl_defaults.abstract` / `backend_overrides` knobs are binding, and the zero-`!$omp`
+        # slice is now a deterministic `Generate.gate` floor). `Generate.verify` has always remanded
+        # on this rule; the authoring side never stated it, which is the asymmetry issue #22 names.
+        "skills/workflow-generate-generate/SKILL.md": 36800,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare
@@ -28297,7 +28311,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # object/dict — stated at both the write rule and the dev-mode failure-basis rule (the
         # latter asks for a violated-convention / target-artifact / reason triple, which is what
         # induced a structured dict). Same E2E #4 orchestration, post_execute_violation.
-        "skills/workflow-generate-verify/SKILL.md": 27600,
+        # Bumped 27600->27800: issue #22 — the impl-defaults reflection rule now names the slice the
+        # `Generate.gate` static check already rejected before verify runs (counted `do` loops with
+        # zero `!$omp`), so the verify leaf spends its judgment on the band above that floor instead
+        # of re-deriving a verdict the gate had settled.
+        "skills/workflow-generate-verify/SKILL.md": 27800,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer
