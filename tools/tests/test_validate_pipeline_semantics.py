@@ -15026,6 +15026,54 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
         # A real trailing comment is dropped.
         self.assertEqual(strip("x = 1  ! note", None), ("x = 1  ", None))
 
+    def test_continuation_line_that_is_only_its_leading_ampersand(self) -> None:
+        # The single `&` of a `&`-only line (or `&! note`) was read as BOTH the leading and the
+        # trailing marker, so the buffer stayed open and glued the next statement on. gfortran
+        # terminates the statement there. Both directions were reproducible on compiling sources.
+        for tail, label, want in (
+            ("    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n",
+             "the glued-on statement is a counted loop", 1),
+            ("    do concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n",
+             "the glued-on statement is a `do concurrent`", 0),
+        ):
+            for wrap in ("      &! wrap note\n", "      &\n"):
+                v = self._run(self._model(
+                    "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+                    "    msg = 'x' &\n" + wrap + tail))
+                self.assertEqual(len(v), 1 if want else 0, f"{label} / {wrap!r}: {v}")
+
+    def test_continuation_without_a_leading_ampersand_joins_with_a_space(self) -> None:
+        # The line break is a token separator unless the next line starts with `&`. Concatenating
+        # turned `do&` / `i = 1, n` into `doi = 1, n` — invisible to both patterns, so an evasion
+        # for a counted loop and a false positive for a `do concurrent`.
+        v = self._run(self._model("    do&\n      i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do&\n      concurrent (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_ampersand_led_continuation_still_joins_tight(self) -> None:
+        # The one case that DOES split a token keeps joining without a separator. A counted loop
+        # sits beside it so the assertion depends on the `do concurrent` being RECOGNIZED — without
+        # it the file would fail open on zero counted loops and pass either way.
+        self.assertEqual(self._run(self._model(
+            "    do k = 1, 3\n      acc(k) = 0.0_dp\n    end do\n"
+            "    do con&\n      &current (i = 1:n)\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_form_feed_before_the_sentinel_is_a_directive(self) -> None:
+        # gfortran accepts a form feed as leading blank and parses the sentinel after it as a real
+        # directive, so the floor must not demand another one.
+        self.assertEqual(self._run(self._model(
+            "\x0c    !$omp parallel do\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n")), [])
+
+    def test_unterminated_literal_does_not_leak_into_the_next_statement(self) -> None:
+        # Only reachable from source no compiler accepts, but the per-statement reset of the literal
+        # state is what keeps a leaked open quote from making the following text read as literal
+        # content — which would hide the loop.
+        v = self._run(self._model(
+            "    msg = 'oops\n    ! note &\n    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"))
+        self.assertEqual(len(v), 1, v)
+
     def test_bang_inside_a_continued_character_literal(self) -> None:
         # Quote state must cross physical lines. Stripping comments per line could not know the `!`
         # sat inside a CONTINUED literal, so the rest of the line was dropped and — because what
@@ -15390,6 +15438,21 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
             "loop_parallelization": "openmp", "parallelization_model": "openmp"}))
         self.assertEqual(len(v), 2, v)
         self.assertTrue(all("MERGE them into a single `parallelization`" in x for x in v), v)
+
+    def test_sibling_merge_remedy_also_names_the_type_change(self) -> None:
+        # Either remedy ends with the value living under the canonical key, so the type note belongs
+        # to BOTH — the merge branch shipped without it and the merged key then failed the type check
+        # on the next turn, the second-remand class this function exists to avoid.
+        v = self._run(self._impl(overrides={"openmp": {"threads": "4", "threads_per_rank": 8}}))
+        self.assertEqual(len(v), 2, v)
+        offending = [x for x in v if ".threads is a non-canonical" in x]
+        self.assertEqual(len(offending), 1, v)
+        self.assertIn("MERGE them into a single `num_threads`", offending[0])
+        self.assertIn("must be int", offending[0])
+        self.assertIn("convert the value in the same edit", offending[0])
+        # The correctly-typed sibling keeps the short form.
+        other = [x for x in v if ".threads_per_rank is a non-canonical" in x][0]
+        self.assertNotIn("convert the value", other)
 
     def test_members_of_a_misnamed_section_are_still_checked(self) -> None:
         # Reporting only the section name would hide the alias inside it until the author fixed the

@@ -4448,7 +4448,11 @@ _DO_CONCURRENT_RE = re.compile(
 # catch, and one real generated source already writes `!$omp` inside a `!>` comment. A commented-out
 # `!!$omp parallel do` is likewise not a directive. Verified to cost zero false positives: no live
 # model source carries a directive anywhere but at line start.
-_OMP_DIRECTIVE_RE = re.compile(r"^[ \t]*!\$omp\b", re.IGNORECASE | re.MULTILINE)
+# `\f` is in the prefix class because gfortran accepts a form feed as leading blank and parses the
+# sentinel after it as a REAL directive (verified: the matching `!$omp end` errors as a directive).
+# `^` still anchors after `\n` only, so `n = n\fBANG$omp ...` — prose then a sentinel — stays
+# correctly unmatched: there the `!$omp` is inside the preceding statement's comment.
+_OMP_DIRECTIVE_RE = re.compile(r"^[ \t\f]*!\$omp\b", re.IGNORECASE | re.MULTILINE)
 
 # Values of the parallelization knob that mean "no parallelism here". `_validate_impl_defaults_knobs`
 # blesses `none` explicitly, so without this the two new gates contradicted each other: Compile
@@ -4508,18 +4512,39 @@ def _fortran_code_statements(text: str) -> list[str]:
         # `.rstrip()` matters beyond tidiness: a legal `do i &   ` (trailing blanks after the
         # continuation marker) would otherwise not register as continued.
         code = code.rstrip()
+        # ORDER MATTERS, in both directions.
+        #
+        # The continuation's LEADING `&` is consumed BEFORE asking whether this line continues.
+        # Testing first read the single ampersand of a `&`-only line (or `&! note`) as both the
+        # leading and the trailing marker, so the buffer stayed open and glued the NEXT statement
+        # on: an evasion when that statement was a counted loop, a false positive when it was a
+        # `do concurrent`. gfortran terminates the statement there, and `_fortran_logical_lines`
+        # already strips before testing — this order matches both.
+        #
+        # And a continuation line that does NOT begin with `&` is joined with a SPACE, because the
+        # line break is then a token separator: concatenating turned `do&` / `i = 1, n` into
+        # `doi = 1, n` (evasion) and `do&` / `concurrent (...)` into `doconcurrent (...)` (false
+        # positive). Only a `&`-led line splits a token, and that one still joins tight.
+        joins_tight = False
+        if buffer:
+            code = code.lstrip()
+            if code.startswith("&"):
+                joins_tight = True
+                code = code[1:]
         continued = code.endswith("&")
         if continued:
             code = code[:-1]
         if buffer:
-            stripped = code.lstrip()
-            buffer += stripped[1:] if stripped.startswith("&") else stripped
+            buffer += code if joins_tight else f" {code}"
         else:
             buffer = code
         if continued:
             continue
         flush(buffer)
         buffer = ""
+        # Reset the literal state with the statement. Only reachable from source no compiler
+        # accepts (an unterminated literal), but without it a leaked open quote makes the NEXT
+        # statement's text read as literal content and can hide a loop.
         quote = None
     if buffer.strip():
         flush(buffer)
@@ -10389,23 +10414,26 @@ def _append_impl_alias_violations(
                 f"the canonical `{canonical}` is already present, so DELETE this key — move any "
                 f"detail it carries {where}, not into `{canonical}`"
             )
-        elif len(siblings[canonical]) > 1:
-            # Several aliases of the SAME canonical key with the canonical absent. Told to rename
-            # separately they collide into a duplicate YAML key, and `yaml.safe_load` keeps the last
-            # silently — the same argument the section-level check makes, one level down.
-            others = ", ".join(f"`{s}`" for s in siblings[canonical] if s != name)
-            remedy = (
-                f"it and {others} all mean `{canonical}` — MERGE them into a single `{canonical}` "
-                "and delete the rest; renaming each separately collides into a duplicate key"
-            )
         else:
-            remedy = f"rename it to `{canonical}`"
+            if len(siblings[canonical]) > 1:
+                # Several aliases of the SAME canonical key with the canonical absent. Told to
+                # rename separately they collide into a duplicate YAML key, and `yaml.safe_load`
+                # keeps the last silently — the argument the section-level check makes, one level
+                # down.
+                others = ", ".join(f"`{s}`" for s in siblings[canonical] if s != name)
+                remedy = (
+                    f"it and {others} all mean `{canonical}` — MERGE them into a single "
+                    f"`{canonical}` and delete the rest; renaming each separately collides into a "
+                    "duplicate key"
+                )
+            else:
+                remedy = f"rename it to `{canonical}`"
+            # The type note belongs to BOTH remedies: either one ends with the value living under
+            # `canonical`, so a value the pinned type rejects becomes a second remand on the next
+            # turn. `bool` is an `int` subclass, so `threads: true` looks int-valid without
+            # `_value_matches_pinned_type` — and `int(True)` is 1, the silent degradation itself.
             expected = pinned.get(canonical)
             value = section[key]
-            # Same bool/int subtlety `_append_impl_knob_type_violations` handles: `bool` is an `int`
-            # subclass, so `threads: true` looked type-valid for an int-pinned `num_threads` and the
-            # remedy shipped without its conversion note — then the renamed key failed the type
-            # check on the next turn, which is the second remand this branch exists to avoid.
             if expected and value is not None and not _value_matches_pinned_type(value, expected):
                 names = " or ".join(t.__name__ for t in expected)
                 remedy += (
