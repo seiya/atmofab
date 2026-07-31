@@ -4742,7 +4742,8 @@ class SubstepEventTests(unittest.TestCase):
             orchestration_id = "orch_sub"
             orchestration_agent_run_id = "orch_agent_run"
             workflow_mode = "dev"
-            backend = "claude"
+            # `__init__` is bypassed, so the leaf-model authority is supplied directly.
+            llm_config = wc.llm_config_from_legacy("claude")
 
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})
@@ -4817,7 +4818,8 @@ class SubstepEventTests(unittest.TestCase):
             orchestration_id = "orch_sub_build"
             orchestration_agent_run_id = "orch_agent_run"
             workflow_mode = "dev"
-            backend = "claude"
+            # `__init__` is bypassed, so the leaf-model authority is supplied directly.
+            llm_config = wc.llm_config_from_legacy("claude")
 
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})

@@ -15,6 +15,7 @@ import json
 import os
 import queue
 import select
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -27,6 +28,7 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
 
@@ -559,11 +561,11 @@ class _FakeConductor(wc.Conductor):
     usage_probe_result: tuple = (None, {"outcome": "probe_error", "duration_ms": 0,
                                         "excerpt": "stubbed: no probe in tests"})
 
-    def _run_usage_probe(self):  # type: ignore[override]
+    def _run_usage_probe(self, entry=None):  # type: ignore[override]
         self.usage_probe_calls = getattr(self, "usage_probe_calls", 0) + 1
         return self.usage_probe_result
 
-    def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
         return wc.ProcResult(0, "", "")
 
     # Configurable meta payloads the fake writes for the deterministic validate gate substeps
@@ -751,14 +753,19 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertNotIn("elapsed_seconds", completes[0])
 
     def test_run_conductor_falls_back_to_claude_alias(self) -> None:
-        """Claude may use its unpinned config alias when none was supplied."""
+        """Claude may use its unpinned settings alias when none was supplied.
+
+        Since issue #28 the alias is filled into the resolved leaf entries at construction
+        (`Conductor._resolve_claude_model_aliases`) rather than passed in as a run-wide
+        `agent_model`, so the assertion reads the entry every leaf will launch with."""
         from unittest.mock import patch
-        seen: dict[str, str] = {}
+        seen: dict[str, object] = {}
         orig_init = wc.Conductor.__init__
 
         def _capture_init(self, **kw):  # type: ignore[no-untyped-def]
-            seen["agent_model"] = kw.get("agent_model", "")
             orig_init(self, **kw)
+            seen["model"] = self.entry_for(None, None).model
+            seen["leaf_models"] = {e.model for e in self._all_entries()}
 
         with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
              patch.object(wc, "prepare_node",
@@ -773,11 +780,12 @@ class ConductHappyPathTest(unittest.TestCase):
                 source_dependency_ref="d", until_phase="compile", backend="claude",
                 agent_model="", workflow_mode="dev", env={})
         self.assertEqual(status, "pass")
-        self.assertEqual(seen["agent_model"], "opus")
-        self.assertNotRegex(seen["agent_model"], r"-\d+-\d+$")
+        self.assertEqual(seen["model"], "opus")
+        self.assertEqual(seen["leaf_models"], {"opus"})
+        self.assertNotRegex(str(seen["model"]), r"-\d+-\d+$")
 
     def test_run_conductor_requires_explicit_codex_model(self) -> None:
-        with self.assertRaisesRegex(ValueError, "explicit model slug"):
+        with self.assertRaisesRegex(ValueError, "llm_config_codex_cli_requires_model"):
             wc.run_conductor(
                 repo_root="/tmp/repo", orchestration_id="o",
                 orchestration_agent_run_id="O", spec_ref="spec/c/x",
@@ -3820,7 +3828,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         def _resolve_reuse_resume(self, repair, phase, substep):  # type: ignore[override]
             return self.resume_target
 
-        def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
             self.spawns.append(dict(kwargs))
             idx = len(self.spawns) - 1
             return self.procs[min(idx, len(self.procs) - 1)]
@@ -4797,7 +4805,7 @@ class LeafTransientRetryTest(unittest.TestCase):
                     return wc.Conductor.determine_substep_status(
                         self, refs, phase, substep, allowed, min_mtime=min_mtime)
 
-                def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+                def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                     self.spawns.append(dict(kwargs))
                     if len(self.spawns) == 1:
                         # attempt 1: author a PASSING review, then die of a transport fault
@@ -4817,7 +4825,7 @@ class LeafTransientRetryTest(unittest.TestCase):
             self.assertEqual(oc.attempts, 2)
             # sanity: the same review REWRITTEN inside the retry's window does pass, so the gate
             # is freshness and not the file's content
-            def _reauthoring_judge(prompt_text, child_env, **kwargs):
+            def _reauthoring_judge(prompt_text, child_env, entry=None, **kwargs):
                 (rundir / "semantic_review.json").write_text(
                     json.dumps({"decision": "pass", "findings": []}), encoding="utf-8")
                 return wc.ProcResult(0, "re-authored", "")
@@ -4862,7 +4870,7 @@ class TransportSubstepResumeTest(unittest.TestCase):
         def _write_dependency_graph(self, refs):  # type: ignore[override]
             return None
 
-        def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
             self.spawns.append(dict(kwargs))
             idx = len(self.spawns) - 1
             return self.procs[min(idx, len(self.procs) - 1)]
@@ -5264,7 +5272,7 @@ class DiagnosticianTest(unittest.TestCase):
         # End-to-end through escalate(): a critical directive that asks to reuse is forced to
         # restart (discard) by resolve_severity_directive.
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, '{"action":"reopen","target_phase":"compile","severity":"critical",'
                '"repair_strategy":"reuse","reason":"ir_rot"}', "")
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
@@ -5390,7 +5398,7 @@ class DiagnosticianTest(unittest.TestCase):
 
     def test_escalate_routes_from_diagnostician(self) -> None:
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, 'analysis\n{"action":"reopen","target_phase":"compile","reason":"diag_ir"}', "")
         d = c.escalate(self._refs(), "validate",
                        wc.PhaseOutcome("validate", "fail", failed_substeps=["child-9"]))
@@ -5404,7 +5412,7 @@ class DiagnosticianTest(unittest.TestCase):
         event is the operator's only pointer to it."""
         captured: dict[str, Any] = {}
 
-        def spawn(prompt, env, **kw):  # type: ignore[no-untyped-def]
+        def spawn(prompt, env, entry=None, **kw):  # type: ignore[no-untyped-def]
             captured.update(kw)
             return wc.ProcResult(1, "", "killed", timed_out=True)
 
@@ -5426,21 +5434,21 @@ class DiagnosticianTest(unittest.TestCase):
         fails closed. (The codex path is safe by construction: its timeout returns `""`.)"""
         directive = 'thinking...\n{"action":"retry","target_phase":"generate","reason":"x"}'
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             -9, directive, wc._leaf_timeout_marker(7200, 7203.0), timed_out=True)
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual(d.action, "fail_closed")
         self.assertEqual(d.reason, "validate_diagnose_unparsable")
         # ...while the SAME directive from a leaf that finished on its own is still honoured.
         c2 = self._conductor()
-        c2.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(0, directive, "")  # type: ignore[assignment]
+        c2.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, directive, "")  # type: ignore[assignment]
         self.assertEqual(
             c2.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail")).action,
             "retry")
 
     def test_escalate_unparsable_is_fail_closed(self) -> None:
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(0, "I am unsure; no directive", "")  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "I am unsure; no directive", "")  # type: ignore[assignment]
         d = c.escalate(self._refs(), "build", wc.PhaseOutcome("build", "fail"))
         self.assertEqual(d.action, "fail_closed")
 
@@ -5471,7 +5479,7 @@ class DiagnosticianTest(unittest.TestCase):
             self.assertTrue(c._bwrap_enabled())  # the test conductor enforces bwrap
             captured: dict[str, object] = {}
 
-            def spawn(prompt, env, **kw):  # type: ignore[no-untyped-def]
+            def spawn(prompt, env, entry=None, **kw):  # type: ignore[no-untyped-def]
                 captured["profile"] = kw.get("profile")
                 return wc.ProcResult(
                     0, '{"action":"reopen","target_phase":"compile","reason":"diag"}', "")
@@ -5536,7 +5544,7 @@ class DiagnosticianTest(unittest.TestCase):
         c.status_fn = status_fn
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision("escalate", reason="novel")
 
-        def spawn(prompt, env, **kw):
+        def spawn(prompt, env, entry=None, **kw):
             if "diagnostician" in prompt:
                 return wc.ProcResult(
                     0, '{"action":"reopen","target_phase":"compile","reason":"diag"}', "")
@@ -5942,7 +5950,7 @@ class LeafSpawnTest(unittest.TestCase):
         )
 
     def test_codex_leaf_rejects_generic_model_alias(self) -> None:
-        with self.assertRaisesRegex(ValueError, "explicit --agent-model"):
+        with self.assertRaisesRegex(ValueError, "explicit model slug"):
             self._c(backend="codex", agent_model="codex").leaf_command("P")
 
     # --- codex JSONL stream handling -----------------------------------------
@@ -6538,7 +6546,7 @@ class LeafSpawnTest(unittest.TestCase):
             c.calls = []
             c.status_fn = lambda phase, substep, n: "pass"  # artifacts claim pass
             # leaf crashed (e.g. token limit), emitting a diagnostic to stderr
-            c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(1, "", "context limit exceeded")
+            c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(1, "", "context limit exceeded")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
@@ -6567,7 +6575,7 @@ class LeafSpawnTest(unittest.TestCase):
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                orchestration_agent_run_id="ORCH", backend="claude", env={})
             c.calls = []
-            c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(1, "", "boom")
+            c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(1, "", "boom")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
@@ -6582,7 +6590,7 @@ class LeafSpawnTest(unittest.TestCase):
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                orchestration_agent_run_id="ORCH", backend="claude", env={})
             c.calls = []
-            c.spawn_leaf = lambda prompt, env, **kw: wc.ProcResult(0, "all good", "")
+            c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "all good", "")
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
@@ -6607,7 +6615,7 @@ class LeafSpawnTest(unittest.TestCase):
                                    orchestration_agent_run_id="ORCH", backend="claude", env=env)
                 c.calls = []
 
-                def spawn(prompt, env_, **kw):
+                def spawn(prompt, env_, entry=None, **kw):
                     cap.update(kw)
                     return wc.ProcResult(0, "", "")
 
@@ -6640,7 +6648,7 @@ class LeafSpawnTest(unittest.TestCase):
                                orchestration_agent_run_id="ORCH", backend="claude", env={})
             c.calls = []
 
-            def spawn(prompt, env_, **kw):
+            def spawn(prompt, env_, entry=None, **kw):
                 cap.update(kw)
                 return wc.ProcResult(0, "", "")
 
@@ -7479,7 +7487,7 @@ class LeafSpawnTest(unittest.TestCase):
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
                         env={}, llm_command=f"python3 {script}")
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
-            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
                     patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
@@ -7512,7 +7520,7 @@ class LeafSpawnTest(unittest.TestCase):
             c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
                         env={}, llm_command=f"python3 {script}")
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
-            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
@@ -7708,7 +7716,7 @@ class LeafSpawnTest(unittest.TestCase):
                     c = self._c(repo_root=repo, backend=backend, env={},
                                 agent_model="gpt-5.6-codex")
                     c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-                    c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+                    c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
                     with patch.object(wc.subprocess, "Popen", _WedgedPopen), \
                             patch.object(wc.os, "getpgid", _getpgid), \
                             patch.object(wc.os, "killpg", _killpg), \
@@ -8002,7 +8010,7 @@ class LeafSpawnTest(unittest.TestCase):
             repo = self._profile_repo(tmp)
             c = self._c(repo_root=repo, backend="codex", agent_model="gpt-5.6-codex", env={})
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-            c._ensure_codex_feature_cache = lambda: None  # type: ignore[method-assign]
+            c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             # The cap is patched rather than set through the env var, which parses whole
             # seconds only; the waits below are real.
             with patch.object(wc.subprocess, "Popen", _WedgedPopen), \
@@ -10101,7 +10109,7 @@ class FailSummaryContractTest(unittest.TestCase):
                                orchestration_agent_run_id="ORCH", backend="claude", env={})
             c.calls = []
             c.status_fn = status_fn
-            c.spawn_leaf = lambda prompt, env, **kw: proc
+            c.spawn_leaf = lambda prompt, env, entry=None, **kw: proc
             refs = wc.NodeRefs(node_key="component/spec_x@0.1.0",
                                spec_path="spec/component/spec_x",
                                ir_id="x_1_001", pipeline_id="x_1_001")
@@ -14363,7 +14371,7 @@ class TransportTombstoneRealCliTest(unittest.TestCase):
                 # Only the bookkeeping calls that need a fully-provisioned orchestration
                 # (capability tokens, prompt rendering, return tokens) are stubbed; the
                 # tombstone goes through the real CLI, and the leaf output through the real FS.
-                def record_launch(self, child_arid, request):  # type: ignore[override]
+                def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                     return {"launch_prompt_text": "PROMPT"}
 
                 def read_parent_return_token(self, child_arid):  # type: ignore[override]
@@ -14377,7 +14385,7 @@ class TransportTombstoneRealCliTest(unittest.TestCase):
                                              min_mtime=0.0):  # type: ignore[override]
                     return "pass", ["out.json"]
 
-                def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+                def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                     spawned.append(kwargs["child_arid"])
                     return (wc.ProcResult(1, flake, "") if len(spawned) == 1
                             else wc.ProcResult(0, "done", ""))
@@ -14593,7 +14601,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             def _verify_session_resumable(self, verify_arid):  # type: ignore[override]
                 return True
 
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 if self._current_substep != "verify":
                     return wc.ProcResult(0, "", "")
                 n = state["verify_runs"]
@@ -14999,6 +15007,208 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
         self.assertEqual(req["allowed_output_paths"],
                          [f"{refs.source_dir()}/source_meta.json"])
         self.assertFalse([p for p in req["allowed_output_paths"] if p.endswith("_model.f90")])
+
+
+class LeafEntryThreadingTests(unittest.TestCase):
+    """Issue #28 Phase 2: the leaf's model is a per-launch PARAMETER, not the run's identity.
+
+    The conversion is behavior-preserving by construction, so the tests that matter are the
+    ones that would catch it NOT being: byte-identical leaf argv from the deprecated flag trio
+    and from the shipped config it maps onto, capability predicates standing in for the old
+    `backend == ...` tests, and a source-level guard that every production launch site passes
+    its own entry rather than falling through to `defaults`."""
+
+    @staticmethod
+    def _legacy(**kw) -> wc.Conductor:
+        base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                    orchestration_agent_run_id="O", backend="claude", env={})
+        base.update(kw)
+        return wc.Conductor(**base)
+
+    def _config_text(self, text: str) -> lc.LlmConfig:
+        """Load an inline config document from a scratch file (the loader reads bytes, and the
+        sha256 it records is the file's, so an on-disk file is what it wants)."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        path.write_text(text, encoding="utf-8")
+        return lc.load_llm_config(path)
+
+    @staticmethod
+    def _configured(backend: str, **kw) -> wc.Conductor:
+        cfg = lc.load_llm_config(lc.shipped_config_path(backend))
+        overrides = {k: kw.pop(k) for k in ("model", "command") if k in kw}
+        if overrides:
+            cfg = lc.apply_defaults_overrides(cfg, **overrides)
+        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                            orchestration_agent_run_id="O", env={}, llm_config=cfg, **kw)
+
+    # --- acceptance 1 (conductor half): identical argv from either spelling -------------
+
+    def _assert_same_argv(self, legacy: wc.Conductor, configured: wc.Conductor) -> None:
+        for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            le, ce = legacy.entry_for(phase, substep), configured.entry_for(phase, substep)
+            self.assertEqual(le, ce, msg=f"{phase}.{substep}")
+            for kwargs in (
+                {},                                                        # cold
+                {"session_id": "arid-1"},                                  # cold, pinned
+                {"session_id": "new", "resume_session_id": "prior"},       # warm
+                {"session_id": "arid-1", "pure": True},                    # pure cold
+                {"session_id": "n", "resume_session_id": "p", "pure": True},   # pure warm
+            ):
+                self.assertEqual(legacy.leaf_command("P", le, **kwargs),
+                                 configured.leaf_command("P", ce, **kwargs),
+                                 msg=f"{phase}.{substep} {kwargs}")
+
+    def test_claude_legacy_trio_and_shipped_config_produce_identical_argv(self) -> None:
+        self._assert_same_argv(self._legacy(backend="claude", agent_model="opus"),
+                               self._configured("claude", model="opus"))
+
+    def test_claude_llm_command_wrapper_survives_the_mapping(self) -> None:
+        self._assert_same_argv(
+            self._legacy(backend="claude", agent_model="opus", llm_command="mywrap --model Z"),
+            self._configured("claude", model="opus", command="mywrap --model Z"))
+
+    def test_codex_legacy_trio_and_shipped_config_produce_identical_argv(self) -> None:
+        self._assert_same_argv(
+            self._legacy(backend="codex", agent_model="gpt-5.6-codex"),
+            self._configured("codex", model="gpt-5.6-codex"))
+
+    def test_codex_llm_command_wrapper_survives_the_mapping(self) -> None:
+        self._assert_same_argv(
+            self._legacy(backend="codex", agent_model="gpt-5.6-codex",
+                         llm_command="codexwrap --x"),
+            self._configured("codex", model="gpt-5.6-codex", command="codexwrap --x"))
+
+    def test_the_argv_is_actually_the_pre_change_one(self) -> None:
+        """A golden, so "both spellings agree" cannot be satisfied by both being wrong."""
+        c = self._configured("claude", model="opus")
+        self.assertEqual(c.leaf_command("P", c.entry_for("validate", "judge")),
+                         ["claude", "-p", "P"])
+        k = self._configured("codex", model="gpt-5.6-codex")
+        self.assertEqual(
+            k.leaf_command("P", k.entry_for("validate", "judge")),
+            ["codex", "exec", "--model", "gpt-5.6-codex",
+             "--dangerously-bypass-hook-trust", "--json", "P"])
+
+    # --- capability predicates replace the backend tests --------------------------------
+
+    def test_usage_probe_declines_by_capability_absence_not_by_a_codex_branch(self) -> None:
+        codex = self._configured("codex", model="gpt-5.6-codex")
+        rows, meta = codex._run_usage_probe(codex.entry_for("generate", "generate"))
+        self.assertIsNone(rows)
+        self.assertEqual(meta["outcome"], "backend_unsupported")
+        # Same outcome for a CLAUDE entry whose config withdrew the capability — the probe
+        # never asks which provider it is.
+        restricted = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n"
+                "  capabilities: [agentic, pure, warm_resume, mcp_tools]\n"))
+        rows, meta = restricted._run_usage_probe(restricted.entry_for("validate", "judge"))
+        self.assertIsNone(rows)
+        self.assertEqual(meta["outcome"], "backend_unsupported")
+
+    def test_pure_session_resumable_is_false_without_the_warm_resume_capability(self) -> None:
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  capabilities: [agentic, pure]\n"))
+        self.assertFalse(c._pure_session_resumable("sess-1", c.entry_for("generate", "verify")))
+
+    def test_warm_resume_is_refused_and_reported_when_the_capability_is_absent(self) -> None:
+        emitted: list[dict] = []
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  capabilities: [agentic, pure]\n"))
+        c.emit = lambda event, **f: emitted.append({"event": event, **f})  # type: ignore
+        repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "prior-arid"}
+        self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
+        self.assertEqual([e["event"] for e in emitted], ["resume_session_unavailable"])
+        self.assertFalse(c._verify_session_resumable("prior-arid"))
+
+    def test_pure_dispatch_follows_the_pure_capability(self) -> None:
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  capabilities: [agentic]\n"))
+        c._conductor_authors_makefile = lambda refs: True   # type: ignore[assignment]
+        c._conductor_authors_runner = lambda refs: True     # type: ignore[assignment]
+        self.assertFalse(c._pure_leaf_substep(None, "generate", "generate"))
+        c2 = self._configured("claude", model="opus")
+        c2._conductor_authors_makefile = lambda refs: True  # type: ignore[assignment]
+        c2._conductor_authors_runner = lambda refs: True    # type: ignore[assignment]
+        self.assertTrue(c2._pure_leaf_substep(None, "generate", "generate"))
+
+    def test_child_env_output_ceiling_comes_from_the_entry_when_set(self) -> None:
+        c = self._configured("claude", model="opus")
+        env = c._child_env("arid", c.entry_for("generate", "generate"))
+        self.assertEqual(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], str(wc.LEAF_MAX_OUTPUT_TOKENS))
+        c2 = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n"
+                "phases:\n  generate:\n    substeps:\n      generate:\n"
+                "        max_output_tokens: 4096\n"))
+        self.assertEqual(
+            c2._child_env("arid", c2.entry_for("generate", "generate"))
+            ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "4096")
+        self.assertEqual(
+            c2._child_env("arid", c2.entry_for("validate", "judge"))
+            ["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], str(wc.LEAF_MAX_OUTPUT_TOKENS))
+
+    def test_a_mixed_config_records_per_launch_backend_tokens(self) -> None:
+        c = self._config_text(
+            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: codex_cli\n        model: gpt-5.6-codex\n")
+        self.assertEqual(c.entry_for("generate", "generate").backend_token, "claude")
+        self.assertEqual(c.entry_for("validate", "judge").backend_token, "codex")
+
+    # --- the guard that keeps the conversion honest --------------------------------------
+
+    def test_every_leaf_launch_site_passes_its_own_entry(self) -> None:
+        """No production call to an entry-taking method may omit the entry.
+
+        The methods below default to `defaults` so tests and the entry-less diagnostician can
+        call them plainly. That default is exactly the failure mode of this refactor — a launch
+        silently reverting to the run-wide model under a mixed config — so the conductor's own
+        source is parsed and every call checked for an entry argument. `escalate` and
+        `_readonly_sandbox_profile` genuinely have no phase/substep, and both resolve
+        `entry_for(None, None)` explicitly, so they pass this too."""
+        import ast
+        src = (Path(wc.__file__)).read_text(encoding="utf-8")
+        guarded = {"leaf_command", "spawn_leaf", "record_launch", "_child_env",
+                   "_agent_run_json", "workflow_launch_check", "_ensure_codex_feature_cache",
+                   "_run_usage_probe", "_usage_reset_wait_plan", "_session_id_for_child",
+                   "_pure_session_resumable", "_codex_session_home_generation",
+                   "_codex_pinned_model", "_spawn_codex_json_leaf", "_timed_out_result"}
+        offenders = []
+        for node in ast.walk(ast.parse(src)):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr in guarded):
+                continue
+            if not (isinstance(fn.value, ast.Name) and fn.value.id == "self"):
+                continue
+            names = {kw.arg for kw in node.keywords}
+            passes = "entry" in names or len(node.args) > _MIN_POSITIONAL_BEFORE_ENTRY[fn.attr]
+            if not passes:
+                offenders.append(f"{fn.attr} at line {node.lineno}")
+        self.assertEqual(offenders, [])
+
+
+# How many positional arguments precede `entry` in each guarded method's signature; a call
+# with MORE than this passed the entry positionally.
+_MIN_POSITIONAL_BEFORE_ENTRY = {
+    "leaf_command": 1, "spawn_leaf": 2, "record_launch": 2, "_child_env": 1,
+    "_agent_run_json": 99, "workflow_launch_check": 3, "_ensure_codex_feature_cache": 0,
+    "_run_usage_probe": 0, "_usage_reset_wait_plan": 99, "_session_id_for_child": 1,
+    "_pure_session_resumable": 1, "_codex_session_home_generation": 1,
+    "_codex_pinned_model": 0, "_spawn_codex_json_leaf": 99, "_timed_out_result": 99,
+}
 
 
 if __name__ == "__main__":  # pragma: no cover

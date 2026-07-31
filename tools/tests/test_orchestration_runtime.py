@@ -30904,7 +30904,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
                         "sources": [{"filename": "y_model.f90", "text": "m"}]}
 
             c._resolve_exemplar = spy_exemplar  # type: ignore[assignment]
-            c.spawn_leaf = lambda p, e, **kw: (cap.update(kw) or wc.ProcResult(0, "", ""))  # type: ignore[assignment]
+            c.spawn_leaf = lambda p, e, entry=None, **kw: (cap.update(kw) or wc.ProcResult(0, "", ""))  # type: ignore[assignment]
             c._claude_session_resumable = lambda sid: resumable  # type: ignore[assignment]
             # capture the built request so we can assert exemplar attach scope too
             orig_build = wc.build_launch_request
