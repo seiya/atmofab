@@ -1761,14 +1761,28 @@ def _llm_config_resume_rejection(
             f"cannot resume orchestration {orchestration_id}: its leaf-LLM configuration "
             f"{recorded_path!r} is gone. Restore that file, or start a fresh run."
         )
-    if on_disk != str(recorded.get("sha256") or ""):
+    if on_disk == "sha256:unreadable":
         return _fail(
             f"cannot resume orchestration {orchestration_id}: its leaf-LLM configuration "
-            f"{recorded_path!r} has changed since launch (recorded "
-            f"{recorded.get('sha256')}, now {on_disk}). The phases already run used the "
-            f"recorded models; resuming would silently run the rest on the new ones. Restore "
-            f"the file, or start a fresh run."
+            f"{recorded_path!r} exists but cannot be read, so it cannot be shown to be the one "
+            f"the run launched with. Restore access to that file, or start a fresh run."
         )
+    # BOTH hashes must match the record. `effective_sha256` is the snapshot the run will
+    # actually use — the bytes `load_llm_config` read and resolved — and `on_disk` is what the
+    # file says right now. Comparing only the file leaves a window: an atomic replace between
+    # this gate and the load (or between the load and here) resolves the entries from bytes
+    # neither hash describes, and the resume proceeds on a configuration nothing pinned. The
+    # caller passes the on-disk hash before the load and the snapshot hash after it, so between
+    # the two invocations both are checked.
+    for label, digest in (("on disk", on_disk), ("as loaded", effective_sha256)):
+        if digest and digest != str(recorded.get("sha256") or ""):
+            return _fail(
+                f"cannot resume orchestration {orchestration_id}: its leaf-LLM configuration "
+                f"{recorded_path!r} has changed since launch (recorded "
+                f"{recorded.get('sha256')}, {label} {digest}). The phases already run used the "
+                f"recorded models; resuming would silently run the rest on the new ones. "
+                f"Restore the file, or start a fresh run."
+            )
     if dict(recorded.get("overrides") or {}) != dict(effective_overrides or {}):
         return _fail(
             f"cannot resume orchestration {orchestration_id}: its deprecated leaf-LLM flag "

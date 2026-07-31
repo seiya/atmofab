@@ -5909,6 +5909,48 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(out["reason"], "llm_config_changed_since_launch")
             self.assertIn("has changed since launch", out["detail"])
 
+    def test_the_loaded_snapshot_is_compared_not_only_the_file(self) -> None:
+        """`effective_sha256` is the bytes the run will actually use. Checking only the file
+        leaves a window: an atomic replace between the gate and the load resolves the entries
+        from bytes neither hash describes, and the resume proceeds unpinned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "configs" / "llm").mkdir(parents=True)
+            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            recorded = {"path": "configs/llm/claude.yaml",
+                        "sha256": lc.config_sha256(path), "overrides": {}}
+            # The file on disk still matches; the SNAPSHOT the run loaded does not.
+            out = self._rejection(recorded, repo_root=repo_root,
+                                  effective_sha256="sha256:something-else")
+            assert out is not None
+            self.assertEqual(out["reason"], "llm_config_changed_since_launch")
+            self.assertIn("as loaded", out["detail"])
+
+    def test_an_unreadable_config_refuses_the_resume_without_a_traceback(self) -> None:
+        """`config_sha256` used to raise `PermissionError` here, and the startup handler
+        catches only `ValueError` — so a permission change turned the documented refusal into
+        an uncaught traceback."""
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "configs" / "llm").mkdir(parents=True)
+            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            recorded = {"path": "configs/llm/claude.yaml",
+                        "sha256": lc.config_sha256(path), "overrides": {}}
+            os.chmod(path, 0o000)
+            try:
+                if os.access(path, os.R_OK):    # running as root: the mode does not apply
+                    self.skipTest("cannot make a file unreadable as this user")
+                out = self._rejection(recorded, repo_root=repo_root,
+                                      effective_sha256=recorded["sha256"])
+            finally:
+                os.chmod(path, 0o644)
+            assert out is not None
+            self.assertEqual(out["reason"], "llm_config_changed_since_launch")
+            self.assertIn("cannot be read", out["detail"])
+
     def test_a_deleted_config_file_refuses_the_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = self._rejection(

@@ -738,6 +738,21 @@ class MirrorTableDriftTests(unittest.TestCase):
             self.assertEqual(lc.config_sha256(missing), ort._compute_sha256(missing))
             self.assertEqual(lc.config_sha256(missing), "sha256:missing")
 
+    def test_an_unreadable_file_hashes_to_a_value_no_record_can_match(self) -> None:
+        """A file that exists but cannot be read is not an exception the callers are shaped
+        for — the resume gate would exit with a traceback instead of its structured refusal."""
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "f.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            os.chmod(path, 0o000)
+            try:
+                if os.access(path, os.R_OK):     # running as root: the mode does not apply
+                    self.skipTest("cannot make a file unreadable as this user")
+                self.assertEqual(lc.config_sha256(path), "sha256:unreadable")
+            finally:
+                os.chmod(path, 0o644)
+
 
 if __name__ == "__main__":
     unittest.main()

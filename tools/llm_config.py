@@ -729,9 +729,16 @@ def config_sha256(path: str | Path) -> str:
     if not p.exists():
         return "sha256:missing"
     digest = hashlib.sha256()
-    with p.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            digest.update(chunk)
+    try:
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                digest.update(chunk)
+    except OSError:
+        # A file that exists but cannot be read (a permission change, a storage error) is not
+        # an exception the callers are shaped for: the resume gate would exit with a traceback
+        # instead of its structured refusal. It is a value that can never equal a recorded
+        # hash, which routes it to exactly that refusal.
+        return "sha256:unreadable"
     return f"sha256:{digest.hexdigest()}"
 
 
