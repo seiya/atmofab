@@ -531,6 +531,60 @@ class TransportBoundsTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 
+    def _silent_after_one_byte(self, status_line: bytes) -> str:
+        """A real server that sends headers, one byte, and then goes silent. Returns its
+        base_url. The socket's own timeout is what must be narrowed for this to end at the
+        deadline rather than a full timeout later."""
+        import socket
+        import threading
+
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        self.addCleanup(srv.close)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def _serve():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                conn.sendall(status_line + b"\r\nContent-Length: 100000\r\n"
+                             b"Content-Type: application/json\r\n\r\n")
+                stop.wait(0.9)               # just before a 1.0s deadline
+                try:
+                    conn.sendall(b" ")
+                except OSError:
+                    return
+                stop.wait(30)
+        threading.Thread(target=_serve, daemon=True).start()
+        return f"http://127.0.0.1:{srv.getsockname()[1]}/v1"
+
+    def test_an_error_body_that_goes_silent_still_ends_at_the_deadline(self) -> None:
+        """The wrapper chain nests differently for an `HTTPError` (it adds a layer), so a
+        fixed-path unwrap reached the socket for a success and not for an error — a 503 whose
+        body went silent ran for the deadline PLUS a full socket timeout (measured 3.5 s
+        against a 2 s bound)."""
+        entry = _entry(base_url=self._silent_after_one_byte(b"HTTP/1.1 503 Unavailable"))
+        started = time.monotonic()
+        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=1.0)
+        elapsed = time.monotonic() - started
+        self.assertIn("HTTP 503", str(out.transport_error))
+        # An un-narrowed socket would wait a full extra timeout from t=0.9 -> ~1.9s.
+        self.assertLess(elapsed, 1.4, msg=f"took {elapsed:.1f}s for a 1.0s deadline")
+
+    def test_a_success_body_that_goes_silent_ends_at_the_deadline(self) -> None:
+        entry = _entry(base_url=self._silent_after_one_byte(b"HTTP/1.1 200 OK"))
+        started = time.monotonic()
+        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=1.0)
+        elapsed = time.monotonic() - started
+        self.assertEqual(out.transport_error, "response_deadline_exceeded")
+        self.assertLess(elapsed, 1.4, msg=f"took {elapsed:.1f}s for a 1.0s deadline")
+
     def test_the_deadline_bounds_the_TOTAL_not_each_receive(self) -> None:
         """`urlopen(timeout=)` applies to each receive independently, so a server that sends a
         byte just before the deadline and then stalls would buy itself another full timeout —

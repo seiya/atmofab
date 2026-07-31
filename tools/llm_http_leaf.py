@@ -104,6 +104,10 @@ _READ_CHUNK_BYTES = 65536
 # An error body is only ever a diagnostic excerpt (`_ERROR_DETAIL_CHARS` of it survives), so it
 # gets its own, far smaller ceiling: reading 32 MiB to keep 400 characters is not a bound worth
 # having, and a gateway emitting an enormous error page is exactly when it matters.
+# How far to unwrap looking for a socket. The deepest real chain is four
+# (`HTTPError -> HTTPResponse -> BufferedReader -> SocketIO -> socket`); the bound exists so a
+# self-referential or unexpectedly deep object cannot spin here.
+_SOCKET_UNWRAP_MAX_DEPTH = 8
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _ERROR_DETAIL_CHARS = 400
 
@@ -111,17 +115,33 @@ _ERROR_DETAIL_CHARS = 400
 def _set_socket_timeout(response: Any, seconds: float) -> None:
     """Best-effort: set the underlying socket's timeout, so a blocking receive cannot outlive
     the caller's deadline. Silent on any object that does not expose one — a test double, or a
-    future response type — because this narrows a bound rather than establishing it."""
-    for attribute in ("fp", "raw", "_sock"):
-        response = getattr(response, attribute, None)
-        if response is None:
+    future response type — because this narrows a bound rather than establishing it.
+
+    The wrapper chain is walked GENERICALLY rather than by a fixed path, because the two
+    response types nest differently: a success is `HTTPResponse -> fp(BufferedReader) ->
+    raw(SocketIO) -> _sock`, while an `HTTPError` adds a layer (`HTTPError -> fp(HTTPResponse)
+    -> ...`). A fixed `fp, raw, _sock` walk reached the socket for the first and not the
+    second, so a 503 whose body went silent ran for the deadline PLUS a full socket timeout —
+    measured 3.5 s against a 2 s bound."""
+    seen: set[int] = set()
+    for _ in range(_SOCKET_UNWRAP_MAX_DEPTH):
+        if response is None or id(response) in seen:
             return
-    settimeout = getattr(response, "settimeout", None)
-    if callable(settimeout):
-        try:
-            settimeout(max(seconds, 0.001))
-        except (OSError, ValueError):            # pragma: no cover - defensive
-            pass
+        seen.add(id(response))
+        settimeout = getattr(response, "settimeout", None)
+        if callable(settimeout):
+            try:
+                settimeout(max(seconds, 0.001))
+            except (OSError, ValueError):        # pragma: no cover - defensive
+                pass
+            return
+        for attribute in ("fp", "raw", "_sock"):
+            nested = getattr(response, attribute, None)
+            if nested is not None:
+                response = nested
+                break
+        else:
+            return
 
 
 def _read_bounded(response: Any, deadline: float,
