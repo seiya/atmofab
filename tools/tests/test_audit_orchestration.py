@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tools import audit_orchestration as ao
 from tools import orchestration_diagnostics as diag
 from tools.audit_orchestration import (
     audit,
@@ -1297,6 +1298,63 @@ class PureLeafABSummaryTest(unittest.TestCase):
         md = "\n".join(lines)
         self.assertIn("no pure-leaf node located", md)
         self.assertIn("unrecorded", md)
+
+
+class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
+    """`preflight.json#backend` / `#agent_version` describe `defaults` only since issue #28, and
+    this section exists to attribute PURE-LEAF metrics — whose leaves are the ones an operator
+    is most likely to have moved elsewhere."""
+
+    def _summary(self, leaf_map: dict) -> dict:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = repo_root / "workspace" / "orchestrations" / "o"
+            orch.mkdir(parents=True)
+            (orch / "orchestration_meta.json").write_text(json.dumps({
+                "orchestration_id": "o",
+                "invocation": {"generate_executor": "pure", "llm_leaf_map": leaf_map},
+            }), encoding="utf-8")
+            (orch / "preflight.json").write_text(json.dumps({
+                "backend": "claude", "agent_version": "2.1.9 (Claude Code)"}), encoding="utf-8")
+            meta = json.loads((orch / "orchestration_meta.json").read_text(encoding="utf-8"))
+            return ao.collect_pure_leaf_ab_summary(repo_root, "o", meta)
+
+    def _render(self, summary: dict) -> str:
+        lines: list[str] = []
+        ao._render_pure_leaf_ab(summary, lines)
+        return "\n".join(lines)
+
+    def test_a_uniform_run_still_reports_the_probed_cli_version(self) -> None:
+        summary = self._summary({"generate.generate": {"backend": "claude", "model": "opus"}})
+        self.assertEqual(summary["backend"], "claude")
+        self.assertIn("claude --version: `2.1.9 (Claude Code)`", self._render(summary))
+
+    def test_a_legacy_record_without_a_leaf_map_is_unchanged(self) -> None:
+        summary = self._summary({})
+        self.assertEqual(summary["backend"], "claude")
+        self.assertIn("claude --version:", self._render(summary))
+
+    def test_pure_leaves_on_another_provider_are_named_without_a_borrowed_version(self) -> None:
+        summary = self._summary({
+            "generate.generate": {"backend": "openai_compatible", "model": "local-coder"},
+            "generate.verify": {"backend": "openai_compatible", "model": "local-coder"},
+            "validate.judge": {"backend": "claude", "model": "opus"},
+        })
+        rendered = self._render(summary)
+        self.assertEqual(summary["backend"], "openai_compatible")
+        self.assertIn("pure-leaf provider: `openai_compatible`", rendered)
+        # The version line is the DEFAULT backend's and would be false provenance here.
+        self.assertNotIn("2.1.9 (Claude Code)", rendered)
+        self.assertNotIn("--version", rendered)
+
+    def test_the_attributed_substeps_track_the_pure_capable_table(self) -> None:
+        import tools.llm_config as lc
+        self.assertEqual(
+            ao._PURE_LEAF_MAP_KEYS,
+            frozenset(f"{p}.{s}" for p, s in lc.PURE_CAPABLE_SUBSTEPS))
+        # A leaf outside that set must not steer the attribution.
+        summary = self._summary({"compile.verify": {"backend": "codex", "model": "x"}})
+        self.assertEqual(summary["backend"], "claude")
 
 
 if __name__ == "__main__":

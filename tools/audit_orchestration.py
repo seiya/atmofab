@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
+
 try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
     from orchestration_diagnostics import (
         build_launch_incident,
@@ -504,6 +506,12 @@ def collect_token_cost_summary(
 _KNOWN_GENERATE_EXECUTORS: tuple[str, ...] = ("legacy", "pure")
 
 
+# The `llm_leaf_map` keys whose provider this section attributes: the pure-capable substeps,
+# read from `llm_config` rather than restated, so adding one cannot silently leave it out.
+_PURE_LEAF_MAP_KEYS: frozenset[str] = frozenset(
+    f"{phase}.{substep}" for phase, substep in _PURE_CAPABLE_SUBSTEPS)
+
+
 def _clean_str(value: Any) -> str | None:
     """Return a stripped non-empty string, else None.
 
@@ -636,10 +644,11 @@ def collect_pure_leaf_ab_summary(
     pure_leaf_providers = sorted({
         _clean_str(row.get("backend"))
         for key, row in leaf_map.items()
-        if key in ("generate.generate", "generate.verify") and isinstance(row, dict)
+        if key in _PURE_LEAF_MAP_KEYS and isinstance(row, dict)
         and _clean_str(row.get("backend"))
     })
-    if pure_leaf_providers and pure_leaf_providers != [backend]:
+    pure_leaf_provider_differs = bool(pure_leaf_providers) and pure_leaf_providers != [backend]
+    if pure_leaf_provider_differs:
         backend = "/".join(pure_leaf_providers)
         agent_cli_version = ""
 
@@ -658,6 +667,10 @@ def collect_pure_leaf_ab_summary(
         "generate_executor": generate_executor,
         "backend": backend,
         "agent_cli_version": agent_cli_version,
+        # True when the pure leaves ran on a provider the top-level `backend` / `agent_version`
+        # do not describe; the renderer then names the provider instead of borrowing the
+        # default backend's CLI version.
+        "pure_leaf_provider_differs": pure_leaf_provider_differs,
         "pure_nodes": nodes,
     }
     if not nodes:
@@ -1003,8 +1016,15 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     summary = summary if isinstance(summary, dict) else {}
     recorded_executor = summary.get("generate_executor")
     executor = recorded_executor or "unknown"
-    version = summary.get("agent_cli_version") or "unrecorded"
+    # `raw_version` before the placeholder: `or "unrecorded"` makes the value unconditionally
+    # truthy, so testing the placeholder would take the version branch even when the collector
+    # deliberately blanked it to say "the pure leaves did not run on the CLI this version
+    # describes".
+    version = _clean_str(summary.get("agent_cli_version")) or "unrecorded"
     backend = summary.get("backend")
+    # An EXPLICIT flag from the collector, not "the version is blank": a uniform run whose
+    # preflight recorded no version still reports `unrecorded` against its own backend.
+    provider_differs = bool(summary.get("pure_leaf_provider_differs"))
     lines.append(f"- generate-executor: `{executor}`")
     # Report the recorded value verbatim (diagnostics say what IS recorded, not what
     # should be) but flag an out-of-vocabulary one: the branches below key on the
@@ -1017,10 +1037,10 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     # Label the version by the backend that was actually probed. `agent_version` is
     # whichever CLI ran, so a fixed "claude --version" label would misreport every
     # codex orchestration's version as Claude's.
-    if version:
+    if not provider_differs:
         version_label = f"{backend} --version" if backend else "backend CLI --version"
         lines.append(f"- {version_label}: `{version}` (from `preflight.json#agent_version`)")
-    elif backend:
+    else:
         # The pure leaves ran somewhere the preflight's top-level version does not describe
         # (a per-substep provider). Naming the provider without a version is the honest report;
         # borrowing the default backend's version would be false provenance.

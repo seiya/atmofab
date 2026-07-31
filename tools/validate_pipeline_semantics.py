@@ -9451,6 +9451,28 @@ def _validate_orchestration_hierarchy(
                                                 f"NOT reference a sandbox profile (got "
                                                 f"{sbx_ref_for_launch!r})"
                                             )
+                                        # A genuine HTTP launch writes no profile, so one
+                                        # EXISTING alongside the exemption is incoherent — and
+                                        # is exactly how a tampered CLI record would claim the
+                                        # exemption to escape the profile-content audit below.
+                                        # Checking the file costs a stat and closes that.
+                                        if (orchestration_dir / "sandbox_profiles"
+                                                / f"{run_id}.json").exists():
+                                            violations.append(
+                                                f"{runs_path}:line {idx + 1} http pure launch "
+                                                f"claims no sandbox, but "
+                                                f"sandbox_profiles/{run_id}.json exists"
+                                            )
+                                        # The row must agree with the response it points at: an
+                                        # exemption granted on a response whose provider the row
+                                        # does not claim is a record disagreeing with itself.
+                                        row_backend = str(item.get("agent_backend") or "").strip()
+                                        if row_backend.lower() not in _HTTP_PURE_LEAF_BACKENDS:
+                                            violations.append(
+                                                f"{runs_path}:line {idx + 1} http pure launch row "
+                                                f"agent_backend must be an http provider (got "
+                                                f"{row_backend!r})"
+                                            )
                                         sbx_doc = None
                                         sbx_path = None
                                     else:

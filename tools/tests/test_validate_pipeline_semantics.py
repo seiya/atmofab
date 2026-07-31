@@ -17050,9 +17050,29 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         resp["sandbox_runtime"] = "none"
         resp["sandbox_enforced"] = False
         resp.pop("sandbox_profile_ref", None)
-        resp_path.write_text(json.dumps(resp, ensure_ascii=False), encoding="utf-8")
+        body = json.dumps(resp, ensure_ascii=False)
+        resp_path.write_text(body, encoding="utf-8")
+        # `record_launch` writes BOTH copies and the sweep compares them; mutating only one
+        # leaves a `must equal launches response payload` violation the filter would hide.
+        (orch_root / "agents" / self._ARID / "dialogs"
+         / "child.response.json").write_text(body, encoding="utf-8")
+        # `record_agent_run` stamps the row from the same response.
+        self._patch_row(repo_root, agent_backend=backend)
         if not keep_profile:
             (orch_root / "sandbox_profiles" / f"{self._ARID}.json").unlink(missing_ok=True)
+
+    def _patch_row(self, repo_root: Path, **fields) -> None:
+        runs = self._orch_root(repo_root) / "agent_runs.jsonl"
+        out = []
+        for line in runs.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                out.append(line)
+                continue
+            row = json.loads(line)
+            if row.get("agent_run_id") == self._ARID:
+                row.update(fields)
+            out.append(json.dumps(row, ensure_ascii=False))
+        runs.write_text("\n".join(out) + "\n", encoding="utf-8")
 
     def test_an_http_pure_launch_needs_no_sandbox_profile(self) -> None:
         """An HTTP pure leaf is answered from the conductor's own process, so `record_launch`
@@ -17065,6 +17085,42 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._make_pure(repo_root)
             self._make_http(repo_root)
             self.assertEqual(self._pure_violations(repo_root), [])
+            # Compared against the SAME tree without the HTTP conversion, so this asserts the
+            # conversion adds nothing rather than that the filter hides everything.
+            with tempfile.TemporaryDirectory() as tmp2:
+                control = Path(tmp2)
+                self._build_tree(control)
+                self._make_pure(control)
+                self.assertEqual(
+                    self._all_violations(repo_root), self._all_violations(control))
+
+    def _all_violations(self, repo_root: Path) -> list[str]:
+        """Every violation, with the run-specific tmp path stripped so two trees compare."""
+        return sorted(
+            v.replace(str(repo_root), "<root>")
+            for v in validate(repo_root=repo_root, workspace_root="workspace",
+                              require_orchestration=True))
+
+    def test_an_http_exemption_with_a_profile_still_on_disk_is_flagged(self) -> None:
+        """A genuine HTTP launch writes none, so one existing alongside the claim is how a
+        tampered CLI record would escape the profile-content audit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root, keep_profile=True)
+            self.assertTrue([v for v in self._pure_violations(repo_root)
+                             if "sandbox_profiles/" in v and "exists" in v])
+
+    def test_an_http_exemption_needs_the_row_to_agree_with_the_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root)
+            self._patch_row(repo_root, agent_backend="claude")
+            self.assertTrue([v for v in self._pure_violations(repo_root)
+                             if "agent_backend must be an http provider" in v])
 
     def test_a_cli_pure_launch_still_needs_one(self) -> None:
         """The control: the exemption is not "a missing profile is fine"."""

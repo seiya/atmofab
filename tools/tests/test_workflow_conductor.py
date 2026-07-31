@@ -15194,6 +15194,30 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c.record_launch("arid-2", {}, c.entry_for("validate", "judge"))
         self.assertEqual([r["backend"] for r in recorded], ["claude", "codex"])
 
+    def test_record_launch_names_the_executable_this_leaf_is_launched_through(self) -> None:
+        """`record_launch` builds the sandbox's read-only bind of the CLI install directory
+        from this. It used to take `preflight.json#probe_command` — the run's `defaults` — which
+        was the same object only while a run had one `--llm-command`. With a per-entry
+        `command:` the leaf would be launched inside a sandbox where its binary is not bound."""
+        recorded: list[dict] = []
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "  command: /opt/wrap/claude --sandbox\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n"
+                "        command: /opt/other/claude\n"))
+        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+            recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
+        for phase, substep in (("generate", "generate"), ("validate", "judge")):
+            entry = c.entry_for(phase, substep)
+            c.record_launch(f"arid-{substep}", {}, entry)
+            # THE claim: what is recorded is argv[0] of what `spawn_leaf` would launch.
+            self.assertEqual(recorded[-1]["backend_command"],
+                             c.leaf_command("P", entry)[0], msg=f"{phase}.{substep}")
+        self.assertEqual([r["backend_command"] for r in recorded],
+                         ["/opt/wrap/claude", "/opt/other/claude"])
+
     def test_the_codex_finalize_row_survives_a_populated_session_index(self) -> None:
         """`_agent_run_json`'s codex branch walks the session index; its loop variable used to
         shadow the entry, so every codex finalize died with an AttributeError — and no test
