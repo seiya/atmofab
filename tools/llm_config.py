@@ -241,7 +241,11 @@ _ENTRY_FIELDS: frozenset[str] = frozenset({
 # token budget — so the field does not apply there and saying otherwise is an operator error.
 _EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
     "claude_cli": frozenset({"low", "medium", "high", "xhigh", "max"}),
-    "codex_cli": frozenset({"none", "minimal", "low", "medium", "high", "xhigh"}),
+    # Read off `~/.codex/models_cache.json` (`supported_reasoning_levels`), which is what the
+    # CLI itself resolves against — NOT inferred from the OpenAI API's `reasoning_effort`
+    # vocabulary, which is a different list. The union over the served coding models: Sol and
+    # Terra accept all six, Luna every one but `ultra`. Codex has no `none` and no `minimal`.
+    "codex_cli": frozenset({"low", "medium", "high", "xhigh", "max", "ultra"}),
     "openai_compatible": frozenset({"minimal", "low", "medium", "high"}),
 }
 

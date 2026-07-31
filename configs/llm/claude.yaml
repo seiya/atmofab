@@ -20,12 +20,35 @@
 #            `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus` — which overrides the `model` in the operator's own
 #            `~/.claude/settings.json`. Delete the `model:` lines to hand that choice back.
-#   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`. All five
-#            leaves are judgement-bearing — an IR author, two verifiers, a bundle producer and a
-#            semantic judge — and this repository's standing rule is that nothing may trade
-#            accuracy for speed, so the shipped default asks for `high` everywhere rather than
-#            economising on the ones that look cheap. Lower it per substep to buy speed
-#            knowingly; delete the line to leave the CLI's own default in force.
+#   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
+#
+# WHY THESE VALUES. Measured over the 94 recorded orchestrations that still have transcripts
+# (`skills/workflow-timing-audit/`), by share of output tokens and by how often the leaf had to
+# be re-run:
+#
+#     leaf                 tokens   re-run   attempts seen
+#     generate.generate     45.3%    30.2%   1..7   (only 39 of 87 nodes passed first try)
+#     compile.generate      26.7%    14.8%   1..3
+#     generate.verify       11.3%    21.8%   1..5
+#     compile.verify         8.3%     3.3%   1..2   (90 of 93 nodes passed first try)
+#     validate.judge         8.2%     0.0%   1      (69 of 69)
+#
+# Re-runs are 20% of every token this pipeline has ever spent, and they are concentrated in the
+# leaves that WRITE things. That inverts the usual intuition: on `generate.generate` a cheaper
+# setting is not a discount, it is a bet against a leaf that already reaches 7 attempts against
+# a `MAX_ATTEMPTS_PER_PHASE` of 3 — and going over does not cost one more attempt, it fails the
+# phase and re-runs the node. So the four leaves that write, or whose mistakes force a rewrite,
+# stay at the top setting; economising them raises the expected bill rather than lowering it.
+#
+# `compile.verify` is the one place the numbers support spending less. It is the smallest leaf,
+# it re-ran in 3 of 93 nodes, it reads an IR that the deterministic `compile.static` gate has
+# already proved clean, and anything it lets through is looked at again by `generate` and by
+# `validate.judge`. `validate.judge` is NOT economised despite also being small and never
+# re-run: nothing runs after it, so what it misses ships.
+#
+# Raising `generate.generate` to `xhigh` is the other move worth considering, and is left off
+# deliberately: it costs ~40% more on every attempt, so it only pays if it lifts the first-try
+# rate from 45% to about 65%, which nothing here measures. Run the A/B before adopting it.
 #
 # To move one leaf elsewhere, replace its block. HTTP providers (`openai_compatible`,
 # `anthropic_api`) are admissible ONLY on the two `generate` leaves, which run as host-mediated
@@ -55,25 +78,30 @@ defaults:
 phases:
   compile:
     substeps:
-      # Authors spec.ir.yaml from the controlled spec: the hardest structured task in the run.
+      # Authors spec.ir.yaml from the controlled spec: the hardest structured task in the run,
+      # 26.7% of all tokens, and every later leaf reads what it wrote.
       generate:
         provider: claude_cli
         model: opus
         effort: high
-      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR.
+      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest
+      # leaf to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge`
+      # read the same IR afterwards. The only leaf this file economises.
       verify:
         provider: claude_cli
-        model: opus
-        effort: high
+        model: sonnet
+        effort: medium
 
   generate:
     substeps:
-      # The CodegenBundle producer — the dominant leaf of the run, by tokens and by difficulty.
+      # The CodegenBundle producer — 45.3% of all tokens and the only leaf that routinely
+      # re-runs (30.2% of its spend is re-runs, tail to 7 attempts). The last leaf to economise.
       generate:
         provider: claude_cli
         model: opus
         effort: high
-      # The verdict reviewer, reached only on a source the deterministic gate already accepted.
+      # The verdict reviewer, reached only on a source the deterministic gate already accepted —
+      # but it re-ran in 12 of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
         provider: claude_cli
         model: opus
@@ -81,7 +109,8 @@ phases:
 
   validate:
     substeps:
-      # The independent semantic check; the contract calls it essential, so it is not economised.
+      # The independent semantic check. Never re-run in 69 of 69 nodes, so its cost is perfectly
+      # predictable — and still not economised, because nothing runs after it to catch a miss.
       judge:
         provider: claude_cli
         model: opus

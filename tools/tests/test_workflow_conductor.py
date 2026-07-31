@@ -781,7 +781,12 @@ class ConductHappyPathTest(unittest.TestCase):
                 agent_model="", workflow_mode="dev", env={})
         self.assertEqual(status, "pass")
         self.assertEqual(seen["model"], "opus")
-        self.assertEqual(seen["leaf_models"], {"opus"})
+        # Derived, not spelled out: the shipped file no longer gives every leaf the same model
+        # (`compile.verify` is deliberately cheaper), and a literal set here would just have to
+        # be edited each time that choice is revisited.
+        shipped = lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT))
+        self.assertEqual(seen["leaf_models"],
+                         {e.model for e in shipped.entries.values()})
         self.assertNotRegex(str(seen["model"]), r"-\d+-\d+$")
 
     def test_run_conductor_requires_explicit_codex_model(self) -> None:
@@ -832,7 +837,7 @@ class ConductHappyPathTest(unittest.TestCase):
             c = _FakeConductor(
                 repo_root=repo_root, orchestration_id="orch_x",
                 orchestration_agent_run_id="ORCH", backend="codex", env={},
-                agent_model="gpt-5.6-codex",
+                agent_model="gpt-5.6-sol",
             )
             hooks_path = repo_root / "workspace" / "orchestrations" / "orch_x" / "hooks" / "native_hook_events.jsonl"
             hooks_path.parent.mkdir(parents=True)
@@ -846,7 +851,7 @@ class ConductHappyPathTest(unittest.TestCase):
             )
             payload = c._agent_run_json(
                 self._refs(), "compile", "generate", "child-arid-3", "pass", [])
-        self.assertEqual(payload["agent_model"], "gpt-5.6-codex")
+        self.assertEqual(payload["agent_model"], "gpt-5.6-sol")
         self.assertEqual(payload["agent_model_provenance"], "codex_launch_pinned")
 
     def test_agent_run_json_carries_step_and_substep(self) -> None:
@@ -5941,14 +5946,14 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
         self.assertEqual(c.leaf_command("PROMPT"), ["mywrap", "--model", "Z", "-p", "PROMPT"])
-        c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-codex")
-        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"])
+        c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
+        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "P"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
         self.assertEqual(self._c(backend="claude").leaf_command("P"), ["claude", "-p", "P"])
         self.assertEqual(
-            self._c(backend="codex", agent_model="gpt-5.6-codex").leaf_command("P"),
-            ["codex", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"],
+            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command("P"),
+            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "P"],
         )
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
@@ -5959,8 +5964,8 @@ class LeafSpawnTest(unittest.TestCase):
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
-            self._c(backend="codex", agent_model="gpt-5.6-codex").leaf_command("P", session_id="arid-1"),
-            ["codex", "exec", "--model", "gpt-5.6-codex", "--dangerously-bypass-hook-trust", "--json", "P"],
+            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command("P", session_id="arid-1"),
+            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "P"],
         )
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
@@ -5972,10 +5977,10 @@ class LeafSpawnTest(unittest.TestCase):
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         self.assertEqual(
             c.leaf_command("repair", resume_session_id="thread-123"),
-            ["codex", "exec", "resume", "--model", "gpt-5.6-codex", "thread-123",
+            ["codex", "exec", "resume", "--model", "gpt-5.6-sol", "thread-123",
              "--dangerously-bypass-hook-trust", "--json", "repair"],
         )
 
@@ -6017,7 +6022,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = (  # type: ignore[method-assign]
             register if register is not None else (lambda *a: None))
         with patch.object(wc.subprocess, "Popen", _FakePopen):
@@ -6129,7 +6134,7 @@ class LeafSpawnTest(unittest.TestCase):
                     signalled.append((pgid, sig))
                     return None
 
-                c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+                c = self._c(backend="codex", agent_model="gpt-5.6-sol")
                 c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
                 with patch.object(wc.subprocess, "Popen", _FakePopen), \
                         patch.object(wc.queue, "Queue", _InterruptedQueue), \
@@ -6179,7 +6184,7 @@ class LeafSpawnTest(unittest.TestCase):
         def _boom(*_args):  # type: ignore[no-untyped-def]
             raise OSError(28, "No space left on device")
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = _boom  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _NeverExitsPopen), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
@@ -6214,7 +6219,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             c = self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
-                agent_model="gpt-5.6-codex")
+                agent_model="gpt-5.6-sol")
             c._register_codex_thread("A", "thread-1")
 
             launch_response = json.loads(
@@ -6259,7 +6264,7 @@ class LeafSpawnTest(unittest.TestCase):
                 try:
                     c = self._c(
                         repo_root=repo, orchestration_id="o", backend="codex",
-                        agent_model="gpt-5.6-codex")
+                        agent_model="gpt-5.6-sol")
                     barrier.wait()
                     c._register_codex_thread(arid, f"thread-{arid}")
                 except BaseException as exc:
@@ -6308,7 +6313,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             c = self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
-                agent_model="gpt-5.6-codex")
+                agent_model="gpt-5.6-sol")
             child_response_path = dialogs_dir / "child.response.json"
             real_replace = wc_runtime.os.replace
             failed = False
@@ -6356,7 +6361,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             c = self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
-                agent_model="gpt-5.6-codex")
+                agent_model="gpt-5.6-sol")
             real_replace = wc_runtime.os.replace
             failed_commit = False
             failed_rollback = False
@@ -6403,7 +6408,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
-                agent_model="gpt-5.6-codex")
+                agent_model="gpt-5.6-sol")
 
             self.assertEqual(
                 json.loads(response_path.read_text(encoding="utf-8")),
@@ -6431,7 +6436,7 @@ class LeafSpawnTest(unittest.TestCase):
 
             self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
-                agent_model="gpt-5.6-codex")
+                agent_model="gpt-5.6-sol")
 
             self.assertFalse(tx_dir.exists())
 
@@ -6460,7 +6465,7 @@ class LeafSpawnTest(unittest.TestCase):
             ):
                 self._c(
                     repo_root=repo, orchestration_id="o", backend="codex",
-                    agent_model="gpt-5.6-codex")
+                    agent_model="gpt-5.6-sol")
 
             self.assertEqual(
                 json.loads(protected.read_text(encoding="utf-8")),
@@ -6546,7 +6551,7 @@ class LeafSpawnTest(unittest.TestCase):
         exists to handle such a reply never runs.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-codex")
+            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-sol")
             proc = wc.ProcResult(0, '{"a":"\ud800"}', "boom \ud800",
                                  raw_stdout='{"text":"\ud800"}\n')
             c._persist_leaf_output("A", proc)
@@ -6561,7 +6566,7 @@ class LeafSpawnTest(unittest.TestCase):
         # `.jsonl` would sit next to freshly overwritten `.log` files and read as this
         # run's event stream. Skipping the write when absent is not enough.
         with tempfile.TemporaryDirectory() as tmp:
-            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-codex")
+            c = self._c(repo_root=Path(tmp), backend="codex", agent_model="gpt-5.6-sol")
             dialogs = (Path(tmp) / "workspace" / "orchestrations" / "o"
                        / "agents" / "A" / "dialogs")
             c._persist_leaf_output("A", wc.ProcResult(0, "x", "", raw_stdout='{"a":1}\n'))
@@ -7514,7 +7519,7 @@ class LeafSpawnTest(unittest.TestCase):
             # carrying both quote characters cannot survive that round trip.
             script = Path(tmp) / "leaf.py"
             script.write_text(source, encoding="utf-8")
-            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
+            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
             c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
@@ -7547,7 +7552,7 @@ class LeafSpawnTest(unittest.TestCase):
             # From a FILE: see the sibling flood test — the leaf command is shlex-split.
             script = Path(tmp) / "leaf.py"
             script.write_text(source, encoding="utf-8")
-            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-codex",
+            c = self._c(repo_root=Path("/tmp"), backend="codex", agent_model="gpt-5.6-sol",
                         env={}, llm_command=f"python3 {script}")
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
             c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
@@ -7744,7 +7749,7 @@ class LeafSpawnTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp:
                     repo = self._profile_repo(tmp)
                     c = self._c(repo_root=repo, backend=backend, env={},
-                                agent_model="gpt-5.6-codex")
+                                agent_model="gpt-5.6-sol")
                     c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
                     c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
                     with patch.object(wc.subprocess, "Popen", _WedgedPopen), \
@@ -7972,7 +7977,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _QuickPopen), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
@@ -7995,7 +8000,7 @@ class LeafSpawnTest(unittest.TestCase):
         released = threading.Event()
         signalled: list[tuple[int, int]] = []
         usage_line = ('{"type":"turn.started","turn":{"usage":{"input_tokens":11},'
-                      '"model":"gpt-5.6-codex"}}\n')
+                      '"model":"gpt-5.6-sol"}}\n')
 
         # One line each, then nothing at all — exactly like a wedged leaf — until the kill
         # lands. The pipes stay OPEN meanwhile, which is what makes this a wedge rather
@@ -8038,7 +8043,7 @@ class LeafSpawnTest(unittest.TestCase):
         out = io.StringIO()
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._profile_repo(tmp)
-            c = self._c(repo_root=repo, backend="codex", agent_model="gpt-5.6-codex", env={})
+            c = self._c(repo_root=repo, backend="codex", agent_model="gpt-5.6-sol", env={})
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             # The cap is patched rather than set through the env var, which parses whole
@@ -8065,7 +8070,7 @@ class LeafSpawnTest(unittest.TestCase):
         # which is the only account of what those (up to) two hours cost.
         self.assertEqual(proc.raw_stdout, usage_line)
         self.assertEqual(proc.usage, {"input_tokens": 11})
-        self.assertEqual(proc.model, "gpt-5.6-codex")
+        self.assertEqual(proc.model, "gpt-5.6-sol")
         # A WARM attempt (launched with `resume_session_id`) keeps its resume mode: the killed
         # attempt's `agent_runs.jsonl` row is where that is recorded.
         self.assertEqual(proc.resume_mode, "in_place")
@@ -8127,7 +8132,7 @@ class LeafSpawnTest(unittest.TestCase):
             signalled.append(sig)
             return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         out = io.StringIO()
         with patch.object(wc.subprocess, "Popen", _NeverExitsPopen), \
@@ -8176,7 +8181,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         out = io.StringIO()
         with patch.object(wc.subprocess, "Popen", _ExitedWithOpenPipePopen), \
@@ -8228,7 +8233,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         out = io.StringIO()
         with patch.object(wc.subprocess, "Popen", _ChattyPopen), \
@@ -8274,7 +8279,7 @@ class LeafSpawnTest(unittest.TestCase):
         def _boom(*_args):  # type: ignore[no-untyped-def]
             raise OSError(28, "No space left on device")
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = _boom  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _WedgedAfterRegistrationPopen), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
@@ -8321,7 +8326,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         out = io.StringIO()
         with patch.object(wc.subprocess, "Popen", _ChattyPopen), \
@@ -8352,7 +8357,7 @@ class LeafSpawnTest(unittest.TestCase):
         lines = (['{"type":"thread.started","thread_id":"t-1"}\n']
                  + ['{"type":"item.started","item":{"type":"tool_call"}}\n'] * backlog
                  + ['{"type":"turn.started","turn":{"usage":{"input_tokens":7},'
-                    '"model":"gpt-5.6-codex"}}\n',
+                    '"model":"gpt-5.6-sol"}}\n',
                     '{"type":"turn.failed","error":{"message":"boom"}}\n'])
 
         pipes = (self._pipe("".join(lines)), self._pipe())
@@ -8374,7 +8379,7 @@ class LeafSpawnTest(unittest.TestCase):
                 return None
 
         registrations: list = []
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = (  # type: ignore[method-assign]
             lambda *a: registrations.append(a))
         # A cap so small that the read loop gives up before consuming the stream, leaving the
@@ -8396,7 +8401,7 @@ class LeafSpawnTest(unittest.TestCase):
         # ...and the value-carrying events in that backlog are folded in: the billed usage and
         # the model of an attempt that may have run for hours, and its terminal failure.
         self.assertEqual(proc.usage, {"input_tokens": 7})
-        self.assertEqual(proc.model, "gpt-5.6-codex")
+        self.assertEqual(proc.model, "gpt-5.6-sol")
         self.assertIs(proc.timed_out, True)
         self.assertIn("turn.failed", proc.stderr)   # the structured terminal event survives
         # ...but the `thread.started` in that backlog is NOT replayed: registration is a
@@ -8448,7 +8453,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _DyingPipePopen), \
                 patch.object(wc.os, "read", _read), \
@@ -8518,7 +8523,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ExitedFloodedPopen), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
@@ -8571,7 +8576,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         def _killpg(pgid, sig):  # type: ignore[no-untyped-def]
             # The group is gone once signalled, so the teardown returns at once instead of
@@ -8638,7 +8643,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
                 patch.object(wc.os, "read", _read), \
@@ -8689,7 +8694,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ChattyStderrPopen), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 10_000), \
@@ -8743,7 +8748,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         # Warm the lazy import behind `_pid_start_ticks` (it pulls in `tools.run_workflow`
         # and its dependents, ~1 MB of module objects on first call): one-time import cost
@@ -8811,7 +8816,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _BigRecordPopen), \
                 patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
@@ -8866,7 +8871,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
                 patch.object(wc, "_leaf_stream_encoding", lambda: "utf-8"), \
@@ -9006,7 +9011,7 @@ class LeafSpawnTest(unittest.TestCase):
                     def send_signal(self, sig):  # type: ignore[no-untyped-def]
                         return None
 
-                c = self._c(backend=backend, agent_model="gpt-5.6-codex")
+                c = self._c(backend=backend, agent_model="gpt-5.6-sol")
                 c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
                 c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
                 with patch.object(wc.subprocess, "Popen", _Popen), \
@@ -9069,7 +9074,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", 3_000), \
@@ -9257,7 +9262,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
                 patch.object(wc, "_leaf_stream_encoding", lambda: "utf-8"), \
@@ -9302,7 +9307,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
@@ -9480,7 +9485,7 @@ class LeafSpawnTest(unittest.TestCase):
                 super().put(item, block, timeout)
                 in_flight.append(sum(len(x) for x in list(self.queue) if x))
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _BigRecordPopen), \
                 patch.object(wc.queue, "Queue", _MeasuringQueue), \
@@ -9555,7 +9560,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
                 patch.object(wc, "_LineReassembler", _StalledReassembler), \
@@ -9618,7 +9623,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _Popen), \
                 patch.object(wc.queue, "Queue", _InterruptedQueue), \
@@ -9694,7 +9699,7 @@ class LeafSpawnTest(unittest.TestCase):
                     return None
 
             registrations: list = []
-            c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+            c = self._c(backend="codex", agent_model="gpt-5.6-sol")
             c._register_codex_thread = (  # type: ignore[method-assign]
                 lambda *a: registrations.append(a))
             # A cap equal to the poll slice, and a queue the reader never drains, so the read
@@ -9757,7 +9762,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ChattyPopen), \
                 patch.object(wc, "LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS", 5_000), \
@@ -9817,7 +9822,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ExitsLatePopen), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 3600), \
@@ -9915,7 +9920,7 @@ class LeafSpawnTest(unittest.TestCase):
             def send_signal(self, sig):  # type: ignore[no-untyped-def]
                 return None
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         out = io.StringIO()
         with patch.object(wc.subprocess, "Popen", _UnkillablePopen), \
@@ -9977,7 +9982,7 @@ class LeafSpawnTest(unittest.TestCase):
                 signalled.append(sig)
                 released.set()
 
-        c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
         with patch.object(wc.subprocess, "Popen", _ExitedPopen), \
                 patch.object(wc, "_leaf_timeout_seconds", lambda: 7200), \
@@ -10074,7 +10079,7 @@ class LeafSpawnTest(unittest.TestCase):
                 def send_signal(self, sig):  # type: ignore[no-untyped-def]
                     return None
 
-            c = self._c(backend="codex", agent_model="gpt-5.6-codex")
+            c = self._c(backend="codex", agent_model="gpt-5.6-sol")
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
             with patch.object(wc.subprocess, "Popen", _FinishingPopen), \
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 0.2), \
@@ -15117,7 +15122,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                          ["claude", "--model", "opus", "--effort", "high", "-p", "P"])
         k = self._configured("codex")
         judge = k.leaf_command("P", k.entry_for("validate", "judge"))
-        self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-codex"])
+        self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
         self.assertIn('model_reasoning_effort="high"', judge)
         self.assertEqual(judge[-2:], ["--json", "P"])
 
@@ -15153,12 +15158,12 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  effort: xhigh\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
-                "        provider: codex_cli\n        model: gpt-5.6-codex\n"
-                "        effort: minimal\n"))
+                "        provider: codex_cli\n        model: gpt-5.6-sol\n"
+                "        effort: ultra\n"))
         self.assertEqual(c.leaf_command("P", c.entry_for("compile", "verify")),
                          ["claude", "--effort", "xhigh", "-p", "P"])
         judge = c.leaf_command("P", c.entry_for("validate", "judge"))
-        self.assertIn('model_reasoning_effort="minimal"', judge)
+        self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
         self.assertIn("--config", judge)
         self.assertNotIn("-c", judge)
@@ -15169,7 +15174,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: codex_cli\n  model: gpt-5.6-codex\n"
+                "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                 "  effort: xhigh\n"))
         entry = c.entry_for("generate", "generate")
         for argv in (c.leaf_command("P", entry),
@@ -15202,7 +15207,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     # --- capability predicates replace the backend tests --------------------------------
 
     def test_usage_probe_declines_by_capability_absence_not_by_a_codex_branch(self) -> None:
-        codex = self._configured("codex", model="gpt-5.6-codex")
+        codex = self._configured("codex", model="gpt-5.6-sol")
         rows, meta = codex._run_usage_probe(codex.entry_for("generate", "generate"))
         self.assertIsNone(rows)
         self.assertEqual(meta["outcome"], "backend_unsupported")
@@ -15270,7 +15275,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = self._config_text(
             "defaults:\n  provider: claude_cli\n  model: opus\n"
             "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: codex_cli\n        model: gpt-5.6-codex\n")
+            "        provider: codex_cli\n        model: gpt-5.6-sol\n")
         self.assertEqual(c.entry_for("generate", "generate").backend_token, "claude")
         self.assertEqual(c.entry_for("validate", "judge").backend_token, "codex")
 
@@ -15279,7 +15284,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """The safety argument of this conversion is that a site still asking the RUN what
         backend it is fails loudly. `InitVar` alone does not deliver that: its DEFAULT stays a
         class attribute, so `self.backend` answered `""` — a plausible wrong answer."""
-        c = self._legacy(backend="codex", agent_model="gpt-5.6-codex")
+        c = self._legacy(backend="codex", agent_model="gpt-5.6-sol")
         for name in ("backend", "agent_model", "llm_command"):
             with self.assertRaises(AttributeError, msg=name):
                 getattr(c, name)
@@ -15295,7 +15300,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
-                "        provider: codex_cli\n        model: gpt-5.6-codex\n"))
+                "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
         c.runtime = lambda argv: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
@@ -15338,7 +15343,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 {"agent_run_id": "child-1", "agent_session_id": "thread-abc",
                  "context_id": "ctx-abc"},
             ]}), encoding="utf-8")
-            c = self._legacy(repo_root=repo, backend="codex", agent_model="gpt-5.6-codex")
+            c = self._legacy(repo_root=repo, backend="codex", agent_model="gpt-5.6-sol")
             row = c._agent_run_json(
                 wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x", ir_id="i",
                             pipeline_id="p"),
@@ -15347,7 +15352,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(row["agent_backend"], "codex")
         self.assertEqual(row["agent_session_id"], "thread-abc")
         self.assertEqual(row["context_id"], "ctx-abc")
-        self.assertEqual(row["agent_model"], "gpt-5.6-codex")
+        self.assertEqual(row["agent_model"], "gpt-5.6-sol")
 
     def test_verify_session_resumability_is_asked_of_the_right_phase(self) -> None:
         """Its caller runs for compile AND generate; hardcoding generate would refuse a

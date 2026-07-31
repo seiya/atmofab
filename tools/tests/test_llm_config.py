@@ -59,13 +59,12 @@ class ShippedConfigTests(unittest.TestCase):
         self.assertEqual(cfg.providers, frozenset({"claude_cli"}))
         self.assertTrue(cfg.is_uniform)
         self.assertEqual(sorted(cfg.entries), sorted(lc.LLM_LEAF_SUBSTEPS))
-        for entry in cfg.entries.values():
+        for (phase, substep), entry in cfg.entries.items():
             self.assertEqual(entry.backend_token, "claude")
             # An unpinned ALIAS, never a version — versions move, and the exact one that ran is
             # recovered from the transcript afterwards.
-            self.assertEqual(entry.model, "opus")
             self.assertNotRegex(entry.model, r"-\d+-\d+$")
-            self.assertEqual(entry.effort, "high")
+            self.assertIn(entry.model, ("opus", "sonnet"), msg=f"{phase}.{substep}")
 
     def test_the_shipped_configs_spell_out_every_leaf(self) -> None:
         """The shipped files answer "what runs where, and how hard does it think" by being
@@ -98,8 +97,29 @@ class ShippedConfigTests(unittest.TestCase):
         for entry in cfg.entries.values():
             self.assertTrue(entry.model)
             self.assertNotEqual(entry.model.lower(), "codex")
-            self.assertEqual(entry.effort, "high")
         cfg.validate_runnable()
+
+    def test_the_shipped_configs_economise_only_the_leaf_the_measurements_allow(self) -> None:
+        """Cheapest EXPECTED total is not the cheapest per attempt. Re-runs are ~20% of every
+        token this pipeline has spent and they concentrate in the leaves that WRITE, so a leaf
+        that re-runs must not be set below the top: `generate.generate` has been seen at 7
+        attempts against a `MAX_ATTEMPTS_PER_PHASE` of 3, and going over fails the phase rather
+        than costing one more attempt. `compile.verify` is the single leaf the numbers support
+        spending less on — smallest, re-ran in 3 of 93 nodes, reads an IR the deterministic
+        `compile.static` gate already proved clean, and re-read downstream by two other leaves.
+        `validate.judge` is NOT economised despite never being re-run: nothing follows it."""
+        for backend in ("claude", "codex"):
+            cfg = lc.load_llm_config(lc.shipped_config_path(backend, REPO_ROOT))
+            top = cfg.entry_for("generate", "generate")
+            for (phase, substep), entry in cfg.entries.items():
+                where = f"{backend} {phase}.{substep}"
+                if (phase, substep) == ("compile", "verify"):
+                    self.assertNotEqual((entry.model, entry.effort), (top.model, top.effort),
+                                        msg=f"{where} is the leaf meant to be economised")
+                    continue
+                self.assertEqual(entry.model, top.model, msg=where)
+                self.assertEqual(entry.effort, top.effort, msg=where)
+            self.assertEqual(top.effort, "high")
 
     def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -216,7 +236,7 @@ class ResolutionTests(_Tmp):
         cfg = lc.load_llm_config(self.write(
             "defaults:\n  provider: claude_cli\n  max_output_tokens: 32000\n"
             "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: codex_cli\n        model: gpt-5.6-codex\n"))
+            "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
         self.assertEqual(cfg.entry_for("compile", "verify").max_output_tokens, 32000)
         # Dropped where it cannot apply, so nothing downstream reads a budget that is ignored.
         self.assertIsNone(cfg.entry_for("validate", "judge").max_output_tokens)
@@ -438,17 +458,22 @@ class RuleTests(_Tmp):
 
     def test_invalid_field_effort_level_is_per_provider(self) -> None:
         """The level names are the provider's own, so this is not one enum with different
-        spellings: `max` exists for claude and not codex, `minimal` for codex and not claude."""
+        spellings: `ultra` exists for codex and not claude, `minimal` for an OpenAI-compatible
+        endpoint and for neither CLI."""
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  effort: minimal\n")
+                         "defaults:\n  provider: claude_cli\n  effort: ultra\n")
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: codex_cli\n  model: m\n  effort: max\n")
+                         "defaults:\n  provider: codex_cli\n  model: m\n  effort: minimal\n")
         self.assert_rule("llm_config_invalid_field",
                          "defaults:\n  provider: claude_cli\n  effort: enthusiastic\n")
+        # `none`/`minimal` are the OpenAI API's words, not the Codex CLI's: the CLI resolves
+        # against `supported_reasoning_levels`, which lists neither for any served model.
+        self.assert_rule("llm_config_invalid_field",
+                         "defaults:\n  provider: codex_cli\n  model: m\n  effort: none\n")
         # ...and each accepts its own.
         for body, expected in (
             ("defaults:\n  provider: claude_cli\n  effort: max\n", "max"),
-            ("defaults:\n  provider: codex_cli\n  model: m\n  effort: minimal\n", "minimal"),
+            ("defaults:\n  provider: codex_cli\n  model: m\n  effort: ultra\n", "ultra"),
         ):
             cfg = lc.load_llm_config(self.write(body, "levels.yaml"))
             self.assertEqual(cfg.entry_for("validate", "judge").effort, expected)

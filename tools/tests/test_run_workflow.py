@@ -5666,12 +5666,12 @@ class LlmConfigStartupTests(unittest.TestCase):
             run_workflow._run_with_dependency_closure = (   # type: ignore[assignment]
                 lambda **kw: (captured.update(kw) or 0))
             try:
-                self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-codex",
+                self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-sol",
                                       "--with-deps"], oid="orch_wd")
             finally:
                 run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
-            self.assertEqual(captured["llm_config_overrides"], {"model": "gpt-5.6-codex"})
-            self.assertEqual(captured["llm_config"].defaults.model, "gpt-5.6-codex")
+            self.assertEqual(captured["llm_config_overrides"], {"model": "gpt-5.6-sol"})
+            self.assertEqual(captured["llm_config"].defaults.model, "gpt-5.6-sol")
 
     def test_main_hands_the_closure_RESUME_driver_the_same_overrides(self) -> None:
         """The other call site: a closure resume. Dropping it there makes every member gate
@@ -5765,10 +5765,10 @@ class LlmConfigStartupTests(unittest.TestCase):
             cfg_path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
             _, kw, _, _ = self._run(repo_root, [
                 "--llm-config", "configs/llm/bare-codex.yaml",
-                "--agent-model", "gpt-5.6-codex"])
+                "--agent-model", "gpt-5.6-sol"])
             cfg = kw["llm_config"]
-            self.assertEqual(cfg.defaults.model, "gpt-5.6-codex")
-            self.assertEqual({e.model for e in cfg.entries.values()}, {"gpt-5.6-codex"})
+            self.assertEqual(cfg.defaults.model, "gpt-5.6-sol")
+            self.assertEqual({e.model for e in cfg.entries.values()}, {"gpt-5.6-sol"})
 
     def test_llm_command_overrides_defaults_command_under_a_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5916,10 +5916,10 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-codex"],
+            self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-sol"],
                       oid="orch_ov")
             inv = self._invocation()
-            self.assertEqual(inv["llm_config_overrides"]["model"], "gpt-5.6-codex")
+            self.assertEqual(inv["llm_config_overrides"]["model"], "gpt-5.6-sol")
             self.assertEqual(inv["llm_config_path"], "configs/llm/codex.yaml")
 
     # --- resume refusal --------------------------------------------------------------
@@ -6090,7 +6090,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "configs" / "llm" / "mycodex.yaml"
-            cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-codex\n",
+            cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
                            encoding="utf-8")
             self._seed_resumable(repo_root, "orch_cx", {
                 "llm_config_path": "configs/llm/mycodex.yaml",
@@ -6099,7 +6099,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             }, backend="codex")
             code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_cx")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
-            self.assertEqual(kw["llm_config"].defaults.model, "gpt-5.6-codex")
+            self.assertEqual(kw["llm_config"].defaults.model, "gpt-5.6-sol")
 
     def test_a_cold_codex_run_without_a_config_still_demands_agent_model(self) -> None:
         """The control: the legacy rule is still enforced on the legacy path."""

@@ -41,8 +41,8 @@ class HookCliTests(unittest.TestCase):
 
     def test_audit_summary_preserves_codex_session_start_model(self) -> None:
         summary = cli._audit_payload_summary(
-            {"model": "gpt-5.6-codex", "session_id": "thread-123"}, None)
-        self.assertEqual(summary["model"], "gpt-5.6-codex")
+            {"model": "gpt-5.6-sol", "session_id": "thread-123"}, None)
+        self.assertEqual(summary["model"], "gpt-5.6-sol")
         self.assertEqual(summary["session_id"], "thread-123")
 
     def test_subprocess_command_works_with_module_entrypoint(self) -> None:
