@@ -522,6 +522,14 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
     return launch_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
 
 
+# The provider tokens whose pure leaf is answered over HTTPS from the CONDUCTOR's own process
+# (issue #28) and therefore has no child process to confine and no bwrap profile to audit.
+# Duplicated from `orchestration_runtime._HTTP_PROVIDER_TOKENS` rather than imported: this
+# module may not import the runtime (module-boundary rule), and the two are compared by
+# `test_http_pure_leaf_backends_matches_the_runtime`.
+_HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
+
+
 def _launch_request_is_pure(request_payload: dict) -> bool:
     """True when the structured launch REQUEST is a Z2 pure-function leaf (`leaf_mode == "pure"`).
 
@@ -9245,6 +9253,24 @@ def _validate_orchestration_hierarchy(
                                 request_confirms_slim = False
                                 request_confirms_pure = False
                                 req_payload_for_launch = None
+                                # The host-authored launch RESPONSE, read alongside the request:
+                                # it is what says an HTTP pure leaf ran in the conductor's own
+                                # process and therefore has no sandbox profile to audit.
+                                resp_payload_for_launch = None
+                                sbx_ref_for_launch = ""
+                                resp_ref = launch_refs.get("launch_response_ref")
+                                if isinstance(resp_ref, str) and resp_ref.strip():
+                                    resp_path = workspace_path.parent / resp_ref
+                                    if resp_path.is_file():
+                                        try:
+                                            resp_payload_for_launch = _read_json(resp_path)
+                                        except json.JSONDecodeError:
+                                            resp_payload_for_launch = None
+                                        if isinstance(resp_payload_for_launch, dict):
+                                            _ref = resp_payload_for_launch.get(
+                                                "sandbox_profile_ref")
+                                            sbx_ref_for_launch = (
+                                                _ref.strip() if isinstance(_ref, str) else "")
                                 req_ref = launch_refs.get("launch_request_ref")
                                 if isinstance(req_ref, str):
                                     req_path = workspace_path.parent / req_ref
@@ -9391,16 +9417,78 @@ def _validate_orchestration_hierarchy(
                                             f"allowed_read_roots must be [] (deny-all; got "
                                             f"{rman_doc.get('allowed_read_roots')!r})"
                                         )
-                                    sbx_path = (
-                                        orchestration_dir / "sandbox_profiles" / f"{run_id}.json"
+                                    # (4) The sandbox profile. A pure leaf launched as a CHILD
+                                    # PROCESS must have one, read-only and write-root-free. An
+                                    # HTTP pure leaf (issue #28) is answered from the conductor's
+                                    # own process over HTTPS: there is no process to confine, so
+                                    # `record_launch` writes no profile and stamps the response
+                                    # `leaf_transport: "http"` instead. Demanding a profile of it
+                                    # would fail every such run at this gate — as `unrecoverable`,
+                                    # after the whole pipeline was paid for, naming a file the
+                                    # operator cannot create. The exemption is read from the
+                                    # host-authored launch RESPONSE and requires BOTH the
+                                    # transport marker and a genuine HTTP provider token, so a
+                                    # CLI launch cannot claim it by dropping its profile.
+                                    resp_backend = (
+                                        resp_payload_for_launch.get("backend")
+                                        if isinstance(resp_payload_for_launch, dict) else None
                                     )
-                                    sbx_doc = None
-                                    if sbx_path.is_file():
-                                        try:
-                                            sbx_doc = _read_json(sbx_path)
-                                        except json.JSONDecodeError:
-                                            sbx_doc = None
-                                    if not isinstance(sbx_doc, dict):
+                                    resp_transport = (
+                                        str(resp_payload_for_launch.get("leaf_transport") or "")
+                                        .strip().lower()
+                                        if isinstance(resp_payload_for_launch, dict) else ""
+                                    )
+                                    http_pure_leaf = (
+                                        resp_transport == "http"
+                                        and isinstance(resp_backend, str)
+                                        and resp_backend.strip().lower()
+                                        in _HTTP_PURE_LEAF_BACKENDS
+                                    )
+                                    if http_pure_leaf:
+                                        if sbx_ref_for_launch:
+                                            violations.append(
+                                                f"{runs_path}:line {idx + 1} http pure launch must "
+                                                f"NOT reference a sandbox profile (got "
+                                                f"{sbx_ref_for_launch!r})"
+                                            )
+                                        # A genuine HTTP launch writes no profile, so one
+                                        # EXISTING alongside the exemption is incoherent — and
+                                        # is exactly how a tampered CLI record would claim the
+                                        # exemption to escape the profile-content audit below.
+                                        # Checking the file costs a stat and closes that.
+                                        if (orchestration_dir / "sandbox_profiles"
+                                                / f"{run_id}.json").exists():
+                                            violations.append(
+                                                f"{runs_path}:line {idx + 1} http pure launch "
+                                                f"claims no sandbox, but "
+                                                f"sandbox_profiles/{run_id}.json exists"
+                                            )
+                                        # The row must agree with the response it points at: an
+                                        # exemption granted on a response whose provider the row
+                                        # does not claim is a record disagreeing with itself.
+                                        row_backend = str(item.get("agent_backend") or "").strip()
+                                        if row_backend.lower() not in _HTTP_PURE_LEAF_BACKENDS:
+                                            violations.append(
+                                                f"{runs_path}:line {idx + 1} http pure launch row "
+                                                f"agent_backend must be an http provider (got "
+                                                f"{row_backend!r})"
+                                            )
+                                        sbx_doc = None
+                                        sbx_path = None
+                                    else:
+                                        sbx_path = (
+                                            orchestration_dir / "sandbox_profiles"
+                                            / f"{run_id}.json"
+                                        )
+                                        sbx_doc = None
+                                        if sbx_path.is_file():
+                                            try:
+                                                sbx_doc = _read_json(sbx_path)
+                                            except json.JSONDecodeError:
+                                                sbx_doc = None
+                                    if http_pure_leaf:
+                                        pass
+                                    elif not isinstance(sbx_doc, dict):
                                         violations.append(
                                             f"{runs_path}:line {idx + 1} pure launch sandbox profile "
                                             f"missing/unreadable ({sbx_path.name})"

@@ -207,7 +207,7 @@ class _PureFakeConductor(wc.Conductor):
         self._n = getattr(self, "_n", 0) + 1
         return f"child-{self._n}"
 
-    def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
         self._spawn = getattr(self, "_spawn", 0)
         env = self.envelopes[min(self._spawn, len(self.envelopes) - 1)]
         self._spawn += 1
@@ -227,7 +227,7 @@ class _PureFakeConductor(wc.Conductor):
     usage_probe_result: tuple = (None, {"outcome": "probe_error", "duration_ms": 0,
                                         "excerpt": "stubbed: no probe in tests"})
 
-    def _run_usage_probe(self):  # type: ignore[override]
+    def _run_usage_probe(self, entry=None):  # type: ignore[override]
         self.usage_probe_calls = getattr(self, "usage_probe_calls", 0) + 1
         return self.usage_probe_result
 
@@ -1030,7 +1030,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
     (last_excerpt / resume_session_id). Default OFF preserves the current terminal behavior."""
 
     class _C(_PureFakeConductor):
-        def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
             self._spawn = getattr(self, "_spawn", 0)
             proc = self.procs[min(self._spawn, len(self.procs) - 1)]
             self._spawn += 1
@@ -1067,7 +1067,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             spawn_kwargs: list = []
             inner = c.spawn_leaf
 
-            def _spawn(prompt_text, child_env, **kwargs):  # type: ignore[no-untyped-def]
+            def _spawn(prompt_text, child_env, entry=None, **kwargs):  # type: ignore[no-untyped-def]
                 spawn_kwargs.append(kwargs)
                 return inner(prompt_text, child_env, **kwargs)
 
@@ -1206,7 +1206,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             captured: list[dict] = []
             orig = c.record_launch
 
-            def _rec(child_arid, request):  # capture the per-launch request shape
+            def _rec(child_arid, request, entry=None, **kw):  # capture the per-launch request shape
                 captured.append(request)
                 return orig(child_arid, request)
 
@@ -1290,7 +1290,7 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
         class _C(_PureFakeConductor):
             def _claude_session_resumable(self, arid):  # type: ignore[override]
                 return False  # force the cold-fallback repair branch on every turn
-            def record_launch(self, child_arid, request):  # type: ignore[override]
+            def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 # Emulate the real record_launch's UTF-8 prompt persistence to surface any
                 # non-encodable prior_document as the real path would.
                 json.dumps(request, ensure_ascii=False).encode("utf-8")
@@ -1315,7 +1315,7 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
         class _C(_PureFakeConductor):
             def _pure_bundle_violations(self, refs, doc):  # type: ignore[override]
                 return ("bundle_schema_violation", "bad field value \ud800 here")
-            def record_launch(self, child_arid, request):  # type: ignore[override]
+            def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 json.dumps(request, ensure_ascii=False).encode("utf-8")  # emulate prompt persist
                 return {"launch_prompt_text": "PROMPT"}
         with tempfile.TemporaryDirectory() as tmp:
@@ -1429,7 +1429,7 @@ class _RenderingFakeConductor(_PureFakeConductor):
         ort._validate_launch_prompt_text(prepared, prompt)
         return {"launch_prompt_text": prompt}
 
-    def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
         self.prompts = getattr(self, "prompts", [])
         self.prompts.append(prompt_text)
         return super().spawn_leaf(prompt_text, child_env, **kwargs)

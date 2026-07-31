@@ -3050,6 +3050,21 @@ DEFAULT_BACKEND_COMMANDS = {
     "claude": "claude",
 }
 
+# Every token a launch may be RECORDED under. `SUPPORTED_BACKENDS` stays exactly what it was —
+# the CLI backends a leaf is spawned as a child process of — because that is what the sandbox,
+# hook and session machinery keys on. The HTTP providers (issue #28) are answered from the
+# conductor's own process and never spawn anything, so they are not backends in that sense; but
+# they DO appear in `record-launch` responses, `agent_runs` rows and `--backend` arguments, and
+# every validator that used to accept only `SUPPORTED_BACKENDS` has to admit them or the first
+# HTTP leaf fails closed on its own provenance.
+_HTTP_PROVIDER_TOKENS = frozenset({"openai_compatible", "anthropic_api"})
+SUPPORTED_PROVIDER_TOKENS = frozenset(SUPPORTED_BACKENDS) | _HTTP_PROVIDER_TOKENS
+
+# Escape hatch for an air-gapped or offline preflight: the unauthenticated reachability GET is
+# skipped, the key-presence and URL-shape checks are NOT (those cost nothing and catch the two
+# mistakes an operator actually makes).
+_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY"
+
 # Child agent `skill_must_read_refs`: split workflow spec (see docs/workflow/).
 # WORKFLOW_CORE.md is no longer a leaf must-read (its leaf-actionable invariants
 # + stage-meta keys live in AGENT_CONTRACT.md); it stays readable under docs/, so
@@ -5346,11 +5361,27 @@ def workflow_launch_check(
             "blocking_policy_scope": "preflight",
             "next_action": "stop_before_phase_body",
         }
+    # The launching leaf's own provider must be one preflight PROBED — membership, not
+    # equality. Equality was right while a run had one backend; with a per-substep
+    # configuration the `providers` map is the authority and the top-level `backend` describes
+    # only `defaults`. A payload without a `providers` map is a pre-#28 preflight, where the two
+    # readings coincide, so the old equality test is exactly what membership degrades to.
+    wanted = backend.strip().lower()
     preflight_backend = preflight.get("backend")
-    if isinstance(preflight_backend, str) and preflight_backend.strip().lower() != backend.strip().lower():
+    providers = preflight.get("providers")
+    if isinstance(providers, dict) and providers:
+        probed = providers.get(wanted)
+        if not (isinstance(probed, dict) and probed.get("launchable") is True):
+            reason_code = reason_code or "backend_not_probed"
+            reason_detail = reason_detail or (
+                f"preflight probed no launchable provider {wanted!r}; probed: "
+                f"{', '.join(sorted(k for k, v in providers.items() if isinstance(v, dict) and v.get('launchable') is True)) or '(none launchable)'}"
+            )
+    elif (isinstance(preflight_backend, str)
+            and preflight_backend.strip().lower() != wanted):
         reason_code = reason_code or "child_agent_unavailable_on_execution_platform"
         reason_detail = reason_detail or (
-            f"preflight backend mismatch: expected {backend.strip().lower()!r}, "
+            f"preflight backend mismatch: expected {wanted!r}, "
             f"got {preflight_backend.strip().lower()!r}"
         )
 
@@ -9965,10 +9996,38 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             and feature_states.get("multi_agent") is True
             and multi_agent_check_pass is True
         )
+    # With a `providers` map (issue #28), the top-level verdict above describes `defaults`
+    # only. A run whose config also names a provider that did NOT probe launchable would reach
+    # that provider's first substep and fail there, phases in — so require every probed
+    # provider, fail-closed on a malformed entry. A payload without the map is a pre-#28
+    # preflight and is unchanged.
+    providers = payload.get("providers")
+    if isinstance(providers, dict) and providers:
+        launchable = launchable and all(
+            isinstance(entry, dict) and entry.get("launchable") is True
+            for entry in providers.values()
+        )
     return launchable
 
 
 def _validate_preflight_payload(payload: dict[str, Any]) -> None:
+    # Validator and gate must reject the same documents. `_preflight_allows_agent_launch` ANDs
+    # in "every probed provider is launchable" (issue #28), so accepting a `status=pass`
+    # document with an unlaunchable provider would persist a preflight every later
+    # record-launch refuses, with a gate message that names no provider.
+    providers = payload.get("providers")
+    if isinstance(providers, dict) and providers and (
+            payload.get("can_launch_step_agents") is True
+            or payload.get("can_launch_substep_agents") is True):
+        unlaunchable = sorted(
+            token for token, entry in providers.items()
+            if not (isinstance(entry, dict) and entry.get("launchable") is True))
+        if unlaunchable:
+            raise ValueError(
+                "preflight cannot report can_launch_*_agents=true while probed provider(s) "
+                f"{', '.join(unlaunchable)} are not launchable"
+            )
+
     if (
         payload.get("can_launch_step_agents") is True
         or payload.get("can_launch_substep_agents") is True
@@ -10169,11 +10228,16 @@ def _update_preflight_probed_at(
     repo_root: Path,
     orchestration_id: str,
     probed_at_iso: str,
+    providers: dict[str, Any] | None = None,
 ) -> None:
-    """Update only the probed_at field of preflight.json.
+    """Update the probed_at field of preflight.json, and the `providers` map when re-probed.
 
     Do not change other fields (status / can_launch_* etc.).
     Do nothing when preflight.json does not exist (not an error).
+
+    `probed_at` is the freshness claim for the WHOLE document, so a re-probe that produced new
+    provider rows must persist them with it: leaving the stale rows while advancing the
+    timestamp is precisely the "treated as fresh indefinitely" state this guards against.
     """
     path = _preflight_path(repo_root, orchestration_id)
     if not path.exists():
@@ -10185,7 +10249,73 @@ def _update_preflight_probed_at(
     if not isinstance(file_payload, dict):
         return
     file_payload["probed_at"] = probed_at_iso
+    if providers is not None:
+        file_payload["providers"] = providers
     _write_json(path, file_payload)
+
+
+def _reprobe_recorded_providers(
+    cached_providers: Mapping[str, Any],
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """Re-probe every provider row a preflight recorded, from the row itself.
+
+    The rows carry everything a probe needs — `provider_type`, and the `probe_command` or the
+    `base_url` / `api_key_env` — so this does not reload the configuration file (which the
+    preflight deliberately does not record: `orchestration_meta.json#invocation` already pins
+    its path and hash). A row that is not a mapping is carried through as unlaunchable rather
+    than dropped, so a corrupted document cannot become a launchable one by re-probing."""
+    fresh: dict[str, Any] = {}
+    for token, row in cached_providers.items():
+        if not isinstance(row, dict):
+            fresh[str(token)] = {"launchable": False, "surfaces": [],
+                                 "checks": [{"name": "provider_row_unreadable",
+                                             "pass": False, "detail": repr(row)[:200]}]}
+            continue
+        # EVERY surface recorded under the token, AND-ed exactly as the initial probe did. A
+        # pre-adoption row (or one written before `surfaces` existed) degrades to the single
+        # surface its top-level fields name, which is what it always described.
+        surfaces = row.get("surfaces")
+        if not isinstance(surfaces, list) or not surfaces:
+            surfaces = [{"provider_type": row.get("provider_type", ""),
+                         "probe_command": row.get("probe_command", ""),
+                         "base_url": row.get("base_url", ""),
+                         "api_key_env": row.get("api_key_env", "")}]
+        merged: dict[str, Any] | None = None
+        for surface in surfaces:
+            surface = surface if isinstance(surface, dict) else {}
+            provider_type = str(surface.get("provider_type") or row.get("provider_type") or "")
+            if provider_type in ("claude_cli", "codex_cli"):
+                command = str(surface.get("probe_command") or "").strip()
+                probe = probe_execution_platform(
+                    backend=str(token), agent_command=command or None, repo_root=repo_root)
+                probed = {
+                    "provider_type": provider_type,
+                    "probe_command": probe.get("probe_command", ""),
+                    "checks": probe.get("checks", []),
+                    "launchable": _preflight_allows_agent_launch(probe),
+                }
+            else:
+                probed = _probe_http_provider({
+                    "backend": str(token), "provider": provider_type,
+                    "base_url": surface.get("base_url", ""),
+                    "api_key_env": surface.get("api_key_env", ""),
+                })
+            probed["surfaces"] = [{
+                "provider_type": provider_type,
+                "probe_command": str(surface.get("probe_command") or ""),
+                "base_url": str(surface.get("base_url") or ""),
+                "api_key_env": str(surface.get("api_key_env") or ""),
+            }]
+            if merged is None:
+                merged = probed
+            else:
+                merged["checks"] = list(merged.get("checks", [])) + list(probed.get("checks", []))
+                merged["surfaces"] = list(merged["surfaces"]) + probed["surfaces"]
+                merged["launchable"] = (bool(merged.get("launchable"))
+                                        and bool(probed.get("launchable")))
+        fresh[str(token)] = merged or {"launchable": False, "checks": [], "surfaces": []}
+    return fresh
 
 
 def _run_live_probe_and_update(
@@ -10206,12 +10336,25 @@ def _run_live_probe_and_update(
     live_probe = probe_execution_platform(
         backend=backend, agent_command=probe_command, repo_root=repo_root
     )
+    # EVERY recorded provider, not just `defaults` (issue #28): the `probed_at` written below
+    # is the freshness claim for the whole document, so re-probing one provider and refreshing
+    # the timestamp would leave a mixed configuration's other providers treated as fresh
+    # indefinitely — and `record-launch` would then create durable child state for a provider
+    # that has since become unavailable, discovering it only when the spawn or request fails.
+    # This runs on TTL EXPIRY, not per launch (`_live_preflight_mode` / `_live_preflight_ttl_seconds`),
+    # so the cost is one probe per provider per TTL window.
+    cached_providers = cached_payload.get("providers")
+    fresh_providers: dict[str, Any] | None = None
+    if isinstance(cached_providers, dict) and cached_providers:
+        fresh_providers = _reprobe_recorded_providers(cached_providers, repo_root)
+        live_probe["providers"] = fresh_providers
     if not _preflight_allows_agent_launch(live_probe):
         raise RuntimeError(
             "live preflight gate failed: execution platform required launch capabilities are unavailable"
         )
     probed_at = live_probe.get("checked_at") or _utc_now_iso()
-    _update_preflight_probed_at(repo_root, orchestration_id, probed_at)
+    _update_preflight_probed_at(repo_root, orchestration_id, probed_at,
+                                providers=fresh_providers)
 
 
 def _require_preflight_launchable(
@@ -13764,6 +13907,28 @@ def repair_legacy_agent_runs(
 
         parsed: list[dict[str, Any] | None] = []
         models: set[str] = set()
+        # Per-(step, substep) models, because since issue #28 a run legitimately holds several:
+        # `generate.generate` may be on a local endpoint while `validate.judge` is on a hosted
+        # model. A whole-orchestration `sibling_uniform` would then never fire (mixed set) — or,
+        # worse, would have backfilled a row from a sibling that ran somewhere else. The siblings
+        # that speak for a row are the ones that ran the SAME substep.
+        models_by_substep: dict[tuple[str, str], set[str]] = {}
+
+        def _substep_key(obj: dict[str, Any]) -> tuple[str, str] | None:
+            """The `(step, substep)` a row belongs to, or None when it names no step.
+
+            None is NOT a bucket. A legacy row — the kind this repair exists for — frequently
+            carries neither field, and so does the orchestration row; bucketing both under
+            `("", "")` would let the orchestration's unpinned alias fill a leaf row that ran on
+            another provider entirely. A row that cannot name its own step falls through to the
+            whole-orchestration agreement, which is the pre-issue-#28 behavior."""
+            step = obj.get("step")
+            if not (isinstance(step, str) and step.strip()):
+                return None
+            substep = obj.get("substep")
+            return (step.strip().lower(),
+                    substep.strip().lower() if isinstance(substep, str) else "")
+
         for line in raw_lines:
             s = line.strip()
             if not s:
@@ -13781,6 +13946,9 @@ def repair_legacy_agent_runs(
             m = obj.get("agent_model")
             if isinstance(m, str) and m.strip():
                 models.add(m.strip())
+                key = _substep_key(obj)
+                if key is not None:
+                    models_by_substep.setdefault(key, set()).add(m.strip())
 
         if isinstance(agent_model, str) and agent_model.strip():
             chosen_model = agent_model.strip()
@@ -13865,9 +14033,21 @@ def repair_legacy_agent_runs(
                     line_missing.append("parent_agent_run_id")
 
             cur_model = obj.get("agent_model")
+            model_src_used: str | None = None
             if not (isinstance(cur_model, str) and cur_model.strip()):
-                if chosen_model:
-                    obj["agent_model"] = chosen_model
+                # Prefer the row's OWN substep siblings; only they are guaranteed to have run
+                # on the same provider (issue #28). Fall back to the whole-orchestration
+                # agreement, which is what a single-provider run has always used.
+                key = _substep_key(obj)
+                own = models_by_substep.get(key, set()) if key is not None else set()
+                if isinstance(agent_model, str) and agent_model.strip():
+                    filled, model_src_used = agent_model.strip(), "override"
+                elif len(own) == 1:
+                    filled, model_src_used = next(iter(own)), "substep_sibling_uniform"
+                else:
+                    filled, model_src_used = chosen_model, model_source
+                if filled:
+                    obj["agent_model"] = filled
                     fields_filled.append("agent_model")
                 else:
                     line_missing.append("agent_model")
@@ -13882,7 +14062,9 @@ def repair_legacy_agent_runs(
                 if "parent_agent_run_id" in fields_filled:
                     prov["parent_source"] = parent_src_used
                 if "agent_model" in fields_filled:
-                    prov["agent_model_source"] = model_source
+                    # The source that actually supplied THIS row's value, which under a mixed
+                    # configuration need not be the whole-orchestration one.
+                    prov["agent_model_source"] = model_src_used
                 obj["backfilled"] = prov
                 raw_lines[idx] = json.dumps(obj, ensure_ascii=False)
                 repaired.append(
@@ -15657,7 +15839,7 @@ def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
 
 def _probe_claude_backend(
     backend_token: str,
-    command: str,
+    command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
     """A probe specific to the claude backend.
@@ -15675,7 +15857,15 @@ def _probe_claude_backend(
     preventing a false-pass of an empty-output binary impersonating `claude`. The authoritative gate of `multi_agent`
     remains on the launch-time live preflight side of `record_launch`.
     """
-    version_proc = runner([command, "--version"], text=True, capture_output=True, check=False)
+    # SPLIT, like the codex prober and like `Conductor._provider_command_base`: a configured
+    # command may carry flags (`mywrap --flag`), and the leaf is launched with it split. Passing
+    # the whole string as argv[0] probes an executable of that literal name, which does not
+    # exist — so every wrapper failed preflight before any leaf could run.
+    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
+    if not command_argv:
+        raise ValueError("claude command must be non-empty")
+    version_proc = runner([*command_argv, "--version"], text=True, capture_output=True,
+                          check=False)
     # Skip `features list` for claude: the subcommand does not exist in Claude Code CLI
     # and would result in a full chat session response being captured as the probe output,
     # contaminating preflight.json with assistant text.  Mark as advisory (pass=None).
@@ -15686,7 +15876,7 @@ def _probe_claude_backend(
         "multi_agent detection uses --help probe instead."
     )
 
-    help_proc = runner([command, "--help"], text=True, capture_output=True, check=False)
+    help_proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
     help_stdout = help_proc.stdout.strip()
     # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
     # weak proxy — any binary named `claude` that exits 0 (even with no output)
@@ -16105,7 +16295,8 @@ def _probe_claude_mcp_registry(
     # Call `claude mcp list` lightly as an advisory diagnostic. The timeout does not gate.
     try:
         proc = runner(
-            [command, "mcp", "list"],
+            [*(list(command) if not isinstance(command, str) else shlex.split(command)),
+             "mcp", "list"],
             text=True,
             capture_output=True,
             check=False,
@@ -16194,6 +16385,175 @@ def _probe_claude_mcp_registry(
     # is not permission-granted to the child Agent session, the launch is not permitted.
     mcp_ok = registered_pass and permission_granted
     return checks, mcp_ok
+
+
+def _probe_http_provider(
+    provider_row: Mapping[str, Any],
+    *,
+    opener: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Probe one HTTP leaf provider (issue #28). Fail-closed on every check.
+
+    An HTTP provider spawns no process, so none of the CLI probe's questions (version, feature
+    flags, hooks, sandbox) apply. Three things CAN be established before a run spends tokens
+    finding out, and all three are the mistakes operators actually make:
+
+      1. the environment variable named by `api_key_env` is set and non-empty. Its VALUE is
+         never read into the payload, logged, or hashed — only the fact that it is there.
+      2. `base_url` is a well-formed http(s) URL with a host.
+      3. the endpoint answers at all. Any HTTP status counts as reachable — a 401 or a 404
+         proves a server is there, which is what this check is for; only DNS failure, a refused
+         connection or a timeout mean "nothing is listening". The request is UNAUTHENTICATED
+         deliberately: preflight must not send the operator's key to a URL it has not yet
+         validated, and must not spend a token on a probe.
+
+    `METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY=1` drops only (3), for an offline preflight."""
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlparse
+
+    token = str(provider_row.get("backend") or "").strip().lower()
+    base_url = str(provider_row.get("base_url") or "").strip()
+    api_key_env = str(provider_row.get("api_key_env") or "").strip()
+    checks: list[dict[str, Any]] = []
+
+    key_present = bool(api_key_env) and bool(os.environ.get(api_key_env, "").strip())
+    checks.append({
+        "name": f"{token}_api_key_env_set",
+        "pass": key_present,
+        # Names the VARIABLE, never its value.
+        "detail": (f"{api_key_env} is set" if key_present else
+                   f"{api_key_env or '(no api_key_env)'} is unset or empty"),
+    })
+
+    parsed = urlparse(base_url)
+    url_ok = parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    checks.append({
+        "name": f"{token}_base_url_well_formed",
+        "pass": url_ok,
+        "detail": base_url if url_ok else f"not an http(s) URL with a host: {base_url!r}",
+    })
+
+    skip = os.environ.get(_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV, "").strip().lower() in {
+        "1", "true", "yes"}
+    if skip:
+        checks.append({
+            "name": f"{token}_endpoint_reachable",
+            "pass": True,
+            "detail": f"skipped ({_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV} set)",
+        })
+    elif not url_ok:
+        checks.append({
+            "name": f"{token}_endpoint_reachable",
+            "pass": False,
+            "detail": "not attempted: base_url is not well-formed",
+        })
+    else:
+        open_url = opener if opener is not None else urllib.request.urlopen
+        reachable, detail = True, "responded"
+        try:
+            open_url(urllib.request.Request(base_url, method="GET"),
+                     timeout=_HTTP_PREFLIGHT_TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as exc:
+            detail = f"HTTP {exc.code}"        # a server answered: reachable
+        except Exception as exc:               # noqa: BLE001 - DNS/TLS/refused/timeout
+            reachable = False
+            detail = f"{type(exc).__name__}: {exc}"
+        checks.append({
+            "name": f"{token}_endpoint_reachable",
+            "pass": reachable,
+            "detail": detail,
+        })
+
+    return {
+        "provider_type": str(provider_row.get("provider") or ""),
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "checks": checks,
+        "launchable": all(item.get("pass") is True for item in checks),
+    }
+
+
+# Short on purpose: preflight is not a health check, and a hung endpoint must not hold a run at
+# the starting line.
+_HTTP_PREFLIGHT_TIMEOUT_SECONDS = 10
+
+
+def probe_all_providers(
+    *,
+    llm_config_path: str | Path | None = None,
+    config: Any = None,
+    repo_root: Path | None = None,
+    # The resolved `defaults` of the configuration the caller will launch, so a reload here
+    # cannot lose a value that came from a deprecated flag rather than from the file.
+    model_override: str = "",
+    command_override: str = "",
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    opener: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """The `providers` map of a preflight payload: one entry per DISTINCT provider a config can
+    launch.
+
+    Keyed by the backend TOKEN a launch is recorded under, so `workflow_launch_check` and
+    `record_launch` can look a launch's own token up directly. Two entries can share a token
+    (the same backend behind two wrapper commands); they are AND-ed, because a token is
+    launchable only if every command recorded under it is.
+
+    Deliberately NOT merged into `probe_execution_platform`: that function answers "can this
+    host spawn agents at all", produces the top-level payload the existing gates read, and is
+    called for `defaults` exactly as before. This adds the per-provider layer above it."""
+    from tools.llm_config import apply_defaults_overrides, describe_providers, load_llm_config
+
+    # `config` is an ALREADY-LOADED snapshot: the caller hashed and parsed one set of bytes,
+    # and re-reading the file here would leave a window in which the hash approves one version
+    # while the probes certify another. `llm_config_path` remains for callers that have no
+    # snapshot to hand.
+    #
+    # The overrides MUST be reapplied either way. This runs in the `preflight` subprocess, and
+    # the deprecated `--agent-model` / `--llm-command` are not IN the file; `run_workflow`
+    # applies them to the loaded configuration. Probing without them certifies a command the
+    # run will not launch: an operator whose wrapper works but whose bare CLI is absent fails
+    # preflight, and one whose bare CLI is present gets a green `providers` row authorizing a
+    # wrapper nothing probed.
+    if config is None:
+        config = load_llm_config(llm_config_path)
+    cfg = apply_defaults_overrides(
+        config, model=model_override, command=command_override)
+    providers: dict[str, dict[str, Any]] = {}
+    for row in describe_providers(cfg):
+        token = row["backend"]
+        if row["provider"] in ("claude_cli", "codex_cli"):
+            probe = probe_execution_platform(
+                backend=token, agent_command=row["command"] or None,
+                runner=runner, repo_root=repo_root)
+            entry = {
+                "provider_type": row["provider"],
+                "probe_command": probe.get("probe_command", ""),
+                "checks": probe.get("checks", []),
+                "launchable": _preflight_allows_agent_launch(probe),
+            }
+        else:
+            entry = _probe_http_provider(row, opener=opener)
+        # Every surface is recorded, not just the first. The row is what the TTL re-probe
+        # reconstructs its probes from (`_reprobe_recorded_providers`), so keeping one
+        # command/endpoint would silently stop checking the others after the first expiry —
+        # and an unavailable one would then be certified fresh until its leaf launch failed.
+        entry["surfaces"] = [{
+            "provider_type": row["provider"],
+            "probe_command": row["command"],
+            "base_url": row["base_url"],
+            "api_key_env": row["api_key_env"],
+        }]
+        prior = providers.get(token)
+        if prior is None:
+            providers[token] = entry
+        else:
+            # Same token, different command/endpoint: AND them, and keep both check lists so
+            # the operator can see WHICH one failed.
+            prior["checks"] = list(prior.get("checks", [])) + list(entry.get("checks", []))
+            prior["surfaces"] = list(prior.get("surfaces", [])) + entry["surfaces"]
+            prior["launchable"] = bool(prior.get("launchable")) and bool(entry.get("launchable"))
+    return providers
 
 
 def probe_execution_platform(
@@ -16445,9 +16805,10 @@ def init_orchestration(
     if not orchestration_agent_run_id:
         orchestration_agent_run_id = str(uuid.uuid4())
     backend_token = str(agent_backend).strip().lower()
-    if backend_token not in SUPPORTED_BACKENDS:
+    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_BACKENDS)}; got {agent_backend!r}"
+            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
+            f"got {agent_backend!r}"
         )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
@@ -16838,7 +17199,43 @@ def record_launch(
         if isinstance(preflight_payload, dict)
         else ""
     )
-    backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
+    # THIS launch's provider, not the run's. Two consumers used to disagree: the codex-home
+    # transaction, the claude sequential-child gate and `pre_phase_launch` read the preflight's
+    # single `backend`, while the sandbox-profile branch below read the conductor's own response
+    # payload. Under a mixed configuration those are different answers for the same launch, so
+    # the response payload — which the conductor stamps per leaf — becomes authoritative, and
+    # the preflight's `providers` map is what authorizes it.
+    _launch_backend = response_payload.get("backend") if isinstance(response_payload, dict) else None
+    _launch_backend = (_launch_backend.strip().lower()
+                       if isinstance(_launch_backend, str) and _launch_backend.strip() else "")
+    _probed = preflight_payload.get("providers") if isinstance(preflight_payload, dict) else None
+    if _launch_backend and isinstance(_probed, dict) and _probed:
+        entry = _probed.get(_launch_backend)
+        if not (isinstance(entry, dict) and entry.get("launchable") is True):
+            raise RuntimeError(
+                f"record-launch: backend_not_probed — this launch names provider "
+                f"{_launch_backend!r}, which preflight did not probe as launchable"
+            )
+        backend_token = _launch_backend
+    elif _launch_backend in SUPPORTED_BACKENDS:
+        # No `providers` map: a pre-#28 preflight, where the run has one backend and the
+        # response payload restates it. Accept it, and fall back to the preflight's own value
+        # for a legacy payload that carries no backend at all.
+        backend_token = _launch_backend
+    else:
+        backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
+
+    # Defense in depth, and BEFORE any durable launch/session/graph mutation — the same rule
+    # the build-recurrence guard and the codex-home transaction check obey. `llm_config` refuses
+    # an HTTP provider on an agentic substep and the conductor refuses one on a node with no
+    # pure path, but this is the authorization gate and must not be the only layer assuming the
+    # other two ran: a non-pure HTTP launch would receive allowed_output_paths, file-tool pins
+    # and a write-authorized capability with no sandbox at all. Raising here leaves no
+    # capability document, no manifest, no agent-graph edge and no session-index row behind.
+    if backend_token in _HTTP_PROVIDER_TOKENS and not _is_pure_launch_request(request_payload):
+        raise RuntimeError(
+            f"record-launch: provider {backend_token!r} runs no confined child process and is "
+            f"admissible only for a pure leaf; this launch is not pure")
 
     # A Codex warm-resume target belongs to one isolated HOME generation.  Prepare
     # the home at the beginning of the launch transaction and reject a stale
@@ -16940,14 +17337,29 @@ def record_launch(
                 "record-launch blocked by pre_phase_launch / workflow-launch-check: "
                 f"reason_code={reason_code}"
             )
-    # Fall back to the default command for the preflight's own backend (not a fixed
-    # backend), so a codex preflight without a probe_command still binds ~/.codex — a
-    # hardcoded command would resolve the wrong runtime home in _backend_runtime_bind_paths.
-    backend_command = DEFAULT_BACKEND_COMMANDS[backend_token]
+    # The executable this leaf is launched through, which is what
+    # `_backend_runtime_bind_paths` resolves the sandbox's read-only bind of the CLI install
+    # directory from. Three sources, most specific first:
+    #   1. the launch RESPONSE's `backend_command` — THIS leaf's own, host-authored by the
+    #      conductor from the entry it is about to spawn. Since issue #28 an entry can carry
+    #      its own `command:`, so the run has no single answer; binding a different executable
+    #      than the one in argv puts the leaf's binary outside its own sandbox.
+    #   2. `preflight.json#probe_command` — the run's `defaults`, which is what every launch
+    #      used before per-substep configuration and what a legacy payload still carries.
+    #   3. the default command for the preflight's own backend (not a fixed backend), so a
+    #      codex preflight without a probe_command still binds ~/.codex.
+    # `.get`, not `[...]`: an HTTP provider token names no CLI at all (issue #28). The bwrap
+    # profile built from it is skipped for those launches — an HTTP leaf runs no
+    # model-directed tool and so has nothing to confine.
+    backend_command = DEFAULT_BACKEND_COMMANDS.get(backend_token, "")
     if isinstance(preflight_payload, dict):
         probe_command = preflight_payload.get("probe_command")
         if isinstance(probe_command, str) and probe_command.strip():
             backend_command = probe_command.strip()
+    _launch_command = response_payload.get("backend_command") if isinstance(
+        response_payload, dict) else None
+    if isinstance(_launch_command, str) and _launch_command.strip():
+        backend_command = _launch_command.strip()
     root = _orchestration_root(repo_root, orchestration_id)
     launches_root = root / "launches"
     launches_root.mkdir(parents=True, exist_ok=True)
@@ -17328,87 +17740,100 @@ def record_launch(
                 mcp_owned_audit_logs=canonical_audit_logs,
             )
             out_refs["allowed_output_manifest_ref"] = manifest_ref
-        try:
-            _resp_backend = response_payload.get("backend")
-            if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
-                # Prepared before any launch-side durable mutations above.  Do not
-                # re-prepare here: doing so would reopen the generation race that
-                # the expected-generation transaction check closes.
-                if codex_isolation is None:
-                    codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
-                response_payload["codex_workflow_home"] = codex_isolation["home"]
-                response_payload["codex_home_generation"] = int(codex_isolation["generation"])
-                response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
-            profile_kwargs: dict[str, Any] = {}
-            if codex_isolation is not None:
-                profile_kwargs = {
-                    "backend_ro_mappings": [
-                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
-                        # The home itself stays writable for Codex session/state
-                        # persistence, but the trust-bypassed hook source and
-                        # project-layer exclusion config must remain immutable.
-                        (codex_isolation["hooks"], codex_isolation["hooks"]),
-                        (codex_isolation["config"], codex_isolation["config"]),
-                    ],
-                    "backend_rw_override": [codex_isolation["home"]],
-                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
-                }
-            if is_pure:
-                # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
-                # has no repository write authority. Claude is tool-free, while Codex's
-                # structured-output approximation remains tool-bearing in a read-only sandbox;
-                # bwrap ensures neither can write an artifact from the child window.
-                profile = build_readonly_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orchestration_id,
-                    agent_run_id=child_agent_run_id,
-                    backend_command=backend_command,
-                    backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
-                    **profile_kwargs,
+        # An HTTP pure leaf (issue #28) runs in the conductor's own process over HTTPS: there is
+        # no child process to confine, no codex home to isolate, and no `backend_command` to
+        # pin. Everything ABOVE this point still runs for it — the capability, the manifest, the
+        # agent-graph edge, the session-index row — because those describe the LAUNCH, which is
+        # as real as any other. Only the process-sandbox layer is skipped, and it is marked so
+        # the audit validators (which key on `sandbox_profile` presence) can tell a skipped
+        # profile from a missing one.
+        if backend_token in _HTTP_PROVIDER_TOKENS:
+            request_payload.setdefault("leaf_transport", "http")
+            response_payload.setdefault("leaf_transport", "http")
+            response_payload.setdefault("sandbox_runtime", "none")
+            response_payload.setdefault("sandbox_enforced", False)
+        else:
+            try:
+                _resp_backend = response_payload.get("backend")
+                if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
+                    # Prepared before any launch-side durable mutations above.  Do not
+                    # re-prepare here: doing so would reopen the generation race that
+                    # the expected-generation transaction check closes.
+                    if codex_isolation is None:
+                        codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+                    response_payload["codex_workflow_home"] = codex_isolation["home"]
+                    response_payload["codex_home_generation"] = int(codex_isolation["generation"])
+                    response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
+                profile_kwargs: dict[str, Any] = {}
+                if codex_isolation is not None:
+                    profile_kwargs = {
+                        "backend_ro_mappings": [
+                            (codex_isolation["auth"], codex_isolation["auth_destination"]),
+                            # The home itself stays writable for Codex session/state
+                            # persistence, but the trust-bypassed hook source and
+                            # project-layer exclusion config must remain immutable.
+                            (codex_isolation["hooks"], codex_isolation["hooks"]),
+                            (codex_isolation["config"], codex_isolation["config"]),
+                        ],
+                        "backend_rw_override": [codex_isolation["home"]],
+                        "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
+                    }
+                if is_pure:
+                    # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
+                    # has no repository write authority. Claude is tool-free, while Codex's
+                    # structured-output approximation remains tool-bearing in a read-only sandbox;
+                    # bwrap ensures neither can write an artifact from the child window.
+                    profile = build_readonly_bwrap_profile(
+                        repo_root=repo_root,
+                        orchestration_id=orchestration_id,
+                        agent_run_id=child_agent_run_id,
+                        backend_command=backend_command,
+                        backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                        **profile_kwargs,
+                    )
+                else:
+                    profile = build_bwrap_profile(
+                        repo_root=repo_root,
+                        orchestration_id=orchestration_id,
+                        agent_run_id=child_agent_run_id,
+                        backend_command=backend_command,
+                        backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                        **profile_kwargs,
+                    )
+                command_argv = [backend_command]
+                rendered = render_bwrap_command(profile=profile, command_argv=command_argv)
+                profile["rendered_command"] = rendered
+                profile_path = _sandbox_profiles_dir(
+                    repo_root,
+                    orchestration_id,
+                ) / f"{child_agent_run_id}.json"
+                _write_json(profile_path, profile)
+                sandbox_ref = (
+                    f"workspace/orchestrations/{orchestration_id}/sandbox_profiles/{child_agent_run_id}.json"
                 )
-            else:
-                profile = build_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orchestration_id,
+                out_refs["sandbox_profile_ref"] = sandbox_ref
+                request_payload.setdefault("sandbox_profile_ref", sandbox_ref)
+                response_payload.setdefault("sandbox_runtime", "bwrap")
+                response_payload.setdefault("sandbox_enforced", True)
+                response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
+                response_payload.setdefault("sandbox_command", rendered)
+            except Exception as exc:
+                _write_sandbox_enforcement_violation(
+                    repo_root,
+                    orchestration_id,
                     agent_run_id=child_agent_run_id,
-                    backend_command=backend_command,
-                    backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
-                    **profile_kwargs,
+                    reason="sandbox_profile_build_failed",
+                    detail={"error": str(exc)},
                 )
-            command_argv = [backend_command]
-            rendered = render_bwrap_command(profile=profile, command_argv=command_argv)
-            profile["rendered_command"] = rendered
-            profile_path = _sandbox_profiles_dir(
-                repo_root,
-                orchestration_id,
-            ) / f"{child_agent_run_id}.json"
-            _write_json(profile_path, profile)
-            sandbox_ref = (
-                f"workspace/orchestrations/{orchestration_id}/sandbox_profiles/{child_agent_run_id}.json"
-            )
-            out_refs["sandbox_profile_ref"] = sandbox_ref
-            request_payload.setdefault("sandbox_profile_ref", sandbox_ref)
-            response_payload.setdefault("sandbox_runtime", "bwrap")
-            response_payload.setdefault("sandbox_enforced", True)
-            response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
-            response_payload.setdefault("sandbox_command", rendered)
-        except Exception as exc:
-            _write_sandbox_enforcement_violation(
-                repo_root,
-                orchestration_id,
-                agent_run_id=child_agent_run_id,
-                reason="sandbox_profile_build_failed",
-                detail={"error": str(exc)},
-            )
-            update_orchestration_status(
-                repo_root,
-                orchestration_id,
-                status="fail_closed",
-                reason_code="sandbox_enforcement_violation",
-                reason_detail=str(exc),
-                blocking_policy_scope="sandbox",
-            )
-            raise RuntimeError(f"record-launch sandbox enforcement failed: {exc}") from exc
+                update_orchestration_status(
+                    repo_root,
+                    orchestration_id,
+                    status="fail_closed",
+                    reason_code="sandbox_enforcement_violation",
+                    reason_detail=str(exc),
+                    blocking_policy_scope="sandbox",
+                )
+                raise RuntimeError(f"record-launch sandbox enforcement failed: {exc}") from exc
     _write_json(request_path, request_payload)
     _write_json(response_path, response_payload)
     _write_text(prompt_path, prompt_text)
@@ -17663,9 +18088,10 @@ def record_timeout(
 
     backend_obj = resp_doc.get("backend")
     backend_token = backend_obj.strip().lower() if isinstance(backend_obj, str) and backend_obj.strip() else ""
-    if backend_token not in SUPPORTED_BACKENDS:
+    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"record-timeout: launch response backend={backend_token!r} not in {sorted(SUPPORTED_BACKENDS)}"
+            f"record-timeout: launch response backend={backend_token!r} not in "
+            f"{sorted(SUPPORTED_PROVIDER_TOKENS)}"
         )
 
     # Adv-14: liveness/ownership guards before fabricating a terminal record
@@ -17888,9 +18314,10 @@ def record_agent_run(
     if not isinstance(agent_backend, str) or not agent_backend.strip():
         raise ValueError("agent_backend must be non-empty string")
     backend_token = agent_backend.strip().lower()
-    if backend_token not in SUPPORTED_BACKENDS:
+    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_BACKENDS)}; got {agent_backend!r}"
+            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
+            f"got {agent_backend!r}"
         )
     payload["agent_backend"] = backend_token
 
@@ -18010,7 +18437,25 @@ def record_agent_run(
                         "agent_session_id must match child agent identifier in launch response"
                     )
                 sandbox_ref = launch_response_payload.get("sandbox_profile_ref")
-                if launch_response_payload.get("sandbox_runtime") != "bwrap":
+                # An HTTP leaf (issue #28) is answered from the conductor's own process: there
+                # is no child process, so there is nothing for bwrap to confine and
+                # `record_launch` records `leaf_transport: "http"` with no profile. The
+                # sandbox block below asserts a profile that, for such a launch, correctly does
+                # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored
+                # and outside every leaf's write roots — and only when it names a genuine HTTP
+                # provider token, so a leaf cannot claim it. Everything else about the terminal
+                # payload, including the unauthorized-write check below, still applies.
+                _launch_backend = launch_response_payload.get("backend")
+                _http_leaf = (
+                    str(launch_response_payload.get("leaf_transport") or "").strip().lower()
+                    == "http"
+                    and isinstance(_launch_backend, str)
+                    and _launch_backend.strip().lower() in _HTTP_PROVIDER_TOKENS)
+                if _http_leaf:
+                    payload.setdefault("sandbox_runtime", "none")
+                    payload.setdefault("sandbox_enforced", False)
+                    payload.setdefault("leaf_transport", "http")
+                elif launch_response_payload.get("sandbox_runtime") != "bwrap":
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18020,7 +18465,7 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_runtime_not_bwrap"
                     raise ValueError("launch response must record sandbox_runtime=bwrap")
-                if launch_response_payload.get("sandbox_enforced") is not True:
+                elif launch_response_payload.get("sandbox_enforced") is not True:
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18030,7 +18475,7 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_not_enforced"
                     raise ValueError("launch response must record sandbox_enforced=true")
-                if not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
+                elif not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18040,8 +18485,7 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_profile_missing"
                     raise ValueError("launch response must include sandbox_profile_ref")
-                sandbox_path = repo_root / str(sandbox_ref).strip()
-                if not sandbox_path.exists():
+                elif not (repo_root / str(sandbox_ref).strip()).exists():
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18051,9 +18495,10 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_profile_not_found"
                     raise ValueError(f"sandbox_profile_ref target not found: {sandbox_ref}")
-                payload.setdefault("sandbox_runtime", "bwrap")
-                payload.setdefault("sandbox_enforced", True)
-                payload.setdefault("sandbox_profile_ref", str(sandbox_ref).strip())
+                else:
+                    payload.setdefault("sandbox_runtime", "bwrap")
+                    payload.setdefault("sandbox_enforced", True)
+                    payload.setdefault("sandbox_profile_ref", str(sandbox_ref).strip())
             _validate_terminal_run_payload(
                 repo_root, orchestration_id, payload, caller_holds_lock=True,
             )
@@ -20141,9 +20586,10 @@ def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
                 f"\"started_at\": \"<ISO8601>\", \"backend\": \"claude\"}}"
             )
     backend = payload["backend"].strip()
-    if backend not in SUPPORTED_BACKENDS:
+    if backend not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"{label}: 'backend' must be one of {sorted(SUPPORTED_BACKENDS)}; got {backend!r}"
+            f"{label}: 'backend' must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
+            f"got {backend!r}"
         )
 
 
@@ -20342,6 +20788,25 @@ def main(argv: list[str] | None = None) -> int:
     preflight_parser.add_argument("--orchestration-id", required=True)
     preflight_parser.add_argument("--backend", default="claude", choices=sorted(SUPPORTED_BACKENDS))
     preflight_parser.add_argument("--agent-command")
+    preflight_parser.add_argument(
+        "--llm-config",
+        default=None,
+        help=(
+            "Leaf-LLM configuration file. When given, EVERY distinct provider it can launch is "
+            "probed and recorded under preflight.json#providers (in addition to the top-level "
+            "fields, which keep describing --backend / defaults)."
+        ),
+    )
+    # The RESOLVED `defaults` of the configuration the run will actually use. The deprecated
+    # `--agent-model` / `--llm-command` are not in the FILE, so a probe that only reloads the
+    # path would certify a different command than the run launches. Re-applying a value the
+    # file already declares is a no-op, so these are sent unconditionally.
+    preflight_parser.add_argument("--llm-config-defaults-model", default=None)
+    preflight_parser.add_argument("--llm-config-defaults-command", default=None)
+    # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the
+    # file, so an edit in between would certify commands the conductor will never launch —
+    # it keeps the object it already has.
+    preflight_parser.add_argument("--llm-config-sha256", default=None)
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
@@ -20659,7 +21124,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     launch_check_parser.add_argument("--step", required=True,
                                      help="Workflow step name: plan, generate, build, execute, judge, etc.")
-    launch_check_parser.add_argument("--backend", default="claude", choices=sorted(SUPPORTED_BACKENDS))
+    # Provider tokens, not just spawnable backends: the conductor passes the LAUNCHING leaf's
+    # own token, which for an HTTP pure leaf is not a CLI backend at all.
+    launch_check_parser.add_argument("--backend", default="claude",
+                                     choices=sorted(SUPPORTED_PROVIDER_TOKENS))
     launch_check_parser.add_argument(
         "--require-child-agent", required=True, choices=("step", "substep"),
         help="Expected child agent kind. Plan/Generate/Tune require 'substep'; "
@@ -20965,14 +21433,48 @@ def main(argv: list[str] | None = None) -> int:
                 agent_command = args.codex_command
             elif args.backend == "claude":
                 agent_command = args.claude_command
+        preflight_payload = probe_execution_platform(
+            backend=args.backend,
+            agent_command=agent_command,
+            repo_root=repo_root,
+        )
+        expected_sha = getattr(args, "llm_config_sha256", None)
+        llm_config_snapshot = None
+        if getattr(args, "llm_config", None):
+            # ONE snapshot: read the bytes, parse THOSE, and check the hash of THOSE. Hashing
+            # the path and then re-reading it to probe would approve one version and certify
+            # another, which under two wrapper commands on one backend token is a launch the
+            # `providers` map never saw.
+            from tools.llm_config import load_llm_config as _load_llm_config
+            _raw = Path(args.llm_config).read_bytes()
+            llm_config_snapshot = _load_llm_config(args.llm_config, content=_raw)
+            if expected_sha and llm_config_snapshot.sha256 != expected_sha:
+                raise ValueError(
+                    f"preflight: leaf-LLM configuration {args.llm_config} changed between the "
+                    f"caller loading it ({expected_sha}) and this probe "
+                    f"({llm_config_snapshot.sha256}); the probe would certify a configuration "
+                    f"the run will not launch")
+        if getattr(args, "llm_config", None):
+            # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
+            # (i.e. `defaults`), and `providers` adds one entry per distinct provider the
+            # configuration can launch — including the one just probed, so the launch check has
+            # a single place to look. The configuration's own path and hash are NOT recorded
+            # here: `orchestration_meta.json#invocation` already pins both, for the same file
+            # and the same orchestration, and that is what the resume gate compares.
+            preflight_payload["providers"] = probe_all_providers(
+                config=llm_config_snapshot, repo_root=repo_root,
+                model_override=getattr(args, "llm_config_defaults_model", "") or "",
+                command_override=getattr(args, "llm_config_defaults_command", "") or "")
+            # A provider the config names but the host cannot launch must fail the preflight
+            # itself, not the substep that first reaches it.
+            if not _preflight_allows_agent_launch(preflight_payload):
+                preflight_payload["status"] = "fail"
+                preflight_payload["can_launch_step_agents"] = False
+                preflight_payload["can_launch_substep_agents"] = False
         result = write_preflight(
             repo_root=repo_root,
             orchestration_id=args.orchestration_id,
-            payload=probe_execution_platform(
-                backend=args.backend,
-                agent_command=agent_command,
-                repo_root=repo_root,
-            ),
+            payload=preflight_payload,
         )
     elif args.command == "preflight-status":
         result = get_preflight_ttl_status(

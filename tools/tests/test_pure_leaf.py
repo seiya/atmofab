@@ -467,7 +467,11 @@ class LeafCommandPureBranchTest(unittest.TestCase):
             "REPAIR", session_id="arid-2", resume_session_id="thread-1", pure=True)
         self.assertEqual(argv[:3], ["codex", "exec", "resume"])
         self.assertNotIn("--sandbox", argv)
-        self.assertEqual(argv[argv.index("--config") + 1], 'sandbox_mode="read-only"')
+        # The PAIR, not `argv.index("--config") + 1`: a second `--config` (the reasoning
+        # effort) now precedes this one, and a positional lookup silently reads whichever
+        # comes first.
+        self.assertIn('sandbox_mode="read-only"',
+                      [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
         self.assertIn("--ignore-rules", argv)
         self.assertIn("--output-schema", argv)
         self.assertIn("thread-1", argv)

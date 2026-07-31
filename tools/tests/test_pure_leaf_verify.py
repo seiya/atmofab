@@ -169,7 +169,7 @@ class PureVerifySubstepTests(unittest.TestCase):
 
     def test_transport_error_routes_fail_closed(self) -> None:
         class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 return wc.ProcResult(1, "", "usage limit reached")
         c, refs, oc = self._run([_envelope(_verdict("pass"))], cls=_C)
         self.assertEqual(oc.status, "fail")
@@ -190,7 +190,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         spawn_kwargs: list = []
 
         class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 spawn_kwargs.append(kwargs)
                 return wc.ProcResult(
                     -9, "", "You've hit your session limit · resets 3pm (Asia/Tokyo)\n" + marker,
@@ -226,7 +226,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         now = 1_752_200_000.0
 
         class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 self._spawn = getattr(self, "_spawn", 0)
                 proc = self.procs[min(self._spawn, len(self.procs) - 1)]
                 self._spawn += 1
@@ -270,7 +270,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         recorded_stdout = "You've hit your session limit · resets 5:50pm (Asia/Tokyo)\n"
 
         class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 self._spawn = getattr(self, "_spawn", 0)
                 proc = self.procs[min(self._spawn, len(self.procs) - 1)]
                 self._spawn += 1
@@ -314,7 +314,7 @@ class PureVerifySubstepTests(unittest.TestCase):
             '{},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","uuid":"ab0'
             '9298a-847a-415f-87d6-88205cc51fb4"}')
         class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 self._spawn = getattr(self, "_spawn", 0)
                 proc = self.procs[min(self._spawn, len(self.procs) - 1)]
                 self._spawn += 1
@@ -424,7 +424,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         resumes: list = []
 
         class _C(_PureFakeConductor):
-            def spawn_leaf(self, prompt_text, child_env, **kwargs):  # type: ignore[override]
+            def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
                 resumes.append(kwargs.get("resume_session_id"))
                 return super().spawn_leaf(prompt_text, child_env, **kwargs)
         bad = {"verification_status": "pass"}
@@ -499,7 +499,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
         class _C(_PureFakeConductor):
             def _claude_session_resumable(self, arid):  # type: ignore[override]
                 return False  # force the cold-fallback repair branch on every turn
-            def record_launch(self, child_arid, request):  # type: ignore[override]
+            def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 # Emulate the real record_launch's UTF-8 prompt persistence to surface any
                 # non-encodable prior_document as the real path would.
                 json.dumps(request, ensure_ascii=False).encode("utf-8")
@@ -525,7 +525,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
         import tools.pure_leaf as pl
 
         class _C(_PureFakeConductor):
-            def record_launch(self, child_arid, request):  # type: ignore[override]
+            def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 json.dumps(request, ensure_ascii=False).encode("utf-8")  # emulate prompt persist
                 return {"launch_prompt_text": "PROMPT"}
         with tempfile.TemporaryDirectory() as tmp:

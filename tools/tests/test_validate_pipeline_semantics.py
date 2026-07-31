@@ -17037,6 +17037,138 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._make_pure(repo_root)
             self.assertEqual(self._pure_violations(repo_root), [])
 
+    def _make_http(self, repo_root: Path, *, keep_profile: bool = False,
+                   backend: str = "openai_compatible",
+                   transport: str = "http") -> None:
+        """Turn the pure record into the shape `record_launch` writes for an HTTP pure leaf:
+        the response marks the transport and the provider, and NO sandbox profile exists."""
+        orch_root = self._orch_root(repo_root)
+        resp_path = orch_root / "launches" / f"{self._ARID}.response.json"
+        resp = json.loads(resp_path.read_text(encoding="utf-8"))
+        resp["backend"] = backend
+        resp["leaf_transport"] = transport
+        resp["sandbox_runtime"] = "none"
+        resp["sandbox_enforced"] = False
+        resp.pop("sandbox_profile_ref", None)
+        body = json.dumps(resp, ensure_ascii=False)
+        resp_path.write_text(body, encoding="utf-8")
+        # `record_launch` writes BOTH copies and the sweep compares them; mutating only one
+        # leaves a `must equal launches response payload` violation the filter would hide.
+        (orch_root / "agents" / self._ARID / "dialogs"
+         / "child.response.json").write_text(body, encoding="utf-8")
+        # `record_agent_run` stamps the row from the same response.
+        self._patch_row(repo_root, agent_backend=backend)
+        if not keep_profile:
+            (orch_root / "sandbox_profiles" / f"{self._ARID}.json").unlink(missing_ok=True)
+
+    def _patch_row(self, repo_root: Path, **fields) -> None:
+        runs = self._orch_root(repo_root) / "agent_runs.jsonl"
+        out = []
+        for line in runs.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                out.append(line)
+                continue
+            row = json.loads(line)
+            if row.get("agent_run_id") == self._ARID:
+                row.update(fields)
+            out.append(json.dumps(row, ensure_ascii=False))
+        runs.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+    def test_an_http_pure_launch_needs_no_sandbox_profile(self) -> None:
+        """An HTTP pure leaf is answered from the conductor's own process, so `record_launch`
+        writes no profile. Demanding one failed this gate for every such run — as
+        `unrecoverable`, at Validate, after the whole pipeline was paid for, naming a file the
+        operator cannot create."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root)
+            self.assertEqual(self._pure_violations(repo_root), [])
+            # Compared against the SAME tree without the HTTP conversion, so this asserts the
+            # conversion adds nothing rather than that the filter hides everything.
+            with tempfile.TemporaryDirectory() as tmp2:
+                control = Path(tmp2)
+                self._build_tree(control)
+                self._make_pure(control)
+                self.assertEqual(
+                    self._all_violations(repo_root), self._all_violations(control))
+
+    def _all_violations(self, repo_root: Path) -> list[str]:
+        """Every violation, with the run-specific tmp path stripped so two trees compare."""
+        return sorted(
+            v.replace(str(repo_root), "<root>")
+            for v in validate(repo_root=repo_root, workspace_root="workspace",
+                              require_orchestration=True))
+
+    def test_an_http_exemption_with_a_profile_still_on_disk_is_flagged(self) -> None:
+        """A genuine HTTP launch writes none, so one existing alongside the claim is how a
+        tampered CLI record would escape the profile-content audit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root, keep_profile=True)
+            self.assertTrue([v for v in self._pure_violations(repo_root)
+                             if "sandbox_profiles/" in v and "exists" in v])
+
+    def test_an_http_exemption_needs_the_row_to_agree_with_the_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root)
+            self._patch_row(repo_root, agent_backend="claude")
+            self.assertTrue([v for v in self._pure_violations(repo_root)
+                             if "agent_backend must be an http provider" in v])
+
+    def test_a_cli_pure_launch_still_needs_one(self) -> None:
+        """The control: the exemption is not "a missing profile is fine"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            (self._orch_root(repo_root) / "sandbox_profiles"
+             / f"{self._ARID}.json").unlink()
+            self.assertTrue([v for v in self._pure_violations(repo_root)
+                             if "sandbox profile missing" in v])
+
+    def test_the_exemption_needs_both_the_transport_and_an_http_provider(self) -> None:
+        """Either half alone is a CLI launch that dropped its profile."""
+        for kwargs in ({"backend": "claude"},                    # transport claimed, CLI token
+                       {"transport": "cli"}):                    # HTTP token, no transport mark
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_pure(repo_root)
+                self._make_http(repo_root, **kwargs)
+                self.assertTrue(
+                    [v for v in self._pure_violations(repo_root)
+                     if "sandbox profile missing" in v], msg=str(kwargs))
+
+    def test_an_http_pure_launch_may_not_reference_a_profile(self) -> None:
+        """A response claiming both is incoherent: it says nothing was confined and then points
+        at the confinement."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root, keep_profile=True)
+            resp_path = (self._orch_root(repo_root) / "launches"
+                         / f"{self._ARID}.response.json")
+            resp = json.loads(resp_path.read_text(encoding="utf-8"))
+            resp["sandbox_profile_ref"] = (
+                f"workspace/orchestrations/{self._ORCH}/sandbox_profiles/{self._ARID}.json")
+            resp_path.write_text(json.dumps(resp), encoding="utf-8")
+            self.assertTrue([v for v in self._pure_violations(repo_root)
+                             if "must NOT reference a sandbox profile" in v])
+
+    def test_http_pure_leaf_backends_matches_the_runtime(self) -> None:
+        """The token set is duplicated here (this module may not import the runtime); the two
+        must not drift, or a provider added there would fail this gate."""
+        from tools.orchestration_runtime import _HTTP_PROVIDER_TOKENS
+        self.assertEqual(vps._HTTP_PURE_LEAF_BACKENDS, frozenset(_HTTP_PROVIDER_TOKENS))
+
     def test_pure_record_with_output_manifest_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

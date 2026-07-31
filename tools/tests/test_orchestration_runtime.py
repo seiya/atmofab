@@ -24,6 +24,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mcp_servers.build_runtime_server import tool_compile_project
+from tools import orchestration_runtime as ort
+from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
     TERMINAL_STATUSES,
@@ -30904,7 +30906,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
                         "sources": [{"filename": "y_model.f90", "text": "m"}]}
 
             c._resolve_exemplar = spy_exemplar  # type: ignore[assignment]
-            c.spawn_leaf = lambda p, e, **kw: (cap.update(kw) or wc.ProcResult(0, "", ""))  # type: ignore[assignment]
+            c.spawn_leaf = lambda p, e, entry=None, **kw: (cap.update(kw) or wc.ProcResult(0, "", ""))  # type: ignore[assignment]
             c._claude_session_resumable = lambda sid: resumable  # type: ignore[assignment]
             # capture the built request so we can assert exemplar attach scope too
             orig_build = wc.build_launch_request
@@ -31661,6 +31663,748 @@ class DriverIdentityRecordingTest(unittest.TestCase):
             meta = self._meta(repo_root, "o1")
             self.assertEqual(meta["status"], "cancel")
             self.assertEqual(meta["reason_code"], "driver_interrupted")
+
+
+class MultiProviderPreflightTests(unittest.TestCase):
+    """Issue #28 Phase 4: preflight probes EVERY provider a configuration can launch.
+
+    The payload is a back-compatible superset — the top-level fields keep describing
+    `--backend` (i.e. `defaults`) — and `providers` is the new authority the launch check and
+    `record_launch` consult. A payload without the map is a pre-#28 preflight and every gate
+    must behave exactly as it did."""
+
+    def _config(self, tmp: Path, text: str) -> Path:
+        path = tmp / "llm.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    _MIXED = ("defaults:\n  provider: claude_cli\n"
+              "phases:\n  generate:\n    substeps:\n      generate:\n"
+              "        provider: openai_compatible\n"
+              "        base_url: http://localhost:8000/v1\n"
+              "        api_key_env: METDSL_TEST_LOCAL_KEY\n        model: local-model\n")
+
+    # --- the HTTP prober -------------------------------------------------------------
+
+    def _row(self, **kw):
+        row = {"backend": "openai_compatible", "provider": "openai_compatible",
+               "base_url": "http://localhost:8000/v1", "api_key_env": "METDSL_TEST_LOCAL_KEY"}
+        row.update(kw)
+        return row
+
+    def test_http_provider_probes_launchable_when_all_three_checks_pass(self) -> None:
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "secret-value"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
+        self.assertTrue(out["launchable"])
+        self.assertEqual(len(out["checks"]), 3)
+        self.assertEqual(out["provider_type"], "openai_compatible")
+
+    def test_http_provider_never_records_the_key_value(self) -> None:
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "super-secret"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
+        self.assertNotIn("super-secret", json.dumps(out))
+        self.assertIn("METDSL_TEST_LOCAL_KEY", json.dumps(out))
+
+    def test_http_provider_fails_closed_when_the_key_variable_is_unset(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "METDSL_TEST_LOCAL_KEY"}
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
+        self.assertFalse(out["launchable"])
+        self.assertFalse(
+            [c for c in out["checks"] if c["name"].endswith("api_key_env_set")][0]["pass"])
+
+    def test_http_provider_fails_closed_on_a_malformed_base_url(self) -> None:
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+            out = ort._probe_http_provider(
+                self._row(base_url="localhost:8000"), opener=lambda *a, **k: object())
+        self.assertFalse(out["launchable"])
+        names = {c["name"]: c["pass"] for c in out["checks"]}
+        self.assertFalse(names["openai_compatible_base_url_well_formed"])
+        # Reachability is not even attempted against a URL that is not one.
+        self.assertFalse(names["openai_compatible_endpoint_reachable"])
+
+    def test_http_provider_fails_closed_when_nothing_is_listening(self) -> None:
+        def _refuse(*_a, **_k):
+            raise OSError("Connection refused")
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=_refuse)
+        self.assertFalse(out["launchable"])
+
+    def test_an_http_error_status_still_counts_as_reachable(self) -> None:
+        """A 401 proves a server is there, which is the whole question this check asks — the
+        probe is deliberately unauthenticated, so an auth failure is the EXPECTED answer."""
+        import urllib.error
+
+        def _unauthorized(*_a, **_k):
+            raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {}, None)
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=_unauthorized)
+        self.assertTrue(out["launchable"])
+        self.assertIn("HTTP 401",
+                      [c["detail"] for c in out["checks"] if "reachable" in c["name"]][0])
+
+    def test_the_reachability_escape_hatch_never_skips_the_other_two(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "METDSL_TEST_LOCAL_KEY"}
+        env["METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY"] = "1"
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(), opener=None)
+        self.assertFalse(out["launchable"])       # the missing key still fails it
+        self.assertTrue([c for c in out["checks"] if "reachable" in c["name"]][0]["pass"])
+
+    # --- the providers map -----------------------------------------------------------
+
+    def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), self._MIXED)
+            with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False), \
+                 patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")):
+                out = ort.probe_all_providers(llm_config_path=cfg,
+                                              opener=lambda *a, **k: object())
+        self.assertEqual(set(out), {"claude", "openai_compatible"})
+        self.assertTrue(all(entry["launchable"] for entry in out.values()))
+
+    def test_preflight_refuses_a_snapshot_that_changed_under_it(self) -> None:
+        """The caller resolved one set of bytes; this subprocess reloads the file. If they
+        differ, the probe would certify a configuration the run will not launch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            argv = ["preflight", "--repo-root", str(repo_root),
+                    "--orchestration-id", "orch_001", "--backend", "claude",
+                    "--llm-config", str(cfg), "--llm-config-sha256", "sha256:stale"]
+            with patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 self.assertRaises(ValueError) as ctx:
+                ort.main(argv)
+            self.assertIn("changed between the caller loading it", str(ctx.exception))
+
+    def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            argv = ["preflight", "--repo-root", str(repo_root),
+                    "--orchestration-id", "orch_001", "--backend", "claude",
+                    "--llm-config", str(cfg),
+                    "--llm-config-sha256", lc_config_sha256(cfg)]
+            with patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")):
+                ort.main(argv)
+            stored = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/preflight.json")
+                .read_text(encoding="utf-8"))
+            self.assertIn("claude", stored["providers"])
+
+    def test_probing_a_snapshot_never_re_reads_the_file(self) -> None:
+        """Hashing the path and then re-reading it to probe approves one version and certifies
+        another. Under two wrapper commands on one backend token that is a launch the
+        `providers` map never saw, so the two must share one snapshot."""
+        import tools.llm_config as _lc
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n"
+                                          "  command: wrapA\n")
+            snapshot = _lc.load_llm_config(cfg, content=cfg.read_bytes())
+            # The file moves on after the snapshot was taken.
+            cfg.write_text("defaults:\n  provider: claude_cli\n  command: wrapB\n",
+                           encoding="utf-8")
+            seen: list = []
+
+            def _probe(**kw):
+                seen.append(kw.get("agent_command"))
+                return _launchable_preflight_dict(backend="claude")
+
+            with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+                ort.probe_all_providers(config=snapshot)
+            self.assertEqual(seen, ["wrapA"])
+
+    def test_preflight_hands_the_prober_its_own_snapshot(self) -> None:
+        """The CLI half: it must pass the object it hashed, not the path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            captured: dict = {}
+            with patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 patch.object(ort, "probe_all_providers",
+                              side_effect=lambda **kw: captured.update(kw) or {}):
+                ort.main(["preflight", "--repo-root", str(repo_root),
+                          "--orchestration-id", "orch_001", "--backend", "claude",
+                          "--llm-config", str(cfg),
+                          "--llm-config-sha256", lc_config_sha256(cfg)])
+            self.assertIsNotNone(captured.get("config"))
+            self.assertIsNone(captured.get("llm_config_path"))
+            self.assertEqual(captured["config"].sha256, lc_config_sha256(cfg))
+
+    def test_a_claude_wrapper_with_flags_is_probed_as_argv(self) -> None:
+        """A configured `command:` may carry flags, and the leaf is launched with it split
+        (`Conductor._provider_command_base`). The claude prober passed the whole string as
+        argv[0] — an executable of that literal name, which does not exist — so every wrapper
+        failed preflight before any leaf could run. The codex prober already split."""
+        seen: list = []
+
+        def _runner(argv, **_kw):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+        ort._probe_claude_backend("claude", "mywrap --flag", _runner)
+        self.assertEqual(seen[0], ["mywrap", "--flag", "--version"])
+        self.assertTrue(all(a[:2] == ["mywrap", "--flag"] for a in seen), msg=str(seen))
+
+    def test_a_bare_claude_command_is_unchanged(self) -> None:
+        seen: list = []
+
+        def _runner(argv, **_kw):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+        ort._probe_claude_backend("claude", "claude", _runner)
+        self.assertEqual(seen[0], ["claude", "--version"])
+
+    def test_the_claude_mcp_probe_splits_the_wrapper_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / ".claude").mkdir()
+            (repo_root / ".claude" / "settings.json").write_text(json.dumps({
+                "enabledMcpjsonServers": ["build-runtime"],
+                "permissions": {"allow": ["mcp__build-runtime"]}}), encoding="utf-8")
+            (repo_root / ".mcp.json").write_text(json.dumps({
+                "mcpServers": {"build-runtime": {"command": "python3"}}}), encoding="utf-8")
+            seen: list = []
+
+            def _runner(argv, **_kw):
+                seen.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+            ort._probe_claude_mcp_registry("mywrap --flag", repo_root, _runner)
+            mcp = [a for a in seen if "mcp" in a]
+            self.assertEqual(mcp, [["mywrap", "--flag", "mcp", "list"]])
+
+    def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
+        """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but
+        the deprecated `--agent-model` / `--llm-command` are not in the file — `run_workflow`
+        applies them to the loaded object. Probing without them certifies a command the run
+        will not launch: a wrapper that works but a bare CLI that is absent fails preflight,
+        and the reverse authorizes a wrapper nothing probed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n  model: opus\n")
+            seen: list = []
+
+            def _probe(**kw):
+                seen.append(kw.get("agent_command"))
+                return _launchable_preflight_dict(backend="claude")
+
+            with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+                ort.probe_all_providers(llm_config_path=cfg)
+                ort.probe_all_providers(llm_config_path=cfg,
+                                        command_override="/opt/wrap/claude --sandbox")
+        self.assertIsNone(seen[0])                       # the file names none
+        self.assertEqual(seen[1], "/opt/wrap/claude --sandbox")
+
+    def test_the_live_reprobe_covers_every_recorded_provider(self) -> None:
+        """`probed_at` is the freshness claim for the WHOLE document. Probing only `defaults`
+        and refreshing it leaves a mixed configuration's other providers treated as fresh
+        indefinitely — and `record-launch` then creates durable child state for a provider that
+        has since become unavailable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"
+            payload["providers"] = {
+                "claude": {"provider_type": "claude_cli", "probe_command": "claude",
+                           "checks": [], "launchable": True},
+                "openai_compatible": {"provider_type": "openai_compatible",
+                                      "base_url": "http://localhost:8000/v1",
+                                      "api_key_env": "METDSL_TEST_LOCAL_KEY",
+                                      "checks": [], "launchable": True},
+            }
+            self._orch_with_preflight(repo_root, payload)
+            # The endpoint has since gone away.
+            def _refuse(*_a, **_k):
+                raise OSError("Connection refused")
+
+            with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False), \
+                 patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 patch("urllib.request.urlopen", _refuse), \
+                 self.assertRaises(RuntimeError):
+                ort._run_live_probe_and_update(
+                    repo_root, "orch_001",
+                    json.loads((repo_root / "workspace/orchestrations/orch_001/preflight.json")
+                               .read_text(encoding="utf-8")))
+
+    def test_the_reprobe_covers_every_surface_recorded_under_a_token(self) -> None:
+        """Two entries can share a backend token with different commands; the initial probe
+        AND-s them. The row is what the TTL re-probe reconstructs from, so recording only the
+        first command would silently stop checking the second after the first expiry."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp),
+                               "defaults:\n  provider: claude_cli\n  command: wrapA\n"
+                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "        command: wrapB\n")
+            seen: list = []
+
+            def _probe(**kw):
+                seen.append(kw.get("agent_command"))
+                return _launchable_preflight_dict(backend="claude")
+
+            with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+                recorded = ort.probe_all_providers(llm_config_path=cfg)
+                self.assertEqual(seen, ["wrapA", "wrapB"])
+                seen.clear()
+                ort._reprobe_recorded_providers(recorded, None)
+            self.assertEqual(seen, ["wrapA", "wrapB"])
+
+    def test_a_row_predating_surfaces_degrades_to_the_one_it_names(self) -> None:
+        seen: list = []
+
+        def _probe(**kw):
+            seen.append(kw.get("agent_command"))
+            return _launchable_preflight_dict(backend="claude")
+
+        with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+            ort._reprobe_recorded_providers(
+                {"claude": {"provider_type": "claude_cli", "probe_command": "wrapA",
+                            "checks": [], "launchable": True}}, None)
+        self.assertEqual(seen, ["wrapA"])
+
+    def test_a_refreshed_probe_persists_the_rows_it_refreshed(self) -> None:
+        """Advancing `probed_at` while leaving the stale rows is the state the re-probe exists
+        to prevent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"
+            payload["providers"] = {
+                "claude": {"provider_type": "claude_cli", "probe_command": "oldwrapper",
+                           "checks": [], "launchable": True}}
+            self._orch_with_preflight(repo_root, payload)
+            path = repo_root / "workspace/orchestrations/orch_001/preflight.json"
+            probed = _launchable_preflight_dict(backend="claude")
+            probed["probe_command"] = "oldwrapper"
+            with patch.object(ort, "probe_execution_platform", return_value=probed):
+                ort._run_live_probe_and_update(
+                    repo_root, "orch_001",
+                    json.loads(path.read_text(encoding="utf-8")))
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            self.assertTrue(stored["providers"]["claude"]["launchable"])
+            # Re-probed, not carried through: the row now holds THIS probe's checks.
+            self.assertTrue(stored["providers"]["claude"]["checks"])
+            self.assertEqual(stored["providers"]["claude"]["probe_command"], "oldwrapper")
+
+    def test_two_entries_under_one_token_are_anded(self) -> None:
+        """Same backend behind two commands: the token is launchable only if BOTH are."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp),
+                               "defaults:\n  provider: claude_cli\n  command: claude\n"
+                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "        command: otherwrap\n")
+            payloads = iter([
+                _launchable_preflight_dict(backend="claude"),
+                dict(_launchable_preflight_dict(backend="claude"), status="fail"),
+            ])
+            with patch.object(ort, "probe_execution_platform",
+                              side_effect=lambda **_k: next(payloads)):
+                out = ort.probe_all_providers(llm_config_path=cfg)
+        self.assertEqual(set(out), {"claude"})
+        self.assertFalse(out["claude"]["launchable"])
+
+    def test_a_composite_payload_stays_launchable_for_the_old_gates(self) -> None:
+        payload = _launchable_preflight_dict(backend="claude")
+        self.assertTrue(ort._preflight_allows_agent_launch(payload))
+        payload["providers"] = {
+            "claude": {"launchable": True, "checks": []},
+            "openai_compatible": {"launchable": True, "checks": []},
+        }
+        self.assertTrue(ort._preflight_allows_agent_launch(payload))
+
+    def test_one_unlaunchable_provider_fails_the_whole_preflight(self) -> None:
+        payload = _launchable_preflight_dict(backend="claude")
+        payload["providers"] = {
+            "claude": {"launchable": True, "checks": []},
+            "openai_compatible": {"launchable": False, "checks": []},
+        }
+        self.assertFalse(ort._preflight_allows_agent_launch(payload))
+        # Fail-closed on a malformed entry too.
+        payload["providers"] = {"claude": "not-a-mapping"}
+        self.assertFalse(ort._preflight_allows_agent_launch(payload))
+
+    # --- the launch check ------------------------------------------------------------
+
+    def _orch_with_preflight(self, repo_root: Path, payload: dict) -> None:
+        init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+        _mark_dependencies_ready(repo_root)
+        write_preflight(repo_root=repo_root, orchestration_id="orch_001", payload=payload)
+
+    def _check(self, repo_root: Path, backend: str) -> dict:
+        return workflow_launch_check(
+            repo_root, orchestration_id="orch_001",
+            node_key="problem/shallow_water2d@0.3.0", step="compile",
+            backend=backend, require_child_agent="substep")
+
+    def test_launch_check_accepts_any_probed_launchable_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["providers"] = {
+                "claude": {"launchable": True, "checks": []},
+                "openai_compatible": {"launchable": True, "checks": []},
+            }
+            self._orch_with_preflight(repo_root, payload)
+            for backend in ("claude", "openai_compatible"):
+                self.assertEqual(self._check(repo_root, backend)["status"], "pass",
+                                 msg=backend)
+
+    def test_launch_check_rejects_a_provider_nothing_probed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["providers"] = {"claude": {"launchable": True, "checks": []}}
+            self._orch_with_preflight(repo_root, payload)
+            out = self._check(repo_root, "anthropic_api")
+            self.assertNotEqual(out["status"], "pass")
+            self.assertEqual(out["reason_code"], "backend_not_probed")
+
+    def test_launch_check_without_a_providers_map_keeps_the_equality_test(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._orch_with_preflight(repo_root, _launchable_preflight_dict(backend="claude"))
+            self.assertEqual(self._check(repo_root, "claude")["status"], "pass")
+            out = self._check(repo_root, "codex")
+            self.assertNotEqual(out["status"], "pass")
+            self.assertEqual(out["reason_code"],
+                             "child_agent_unavailable_on_execution_platform")
+
+
+    # --- record_launch: the token comes from THIS launch --------------------------------
+
+    def _launch(self, repo_root: Path, response_backend: str, arid: str,
+                *, pure: bool = True, extra_response: dict | None = None) -> dict:
+        """A real `record_launch`. Pure by default: an HTTP provider is admissible only for a
+        pure leaf, and `record_launch` now asserts that itself."""
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        if pure:
+            request: dict = {
+                "leaf_mode": "pure",
+                "agent_model": "some-model",
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "node_key": "problem/shallow_water2d@0.3.0",
+                "step": "generate",
+                "substep": "generate",
+                "orchestration_id": "orch_001",
+                "parent_agent_run_id": "orch_run_001",
+                "ir_ref": _FIX_IR_REF,
+                "pipeline_ref": _FIX_PIPE_REF,
+                "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
+                "source_id": "src_20260415_001",
+                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "allowed_output_paths": [],
+                "pure_context": {
+                    "controlled_spec_document": "the model conserves mass",
+                    "tests_document": "- test: conserves mass",
+                    "ir_document": "algorithm:\n  state_variables: [h]\n",
+                    "runner_document": "program p\nend program p\n",
+                    "harness_document": "module m\nend module m\n",
+                    "harness_signatures_document": "{}",
+                    "harness_capabilities": "{}",
+                    "target_profile": "{}",
+                },
+            }
+        else:
+            request = {
+                "agent_model": "some-model",
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "node_key": "problem/shallow_water2d@0.3.0",
+                "step": "compile",
+                "substep": "generate",
+                "orchestration_id": "orch_001",
+                "parent_agent_run_id": "orch_run_001",
+                "ir_ref": _FIX_IR_REF,
+                "pipeline_ref": _FIX_PIPE_REF,
+                "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
+                "skill_name": "workflow-compile-generate",
+                "skill_ref": "skills/workflow-compile-generate/SKILL.md",
+                "skill_must_read_refs": "",
+                "allowed_output_paths": [f"{_FIX_IR_REF}/spec.ir.yaml"],
+                "launch_prompt_full": _substep_launch_prompt(
+                    "problem/shallow_water2d@0.3.0", "compile", "generate", arid),
+            }
+        return record_launch(
+            repo_root=repo_root,
+            orchestration_id="orch_001",
+            parent_agent_run_id="orch_run_001",
+            child_agent_run_id=arid,
+            request_payload=request,
+            response_payload={
+                "agent_run_id": arid,
+                "backend": response_backend,
+                **(extra_response or {}),
+                **_spawn_response_payload(f"sess_{arid}"),
+            },
+        )
+
+    def _mixed_preflight(self, repo_root: Path) -> None:
+        payload = _launchable_preflight_dict(backend="claude")
+        payload["providers"] = {
+            "claude": {"launchable": True, "checks": []},
+            "openai_compatible": {"launchable": True, "checks": []},
+        }
+        self._orch_with_preflight(repo_root, payload)
+
+    def test_record_launch_takes_the_backend_from_this_launchs_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            self._launch(repo_root, "openai_compatible", "substep_run_http_001")
+            launch = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/launches"
+                 / "substep_run_http_001.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(launch["backend"], "openai_compatible")
+
+    def test_record_launch_refuses_a_provider_preflight_did_not_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            with self.assertRaises(RuntimeError) as ctx:
+                self._launch(repo_root, "anthropic_api", "substep_run_bad_001")
+            # `record-launch:` prefix, not the bare reason code: `pre_phase_launch` reports the
+            # SAME code, so a substring test on it passes even with this guard deleted.
+            self.assertIn("record-launch: backend_not_probed", str(ctx.exception))
+
+    def test_an_http_launch_skips_the_sandbox_profile_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            arid = "substep_run_http_002"
+            out = self._launch(repo_root, "openai_compatible", arid)
+            self.assertNotIn("sandbox_profile_ref", out)
+            self.assertFalse((repo_root / "workspace/orchestrations/orch_001/sandbox_profiles"
+                              / f"{arid}.json").exists())
+            response = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/launches"
+                 / f"{arid}.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(response["leaf_transport"], "http")
+            self.assertEqual(response["sandbox_runtime"], "none")
+            self.assertIs(response["sandbox_enforced"], False)
+
+    def test_a_cli_launch_still_gets_its_sandbox_profile(self) -> None:
+        """The control: the skip is keyed on the provider, not on `is_pure`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            out = self._launch(repo_root, "claude", "substep_run_cli_001")
+            self.assertIn("sandbox_profile_ref", out)
+            response = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/launches"
+                 / "substep_run_cli_001.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(response["sandbox_runtime"], "bwrap")
+            self.assertNotIn("leaf_transport", response)
+
+    def test_an_http_leaf_can_actually_be_finalized(self) -> None:
+        """`record_agent_run` demanded `sandbox_runtime == "bwrap"` unconditionally, so the
+        first real HTTP leaf died at finalize — AFTER its turn was paid for, and past the point
+        `finalize-child` can be retried."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            arid = "substep_run_http_003"
+            self._launch(repo_root, "openai_compatible", arid)
+            record_agent_run(
+                repo_root=repo_root, orchestration_id="orch_001",
+                payload={
+                    "agent_run_id": arid,
+                    "agent_role": "substep",
+                    "agent_backend": "openai_compatible",
+                    "agent_model": "local-coder",
+                    "parent_agent_run_id": "orch_run_001",
+                    "status": "pass",
+                    "started_at": "2026-03-11T00:00:00Z",
+                    "finished_at": "2026-03-11T00:01:00Z",
+                    "agent_session_id": f"sess_{arid}",
+                    "context_id": arid,
+                    "context_isolated": True,
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "step": "generate",
+                    "substep": "generate",
+                    "output_refs": [],
+                    "result_summary": "pure_generate: bundle accepted",
+                })
+            rows = [json.loads(ln) for ln in
+                    (repo_root / "workspace/orchestrations/orch_001/agent_runs.jsonl")
+                    .read_text(encoding="utf-8").splitlines() if ln.strip()]
+            row = [r for r in rows if r.get("agent_run_id") == arid][0]
+            self.assertEqual(row["agent_backend"], "openai_compatible")
+            self.assertEqual(row["sandbox_runtime"], "none")
+            self.assertIs(row["sandbox_enforced"], False)
+            self.assertFalse((repo_root / "workspace/orchestrations/orch_001"
+                              / "agent_runs_invalid.jsonl").exists())
+
+    def test_a_cli_leaf_still_must_prove_its_sandbox(self) -> None:
+        """The exemption is granted on the launch RESPONSE's provider token, so it cannot be
+        claimed by a CLI launch whose profile is missing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            arid = "substep_run_cli_002"
+            self._launch(repo_root, "claude", arid)
+            launches = repo_root / "workspace/orchestrations/orch_001/launches"
+            response = json.loads((launches / f"{arid}.response.json").read_text("utf-8"))
+            response["sandbox_runtime"] = "none"      # a CLI launch claiming the exemption
+            response["leaf_transport"] = "http"
+            (launches / f"{arid}.response.json").write_text(json.dumps(response), "utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                record_agent_run(
+                    repo_root=repo_root, orchestration_id="orch_001",
+                    payload={
+                        "agent_run_id": arid, "agent_role": "substep",
+                        "agent_backend": "claude", "agent_model": "opus",
+                        "parent_agent_run_id": "orch_run_001", "status": "pass",
+                        "started_at": "2026-03-11T00:00:00Z",
+                        "finished_at": "2026-03-11T00:01:00Z",
+                        "agent_session_id": f"sess_{arid}", "context_id": arid,
+                        "context_isolated": True,
+                        "node_key": "problem/shallow_water2d@0.3.0",
+                        "step": "generate", "substep": "generate",
+                        "output_refs": [], "result_summary": "x",
+                    })
+            self.assertIn("sandbox_runtime=bwrap", str(ctx.exception))
+
+    def test_an_http_token_on_a_non_pure_launch_is_refused(self) -> None:
+        """`record_launch` is the authorization gate; it must not be the one layer that assumes
+        the config and conductor checks ran."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            before = self._tree(repo_root)
+            with self.assertRaises(RuntimeError) as ctx:
+                self._launch(repo_root, "openai_compatible", "substep_run_agentic_001",
+                             pure=False)
+            self.assertIn("admissible only for a pure leaf", str(ctx.exception))
+            # AND it must refuse before any durable launch state — the same rule the
+            # build-recurrence guard and the codex-home transaction obey. Placed inside the
+            # sandbox block (where it first landed) it raised only after the capability,
+            # manifests, agent-graph edge and session-index row were already written.
+            self.assertEqual(self._tree(repo_root) - before, set())
+
+    @staticmethod
+    def _tree(repo_root: Path) -> set:
+        root = repo_root / "workspace" / "orchestrations" / "orch_001"
+        return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+    def test_the_sandbox_profile_binds_the_executable_this_leaf_launches(self) -> None:
+        """The profile's read-only bind of the CLI install directory used to come from
+        `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run had one
+        `--llm-command`; with a per-entry `command:` the leaf would be launched inside a sandbox
+        where its own binary is not bound."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bindir:
+            repo_root = Path(tmp)
+            wrapper = Path(bindir) / "claude"
+            wrapper.write_text("#!/bin/sh\nexec claude \"$@\"\n", encoding="utf-8")
+            wrapper.chmod(0o755)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"          # the run's defaults
+            payload["providers"] = {"claude": {"launchable": True, "checks": []}}
+            self._orch_with_preflight(repo_root, payload)
+            out = self._launch(repo_root, "claude", "substep_run_wrapped_001",
+                               extra_response={"backend_command": str(wrapper)})
+            profile = json.loads(
+                (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
+            self.assertEqual(profile["backend_command"], str(wrapper))
+            self.assertIn(bindir, json.dumps(profile))
+
+    def test_a_launch_without_its_own_command_still_uses_the_preflight_one(self) -> None:
+        """The fallback: a legacy response carries no `backend_command`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"
+            payload["providers"] = {"claude": {"launchable": True, "checks": []}}
+            self._orch_with_preflight(repo_root, payload)
+            out = self._launch(repo_root, "claude", "substep_run_plain_001")
+            profile = json.loads(
+                (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
+            self.assertEqual(profile["backend_command"], "claude")
+
+    def test_write_preflight_refuses_what_the_launch_gate_would_refuse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["providers"] = {
+                "claude": {"launchable": True, "checks": []},
+                "openai_compatible": {"launchable": False, "checks": []},
+            }
+            with self.assertRaises(ValueError) as ctx:
+                write_preflight(repo_root=repo_root, orchestration_id="orch_001",
+                                payload=payload)
+            self.assertIn("openai_compatible", str(ctx.exception))
+
+
+class SiblingUniformScopeTests(unittest.TestCase):
+    """`repair-agent-runs` backfills a missing `agent_model` from siblings. Since issue #28 a
+    run legitimately holds several models, so the siblings that speak for a row are the ones
+    that ran the SAME substep — a whole-orchestration agreement would either never fire, or
+    fire with a model from a leaf that ran on another provider entirely."""
+
+    def test_a_missing_model_is_filled_from_its_own_substeps_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            runs = (repo_root / "workspace" / "orchestrations" / "orch_001"
+                    / "agent_runs.jsonl")
+            rows = [
+                {"agent_run_id": "a1", "agent_role": "substep", "step": "generate",
+                 "substep": "generate", "agent_model": "local-model",
+                 "parent_agent_run_id": "p"},
+                {"agent_run_id": "a2", "agent_role": "substep", "step": "generate",
+                 "substep": "generate", "parent_agent_run_id": "p"},
+                {"agent_run_id": "b1", "agent_role": "substep", "step": "validate",
+                 "substep": "judge", "agent_model": "hosted-model",
+                 "parent_agent_run_id": "p"},
+            ]
+            runs.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            ort.repair_legacy_agent_runs(repo_root=repo_root, orchestration_id="orch_001")
+            filled = [json.loads(ln) for ln in runs.read_text(encoding="utf-8").splitlines()]
+            by_id = {r["agent_run_id"]: r for r in filled}
+            # Mixed run: the orchestration-wide set has two models, so the OLD rule would have
+            # left this row unrepaired.
+            self.assertEqual(by_id["a2"]["agent_model"], "local-model")
+            self.assertNotEqual(by_id["a2"]["agent_model"], "hosted-model")
+            self.assertEqual(by_id["a2"]["backfilled"]["agent_model_source"],
+                             "substep_sibling_uniform")
+
+    def test_a_row_that_names_no_step_is_not_filled_from_the_orchestration_row(self) -> None:
+        """A legacy row — the kind this repair exists for — often carries no step/substep, and
+        neither does the orchestration row. Bucketing both under `("", "")` let the
+        orchestration's unpinned alias fill a leaf row that ran on another provider."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            runs = (repo_root / "workspace" / "orchestrations" / "orch_001"
+                    / "agent_runs.jsonl")
+            rows = [
+                {"agent_run_id": "orch", "agent_role": "orchestration",
+                 "agent_model": "opus"},
+                {"agent_run_id": "legacy", "agent_role": "substep",
+                 "parent_agent_run_id": "orch"},
+                {"agent_run_id": "g1", "agent_role": "substep", "step": "generate",
+                 "substep": "generate", "agent_model": "local-model",
+                 "parent_agent_run_id": "orch"},
+                {"agent_run_id": "j1", "agent_role": "substep", "step": "validate",
+                 "substep": "judge", "agent_model": "hosted-model",
+                 "parent_agent_run_id": "orch"},
+            ]
+            runs.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            out = ort.repair_legacy_agent_runs(repo_root=repo_root,
+                                               orchestration_id="orch_001")
+            filled = [json.loads(ln) for ln in runs.read_text(encoding="utf-8").splitlines()]
+            legacy = [r for r in filled if r["agent_run_id"] == "legacy"][0]
+            self.assertNotIn("agent_model", legacy)
+            self.assertEqual(out["status"], "needs_manual")
 
 
 if __name__ == "__main__":

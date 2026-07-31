@@ -43,7 +43,7 @@ high-risk **Build** — executes under bwrap:
 ```
 ! python3 tools/run_workflow.py \
     spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2 \
-    validate --llm claude
+    validate --llm-config configs/llm/claude.yaml
 ```
 
 bwrap enforcement is unconditional, so the conductor wraps every leaf in
@@ -57,7 +57,7 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 
 | Check | How to confirm |
 |---|---|
-| Leaves actually ran sandboxed | each `agents/<arid>/dialogs/child.response.json` has `sandbox_enforced: true` **and** a `sandbox_command` starting with `bwrap`; the leaf produced a real reply (not an immediate launch error) |
+| Leaves actually ran sandboxed | each `agents/<arid>/dialogs/child.response.json` of a CHILD-PROCESS leaf has `sandbox_enforced: true` **and** a `sandbox_command` starting with `bwrap`; the leaf produced a real reply (not an immediate launch error). A leaf answered over HTTPS from the conductor's own process instead carries `leaf_transport: "http"`, `sandbox_enforced: false` and no `sandbox_command` — it runs no model-directed tool, so there is nothing to confine (see `docs/ORCHESTRATION.md` "Leaf LLM configuration") |
 | Real auth + `--session-id` transcript worked | `~/.claude/projects/<slug>/<session_id>.jsonl` exists and has assistant turns for each leaf (auth/config-home bind is functional) |
 | MCP `build-runtime` invoked | the deterministic conductor substeps (`generate.gate` / `build` / `validate.execute`, run in-process — not LLM leaves) recorded `run_linter` / `run_syntax_check` / `compile_project` / `run_program` evidence (`command_log.jsonl` present, `ok:true`) |
 | Hooks fired in-sandbox | the run completed without a `*_violation` due to a missing hook decision; gate-friction behavior is unchanged |
