@@ -16472,7 +16472,8 @@ _HTTP_PREFLIGHT_TIMEOUT_SECONDS = 10
 
 def probe_all_providers(
     *,
-    llm_config_path: str | Path,
+    llm_config_path: str | Path | None = None,
+    config: Any = None,
     repo_root: Path | None = None,
     # The resolved `defaults` of the configuration the caller will launch, so a reload here
     # cannot lose a value that came from a deprecated flag rather than from the file.
@@ -16494,14 +16495,21 @@ def probe_all_providers(
     called for `defaults` exactly as before. This adds the per-provider layer above it."""
     from tools.llm_config import apply_defaults_overrides, describe_providers, load_llm_config
 
-    # The overrides MUST be reapplied here. This runs in the `preflight` subprocess, so it
-    # reloads the file — and the deprecated `--agent-model` / `--llm-command` are not IN the
-    # file; `run_workflow` applies them to the loaded configuration. Probing without them
-    # certifies a command the run will not launch: an operator whose wrapper works but whose
-    # bare CLI is absent fails preflight, and one whose bare CLI is present gets a green
-    # `providers` row authorizing a wrapper nothing probed.
+    # `config` is an ALREADY-LOADED snapshot: the caller hashed and parsed one set of bytes,
+    # and re-reading the file here would leave a window in which the hash approves one version
+    # while the probes certify another. `llm_config_path` remains for callers that have no
+    # snapshot to hand.
+    #
+    # The overrides MUST be reapplied either way. This runs in the `preflight` subprocess, and
+    # the deprecated `--agent-model` / `--llm-command` are not IN the file; `run_workflow`
+    # applies them to the loaded configuration. Probing without them certifies a command the
+    # run will not launch: an operator whose wrapper works but whose bare CLI is absent fails
+    # preflight, and one whose bare CLI is present gets a green `providers` row authorizing a
+    # wrapper nothing probed.
+    if config is None:
+        config = load_llm_config(llm_config_path)
     cfg = apply_defaults_overrides(
-        load_llm_config(llm_config_path), model=model_override, command=command_override)
+        config, model=model_override, command=command_override)
     providers: dict[str, dict[str, Any]] = {}
     for row in describe_providers(cfg):
         token = row["backend"]
@@ -21422,14 +21430,21 @@ def main(argv: list[str] | None = None) -> int:
             repo_root=repo_root,
         )
         expected_sha = getattr(args, "llm_config_sha256", None)
-        if expected_sha and getattr(args, "llm_config", None):
-            from tools.llm_config import config_sha256 as _config_sha256
-            actual_sha = _config_sha256(args.llm_config)
-            if actual_sha != expected_sha:
+        llm_config_snapshot = None
+        if getattr(args, "llm_config", None):
+            # ONE snapshot: read the bytes, parse THOSE, and check the hash of THOSE. Hashing
+            # the path and then re-reading it to probe would approve one version and certify
+            # another, which under two wrapper commands on one backend token is a launch the
+            # `providers` map never saw.
+            from tools.llm_config import load_llm_config as _load_llm_config
+            _raw = Path(args.llm_config).read_bytes()
+            llm_config_snapshot = _load_llm_config(args.llm_config, content=_raw)
+            if expected_sha and llm_config_snapshot.sha256 != expected_sha:
                 raise ValueError(
                     f"preflight: leaf-LLM configuration {args.llm_config} changed between the "
-                    f"caller loading it ({expected_sha}) and this probe ({actual_sha}); the "
-                    f"probe would certify a configuration the run will not launch")
+                    f"caller loading it ({expected_sha}) and this probe "
+                    f"({llm_config_snapshot.sha256}); the probe would certify a configuration "
+                    f"the run will not launch")
         if getattr(args, "llm_config", None):
             # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
             # (i.e. `defaults`), and `providers` adds one entry per distinct provider the
@@ -21438,7 +21453,7 @@ def main(argv: list[str] | None = None) -> int:
             # here: `orchestration_meta.json#invocation` already pins both, for the same file
             # and the same orchestration, and that is what the resume gate compares.
             preflight_payload["providers"] = probe_all_providers(
-                llm_config_path=args.llm_config, repo_root=repo_root,
+                config=llm_config_snapshot, repo_root=repo_root,
                 model_override=getattr(args, "llm_config_defaults_model", "") or "",
                 command_override=getattr(args, "llm_config_defaults_command", "") or "")
             # A provider the config names but the host cannot launch must fail the preflight

@@ -462,6 +462,27 @@ class RuleTests(_Tmp):
         self.assertEqual(cfg.entry_for("generate", "generate").base_url,
                          "http://192.168.1.9:8000/v1")
 
+    def test_an_unhashable_mapping_key_is_a_named_rejection(self) -> None:
+        """`? [a, b]` is legal YAML and produces a LIST key. Testing it for membership raised
+        a bare TypeError, which escapes the startup envelope as a traceback rather than the
+        named rejection every other malformed document gets."""
+        self.assert_rule("llm_config_unknown_key",
+                         "defaults:\n  provider: claude_cli\n? [a, b]\n: x\n")
+
+    def test_content_parses_the_bytes_it_was_given(self) -> None:
+        """One snapshot: a caller that must hash, parse and act on the same bytes cannot read
+        the file twice, or the two answers can describe different versions."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n  model: on-disk\n",
+                            encoding="utf-8")
+            snapshot = b"defaults:\n  provider: claude_cli\n  model: in-hand\n"
+            cfg = lc.load_llm_config(path, content=snapshot)
+            self.assertEqual(cfg.defaults.model, "in-hand")
+            self.assertEqual(cfg.sha256, lc._sha256_bytes(snapshot))
+            self.assertEqual(cfg.path, str(path))
+            self.assertNotEqual(cfg.sha256, lc.config_sha256(path))
+
     def test_duplicate_key(self) -> None:
         """YAML keeps the last of a repeated key. This file decides which model runs each
         substep and therefore what a run costs, so a silent resolution is the failure mode a

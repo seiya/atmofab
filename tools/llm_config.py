@@ -61,6 +61,16 @@ def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bo
     seen: set = set()
     for key_node, _ in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        try:
+            hash(key)
+        except TypeError:
+            # `? [a, b]` is legal YAML and gives a LIST key. Testing it for membership raises
+            # a bare TypeError, which escapes the startup envelope as a traceback rather than
+            # the named rejection every other malformed document gets.
+            raise LlmConfigError(
+                "llm_config_unknown_key",
+                f"mapping key {key!r} is a {type(key).__name__}; only scalar keys are "
+                f"meaningful in this document", where="") from None
         if key in seen:
             raise LlmConfigError(
                 "llm_config_duplicate_key",
@@ -612,22 +622,43 @@ def _validate_assignment(phase: str, substep: str, entry: ResolvedLeafEntry, whe
             where=where)
 
 
-def load_llm_config(path: str | Path) -> LlmConfig:
+def load_llm_config(path: str | Path, *, content: bytes | None = None) -> LlmConfig:
     """Load and fully validate a leaf-LLM configuration file.
 
     Every rejection raises `LlmConfigError` with a named `rule`. Run-start-only checks live in
-    `LlmConfig.validate_runnable`."""
+    `LlmConfig.validate_runnable`.
+
+    `content` supplies the bytes instead of reading `path`, for a caller that must hash, parse
+    and act on ONE snapshot — `path` is then only what gets recorded. Reading the file twice
+    leaves a window in which the two answers describe different bytes."""
     p = Path(path)
+    if content is not None:
+        try:
+            return _build_llm_config(p, content)
+        except UnicodeDecodeError as exc:
+            raise LlmConfigError(
+                "llm_config_unreadable", f"cannot decode {p} as UTF-8: {exc}",
+                where=str(p)) from exc
     try:
         # ONE read, hashed and parsed: `config_sha256(p)` would re-open the file, so a
         # replacement between the two would resolve the entries from the old bytes while
         # recording a pin describing the new ones — an invocation claiming a configuration
         # the run did not use, and a resume that then accepts it.
         raw = p.read_bytes()
-        text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+    except OSError as exc:
         raise LlmConfigError(
             "llm_config_unreadable", f"cannot read {p}: {exc}", where=str(p)) from exc
+    try:
+        return _build_llm_config(p, raw)
+    except UnicodeDecodeError as exc:
+        raise LlmConfigError(
+            "llm_config_unreadable", f"cannot decode {p} as UTF-8: {exc}",
+            where=str(p)) from exc
+
+
+def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
+    """Parse and validate ONE snapshot of bytes; `p` is only the recorded path."""
+    text = raw.decode("utf-8")
     try:
         doc = yaml.load(text, Loader=_NoDuplicateKeyLoader)
     except yaml.YAMLError as exc:

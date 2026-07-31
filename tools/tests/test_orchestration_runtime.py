@@ -31797,6 +31797,47 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 .read_text(encoding="utf-8"))
             self.assertIn("claude", stored["providers"])
 
+    def test_probing_a_snapshot_never_re_reads_the_file(self) -> None:
+        """Hashing the path and then re-reading it to probe approves one version and certifies
+        another. Under two wrapper commands on one backend token that is a launch the
+        `providers` map never saw, so the two must share one snapshot."""
+        import tools.llm_config as _lc
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n"
+                                          "  command: wrapA\n")
+            snapshot = _lc.load_llm_config(cfg, content=cfg.read_bytes())
+            # The file moves on after the snapshot was taken.
+            cfg.write_text("defaults:\n  provider: claude_cli\n  command: wrapB\n",
+                           encoding="utf-8")
+            seen: list = []
+
+            def _probe(**kw):
+                seen.append(kw.get("agent_command"))
+                return _launchable_preflight_dict(backend="claude")
+
+            with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+                ort.probe_all_providers(config=snapshot)
+            self.assertEqual(seen, ["wrapA"])
+
+    def test_preflight_hands_the_prober_its_own_snapshot(self) -> None:
+        """The CLI half: it must pass the object it hashed, not the path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            captured: dict = {}
+            with patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 patch.object(ort, "probe_all_providers",
+                              side_effect=lambda **kw: captured.update(kw) or {}):
+                ort.main(["preflight", "--repo-root", str(repo_root),
+                          "--orchestration-id", "orch_001", "--backend", "claude",
+                          "--llm-config", str(cfg),
+                          "--llm-config-sha256", lc_config_sha256(cfg)])
+            self.assertIsNotNone(captured.get("config"))
+            self.assertIsNone(captured.get("llm_config_path"))
+            self.assertEqual(captured["config"].sha256, lc_config_sha256(cfg))
+
     def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
         """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but
         the deprecated `--agent-model` / `--llm-command` are not in the file — `run_workflow`
