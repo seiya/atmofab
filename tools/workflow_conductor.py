@@ -2132,6 +2132,11 @@ class ProcResult:
     # conductor's own act, and routing it back through a regex over leaf-written text would let
     # any leaf claim it (see `_LEAF_INFRA_ERROR_PATTERNS`).
     timed_out: bool = False
+    # An HTTP provider reported its own answer cut off at the output-token ceiling
+    # (`finish_reason == "length"` / `stop_reason == "max_tokens"`). Authoritative, so the pure
+    # loops classify it as `pure_response_truncated` without asking the extractor to infer it
+    # from a partial document — which it can only do heuristically.
+    response_truncated: bool = False
 
 
 # A leaf that dies on an LLM-infrastructure error exits nonzero with no artifacts, which the
@@ -3519,6 +3524,72 @@ class Conductor:
         certified.add(cache_key)
         self._codex_feature_cache_written = certified
 
+    def _http_history_key(self, timeout_context: dict[str, str] | None) -> tuple[str, str]:
+        ctx = timeout_context or {}
+        return (str(ctx.get("step", "")), str(ctx.get("substep", "")))
+
+    def reset_http_history(self, phase: str, substep: str | None) -> None:
+        """Drop the in-memory conversation for one substep, at the start of its loop."""
+        getattr(self, "_http_history", {}).pop((phase, substep or ""), None)
+
+    def _run_http_leaf(
+        self,
+        prompt_text: str,
+        entry: ResolvedLeafEntry,
+        *,
+        child_arid: str | None,
+        timeout_context: dict[str, str] | None,
+    ) -> ProcResult:
+        """One HTTP pure-leaf turn, returned in the `ProcResult` shape the loops already read.
+
+        **Repair replay.** The CLI pure loops repair by reopening the prior session
+        (`--resume --fork-session`); an HTTP provider has no session to reopen, so the
+        conversation is kept HERE, in memory, for the life of one substep run: each turn sends
+        the prior user prompts and assistant replies plus this turn's prompt. That is the same
+        thing a forked resume gives the model — its own prior answer and the critique of it —
+        and it is why `_pure_session_resumable` returns False for HTTP: the history does not
+        survive the process, so a cross-restart reopen degrades to the existing cold fallback
+        (full context re-sent with `prior_document`), which is a correct, if more expensive,
+        repair turn.
+
+        The raw response body is persisted under `launches/` before anything is parsed, so an
+        answer the validators reject is still on disk in the form it arrived in."""
+        from tools.llm_http_leaf import run_pure_http_leaf
+
+        histories: dict[tuple[str, str], list[dict[str, str]]] = getattr(
+            self, "_http_history", {})
+        key = self._http_history_key(timeout_context)
+        history = histories.get(key, [])
+        messages = [*history, {"role": "user", "content": prompt_text}]
+
+        response = run_pure_http_leaf(
+            entry, messages,
+            timeout_s=entry.timeout_s or float(_leaf_timeout_seconds() or 0) or None,
+            max_output_tokens=entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
+
+        if child_arid:
+            path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                    / "launches" / f"{child_arid}.http_response.json")
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(response.raw_response or "", encoding="utf-8")
+            except OSError as exc:
+                # Evidence, not control flow: losing the copy must not lose the answer.
+                self.emit("http_leaf_response_unpersisted", agent_run_id=child_arid,
+                          error=str(exc)[:200])
+
+        if response.transport_error is not None:
+            self.emit("http_leaf_transport_error", agent_run_id=child_arid or "",
+                      provider=entry.provider, error=response.transport_error[:400])
+            return ProcResult(1, "", response.transport_error[:4000], model=entry.model or None)
+
+        histories[key] = [*messages, {"role": "assistant", "content": response.text}]
+        self._http_history = histories
+        return ProcResult(
+            0, response.text, "", usage=response.usage,
+            model=response.model or entry.model or None,
+            response_truncated=response.truncated)
+
     def _sandbox_profile_for(self, child_arid: str) -> dict[str, Any] | None:
         """The bwrap profile record-launch wrote for this child, or None."""
         path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
@@ -3599,6 +3670,14 @@ class Conductor:
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
+        if entry.is_http:
+            # No process, so nothing below applies: no codex feature cache, no bwrap profile
+            # (an HTTP pure leaf runs no model-directed tool — see tools/llm_http_leaf.py), no
+            # process group to reap. The reply comes back in the same `ProcResult` shape, so
+            # every consumer downstream — persistence, envelope, validators, repair — is
+            # unchanged.
+            return self._run_http_leaf(prompt_text, entry, child_arid=child_arid,
+                                       timeout_context=timeout_context)
         # Host-certify the codex hooks feature into the leaf-unwritable cache before the
         # codex leaf launches (the in-sandbox hook reads it read-only; see
         # _ensure_codex_feature_cache). Memoized; no-op for claude.
@@ -5387,11 +5466,15 @@ clean:
         conformance test."""
         from tools.pure_leaf import (
             parse_result_envelope, extract_json_document, MAX_BUNDLE_REPAIR_TURNS,
-            RESPONSE_UNPARSEABLE, ResultEnvelope, _MISSING)
+            RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE, ResultEnvelope, _MISSING)
         # THE model this substep runs on, resolved once at the top of the loop and threaded
         # through every launch/record/provenance call below, so a mixed config cannot record one
         # provider and launch another.
         entry = self.entry_for(phase, substep)
+        # A fresh conversation per substep RUN (HTTP transport only): a reopen of this substep
+        # must not inherit the previous run's turns, which is what a fresh session gives the
+        # CLI path.
+        self.reset_http_history(phase, substep)
         # Assembling the context reads host-owned artifacts and RAISES on a missing one
         # (`pure_runner_document_missing`). run_substep's callers must never see an exception —
         # recover it as the same fail_closed transport outcome a failed `_write_runner` produces.
@@ -5542,6 +5625,13 @@ clean:
                 infra_error = _leaf_infra_error(proc)
                 category = "pure_transport"
                 findings = self._leaf_failure_summary(proc)
+            elif proc.response_truncated:
+                # The PROVIDER said the answer was cut off (HTTP transport). Authoritative:
+                # a partial document that happens to parse must not be accepted, and one that
+                # does not must not be blamed on the model's formatting.
+                category = RESPONSE_TRUNCATED
+                findings = ("the provider reported the reply was cut off at the output-token "
+                            "ceiling; answer with a smaller document")
             elif not envelope.parsed or envelope.is_error is True:
                 category = RESPONSE_UNPARSEABLE
                 findings = ("the CLI result envelope was unparseable or reported is_error: "
@@ -5857,8 +5947,10 @@ clean:
         source_meta.json / verdict_meta.json."""
         from tools.pure_leaf import (
             parse_result_envelope, extract_json_document, verify_verdict_violations,
-            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_UNPARSEABLE, ResultEnvelope, _MISSING)
+            MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE, ResultEnvelope,
+            _MISSING)
         entry = self.entry_for(phase, substep)
+        self.reset_http_history(phase, substep)
         pure_context = self._build_pure_verify_context(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
@@ -5950,6 +6042,13 @@ clean:
                 infra_error = _leaf_infra_error(proc)
                 category = "pure_transport"
                 findings = self._leaf_failure_summary(proc)
+            elif proc.response_truncated:
+                # The PROVIDER said the answer was cut off (HTTP transport). Authoritative:
+                # a partial document that happens to parse must not be accepted, and one that
+                # does not must not be blamed on the model's formatting.
+                category = RESPONSE_TRUNCATED
+                findings = ("the provider reported the reply was cut off at the output-token "
+                            "ceiling; answer with a smaller document")
             elif not envelope.parsed or envelope.is_error is True:
                 category = RESPONSE_UNPARSEABLE
                 findings = ("the CLI result envelope was unparseable or reported is_error: "
@@ -8059,6 +8158,23 @@ clean:
         # Memoized per orchestration (no-op after the first); spawn_leaf also calls it as a
         # safety net for the record-launch-less diagnostician leaf.
         entry = self.entry_for(phase, substep)
+        # RUNTIME half of the pure-only rule. Config validation rejects an HTTP provider on an
+        # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node's M3c shape:
+        # a harness self-test, a c/cpp/mixed node, or a physics node with no infra dep has no
+        # bundle representation for its runner and falls through to the shared agentic loop.
+        # An entry that cannot run that loop must fail here, not launch into it.
+        if not entry.supports(CAP_AGENTIC) and not self._pure_leaf_substep(refs, phase, substep):
+            detail = (
+                f"provider {entry.provider!r} is configured for {phase}."
+                f"{substep or ''} but can only run the pure leaf, and this node has no pure "
+                f"path (it is not an M3c node, so the substep runs the agentic leaf loop). "
+                f"Configure an agentic provider for this substep, or run this node's generate "
+                f"phase on one.")
+            self.emit("pure_only_provider_on_agentic_path", node_key=refs.node_key,
+                      phase=phase, substep=substep or "", provider=entry.provider)
+            return SubstepOutcome(
+                self.new_agent_run_id(), "fail", [], 1,
+                ("pure_only_provider_on_agentic_path", detail), time.time(), 1)
         self._ensure_codex_feature_cache(entry)
         # Z2 pure-function producer (M-C): `generate.generate` on an M3c node under
         # executor=pure runs as a host-mediated pure function with its OWN spawn/validate/

@@ -17558,87 +17558,100 @@ def record_launch(
                 mcp_owned_audit_logs=canonical_audit_logs,
             )
             out_refs["allowed_output_manifest_ref"] = manifest_ref
-        try:
-            _resp_backend = response_payload.get("backend")
-            if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
-                # Prepared before any launch-side durable mutations above.  Do not
-                # re-prepare here: doing so would reopen the generation race that
-                # the expected-generation transaction check closes.
-                if codex_isolation is None:
-                    codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
-                response_payload["codex_workflow_home"] = codex_isolation["home"]
-                response_payload["codex_home_generation"] = int(codex_isolation["generation"])
-                response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
-            profile_kwargs: dict[str, Any] = {}
-            if codex_isolation is not None:
-                profile_kwargs = {
-                    "backend_ro_mappings": [
-                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
-                        # The home itself stays writable for Codex session/state
-                        # persistence, but the trust-bypassed hook source and
-                        # project-layer exclusion config must remain immutable.
-                        (codex_isolation["hooks"], codex_isolation["hooks"]),
-                        (codex_isolation["config"], codex_isolation["config"]),
-                    ],
-                    "backend_rw_override": [codex_isolation["home"]],
-                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
-                }
-            if is_pure:
-                # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
-                # has no repository write authority. Claude is tool-free, while Codex's
-                # structured-output approximation remains tool-bearing in a read-only sandbox;
-                # bwrap ensures neither can write an artifact from the child window.
-                profile = build_readonly_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orchestration_id,
-                    agent_run_id=child_agent_run_id,
-                    backend_command=backend_command,
-                    backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
-                    **profile_kwargs,
+        # An HTTP pure leaf (issue #28) runs in the conductor's own process over HTTPS: there is
+        # no child process to confine, no codex home to isolate, and no `backend_command` to
+        # pin. Everything ABOVE this point still runs for it — the capability, the manifest, the
+        # agent-graph edge, the session-index row — because those describe the LAUNCH, which is
+        # as real as any other. Only the process-sandbox layer is skipped, and it is marked so
+        # the audit validators (which key on `sandbox_profile` presence) can tell a skipped
+        # profile from a missing one.
+        if backend_token in _HTTP_PROVIDER_TOKENS:
+            request_payload.setdefault("leaf_transport", "http")
+            response_payload.setdefault("leaf_transport", "http")
+            response_payload.setdefault("sandbox_runtime", "none")
+            response_payload.setdefault("sandbox_enforced", False)
+        else:
+            try:
+                _resp_backend = response_payload.get("backend")
+                if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
+                    # Prepared before any launch-side durable mutations above.  Do not
+                    # re-prepare here: doing so would reopen the generation race that
+                    # the expected-generation transaction check closes.
+                    if codex_isolation is None:
+                        codex_isolation = _prepare_codex_workflow_home(repo_root, orchestration_id)
+                    response_payload["codex_workflow_home"] = codex_isolation["home"]
+                    response_payload["codex_home_generation"] = int(codex_isolation["generation"])
+                    response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
+                profile_kwargs: dict[str, Any] = {}
+                if codex_isolation is not None:
+                    profile_kwargs = {
+                        "backend_ro_mappings": [
+                            (codex_isolation["auth"], codex_isolation["auth_destination"]),
+                            # The home itself stays writable for Codex session/state
+                            # persistence, but the trust-bypassed hook source and
+                            # project-layer exclusion config must remain immutable.
+                            (codex_isolation["hooks"], codex_isolation["hooks"]),
+                            (codex_isolation["config"], codex_isolation["config"]),
+                        ],
+                        "backend_rw_override": [codex_isolation["home"]],
+                        "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
+                    }
+                if is_pure:
+                    # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
+                    # has no repository write authority. Claude is tool-free, while Codex's
+                    # structured-output approximation remains tool-bearing in a read-only sandbox;
+                    # bwrap ensures neither can write an artifact from the child window.
+                    profile = build_readonly_bwrap_profile(
+                        repo_root=repo_root,
+                        orchestration_id=orchestration_id,
+                        agent_run_id=child_agent_run_id,
+                        backend_command=backend_command,
+                        backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                        **profile_kwargs,
+                    )
+                else:
+                    profile = build_bwrap_profile(
+                        repo_root=repo_root,
+                        orchestration_id=orchestration_id,
+                        agent_run_id=child_agent_run_id,
+                        backend_command=backend_command,
+                        backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                        **profile_kwargs,
+                    )
+                command_argv = [backend_command]
+                rendered = render_bwrap_command(profile=profile, command_argv=command_argv)
+                profile["rendered_command"] = rendered
+                profile_path = _sandbox_profiles_dir(
+                    repo_root,
+                    orchestration_id,
+                ) / f"{child_agent_run_id}.json"
+                _write_json(profile_path, profile)
+                sandbox_ref = (
+                    f"workspace/orchestrations/{orchestration_id}/sandbox_profiles/{child_agent_run_id}.json"
                 )
-            else:
-                profile = build_bwrap_profile(
-                    repo_root=repo_root,
-                    orchestration_id=orchestration_id,
+                out_refs["sandbox_profile_ref"] = sandbox_ref
+                request_payload.setdefault("sandbox_profile_ref", sandbox_ref)
+                response_payload.setdefault("sandbox_runtime", "bwrap")
+                response_payload.setdefault("sandbox_enforced", True)
+                response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
+                response_payload.setdefault("sandbox_command", rendered)
+            except Exception as exc:
+                _write_sandbox_enforcement_violation(
+                    repo_root,
+                    orchestration_id,
                     agent_run_id=child_agent_run_id,
-                    backend_command=backend_command,
-                    backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
-                    **profile_kwargs,
+                    reason="sandbox_profile_build_failed",
+                    detail={"error": str(exc)},
                 )
-            command_argv = [backend_command]
-            rendered = render_bwrap_command(profile=profile, command_argv=command_argv)
-            profile["rendered_command"] = rendered
-            profile_path = _sandbox_profiles_dir(
-                repo_root,
-                orchestration_id,
-            ) / f"{child_agent_run_id}.json"
-            _write_json(profile_path, profile)
-            sandbox_ref = (
-                f"workspace/orchestrations/{orchestration_id}/sandbox_profiles/{child_agent_run_id}.json"
-            )
-            out_refs["sandbox_profile_ref"] = sandbox_ref
-            request_payload.setdefault("sandbox_profile_ref", sandbox_ref)
-            response_payload.setdefault("sandbox_runtime", "bwrap")
-            response_payload.setdefault("sandbox_enforced", True)
-            response_payload.setdefault("sandbox_profile_ref", sandbox_ref)
-            response_payload.setdefault("sandbox_command", rendered)
-        except Exception as exc:
-            _write_sandbox_enforcement_violation(
-                repo_root,
-                orchestration_id,
-                agent_run_id=child_agent_run_id,
-                reason="sandbox_profile_build_failed",
-                detail={"error": str(exc)},
-            )
-            update_orchestration_status(
-                repo_root,
-                orchestration_id,
-                status="fail_closed",
-                reason_code="sandbox_enforcement_violation",
-                reason_detail=str(exc),
-                blocking_policy_scope="sandbox",
-            )
-            raise RuntimeError(f"record-launch sandbox enforcement failed: {exc}") from exc
+                update_orchestration_status(
+                    repo_root,
+                    orchestration_id,
+                    status="fail_closed",
+                    reason_code="sandbox_enforcement_violation",
+                    reason_detail=str(exc),
+                    blocking_policy_scope="sandbox",
+                )
+                raise RuntimeError(f"record-launch sandbox enforcement failed: {exc}") from exc
     _write_json(request_path, request_payload)
     _write_json(response_path, response_payload)
     _write_text(prompt_path, prompt_text)
