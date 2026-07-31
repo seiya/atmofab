@@ -15091,6 +15091,44 @@ class LeafEntryThreadingTests(unittest.TestCase):
             ["codex", "exec", "--model", "gpt-5.6-codex",
              "--dangerously-bypass-hook-trust", "--json", "P"])
 
+    def test_a_declared_claude_model_actually_reaches_the_launch(self) -> None:
+        """Per-substep model selection is the point of the feature. Recording `model: haiku`
+        while launching the ambient default is provenance describing a run that did not
+        happen."""
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
+        judge = c.leaf_command("P", c.entry_for("validate", "judge"))
+        self.assertEqual(judge, ["claude", "--model", "haiku", "-p", "P"])
+        # ...and only that leaf.
+        self.assertEqual(c.leaf_command("P", c.entry_for("generate", "generate")),
+                         ["claude", "-p", "P"])
+
+    def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  model: haiku\n"))
+        for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            self.assertEqual(c.leaf_command("P", c.entry_for(phase, substep)),
+                             ["claude", "--model", "haiku", "-p", "P"], msg=f"{phase}.{substep}")
+
+    def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
+        """The repo's long-standing rule: a model from the deprecated `--agent-model`, or from
+        Claude's runtime alias resolution, is NOT pinned onto the argv. That is what keeps
+        every pre-issue-#28 launch byte-identical, and the equivalence tests above depend on
+        it."""
+        legacy = self._legacy(backend="claude", agent_model="opus")
+        self.assertEqual(legacy.entry_for("validate", "judge").model, "opus")
+        self.assertFalse(legacy.entry_for("validate", "judge").model_declared)
+        self.assertEqual(legacy.leaf_command("P", legacy.entry_for("validate", "judge")),
+                         ["claude", "-p", "P"])
+        shipped = self._configured("claude", model="opus")
+        self.assertEqual(shipped.leaf_command("P", shipped.entry_for("validate", "judge")),
+                         ["claude", "-p", "P"])
+
     # --- capability predicates replace the backend tests --------------------------------
 
     def test_usage_probe_declines_by_capability_absence_not_by_a_codex_branch(self) -> None:

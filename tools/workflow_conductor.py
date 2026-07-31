@@ -3429,6 +3429,15 @@ class Conductor:
             # `-p` runs non-interactively; the committed .claude/settings.json supplies
             # MCP build-runtime registration + permission grants (see preflight gate).
             flags: list[str] = []
+            # `--model` ONLY for a model the configuration FILE names. An operator who wrote
+            # `model: haiku` for a substep means that leaf to run haiku, and recording it while
+            # launching the ambient default would be provenance that describes a run that did
+            # not happen. A model arriving from the deprecated `--agent-model`, or from Claude's
+            # runtime alias resolution, is deliberately NOT pinned — that is the repo's
+            # long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps every
+            # pre-issue-#28 launch byte-identical.
+            if entry.model_declared and entry.model.strip():
+                flags += ["--model", entry.model.strip()]
             if resume_session_id:
                 flags += ["--resume", resume_session_id, "--fork-session"]
             if session_id:

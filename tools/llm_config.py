@@ -273,6 +273,12 @@ class ResolvedLeafEntry:
     timeout_s: float | None = None
     max_output_tokens: int | None = None
     capabilities: frozenset[str] = frozenset()
+    # True when a level of the FILE named `model:` for this entry — as opposed to the value
+    # arriving from the deprecated `--agent-model` or from Claude's runtime alias resolution.
+    # The conductor pins `--model` on a claude launch only when this is set: an operator who
+    # wrote a model means it, while the alias is deliberately left unpinned (the repo's
+    # long-standing rule, and what keeps every pre-issue-#28 run byte-identical).
+    model_declared: bool = False
     # The field names a level on THIS entry's provider actually wrote, as opposed to inherited.
     # `apply_defaults_overrides` needs it: value equality cannot tell an inherited `opus` from
     # a per-substep one deliberately pinned to the same string, and a run-wide `--agent-model`
@@ -498,6 +504,7 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 f"alias to resolve at runtime)", where=where)
 
     return ResolvedLeafEntry(
+        model_declared="model" in declared_here,
         declared=frozenset(declared_local),
         provider=provider,
         model=str(fields.get("model") or ""),
