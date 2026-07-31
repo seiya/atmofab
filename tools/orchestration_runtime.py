@@ -21315,12 +21315,9 @@ def main(argv: list[str] | None = None) -> int:
             # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
             # (i.e. `defaults`), and `providers` adds one entry per distinct provider the
             # configuration can launch — including the one just probed, so the launch check has
-            # a single place to look.
-            from tools.llm_config import config_sha256
-            preflight_payload["llm_config"] = {
-                "path": str(args.llm_config),
-                "sha256": config_sha256(args.llm_config),
-            }
+            # a single place to look. The configuration's own path and hash are NOT recorded
+            # here: `orchestration_meta.json#invocation` already pins both, for the same file
+            # and the same orchestration, and that is what the resume gate compares.
             preflight_payload["providers"] = probe_all_providers(
                 llm_config_path=args.llm_config, repo_root=repo_root)
             # A provider the config names but the host cannot launch must fail the preflight

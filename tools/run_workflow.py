@@ -2495,7 +2495,10 @@ def _run_main(
             # The recorded pin WINS on a resume, including over an explicitly passed
             # --llm-config: the finished phases ran on the recorded file, and this is a
             # continuation of that run, not a new one. Say so rather than dropping the flag in
-            # silence — the refusal below covers a DIFFERENT file, and this covers the same one.
+            # silence — this notice is the ONLY signal, since the effective path is then always
+            # the recorded one and the gate below can only ever compare it against itself. (The
+            # gate's path-mismatch arm stays reachable from the closure gates, which compare a
+            # member's recorded pin against the closure's effective configuration.)
             # `raw_agent_model`, not `args.agent_model`: the latter has already been
             # overwritten with the value recovered from the record, so reading it here
             # announced a flag the operator never passed.
