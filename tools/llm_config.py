@@ -37,6 +37,7 @@ where "invalid configuration" without the rule name costs a debugging round-trip
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from dataclasses import dataclass
 from ipaddress import ip_address
@@ -294,11 +295,16 @@ class ResolvedLeafEntry:
         return self.provider in HTTP_PROVIDERS
 
     def provenance(self) -> dict[str, str]:
-        """The per-leaf provenance row recorded in the invocation record."""
+        """The per-leaf provenance row recorded in the invocation record.
+
+        `command` is part of it because two leaves can share a backend TOKEN and still run
+        different executables; an audit that attributes a CLI version has to be able to tell
+        them apart."""
         return {
             "provider": self.provider,
             "backend": self.backend_token,
             "model": self.model,
+            "command": self.command,
         }
 
 
@@ -333,10 +339,14 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
         if key in ("provider", "model", "command", "base_url", "api_key_env"):
             out[key] = _clean_str(value, loc)
         elif key == "timeout_s":
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            # `math.isfinite` as well as `> 0`: YAML reads `.nan` and `.inf` as floats, and
+            # both slip past a `<= 0` test — a configuration advertising a positive wall-clock
+            # bound would then carry a deadline that never fires or never holds.
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value <= 0):
                 raise LlmConfigError(
                     "llm_config_invalid_field",
-                    f"expected a positive number, got {value!r}", where=loc)
+                    f"expected a positive, finite number, got {value!r}", where=loc)
             out[key] = float(value)
         elif key == "max_output_tokens":
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:

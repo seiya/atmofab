@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 from mcp_servers.build_runtime_server import tool_compile_project
 from tools import orchestration_runtime as ort
+from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
     TERMINAL_STATUSES,
@@ -31762,6 +31763,39 @@ class MultiProviderPreflightTests(unittest.TestCase):
                                               opener=lambda *a, **k: object())
         self.assertEqual(set(out), {"claude", "openai_compatible"})
         self.assertTrue(all(entry["launchable"] for entry in out.values()))
+
+    def test_preflight_refuses_a_snapshot_that_changed_under_it(self) -> None:
+        """The caller resolved one set of bytes; this subprocess reloads the file. If they
+        differ, the probe would certify a configuration the run will not launch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            argv = ["preflight", "--repo-root", str(repo_root),
+                    "--orchestration-id", "orch_001", "--backend", "claude",
+                    "--llm-config", str(cfg), "--llm-config-sha256", "sha256:stale"]
+            with patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 self.assertRaises(ValueError) as ctx:
+                ort.main(argv)
+            self.assertIn("changed between the caller loading it", str(ctx.exception))
+
+    def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            argv = ["preflight", "--repo-root", str(repo_root),
+                    "--orchestration-id", "orch_001", "--backend", "claude",
+                    "--llm-config", str(cfg),
+                    "--llm-config-sha256", lc_config_sha256(cfg)]
+            with patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")):
+                ort.main(argv)
+            stored = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/preflight.json")
+                .read_text(encoding="utf-8"))
+            self.assertIn("claude", stored["providers"])
 
     def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
         """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but

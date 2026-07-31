@@ -1305,6 +1305,26 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
     this section exists to attribute PURE-LEAF metrics — whose leaves are the ones an operator
     is most likely to have moved elsewhere."""
 
+    def test_a_pure_leaf_on_a_different_command_suppresses_the_version(self) -> None:
+        """Two leaves can share a backend TOKEN and run different executables, and
+        `preflight.json#agent_version` describes only the command it probed. Attributing it
+        across that difference names an executable that did not produce the metrics."""
+        summary = self._summary({
+            "generate.generate": {"backend": "claude", "command": "", "model": "opus"},
+            "generate.verify": {"backend": "claude", "command": "/opt/wrap/claude",
+                                "model": "opus"},
+        })
+        self.assertTrue(summary["pure_leaf_provider_differs"])
+        self.assertNotIn("2.1.9", self._render(summary))
+
+    def test_the_same_command_still_reports_the_version(self) -> None:
+        summary = self._summary({
+            "generate.generate": {"backend": "claude", "command": "", "model": "opus"},
+            "generate.verify": {"backend": "claude", "command": "", "model": "opus"},
+        })
+        self.assertFalse(summary["pure_leaf_provider_differs"])
+        self.assertIn("2.1.9", self._render(summary))
+
     def _summary(self, leaf_map: dict) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1315,7 +1335,8 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
                 "invocation": {"generate_executor": "pure", "llm_leaf_map": leaf_map},
             }), encoding="utf-8")
             (orch / "preflight.json").write_text(json.dumps({
-                "backend": "claude", "agent_version": "2.1.9 (Claude Code)"}), encoding="utf-8")
+                "backend": "claude", "agent_version": "2.1.9 (Claude Code)",
+                "probe_command": "claude"}), encoding="utf-8")
             meta = json.loads((orch / "orchestration_meta.json").read_text(encoding="utf-8"))
             return ao.collect_pure_leaf_ab_summary(repo_root, "o", meta)
 

@@ -180,6 +180,17 @@ def _redact(text: str, secret: str) -> str:
     return text.replace(secret, _REDACTED)
 
 
+def redact_secret(text: str, entry: Any) -> str:
+    """`text` with `entry`'s API key removed, for a caller that persists provider-supplied
+    text outside this module.
+
+    The conductor needs this for the model's ANSWER channel: that value cannot be redacted in
+    place (the validators parse it, and a key that is a common substring would corrupt a
+    legitimate document), so the redaction happens on the copy written to disk."""
+    secret, _ = _api_key(entry)
+    return _redact(text, secret)
+
+
 def _post_json(
     url: str,
     payload: Mapping[str, Any],

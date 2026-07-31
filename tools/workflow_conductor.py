@@ -2132,6 +2132,12 @@ class ProcResult:
     # conductor's own act, and routing it back through a regex over leaf-written text would let
     # any leaf claim it (see `_LEAF_INFRA_ERROR_PATTERNS`).
     timed_out: bool = False
+    # What to PERSIST in place of `stdout`, when `stdout` may carry a secret. The HTTP
+    # transport redacts the API key from every provider-supplied string, but the model's answer
+    # channel cannot be redacted in the value itself: the validators parse it, and a key that
+    # is a common substring would corrupt a legitimate document (a real defect, measured). So
+    # the split is here — the validators read `stdout`, the artifact gets this.
+    persist_stdout: str | None = None
     # An HTTP provider reported its own answer cut off at the output-token ceiling
     # (`finish_reason == "length"` / `stop_reason == "max_tokens"`). Authoritative, so the pure
     # loops classify it as `pure_response_truncated` without asking the extractor to infer it
@@ -3609,10 +3615,15 @@ class Conductor:
 
         histories[key] = [*messages, {"role": "assistant", "content": response.text}]
         self._http_history = histories
+        # `persist_stdout` carries the redacted answer: the loop below parses `stdout` (which
+        # must be the provider's exact document) while the artifact on disk holds a copy with
+        # the API key removed, closing the one channel the transport's own redaction cannot.
+        from tools.llm_http_leaf import redact_secret
         return ProcResult(
             0, response.text, "", usage=response.usage,
             model=response.model or entry.model or None,
-            response_truncated=response.truncated)
+            response_truncated=response.truncated,
+            persist_stdout=redact_secret(response.text, entry))
 
     def _sandbox_profile_for(self, child_arid: str) -> dict[str, Any] | None:
         """The bwrap profile record-launch wrote for this child, or None."""
@@ -8762,6 +8773,9 @@ clean:
         dialogs = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
                    / "agents" / child_arid / "dialogs")
         dialogs.mkdir(parents=True, exist_ok=True)
+        # A redacted copy takes the place of stdout when the transport supplied one: the
+        # validators need the true document, the artifact must not hold the API key.
+        stdout_text = proc.persist_stdout if proc.persist_stdout is not None else proc.stdout
         # `backslashreplace`, because persisting a leaf's own output must never be able
         # to fail on leaf-controlled text. On the codex path `proc.stdout` is the
         # agent_message pulled through `json.loads`, which materializes an escaped
@@ -8772,7 +8786,7 @@ clean:
         # the bundle-repair loop that exists to handle exactly such a reply never runs.
         # The pure loops' own surrogate guards are downstream of this point.
         (dialogs / f"{prefix}.stdout.log").write_text(
-            proc.stdout or "", encoding="utf-8", errors="backslashreplace")
+            stdout_text or "", encoding="utf-8", errors="backslashreplace")
         (dialogs / f"{prefix}.stderr.log").write_text(
             proc.stderr or "", encoding="utf-8", errors="backslashreplace")
         # Codex: `stdout` above is only the extracted final message, so the event stream

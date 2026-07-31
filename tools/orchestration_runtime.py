@@ -20786,6 +20786,10 @@ def main(argv: list[str] | None = None) -> int:
     # file already declares is a no-op, so these are sent unconditionally.
     preflight_parser.add_argument("--llm-config-defaults-model", default=None)
     preflight_parser.add_argument("--llm-config-defaults-command", default=None)
+    # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the
+    # file, so an edit in between would certify commands the conductor will never launch —
+    # it keeps the object it already has.
+    preflight_parser.add_argument("--llm-config-sha256", default=None)
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
@@ -21417,6 +21421,15 @@ def main(argv: list[str] | None = None) -> int:
             agent_command=agent_command,
             repo_root=repo_root,
         )
+        expected_sha = getattr(args, "llm_config_sha256", None)
+        if expected_sha and getattr(args, "llm_config", None):
+            from tools.llm_config import config_sha256 as _config_sha256
+            actual_sha = _config_sha256(args.llm_config)
+            if actual_sha != expected_sha:
+                raise ValueError(
+                    f"preflight: leaf-LLM configuration {args.llm_config} changed between the "
+                    f"caller loading it ({expected_sha}) and this probe ({actual_sha}); the "
+                    f"probe would certify a configuration the run will not launch")
         if getattr(args, "llm_config", None):
             # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
             # (i.e. `defaults`), and `providers` adds one entry per distinct provider the

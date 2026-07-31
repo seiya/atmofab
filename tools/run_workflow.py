@@ -3381,6 +3381,10 @@ def _run_node(
                 llm_config.defaults.model,
                 "--llm-config-defaults-command",
                 llm_config.defaults.command,
+                # The snapshot THIS process resolved. Preflight reloads the file, so without
+                # it an edit in between would certify commands the conductor never launches.
+                "--llm-config-sha256",
+                llm_config.sha256,
             ]
             preflight_result = _runtime_command(repo_root, env, preflight_args).payload
         except RuntimeError as exc:

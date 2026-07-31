@@ -5803,6 +5803,18 @@ class LlmConfigStartupTests(unittest.TestCase):
             # ...and the top-level probe still gets the same command it always did.
             self.assertEqual(args[args.index("--agent-command") + 1], "mywrap --x")
 
+    def test_preflight_is_told_which_snapshot_to_probe(self) -> None:
+        """Preflight is a subprocess that reloads the file; without the hash, an edit between
+        the load and the probe certifies commands the conductor will never launch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            _, kw, _, _ = self._run(
+                repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_snap")
+            args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
+            self.assertEqual(args[args.index("--llm-config-sha256") + 1],
+                             kw["llm_config"].sha256)
+
     def test_a_file_that_declares_its_own_values_sends_those(self) -> None:
         """The resolved defaults are sent unconditionally: re-applying a value the file already
         declares is a no-op, so nothing has to track which came from a flag."""

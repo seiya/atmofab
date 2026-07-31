@@ -169,6 +169,29 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         for path in launches.rglob("*.json"):
             self.assertEqual(_scan_json_for_violations(path), [], msg=str(path))
 
+    def test_a_key_echoed_into_the_answer_is_not_persisted(self) -> None:
+        """The transport redacts every provider string it returns, but the model's ANSWER is
+        also written to disk (`_persist_leaf_output`) — and it cannot be redacted in the value,
+        because the validators parse it and a key that is a common substring would corrupt a
+        legitimate document. The split is at persistence."""
+        bundle = _valid_bundle()
+        bundle["files"][0]["content"] = (
+            bundle["files"][0]["content"] + "\n! leaked sk-test\n")
+        self._serve([json.dumps(bundle)])
+        c = self._conductor()
+        c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        dialogs = self.repo / "workspace" / "orchestrations" / "o" / "agents"
+        logs = list(dialogs.rglob("*.stdout.log"))
+        self.assertTrue(logs)
+        for log in logs:
+            body = log.read_text(encoding="utf-8")
+            self.assertNotIn("sk-test", body, msg=str(log))
+            self.assertIn("[redacted-api-key]", body)
+        # ...and the validators saw the TRUE document: the bundle was accepted and written.
+        written = (self.repo / self.refs.source_dir() / "src" / f"{_SPEC_ID}_model.f90"
+                   ).read_text(encoding="utf-8")
+        self.assertIn("sk-test", written)
+
     def test_no_process_is_spawned(self) -> None:
         self._serve([json.dumps(_valid_bundle())])
         c = self._conductor()

@@ -644,13 +644,24 @@ def collect_pure_leaf_ab_summary(
     # other than the top-level backend, the version line is the WRONG CLI's and is suppressed.
     leaf_map = invocation.get("llm_leaf_map")
     leaf_map = leaf_map if isinstance(leaf_map, dict) else {}
-    pure_leaf_providers = sorted({
-        _clean_str(row.get("backend"))
+    # (backend, command) — not the backend token alone. Two leaves can share a token and run
+    # different EXECUTABLES (`defaults` on `claude`, a substep on a wrapper), and
+    # `preflight.json#agent_version` describes only the command it probed. A version attributed
+    # across that difference names an executable that did not produce the metrics.
+    default_command = _clean_str(preflight.get("probe_command")) or ""
+    pure_leaf_surfaces = sorted({
+        (_clean_str(row.get("backend")) or "", _clean_str(row.get("command")) or "")
         for key, row in leaf_map.items()
         if key in _PURE_LEAF_MAP_KEYS and isinstance(row, dict)
         and _clean_str(row.get("backend"))
     })
-    pure_leaf_provider_differs = bool(pure_leaf_providers) and pure_leaf_providers != [backend]
+    pure_leaf_providers = sorted({surface[0] for surface in pure_leaf_surfaces})
+    # An empty recorded `command` means "the bare backend binary", which is also what a
+    # preflight whose `probe_command` IS the backend name means; compare them as one surface.
+    default_surface = (backend or "",
+                       "" if default_command == backend else default_command)
+    pure_leaf_provider_differs = (bool(pure_leaf_surfaces)
+                                  and pure_leaf_surfaces != [default_surface])
     if pure_leaf_provider_differs:
         backend = "/".join(pure_leaf_providers)
         agent_cli_version = ""

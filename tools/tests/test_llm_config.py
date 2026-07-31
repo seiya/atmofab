@@ -252,7 +252,7 @@ class ResolutionTests(_Tmp):
         self.assertEqual(set(pm), {"defaults"} | {f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS})
         self.assertEqual(pm["generate.generate"],
                          {"provider": "openai_compatible", "backend": "openai_compatible",
-                          "model": "local-model"})
+                          "model": "local-model", "command": ""})
         self.assertEqual(pm["validate.judge"]["backend"], "claude")
 
     def test_describe_providers_dedups_on_the_probed_surface(self) -> None:
@@ -373,6 +373,17 @@ class RuleTests(_Tmp):
     def test_invalid_field_non_positive_timeout(self) -> None:
         self.assert_rule("llm_config_invalid_field",
                          "defaults:\n  provider: claude_cli\n  timeout_s: 0\n")
+
+    def test_invalid_field_non_finite_timeout(self) -> None:
+        """YAML reads `.nan` / `.inf` as floats and both slip past a `<= 0` test, so a config
+        advertising a positive wall-clock bound would carry a deadline that never fires."""
+        for value in (".nan", ".inf"):
+            self.assert_rule("llm_config_invalid_field",
+                             "defaults:\n  provider: claude_cli\n"
+                             "phases:\n  generate:\n    substeps:\n      generate:\n"
+                             "        provider: openai_compatible\n"
+                             "        base_url: https://x/v1\n        api_key_env: K\n"
+                             f"        model: m\n        timeout_s: {value}\n")
 
     def test_invalid_field_unknown_capability_name(self) -> None:
         self.assert_rule("llm_config_invalid_field",
