@@ -2561,10 +2561,35 @@ def _run_main(
                      else llm_command.strip()),
                 ) if v
             }
+        _loaded_llm_config = load_llm_config(llm_config_path)
         llm_config = apply_defaults_overrides(
-            load_llm_config(llm_config_path),
+            _loaded_llm_config,
             model=llm_config_overrides.get("model", ""),
             command=llm_config_overrides.get("command", ""))
+        # A run-wide override reaches `defaults` and everything that inherited from it, and
+        # deliberately leaves a value the FILE declared for a specific leaf alone. That rule is
+        # right, and it makes the deprecated flag a NO-OP against a configuration that declares
+        # every leaf — which the shipped ones now do. Say so: an operator who passes
+        # `--agent-model` and gets the file's model would otherwise have no way to tell.
+        # `model_declared` is cleared by an override that lands, so what survives it is
+        # exactly a per-leaf declaration; `command` has no such marker and is read from the
+        # entry's own declared set (which excludes `defaults`).
+        _kept_by = {
+            "model": lambda entry: entry.model_declared,
+            "command": lambda entry: "command" in entry.declared,
+        }
+        for flag, field in (("--agent-model", "model"), ("--llm-command", "command")):
+            if not llm_config_overrides.get(field):
+                continue
+            kept = sorted(f"{phase}.{substep}"
+                          for (phase, substep), entry in llm_config.entries.items()
+                          if _kept_by[field](entry))
+            if kept:
+                sys.stderr.write(
+                    f"warning: {flag} does not change {', '.join(kept)} — "
+                    f"{llm_config_path} declares a {field} for {'them' if len(kept) > 1 else 'it'} "
+                    f"explicitly, and a per-leaf value is not overridden run-wide. Edit the "
+                    f"configuration to change {'those' if len(kept) > 1 else 'that'} leaf/leaves.\n")
         llm_config.validate_runnable()
         # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
         # single-backend vocabulary; derive it FROM the config so there is one authority.

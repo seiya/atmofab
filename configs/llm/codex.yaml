@@ -3,20 +3,72 @@
 # The replacement for the deprecated run-wide `--llm codex`, onto which that flag is mapped
 # internally.
 #
-# `model:` is INTENTIONALLY ABSENT, but for the opposite reason to `claude.yaml`: Codex has no
-# runtime alias to resolve, so the OPERATOR must name an explicit model slug. This file
-# therefore LOADS but is not RUNNABLE as shipped — starting a run against it fails with
-# `llm_config_codex_cli_requires_model` (a `validate_runnable` check, not a load check, so the
-# shipped file stays loadable and testable). Supply one either here:
+# CHECK `model:` BEFORE THE FIRST RUN. Unlike Claude, Codex has no unpinned alias to resolve —
+# every launch must carry an explicit slug, and the generic `codex` alias is rejected precisely
+# so that no leaf runs without authoritative model provenance. The slug written below is the one
+# this repository's own tests use; if your account serves a different one, replace it (all five
+# places, or `defaults` plus the four that differ). Blanking it is also fine: a run then stops at
+# `llm_config_codex_cli_requires_model` before launching anything, rather than mid-phase.
 #
-#   defaults:
-#     provider: codex_cli
-#     model: <explicit-model-slug>
+# EVERY phase, substep, provider, model and effort is written out, even though the resolution
+# rules would let all five leaves inherit one `defaults` block. The file is the answer to
+# "what runs where, and how hard does it think" — a reader should get that answer by reading it,
+# not by re-deriving it from an inheritance chain. Omission still works and is the right choice
+# for a file an operator writes themselves; it is the wrong choice for the shipped default.
 #
-# or on the command line with the deprecated `--agent-model <explicit-model-slug>`, which
-# overrides `defaults.model`.
+# The five entries below are the complete set of LLM leaves. Every other substep
+# (compile.static, generate.gate, validate.pre_judge / execute / post_judge, and the whole
+# build phase) is deterministic and runs in-process, so naming one here is rejected.
 #
-# As in `claude.yaml`, nothing is declared per phase or per substep, so all five LLM leaves
-# inherit `defaults`.
+#   model    An explicit slug, required. The deprecated `--agent-model <slug>` overrides every
+#            entry that took its model from `defaults`, and leaves a per-substep one alone.
+#   effort   `none` | `minimal` | `low` | `medium` | `high` | `xhigh`, passed as
+#            `codex --config model_reasoning_effort="<level>"` (Codex has no `--effort` flag).
+#            All five leaves are judgement-bearing — an IR author, two verifiers, a bundle
+#            producer and a semantic judge — and this repository's standing rule is that nothing
+#            may trade accuracy for speed, so the shipped default asks for `high` everywhere
+#            rather than economising on the ones that look cheap. Lower it per substep to buy
+#            speed knowingly; delete the line to leave the CLI's own default in force.
+#
+# HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
+# `generate` leaves, which run as host-mediated pure functions; see `claude.yaml` for a worked
+# example.
 defaults:
   provider: codex_cli
+  model: gpt-5.6-codex
+  effort: high
+
+phases:
+  compile:
+    substeps:
+      # Authors spec.ir.yaml from the controlled spec: the hardest structured task in the run.
+      generate:
+        provider: codex_cli
+        model: gpt-5.6-codex
+        effort: high
+      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR.
+      verify:
+        provider: codex_cli
+        model: gpt-5.6-codex
+        effort: high
+
+  generate:
+    substeps:
+      # The CodegenBundle producer — the dominant leaf of the run, by tokens and by difficulty.
+      generate:
+        provider: codex_cli
+        model: gpt-5.6-codex
+        effort: high
+      # The verdict reviewer, reached only on a source the deterministic gate already accepted.
+      verify:
+        provider: codex_cli
+        model: gpt-5.6-codex
+        effort: high
+
+  validate:
+    substeps:
+      # The independent semantic check; the contract calls it essential, so it is not economised.
+      judge:
+        provider: codex_cli
+        model: gpt-5.6-codex
+        effort: high

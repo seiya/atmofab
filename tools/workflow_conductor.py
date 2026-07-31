@@ -3438,6 +3438,12 @@ class Conductor:
             # pre-issue-#28 launch byte-identical.
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
+            # Reasoning effort has no "unpinned alias" story the way the model does — there is
+            # no ambient value the conductor is deliberately leaving alone — so a configured
+            # level is always passed, and an absent one says nothing and leaves the CLI's own
+            # default in force.
+            if entry.effort:
+                flags += ["--effort", entry.effort]
             if resume_session_id:
                 flags += ["--resume", resume_session_id, "--fork-session"]
             if session_id:
@@ -3453,6 +3459,12 @@ class Conductor:
             pure_flags: list[str] = []
             pure_resume_flags: list[str] = []
             model = self._codex_pinned_model(entry)
+            # `--config`, not the `-c` alias: the preflight certifies this argv by FLAG NAME
+            # (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`), so a spelling the probe does not assert
+            # would leave the gate green on a CLI that dropped it. Codex has no `--effort`
+            # flag; the reasoning level is a config override on both subcommands.
+            effort_flags = (["--config", f'model_reasoning_effort="{entry.effort}"']
+                            if entry.effort else [])
             if pure:
                 schema = self._codex_pure_schema_path(session_id)
                 # CODEX_HOME is already an orchestration-private directory.
@@ -3476,10 +3488,10 @@ class Conductor:
                                      "--output-schema", str(schema)]
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
-                        "--dangerously-bypass-hook-trust", *pure_resume_flags,
+                        "--dangerously-bypass-hook-trust", *effort_flags, *pure_resume_flags,
                         "--json", prompt_text]
-            return [*base, "exec", "--model", model,
-                    "--dangerously-bypass-hook-trust", *pure_flags, "--json", prompt_text]
+            return [*base, "exec", "--model", model, "--dangerously-bypass-hook-trust",
+                    *effort_flags, *pure_flags, "--json", prompt_text]
         raise ValueError(
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")

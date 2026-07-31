@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 import tempfile
 import unittest
+
+import yaml
 from pathlib import Path
 
 from tools import llm_config as lc
@@ -59,17 +61,52 @@ class ShippedConfigTests(unittest.TestCase):
         self.assertEqual(sorted(cfg.entries), sorted(lc.LLM_LEAF_SUBSTEPS))
         for entry in cfg.entries.values():
             self.assertEqual(entry.backend_token, "claude")
-            # Model deliberately absent: runtime alias resolution, not a pinned version.
-            self.assertEqual(entry.model, "")
+            # An unpinned ALIAS, never a version — versions move, and the exact one that ran is
+            # recovered from the transcript afterwards.
+            self.assertEqual(entry.model, "opus")
+            self.assertNotRegex(entry.model, r"-\d+-\d+$")
+            self.assertEqual(entry.effort, "high")
+
+    def test_the_shipped_configs_spell_out_every_leaf(self) -> None:
+        """The shipped files answer "what runs where, and how hard does it think" by being
+        READ. Inheritance is legal and right for a file an operator writes; it is the wrong
+        choice for the default, where a reader would have to re-derive the answer."""
+        for backend in ("claude", "codex"):
+            text = lc.shipped_config_path(backend, REPO_ROOT).read_text(encoding="utf-8")
+            body = "\n".join(line for line in text.splitlines()
+                              if not line.lstrip().startswith("#"))
+            document = yaml.safe_load(body)
+            declared = {
+                (phase, substep)
+                for phase, phase_doc in (document.get("phases") or {}).items()
+                for substep in ((phase_doc or {}).get("substeps") or {})
+            }
+            self.assertEqual(declared, set(lc.LLM_LEAF_SUBSTEPS), msg=backend)
+            for phase, phase_doc in document["phases"].items():
+                for substep, entry in phase_doc["substeps"].items():
+                    for field in ("provider", "model", "effort"):
+                        self.assertIn(field, entry, msg=f"{backend} {phase}.{substep}")
 
     def test_claude_shipped_config_is_runnable_without_a_model(self) -> None:
         lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT)).validate_runnable()
 
-    def test_codex_shipped_config_loads_but_is_not_runnable_without_a_model(self) -> None:
+    def test_codex_shipped_config_carries_an_explicit_slug(self) -> None:
+        """Codex has no alias to resolve, so every launch must carry a slug. The shipped file
+        names one rather than failing at run start; blanking it still trips the rule."""
         cfg = lc.load_llm_config(lc.shipped_config_path("codex", REPO_ROOT))
         self.assertEqual(cfg.providers, frozenset({"codex_cli"}))
-        with self.assertRaises(lc.LlmConfigError) as ctx:
-            cfg.validate_runnable()
+        for entry in cfg.entries.values():
+            self.assertTrue(entry.model)
+            self.assertNotEqual(entry.model.lower(), "codex")
+            self.assertEqual(entry.effort, "high")
+        cfg.validate_runnable()
+
+    def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.yaml"
+            path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
+            with self.assertRaises(lc.LlmConfigError) as ctx:
+                lc.load_llm_config(path).validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
 
     def test_shipped_config_path_points_into_the_repository(self) -> None:
@@ -252,7 +289,7 @@ class ResolutionTests(_Tmp):
         self.assertEqual(set(pm), {"defaults"} | {f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS})
         self.assertEqual(pm["generate.generate"],
                          {"provider": "openai_compatible", "backend": "openai_compatible",
-                          "model": "local-model", "command": ""})
+                          "model": "local-model", "command": "", "effort": ""})
         self.assertEqual(pm["validate.judge"]["backend"], "claude")
 
     def test_describe_providers_dedups_on_the_probed_surface(self) -> None:
@@ -398,6 +435,43 @@ class RuleTests(_Tmp):
     def test_invalid_field_non_positive_timeout(self) -> None:
         self.assert_rule("llm_config_invalid_field",
                          "defaults:\n  provider: claude_cli\n  timeout_s: 0\n")
+
+    def test_invalid_field_effort_level_is_per_provider(self) -> None:
+        """The level names are the provider's own, so this is not one enum with different
+        spellings: `max` exists for claude and not codex, `minimal` for codex and not claude."""
+        self.assert_rule("llm_config_invalid_field",
+                         "defaults:\n  provider: claude_cli\n  effort: minimal\n")
+        self.assert_rule("llm_config_invalid_field",
+                         "defaults:\n  provider: codex_cli\n  model: m\n  effort: max\n")
+        self.assert_rule("llm_config_invalid_field",
+                         "defaults:\n  provider: claude_cli\n  effort: enthusiastic\n")
+        # ...and each accepts its own.
+        for body, expected in (
+            ("defaults:\n  provider: claude_cli\n  effort: max\n", "max"),
+            ("defaults:\n  provider: codex_cli\n  model: m\n  effort: minimal\n", "minimal"),
+        ):
+            cfg = lc.load_llm_config(self.write(body, "levels.yaml"))
+            self.assertEqual(cfg.entry_for("validate", "judge").effort, expected)
+
+    def test_effort_does_not_apply_to_the_anthropic_api(self) -> None:
+        """Its Messages API expresses the same idea as a thinking token budget, not a level."""
+        self.assert_rule("llm_config_field_not_applicable",
+                         "defaults:\n  provider: claude_cli\n"
+                         "phases:\n  generate:\n    substeps:\n      generate:\n"
+                         "        provider: anthropic_api\n"
+                         "        api_key_env: ANTHROPIC_API_KEY\n"
+                         "        model: claude-opus-5\n        effort: high\n")
+
+    def test_an_effort_does_not_inherit_across_a_provider_switch(self) -> None:
+        """A level is a word in the outer provider's vocabulary; carrying it into another
+        provider would inherit a level it may not have."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n  effort: max\n"
+            "phases:\n  generate:\n    substeps:\n      generate:\n"
+            "        provider: openai_compatible\n"
+            "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"))
+        self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
+        self.assertEqual(cfg.entry_for("validate", "judge").effort, "max")
 
     def test_invalid_field_non_finite_timeout(self) -> None:
         """YAML reads `.nan` / `.inf` as floats and both slip past a `<= 0` test, so a config
@@ -608,11 +682,24 @@ class LegacyBridgeTests(unittest.TestCase):
         cfg = lc.llm_config_from_legacy("claude", repo_root=REPO_ROOT)
         self.assertEqual(cfg.path, str(lc.shipped_config_path("claude", REPO_ROOT)))
         self.assertEqual(cfg.providers, frozenset({"claude_cli"}))
-        self.assertEqual(cfg.defaults.model, "")
+        self.assertEqual(cfg.defaults.model, "opus")
 
-    def test_legacy_agent_model_becomes_defaults_model_everywhere(self) -> None:
+    def test_legacy_agent_model_does_not_displace_a_per_leaf_declaration(self) -> None:
+        """The shipped files declare a model for every leaf, so the run-wide deprecated flag
+        reaches `defaults` and stops there. `run_workflow` warns rather than leaving the
+        operator to discover it — to change a declared leaf, edit the file."""
         cfg = lc.llm_config_from_legacy("codex", "gpt-5-codex", repo_root=REPO_ROOT)
         self.assertEqual(cfg.defaults.model, "gpt-5-codex")
+        for entry in cfg.entries.values():
+            self.assertNotEqual(entry.model, "gpt-5-codex")
+            self.assertTrue(entry.model_declared)
+        cfg.validate_runnable()
+
+    def test_legacy_agent_model_still_reaches_a_file_that_declares_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bare.yaml"
+            path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
+            cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="gpt-5-codex")
         for entry in cfg.entries.values():
             self.assertEqual(entry.model, "gpt-5-codex")
         cfg.validate_runnable()

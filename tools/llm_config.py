@@ -228,8 +228,22 @@ class LlmConfigError(ValueError):
 # Entry-level keys accepted anywhere an entry may appear.
 _ENTRY_FIELDS: frozenset[str] = frozenset({
     "provider", "model", "command", "base_url", "api_key_env",
-    "timeout_s", "max_output_tokens", "capabilities",
+    "timeout_s", "max_output_tokens", "effort", "capabilities",
 })
+
+# Reasoning effort, per provider, because the VOCABULARY differs — this is not one enum with
+# different spellings, it is a different set of levels reaching a different surface:
+#   claude_cli        `--effort <level>`
+#   codex_cli         `--config model_reasoning_effort="<level>"` (the long spelling, which is
+#                     the one `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name)
+#   openai_compatible `reasoning_effort` in the request body
+# `anthropic_api` has no effort LEVEL — the Messages API expresses the same idea as a thinking
+# token budget — so the field does not apply there and saying otherwise is an operator error.
+_EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
+    "claude_cli": frozenset({"low", "medium", "high", "xhigh", "max"}),
+    "codex_cli": frozenset({"none", "minimal", "low", "medium", "high", "xhigh"}),
+    "openai_compatible": frozenset({"minimal", "low", "medium", "high"}),
+}
 
 # Fields that only make sense for some providers. Anything not listed applies to all.
 # Fields a provider does not read. Declaring one is an operator error, not a no-op: an ignored
@@ -246,7 +260,7 @@ _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
     "claude_cli": frozenset({"base_url", "api_key_env", "timeout_s"}),
     "codex_cli": frozenset({"base_url", "api_key_env", "timeout_s", "max_output_tokens"}),
     "openai_compatible": frozenset({"command"}),
-    "anthropic_api": frozenset({"command"}),
+    "anthropic_api": frozenset({"command", "effort"}),
 }
 
 # Fields scoped to the provider that declared them. When a deeper level switches provider,
@@ -254,7 +268,10 @@ _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
 # meaningless — and usually actively wrong — under `openai_compatible`. `timeout_s` /
 # `max_output_tokens` are transport-neutral budgets and do inherit across a switch.
 _PROVIDER_SCOPED_FIELDS: frozenset[str] = frozenset({
-    "provider", "model", "command", "base_url", "api_key_env", "capabilities",
+    # `effort` is provider-scoped for the same reason `model` is: the level names are the
+    # provider's own (`max` is a claude level, `minimal` a codex one), so carrying one across a
+    # switch would inherit a word the new provider does not have.
+    "provider", "model", "command", "base_url", "api_key_env", "effort", "capabilities",
 })
 
 # The Anthropic Messages API has one canonical endpoint, so `base_url` is optional there and
@@ -282,6 +299,9 @@ class ResolvedLeafEntry:
     api_key_env: str = ""
     timeout_s: float | None = None
     max_output_tokens: int | None = None
+    # Reasoning effort, in the provider's own vocabulary (see `_EFFORT_LEVELS`). Empty means
+    # "say nothing", which leaves the provider's own default in force.
+    effort: str = ""
     capabilities: frozenset[str] = frozenset()
     # True when a level of the FILE named `model:` for this entry — as opposed to the value
     # arriving from the deprecated `--agent-model` or from Claude's runtime alias resolution.
@@ -321,6 +341,7 @@ class ResolvedLeafEntry:
             "backend": self.backend_token,
             "model": self.model,
             "command": self.command,
+            "effort": self.effort,
         }
 
 
@@ -361,7 +382,7 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
                 f"unknown key {key!r}; accepted: {', '.join(sorted(_ENTRY_FIELDS))}",
                 where=f"{where}.{key}")
         loc = f"{where}.{key}"
-        if key in ("provider", "model", "command", "base_url", "api_key_env"):
+        if key in ("provider", "model", "command", "base_url", "api_key_env", "effort"):
             out[key] = _clean_str(value, loc)
         elif key == "timeout_s":
             # `math.isfinite` as well as `> 0`: YAML reads `.nan` and `.inf` as floats, and
@@ -476,6 +497,17 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 where=f"{where}.{field}")
         fields = {k: v for k, v in fields.items() if k != field}
 
+    # AFTER the applicability loop: a provider with no effort concept at all should report
+    # `llm_config_field_not_applicable`, which names the real problem, rather than "not a level
+    # it accepts", which implies there is a right level to pick.
+    effort = str(fields.get("effort") or "").strip().lower()
+    if effort and effort not in _EFFORT_LEVELS.get(provider, frozenset()):
+        raise LlmConfigError(
+            "llm_config_invalid_field",
+            f"effort {effort!r} is not a level provider {provider!r} accepts; accepted: "
+            f"{', '.join(sorted(_EFFORT_LEVELS.get(provider, frozenset())))}",
+            where=f"{where}.effort")
+
     allowed = PROVIDER_CAPABILITIES[provider]
     declared = fields.get("capabilities")
     if declared is None:
@@ -532,6 +564,7 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
         api_key_env=str(fields.get("api_key_env") or ""),
         timeout_s=fields.get("timeout_s"),
         max_output_tokens=fields.get("max_output_tokens"),
+        effort=effort,
         capabilities=capabilities,
     )
 

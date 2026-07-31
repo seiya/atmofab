@@ -355,6 +355,10 @@ def _openai_request(
         # actually targets it.
         "max_tokens": max_output_tokens,
     }
+    # Only when configured: the field is meaningful to reasoning models and rejected by some
+    # servers that do not implement it, so an absent level must not put it on the wire.
+    if getattr(entry, "effort", ""):
+        payload["reasoning_effort"] = entry.effort
     return url, payload, {"Authorization": f"Bearer {key}"}, None
 
 

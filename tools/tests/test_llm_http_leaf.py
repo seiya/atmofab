@@ -124,6 +124,21 @@ class RequestShapeTests(unittest.TestCase):
         self.assertEqual(req["body"]["messages"], [{"role": "user", "content": "PROMPT"}])
         self.assertEqual(req["body"]["max_tokens"], 8192)
 
+    def test_a_configured_effort_reaches_the_request_body(self) -> None:
+        seen: list = []
+        hl.run_pure_http_leaf(
+            _entry(effort="high"), [{"role": "user", "content": "P"}],
+            opener=_opener(_OPENAI_OK, seen))
+        self.assertEqual(seen[0]["body"]["reasoning_effort"], "high")
+
+    def test_an_absent_effort_is_not_put_on_the_wire(self) -> None:
+        """Some servers reject a field they do not implement, so "no level" must mean the key
+        is absent rather than empty."""
+        seen: list = []
+        hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
+        self.assertNotIn("reasoning_effort", seen[0]["body"])
+
     def test_a_repair_turn_sends_the_prior_conversation(self) -> None:
         seen: list = []
         history = [

@@ -785,12 +785,19 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertNotRegex(str(seen["model"]), r"-\d+-\d+$")
 
     def test_run_conductor_requires_explicit_codex_model(self) -> None:
-        with self.assertRaisesRegex(ValueError, "llm_config_codex_cli_requires_model"):
-            wc.run_conductor(
-                repo_root="/tmp/repo", orchestration_id="o",
-                orchestration_agent_run_id="O", spec_ref="spec/c/x",
-                source_dependency_ref="d", until_phase="compile", backend="codex",
-                agent_model="", workflow_mode="dev", env={})
+        """The shipped codex configuration names a slug, so `--llm codex` is runnable as
+        shipped; a configuration that blanks it must still stop before launching anything."""
+        import tempfile
+        from tools import llm_config as _lc
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.yaml"
+            path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "llm_config_codex_cli_requires_model"):
+                wc.run_conductor(
+                    repo_root="/tmp/repo", orchestration_id="o",
+                    orchestration_agent_run_id="O", spec_ref="spec/c/x",
+                    source_dependency_ref="d", until_phase="compile",
+                    llm_config=_lc.load_llm_config(path), workflow_mode="dev", env={})
 
     def test_agent_run_json_records_transcript_resolved_model(self) -> None:
         from unittest.mock import patch
@@ -5888,13 +5895,36 @@ class _ScriptedStream:
             pass
 
 
+def _config_from_text(text: str) -> lc.LlmConfig:
+    """Load an inline configuration document from a scratch file (the loader reads bytes, and
+    the sha256 it records is of those bytes, so an on-disk file is what it wants)."""
+    directory = tempfile.mkdtemp()
+    path = Path(directory) / "llm.yaml"
+    path.write_text(text, encoding="utf-8")
+    return lc.load_llm_config(path)
+
+
 class LeafSpawnTest(unittest.TestCase):
     """Codex follow-ups: honor custom llm_command; gate substep on leaf returncode."""
 
     @staticmethod
     def _c(**kw) -> wc.Conductor:
+        """A conductor whose config declares only the provider, so these tests pin
+        `leaf_command`'s FLAG CONSTRUCTION rather than what the shipped file happens to say.
+        (`LeafEntryThreadingTests` covers the shipped default's own argv.)"""
+        backend = kw.pop("backend", "claude")
+        # `"opus"` mirrors the pre-conversion dataclass default these tests were written
+        # against, and it arrives as an OVERRIDE rather than a declaration — so it is not
+        # pinned onto the argv, which is what keeps the flag-construction assertions below
+        # about flags and not about the shipped file's model.
+        model = kw.pop("agent_model", "opus")
+        command = kw.pop("llm_command", "")
+        provider = "claude_cli" if backend == "claude" else "codex_cli"
+        body = f"defaults:\n  provider: {provider}\n"
+        cfg = lc.apply_defaults_overrides(
+            _config_from_text(body), model=model, command=command)
         base = dict(repo_root=Path("/tmp/repo"), orchestration_id="o",
-                    orchestration_agent_run_id="O", backend="claude", env={})
+                    orchestration_agent_run_id="O", env={}, llm_config=cfg)
         base.update(kw)
         return wc.Conductor(**base)
 
@@ -15061,35 +15091,35 @@ class LeafEntryThreadingTests(unittest.TestCase):
                                  msg=f"{phase}.{substep} {kwargs}")
 
     def test_claude_legacy_trio_and_shipped_config_produce_identical_argv(self) -> None:
-        self._assert_same_argv(self._legacy(backend="claude", agent_model="opus"),
-                               self._configured("claude", model="opus"))
+        """Acceptance 1: `--llm claude` and `--llm-config configs/llm/claude.yaml` are the same
+        run. Both load the shipped file, so both now carry what it declares."""
+        self._assert_same_argv(self._legacy(backend="claude"), self._configured("claude"))
 
     def test_claude_llm_command_wrapper_survives_the_mapping(self) -> None:
         self._assert_same_argv(
-            self._legacy(backend="claude", agent_model="opus", llm_command="mywrap --model Z"),
-            self._configured("claude", model="opus", command="mywrap --model Z"))
+            self._legacy(backend="claude", llm_command="mywrap --model Z"),
+            self._configured("claude", command="mywrap --model Z"))
 
     def test_codex_legacy_trio_and_shipped_config_produce_identical_argv(self) -> None:
-        self._assert_same_argv(
-            self._legacy(backend="codex", agent_model="gpt-5.6-codex"),
-            self._configured("codex", model="gpt-5.6-codex"))
+        self._assert_same_argv(self._legacy(backend="codex"), self._configured("codex"))
 
     def test_codex_llm_command_wrapper_survives_the_mapping(self) -> None:
         self._assert_same_argv(
-            self._legacy(backend="codex", agent_model="gpt-5.6-codex",
-                         llm_command="codexwrap --x"),
-            self._configured("codex", model="gpt-5.6-codex", command="codexwrap --x"))
+            self._legacy(backend="codex", llm_command="codexwrap --x"),
+            self._configured("codex", command="codexwrap --x"))
 
-    def test_the_argv_is_actually_the_pre_change_one(self) -> None:
-        """A golden, so "both spellings agree" cannot be satisfied by both being wrong."""
-        c = self._configured("claude", model="opus")
+    def test_the_shipped_defaults_argv_is_a_golden(self) -> None:
+        """A golden, so "both spellings agree" cannot be satisfied by both being wrong — and
+        so the shipped files' effect on the argv is visible in one place. Both now DECLARE a
+        model and an effort, so both reach the CLI."""
+        c = self._configured("claude")
         self.assertEqual(c.leaf_command("P", c.entry_for("validate", "judge")),
-                         ["claude", "-p", "P"])
-        k = self._configured("codex", model="gpt-5.6-codex")
-        self.assertEqual(
-            k.leaf_command("P", k.entry_for("validate", "judge")),
-            ["codex", "exec", "--model", "gpt-5.6-codex",
-             "--dangerously-bypass-hook-trust", "--json", "P"])
+                         ["claude", "--model", "opus", "--effort", "high", "-p", "P"])
+        k = self._configured("codex")
+        judge = k.leaf_command("P", k.entry_for("validate", "judge"))
+        self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-codex"])
+        self.assertIn('model_reasoning_effort="high"', judge)
+        self.assertEqual(judge[-2:], ["--json", "P"])
 
     def test_a_declared_claude_model_actually_reaches_the_launch(self) -> None:
         """Per-substep model selection is the point of the feature. Recording `model: haiku`
@@ -15115,19 +15145,59 @@ class LeafEntryThreadingTests(unittest.TestCase):
             self.assertEqual(c.leaf_command("P", c.entry_for(phase, substep)),
                              ["claude", "--model", "haiku", "-p", "P"], msg=f"{phase}.{substep}")
 
+    def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
+        """The three surfaces are genuinely different — a claude flag, a codex config
+        override, an OpenAI request field — which is why the level vocabularies differ too."""
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  effort: xhigh\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n"
+                "        provider: codex_cli\n        model: gpt-5.6-codex\n"
+                "        effort: minimal\n"))
+        self.assertEqual(c.leaf_command("P", c.entry_for("compile", "verify")),
+                         ["claude", "--effort", "xhigh", "-p", "P"])
+        judge = c.leaf_command("P", c.entry_for("validate", "judge"))
+        self.assertIn('model_reasoning_effort="minimal"', judge)
+        # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
+        self.assertIn("--config", judge)
+        self.assertNotIn("-c", judge)
+
+    def test_a_codex_effort_survives_the_warm_resume_argv(self) -> None:
+        """Warm resume is how both pure loops run every repair attempt, so an option present
+        only on the cold argv would silently change the model's behaviour mid-loop."""
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: codex_cli\n  model: gpt-5.6-codex\n"
+                "  effort: xhigh\n"))
+        entry = c.entry_for("generate", "generate")
+        for argv in (c.leaf_command("P", entry),
+                     c.leaf_command("P", entry, resume_session_id="t1"),
+                     c.leaf_command("P", entry, resume_session_id="t1", pure=True)):
+            self.assertIn('model_reasoning_effort="xhigh"', argv)
+
+    def test_an_absent_effort_says_nothing(self) -> None:
+        """No level is not a level: the CLI's own default stays in force."""
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        self.assertEqual(c.leaf_command("P", c.entry_for("compile", "verify")),
+                         ["claude", "-p", "P"])
+
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model from the deprecated `--agent-model`, or from
         Claude's runtime alias resolution, is NOT pinned onto the argv. That is what keeps
         every pre-issue-#28 launch byte-identical, and the equivalence tests above depend on
         it."""
-        legacy = self._legacy(backend="claude", agent_model="opus")
-        self.assertEqual(legacy.entry_for("validate", "judge").model, "opus")
-        self.assertFalse(legacy.entry_for("validate", "judge").model_declared)
-        self.assertEqual(legacy.leaf_command("P", legacy.entry_for("validate", "judge")),
-                         ["claude", "-p", "P"])
-        shipped = self._configured("claude", model="opus")
-        self.assertEqual(shipped.leaf_command("P", shipped.entry_for("validate", "judge")),
-                         ["claude", "-p", "P"])
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=lc.apply_defaults_overrides(
+                self._config_text("defaults:\n  provider: claude_cli\n"), model="opus"))
+        entry = c.entry_for("validate", "judge")
+        self.assertEqual(entry.model, "opus")
+        self.assertFalse(entry.model_declared)
+        self.assertEqual(c.leaf_command("P", entry), ["claude", "-p", "P"])
 
     # --- capability predicates replace the backend tests --------------------------------
 

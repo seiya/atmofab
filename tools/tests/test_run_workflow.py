@@ -5730,12 +5730,42 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(legacy["llm_config"].provenance_map(),
                              viacfg["llm_config"].provenance_map())
 
+    def test_an_override_that_changes_nothing_says_so(self) -> None:
+        """The shipped files declare a model for every leaf, so a run-wide `--agent-model`
+        reaches `defaults` and stops there. That rule is right — a per-leaf declaration is a
+        deliberate choice — but it makes the deprecated flag a no-op, and an operator who
+        passed it would otherwise have no way to tell."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            _, kw, err, _ = self._run(
+                repo_root, ["--llm-config", "configs/llm/claude.yaml",
+                            "--agent-model", "ignored-slug"], oid="orch_noop")
+            self.assertIn("--agent-model does not change", err)
+            self.assertIn("validate.judge", err)
+            self.assertEqual(kw["llm_config"].entry_for("validate", "judge").model, "opus")
+
+    def test_an_override_that_lands_is_not_warned_about(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = repo_root / "configs" / "llm" / "bare.yaml"
+            cfg.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            _, kw, err, _ = self._run(
+                repo_root, ["--llm-config", "configs/llm/bare.yaml",
+                            "--agent-model", "sonnet"], oid="orch_lands")
+            self.assertNotIn("does not change", err)
+            self.assertEqual(kw["llm_config"].entry_for("validate", "judge").model, "sonnet")
+
     def test_agent_model_overrides_defaults_model_under_a_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
+            cfg_path = repo_root / "configs" / "llm" / "bare-codex.yaml"
+            cfg_path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
             _, kw, _, _ = self._run(repo_root, [
-                "--llm-config", "configs/llm/codex.yaml", "--agent-model", "gpt-5.6-codex"])
+                "--llm-config", "configs/llm/bare-codex.yaml",
+                "--agent-model", "gpt-5.6-codex"])
             cfg = kw["llm_config"]
             self.assertEqual(cfg.defaults.model, "gpt-5.6-codex")
             self.assertEqual({e.model for e in cfg.entries.values()}, {"gpt-5.6-codex"})
