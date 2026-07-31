@@ -77,9 +77,12 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         self.addCleanup(key.stop)
 
     def _conductor(self) -> _HttpConductor:
-        return _HttpConductor(
+        c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
             env={}, llm_config=self.config)
+        self._events: list[dict] = []
+        c.emit = lambda event, **f: self._events.append({"event": event, **f})  # type: ignore
+        return c
 
     def _serve(self, replies: list[dict | str]) -> list[dict]:
         """Install a fake `urlopen` answering `replies` in order; return the captured requests.
@@ -104,7 +107,10 @@ class HttpPureLeafWiringTests(unittest.TestCase):
             }
             return _FakeResponse(json.dumps(body).encode("utf-8"))
 
-        patcher = patch("tools.llm_http_leaf.urllib.request.urlopen", _open)
+        # `_default_opener`, not `urlopen`: the transport builds a no-redirect opener rather
+        # than calling `urlopen` directly (a redirect would forward the API key), so patching
+        # `urlopen` would silently stop intercepting anything.
+        patcher = patch("tools.llm_http_leaf._default_opener", lambda: _open)
         patcher.start()
         self.addCleanup(patcher.stop)
         return captured
@@ -170,7 +176,16 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
         self.assertEqual([len(r["messages"]) for r in sent], [2, 2])
 
+    def _attempt_categories(self) -> list[str]:
+        """The per-attempt failure categories the loop emitted, read from the events it
+        published — `bundle_meta.json` records only the TERMINAL one."""
+        return [e["failure_category"] for e in self._events
+                if e.get("event") == "pure_bundle_attempt_failed"]
+
     def test_a_provider_reported_truncation_is_classified_as_truncated(self) -> None:
+        """The provider's own signal must decide, not the extractor's inference: this reply is
+        also unparseable, so a test that only counted attempts stayed green with the whole
+        `response_truncated` plumbing severed."""
         sent = self._serve([
             {"text": '{"partial": ', "finish_reason": "length"},
             {"text": json.dumps(_valid_bundle())},
@@ -179,9 +194,38 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
         self.assertEqual(outcome.status, "pass")
         self.assertEqual(len(sent), 2)
-        meta = json.loads((self.repo / self.refs.source_dir() / "bundle_meta.json")
-                          .read_text(encoding="utf-8"))
-        self.assertEqual(meta["attempts"], 2)
+        self.assertEqual(self._attempt_categories(), ["pure_response_truncated"])
+
+    def test_a_truncated_reply_that_PARSES_is_still_rejected(self) -> None:
+        """The case only the provider's signal can catch: a cut-off answer that happens to be
+        valid JSON. Without the signal the host would accept a partial bundle as complete."""
+        bundle = _valid_bundle()
+        truncated = dict(bundle)
+        truncated["files"] = truncated["files"][:1]
+        sent = self._serve([
+            {"text": json.dumps(truncated), "finish_reason": "length"},
+            {"text": json.dumps(bundle)},
+        ])
+        c = self._conductor()
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "pass")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(self._attempt_categories(), ["pure_response_truncated"])
+
+    def test_a_repair_turn_does_not_re_send_the_whole_context(self) -> None:
+        """The replay already carries the prior prompt and answer, so the repair renders the
+        WARM (slim) turn. Rendering the cold fallback on top of it shipped the node's whole
+        closed context once per attempt and each prior bundle twice."""
+        self._serve(["not a json document at all", json.dumps(_valid_bundle())])
+        c = self._conductor()
+        c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        requests = [payload["--request-json"] for sub, payload in c.calls
+                    if sub == "record-launch" and "--request-json" in payload]
+        self.assertEqual(len(requests), 2)
+        self.assertIsNotNone(requests[0].get("pure_context"))
+        self.assertIsNone(requests[1].get("pure_context"))
+        self.assertNotIn("prior_document", requests[1])
+        self.assertTrue(requests[1].get("warm_resume"))
 
     def test_a_dead_endpoint_is_a_transport_failure_not_a_content_one(self) -> None:
         self._serve([{"raise": "Connection refused"}])

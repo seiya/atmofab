@@ -10011,6 +10011,23 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
 
 
 def _validate_preflight_payload(payload: dict[str, Any]) -> None:
+    # Validator and gate must reject the same documents. `_preflight_allows_agent_launch` ANDs
+    # in "every probed provider is launchable" (issue #28), so accepting a `status=pass`
+    # document with an unlaunchable provider would persist a preflight every later
+    # record-launch refuses, with a gate message that names no provider.
+    providers = payload.get("providers")
+    if isinstance(providers, dict) and providers and (
+            payload.get("can_launch_step_agents") is True
+            or payload.get("can_launch_substep_agents") is True):
+        unlaunchable = sorted(
+            token for token, entry in providers.items()
+            if not (isinstance(entry, dict) and entry.get("launchable") is True))
+        if unlaunchable:
+            raise ValueError(
+                "preflight cannot report can_launch_*_agents=true while probed provider(s) "
+                f"{', '.join(unlaunchable)} are not launchable"
+            )
+
     if (
         payload.get("can_launch_step_agents") is True
         or payload.get("can_launch_substep_agents") is True
@@ -10248,6 +10265,13 @@ def _run_live_probe_and_update(
     live_probe = probe_execution_platform(
         backend=backend, agent_command=probe_command, repo_root=repo_root
     )
+    # The cached payload's `providers` map (issue #28) covers providers this probe never
+    # touched, and the `probed_at` written below refreshes the TTL of the WHOLE document. Carry
+    # the map onto the live payload so the gate applies to it here too, rather than certifying
+    # freshness for rows nobody re-examined.
+    cached_providers = cached_payload.get("providers")
+    if isinstance(cached_providers, dict) and cached_providers:
+        live_probe["providers"] = cached_providers
     if not _preflight_allows_agent_launch(live_probe):
         raise RuntimeError(
             "live preflight gate failed: execution platform required launch capabilities are unavailable"
@@ -13813,10 +13837,19 @@ def repair_legacy_agent_runs(
         # that speak for a row are the ones that ran the SAME substep.
         models_by_substep: dict[tuple[str, str], set[str]] = {}
 
-        def _substep_key(obj: dict[str, Any]) -> tuple[str, str]:
+        def _substep_key(obj: dict[str, Any]) -> tuple[str, str] | None:
+            """The `(step, substep)` a row belongs to, or None when it names no step.
+
+            None is NOT a bucket. A legacy row — the kind this repair exists for — frequently
+            carries neither field, and so does the orchestration row; bucketing both under
+            `("", "")` would let the orchestration's unpinned alias fill a leaf row that ran on
+            another provider entirely. A row that cannot name its own step falls through to the
+            whole-orchestration agreement, which is the pre-issue-#28 behavior."""
             step = obj.get("step")
+            if not (isinstance(step, str) and step.strip()):
+                return None
             substep = obj.get("substep")
-            return (step.strip().lower() if isinstance(step, str) else "",
+            return (step.strip().lower(),
                     substep.strip().lower() if isinstance(substep, str) else "")
 
         for line in raw_lines:
@@ -13836,7 +13869,9 @@ def repair_legacy_agent_runs(
             m = obj.get("agent_model")
             if isinstance(m, str) and m.strip():
                 models.add(m.strip())
-                models_by_substep.setdefault(_substep_key(obj), set()).add(m.strip())
+                key = _substep_key(obj)
+                if key is not None:
+                    models_by_substep.setdefault(key, set()).add(m.strip())
 
         if isinstance(agent_model, str) and agent_model.strip():
             chosen_model = agent_model.strip()
@@ -13921,14 +13956,19 @@ def repair_legacy_agent_runs(
                     line_missing.append("parent_agent_run_id")
 
             cur_model = obj.get("agent_model")
+            model_src_used: str | None = None
             if not (isinstance(cur_model, str) and cur_model.strip()):
                 # Prefer the row's OWN substep siblings; only they are guaranteed to have run
                 # on the same provider (issue #28). Fall back to the whole-orchestration
                 # agreement, which is what a single-provider run has always used.
-                own = models_by_substep.get(_substep_key(obj), set())
-                filled = (agent_model.strip() if isinstance(agent_model, str)
-                          and agent_model.strip() else
-                          (next(iter(own)) if len(own) == 1 else chosen_model))
+                key = _substep_key(obj)
+                own = models_by_substep.get(key, set()) if key is not None else set()
+                if isinstance(agent_model, str) and agent_model.strip():
+                    filled, model_src_used = agent_model.strip(), "override"
+                elif len(own) == 1:
+                    filled, model_src_used = next(iter(own)), "substep_sibling_uniform"
+                else:
+                    filled, model_src_used = chosen_model, model_source
                 if filled:
                     obj["agent_model"] = filled
                     fields_filled.append("agent_model")
@@ -13945,7 +13985,9 @@ def repair_legacy_agent_runs(
                 if "parent_agent_run_id" in fields_filled:
                     prov["parent_source"] = parent_src_used
                 if "agent_model" in fields_filled:
-                    prov["agent_model_source"] = model_source
+                    # The source that actually supplied THIS row's value, which under a mixed
+                    # configuration need not be the whole-orchestration one.
+                    prov["agent_model_source"] = model_src_used
                 obj["backfilled"] = prov
                 raw_lines[idx] = json.dumps(obj, ensure_ascii=False)
                 repaired.append(
@@ -17566,6 +17608,16 @@ def record_launch(
         # the audit validators (which key on `sandbox_profile` presence) can tell a skipped
         # profile from a missing one.
         if backend_token in _HTTP_PROVIDER_TOKENS:
+            if not is_pure:
+                # Defense in depth. `llm_config` refuses an HTTP provider on an agentic
+                # substep, and the conductor refuses one on a node with no pure path — but
+                # THIS is the authorization gate, and it must not be the only layer that
+                # assumes the other two ran. A non-pure HTTP launch would receive
+                # allowed_output_paths, file-tool pins and a write-authorized capability with
+                # no sandbox at all.
+                raise RuntimeError(
+                    f"record-launch: provider {backend_token!r} runs no confined child "
+                    f"process and is admissible only for a pure leaf; this launch is not pure")
             request_payload.setdefault("leaf_transport", "http")
             response_payload.setdefault("leaf_transport", "http")
             response_payload.setdefault("sandbox_runtime", "none")
@@ -18255,7 +18307,25 @@ def record_agent_run(
                         "agent_session_id must match child agent identifier in launch response"
                     )
                 sandbox_ref = launch_response_payload.get("sandbox_profile_ref")
-                if launch_response_payload.get("sandbox_runtime") != "bwrap":
+                # An HTTP leaf (issue #28) is answered from the conductor's own process: there
+                # is no child process, so there is nothing for bwrap to confine and
+                # `record_launch` records `leaf_transport: "http"` with no profile. The
+                # sandbox block below asserts a profile that, for such a launch, correctly does
+                # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored
+                # and outside every leaf's write roots — and only when it names a genuine HTTP
+                # provider token, so a leaf cannot claim it. Everything else about the terminal
+                # payload, including the unauthorized-write check below, still applies.
+                _launch_backend = launch_response_payload.get("backend")
+                _http_leaf = (
+                    str(launch_response_payload.get("leaf_transport") or "").strip().lower()
+                    == "http"
+                    and isinstance(_launch_backend, str)
+                    and _launch_backend.strip().lower() in _HTTP_PROVIDER_TOKENS)
+                if _http_leaf:
+                    payload.setdefault("sandbox_runtime", "none")
+                    payload.setdefault("sandbox_enforced", False)
+                    payload.setdefault("leaf_transport", "http")
+                elif launch_response_payload.get("sandbox_runtime") != "bwrap":
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18265,7 +18335,7 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_runtime_not_bwrap"
                     raise ValueError("launch response must record sandbox_runtime=bwrap")
-                if launch_response_payload.get("sandbox_enforced") is not True:
+                elif launch_response_payload.get("sandbox_enforced") is not True:
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18275,7 +18345,7 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_not_enforced"
                     raise ValueError("launch response must record sandbox_enforced=true")
-                if not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
+                elif not isinstance(sandbox_ref, str) or not sandbox_ref.strip():
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18285,8 +18355,7 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_profile_missing"
                     raise ValueError("launch response must include sandbox_profile_ref")
-                sandbox_path = repo_root / str(sandbox_ref).strip()
-                if not sandbox_path.exists():
+                elif not (repo_root / str(sandbox_ref).strip()).exists():
                     _write_sandbox_enforcement_violation(
                         repo_root,
                         orchestration_id,
@@ -18296,9 +18365,10 @@ def record_agent_run(
                     )
                     sandbox_fail_reason = "sandbox_profile_not_found"
                     raise ValueError(f"sandbox_profile_ref target not found: {sandbox_ref}")
-                payload.setdefault("sandbox_runtime", "bwrap")
-                payload.setdefault("sandbox_enforced", True)
-                payload.setdefault("sandbox_profile_ref", str(sandbox_ref).strip())
+                else:
+                    payload.setdefault("sandbox_runtime", "bwrap")
+                    payload.setdefault("sandbox_enforced", True)
+                    payload.setdefault("sandbox_profile_ref", str(sandbox_ref).strip())
             _validate_terminal_run_payload(
                 repo_root, orchestration_id, payload, caller_holds_lock=True,
             )

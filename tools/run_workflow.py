@@ -143,7 +143,10 @@ def _repo_relative(path: str | Path, repo_root: Path) -> str:
     try:
         return str(p.resolve().relative_to(Path(repo_root).resolve()))
     except ValueError:
-        return str(p)
+        # ABSOLUTE, not the caller's spelling: the recorded path is re-joined to `repo_root` on
+        # resume, so a relative spelling naming a file outside the root would resolve to a
+        # different file (or to nothing).
+        return str(p.resolve())
 
 
 def _build_invocation_record(
@@ -2448,7 +2451,13 @@ def _run_main(
             raise ValueError(
                 f"conductor orchestration supports --llm claude|codex, not {llm!r}"
             )
-        if not args.llm_config and llm == "codex" and (
+        # `config_pinned` — not `args.llm_config` — is what says "the model lives in a file".
+        # A resume of a config-pinned run passes no --llm-config (it recovers the pin), so
+        # testing the flag alone made every such codex run unresumable: the guard demanded an
+        # --agent-model for a model the file already names.
+        config_pinned = bool(args.llm_config) or bool(
+            (resume_recorded_llm_config if resume_mode else {}).get("path"))
+        if not config_pinned and llm == "codex" and (
             not isinstance(agent_model_in, str)
             or not agent_model_in.strip()
             or agent_model_in.strip().lower() == "codex"
@@ -2480,15 +2489,42 @@ def _run_main(
         #      the run-wide model/command applied to `defaults`, which is what makes
         #      `--llm claude` and `--llm-config configs/llm/claude.yaml` the same run.
         recorded_pin = resume_recorded_llm_config if resume_mode else {}
-        if args.llm_config:
+        if recorded_pin.get("path"):
+            # The recorded pin WINS on a resume, including over an explicitly passed
+            # --llm-config: the finished phases ran on the recorded file, and this is a
+            # continuation of that run, not a new one. Say so rather than dropping the flag in
+            # silence — the refusal below covers a DIFFERENT file, and this covers the same one.
+            for flag, value in (("--llm-config", args.llm_config), ("--llm", args.llm),
+                                ("--agent-model", args.agent_model),
+                                ("--llm-command", args.llm_command)):
+                if value:
+                    sys.stderr.write(
+                        f"warning: {flag} is ignored on --resume; orchestration "
+                        f"{orchestration_id} is pinned to its recorded leaf-LLM configuration "
+                        f"{recorded_pin['path']!r}. Start a fresh run to change it.\n")
+            llm_config_path = repo_root / str(recorded_pin["path"])
+            llm_config_overrides = dict(recorded_pin.get("overrides") or {})
+            # Compare BEFORE loading: a pinned file that has been deleted must surface as
+            # `llm_config_changed_since_launch` ("restore that file"), not as a generic
+            # `llm_config_unreadable` from the loader.
+            rejection = _llm_config_resume_rejection(
+                orchestration_id, recorded_pin, repo_root=repo_root,
+                effective_path=str(recorded_pin["path"]),
+                effective_sha256=config_sha256(llm_config_path),
+                effective_overrides=llm_config_overrides)
+            if rejection is not None:
+                print(json.dumps(rejection, ensure_ascii=False))
+                return 2
+        elif args.llm_config:
+            # Relative to `--repo-root`, like every other path this driver resolves — resolving
+            # against the process CWD would run one file and record a spelling naming another.
             llm_config_path = Path(args.llm_config)
+            if not llm_config_path.is_absolute():
+                llm_config_path = repo_root / llm_config_path
             llm_config_overrides = {
                 k: v for k, v in (("model", (args.agent_model or "").strip()),
                                   ("command", (args.llm_command or "").strip())) if v
             }
-        elif recorded_pin.get("path"):
-            llm_config_path = repo_root / str(recorded_pin["path"])
-            llm_config_overrides = dict(recorded_pin.get("overrides") or {})
         else:
             llm_config_path = shipped_config_path(llm, repo_root)
             # `llm_command` always has a value — `DEFAULT_LLM_COMMANDS[llm]` is the bare binary
@@ -2642,6 +2678,7 @@ def _run_main(
             llm=llm,
             llm_command=llm_command,
             llm_config=llm_config,
+            llm_config_overrides=llm_config_overrides,
             workflow_mode=workflow_mode,
             agent_model=args.agent_model,
             status=args.status,
@@ -2667,6 +2704,7 @@ def _run_main(
             llm=llm,
             llm_command=llm_command,
             llm_config=llm_config,
+            llm_config_overrides=llm_config_overrides,
             workflow_mode=workflow_mode,
             agent_model=args.agent_model,
             status=args.status,

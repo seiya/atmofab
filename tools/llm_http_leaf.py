@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Mapping, NamedTuple, Sequence
@@ -65,6 +66,50 @@ class HttpLeafResponse(NamedTuple):
     raw_response: str
 
 
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect.
+
+    `urlopen` follows them by default and copies the request headers onto the new request with
+    no same-origin check, so a redirecting endpoint — misconfigured or hostile — harvests the
+    operator's API key and gets to supply the leaf's "answer". A single-shot JSON POST has no
+    legitimate use for a redirect, so the safe rule is the simple one."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D102
+        raise urllib.error.HTTPError(
+            req.full_url, code,
+            f"redirect refused (would forward credentials to {newurl})", headers, fp)
+
+
+def _default_opener() -> "Callable[..., Any]":
+    return urllib.request.build_opener(_NoRedirects).open
+
+
+# Ceiling on a response body. A pure leaf answers with one JSON document; anything past this is
+# not an answer, and reading it unbounded is how a trickling endpoint holds the run open.
+_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+_READ_CHUNK_BYTES = 65536
+
+
+def _read_bounded(response: Any, deadline: float) -> "tuple[bytes | None, str | None]":
+    """Read the body under a WALL-CLOCK deadline and a size ceiling.
+
+    `urlopen(timeout=)` is a per-socket-operation timeout: it resets on every byte, so an
+    endpoint dribbling one byte below the interval never trips it. The CLI leaf has a process
+    to kill and a `leaf_timeout` event; this path has neither, so the bound has to be here."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        if time.monotonic() > deadline:
+            return None, "response_deadline_exceeded"
+        chunk = response.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks), None
+        total += len(chunk)
+        if total > _MAX_RESPONSE_BYTES:
+            return None, f"response_too_large: over {_MAX_RESPONSE_BYTES} bytes"
+        chunks.append(chunk)
+
+
 def _post_json(
     url: str,
     payload: Mapping[str, Any],
@@ -82,10 +127,13 @@ def _post_json(
     request = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/json", **dict(headers)})
-    open_url = opener if opener is not None else urllib.request.urlopen
+    open_url = opener if opener is not None else _default_opener()
+    deadline = time.monotonic() + timeout_s
     try:
         with open_url(request, timeout=timeout_s) as response:
-            raw = response.read()
+            raw, read_error = _read_bounded(response, deadline)
+        if read_error is not None:
+            return None, "", read_error
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -230,7 +278,7 @@ def run_pure_http_leaf(
             "", "", None, False,
             f"unsupported_http_provider: {entry.provider!r}", "")
     build_request, read_response = shape
-    limit = int(max_output_tokens or entry.max_output_tokens or _DEFAULT_MAX_OUTPUT_TOKENS)
+    limit = int(max_output_tokens or entry.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
     timeout = float(timeout_s or entry.timeout_s or DEFAULT_HTTP_TIMEOUT_SECONDS)
 
     url, payload, headers, error = build_request(entry, messages, limit)
@@ -247,6 +295,10 @@ def run_pure_http_leaf(
     return HttpLeafResponse(text, model or entry.model, usage or None, truncated, None, raw)
 
 
-# Mirrors the CLI leaf's ceiling so the two transports are budgeted alike. Imported lazily-ish
-# as a module constant rather than from the conductor, which imports THIS module.
-_DEFAULT_MAX_OUTPUT_TOKENS = 128000
+# The default `max_tokens` when neither the entry nor the caller names one. Deliberately NOT
+# the CLI leaf's 128000 ceiling: that is a Claude-CLI budget, and sending it verbatim to a local
+# server (vLLM, llama.cpp, Ollama — the endpoints `openai_compatible` is named for) is rejected
+# outright, because it exceeds the model's whole context length. 16384 comfortably holds a
+# CodegenBundle and is accepted by every endpoint these providers target; an operator who needs
+# more sets `max_output_tokens:` on the entry.
+DEFAULT_MAX_OUTPUT_TOKENS = 16384

@@ -14598,7 +14598,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             # The real precondition (a claude session transcript on disk for the failed verify
             # leaf) cannot hold for a fake arid; the loop's resumability guard is pinned
             # separately by test_no_warm_session_skips_loop_and_escalates.
-            def _verify_session_resumable(self, verify_arid):  # type: ignore[override]
+            def _verify_session_resumable(self, verify_arid, phase="generate"):  # type: ignore[override]
                 return True
 
             def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
@@ -14890,7 +14890,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
             self._write_meta(repo, refs, "generate", bad)
             c = self._conductor(repo, refs, "generate", [bad, _conformant_stage_meta("pass")])
-            c._verify_session_resumable = lambda arid: False  # type: ignore[assignment]
+            c._verify_session_resumable = lambda arid, phase="generate": False  # type: ignore[assignment]
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(c.verify_runs["verify_runs"], 1)  # the original verify only
@@ -14910,7 +14910,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             # Only the ORIGINAL verify leaf's session survives; the repair turn's does not.
             original_verify_arid = f"child-{len(wc.SUBSTEPS['generate'])}"
             c._verify_session_resumable = (  # type: ignore[assignment]
-                lambda arid: arid == original_verify_arid)
+                lambda arid, phase="generate": arid == original_verify_arid)
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(len(self._repair_requests(c)), 1)  # one turn, then stop
@@ -15166,6 +15166,70 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(c.entry_for("generate", "generate").backend_token, "claude")
         self.assertEqual(c.entry_for("validate", "judge").backend_token, "codex")
 
+
+    def test_the_deprecated_trio_leaves_no_readable_attribute(self) -> None:
+        """The safety argument of this conversion is that a site still asking the RUN what
+        backend it is fails loudly. `InitVar` alone does not deliver that: its DEFAULT stays a
+        class attribute, so `self.backend` answered `""` — a plausible wrong answer."""
+        c = self._legacy(backend="codex", agent_model="gpt-5.6-codex")
+        for name in ("backend", "agent_model", "llm_command"):
+            with self.assertRaises(AttributeError, msg=name):
+                getattr(c, name)
+        self.assertEqual(c.entry_for(None, None).backend_token, "codex")
+
+    def test_record_launch_stamps_the_launching_leafs_own_backend(self) -> None:
+        """That token is authoritative in the runtime: it drives `backend_not_probed`, the
+        codex-home transaction, the sandbox profile's backend type, and the HTTP sandbox skip.
+        Reverting it to the run-wide identity left the whole suite green."""
+        recorded: list[dict] = []
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n"
+                "        provider: codex_cli\n        model: gpt-5.6-codex\n"))
+        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+            recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
+        c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
+        c.record_launch("arid-2", {}, c.entry_for("validate", "judge"))
+        self.assertEqual([r["backend"] for r in recorded], ["claude", "codex"])
+
+    def test_the_codex_finalize_row_survives_a_populated_session_index(self) -> None:
+        """`_agent_run_json`'s codex branch walks the session index; its loop variable used to
+        shadow the entry, so every codex finalize died with an AttributeError — and no test
+        caught it because the fixtures never wrote a session index for it to walk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orch = repo / "workspace" / "orchestrations" / "o"
+            orch.mkdir(parents=True)
+            (orch / "session_run_index.json").write_text(json.dumps({"entries": [
+                {"agent_run_id": "child-1", "agent_session_id": "thread-abc",
+                 "context_id": "ctx-abc"},
+            ]}), encoding="utf-8")
+            c = self._legacy(repo_root=repo, backend="codex", agent_model="gpt-5.6-codex")
+            row = c._agent_run_json(
+                wc.NodeRefs(node_key="c/x@0.1.0", spec_path="spec/c/x", ir_id="i",
+                            pipeline_id="p"),
+                "generate", "generate", "child-1", "pass", [], "ok",
+                entry=c.entry_for("generate", "generate"))
+        self.assertEqual(row["agent_backend"], "codex")
+        self.assertEqual(row["agent_session_id"], "thread-abc")
+        self.assertEqual(row["context_id"], "ctx-abc")
+        self.assertEqual(row["agent_model"], "gpt-5.6-codex")
+
+    def test_verify_session_resumability_is_asked_of_the_right_phase(self) -> None:
+        """Its caller runs for compile AND generate; hardcoding generate would refuse a
+        compile repair the session can serve."""
+        c = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "phases:\n  generate:\n    substeps:\n      verify:\n"
+                "        capabilities: [agentic, pure]\n"))
+        c._claude_session_resumable = lambda arid: True   # type: ignore[assignment]
+        self.assertTrue(c._verify_session_resumable("arid", "compile"))
+        self.assertFalse(c._verify_session_resumable("arid", "generate"))
+
     # --- the guard that keeps the conversion honest --------------------------------------
 
     def test_every_leaf_launch_site_passes_its_own_entry(self) -> None:
@@ -15178,12 +15242,21 @@ class LeafEntryThreadingTests(unittest.TestCase):
         `_readonly_sandbox_profile` genuinely have no phase/substep, and both resolve
         `entry_for(None, None)` explicitly, so they pass this too."""
         import ast
+        import inspect
+        # DERIVED, not hand-listed: the set of guarded methods and the position of `entry` in
+        # each are read off the signatures, so a method added with an `entry=None` default —
+        # or a reordered signature — cannot silently fall outside the guard.
+        guarded: dict[str, int] = {}
+        for name, member in inspect.getmembers(wc.Conductor, inspect.isfunction):
+            params = list(inspect.signature(member).parameters.values())
+            for position, param in enumerate(params):
+                if param.name != "entry" or param.default is inspect.Parameter.empty:
+                    continue
+                guarded[name] = (
+                    99 if param.kind is inspect.Parameter.KEYWORD_ONLY
+                    else position - 1)          # -1 for `self`
+        self.assertGreaterEqual(len(guarded), 15, msg=sorted(guarded))
         src = (Path(wc.__file__)).read_text(encoding="utf-8")
-        guarded = {"leaf_command", "spawn_leaf", "record_launch", "_child_env",
-                   "_agent_run_json", "workflow_launch_check", "_ensure_codex_feature_cache",
-                   "_run_usage_probe", "_usage_reset_wait_plan", "_session_id_for_child",
-                   "_pure_session_resumable", "_codex_session_home_generation",
-                   "_codex_pinned_model", "_spawn_codex_json_leaf", "_timed_out_result"}
         offenders = []
         for node in ast.walk(ast.parse(src)):
             if not isinstance(node, ast.Call):
@@ -15193,22 +15266,18 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 continue
             if not (isinstance(fn.value, ast.Name) and fn.value.id == "self"):
                 continue
-            names = {kw.arg for kw in node.keywords}
-            passes = "entry" in names or len(node.args) > _MIN_POSITIONAL_BEFORE_ENTRY[fn.attr]
-            if not passes:
+            passed: ast.expr | None = None
+            for keyword in node.keywords:
+                if keyword.arg == "entry":
+                    passed = keyword.value
+            position = guarded[fn.attr]
+            if passed is None and len(node.args) > position:
+                passed = node.args[position]
+            # A literal `None` is the DEFAULT spelled out; it is not an entry.
+            if passed is None or (isinstance(passed, ast.Constant) and passed.value is None):
                 offenders.append(f"{fn.attr} at line {node.lineno}")
         self.assertEqual(offenders, [])
 
-
-# How many positional arguments precede `entry` in each guarded method's signature; a call
-# with MORE than this passed the entry positionally.
-_MIN_POSITIONAL_BEFORE_ENTRY = {
-    "leaf_command": 1, "spawn_leaf": 2, "record_launch": 2, "_child_env": 1,
-    "_agent_run_json": 99, "workflow_launch_check": 3, "_ensure_codex_feature_cache": 0,
-    "_run_usage_probe": 0, "_usage_reset_wait_plan": 99, "_session_id_for_child": 1,
-    "_pure_session_resumable": 1, "_codex_session_home_generation": 1,
-    "_codex_pinned_model": 0, "_spawn_codex_json_leaf": 99, "_timed_out_result": 99,
-}
 
 
 if __name__ == "__main__":  # pragma: no cover

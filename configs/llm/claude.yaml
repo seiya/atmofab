@@ -22,9 +22,16 @@
 #       substeps:
 #         verify:
 #           provider: openai_compatible
+#           # MUST include the API version segment: the request appends /chat/completions.
+#           # (`anthropic_api` is the opposite -- it appends /v1/messages, so give it a bare
+#           # host, or omit base_url entirely and take its default.)
 #           base_url: http://localhost:8000/v1
+#           # The NAME of the environment variable holding the key, never the key.
 #           api_key_env: LOCAL_LLM_API_KEY
 #           model: qwen2.5-coder-32b-instruct
+#           # Size against the model's CONTEXT WINDOW, not its documented maximum: the
+#           # request is non-streaming, and the default (16384) is conservative.
+#           max_output_tokens: 8192
 #
 # HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
 # `generate` leaves, which run as host-mediated pure functions; assigning one to an agentic

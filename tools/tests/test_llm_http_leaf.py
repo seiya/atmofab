@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import unittest
 import urllib.error
+import urllib.request
 from unittest.mock import patch
 
 from tools import llm_config as lc
@@ -305,6 +307,113 @@ class KeySecrecyTests(unittest.TestCase):
             out = hl.run_pure_http_leaf(
                 _entry(), [{"role": "user", "content": "P"}], opener=_refuse)
         self.assertNotIn(KEY_VALUE, str(out.transport_error))
+
+
+class TransportBoundsTests(unittest.TestCase):
+    """The two bounds the CLI path gets for free and this one has to supply itself: a
+    wall-clock deadline (there is no process to kill and no `leaf_timeout` event), and a
+    refusal to follow a redirect (which would hand the operator's key to the new host)."""
+
+    def setUp(self) -> None:
+        patcher = patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_trickling_response_is_cut_off_at_the_deadline(self) -> None:
+        """`urlopen(timeout=)` resets on every byte, so an endpoint dribbling below the
+        interval never trips it and the conductor waits forever."""
+
+        class _Trickle:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self, _n=None):
+                time.sleep(0.02)
+                return b" "          # never EOF
+
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}],
+            timeout_s=0.1, opener=lambda *_a, **_k: _Trickle())
+        self.assertEqual(out.transport_error, "response_deadline_exceeded")
+        self.assertEqual(out.text, "")
+
+    def test_an_oversized_response_is_refused(self) -> None:
+        class _Flood:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self, n=65536):
+                return b"x" * n
+
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}],
+            opener=lambda *_a, **_k: _Flood())
+        self.assertIn("response_too_large", str(out.transport_error))
+
+    def test_the_default_opener_refuses_redirects(self) -> None:
+        """A real redirect through the real opener: `urlopen` would follow it and copy the
+        Authorization header onto the new host."""
+        handler = hl._NoRedirects()
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            handler.redirect_request(
+                urllib.request.Request("https://configured.example/v1/chat/completions"),
+                io.BytesIO(b""), 302, "Found", {}, "https://elsewhere.example/v1")
+        self.assertIn("redirect refused", str(ctx.exception))
+        self.assertIn("elsewhere.example", str(ctx.exception))
+
+    def test_the_transport_actually_installs_that_handler(self) -> None:
+        opener = hl._default_opener()
+        owner = getattr(opener, "__self__", None)
+        self.assertTrue(
+            any(isinstance(h, hl._NoRedirects) for h in getattr(owner, "handlers", [])),
+            msg="the default opener must carry the no-redirect handler")
+
+    def test_a_redirect_reaches_the_caller_as_a_transport_error(self) -> None:
+        """End to end over a real socket, so the claim does not rest on the handler alone."""
+        import http.server
+        import threading
+
+        seen: list[dict] = []
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):                              # noqa: N802
+                seen.append({"path": self.path,
+                            "auth": self.headers.get("Authorization")})
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:1/v1/chat/completions")
+                self.end_headers()
+
+            def log_message(self, *_a):                     # noqa: D102 - silence the test log
+                return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+        self.addCleanup(server.server_close)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), thread.join(timeout=5)))
+        base = f"http://127.0.0.1:{server.server_address[1]}/v1"
+        out = hl.run_pure_http_leaf(
+            _entry(base_url=base), [{"role": "user", "content": "P"}], timeout_s=10)
+        self.assertIsNotNone(out.transport_error)
+        self.assertIn("redirect refused", str(out.transport_error))
+        # The key reached the CONFIGURED endpoint (correct) and exactly once.
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0]["auth"], f"Bearer {KEY_VALUE}")
+
+    def test_the_default_max_tokens_is_sized_for_the_endpoints_this_targets(self) -> None:
+        """Not the CLI leaf's 128000: that exceeds the whole context length of the local
+        servers `openai_compatible` exists for, which reject the request outright."""
+        seen: list = []
+        hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
+        self.assertEqual(seen[0]["body"]["max_tokens"], hl.DEFAULT_MAX_OUTPUT_TOKENS)
+        self.assertLessEqual(hl.DEFAULT_MAX_OUTPUT_TOKENS, 32768)
 
 
 if __name__ == "__main__":

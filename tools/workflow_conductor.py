@@ -3113,10 +3113,12 @@ class Conductor:
     orchestration_id: str
     orchestration_agent_run_id: str
     # `backend` / `agent_model` / `llm_command` are the DEPRECATED run-wide trio, kept as
-    # constructor inputs only (`InitVar`, so they leave no attribute behind): they are folded
-    # into `llm_config` by `__post_init__` and are never consulted again. Deliberately not
-    # attributes — a launch site that still asks "what backend is this run?" instead of "what
-    # does THIS leaf's entry say?" must fail loudly rather than silently read the defaults.
+    # constructor inputs only: they are folded into `llm_config` by `__post_init__` and are
+    # never consulted again. `InitVar` keeps them off the INSTANCE, but a default value still
+    # leaves a CLASS attribute behind, which would answer `self.backend` with `""` — exactly
+    # the silent-wrong-branch this conversion exists to prevent. The three class attributes are
+    # deleted below the class body, so any surviving read raises `AttributeError`;
+    # `test_the_deprecated_trio_leaves_no_readable_attribute` pins that.
     backend: InitVar[str] = ""
     env: dict[str, str] = field(default_factory=dict)
     # Unpinned spec-side alias (never a pinned version — that would go stale as
@@ -3278,11 +3280,11 @@ class Conductor:
             index = _read_session_run_index_consistent(
                 self.repo_root, self.orchestration_id
             )
-            for entry in index.get("entries", []):
-                if not isinstance(entry, dict) or entry.get("agent_run_id") != target:
+            for row in index.get("entries", []):
+                if not isinstance(row, dict) or row.get("agent_run_id") != target:
                     continue
-                session = entry.get("agent_session_id")
-                entry_generation = entry.get("codex_home_generation")
+                session = row.get("agent_session_id")
+                entry_generation = row.get("codex_home_generation")
                 if (isinstance(session, str) and session.strip() and session.strip() != target
                         and entry_generation == generation):
                     return session.strip()
@@ -3303,12 +3305,24 @@ class Conductor:
             return False
 
     def _pure_session_resumable(self, session_id: str,
-                                entry: ResolvedLeafEntry | None = None) -> bool:
-        """Whether this leaf's provider can reopen `session_id` for the pure repair loop."""
+                                entry: ResolvedLeafEntry | None = None,
+                                phase: str | None = None,
+                                substep: str | None = None) -> bool:
+        """Whether this leaf's prior turn can be reopened for the pure repair loop.
+
+        For an HTTP provider the reopen is the IN-MEMORY conversation (`_run_http_leaf` replays
+        the prior user prompt and assistant answer), so a repair turn is warm exactly while
+        that history exists — which is the whole of one substep run. Answering False instead
+        would make every repair render the COLD fallback: the full closed context re-inlined
+        plus `prior_document`, on top of a replay already carrying both, so attempt N would
+        ship N copies of the node's spec/IR/tests and each prior bundle twice. The history does
+        not survive the process, so a CROSS-RESTART reopen still degrades to the cold path —
+        that decision is `_resolve_reuse_resume`'s, which keys on `warm_resume` and stays
+        False here."""
         entry = entry if entry is not None else self.entry_for(None, None)
+        if entry.is_http:
+            return bool(getattr(self, "_http_history", {}).get((phase or "", substep or "")))
         if not entry.supports(CAP_WARM_RESUME):
-            # An HTTP pure leaf has no session to reopen across a restart; the repair loop
-            # falls back to the cold `prior_document` path (Phase 5 replays in memory instead).
             return False
         if entry.provider == "claude_cli":
             return self._claude_session_resumable(session_id)
@@ -3326,9 +3340,9 @@ class Conductor:
         index = _read_session_run_index_consistent(
             self.repo_root, self.orchestration_id
         )
-        for entry in index.get("entries", []):
-            if isinstance(entry, dict) and entry.get("agent_run_id") == child_arid:
-                value = entry.get("agent_session_id")
+        for row in index.get("entries", []):
+            if isinstance(row, dict) and row.get("agent_run_id") == child_arid:
+                value = row.get("agent_session_id")
                 if isinstance(value, str) and value.strip():
                     return value.strip()
         return None
@@ -3350,12 +3364,12 @@ class Conductor:
         index = _read_session_run_index_consistent(
             self.repo_root, self.orchestration_id
         )
-        for entry in index.get("entries", []):
-            if not isinstance(entry, dict):
+        for row in index.get("entries", []):
+            if not isinstance(row, dict):
                 continue
-            if entry.get("agent_session_id") != session_id.strip():
+            if row.get("agent_session_id") != session_id.strip():
                 continue
-            generation = entry.get("codex_home_generation")
+            generation = row.get("codex_home_generation")
             if isinstance(generation, int) and generation > 0:
                 return generation
         return None
@@ -5525,7 +5539,8 @@ clean:
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
-                    and self._pure_session_resumable(resume_session_id, entry))
+                    and self._pure_session_resumable(
+                        resume_session_id, entry, phase, substep))
             # A repair turn is any turn with a session to resume (an inner repair — resume_session_id
             # was set to the prior attempt below — or the seeded outer reopen). `warm` may still be
             # False if that session has since been GC'd, in which case the repair renders as a
@@ -5962,7 +5977,8 @@ clean:
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
-                    and self._pure_session_resumable(resume_session_id, entry))
+                    and self._pure_session_resumable(
+                        resume_session_id, entry, phase, substep))
             repair_payload: dict[str, str] | None = None
             repair_target = resume_session_id or cold_repair_target
             if repair_target is not None:
@@ -6469,12 +6485,15 @@ clean:
         except OSError:
             return False
 
-    def _verify_session_resumable(self, verify_arid: str) -> bool:
+    def _verify_session_resumable(self, verify_arid: str, phase: str = "generate") -> bool:
         """True if the failed verify leaf's session can actually be warm-resumed. Mirrors the
         preconditions `_resolve_reuse_resume` applies at launch (a warm-resumable claude
         provider + a surviving session transcript), consulted BEFORE the repair turn so the
         loop never spawns a cold leaf that cannot see its findings."""
-        entry = self.entry_for("generate", "verify")
+        # `phase` matters: the caller runs for BOTH compile and generate, and under a
+        # per-substep configuration `compile.verify` and `generate.verify` need not share a
+        # provider — consulting the wrong one would refuse a repair the session can serve.
+        entry = self.entry_for(phase, "verify")
         return (entry.supports(CAP_WARM_RESUME) and entry.provider == "claude_cli"
                 and self._claude_session_resumable(verify_arid))
 
@@ -6663,12 +6682,16 @@ clean:
             index = _read_session_run_index_consistent(
                 self.repo_root, self.orchestration_id
             )
-            for entry in index.get("entries", []):
-                if isinstance(entry, dict) and entry.get("agent_run_id") == child_arid:
-                    value = entry.get("agent_session_id")
+            # `row`, NOT `entry`: `entry` is the ResolvedLeafEntry this launch ran on, and it
+            # is read again below for `agent_backend` and the codex model pin. Binding the loop
+            # variable to it turned every codex finalize into an AttributeError — after the
+            # leaf had run and been paid for.
+            for row in index.get("entries", []):
+                if isinstance(row, dict) and row.get("agent_run_id") == child_arid:
+                    value = row.get("agent_session_id")
                     if isinstance(value, str) and value.strip():
                         session_id = value.strip()
-                    value = entry.get("context_id")
+                    value = row.get("context_id")
                     if isinstance(value, str) and value.strip():
                         context_id = value.strip()
                     break
@@ -9346,7 +9369,7 @@ clean:
             # carries NO findings (the full template has no findings placeholder) — the leaf
             # would re-verify blind and escalate anyway. Re-checked every iteration, not just on
             # entry: each repair turn is a new session that may itself not be resumable.
-            if not self._verify_session_resumable(verify_arid):
+            if not self._verify_session_resumable(verify_arid, phase):
                 self.emit("verify_meta_schema_no_warm_session", node_key=refs.node_key,
                           phase=phase, attempt=attempt + 1,
                           detail="; ".join(findings)[:200])
@@ -9422,8 +9445,13 @@ clean:
                 self.emit("judge_pre_spawn_blocked", node_key=node_key, detail=block[:200])
                 return PhaseOutcome(phase, "fail", decision=RouteDecision(
                     "fail_closed", reason="validate_pre_judge_dag_incomplete"))
+        # `defaults`, explicitly: this gate runs ONCE per phase, before the substeps that
+        # actually pick providers, so there is no single leaf entry it could speak for
+        # (`entry_for(phase, None)` resolves to the same thing while reading as per-phase).
+        # Each leaf's own provider is authorized per launch, by `record_launch` against
+        # `preflight.json#providers`.
         self.workflow_launch_check(node_key, phase, child_agent_role(phase),
-                                   self.entry_for(phase, None))
+                                   self.entry_for(None, None))
         if preseat is None:
             self._ensure_fresh_producer_id(refs, phase)
         # Author/refresh the pipeline lineage.json host-side BEFORE the substeps run:
@@ -10322,6 +10350,18 @@ clean:
             idx = target_idx
         self.set_status("pass")
         return "pass"
+
+
+# The deprecated trio are `InitVar`s, which keeps them off the instance but still leaves their
+# DEFAULTS as class attributes — so `self.backend` would answer `""` on a codex run rather than
+# raising. Delete them: this conversion's whole safety argument is that a site still asking the
+# RUN what backend it is, instead of asking the LEAF's entry, fails loudly.
+for _legacy_attr in ("backend", "agent_model", "llm_command"):
+    try:
+        delattr(Conductor, _legacy_attr)
+    except AttributeError:                    # pragma: no cover - already absent
+        pass
+del _legacy_attr
 
 
 # --- phase deliverables (step_result.required_outputs) -------------------------

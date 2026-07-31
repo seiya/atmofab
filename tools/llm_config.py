@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
 
@@ -172,8 +172,17 @@ _ENTRY_FIELDS: frozenset[str] = frozenset({
 })
 
 # Fields that only make sense for some providers. Anything not listed applies to all.
-_CLI_ONLY_FIELDS: frozenset[str] = frozenset({"command"})
-_HTTP_ONLY_FIELDS: frozenset[str] = frozenset({"base_url", "api_key_env"})
+# Fields a provider does not read. Declaring one is an operator error, not a no-op: an ignored
+# `max_output_tokens` on a codex entry looks like a budget that was applied.
+_FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
+    # `timeout_s` bounds an HTTP request; a CLI leaf's wall-clock cap is the conductor's own
+    # (`METDSL_LEAF_TIMEOUT_SECONDS`). `max_output_tokens` reaches only the claude transport
+    # (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`) and the HTTP request bodies.
+    "claude_cli": frozenset({"base_url", "api_key_env", "timeout_s"}),
+    "codex_cli": frozenset({"base_url", "api_key_env", "timeout_s", "max_output_tokens"}),
+    "openai_compatible": frozenset({"command"}),
+    "anthropic_api": frozenset({"command"}),
+}
 
 # Fields scoped to the provider that declared them. When a deeper level switches provider,
 # these are DROPPED rather than inherited: a `model` or `command` chosen for `claude_cli` is
@@ -292,19 +301,37 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
     return out
 
 
-def _merge_layer(inherited: Mapping[str, Any], layer: Mapping[str, Any]) -> dict[str, Any]:
-    """Per-field inheritance, with the provider-switch drop.
+def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Resolve `defaults` -> `phases.<phase>` -> `...substeps.<substep>` into one field map.
 
-    When `layer` names a provider different from the inherited one, the inherited
-    provider-scoped fields are dropped before the layer's own fields are applied — so a deeper
-    level that switches provider starts from a clean provider surface and cannot silently
-    inherit, say, a claude `command` into an HTTP entry."""
-    merged = dict(inherited)
-    new_provider = layer.get("provider")
-    if new_provider and new_provider != inherited.get("provider"):
-        for field in _PROVIDER_SCOPED_FIELDS:
-            merged.pop(field, None)
-    merged.update(layer)
+    Two kinds of field, resolved differently:
+
+    * **Transport-neutral** budgets (`timeout_s`, `max_output_tokens`) inherit plainly: the
+      deepest level that names one wins.
+    * **Provider-scoped** fields (`model`, `command`, `base_url`, `api_key_env`,
+      `capabilities`) are contributed only by levels whose EFFECTIVE provider is the one this
+      entry ends up on. A `model` chosen for `claude_cli` names nothing under
+      `openai_compatible`, so a level that switches provider contributes none of the outer
+      level's — and, symmetrically, a level that switches BACK re-inherits from the levels that
+      share its provider. Resolving against effective providers rather than folding pairwise is
+      what makes that second half true: pairwise folding drops a field permanently at the first
+      switch, so `defaults(claude) -> generate(http) -> generate.verify(claude)` silently lost
+      the operator's `defaults.command` wrapper on that one leaf."""
+    effective: list[tuple[str, Mapping[str, Any]]] = []
+    provider = ""
+    for layer in layers:
+        provider = str(layer.get("provider") or "") or provider
+        effective.append((provider, layer))
+    final_provider = provider
+
+    merged: dict[str, Any] = {}
+    for layer_provider, layer in effective:
+        for key, value in layer.items():
+            if key in _PROVIDER_SCOPED_FIELDS and layer_provider != final_provider:
+                continue
+            merged[key] = value
+    if final_provider:
+        merged["provider"] = final_provider
     return merged
 
 
@@ -322,8 +349,7 @@ def _finalize_entry(fields: Mapping[str, Any], where: str) -> ResolvedLeafEntry:
             f"unknown provider {provider!r}; accepted: {', '.join(sorted(SUPPORTED_PROVIDERS))}",
             where=f"{where}.provider")
 
-    not_applicable = _HTTP_ONLY_FIELDS if provider in CLI_PROVIDERS else _CLI_ONLY_FIELDS
-    for field in sorted(not_applicable):
+    for field in sorted(_FIELDS_NOT_APPLICABLE.get(provider, frozenset())):
         if fields.get(field):
             raise LlmConfigError(
                 "llm_config_field_not_applicable",
@@ -542,9 +568,9 @@ def load_llm_config(path: str | Path) -> LlmConfig:
                     f"{', '.join(sorted(s for p, s in LLM_LEAF_SUBSTEPS if p == phase))}",
                     where=f"{where}.substeps.{substep}")
             sub_where = f"{where}.substeps.{key[1]}"
-            merged = _merge_layer(
-                _merge_layer(default_fields, phase_fields[phase]),
-                _layer_fields(_require_mapping(substep_doc or {}, sub_where), sub_where))
+            merged = _merge_layers((
+                default_fields, phase_fields[phase],
+                _layer_fields(_require_mapping(substep_doc or {}, sub_where), sub_where)))
             entry = _finalize_entry(merged, sub_where)
             _validate_assignment(key[0], key[1], entry, sub_where)
             resolved[key] = entry
@@ -555,7 +581,7 @@ def load_llm_config(path: str | Path) -> LlmConfig:
             continue
         phase, substep = key
         where = f"phases.{phase}"
-        merged = _merge_layer(default_fields, phase_fields.get(phase, {}))
+        merged = _merge_layers((default_fields, phase_fields.get(phase, {})))
         entry = _finalize_entry(merged, where if phase in phase_fields else "defaults")
         _validate_assignment(phase, substep, entry,
                              where if phase in phase_fields else "defaults")
@@ -650,11 +676,9 @@ def apply_defaults_overrides(
         if model and entry.model == inherited.model:
             changes["model"] = model
         if command and entry.command == inherited.command:
-            if entry.provider not in CLI_PROVIDERS:
-                raise LlmConfigError(
-                    "llm_config_field_not_applicable",
-                    f"--llm-command does not apply to provider {entry.provider!r}",
-                    where=cfg.path)
+            # Reachable only for a CLI provider: the override is applied to entries sharing
+            # `defaults`' provider, and `defaults` must be agentic (`llm_config_defaults_not_agentic`),
+            # which no HTTP provider is.
             changes["command"] = command
         return ResolvedLeafEntry(**{**entry.__dict__, **changes}) if changes else entry
 
@@ -672,7 +696,10 @@ def describe_providers(cfg: LlmConfig) -> list[dict[str, str]]:
     seen: dict[tuple[str, str], dict[str, str]] = {}
     for _, entry in [("defaults", cfg.defaults)] + sorted(
             ((f"{p}.{s}", e) for (p, s), e in cfg.entries.items())):
-        key = (entry.backend_token, entry.command or entry.base_url)
+        # The api_key_env is part of the probed surface: two entries sharing a base_url but
+        # naming different key variables are two things that can independently be unset, and
+        # collapsing them would leave the second one unprobed.
+        key = (entry.backend_token, entry.command, entry.base_url, entry.api_key_env)
         if key in seen:
             continue
         seen[key] = {

@@ -31849,13 +31849,41 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     # --- record_launch: the token comes from THIS launch --------------------------------
 
-    def _launch(self, repo_root: Path, response_backend: str, arid: str) -> dict:
-        return record_launch(
-            repo_root=repo_root,
-            orchestration_id="orch_001",
-            parent_agent_run_id="orch_run_001",
-            child_agent_run_id=arid,
-            request_payload={
+    def _launch(self, repo_root: Path, response_backend: str, arid: str,
+                *, pure: bool = True, extra_response: dict | None = None) -> dict:
+        """A real `record_launch`. Pure by default: an HTTP provider is admissible only for a
+        pure leaf, and `record_launch` now asserts that itself."""
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        if pure:
+            request: dict = {
+                "leaf_mode": "pure",
+                "agent_model": "some-model",
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "node_key": "problem/shallow_water2d@0.3.0",
+                "step": "generate",
+                "substep": "generate",
+                "orchestration_id": "orch_001",
+                "parent_agent_run_id": "orch_run_001",
+                "ir_ref": _FIX_IR_REF,
+                "pipeline_ref": _FIX_PIPE_REF,
+                "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
+                "source_id": "src_20260415_001",
+                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "allowed_output_paths": [],
+                "pure_context": {
+                    "controlled_spec_document": "the model conserves mass",
+                    "tests_document": "- test: conserves mass",
+                    "ir_document": "algorithm:\n  state_variables: [h]\n",
+                    "runner_document": "program p\nend program p\n",
+                    "harness_document": "module m\nend module m\n",
+                    "harness_signatures_document": "{}",
+                    "harness_capabilities": "{}",
+                    "target_profile": "{}",
+                },
+            }
+        else:
+            request = {
                 "agent_model": "some-model",
                 "agent_run_id": arid,
                 "agent_role": "substep",
@@ -31864,23 +31892,26 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 "substep": "generate",
                 "orchestration_id": "orch_001",
                 "parent_agent_run_id": "orch_run_001",
-                "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
-                "pipeline_ref":
-                    "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                "ir_ref": _FIX_IR_REF,
+                "pipeline_ref": _FIX_PIPE_REF,
                 "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                 "skill_name": "workflow-compile-generate",
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                 "skill_must_read_refs": "",
-                "allowed_output_paths": [
-                    "workspace/ir/problem__shallow_water2d__0.3.0/"
-                    "shallow-water2d_20260415_001/spec.ir.yaml",
-                ],
+                "allowed_output_paths": [f"{_FIX_IR_REF}/spec.ir.yaml"],
                 "launch_prompt_full": _substep_launch_prompt(
                     "problem/shallow_water2d@0.3.0", "compile", "generate", arid),
-            },
+            }
+        return record_launch(
+            repo_root=repo_root,
+            orchestration_id="orch_001",
+            parent_agent_run_id="orch_run_001",
+            child_agent_run_id=arid,
+            request_payload=request,
             response_payload={
                 "agent_run_id": arid,
                 "backend": response_backend,
+                **(extra_response or {}),
                 **_spawn_response_payload(f"sess_{arid}"),
             },
         )
@@ -31909,7 +31940,132 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self._mixed_preflight(repo_root)
             with self.assertRaises(RuntimeError) as ctx:
                 self._launch(repo_root, "anthropic_api", "substep_run_bad_001")
-            self.assertIn("backend_not_probed", str(ctx.exception))
+            # `record-launch:` prefix, not the bare reason code: `pre_phase_launch` reports the
+            # SAME code, so a substring test on it passes even with this guard deleted.
+            self.assertIn("record-launch: backend_not_probed", str(ctx.exception))
+
+    def test_an_http_launch_skips_the_sandbox_profile_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            arid = "substep_run_http_002"
+            out = self._launch(repo_root, "openai_compatible", arid)
+            self.assertNotIn("sandbox_profile_ref", out)
+            self.assertFalse((repo_root / "workspace/orchestrations/orch_001/sandbox_profiles"
+                              / f"{arid}.json").exists())
+            response = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/launches"
+                 / f"{arid}.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(response["leaf_transport"], "http")
+            self.assertEqual(response["sandbox_runtime"], "none")
+            self.assertIs(response["sandbox_enforced"], False)
+
+    def test_a_cli_launch_still_gets_its_sandbox_profile(self) -> None:
+        """The control: the skip is keyed on the provider, not on `is_pure`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            out = self._launch(repo_root, "claude", "substep_run_cli_001")
+            self.assertIn("sandbox_profile_ref", out)
+            response = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/launches"
+                 / "substep_run_cli_001.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(response["sandbox_runtime"], "bwrap")
+            self.assertNotIn("leaf_transport", response)
+
+    def test_an_http_leaf_can_actually_be_finalized(self) -> None:
+        """`record_agent_run` demanded `sandbox_runtime == "bwrap"` unconditionally, so the
+        first real HTTP leaf died at finalize — AFTER its turn was paid for, and past the point
+        `finalize-child` can be retried."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            arid = "substep_run_http_003"
+            self._launch(repo_root, "openai_compatible", arid)
+            record_agent_run(
+                repo_root=repo_root, orchestration_id="orch_001",
+                payload={
+                    "agent_run_id": arid,
+                    "agent_role": "substep",
+                    "agent_backend": "openai_compatible",
+                    "agent_model": "local-coder",
+                    "parent_agent_run_id": "orch_run_001",
+                    "status": "pass",
+                    "started_at": "2026-03-11T00:00:00Z",
+                    "finished_at": "2026-03-11T00:01:00Z",
+                    "agent_session_id": f"sess_{arid}",
+                    "context_id": arid,
+                    "context_isolated": True,
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "step": "generate",
+                    "substep": "generate",
+                    "output_refs": [],
+                    "result_summary": "pure_generate: bundle accepted",
+                })
+            rows = [json.loads(ln) for ln in
+                    (repo_root / "workspace/orchestrations/orch_001/agent_runs.jsonl")
+                    .read_text(encoding="utf-8").splitlines() if ln.strip()]
+            row = [r for r in rows if r.get("agent_run_id") == arid][0]
+            self.assertEqual(row["agent_backend"], "openai_compatible")
+            self.assertEqual(row["sandbox_runtime"], "none")
+            self.assertIs(row["sandbox_enforced"], False)
+            self.assertFalse((repo_root / "workspace/orchestrations/orch_001"
+                              / "agent_runs_invalid.jsonl").exists())
+
+    def test_a_cli_leaf_still_must_prove_its_sandbox(self) -> None:
+        """The exemption is granted on the launch RESPONSE's provider token, so it cannot be
+        claimed by a CLI launch whose profile is missing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            arid = "substep_run_cli_002"
+            self._launch(repo_root, "claude", arid)
+            launches = repo_root / "workspace/orchestrations/orch_001/launches"
+            response = json.loads((launches / f"{arid}.response.json").read_text("utf-8"))
+            response["sandbox_runtime"] = "none"      # a CLI launch claiming the exemption
+            response["leaf_transport"] = "http"
+            (launches / f"{arid}.response.json").write_text(json.dumps(response), "utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                record_agent_run(
+                    repo_root=repo_root, orchestration_id="orch_001",
+                    payload={
+                        "agent_run_id": arid, "agent_role": "substep",
+                        "agent_backend": "claude", "agent_model": "opus",
+                        "parent_agent_run_id": "orch_run_001", "status": "pass",
+                        "started_at": "2026-03-11T00:00:00Z",
+                        "finished_at": "2026-03-11T00:01:00Z",
+                        "agent_session_id": f"sess_{arid}", "context_id": arid,
+                        "context_isolated": True,
+                        "node_key": "problem/shallow_water2d@0.3.0",
+                        "step": "generate", "substep": "generate",
+                        "output_refs": [], "result_summary": "x",
+                    })
+            self.assertIn("sandbox_runtime=bwrap", str(ctx.exception))
+
+    def test_an_http_token_on_a_non_pure_launch_is_refused(self) -> None:
+        """`record_launch` is the authorization gate; it must not be the one layer that assumes
+        the config and conductor checks ran."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            with self.assertRaises(RuntimeError) as ctx:
+                self._launch(repo_root, "openai_compatible", "substep_run_agentic_001",
+                             pure=False)
+            self.assertIn("admissible only for a pure leaf", str(ctx.exception))
+
+    def test_write_preflight_refuses_what_the_launch_gate_would_refuse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["providers"] = {
+                "claude": {"launchable": True, "checks": []},
+                "openai_compatible": {"launchable": False, "checks": []},
+            }
+            with self.assertRaises(ValueError) as ctx:
+                write_preflight(repo_root=repo_root, orchestration_id="orch_001",
+                                payload=payload)
+            self.assertIn("openai_compatible", str(ctx.exception))
 
 
 class SiblingUniformScopeTests(unittest.TestCase):
@@ -31942,6 +32098,37 @@ class SiblingUniformScopeTests(unittest.TestCase):
             # left this row unrepaired.
             self.assertEqual(by_id["a2"]["agent_model"], "local-model")
             self.assertNotEqual(by_id["a2"]["agent_model"], "hosted-model")
+            self.assertEqual(by_id["a2"]["backfilled"]["agent_model_source"],
+                             "substep_sibling_uniform")
+
+    def test_a_row_that_names_no_step_is_not_filled_from_the_orchestration_row(self) -> None:
+        """A legacy row — the kind this repair exists for — often carries no step/substep, and
+        neither does the orchestration row. Bucketing both under `("", "")` let the
+        orchestration's unpinned alias fill a leaf row that ran on another provider."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            runs = (repo_root / "workspace" / "orchestrations" / "orch_001"
+                    / "agent_runs.jsonl")
+            rows = [
+                {"agent_run_id": "orch", "agent_role": "orchestration",
+                 "agent_model": "opus"},
+                {"agent_run_id": "legacy", "agent_role": "substep",
+                 "parent_agent_run_id": "orch"},
+                {"agent_run_id": "g1", "agent_role": "substep", "step": "generate",
+                 "substep": "generate", "agent_model": "local-model",
+                 "parent_agent_run_id": "orch"},
+                {"agent_run_id": "j1", "agent_role": "substep", "step": "validate",
+                 "substep": "judge", "agent_model": "hosted-model",
+                 "parent_agent_run_id": "orch"},
+            ]
+            runs.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            out = ort.repair_legacy_agent_runs(repo_root=repo_root,
+                                               orchestration_id="orch_001")
+            filled = [json.loads(ln) for ln in runs.read_text(encoding="utf-8").splitlines()]
+            legacy = [r for r in filled if r["agent_run_id"] == "legacy"][0]
+            self.assertNotIn("agent_model", legacy)
+            self.assertEqual(out["status"], "needs_manual")
 
 
 if __name__ == "__main__":
