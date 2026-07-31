@@ -693,6 +693,41 @@ class LegacyBridgeTests(unittest.TestCase):
             self.assertEqual(cfg.entry_for("validate", "judge").model, "judge-model")
             self.assertEqual(cfg.entry_for("compile", "verify").model, "run-wide")
 
+    def test_the_override_unpins_the_model_it_replaces(self) -> None:
+        """`--agent-model` is the deprecated run-wide alias, whose contract is that it leaves
+        the model UNPINNED. Keeping `model_declared` when it replaced a declared value made
+        the same flag behave two ways depending on whether the file happened to declare a
+        model of its own."""
+        with tempfile.TemporaryDirectory() as tmp:
+            declared = Path(tmp) / "declared.yaml"
+            declared.write_text("defaults:\n  provider: claude_cli\n  model: opus\n",
+                                encoding="utf-8")
+            bare = Path(tmp) / "bare.yaml"
+            bare.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            for path in (declared, bare):
+                cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
+                entry = cfg.entry_for("validate", "judge")
+                self.assertEqual(entry.model, "sonnet", msg=path.name)
+                self.assertFalse(entry.model_declared, msg=path.name)
+            # Without the override, a declared model IS pinned.
+            self.assertTrue(
+                lc.load_llm_config(declared).entry_for("validate", "judge").model_declared)
+
+    def test_a_substep_pin_survives_the_override_and_stays_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pin.yaml"
+            path.write_text(
+                "defaults:\n  provider: claude_cli\n  model: base\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n",
+                encoding="utf-8")
+            cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
+            judge = cfg.entry_for("validate", "judge")
+            self.assertEqual(judge.model, "haiku")
+            self.assertTrue(judge.model_declared)
+            other = cfg.entry_for("compile", "verify")
+            self.assertEqual(other.model, "sonnet")
+            self.assertFalse(other.model_declared)
+
     def test_no_override_returns_the_same_config(self) -> None:
         cfg = lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT))
         self.assertIs(lc.apply_defaults_overrides(cfg), cfg)

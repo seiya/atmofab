@@ -873,6 +873,11 @@ def apply_defaults_overrides(
         changes: dict[str, Any] = {}
         if model and entry.model == inherited.model and _inherited("model"):
             changes["model"] = model
+            # ...and the value is no longer one the FILE declared, so it is not pinned onto
+            # the launch. `--agent-model` is the deprecated run-wide alias, whose contract is
+            # that it leaves the model unpinned; without this the same flag behaved two ways
+            # depending on whether the file happened to declare a model of its own.
+            changes["model_declared"] = False
         if command and entry.command == inherited.command and _inherited("command"):
             # Reachable only for a CLI provider: the override is applied to entries sharing
             # `defaults`' provider, and `defaults` must be agentic (`llm_config_defaults_not_agentic`),
