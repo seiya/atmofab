@@ -340,7 +340,7 @@ class TransportBoundsTests(unittest.TestCase):
             def __exit__(self, *_exc):
                 return False
 
-            def read(self, _n=None):
+            def read1(self, _n=None):
                 time.sleep(0.02)
                 return b" "          # never EOF
 
@@ -349,6 +349,58 @@ class TransportBoundsTests(unittest.TestCase):
             timeout_s=0.1, opener=lambda *_a, **_k: _Trickle())
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
         self.assertEqual(out.text, "")
+
+    def test_the_body_is_read_one_socket_operation_at_a_time(self) -> None:
+        """`HTTPResponse.read(n)` loops INTERNALLY until it has n bytes, and every inner
+        receive resets the socket timeout — so a deadline checked between `read` calls bounds
+        nothing. Measured against a real trickling socket before this: `timeout_s=2` was still
+        blocked past 40 s. `read1` returns what one receive produced, which is what makes the
+        check between iterations effective.
+
+        The fake below has the two methods behave the way the real class does: `read` does not
+        return until it has the whole chunk, `read1` returns immediately with what it has."""
+
+        class _LikeHTTPResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def read(self, n=None):          # the trap: blocks for the FULL chunk
+                time.sleep(30)
+                return b" " * (n or 0)
+
+            def read1(self, _n=None):        # one receive's worth
+                time.sleep(0.02)
+                return b" "
+
+        started = time.monotonic()
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}],
+            timeout_s=0.1, opener=lambda *_a, **_k: _LikeHTTPResponse())
+        self.assertEqual(out.transport_error, "response_deadline_exceeded")
+        self.assertLess(time.monotonic() - started, 5.0,
+                        msg="the read was not bounded by the deadline")
+
+    def test_a_response_without_read1_still_works(self) -> None:
+        """The fallback: a test double, or any object that only implements `read`."""
+
+        class _PlainRead(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            read1 = None                     # explicitly absent
+
+        body = json.dumps(_OPENAI_OK).encode("utf-8")
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}],
+            opener=lambda *_a, **_k: _PlainRead(body))
+        self.assertIsNone(out.transport_error)
+        self.assertEqual(out.text, '{"ok": true}')
 
     def test_an_oversized_response_is_refused(self) -> None:
         class _Flood:

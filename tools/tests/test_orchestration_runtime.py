@@ -31763,6 +31763,27 @@ class MultiProviderPreflightTests(unittest.TestCase):
         self.assertEqual(set(out), {"claude", "openai_compatible"})
         self.assertTrue(all(entry["launchable"] for entry in out.values()))
 
+    def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
+        """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but
+        the deprecated `--agent-model` / `--llm-command` are not in the file — `run_workflow`
+        applies them to the loaded object. Probing without them certifies a command the run
+        will not launch: a wrapper that works but a bare CLI that is absent fails preflight,
+        and the reverse authorizes a wrapper nothing probed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n  model: opus\n")
+            seen: list = []
+
+            def _probe(**kw):
+                seen.append(kw.get("agent_command"))
+                return _launchable_preflight_dict(backend="claude")
+
+            with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+                ort.probe_all_providers(llm_config_path=cfg)
+                ort.probe_all_providers(llm_config_path=cfg,
+                                        command_override="/opt/wrap/claude --sandbox")
+        self.assertIsNone(seen[0])                       # the file names none
+        self.assertEqual(seen[1], "/opt/wrap/claude --sandbox")
+
     def test_two_entries_under_one_token_are_anded(self) -> None:
         """Same backend behind two commands: the token is launchable only if BOTH are."""
         with tempfile.TemporaryDirectory() as tmp:

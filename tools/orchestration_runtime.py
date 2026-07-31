@@ -16396,6 +16396,10 @@ def probe_all_providers(
     *,
     llm_config_path: str | Path,
     repo_root: Path | None = None,
+    # The resolved `defaults` of the configuration the caller will launch, so a reload here
+    # cannot lose a value that came from a deprecated flag rather than from the file.
+    model_override: str = "",
+    command_override: str = "",
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     opener: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
@@ -16410,9 +16414,16 @@ def probe_all_providers(
     Deliberately NOT merged into `probe_execution_platform`: that function answers "can this
     host spawn agents at all", produces the top-level payload the existing gates read, and is
     called for `defaults` exactly as before. This adds the per-provider layer above it."""
-    from tools.llm_config import describe_providers, load_llm_config
+    from tools.llm_config import apply_defaults_overrides, describe_providers, load_llm_config
 
-    cfg = load_llm_config(llm_config_path)
+    # The overrides MUST be reapplied here. This runs in the `preflight` subprocess, so it
+    # reloads the file — and the deprecated `--agent-model` / `--llm-command` are not IN the
+    # file; `run_workflow` applies them to the loaded configuration. Probing without them
+    # certifies a command the run will not launch: an operator whose wrapper works but whose
+    # bare CLI is absent fails preflight, and one whose bare CLI is present gets a green
+    # `providers` row authorizing a wrapper nothing probed.
+    cfg = apply_defaults_overrides(
+        load_llm_config(llm_config_path), model=model_override, command=command_override)
     providers: dict[str, dict[str, Any]] = {}
     for row in describe_providers(cfg):
         token = row["backend"]
@@ -20680,6 +20691,12 @@ def main(argv: list[str] | None = None) -> int:
             "fields, which keep describing --backend / defaults)."
         ),
     )
+    # The RESOLVED `defaults` of the configuration the run will actually use. The deprecated
+    # `--agent-model` / `--llm-command` are not in the FILE, so a probe that only reloads the
+    # path would certify a different command than the run launches. Re-applying a value the
+    # file already declares is a no-op, so these are sent unconditionally.
+    preflight_parser.add_argument("--llm-config-defaults-model", default=None)
+    preflight_parser.add_argument("--llm-config-defaults-command", default=None)
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
@@ -21319,7 +21336,9 @@ def main(argv: list[str] | None = None) -> int:
             # here: `orchestration_meta.json#invocation` already pins both, for the same file
             # and the same orchestration, and that is what the resume gate compares.
             preflight_payload["providers"] = probe_all_providers(
-                llm_config_path=args.llm_config, repo_root=repo_root)
+                llm_config_path=args.llm_config, repo_root=repo_root,
+                model_override=getattr(args, "llm_config_defaults_model", "") or "",
+                command_override=getattr(args, "llm_config_defaults_command", "") or "")
             # A provider the config names but the host cannot launch must fail the preflight
             # itself, not the substep that first reaches it.
             if not _preflight_allows_agent_launch(preflight_payload):

@@ -5788,6 +5788,36 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(lines[-1]["reason"], "invalid_startup_input")
             self.assertIn("llm_config_unknown_provider", lines[-1]["detail"])
 
+    def test_preflight_is_told_the_overrides_so_it_probes_what_will_launch(self) -> None:
+        """The file is not the whole configuration once a deprecated flag overrides it, and
+        preflight is a subprocess that only gets the path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            self._run(repo_root, ["--llm", "claude", "--llm-command", "mywrap --x",
+                                  "--agent-model", "opus"], oid="orch_ovp")
+            args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
+            self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
+                             "mywrap --x")
+            self.assertEqual(args[args.index("--llm-config-defaults-model") + 1], "opus")
+            # ...and the top-level probe still gets the same command it always did.
+            self.assertEqual(args[args.index("--agent-command") + 1], "mywrap --x")
+
+    def test_a_file_that_declares_its_own_values_sends_those(self) -> None:
+        """The resolved defaults are sent unconditionally: re-applying a value the file already
+        declares is a no-op, so nothing has to track which came from a flag."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = repo_root / "configs" / "llm" / "declared.yaml"
+            cfg.write_text("defaults:\n  provider: claude_cli\n  model: from-file\n"
+                           "  command: from-file-cmd\n", encoding="utf-8")
+            self._run(repo_root, ["--llm-config", "configs/llm/declared.yaml"], oid="orch_novp")
+            args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
+            self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
+                             "from-file-cmd")
+            self.assertEqual(args[args.index("--llm-config-defaults-model") + 1], "from-file")
+
     def test_a_mixed_config_runs_and_preflight_is_asked_to_probe_the_file(self) -> None:
         """Preflight probes every provider the file names, so a mixed config is admissible —
         and the file is what it is asked to probe, not the derived single backend."""

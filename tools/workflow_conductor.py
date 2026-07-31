@@ -3587,8 +3587,13 @@ class Conductor:
         response = run_pure_http_leaf(entry, messages)
 
         if child_arid:
+            # `.txt`, NOT `.json`: this is the provider's body verbatim, and the case it most
+            # needs to preserve is the one where that body is NOT JSON (an HTML 502 page, a
+            # proxy error). `validate_workspace_root` parses every `workspace/**/*.json`, so a
+            # `.json` name would turn the evidence for a transport failure into an `invalid
+            # json` workspace violation that outlives it and can block a later resume.
             path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                    / "launches" / f"{child_arid}.http_response.json")
+                    / "launches" / f"{child_arid}.http_response.txt")
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(response.raw_response or "", encoding="utf-8")

@@ -3357,6 +3357,16 @@ def _run_node(
                 # `providers` reads exactly what it always did.
                 "--llm-config",
                 str(llm_config.path),
+                # ...and probe the EFFECTIVE configuration. Preflight is a subprocess, so it
+                # reloads the file, and a deprecated-flag override lives only in this process's
+                # object — without it the probe certifies a command this run will not launch.
+                # The RESOLVED defaults are what is sent, not "which fields were overridden":
+                # re-applying a value the file already declares is a no-op, so one pair of
+                # arguments covers both cases and nothing has to track the provenance.
+                "--llm-config-defaults-model",
+                llm_config.defaults.model,
+                "--llm-config-defaults-command",
+                llm_config.defaults.command,
             ]
             preflight_result = _runtime_command(repo_root, env, preflight_args).payload
         except RuntimeError as exc:

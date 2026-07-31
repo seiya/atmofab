@@ -93,15 +93,24 @@ _READ_CHUNK_BYTES = 65536
 def _read_bounded(response: Any, deadline: float) -> "tuple[bytes | None, str | None]":
     """Read the body under a WALL-CLOCK deadline and a size ceiling.
 
-    `urlopen(timeout=)` is a per-socket-operation timeout: it resets on every byte, so an
+    `urlopen(timeout=)` is a per-socket-OPERATION timeout: it resets on every recv, so an
     endpoint dribbling one byte below the interval never trips it. The CLI leaf has a process
-    to kill and a `leaf_timeout` event; this path has neither, so the bound has to be here."""
+    to kill and a `leaf_timeout` event; this path has neither, so the bound has to be here.
+
+    Read via `read1`, not `read`. `HTTPResponse.read(n)` loops INTERNALLY until it has n bytes
+    or EOF, so a deadline checked between calls bounds nothing: a trickling server keeps that
+    one call alive indefinitely while every inner recv resets the socket timeout (measured:
+    `timeout_s=2` still blocked past 40s). `read1` returns what one recv produced, which makes
+    each iteration socket-timeout-bounded and the check between them effective. The worst case
+    is therefore the deadline plus one socket timeout, not unbounded. `read` is the fallback
+    only for a test double that does not implement `read1`."""
+    read_once = getattr(response, "read1", None) or response.read
     chunks: list[bytes] = []
     total = 0
     while True:
         if time.monotonic() > deadline:
             return None, "response_deadline_exceeded"
-        chunk = response.read(_READ_CHUNK_BYTES)
+        chunk = read_once(_READ_CHUNK_BYTES)
         if not chunk:
             return b"".join(chunks), None
         total += len(chunk)

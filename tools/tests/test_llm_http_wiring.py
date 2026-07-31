@@ -99,6 +99,8 @@ class HttpPureLeafWiringTests(unittest.TestCase):
                 reply = {"text": reply}
             if isinstance(reply, dict) and reply.get("raise"):
                 raise OSError(reply["raise"])
+            if isinstance(reply, dict) and "raw" in reply:
+                return _FakeResponse(reply["raw"].encode("utf-8"))
             body = {
                 "model": "local-coder-resolved",
                 "choices": [{"message": {"content": reply.get("text", "")},
@@ -144,9 +146,26 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         c = self._conductor()
         c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
         launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
-        bodies = sorted(launches.glob("*.http_response.json"))
+        bodies = sorted(launches.glob("*.http_response.txt"))
         self.assertTrue(bodies)
         self.assertIn("choices", json.loads(bodies[0].read_text(encoding="utf-8")))
+
+    def test_a_non_json_body_is_persisted_without_becoming_a_workspace_violation(self) -> None:
+        """The body this file most needs to keep is the one that is NOT JSON — an HTML error
+        page from a proxy. Under a `.json` name, `validate_workspace_root`, which parses every
+        `workspace/**/*.json`, turns that evidence into an `invalid json` violation that
+        outlives the transport failure and can block a later resume."""
+        from tools.validate_workspace_root import _scan_json_for_violations
+        self._serve([{"raw": "<html><title>502 Bad Gateway</title></html>"}])
+        c = self._conductor()
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "fail")          # transport, as it should be
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        bodies = sorted(launches.glob("*.http_response.*"))
+        self.assertTrue(bodies)
+        self.assertIn("502 Bad Gateway", bodies[0].read_text(encoding="utf-8"))
+        for path in launches.rglob("*.json"):
+            self.assertEqual(_scan_json_for_violations(path), [], msg=str(path))
 
     def test_no_process_is_spawned(self) -> None:
         self._serve([json.dumps(_valid_bundle())])
