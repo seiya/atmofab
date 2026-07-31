@@ -1317,6 +1317,19 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertTrue(summary["pure_leaf_provider_differs"])
         self.assertNotIn("2.1.9", self._render(summary))
 
+    def test_the_bare_binary_spellings_are_the_same_surface(self) -> None:
+        """`command: claude` and an absent command both mean "launch the bare binary".
+        Normalizing only the preflight side reported a difference between two spellings of the
+        same executable and suppressed a valid version."""
+        for command in ("", "claude"):
+            summary = self._summary({
+                "generate.generate": {"backend": "claude", "command": command,
+                                      "model": "opus"},
+                "generate.verify": {"backend": "claude", "command": command, "model": "opus"},
+            })
+            self.assertFalse(summary["pure_leaf_provider_differs"], msg=repr(command))
+            self.assertIn("2.1.9", self._render(summary), msg=repr(command))
+
     def test_the_same_command_still_reports_the_version(self) -> None:
         summary = self._summary({
             "generate.generate": {"backend": "claude", "command": "", "model": "opus"},

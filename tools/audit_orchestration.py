@@ -649,17 +649,23 @@ def collect_pure_leaf_ab_summary(
     # `preflight.json#agent_version` describes only the command it probed. A version attributed
     # across that difference names an executable that did not produce the metrics.
     default_command = _clean_str(preflight.get("probe_command")) or ""
+    def _surface(token: str, command: str) -> tuple[str, str]:
+        """`(backend, command)` with the bare-binary spellings folded together.
+
+        An empty `command`, and a `command` that IS the backend token, both mean "launch the
+        bare binary". Normalizing only one side reported a difference between two spellings of
+        the same executable, and suppressed a version that was perfectly valid."""
+        command = command.strip()
+        return (token, "" if command == token else command)
+
     pure_leaf_surfaces = sorted({
-        (_clean_str(row.get("backend")) or "", _clean_str(row.get("command")) or "")
+        _surface(_clean_str(row.get("backend")) or "", _clean_str(row.get("command")) or "")
         for key, row in leaf_map.items()
         if key in _PURE_LEAF_MAP_KEYS and isinstance(row, dict)
         and _clean_str(row.get("backend"))
     })
     pure_leaf_providers = sorted({surface[0] for surface in pure_leaf_surfaces})
-    # An empty recorded `command` means "the bare backend binary", which is also what a
-    # preflight whose `probe_command` IS the backend name means; compare them as one surface.
-    default_surface = (backend or "",
-                       "" if default_command == backend else default_command)
+    default_surface = _surface(backend or "", default_command)
     pure_leaf_provider_differs = (bool(pure_leaf_surfaces)
                                   and pure_leaf_surfaces != [default_surface])
     if pure_leaf_provider_differs:

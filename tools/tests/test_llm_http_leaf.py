@@ -342,8 +342,13 @@ class KeySecrecyTests(unittest.TestCase):
 
     def test_redaction_never_touches_the_document_the_run_reads(self) -> None:
         """Local endpoints are configured with placeholder keys — `EMPTY`, `test`, `local`.
-        Redacting the body BEFORE parsing rewrites the provider's own document: a valid reply
-        becomes unparseable, or the model name it reports is silently corrupted."""
+        Redacting the body BEFORE parsing rewrites the provider's own document, and a valid
+        reply becomes unparseable. The ANSWER is therefore left exactly as sent.
+
+        `model` is redacted even so, and the difference is the point: nothing parses it, it is
+        only ever persisted, so a mangled model name under a substring-y key is a smaller cost
+        than a credential in `agent_runs.jsonl`. The answer channel cannot make that trade —
+        hence the split, and hence its own redaction happens on the copy written to disk."""
         body = {"model": "test-model",
                 "choices": [{"message": {"content": '{"ok": 1}'}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
@@ -351,8 +356,8 @@ class KeySecrecyTests(unittest.TestCase):
             out = hl.run_pure_http_leaf(
                 _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
         self.assertIsNone(out.transport_error)
-        self.assertEqual(out.model, "test-model")          # NOT "[redacted-api-key]-model"
-        self.assertEqual(out.text, '{"ok": 1}')
+        self.assertEqual(out.text, '{"ok": 1}')            # the document is untouched
+        self.assertEqual(out.model, "[redacted-api-key]-model")
 
     def test_a_key_straddling_the_error_truncation_leaves_no_prefix(self) -> None:
         """Slicing to the diagnostic length first cuts through the middle of the key, and the
@@ -371,6 +376,32 @@ class KeySecrecyTests(unittest.TestCase):
         for length in range(8, len(secret) + 1):
             self.assertNotIn(secret[:length], out.raw_response, msg=f"prefix of {length}")
             self.assertNotIn(secret[:length], str(out.transport_error))
+
+    def test_a_key_echoed_in_the_model_field_is_redacted(self) -> None:
+        """`model` is a provider-controlled METADATA channel that is persisted (the
+        `agent_runs` row, the per-attempt metadata) and parsed by nothing — so unlike the
+        answer, redacting it costs only a mangled model name in the case where the key is a
+        substring of one."""
+        body = dict(_OPENAI_OK, model=f"gpt-{KEY_VALUE}")
+        with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        self.assertNotIn(KEY_VALUE, out.model)
+        self.assertIn("[redacted-api-key]", out.model)
+        self.assertEqual(out.text, '{"ok": true}')      # the answer is untouched
+
+    def test_a_key_in_the_http_reason_phrase_is_redacted(self) -> None:
+        """The reason phrase is provider-controlled too, and it is what the message falls back
+        to when the body was empty or unreadable."""
+        def _reason_only(*_a, **_k):
+            raise urllib.error.HTTPError(
+                "http://x", 401, f"bad key {KEY_VALUE}", {}, io.BytesIO(b""))
+
+        with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_reason_only)
+        self.assertNotIn(KEY_VALUE, str(out.transport_error))
+        self.assertIn("HTTP 401", str(out.transport_error))
 
     def test_an_exception_string_carrying_the_key_is_redacted(self) -> None:
         """An operator can embed a credential in `base_url`; a socket error's text repeats it."""

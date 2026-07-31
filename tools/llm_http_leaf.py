@@ -237,7 +237,10 @@ def _post_json(
         # anchored on `\bhttp\b`, and `http_status_429` is one word to a regex — a terse
         # rate-limit body would then match nothing, and a transient outage would fail the run
         # closed instead of being retried.
-        return None, detail, f"HTTP {exc.code} from provider: {detail or exc.reason}"
+        # `exc.reason` is provider-controlled as much as the body is, and it is what the
+        # message falls back to when the body was empty or unreadable.
+        return None, detail, (f"HTTP {exc.code} from provider: "
+                              f"{detail or _redact(str(exc.reason), secret)}")
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
         # The exception's own text can carry the URL, which an operator may have embedded a
         # credential in; redact for the same reason as the body.
@@ -402,7 +405,13 @@ def run_pure_http_leaf(
         return HttpLeafResponse("", "", None, False, read_error, raw)
     # `model or entry.model`: the response's own value is the provenance ground truth (a
     # gateway may resolve an alias), and the configured one is the honest fallback.
-    return HttpLeafResponse(text, model or entry.model, usage or None, truncated, None, raw)
+    #
+    # Redacted, unlike `text`: this value is only ever PERSISTED (the `agent_runs` row, the
+    # per-attempt metadata) — nothing parses it — so removing a credential from it costs
+    # nothing but a mangled model name in the case where the key is a substring of one, which
+    # is the trade the answer channel could not make.
+    return HttpLeafResponse(text, _redact(model, secret) or entry.model,
+                            usage or None, truncated, None, raw)
 
 
 # The default `max_tokens` when neither the entry nor the caller names one. Deliberately NOT
