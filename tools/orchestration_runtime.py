@@ -3050,6 +3050,21 @@ DEFAULT_BACKEND_COMMANDS = {
     "claude": "claude",
 }
 
+# Every token a launch may be RECORDED under. `SUPPORTED_BACKENDS` stays exactly what it was —
+# the CLI backends a leaf is spawned as a child process of — because that is what the sandbox,
+# hook and session machinery keys on. The HTTP providers (issue #28) are answered from the
+# conductor's own process and never spawn anything, so they are not backends in that sense; but
+# they DO appear in `record-launch` responses, `agent_runs` rows and `--backend` arguments, and
+# every validator that used to accept only `SUPPORTED_BACKENDS` has to admit them or the first
+# HTTP leaf fails closed on its own provenance.
+_HTTP_PROVIDER_TOKENS = frozenset({"openai_compatible", "anthropic_api"})
+SUPPORTED_PROVIDER_TOKENS = frozenset(SUPPORTED_BACKENDS) | _HTTP_PROVIDER_TOKENS
+
+# Escape hatch for an air-gapped or offline preflight: the unauthenticated reachability GET is
+# skipped, the key-presence and URL-shape checks are NOT (those cost nothing and catch the two
+# mistakes an operator actually makes).
+_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY"
+
 # Child agent `skill_must_read_refs`: split workflow spec (see docs/workflow/).
 # WORKFLOW_CORE.md is no longer a leaf must-read (its leaf-actionable invariants
 # + stage-meta keys live in AGENT_CONTRACT.md); it stays readable under docs/, so
@@ -5346,11 +5361,27 @@ def workflow_launch_check(
             "blocking_policy_scope": "preflight",
             "next_action": "stop_before_phase_body",
         }
+    # The launching leaf's own provider must be one preflight PROBED — membership, not
+    # equality. Equality was right while a run had one backend; with a per-substep
+    # configuration the `providers` map is the authority and the top-level `backend` describes
+    # only `defaults`. A payload without a `providers` map is a pre-#28 preflight, where the two
+    # readings coincide, so the old equality test is exactly what membership degrades to.
+    wanted = backend.strip().lower()
     preflight_backend = preflight.get("backend")
-    if isinstance(preflight_backend, str) and preflight_backend.strip().lower() != backend.strip().lower():
+    providers = preflight.get("providers")
+    if isinstance(providers, dict) and providers:
+        probed = providers.get(wanted)
+        if not (isinstance(probed, dict) and probed.get("launchable") is True):
+            reason_code = reason_code or "backend_not_probed"
+            reason_detail = reason_detail or (
+                f"preflight probed no launchable provider {wanted!r}; probed: "
+                f"{', '.join(sorted(k for k, v in providers.items() if isinstance(v, dict) and v.get('launchable') is True)) or '(none launchable)'}"
+            )
+    elif (isinstance(preflight_backend, str)
+            and preflight_backend.strip().lower() != wanted):
         reason_code = reason_code or "child_agent_unavailable_on_execution_platform"
         reason_detail = reason_detail or (
-            f"preflight backend mismatch: expected {backend.strip().lower()!r}, "
+            f"preflight backend mismatch: expected {wanted!r}, "
             f"got {preflight_backend.strip().lower()!r}"
         )
 
@@ -9965,6 +9996,17 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
             and feature_states.get("multi_agent") is True
             and multi_agent_check_pass is True
         )
+    # With a `providers` map (issue #28), the top-level verdict above describes `defaults`
+    # only. A run whose config also names a provider that did NOT probe launchable would reach
+    # that provider's first substep and fail there, phases in — so require every probed
+    # provider, fail-closed on a malformed entry. A payload without the map is a pre-#28
+    # preflight and is unchanged.
+    providers = payload.get("providers")
+    if isinstance(providers, dict) and providers:
+        launchable = launchable and all(
+            isinstance(entry, dict) and entry.get("launchable") is True
+            for entry in providers.values()
+        )
     return launchable
 
 
@@ -13764,6 +13806,19 @@ def repair_legacy_agent_runs(
 
         parsed: list[dict[str, Any] | None] = []
         models: set[str] = set()
+        # Per-(step, substep) models, because since issue #28 a run legitimately holds several:
+        # `generate.generate` may be on a local endpoint while `validate.judge` is on a hosted
+        # model. A whole-orchestration `sibling_uniform` would then never fire (mixed set) — or,
+        # worse, would have backfilled a row from a sibling that ran somewhere else. The siblings
+        # that speak for a row are the ones that ran the SAME substep.
+        models_by_substep: dict[tuple[str, str], set[str]] = {}
+
+        def _substep_key(obj: dict[str, Any]) -> tuple[str, str]:
+            step = obj.get("step")
+            substep = obj.get("substep")
+            return (step.strip().lower() if isinstance(step, str) else "",
+                    substep.strip().lower() if isinstance(substep, str) else "")
+
         for line in raw_lines:
             s = line.strip()
             if not s:
@@ -13781,6 +13836,7 @@ def repair_legacy_agent_runs(
             m = obj.get("agent_model")
             if isinstance(m, str) and m.strip():
                 models.add(m.strip())
+                models_by_substep.setdefault(_substep_key(obj), set()).add(m.strip())
 
         if isinstance(agent_model, str) and agent_model.strip():
             chosen_model = agent_model.strip()
@@ -13866,8 +13922,15 @@ def repair_legacy_agent_runs(
 
             cur_model = obj.get("agent_model")
             if not (isinstance(cur_model, str) and cur_model.strip()):
-                if chosen_model:
-                    obj["agent_model"] = chosen_model
+                # Prefer the row's OWN substep siblings; only they are guaranteed to have run
+                # on the same provider (issue #28). Fall back to the whole-orchestration
+                # agreement, which is what a single-provider run has always used.
+                own = models_by_substep.get(_substep_key(obj), set())
+                filled = (agent_model.strip() if isinstance(agent_model, str)
+                          and agent_model.strip() else
+                          (next(iter(own)) if len(own) == 1 else chosen_model))
+                if filled:
+                    obj["agent_model"] = filled
                     fields_filled.append("agent_model")
                 else:
                     line_missing.append("agent_model")
@@ -16196,6 +16259,145 @@ def _probe_claude_mcp_registry(
     return checks, mcp_ok
 
 
+def _probe_http_provider(
+    provider_row: Mapping[str, Any],
+    *,
+    opener: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Probe one HTTP leaf provider (issue #28). Fail-closed on every check.
+
+    An HTTP provider spawns no process, so none of the CLI probe's questions (version, feature
+    flags, hooks, sandbox) apply. Three things CAN be established before a run spends tokens
+    finding out, and all three are the mistakes operators actually make:
+
+      1. the environment variable named by `api_key_env` is set and non-empty. Its VALUE is
+         never read into the payload, logged, or hashed — only the fact that it is there.
+      2. `base_url` is a well-formed http(s) URL with a host.
+      3. the endpoint answers at all. Any HTTP status counts as reachable — a 401 or a 404
+         proves a server is there, which is what this check is for; only DNS failure, a refused
+         connection or a timeout mean "nothing is listening". The request is UNAUTHENTICATED
+         deliberately: preflight must not send the operator's key to a URL it has not yet
+         validated, and must not spend a token on a probe.
+
+    `METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY=1` drops only (3), for an offline preflight."""
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urlparse
+
+    token = str(provider_row.get("backend") or "").strip().lower()
+    base_url = str(provider_row.get("base_url") or "").strip()
+    api_key_env = str(provider_row.get("api_key_env") or "").strip()
+    checks: list[dict[str, Any]] = []
+
+    key_present = bool(api_key_env) and bool(os.environ.get(api_key_env, "").strip())
+    checks.append({
+        "name": f"{token}_api_key_env_set",
+        "pass": key_present,
+        # Names the VARIABLE, never its value.
+        "detail": (f"{api_key_env} is set" if key_present else
+                   f"{api_key_env or '(no api_key_env)'} is unset or empty"),
+    })
+
+    parsed = urlparse(base_url)
+    url_ok = parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    checks.append({
+        "name": f"{token}_base_url_well_formed",
+        "pass": url_ok,
+        "detail": base_url if url_ok else f"not an http(s) URL with a host: {base_url!r}",
+    })
+
+    skip = os.environ.get(_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV, "").strip().lower() in {
+        "1", "true", "yes"}
+    if skip:
+        checks.append({
+            "name": f"{token}_endpoint_reachable",
+            "pass": True,
+            "detail": f"skipped ({_HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV} set)",
+        })
+    elif not url_ok:
+        checks.append({
+            "name": f"{token}_endpoint_reachable",
+            "pass": False,
+            "detail": "not attempted: base_url is not well-formed",
+        })
+    else:
+        open_url = opener if opener is not None else urllib.request.urlopen
+        reachable, detail = True, "responded"
+        try:
+            open_url(urllib.request.Request(base_url, method="GET"),
+                     timeout=_HTTP_PREFLIGHT_TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as exc:
+            detail = f"HTTP {exc.code}"        # a server answered: reachable
+        except Exception as exc:               # noqa: BLE001 - DNS/TLS/refused/timeout
+            reachable = False
+            detail = f"{type(exc).__name__}: {exc}"
+        checks.append({
+            "name": f"{token}_endpoint_reachable",
+            "pass": reachable,
+            "detail": detail,
+        })
+
+    return {
+        "provider_type": str(provider_row.get("provider") or ""),
+        "base_url": base_url,
+        "api_key_env": api_key_env,
+        "checks": checks,
+        "launchable": all(item.get("pass") is True for item in checks),
+    }
+
+
+# Short on purpose: preflight is not a health check, and a hung endpoint must not hold a run at
+# the starting line.
+_HTTP_PREFLIGHT_TIMEOUT_SECONDS = 10
+
+
+def probe_all_providers(
+    *,
+    llm_config_path: str | Path,
+    repo_root: Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    opener: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """The `providers` map of a preflight payload: one entry per DISTINCT provider a config can
+    launch.
+
+    Keyed by the backend TOKEN a launch is recorded under, so `workflow_launch_check` and
+    `record_launch` can look a launch's own token up directly. Two entries can share a token
+    (the same backend behind two wrapper commands); they are AND-ed, because a token is
+    launchable only if every command recorded under it is.
+
+    Deliberately NOT merged into `probe_execution_platform`: that function answers "can this
+    host spawn agents at all", produces the top-level payload the existing gates read, and is
+    called for `defaults` exactly as before. This adds the per-provider layer above it."""
+    from tools.llm_config import describe_providers, load_llm_config
+
+    cfg = load_llm_config(llm_config_path)
+    providers: dict[str, dict[str, Any]] = {}
+    for row in describe_providers(cfg):
+        token = row["backend"]
+        if row["provider"] in ("claude_cli", "codex_cli"):
+            probe = probe_execution_platform(
+                backend=token, agent_command=row["command"] or None,
+                runner=runner, repo_root=repo_root)
+            entry = {
+                "provider_type": row["provider"],
+                "probe_command": probe.get("probe_command", ""),
+                "checks": probe.get("checks", []),
+                "launchable": _preflight_allows_agent_launch(probe),
+            }
+        else:
+            entry = _probe_http_provider(row, opener=opener)
+        prior = providers.get(token)
+        if prior is None:
+            providers[token] = entry
+        else:
+            # Same token, different command/endpoint: AND them, and keep both check lists so
+            # the operator can see WHICH one failed.
+            prior["checks"] = list(prior.get("checks", [])) + list(entry.get("checks", []))
+            prior["launchable"] = bool(prior.get("launchable")) and bool(entry.get("launchable"))
+    return providers
+
+
 def probe_execution_platform(
     *,
     backend: str,
@@ -16445,9 +16647,10 @@ def init_orchestration(
     if not orchestration_agent_run_id:
         orchestration_agent_run_id = str(uuid.uuid4())
     backend_token = str(agent_backend).strip().lower()
-    if backend_token not in SUPPORTED_BACKENDS:
+    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_BACKENDS)}; got {agent_backend!r}"
+            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
+            f"got {agent_backend!r}"
         )
     meta["orchestration_agent_run_id"] = orchestration_agent_run_id
     _write_json(meta_path, meta)
@@ -16838,7 +17041,31 @@ def record_launch(
         if isinstance(preflight_payload, dict)
         else ""
     )
-    backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
+    # THIS launch's provider, not the run's. Two consumers used to disagree: the codex-home
+    # transaction, the claude sequential-child gate and `pre_phase_launch` read the preflight's
+    # single `backend`, while the sandbox-profile branch below read the conductor's own response
+    # payload. Under a mixed configuration those are different answers for the same launch, so
+    # the response payload — which the conductor stamps per leaf — becomes authoritative, and
+    # the preflight's `providers` map is what authorizes it.
+    _launch_backend = response_payload.get("backend") if isinstance(response_payload, dict) else None
+    _launch_backend = (_launch_backend.strip().lower()
+                       if isinstance(_launch_backend, str) and _launch_backend.strip() else "")
+    _probed = preflight_payload.get("providers") if isinstance(preflight_payload, dict) else None
+    if _launch_backend and isinstance(_probed, dict) and _probed:
+        entry = _probed.get(_launch_backend)
+        if not (isinstance(entry, dict) and entry.get("launchable") is True):
+            raise RuntimeError(
+                f"record-launch: backend_not_probed — this launch names provider "
+                f"{_launch_backend!r}, which preflight did not probe as launchable"
+            )
+        backend_token = _launch_backend
+    elif _launch_backend in SUPPORTED_BACKENDS:
+        # No `providers` map: a pre-#28 preflight, where the run has one backend and the
+        # response payload restates it. Accept it, and fall back to the preflight's own value
+        # for a legacy payload that carries no backend at all.
+        backend_token = _launch_backend
+    else:
+        backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
 
     # A Codex warm-resume target belongs to one isolated HOME generation.  Prepare
     # the home at the beginning of the launch transaction and reject a stale
@@ -16943,7 +17170,10 @@ def record_launch(
     # Fall back to the default command for the preflight's own backend (not a fixed
     # backend), so a codex preflight without a probe_command still binds ~/.codex — a
     # hardcoded command would resolve the wrong runtime home in _backend_runtime_bind_paths.
-    backend_command = DEFAULT_BACKEND_COMMANDS[backend_token]
+    # `.get`, not `[...]`: an HTTP provider token names no CLI at all (issue #28). The bwrap
+    # profile built from it is skipped for those launches — an HTTP leaf runs no
+    # model-directed tool and so has nothing to confine (Phase 5 wires that skip).
+    backend_command = DEFAULT_BACKEND_COMMANDS.get(backend_token, "")
     if isinstance(preflight_payload, dict):
         probe_command = preflight_payload.get("probe_command")
         if isinstance(probe_command, str) and probe_command.strip():
@@ -17663,9 +17893,10 @@ def record_timeout(
 
     backend_obj = resp_doc.get("backend")
     backend_token = backend_obj.strip().lower() if isinstance(backend_obj, str) and backend_obj.strip() else ""
-    if backend_token not in SUPPORTED_BACKENDS:
+    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"record-timeout: launch response backend={backend_token!r} not in {sorted(SUPPORTED_BACKENDS)}"
+            f"record-timeout: launch response backend={backend_token!r} not in "
+            f"{sorted(SUPPORTED_PROVIDER_TOKENS)}"
         )
 
     # Adv-14: liveness/ownership guards before fabricating a terminal record
@@ -17888,9 +18119,10 @@ def record_agent_run(
     if not isinstance(agent_backend, str) or not agent_backend.strip():
         raise ValueError("agent_backend must be non-empty string")
     backend_token = agent_backend.strip().lower()
-    if backend_token not in SUPPORTED_BACKENDS:
+    if backend_token not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"agent_backend must be one of {sorted(SUPPORTED_BACKENDS)}; got {agent_backend!r}"
+            f"agent_backend must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
+            f"got {agent_backend!r}"
         )
     payload["agent_backend"] = backend_token
 
@@ -20141,9 +20373,10 @@ def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
                 f"\"started_at\": \"<ISO8601>\", \"backend\": \"claude\"}}"
             )
     backend = payload["backend"].strip()
-    if backend not in SUPPORTED_BACKENDS:
+    if backend not in SUPPORTED_PROVIDER_TOKENS:
         raise ValueError(
-            f"{label}: 'backend' must be one of {sorted(SUPPORTED_BACKENDS)}; got {backend!r}"
+            f"{label}: 'backend' must be one of {sorted(SUPPORTED_PROVIDER_TOKENS)}; "
+            f"got {backend!r}"
         )
 
 
@@ -20342,6 +20575,15 @@ def main(argv: list[str] | None = None) -> int:
     preflight_parser.add_argument("--orchestration-id", required=True)
     preflight_parser.add_argument("--backend", default="claude", choices=sorted(SUPPORTED_BACKENDS))
     preflight_parser.add_argument("--agent-command")
+    preflight_parser.add_argument(
+        "--llm-config",
+        default=None,
+        help=(
+            "Leaf-LLM configuration file. When given, EVERY distinct provider it can launch is "
+            "probed and recorded under preflight.json#providers (in addition to the top-level "
+            "fields, which keep describing --backend / defaults)."
+        ),
+    )
     preflight_parser.add_argument("--codex-command", default="codex")
     preflight_parser.add_argument("--claude-command", default="claude")
 
@@ -20659,7 +20901,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     launch_check_parser.add_argument("--step", required=True,
                                      help="Workflow step name: plan, generate, build, execute, judge, etc.")
-    launch_check_parser.add_argument("--backend", default="claude", choices=sorted(SUPPORTED_BACKENDS))
+    # Provider tokens, not just spawnable backends: the conductor passes the LAUNCHING leaf's
+    # own token, which for an HTTP pure leaf is not a CLI backend at all.
+    launch_check_parser.add_argument("--backend", default="claude",
+                                     choices=sorted(SUPPORTED_PROVIDER_TOKENS))
     launch_check_parser.add_argument(
         "--require-child-agent", required=True, choices=("step", "substep"),
         help="Expected child agent kind. Plan/Generate/Tune require 'substep'; "
@@ -20965,14 +21210,33 @@ def main(argv: list[str] | None = None) -> int:
                 agent_command = args.codex_command
             elif args.backend == "claude":
                 agent_command = args.claude_command
+        preflight_payload = probe_execution_platform(
+            backend=args.backend,
+            agent_command=agent_command,
+            repo_root=repo_root,
+        )
+        if getattr(args, "llm_config", None):
+            # Back-compatible SUPERSET: the top-level fields keep describing `--backend`
+            # (i.e. `defaults`), and `providers` adds one entry per distinct provider the
+            # configuration can launch — including the one just probed, so the launch check has
+            # a single place to look.
+            from tools.llm_config import config_sha256
+            preflight_payload["llm_config"] = {
+                "path": str(args.llm_config),
+                "sha256": config_sha256(args.llm_config),
+            }
+            preflight_payload["providers"] = probe_all_providers(
+                llm_config_path=args.llm_config, repo_root=repo_root)
+            # A provider the config names but the host cannot launch must fail the preflight
+            # itself, not the substep that first reaches it.
+            if not _preflight_allows_agent_launch(preflight_payload):
+                preflight_payload["status"] = "fail"
+                preflight_payload["can_launch_step_agents"] = False
+                preflight_payload["can_launch_substep_agents"] = False
         result = write_preflight(
             repo_root=repo_root,
             orchestration_id=args.orchestration_id,
-            payload=probe_execution_platform(
-                backend=args.backend,
-                agent_command=agent_command,
-                repo_root=repo_root,
-            ),
+            payload=preflight_payload,
         )
     elif args.command == "preflight-status":
         result = get_preflight_ttl_status(

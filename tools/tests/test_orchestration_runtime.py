@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mcp_servers.build_runtime_server import tool_compile_project
+from tools import orchestration_runtime as ort
 
 from tools.orchestration_runtime import (
     TERMINAL_STATUSES,
@@ -31661,6 +31662,286 @@ class DriverIdentityRecordingTest(unittest.TestCase):
             meta = self._meta(repo_root, "o1")
             self.assertEqual(meta["status"], "cancel")
             self.assertEqual(meta["reason_code"], "driver_interrupted")
+
+
+class MultiProviderPreflightTests(unittest.TestCase):
+    """Issue #28 Phase 4: preflight probes EVERY provider a configuration can launch.
+
+    The payload is a back-compatible superset — the top-level fields keep describing
+    `--backend` (i.e. `defaults`) — and `providers` is the new authority the launch check and
+    `record_launch` consult. A payload without the map is a pre-#28 preflight and every gate
+    must behave exactly as it did."""
+
+    def _config(self, tmp: Path, text: str) -> Path:
+        path = tmp / "llm.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    _MIXED = ("defaults:\n  provider: claude_cli\n"
+              "phases:\n  generate:\n    substeps:\n      generate:\n"
+              "        provider: openai_compatible\n"
+              "        base_url: http://localhost:8000/v1\n"
+              "        api_key_env: METDSL_TEST_LOCAL_KEY\n        model: local-model\n")
+
+    # --- the HTTP prober -------------------------------------------------------------
+
+    def _row(self, **kw):
+        row = {"backend": "openai_compatible", "provider": "openai_compatible",
+               "base_url": "http://localhost:8000/v1", "api_key_env": "METDSL_TEST_LOCAL_KEY"}
+        row.update(kw)
+        return row
+
+    def test_http_provider_probes_launchable_when_all_three_checks_pass(self) -> None:
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "secret-value"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
+        self.assertTrue(out["launchable"])
+        self.assertEqual(len(out["checks"]), 3)
+        self.assertEqual(out["provider_type"], "openai_compatible")
+
+    def test_http_provider_never_records_the_key_value(self) -> None:
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "super-secret"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
+        self.assertNotIn("super-secret", json.dumps(out))
+        self.assertIn("METDSL_TEST_LOCAL_KEY", json.dumps(out))
+
+    def test_http_provider_fails_closed_when_the_key_variable_is_unset(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "METDSL_TEST_LOCAL_KEY"}
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(), opener=lambda *a, **k: object())
+        self.assertFalse(out["launchable"])
+        self.assertFalse(
+            [c for c in out["checks"] if c["name"].endswith("api_key_env_set")][0]["pass"])
+
+    def test_http_provider_fails_closed_on_a_malformed_base_url(self) -> None:
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+            out = ort._probe_http_provider(
+                self._row(base_url="localhost:8000"), opener=lambda *a, **k: object())
+        self.assertFalse(out["launchable"])
+        names = {c["name"]: c["pass"] for c in out["checks"]}
+        self.assertFalse(names["openai_compatible_base_url_well_formed"])
+        # Reachability is not even attempted against a URL that is not one.
+        self.assertFalse(names["openai_compatible_endpoint_reachable"])
+
+    def test_http_provider_fails_closed_when_nothing_is_listening(self) -> None:
+        def _refuse(*_a, **_k):
+            raise OSError("Connection refused")
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=_refuse)
+        self.assertFalse(out["launchable"])
+
+    def test_an_http_error_status_still_counts_as_reachable(self) -> None:
+        """A 401 proves a server is there, which is the whole question this check asks — the
+        probe is deliberately unauthenticated, so an auth failure is the EXPECTED answer."""
+        import urllib.error
+
+        def _unauthorized(*_a, **_k):
+            raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {}, None)
+        with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False):
+            out = ort._probe_http_provider(self._row(), opener=_unauthorized)
+        self.assertTrue(out["launchable"])
+        self.assertIn("HTTP 401",
+                      [c["detail"] for c in out["checks"] if "reachable" in c["name"]][0])
+
+    def test_the_reachability_escape_hatch_never_skips_the_other_two(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "METDSL_TEST_LOCAL_KEY"}
+        env["METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY"] = "1"
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(), opener=None)
+        self.assertFalse(out["launchable"])       # the missing key still fails it
+        self.assertTrue([c for c in out["checks"] if "reachable" in c["name"]][0]["pass"])
+
+    # --- the providers map -----------------------------------------------------------
+
+    def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp), self._MIXED)
+            with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False), \
+                 patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")):
+                out = ort.probe_all_providers(llm_config_path=cfg,
+                                              opener=lambda *a, **k: object())
+        self.assertEqual(set(out), {"claude", "openai_compatible"})
+        self.assertTrue(all(entry["launchable"] for entry in out.values()))
+
+    def test_two_entries_under_one_token_are_anded(self) -> None:
+        """Same backend behind two commands: the token is launchable only if BOTH are."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp),
+                               "defaults:\n  provider: claude_cli\n  command: claude\n"
+                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "        command: otherwrap\n")
+            payloads = iter([
+                _launchable_preflight_dict(backend="claude"),
+                dict(_launchable_preflight_dict(backend="claude"), status="fail"),
+            ])
+            with patch.object(ort, "probe_execution_platform",
+                              side_effect=lambda **_k: next(payloads)):
+                out = ort.probe_all_providers(llm_config_path=cfg)
+        self.assertEqual(set(out), {"claude"})
+        self.assertFalse(out["claude"]["launchable"])
+
+    def test_a_composite_payload_stays_launchable_for_the_old_gates(self) -> None:
+        payload = _launchable_preflight_dict(backend="claude")
+        self.assertTrue(ort._preflight_allows_agent_launch(payload))
+        payload["providers"] = {
+            "claude": {"launchable": True, "checks": []},
+            "openai_compatible": {"launchable": True, "checks": []},
+        }
+        self.assertTrue(ort._preflight_allows_agent_launch(payload))
+
+    def test_one_unlaunchable_provider_fails_the_whole_preflight(self) -> None:
+        payload = _launchable_preflight_dict(backend="claude")
+        payload["providers"] = {
+            "claude": {"launchable": True, "checks": []},
+            "openai_compatible": {"launchable": False, "checks": []},
+        }
+        self.assertFalse(ort._preflight_allows_agent_launch(payload))
+        # Fail-closed on a malformed entry too.
+        payload["providers"] = {"claude": "not-a-mapping"}
+        self.assertFalse(ort._preflight_allows_agent_launch(payload))
+
+    # --- the launch check ------------------------------------------------------------
+
+    def _orch_with_preflight(self, repo_root: Path, payload: dict) -> None:
+        init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+        _mark_dependencies_ready(repo_root)
+        write_preflight(repo_root=repo_root, orchestration_id="orch_001", payload=payload)
+
+    def _check(self, repo_root: Path, backend: str) -> dict:
+        return workflow_launch_check(
+            repo_root, orchestration_id="orch_001",
+            node_key="problem/shallow_water2d@0.3.0", step="compile",
+            backend=backend, require_child_agent="substep")
+
+    def test_launch_check_accepts_any_probed_launchable_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["providers"] = {
+                "claude": {"launchable": True, "checks": []},
+                "openai_compatible": {"launchable": True, "checks": []},
+            }
+            self._orch_with_preflight(repo_root, payload)
+            for backend in ("claude", "openai_compatible"):
+                self.assertEqual(self._check(repo_root, backend)["status"], "pass",
+                                 msg=backend)
+
+    def test_launch_check_rejects_a_provider_nothing_probed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["providers"] = {"claude": {"launchable": True, "checks": []}}
+            self._orch_with_preflight(repo_root, payload)
+            out = self._check(repo_root, "anthropic_api")
+            self.assertNotEqual(out["status"], "pass")
+            self.assertEqual(out["reason_code"], "backend_not_probed")
+
+    def test_launch_check_without_a_providers_map_keeps_the_equality_test(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._orch_with_preflight(repo_root, _launchable_preflight_dict(backend="claude"))
+            self.assertEqual(self._check(repo_root, "claude")["status"], "pass")
+            out = self._check(repo_root, "codex")
+            self.assertNotEqual(out["status"], "pass")
+            self.assertEqual(out["reason_code"],
+                             "child_agent_unavailable_on_execution_platform")
+
+
+    # --- record_launch: the token comes from THIS launch --------------------------------
+
+    def _launch(self, repo_root: Path, response_backend: str, arid: str) -> dict:
+        return record_launch(
+            repo_root=repo_root,
+            orchestration_id="orch_001",
+            parent_agent_run_id="orch_run_001",
+            child_agent_run_id=arid,
+            request_payload={
+                "agent_model": "some-model",
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "node_key": "problem/shallow_water2d@0.3.0",
+                "step": "compile",
+                "substep": "generate",
+                "orchestration_id": "orch_001",
+                "parent_agent_run_id": "orch_run_001",
+                "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                "pipeline_ref":
+                    "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
+                "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
+                "skill_name": "workflow-compile-generate",
+                "skill_ref": "skills/workflow-compile-generate/SKILL.md",
+                "skill_must_read_refs": "",
+                "allowed_output_paths": [
+                    "workspace/ir/problem__shallow_water2d__0.3.0/"
+                    "shallow-water2d_20260415_001/spec.ir.yaml",
+                ],
+                "launch_prompt_full": _substep_launch_prompt(
+                    "problem/shallow_water2d@0.3.0", "compile", "generate", arid),
+            },
+            response_payload={
+                "agent_run_id": arid,
+                "backend": response_backend,
+                **_spawn_response_payload(f"sess_{arid}"),
+            },
+        )
+
+    def _mixed_preflight(self, repo_root: Path) -> None:
+        payload = _launchable_preflight_dict(backend="claude")
+        payload["providers"] = {
+            "claude": {"launchable": True, "checks": []},
+            "openai_compatible": {"launchable": True, "checks": []},
+        }
+        self._orch_with_preflight(repo_root, payload)
+
+    def test_record_launch_takes_the_backend_from_this_launchs_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            self._launch(repo_root, "openai_compatible", "substep_run_http_001")
+            launch = json.loads(
+                (repo_root / "workspace/orchestrations/orch_001/launches"
+                 / "substep_run_http_001.response.json").read_text(encoding="utf-8"))
+            self.assertEqual(launch["backend"], "openai_compatible")
+
+    def test_record_launch_refuses_a_provider_preflight_did_not_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._mixed_preflight(repo_root)
+            with self.assertRaises(RuntimeError) as ctx:
+                self._launch(repo_root, "anthropic_api", "substep_run_bad_001")
+            self.assertIn("backend_not_probed", str(ctx.exception))
+
+
+class SiblingUniformScopeTests(unittest.TestCase):
+    """`repair-agent-runs` backfills a missing `agent_model` from siblings. Since issue #28 a
+    run legitimately holds several models, so the siblings that speak for a row are the ones
+    that ran the SAME substep — a whole-orchestration agreement would either never fire, or
+    fire with a model from a leaf that ran on another provider entirely."""
+
+    def test_a_missing_model_is_filled_from_its_own_substeps_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+            runs = (repo_root / "workspace" / "orchestrations" / "orch_001"
+                    / "agent_runs.jsonl")
+            rows = [
+                {"agent_run_id": "a1", "agent_role": "substep", "step": "generate",
+                 "substep": "generate", "agent_model": "local-model",
+                 "parent_agent_run_id": "p"},
+                {"agent_run_id": "a2", "agent_role": "substep", "step": "generate",
+                 "substep": "generate", "parent_agent_run_id": "p"},
+                {"agent_run_id": "b1", "agent_role": "substep", "step": "validate",
+                 "substep": "judge", "agent_model": "hosted-model",
+                 "parent_agent_run_id": "p"},
+            ]
+            runs.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+            ort.repair_legacy_agent_runs(repo_root=repo_root, orchestration_id="orch_001")
+            filled = [json.loads(ln) for ln in runs.read_text(encoding="utf-8").splitlines()]
+            by_id = {r["agent_run_id"]: r for r in filled}
+            # Mixed run: the orchestration-wide set has two models, so the OLD rule would have
+            # left this row unrepaired.
+            self.assertEqual(by_id["a2"]["agent_model"], "local-model")
+            self.assertNotEqual(by_id["a2"]["agent_model"], "hosted-model")
 
 
 if __name__ == "__main__":

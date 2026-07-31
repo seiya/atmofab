@@ -2507,10 +2507,7 @@ def _run_main(
             load_llm_config(llm_config_path),
             model=llm_config_overrides.get("model", ""),
             command=llm_config_overrides.get("command", ""))
-        # INTERIM (dropped when preflight probes every provider): preflight still certifies a
-        # single backend, so a config that names two would launch a leaf against a provider
-        # nothing probed.
-        llm_config.validate_runnable(allow_mixed_providers=False)
+        llm_config.validate_runnable()
         # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
         # single-backend vocabulary; derive it FROM the config so there is one authority.
         llm = llm_config.defaults.backend_token
@@ -3308,6 +3305,11 @@ def _run_node(
                 llm,
                 "--agent-command",
                 llm_command,
+                # Probe EVERY provider the configuration can launch, not just `defaults`. The
+                # top-level payload still describes `--backend`, so a consumer that predates
+                # `providers` reads exactly what it always did.
+                "--llm-config",
+                str(llm_config.path),
             ]
             preflight_result = _runtime_command(repo_root, env, preflight_args).payload
         except RuntimeError as exc:

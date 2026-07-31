@@ -5636,7 +5636,9 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(lines[-1]["reason"], "invalid_startup_input")
             self.assertIn("llm_config_unknown_provider", lines[-1]["detail"])
 
-    def test_a_mixed_config_is_refused_until_preflight_probes_every_provider(self) -> None:
+    def test_a_mixed_config_runs_and_preflight_is_asked_to_probe_the_file(self) -> None:
+        """Preflight probes every provider the file names, so a mixed config is admissible —
+        and the file is what it is asked to probe, not the derived single backend."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
@@ -5647,9 +5649,14 @@ class LlmConfigStartupTests(unittest.TestCase):
                 "        provider: openai_compatible\n"
                 "        base_url: http://localhost:8000/v1\n"
                 "        api_key_env: LOCAL_KEY\n        model: m\n", encoding="utf-8")
-            code, _, _, lines = self._run(repo_root, ["--llm-config", str(mixed)])
-            self.assertEqual(code, 2)
-            self.assertIn("llm_config_mixed_providers_not_yet_supported", lines[-1]["detail"])
+            code, kw, _, lines = self._run(repo_root, ["--llm-config", str(mixed)])
+            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+            self.assertFalse(kw["llm_config"].is_uniform)
+            preflight = next(a for a in self._runtime_calls if a and a[0] == "preflight")
+            self.assertIn("--llm-config", preflight)
+            self.assertEqual(preflight[preflight.index("--llm-config") + 1], str(mixed))
+            # The top-level backend still describes `defaults`.
+            self.assertEqual(preflight[preflight.index("--backend") + 1], "claude")
 
     # --- the invocation record ------------------------------------------------------
 
