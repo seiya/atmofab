@@ -20,11 +20,21 @@
 #            `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus` — which overrides the `model` in the operator's own
 #            `~/.claude/settings.json`. Delete the `model:` lines to hand that choice back.
-#   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
+#   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort` — which
+#            overrides `effortLevel` in the operator's own `~/.claude/settings.json` the same way
+#            `--model` overrides `model` there. Delete the lines to hand that choice back.
 #
-# WHY THESE VALUES. Measured over the 94 recorded orchestrations that still have transcripts
-# (`skills/workflow-timing-audit/`), by share of output tokens and by how often the leaf had to
-# be re-run:
+# WHY `medium`. It is what the current model generation is built around: it is this CLI's own
+# default, and Codex ships the same default for every gpt-5.6 model while its PREDECESSOR
+# gpt-5.5 defaulted to `xhigh` — the vendor lowered the default as the model got better. A
+# shipped file should not override that without evidence about the model it will actually run on.
+#
+# The measurements below are NOT that evidence, and it is worth being exact about why. They come
+# from the 94 recorded orchestrations that still have transcripts (`skills/workflow-timing-audit/`),
+# and those ran almost entirely on Opus 4.8: of the leaves that record a model, ~1250 are 4.8 and
+# 31 are Opus 5. A re-run rate is a property of the (model, effort, task) triple, so the table
+# says what 4.8 needed at its settings, not what 5 needs. Re-measure on the current model before
+# tuning any of these values again.
 #
 #     leaf                 tokens   re-run   attempts seen
 #     generate.generate     45.3%    30.2%   1..7   (only 39 of 87 nodes passed first try)
@@ -33,22 +43,23 @@
 #     compile.verify         8.3%     3.3%   1..2   (90 of 93 nodes passed first try)
 #     validate.judge         8.2%     0.0%   1      (69 of 69)
 #
-# Re-runs are 20% of every token this pipeline has ever spent, and they are concentrated in the
-# leaves that WRITE things. That inverts the usual intuition: on `generate.generate` a cheaper
-# setting is not a discount, it is a bet against a leaf that already reaches 7 attempts against
-# a `MAX_ATTEMPTS_PER_PHASE` of 3 — and going over does not cost one more attempt, it fails the
-# phase and re-runs the node. So the four leaves that write, or whose mistakes force a rewrite,
-# stay at the top setting; economising them raises the expected bill rather than lowering it.
+# What the table DOES establish is structural and survives a model change: re-runs were 20% of
+# every token spent, they concentrated in the leaves that WRITE, and `generate.generate` reached
+# 7 attempts against a `MAX_ATTEMPTS_PER_PHASE` of 3. Crossing that cap does not cost one more
+# attempt — it fails the phase and re-runs the node. So the cheapest setting per attempt is not
+# the cheapest expected bill, and the leaves that write are the LAST to economise on any model.
+# That is why the one economy below is a model tier on a single leaf, not a lower effort on the
+# expensive ones.
 #
-# `compile.verify` is the one place the numbers support spending less. It is the smallest leaf,
-# it re-ran in 3 of 93 nodes, it reads an IR that the deterministic `compile.static` gate has
-# already proved clean, and anything it lets through is looked at again by `generate` and by
-# `validate.judge`. `validate.judge` is NOT economised despite also being small and never
-# re-run: nothing runs after it, so what it misses ships.
+# `compile.verify` is where it goes: the smallest leaf, re-run in 3 of 93 nodes, reading an IR
+# the deterministic `compile.static` gate has already proved clean — and both `generate` and
+# `validate.judge` read that same IR afterwards. `validate.judge` is NOT economised despite being
+# equally small and never re-run once in 69 nodes: nothing runs after it, so what it misses ships.
 #
-# Raising `generate.generate` to `xhigh` is the other move worth considering, and is left off
-# deliberately: it costs ~40% more on every attempt, so it only pays if it lifts the first-try
-# rate from 45% to about 65%, which nothing here measures. Run the A/B before adopting it.
+# Raising `generate.generate` above `medium` is the obvious next question and is deliberately
+# left open. Each notch costs on every attempt, so it only pays if it lifts the first-try rate,
+# and that has never been measured on this model. Run the A/B rather than reasoning from the 4.8
+# table — reasoning from it is the mistake this comment exists to prevent.
 #
 # To move one leaf elsewhere, replace its block. HTTP providers (`openai_compatible`,
 # `anthropic_api`) are admissible ONLY on the two `generate` leaves, which run as host-mediated
@@ -66,14 +77,14 @@
 #           # The NAME of the environment variable holding the key, never the key.
 #           api_key_env: LOCAL_LLM_API_KEY
 #           model: qwen2.5-coder-32b-instruct
-#           effort: high          # `minimal` | `low` | `medium` | `high` on this provider
+#           effort: medium        # `minimal` | `low` | `medium` | `high` on this provider
 #           # Size against the model's CONTEXT WINDOW, not its documented maximum: the request
 #           # is non-streaming. The default (32768) is sized for a CodegenBundle.
 #           max_output_tokens: 16384
 defaults:
   provider: claude_cli
   model: opus
-  effort: high
+  effort: medium
 
 phases:
   compile:
@@ -83,10 +94,11 @@ phases:
       generate:
         provider: claude_cli
         model: opus
-        effort: high
-      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest
-      # leaf to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge`
-      # read the same IR afterwards. The only leaf this file economises.
+        effort: medium
+      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest leaf
+      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
+      # same IR afterwards. The only leaf this file economises, and it does so by model tier —
+      # effort stays at the generation default here as everywhere else.
       verify:
         provider: claude_cli
         model: sonnet
@@ -99,13 +111,13 @@ phases:
       generate:
         provider: claude_cli
         model: opus
-        effort: high
+        effort: medium
       # The verdict reviewer, reached only on a source the deterministic gate already accepted —
       # but it re-ran in 12 of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
         provider: claude_cli
         model: opus
-        effort: high
+        effort: medium
 
   validate:
     substeps:
@@ -114,4 +126,4 @@ phases:
       judge:
         provider: claude_cli
         model: opus
-        effort: high
+        effort: medium

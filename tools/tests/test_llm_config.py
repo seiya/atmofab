@@ -100,26 +100,36 @@ class ShippedConfigTests(unittest.TestCase):
         cfg.validate_runnable()
 
     def test_the_shipped_configs_economise_only_the_leaf_the_measurements_allow(self) -> None:
-        """Cheapest EXPECTED total is not the cheapest per attempt. Re-runs are ~20% of every
-        token this pipeline has spent and they concentrate in the leaves that WRITE, so a leaf
-        that re-runs must not be set below the top: `generate.generate` has been seen at 7
-        attempts against a `MAX_ATTEMPTS_PER_PHASE` of 3, and going over fails the phase rather
-        than costing one more attempt. `compile.verify` is the single leaf the numbers support
-        spending less on — smallest, re-ran in 3 of 93 nodes, reads an IR the deterministic
-        `compile.static` gate already proved clean, and re-read downstream by two other leaves.
-        `validate.judge` is NOT economised despite never being re-run: nothing follows it."""
+        """Two separate claims, and the difference between them is the point.
+
+        EFFORT is uniform at the current generation's own default. Both CLIs default to
+        `medium`, and Codex lowered it from the `xhigh` its predecessor gpt-5.5 shipped, so the
+        vendor moved the default down as the model improved. Overriding that needs evidence
+        about the model that will run, and the repository's re-run measurements are not it: they
+        were recorded almost entirely on Opus 4.8, and a re-run rate belongs to the
+        (model, effort, task) triple.
+
+        MODEL is where the one economy goes, because the argument for it is structural rather
+        than generational: re-runs were ~20% of every token spent and concentrated in the leaves
+        that WRITE, and `generate.generate` was seen at 7 attempts against a
+        `MAX_ATTEMPTS_PER_PHASE` of 3 — where crossing the cap fails the phase rather than
+        costing one more attempt. So the writing leaves are the last to economise on any model,
+        and `compile.verify` is the safe one: smallest, re-ran in 3 of 93 nodes, reads an IR the
+        deterministic `compile.static` gate already proved clean, and re-read downstream by two
+        other leaves. `validate.judge` is NOT economised despite never being re-run once in 69
+        nodes, because nothing follows it to catch what it misses."""
         for backend in ("claude", "codex"):
             cfg = lc.load_llm_config(lc.shipped_config_path(backend, REPO_ROOT))
             top = cfg.entry_for("generate", "generate")
+            self.assertEqual(top.effort, "medium", msg=backend)
             for (phase, substep), entry in cfg.entries.items():
                 where = f"{backend} {phase}.{substep}"
+                self.assertEqual(entry.effort, top.effort, msg=where)
                 if (phase, substep) == ("compile", "verify"):
-                    self.assertNotEqual((entry.model, entry.effort), (top.model, top.effort),
+                    self.assertNotEqual(entry.model, top.model,
                                         msg=f"{where} is the leaf meant to be economised")
                     continue
                 self.assertEqual(entry.model, top.model, msg=where)
-                self.assertEqual(entry.effort, top.effort, msg=where)
-            self.assertEqual(top.effort, "high")
 
     def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

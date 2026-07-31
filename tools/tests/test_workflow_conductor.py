@@ -15119,11 +15119,11 @@ class LeafEntryThreadingTests(unittest.TestCase):
         model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command("P", c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "high", "-p", "P"])
+                         ["claude", "--model", "opus", "--effort", "medium", "-p", "P"])
         k = self._configured("codex")
         judge = k.leaf_command("P", k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
-        self.assertIn('model_reasoning_effort="high"', judge)
+        self.assertIn('model_reasoning_effort="medium"', judge)
         self.assertEqual(judge[-2:], ["--json", "P"])
 
     def test_a_declared_claude_model_actually_reaches_the_launch(self) -> None:

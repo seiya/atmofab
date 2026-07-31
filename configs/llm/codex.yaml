@@ -31,12 +31,18 @@
 #            the OpenAI API's `reasoning_effort` list, which has `none`/`minimal` and no `ultra`.
 #            Luna serves every level but `ultra`.
 #
-# WHY THESE VALUES — see the measured table in `claude.yaml`, which this file mirrors. In short:
-# re-runs are 20% of every token this pipeline has ever spent and they concentrate in the leaves
-# that WRITE, so `generate.generate` (45% of tokens, tail to 7 attempts against a
-# `MAX_ATTEMPTS_PER_PHASE` of 3) is the last place to save money, not the first. `compile.verify`
-# is the one leaf the numbers support spending less on: smallest, re-ran in 3 of 93 nodes, reads
-# an IR the deterministic gate already proved clean, and re-read downstream by two other leaves.
+# WHY `medium`. It is `default_reasoning_level` for every gpt-5.6 model, and the predecessor
+# gpt-5.5 defaulted to `xhigh` — the vendor lowered the default as the model got better. A
+# shipped file should not override that without evidence about the model it will run on.
+#
+# The measured table in `claude.yaml` is NOT that evidence: it was recorded almost entirely on
+# Opus 4.8, and a re-run rate belongs to the (model, effort, task) triple. What it does establish
+# is structural and survives a model change — re-runs were 20% of every token spent and they
+# concentrate in the leaves that WRITE, so `generate.generate` (45% of tokens, seen at 7 attempts
+# against a `MAX_ATTEMPTS_PER_PHASE` of 3, where crossing the cap fails the PHASE rather than
+# costing one more attempt) is the last place to save money, not the first. Hence the single
+# economy is a model tier on `compile.verify`: smallest leaf, re-ran in 3 of 93 nodes, reads an
+# IR the deterministic gate already proved clean, and re-read downstream by two other leaves.
 #
 # HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
 # `generate` leaves, which run as host-mediated pure functions; see `claude.yaml` for a worked
@@ -44,7 +50,7 @@
 defaults:
   provider: codex_cli
   model: gpt-5.6-sol
-  effort: high
+  effort: medium
 
 phases:
   compile:
@@ -54,10 +60,11 @@ phases:
       generate:
         provider: codex_cli
         model: gpt-5.6-sol
-        effort: high
-      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest
-      # leaf to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge`
-      # read the same IR afterwards. The only leaf this file economises.
+        effort: medium
+      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest leaf
+      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
+      # same IR afterwards. The only leaf this file economises, and it does so by model tier —
+      # effort stays at the generation default here as everywhere else.
       verify:
         provider: codex_cli
         model: gpt-5.6-terra
@@ -70,13 +77,13 @@ phases:
       generate:
         provider: codex_cli
         model: gpt-5.6-sol
-        effort: high
+        effort: medium
       # The verdict reviewer, reached only on a source the deterministic gate already accepted —
       # but it re-ran in 12 of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
         provider: codex_cli
         model: gpt-5.6-sol
-        effort: high
+        effort: medium
 
   validate:
     substeps:
@@ -85,4 +92,4 @@ phases:
       judge:
         provider: codex_cli
         model: gpt-5.6-sol
-        effort: high
+        effort: medium
