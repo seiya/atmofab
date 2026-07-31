@@ -80,6 +80,37 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
             f"redirect refused (would forward credentials to {newurl})", headers, fp)
 
 
+class _EnvProxyHandler(urllib.request.ProxyHandler):
+    """A `ProxyHandler` whose BYPASS decision also comes from the supplied environment.
+
+    `ProxyHandler` takes its proxy URLs from the mapping it is constructed with, but decides
+    whether to bypass by calling `proxy_bypass`, which reads the process-global `os.environ`.
+    So a run whose environment sets `NO_PROXY=localhost` alongside a proxy would send a
+    LOOPBACK request — and its Authorization header — to that proxy, because the global
+    environment never mentioned the exemption. The bypass is evaluated against the same map the
+    proxies came from."""
+
+    def proxy_open(self, req, proxy, type):      # noqa: A002 - urllib's signature
+        if urllib.request.proxy_bypass_environment(req.host, self.proxies):
+            return None                          # handled without a proxy
+        return super().proxy_open(req, proxy, type)
+
+
+def _env_proxies(env: "Mapping[str, str]") -> "dict[str, str]":
+    """`env`'s proxy settings in `getproxies_environment` form — `{"http": ..., "no": ...}`.
+
+    `no_proxy` is kept under the `"no"` key that `proxy_bypass_environment` reads, which is
+    what makes the exemption travel with the proxies rather than being read from the global
+    environment."""
+    proxies: dict[str, str] = {}
+    for key, value in env.items():
+        name = key.lower()
+        if not value or not name.endswith("_proxy"):
+            continue
+        proxies[name[: -len("_proxy")]] = value
+    return proxies
+
+
 def _default_opener(env: "Mapping[str, str] | None" = None) -> "Callable[..., Any]":
     """An opener that refuses redirects and honours `env`'s proxy settings.
 
@@ -88,12 +119,7 @@ def _default_opener(env: "Mapping[str, str] | None" = None) -> "Callable[..., An
     routing) was set for the workflow would silently bypass it."""
     handlers: list[Any] = [_NoRedirects]
     if env is not None:
-        proxies = {
-            key[: -len("_proxy")].lower(): value
-            for key, value in env.items()
-            if key.lower().endswith("_proxy") and value and key.lower() != "no_proxy"
-        }
-        handlers.append(urllib.request.ProxyHandler(proxies))
+        handlers.append(_EnvProxyHandler(_env_proxies(env)))
     return urllib.request.build_opener(*handlers).open
 
 

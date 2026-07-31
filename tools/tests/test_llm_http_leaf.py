@@ -317,6 +317,44 @@ class ErrorTaxonomyTests(unittest.TestCase):
         self.assertTrue(proxies)
         self.assertIn("https", proxies[0].proxies)
 
+    def _routed_host(self, handler, url: str) -> str:
+        """The host the request would actually be sent to: `set_proxy` rewrites `req.host` to
+        the proxy, so this distinguishes "proxied" from "direct"."""
+        request = urllib.request.Request(url)
+
+        class _Parent:
+            def open(self, *_a, **_k):
+                return None
+
+        handler.parent = _Parent()
+        handler.proxy_open(request, "http://proxy.example:3128", "http")
+        return request.host
+
+    def test_the_supplied_environments_no_proxy_is_honoured(self) -> None:
+        """`ProxyHandler` takes its proxy URLs from the mapping it is given but decides
+        BYPASS by reading the process-global environment. A run whose environment sets
+        `NO_PROXY=localhost` alongside a proxy would send a loopback request — and its
+        Authorization header — to that proxy, because the global environment never mentioned
+        the exemption."""
+        env = {"HTTP_PROXY": "http://proxy.example:3128", "NO_PROXY": "localhost,127.0.0.1"}
+        with patch.dict("os.environ", {}, clear=True):
+            handler = hl._EnvProxyHandler(hl._env_proxies(env))
+            self.assertEqual(self._routed_host(handler, "http://127.0.0.1:8000/v1"),
+                             "127.0.0.1:8000")
+            # ...and a host the exemption does not name still goes through the proxy.
+            self.assertEqual(self._routed_host(handler, "http://api.example.com/v1"),
+                             "proxy.example:3128")
+            # The stock handler is what this replaces: it proxies the loopback request.
+            self.assertEqual(
+                self._routed_host(urllib.request.ProxyHandler(hl._env_proxies(env)),
+                                  "http://127.0.0.1:8000/v1"),
+                "proxy.example:3128")
+
+    def test_the_proxy_map_keeps_no_proxy_under_the_key_urllib_reads(self) -> None:
+        self.assertEqual(
+            hl._env_proxies({"HTTPS_PROXY": "http://p:1", "no_proxy": "localhost"}),
+            {"https": "http://p:1", "no": "localhost"})
+
     def test_an_unsupported_provider_is_a_transport_error_not_a_crash(self) -> None:
         entry = lc.ResolvedLeafEntry(provider="claude_cli", model="opus")
         out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}])
