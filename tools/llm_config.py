@@ -327,6 +327,15 @@ class ResolvedLeafEntry:
 # --- parsing helpers -----------------------------------------------------------------
 
 def _require_mapping(value: Any, where: str, rule: str = "llm_config_not_a_mapping") -> dict:
+    """The mapping at `where`, with an ABSENT value (`None`) reading as empty.
+
+    `None` only — never `or {}`. An empty sequence is falsy, so `generate: []` would coerce to
+    `{}` and read as "this phase overrides nothing", silently discarding what the operator
+    wrote and running the inherited provider and model. `generate:` with no value is the
+    spelling that legitimately means nothing; anything else that is not a mapping is an
+    error."""
+    if value is None:
+        return {}
     if not isinstance(value, dict):
         raise LlmConfigError(rule, f"expected a mapping, got {type(value).__name__}", where=where)
     return value
@@ -678,7 +687,7 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
             f"unknown top-level key(s): {', '.join(map(repr, unknown))}; accepted: "
             f"'defaults', 'phases'", where=str(p))
 
-    defaults_raw = _require_mapping(doc.get("defaults") or {}, "defaults")
+    defaults_raw = _require_mapping(doc.get("defaults"), "defaults")
     default_fields = _layer_fields(defaults_raw, "defaults")
     defaults = _finalize_entry(default_fields, "defaults", frozenset(default_fields))
     if not defaults.supports(CAP_AGENTIC):
@@ -689,7 +698,7 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
             f"capabilities {', '.join(sorted(defaults.capabilities)) or '(none)'}",
             where="defaults")
 
-    phases_raw = _require_mapping(doc.get("phases") or {}, "phases")
+    phases_raw = _require_mapping(doc.get("phases"), "phases")
     resolved: dict[tuple[str, str], ResolvedLeafEntry] = {}
     phase_fields: dict[str, dict[str, Any]] = {}
     seen_phases: set[str] = set()
@@ -712,8 +721,8 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
                 f"{', '.join(sorted(LLM_LEAF_PHASES))}", where=f"phases.{phase}")
         phase = phase.strip()
         where = f"phases.{phase}"
-        phase_doc = _require_mapping(phase_doc or {}, where)
-        substeps_raw = _require_mapping(phase_doc.get("substeps") or {}, f"{where}.substeps")
+        phase_doc = _require_mapping(phase_doc, where)
+        substeps_raw = _require_mapping(phase_doc.get("substeps"), f"{where}.substeps")
         phase_fields[phase] = _layer_fields(
             {k: v for k, v in phase_doc.items() if k != "substeps"}, where)
         for substep, substep_doc in substeps_raw.items():
@@ -733,7 +742,7 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
             sub_where = f"{where}.substeps.{key[1]}"
             merged, declared, declared_local = _merge_layers((
                 default_fields, phase_fields[phase],
-                _layer_fields(_require_mapping(substep_doc or {}, sub_where), sub_where)))
+                _layer_fields(_require_mapping(substep_doc, sub_where), sub_where)))
             entry = _finalize_entry(merged, sub_where, declared, declared_local)
             _validate_assignment(key[0], key[1], entry, sub_where)
             resolved[key] = entry

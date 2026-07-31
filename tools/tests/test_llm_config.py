@@ -326,6 +326,25 @@ class RuleTests(_Tmp):
     def test_not_a_mapping_top_level(self) -> None:
         self.assert_rule("llm_config_not_a_mapping", "- provider: claude_cli\n")
 
+    def test_not_a_mapping_empty_sequence_layers(self) -> None:
+        """An empty sequence is FALSY, so `or {}` coerced it to an empty mapping and the layer
+        read as "overrides nothing" — silently discarding what the operator wrote and running
+        the inherited provider and model."""
+        base = "defaults:\n  provider: claude_cli\n  model: base\n"
+        for body in (base + "phases:\n  generate: []\n",
+                     base + "phases:\n  generate:\n    substeps: []\n",
+                     base + "phases:\n  generate:\n    substeps:\n      verify: []\n"):
+            self.assert_rule("llm_config_not_a_mapping", body)
+
+    def test_an_absent_layer_is_still_legitimately_empty(self) -> None:
+        """`generate:` with no value is the spelling that MEANS nothing, and must keep working
+        — only `None` reads as empty."""
+        base = "defaults:\n  provider: claude_cli\n  model: base\n"
+        for body in (base, base + "phases:\n", base + "phases:\n  generate:\n",
+                     base + "phases:\n  generate:\n    substeps:\n"):
+            cfg = lc.load_llm_config(self.write(body, "absent.yaml"))
+            self.assertEqual(cfg.entry_for("generate", "verify").model, "base")
+
     def test_not_a_mapping_defaults(self) -> None:
         self.assert_rule("llm_config_not_a_mapping", "defaults: claude_cli\n")
 
