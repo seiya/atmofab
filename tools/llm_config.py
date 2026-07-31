@@ -224,6 +224,11 @@ class ResolvedLeafEntry:
     timeout_s: float | None = None
     max_output_tokens: int | None = None
     capabilities: frozenset[str] = frozenset()
+    # The field names a level on THIS entry's provider actually wrote, as opposed to inherited.
+    # `apply_defaults_overrides` needs it: value equality cannot tell an inherited `opus` from
+    # a per-substep one deliberately pinned to the same string, and a run-wide `--agent-model`
+    # must move the first and leave the second.
+    declared: frozenset[str] = frozenset()
 
     def supports(self, capability: str) -> bool:
         """Fail-closed capability test: an unknown capability name is NOT supported.
@@ -307,7 +312,9 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
     return out
 
 
-def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], frozenset[str]]:
+def _merge_layers(
+    layers: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], frozenset[str], frozenset[str]]:
     """Resolve `defaults` -> `phases.<phase>` -> `...substeps.<substep>` into one field map.
 
     Two kinds of field, resolved differently:
@@ -324,8 +331,13 @@ def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], 
       switch, so `defaults(claude) -> generate(http) -> generate.verify(claude)` silently lost
       the operator's `defaults.command` wrapper on that one leaf.
 
-    Returns `(fields, declared_on_this_provider)` — the second is what `_finalize_entry` uses
-    to tell a field the operator wrote for THIS provider from one that merely inherited."""
+    Returns `(fields, declared_on_this_provider, declared_below_defaults)`. The second tells
+    `_finalize_entry` a field the operator wrote for THIS provider from one that merely
+    inherited, which is what makes a non-applicable field an error only where it can be acted
+    on. The third is narrower — the field was written at a level BELOW `defaults`, i.e. per
+    phase or per substep — and is what `apply_defaults_overrides` needs: a run-wide flag
+    overrides `defaults` and everything that took its value from `defaults`, but not a
+    per-substep value the operator pinned deliberately."""
     effective: list[tuple[str, Mapping[str, Any]]] = []
     provider = ""
     for layer in layers:
@@ -335,20 +347,24 @@ def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], 
 
     merged: dict[str, Any] = {}
     declared: set[str] = set()
-    for layer_provider, layer in effective:
+    declared_local: set[str] = set()
+    for index, (layer_provider, layer) in enumerate(effective):
         for key, value in layer.items():
             if key in _PROVIDER_SCOPED_FIELDS and layer_provider != final_provider:
                 continue
             merged[key] = value
             if layer_provider == final_provider:
                 declared.add(key)
+                if index > 0:                    # layer 0 IS `defaults`
+                    declared_local.add(key)
     if final_provider:
         merged["provider"] = final_provider
-    return merged, frozenset(declared)
+    return merged, frozenset(declared), frozenset(declared_local)
 
 
 def _finalize_entry(fields: Mapping[str, Any], where: str,
-                    declared_here: frozenset[str] = frozenset()) -> ResolvedLeafEntry:
+                    declared_here: frozenset[str] = frozenset(),
+                    declared_local: frozenset[str] = frozenset()) -> ResolvedLeafEntry:
     """Turn a merged field map into a validated `ResolvedLeafEntry`.
 
     `declared_here` names the fields written by a level that shares this entry's provider —
@@ -413,6 +429,7 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
         base_url = ANTHROPIC_DEFAULT_BASE_URL
 
     return ResolvedLeafEntry(
+        declared=frozenset(declared_local),
         provider=provider,
         model=str(fields.get("model") or ""),
         command=str(fields.get("command") or ""),
@@ -584,10 +601,10 @@ def load_llm_config(path: str | Path) -> LlmConfig:
                     f"{', '.join(sorted(s for p, s in LLM_LEAF_SUBSTEPS if p == phase))}",
                     where=f"{where}.substeps.{substep}")
             sub_where = f"{where}.substeps.{key[1]}"
-            merged, declared = _merge_layers((
+            merged, declared, declared_local = _merge_layers((
                 default_fields, phase_fields[phase],
                 _layer_fields(_require_mapping(substep_doc or {}, sub_where), sub_where)))
-            entry = _finalize_entry(merged, sub_where, declared)
+            entry = _finalize_entry(merged, sub_where, declared, declared_local)
             _validate_assignment(key[0], key[1], entry, sub_where)
             resolved[key] = entry
 
@@ -597,9 +614,10 @@ def load_llm_config(path: str | Path) -> LlmConfig:
             continue
         phase, substep = key
         where = f"phases.{phase}"
-        merged, declared = _merge_layers((default_fields, phase_fields.get(phase, {})))
+        merged, declared, declared_local = _merge_layers(
+            (default_fields, phase_fields.get(phase, {})))
         entry = _finalize_entry(merged, where if phase in phase_fields else "defaults",
-                                declared)
+                                declared, declared_local)
         _validate_assignment(phase, substep, entry,
                              where if phase in phase_fields else "defaults")
         resolved[key] = entry
@@ -686,20 +704,31 @@ def apply_defaults_overrides(
     if not model and not command:
         return cfg
 
-    def _override(entry: ResolvedLeafEntry, inherited: ResolvedLeafEntry) -> ResolvedLeafEntry:
+    def _override(entry: ResolvedLeafEntry, inherited: ResolvedLeafEntry,
+                  *, is_defaults: bool = False) -> ResolvedLeafEntry:
         if entry.provider != inherited.provider:
             return entry
+
+        def _inherited(field: str) -> bool:
+            """The entry took this field from `defaults` rather than declaring its own.
+
+            DECLARATION, not value equality: a `validate.judge.model: opus` written next to a
+            `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
+            `--agent-model sonnet` must not move it. `defaults` itself is always overridable —
+            that is what the flag overrides."""
+            return is_defaults or field not in entry.declared
+
         changes: dict[str, Any] = {}
-        if model and entry.model == inherited.model:
+        if model and entry.model == inherited.model and _inherited("model"):
             changes["model"] = model
-        if command and entry.command == inherited.command:
+        if command and entry.command == inherited.command and _inherited("command"):
             # Reachable only for a CLI provider: the override is applied to entries sharing
             # `defaults`' provider, and `defaults` must be agentic (`llm_config_defaults_not_agentic`),
             # which no HTTP provider is.
             changes["command"] = command
         return ResolvedLeafEntry(**{**entry.__dict__, **changes}) if changes else entry
 
-    new_defaults = _override(cfg.defaults, cfg.defaults)
+    new_defaults = _override(cfg.defaults, cfg.defaults, is_defaults=True)
     entries = {k: _override(e, cfg.defaults) for k, e in cfg.entries.items()}
     return LlmConfig(path=cfg.path, sha256=cfg.sha256,
                      defaults=new_defaults, entries=entries)

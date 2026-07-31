@@ -326,15 +326,51 @@ class KeySecrecyTests(unittest.TestCase):
         self.assertIn("[redacted-api-key]", out.raw_response)
         self.assertIn("HTTP 401", str(out.transport_error))
 
-    def test_a_successful_body_that_echoes_the_key_is_redacted_too(self) -> None:
-        """The success path persists the body as well, so the redaction cannot be scoped to
-        errors."""
+    def test_the_persisted_copy_of_a_successful_body_is_redacted_too(self) -> None:
+        """The success path persists the raw body as well, so the redaction cannot be scoped to
+        errors. It is scoped to the DIAGNOSTIC copy: `text` is the parsed document the run
+        acts on, and rewriting it would corrupt a valid answer whenever the key is a common
+        substring — the documented residual is that a provider echoing the key into a
+        successful completion's CONTENT puts it in the model's answer channel."""
         body = dict(_OPENAI_OK, choices=[
             {"message": {"content": '{"leaked": "%s"}' % KEY_VALUE}, "finish_reason": "stop"}])
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
             out = hl.run_pure_http_leaf(
                 _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
-        self.assertNotIn(KEY_VALUE, json.dumps(list(out)))
+        self.assertNotIn(KEY_VALUE, out.raw_response)
+        self.assertIn("[redacted-api-key]", out.raw_response)
+
+    def test_redaction_never_touches_the_document_the_run_reads(self) -> None:
+        """Local endpoints are configured with placeholder keys — `EMPTY`, `test`, `local`.
+        Redacting the body BEFORE parsing rewrites the provider's own document: a valid reply
+        becomes unparseable, or the model name it reports is silently corrupted."""
+        body = {"model": "test-model",
+                "choices": [{"message": {"content": '{"ok": 1}'}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 2}}
+        with patch.dict("os.environ", {KEY_ENV: "test"}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        self.assertIsNone(out.transport_error)
+        self.assertEqual(out.model, "test-model")          # NOT "[redacted-api-key]-model"
+        self.assertEqual(out.text, '{"ok": 1}')
+
+    def test_a_key_straddling_the_error_truncation_leaves_no_prefix(self) -> None:
+        """Slicing to the diagnostic length first cuts through the middle of the key, and the
+        exact-string replace then matches nothing while a prefix of the secret survives."""
+        secret = "sk-" + "S" * 40
+        env = {KEY_ENV: secret}
+
+        def _straddle(*_a, **_k):
+            raise urllib.error.HTTPError(
+                "http://x", 401, "Unauthorized", {},
+                io.BytesIO(("x" * 380 + secret).encode("utf-8")))
+
+        with patch.dict("os.environ", env, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_straddle)
+        for length in range(8, len(secret) + 1):
+            self.assertNotIn(secret[:length], out.raw_response, msg=f"prefix of {length}")
+            self.assertNotIn(secret[:length], str(out.transport_error))
 
     def test_an_exception_string_carrying_the_key_is_redacted(self) -> None:
         """An operator can embed a credential in `base_url`; a socket error's text repeats it."""

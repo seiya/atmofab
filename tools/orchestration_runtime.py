@@ -10268,27 +10268,53 @@ def _reprobe_recorded_providers(
     fresh: dict[str, Any] = {}
     for token, row in cached_providers.items():
         if not isinstance(row, dict):
-            fresh[str(token)] = {"launchable": False,
+            fresh[str(token)] = {"launchable": False, "surfaces": [],
                                  "checks": [{"name": "provider_row_unreadable",
                                              "pass": False, "detail": repr(row)[:200]}]}
             continue
-        provider_type = str(row.get("provider_type") or "")
-        if provider_type in ("claude_cli", "codex_cli"):
-            command = str(row.get("probe_command") or "").strip()
-            probe = probe_execution_platform(
-                backend=str(token), agent_command=command or None, repo_root=repo_root)
-            fresh[str(token)] = {
+        # EVERY surface recorded under the token, AND-ed exactly as the initial probe did. A
+        # pre-adoption row (or one written before `surfaces` existed) degrades to the single
+        # surface its top-level fields name, which is what it always described.
+        surfaces = row.get("surfaces")
+        if not isinstance(surfaces, list) or not surfaces:
+            surfaces = [{"provider_type": row.get("provider_type", ""),
+                         "probe_command": row.get("probe_command", ""),
+                         "base_url": row.get("base_url", ""),
+                         "api_key_env": row.get("api_key_env", "")}]
+        merged: dict[str, Any] | None = None
+        for surface in surfaces:
+            surface = surface if isinstance(surface, dict) else {}
+            provider_type = str(surface.get("provider_type") or row.get("provider_type") or "")
+            if provider_type in ("claude_cli", "codex_cli"):
+                command = str(surface.get("probe_command") or "").strip()
+                probe = probe_execution_platform(
+                    backend=str(token), agent_command=command or None, repo_root=repo_root)
+                probed = {
+                    "provider_type": provider_type,
+                    "probe_command": probe.get("probe_command", ""),
+                    "checks": probe.get("checks", []),
+                    "launchable": _preflight_allows_agent_launch(probe),
+                }
+            else:
+                probed = _probe_http_provider({
+                    "backend": str(token), "provider": provider_type,
+                    "base_url": surface.get("base_url", ""),
+                    "api_key_env": surface.get("api_key_env", ""),
+                })
+            probed["surfaces"] = [{
                 "provider_type": provider_type,
-                "probe_command": probe.get("probe_command", ""),
-                "checks": probe.get("checks", []),
-                "launchable": _preflight_allows_agent_launch(probe),
-            }
-        else:
-            fresh[str(token)] = _probe_http_provider({
-                "backend": str(token), "provider": provider_type,
-                "base_url": row.get("base_url", ""),
-                "api_key_env": row.get("api_key_env", ""),
-            })
+                "probe_command": str(surface.get("probe_command") or ""),
+                "base_url": str(surface.get("base_url") or ""),
+                "api_key_env": str(surface.get("api_key_env") or ""),
+            }]
+            if merged is None:
+                merged = probed
+            else:
+                merged["checks"] = list(merged.get("checks", [])) + list(probed.get("checks", []))
+                merged["surfaces"] = list(merged["surfaces"]) + probed["surfaces"]
+                merged["launchable"] = (bool(merged.get("launchable"))
+                                        and bool(probed.get("launchable")))
+        fresh[str(token)] = merged or {"launchable": False, "checks": [], "surfaces": []}
     return fresh
 
 
@@ -16491,6 +16517,16 @@ def probe_all_providers(
             }
         else:
             entry = _probe_http_provider(row, opener=opener)
+        # Every surface is recorded, not just the first. The row is what the TTL re-probe
+        # reconstructs its probes from (`_reprobe_recorded_providers`), so keeping one
+        # command/endpoint would silently stop checking the others after the first expiry —
+        # and an unavailable one would then be certified fresh until its leaf launch failed.
+        entry["surfaces"] = [{
+            "provider_type": row["provider"],
+            "probe_command": row["command"],
+            "base_url": row["base_url"],
+            "api_key_env": row["api_key_env"],
+        }]
         prior = providers.get(token)
         if prior is None:
             providers[token] = entry
@@ -16498,6 +16534,7 @@ def probe_all_providers(
             # Same token, different command/endpoint: AND them, and keep both check lists so
             # the operator can see WHICH one failed.
             prior["checks"] = list(prior.get("checks", [])) + list(entry.get("checks", []))
+            prior["surfaces"] = list(prior.get("surfaces", [])) + entry["surfaces"]
             prior["launchable"] = bool(prior.get("launchable")) and bool(entry.get("launchable"))
     return providers
 

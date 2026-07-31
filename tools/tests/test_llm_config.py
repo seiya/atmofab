@@ -521,6 +521,43 @@ class LegacyBridgeTests(unittest.TestCase):
             self.assertEqual(cfg.entry_for("generate", "verify").model, "claude-pinned")
             self.assertEqual(cfg.defaults.model, "claude-pinned")
 
+    def test_an_explicit_pin_that_equals_the_default_still_survives_an_override(self) -> None:
+        """DECLARATION decides, not value equality. A `validate.judge.model: opus` written next
+        to a `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
+        `--agent-model` must move the default and everything that inherited it — not that."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "same.yaml"
+            path.write_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n        model: opus\n",
+                encoding="utf-8")
+            cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
+            self.assertEqual(cfg.entry_for("validate", "judge").model, "opus")
+            self.assertEqual(cfg.defaults.model, "sonnet")
+            # ...and a leaf that declared nothing DOES follow the default.
+            self.assertEqual(cfg.entry_for("compile", "verify").model, "sonnet")
+
+    def test_a_phase_level_pin_equal_to_the_default_survives_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "phase.yaml"
+            path.write_text(
+                "defaults:\n  provider: claude_cli\n  command: wrap\n"
+                "phases:\n  generate:\n    command: wrap\n", encoding="utf-8")
+            cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), command="other")
+            self.assertEqual(cfg.entry_for("generate", "generate").command, "wrap")
+            self.assertEqual(cfg.entry_for("compile", "verify").command, "other")
+
+    def test_declared_names_only_what_a_level_below_defaults_wrote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "d.yaml"
+            path.write_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n",
+                encoding="utf-8")
+            cfg = lc.load_llm_config(path)
+            self.assertEqual(cfg.entry_for("validate", "judge").declared, frozenset({"model"}))
+            self.assertEqual(cfg.entry_for("compile", "verify").declared, frozenset())
+
     def test_overrides_leave_a_per_substep_model_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pinned.yaml"

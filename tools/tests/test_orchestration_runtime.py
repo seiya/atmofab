@@ -31816,6 +31816,41 @@ class MultiProviderPreflightTests(unittest.TestCase):
                     json.loads((repo_root / "workspace/orchestrations/orch_001/preflight.json")
                                .read_text(encoding="utf-8")))
 
+    def test_the_reprobe_covers_every_surface_recorded_under_a_token(self) -> None:
+        """Two entries can share a backend token with different commands; the initial probe
+        AND-s them. The row is what the TTL re-probe reconstructs from, so recording only the
+        first command would silently stop checking the second after the first expiry."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._config(Path(tmp),
+                               "defaults:\n  provider: claude_cli\n  command: wrapA\n"
+                               "phases:\n  validate:\n    substeps:\n      judge:\n"
+                               "        command: wrapB\n")
+            seen: list = []
+
+            def _probe(**kw):
+                seen.append(kw.get("agent_command"))
+                return _launchable_preflight_dict(backend="claude")
+
+            with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+                recorded = ort.probe_all_providers(llm_config_path=cfg)
+                self.assertEqual(seen, ["wrapA", "wrapB"])
+                seen.clear()
+                ort._reprobe_recorded_providers(recorded, None)
+            self.assertEqual(seen, ["wrapA", "wrapB"])
+
+    def test_a_row_predating_surfaces_degrades_to_the_one_it_names(self) -> None:
+        seen: list = []
+
+        def _probe(**kw):
+            seen.append(kw.get("agent_command"))
+            return _launchable_preflight_dict(backend="claude")
+
+        with patch.object(ort, "probe_execution_platform", side_effect=_probe):
+            ort._reprobe_recorded_providers(
+                {"claude": {"provider_type": "claude_cli", "probe_command": "wrapA",
+                            "checks": [], "launchable": True}}, None)
+        self.assertEqual(seen, ["wrapA"])
+
     def test_a_refreshed_probe_persists_the_rows_it_refreshed(self) -> None:
         """Advancing `probed_at` while leaving the stale rows is the state the re-probe exists
         to prevent."""

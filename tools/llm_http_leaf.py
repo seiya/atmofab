@@ -128,8 +128,15 @@ def _redact(text: str, secret: str) -> str:
 
     The key-secrecy contract has to survive text this module did not write. A provider — a
     debug gateway, a verbose proxy, a misconfigured server — may echo the request headers in a
-    4xx/5xx body, and that body is BOTH persisted verbatim under `launches/` and emitted in an
-    event. Redacting is cheap and unconditional; reasoning about which endpoints echo is not."""
+    4xx/5xx body, and that body is BOTH persisted under `launches/` and emitted in an event.
+    Redacting is cheap; reasoning about which endpoints echo is not.
+
+    Applied ONLY to the diagnostic copies — the persisted raw body and the transport-error
+    string — never to the document the run reads. A key that is a common substring would
+    otherwise corrupt a valid reply. RESIDUAL: a provider that echoed the key inside a
+    SUCCESSFUL completion's content would put it in the model's answer channel, which is
+    persisted as the leaf's stdout; scrubbing that channel is not possible without corrupting
+    answers, and it is not a shape any provider produces."""
     if not secret:
         return text
     return text.replace(secret, _REDACTED)
@@ -163,29 +170,35 @@ def _post_json(
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
-            detail = exc.read().decode("utf-8", "replace")[:400]
+            # Redact BEFORE the length limit: slicing first can cut through the middle of the
+            # key, and the exact-string replace then matches nothing while a prefix of the
+            # secret survives into `raw_response` and the emitted event.
+            detail = _redact(exc.read().decode("utf-8", "replace"), secret)[:400]
         except Exception:                       # noqa: BLE001 - diagnostics only
             detail = ""
         # `HTTP <code>`, spaced: the conductor classifies a leaf's terminal line with patterns
         # anchored on `\bhttp\b`, and `http_status_429` is one word to a regex — a terse
         # rate-limit body would then match nothing, and a transient outage would fail the run
         # closed instead of being retried.
-        detail = _redact(detail, secret)
         return None, detail, f"HTTP {exc.code} from provider: {detail or exc.reason}"
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
         # The exception's own text can carry the URL, which an operator may have embedded a
         # credential in; redact for the same reason as the body.
         return None, "", _redact(f"{type(exc).__name__}: {exc}", secret)
-    text = _redact(
-        raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw),
-        secret)
+    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+    # Parse the ORIGINAL, return the REDACTED copy. Redacting first would mutate the provider's
+    # document before it is read: a local endpoint whose key is a short word (`test`, `local`,
+    # `EMPTY` — the placeholders vLLM and Ollama are configured with) turns a valid reply into
+    # an unparseable one, or silently rewrites the model name it reports. The redacted string is
+    # what gets persisted and emitted; the parsed values are what the run uses.
+    redacted = _redact(text, secret)
     try:
         doc = json.loads(text)
     except json.JSONDecodeError as exc:
-        return None, text, f"response_not_json: {exc}"
+        return None, redacted, _redact(f"response_not_json: {exc}", secret)
     if not isinstance(doc, dict):
-        return None, text, f"response_not_an_object: {type(doc).__name__}"
-    return doc, text, None
+        return None, redacted, f"response_not_an_object: {type(doc).__name__}"
+    return doc, redacted, None
 
 
 def _api_key(entry: Any) -> "tuple[str, str | None]":
