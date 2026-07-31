@@ -291,6 +291,32 @@ class ErrorTaxonomyTests(unittest.TestCase):
         self.assertIn("missing_api_key", str(out.transport_error))
         self.assertIn(KEY_ENV, str(out.transport_error))
 
+    def test_the_supplied_environment_is_where_the_key_is_read(self) -> None:
+        """A run's own credential lives in the conductor's environment, which every spawned
+        leaf receives. Reading the process-global one takes a key the run did not choose."""
+        seen: list = []
+        env = {KEY_ENV: "sk-from-the-run"}
+        with patch.dict("os.environ", {KEY_ENV: "sk-from-the-process"}, clear=False):
+            hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], env=env,
+                opener=_opener(_OPENAI_OK, seen))
+        self.assertEqual(seen[0]["headers"]["authorization"], "Bearer sk-from-the-run")
+
+    def test_a_key_absent_from_the_supplied_environment_is_missing(self) -> None:
+        with patch.dict("os.environ", {KEY_ENV: "sk-from-the-process"}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], env={},
+                opener=_opener(_OPENAI_OK))
+        self.assertIn("missing_api_key", str(out.transport_error))
+
+    def test_the_supplied_environments_proxy_is_the_one_installed(self) -> None:
+        opener = hl._default_opener({"https_proxy": "http://proxy.example:3128"})
+        owner = getattr(opener, "__self__", None)
+        proxies = [h for h in getattr(owner, "handlers", [])
+                   if isinstance(h, urllib.request.ProxyHandler)]
+        self.assertTrue(proxies)
+        self.assertIn("https", proxies[0].proxies)
+
     def test_an_unsupported_provider_is_a_transport_error_not_a_crash(self) -> None:
         entry = lc.ResolvedLeafEntry(provider="claude_cli", model="opus")
         out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}])

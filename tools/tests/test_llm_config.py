@@ -329,6 +329,12 @@ class RuleTests(_Tmp):
     def test_not_a_mapping_defaults(self) -> None:
         self.assert_rule("llm_config_not_a_mapping", "defaults: claude_cli\n")
 
+    def test_unknown_top_level_keys_of_mixed_types(self) -> None:
+        """A malformed document can mix key TYPES, and sorting those against each other raises
+        a TypeError that escapes the named-rejection contract as a traceback."""
+        self.assert_rule("llm_config_unknown_key",
+                         "defaults:\n  provider: claude_cli\n1: x\nfoo: y\n")
+
     def test_unknown_top_level_key(self) -> None:
         self.assert_rule("llm_config_unknown_key",
                          "defaults:\n  provider: claude_cli\nbackends: {}\n")

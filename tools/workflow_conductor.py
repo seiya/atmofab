@@ -3566,6 +3566,7 @@ class Conductor:
         prompt_text: str,
         entry: ResolvedLeafEntry,
         *,
+        child_env: dict[str, str] | None = None,
         child_arid: str | None,
         timeout_context: dict[str, str] | None,
     ) -> ProcResult:
@@ -3599,7 +3600,10 @@ class Conductor:
         # unreachable and asked every endpoint for 128000 output tokens — which the local
         # servers this provider exists for reject outright, as a NON-retryable client error on
         # the first attempt.
-        response = run_pure_http_leaf(entry, messages)
+        # `child_env`, not the process environment: it is what every spawned leaf receives,
+        # and it is where a run's own API key or proxy routing lives. Reading the global one
+        # would take a credential this run did not choose, or miss one it did.
+        response = run_pure_http_leaf(entry, messages, env=child_env)
 
         if child_arid:
             # `.txt`, NOT `.json`: this is the provider's body verbatim, and the case it most
@@ -3632,7 +3636,7 @@ class Conductor:
             0, response.text, "", usage=response.usage,
             model=response.model or entry.model or None,
             response_truncated=response.truncated,
-            persist_stdout=redact_secret(response.text, entry))
+            persist_stdout=redact_secret(response.text, entry, child_env))
 
     def _sandbox_profile_for(self, child_arid: str) -> dict[str, Any] | None:
         """The bwrap profile record-launch wrote for this child, or None."""
@@ -3720,7 +3724,8 @@ class Conductor:
             # process group to reap. The reply comes back in the same `ProcResult` shape, so
             # every consumer downstream — persistence, envelope, validators, repair — is
             # unchanged.
-            return self._run_http_leaf(prompt_text, entry, child_arid=child_arid,
+            return self._run_http_leaf(prompt_text, entry, child_env=child_env,
+                                       child_arid=child_arid,
                                        timeout_context=timeout_context)
         # Host-certify the codex hooks feature into the leaf-unwritable cache before the
         # codex leaf launches (the in-sandbox hook reads it read-only; see

@@ -80,8 +80,21 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
             f"redirect refused (would forward credentials to {newurl})", headers, fp)
 
 
-def _default_opener() -> "Callable[..., Any]":
-    return urllib.request.build_opener(_NoRedirects).open
+def _default_opener(env: "Mapping[str, str] | None" = None) -> "Callable[..., Any]":
+    """An opener that refuses redirects and honours `env`'s proxy settings.
+
+    `env` is the CONDUCTOR's environment, which is what every other leaf runs under: urllib
+    would otherwise read the process-global `os.environ`, so a run whose proxy (or endpoint
+    routing) was set for the workflow would silently bypass it."""
+    handlers: list[Any] = [_NoRedirects]
+    if env is not None:
+        proxies = {
+            key[: -len("_proxy")].lower(): value
+            for key, value in env.items()
+            if key.lower().endswith("_proxy") and value and key.lower() != "no_proxy"
+        }
+        handlers.append(urllib.request.ProxyHandler(proxies))
+    return urllib.request.build_opener(*handlers).open
 
 
 # Ceiling on a response body. A pure leaf answers with one JSON document; anything past this is
@@ -180,14 +193,15 @@ def _redact(text: str, secret: str) -> str:
     return text.replace(secret, _REDACTED)
 
 
-def redact_secret(text: str, entry: Any) -> str:
+def redact_secret(text: str, entry: Any,
+                  env: "Mapping[str, str] | None" = None) -> str:
     """`text` with `entry`'s API key removed, for a caller that persists provider-supplied
     text outside this module.
 
     The conductor needs this for the model's ANSWER channel: that value cannot be redacted in
     place (the validators parse it, and a key that is a common substring would corrupt a
     legitimate document), so the redaction happens on the copy written to disk."""
-    secret, _ = _api_key(entry)
+    secret, _ = _api_key(entry, env)
     return _redact(text, secret)
 
 
@@ -198,6 +212,7 @@ def _post_json(
     *,
     timeout_s: float,
     secret: str = "",
+    env: "Mapping[str, str] | None" = None,
     opener: "Callable[..., Any] | None",
 ) -> "tuple[dict[str, Any] | None, str, str | None]":
     """`(document, raw_body, transport_error)` for one JSON POST.
@@ -209,7 +224,7 @@ def _post_json(
     request = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/json", **dict(headers)})
-    open_url = opener if opener is not None else _default_opener()
+    open_url = opener if opener is not None else _default_opener(env)
     deadline = time.monotonic() + timeout_s
     try:
         with open_url(request, timeout=timeout_s) as response:
@@ -261,11 +276,16 @@ def _post_json(
     return doc, redacted, None
 
 
-def _api_key(entry: Any) -> "tuple[str, str | None]":
+def _api_key(entry: Any,
+             env: "Mapping[str, str] | None" = None) -> "tuple[str, str | None]":
     name = (entry.api_key_env or "").strip()
     if not name:
         return "", "missing_api_key_env: the entry declares no api_key_env"
-    value = os.environ.get(name, "").strip()
+    # The CONDUCTOR's environment when it supplies one — the same environment every spawned
+    # leaf receives. Reading the process-global one would take a credential the run did not
+    # choose, or miss one the run did.
+    source = env if env is not None else os.environ
+    value = (source.get(name) or "").strip()
     if not value:
         # Names the VARIABLE, never a value — this string reaches logs and artifacts.
         return "", f"missing_api_key: environment variable {name} is unset or empty"
@@ -273,9 +293,10 @@ def _api_key(entry: Any) -> "tuple[str, str | None]":
 
 
 def _openai_request(
-    entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int
+    entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int,
+    env: "Mapping[str, str] | None" = None,
 ) -> "tuple[str, dict[str, Any], dict[str, str], str | None]":
-    key, error = _api_key(entry)
+    key, error = _api_key(entry, env)
     if error is not None:
         return "", {}, {}, error
     url = entry.base_url.rstrip("/") + "/chat/completions"
@@ -292,9 +313,10 @@ def _openai_request(
 
 
 def _anthropic_request(
-    entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int
+    entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int,
+    env: "Mapping[str, str] | None" = None,
 ) -> "tuple[str, dict[str, Any], dict[str, str], str | None]":
-    key, error = _api_key(entry)
+    key, error = _api_key(entry, env)
     if error is not None:
         return "", {}, {}, error
     url = entry.base_url.rstrip("/") + "/v1/messages"
@@ -369,6 +391,7 @@ def run_pure_http_leaf(
     *,
     timeout_s: "float | None" = None,
     max_output_tokens: "int | None" = None,
+    env: "Mapping[str, str] | None" = None,
     opener: "Callable[..., Any] | None" = None,
 ) -> HttpLeafResponse:
     """One pure-leaf turn against `entry`'s HTTP provider.
@@ -389,15 +412,15 @@ def run_pure_http_leaf(
     limit = int(max_output_tokens or entry.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
     timeout = float(timeout_s or entry.timeout_s or DEFAULT_HTTP_TIMEOUT_SECONDS)
 
-    url, payload, headers, error = build_request(entry, messages, limit)
+    url, payload, headers, error = build_request(entry, messages, limit, env)
     if error is not None:
         return HttpLeafResponse("", "", None, False, error, "")
     # `secret` is the key just resolved for this request: everything this call returns —
     # the raw body (persisted under `launches/`) and the transport error (emitted as an event)
     # — is provider-supplied text that may echo it back.
-    secret, _ = _api_key(entry)
+    secret, _ = _api_key(entry, env)
     doc, raw, error = _post_json(url, payload, headers, timeout_s=timeout,
-                                 secret=secret, opener=opener)
+                                 secret=secret, env=env, opener=opener)
     if error is not None or doc is None:
         return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
     text, model, usage, truncated, read_error = read_response(doc)

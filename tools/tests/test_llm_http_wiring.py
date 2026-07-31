@@ -77,9 +77,12 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         self.addCleanup(key.stop)
 
     def _conductor(self) -> _HttpConductor:
+        # `env` carries the key, as it does in production (`run_workflow` builds the base env
+        # from `os.environ`): the transport reads the CONDUCTOR's environment, not the
+        # process-global one, so that a run's own credential and proxy routing are what apply.
         c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            env={}, llm_config=self.config)
+            env={KEY_ENV: "sk-test"}, llm_config=self.config)
         self._events: list[dict] = []
         c.emit = lambda event, **f: self._events.append({"event": event, **f})  # type: ignore
         return c
@@ -114,7 +117,7 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         # `_default_opener`, not `urlopen`: the transport builds a no-redirect opener rather
         # than calling `urlopen` directly (a redirect would forward the API key), so patching
         # `urlopen` would silently stop intercepting anything.
-        patcher = patch("tools.llm_http_leaf._default_opener", lambda: _open)
+        patcher = patch("tools.llm_http_leaf._default_opener", lambda env=None: _open)
         patcher.start()
         self.addCleanup(patcher.stop)
         return captured
@@ -191,6 +194,18 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         written = (self.repo / self.refs.source_dir() / "src" / f"{_SPEC_ID}_model.f90"
                    ).read_text(encoding="utf-8")
         self.assertIn("sk-test", written)
+
+    def test_the_key_comes_from_the_conductors_environment(self) -> None:
+        """Every spawned leaf receives the conductor's environment; an HTTP leaf must read the
+        same one. Reading the process-global environment takes a credential the run did not
+        choose, or misses one it did."""
+        self._serve([json.dumps(_valid_bundle())])
+        c = self._conductor()
+        c.env = {}                                    # the run supplies no key
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "fail")
+        self.assertIn("missing_api_key",
+                      " ".join(e.get("error", "") for e in self._events))
 
     def test_no_process_is_spawned(self) -> None:
         self._serve([json.dumps(_valid_bundle())])
@@ -314,7 +329,7 @@ class HttpPureLeafWiringTests(unittest.TestCase):
             raise urllib.error.HTTPError(
                 "http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":"max_tokens"}'))
 
-        patcher = patch("tools.llm_http_leaf._default_opener", lambda: _open)
+        patcher = patch("tools.llm_http_leaf._default_opener", lambda env=None: _open)
         patcher.start()
         self.addCleanup(patcher.stop)
         c = self._conductor()
@@ -339,7 +354,7 @@ class HttpPureLeafWiringTests(unittest.TestCase):
     def test_an_agentic_provider_on_a_non_m3c_node_is_untouched(self) -> None:
         c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            env={}, backend="claude", agent_model="opus")
+            env={KEY_ENV: "sk-test"}, backend="claude", agent_model="opus")
         c._conductor_authors_makefile = lambda refs: False   # type: ignore[assignment]
         self.assertFalse(c._pure_leaf_substep(self.refs, "generate", "generate"))
         entry = c.entry_for("generate", "generate")

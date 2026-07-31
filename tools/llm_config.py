@@ -668,7 +668,10 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
         doc = {}
     _require_mapping(doc, str(p))
 
-    unknown = sorted(set(doc) - {"defaults", "phases"})
+    # `key=repr`: a malformed document can mix key TYPES (`1: x` next to `foo: y`), and
+    # sorting those against each other raises a TypeError that escapes the named-rejection
+    # contract as a traceback in the caller's startup path.
+    unknown = sorted(set(doc) - {"defaults", "phases"}, key=repr)
     if unknown:
         raise LlmConfigError(
             "llm_config_unknown_key",
