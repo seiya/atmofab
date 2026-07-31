@@ -1347,6 +1347,20 @@ class PureLeafProvenanceUnderAMixedConfigTests(unittest.TestCase):
         self.assertNotIn("2.1.9 (Claude Code)", rendered)
         self.assertNotIn("--version", rendered)
 
+    def test_the_module_still_runs_as_a_direct_script(self) -> None:
+        """`docs/CLI_REFERENCE.md` makes `python3 tools/audit_orchestration.py ...` the
+        canonical way to run this. Under it `sys.path[0]` is `tools/`, so an unconditional
+        `from tools.x import ...` raises before any existing shim can help."""
+        import os
+        import subprocess
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        repo = Path(__file__).resolve().parent.parent.parent
+        proc = subprocess.run(
+            ["python3", "tools/audit_orchestration.py", "--help"],
+            cwd=repo, env=env, capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+        self.assertIn("--orchestration-id", proc.stdout)
+
     def test_the_attributed_substeps_track_the_pure_capable_table(self) -> None:
         import tools.llm_config as lc
         self.assertEqual(

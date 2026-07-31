@@ -26,7 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
+try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
+    from llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
+except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
+    from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
 
 try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
     from orchestration_diagnostics import (

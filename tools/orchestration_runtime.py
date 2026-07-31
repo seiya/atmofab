@@ -10228,11 +10228,16 @@ def _update_preflight_probed_at(
     repo_root: Path,
     orchestration_id: str,
     probed_at_iso: str,
+    providers: dict[str, Any] | None = None,
 ) -> None:
-    """Update only the probed_at field of preflight.json.
+    """Update the probed_at field of preflight.json, and the `providers` map when re-probed.
 
     Do not change other fields (status / can_launch_* etc.).
     Do nothing when preflight.json does not exist (not an error).
+
+    `probed_at` is the freshness claim for the WHOLE document, so a re-probe that produced new
+    provider rows must persist them with it: leaving the stale rows while advancing the
+    timestamp is precisely the "treated as fresh indefinitely" state this guards against.
     """
     path = _preflight_path(repo_root, orchestration_id)
     if not path.exists():
@@ -10244,7 +10249,47 @@ def _update_preflight_probed_at(
     if not isinstance(file_payload, dict):
         return
     file_payload["probed_at"] = probed_at_iso
+    if providers is not None:
+        file_payload["providers"] = providers
     _write_json(path, file_payload)
+
+
+def _reprobe_recorded_providers(
+    cached_providers: Mapping[str, Any],
+    repo_root: Path | None,
+) -> dict[str, Any]:
+    """Re-probe every provider row a preflight recorded, from the row itself.
+
+    The rows carry everything a probe needs — `provider_type`, and the `probe_command` or the
+    `base_url` / `api_key_env` — so this does not reload the configuration file (which the
+    preflight deliberately does not record: `orchestration_meta.json#invocation` already pins
+    its path and hash). A row that is not a mapping is carried through as unlaunchable rather
+    than dropped, so a corrupted document cannot become a launchable one by re-probing."""
+    fresh: dict[str, Any] = {}
+    for token, row in cached_providers.items():
+        if not isinstance(row, dict):
+            fresh[str(token)] = {"launchable": False,
+                                 "checks": [{"name": "provider_row_unreadable",
+                                             "pass": False, "detail": repr(row)[:200]}]}
+            continue
+        provider_type = str(row.get("provider_type") or "")
+        if provider_type in ("claude_cli", "codex_cli"):
+            command = str(row.get("probe_command") or "").strip()
+            probe = probe_execution_platform(
+                backend=str(token), agent_command=command or None, repo_root=repo_root)
+            fresh[str(token)] = {
+                "provider_type": provider_type,
+                "probe_command": probe.get("probe_command", ""),
+                "checks": probe.get("checks", []),
+                "launchable": _preflight_allows_agent_launch(probe),
+            }
+        else:
+            fresh[str(token)] = _probe_http_provider({
+                "backend": str(token), "provider": provider_type,
+                "base_url": row.get("base_url", ""),
+                "api_key_env": row.get("api_key_env", ""),
+            })
+    return fresh
 
 
 def _run_live_probe_and_update(
@@ -10265,18 +10310,25 @@ def _run_live_probe_and_update(
     live_probe = probe_execution_platform(
         backend=backend, agent_command=probe_command, repo_root=repo_root
     )
-    # RESIDUAL (issue #28): this probe covers `defaults` only, yet the `probed_at` written
-    # below refreshes the TTL of the WHOLE document, including a `providers` map whose non-
-    # default rows nobody re-examined. Re-ANDing the cached map here would be theatre — the
-    # caller already applied it to the cached payload before reaching this function — so the
-    # gap is recorded rather than papered over. Closing it means re-probing every provider,
-    # which costs a subprocess per CLI provider and a request per HTTP one on every launch.
+    # EVERY recorded provider, not just `defaults` (issue #28): the `probed_at` written below
+    # is the freshness claim for the whole document, so re-probing one provider and refreshing
+    # the timestamp would leave a mixed configuration's other providers treated as fresh
+    # indefinitely — and `record-launch` would then create durable child state for a provider
+    # that has since become unavailable, discovering it only when the spawn or request fails.
+    # This runs on TTL EXPIRY, not per launch (`_live_preflight_mode` / `_live_preflight_ttl_seconds`),
+    # so the cost is one probe per provider per TTL window.
+    cached_providers = cached_payload.get("providers")
+    fresh_providers: dict[str, Any] | None = None
+    if isinstance(cached_providers, dict) and cached_providers:
+        fresh_providers = _reprobe_recorded_providers(cached_providers, repo_root)
+        live_probe["providers"] = fresh_providers
     if not _preflight_allows_agent_launch(live_probe):
         raise RuntimeError(
             "live preflight gate failed: execution platform required launch capabilities are unavailable"
         )
     probed_at = live_probe.get("checked_at") or _utc_now_iso()
-    _update_preflight_probed_at(repo_root, orchestration_id, probed_at)
+    _update_preflight_probed_at(repo_root, orchestration_id, probed_at,
+                                providers=fresh_providers)
 
 
 def _require_preflight_launchable(

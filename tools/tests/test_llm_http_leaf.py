@@ -310,6 +310,42 @@ class KeySecrecyTests(unittest.TestCase):
                     _entry(provider), [{"role": "user", "content": "P"}], opener=_opener(body))
                 self.assertNotIn(KEY_VALUE, json.dumps(list(out)), msg=provider)
 
+    def test_a_provider_that_echoes_the_key_back_does_not_get_it_persisted(self) -> None:
+        """The contract has to survive text this module did not write. A debug gateway or a
+        verbose proxy can echo the request headers in an error body — which is BOTH persisted
+        verbatim under `launches/` and emitted in an event."""
+        def _echoing_401(*_a, **_k):
+            body = ('{"error":"invalid key","request_headers":'
+                    '{"Authorization":"Bearer %s"}}' % KEY_VALUE).encode("utf-8")
+            raise urllib.error.HTTPError("http://x", 401, "Unauthorized", {}, io.BytesIO(body))
+
+        with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_echoing_401)
+        self.assertNotIn(KEY_VALUE, json.dumps(list(out)))
+        self.assertIn("[redacted-api-key]", out.raw_response)
+        self.assertIn("HTTP 401", str(out.transport_error))
+
+    def test_a_successful_body_that_echoes_the_key_is_redacted_too(self) -> None:
+        """The success path persists the body as well, so the redaction cannot be scoped to
+        errors."""
+        body = dict(_OPENAI_OK, choices=[
+            {"message": {"content": '{"leaked": "%s"}' % KEY_VALUE}, "finish_reason": "stop"}])
+        with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        self.assertNotIn(KEY_VALUE, json.dumps(list(out)))
+
+    def test_an_exception_string_carrying_the_key_is_redacted(self) -> None:
+        """An operator can embed a credential in `base_url`; a socket error's text repeats it."""
+        def _boom(*_a, **_k):
+            raise OSError(f"cannot connect to http://user:{KEY_VALUE}@host/v1")
+
+        with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
+            out = hl.run_pure_http_leaf(
+                _entry(), [{"role": "user", "content": "P"}], opener=_boom)
+        self.assertNotIn(KEY_VALUE, str(out.transport_error))
+
     def test_an_error_naming_the_variable_does_not_carry_its_value(self) -> None:
         with patch.dict("os.environ", {KEY_ENV: KEY_VALUE}, clear=False):
             def _refuse(*_a, **_k):

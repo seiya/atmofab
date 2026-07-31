@@ -119,12 +119,29 @@ def _read_bounded(response: Any, deadline: float) -> "tuple[bytes | None, str | 
         chunks.append(chunk)
 
 
+# What replaces a credential wherever one is found in provider-supplied text.
+_REDACTED = "[redacted-api-key]"
+
+
+def _redact(text: str, secret: str) -> str:
+    """`text` with `secret` removed.
+
+    The key-secrecy contract has to survive text this module did not write. A provider — a
+    debug gateway, a verbose proxy, a misconfigured server — may echo the request headers in a
+    4xx/5xx body, and that body is BOTH persisted verbatim under `launches/` and emitted in an
+    event. Redacting is cheap and unconditional; reasoning about which endpoints echo is not."""
+    if not secret:
+        return text
+    return text.replace(secret, _REDACTED)
+
+
 def _post_json(
     url: str,
     payload: Mapping[str, Any],
     headers: Mapping[str, str],
     *,
     timeout_s: float,
+    secret: str = "",
     opener: "Callable[..., Any] | None",
 ) -> "tuple[dict[str, Any] | None, str, str | None]":
     """`(document, raw_body, transport_error)` for one JSON POST.
@@ -153,10 +170,15 @@ def _post_json(
         # anchored on `\bhttp\b`, and `http_status_429` is one word to a regex — a terse
         # rate-limit body would then match nothing, and a transient outage would fail the run
         # closed instead of being retried.
+        detail = _redact(detail, secret)
         return None, detail, f"HTTP {exc.code} from provider: {detail or exc.reason}"
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
-        return None, "", f"{type(exc).__name__}: {exc}"
-    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        # The exception's own text can carry the URL, which an operator may have embedded a
+        # credential in; redact for the same reason as the body.
+        return None, "", _redact(f"{type(exc).__name__}: {exc}", secret)
+    text = _redact(
+        raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw),
+        secret)
     try:
         doc = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -297,7 +319,12 @@ def run_pure_http_leaf(
     url, payload, headers, error = build_request(entry, messages, limit)
     if error is not None:
         return HttpLeafResponse("", "", None, False, error, "")
-    doc, raw, error = _post_json(url, payload, headers, timeout_s=timeout, opener=opener)
+    # `secret` is the key just resolved for this request: everything this call returns —
+    # the raw body (persisted under `launches/`) and the transport error (emitted as an event)
+    # — is provider-supplied text that may echo it back.
+    secret, _ = _api_key(entry)
+    doc, raw, error = _post_json(url, payload, headers, timeout_s=timeout,
+                                 secret=secret, opener=opener)
     if error is not None or doc is None:
         return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
     text, model, usage, truncated, read_error = read_response(doc)

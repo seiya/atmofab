@@ -31784,6 +31784,62 @@ class MultiProviderPreflightTests(unittest.TestCase):
         self.assertIsNone(seen[0])                       # the file names none
         self.assertEqual(seen[1], "/opt/wrap/claude --sandbox")
 
+    def test_the_live_reprobe_covers_every_recorded_provider(self) -> None:
+        """`probed_at` is the freshness claim for the WHOLE document. Probing only `defaults`
+        and refreshing it leaves a mixed configuration's other providers treated as fresh
+        indefinitely — and `record-launch` then creates durable child state for a provider that
+        has since become unavailable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"
+            payload["providers"] = {
+                "claude": {"provider_type": "claude_cli", "probe_command": "claude",
+                           "checks": [], "launchable": True},
+                "openai_compatible": {"provider_type": "openai_compatible",
+                                      "base_url": "http://localhost:8000/v1",
+                                      "api_key_env": "METDSL_TEST_LOCAL_KEY",
+                                      "checks": [], "launchable": True},
+            }
+            self._orch_with_preflight(repo_root, payload)
+            # The endpoint has since gone away.
+            def _refuse(*_a, **_k):
+                raise OSError("Connection refused")
+
+            with patch.dict(os.environ, {"METDSL_TEST_LOCAL_KEY": "k"}, clear=False), \
+                 patch.object(ort, "probe_execution_platform",
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 patch("urllib.request.urlopen", _refuse), \
+                 self.assertRaises(RuntimeError):
+                ort._run_live_probe_and_update(
+                    repo_root, "orch_001",
+                    json.loads((repo_root / "workspace/orchestrations/orch_001/preflight.json")
+                               .read_text(encoding="utf-8")))
+
+    def test_a_refreshed_probe_persists_the_rows_it_refreshed(self) -> None:
+        """Advancing `probed_at` while leaving the stale rows is the state the re-probe exists
+        to prevent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"
+            payload["providers"] = {
+                "claude": {"provider_type": "claude_cli", "probe_command": "oldwrapper",
+                           "checks": [], "launchable": True}}
+            self._orch_with_preflight(repo_root, payload)
+            path = repo_root / "workspace/orchestrations/orch_001/preflight.json"
+            probed = _launchable_preflight_dict(backend="claude")
+            probed["probe_command"] = "oldwrapper"
+            with patch.object(ort, "probe_execution_platform", return_value=probed):
+                ort._run_live_probe_and_update(
+                    repo_root, "orch_001",
+                    json.loads(path.read_text(encoding="utf-8")))
+            stored = json.loads(path.read_text(encoding="utf-8"))
+            self.assertTrue(stored["providers"]["claude"]["launchable"])
+            # Re-probed, not carried through: the row now holds THIS probe's checks.
+            self.assertTrue(stored["providers"]["claude"]["checks"])
+            self.assertEqual(stored["providers"]["claude"]["probe_command"], "oldwrapper")
+
     def test_two_entries_under_one_token_are_anded(self) -> None:
         """Same backend behind two commands: the token is launchable only if BOTH are."""
         with tempfile.TemporaryDirectory() as tmp:
