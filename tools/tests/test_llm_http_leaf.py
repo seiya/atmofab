@@ -474,6 +474,48 @@ class TransportBoundsTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 
+    def test_the_deadline_bounds_the_TOTAL_not_each_receive(self) -> None:
+        """`urlopen(timeout=)` applies to each receive independently, so a server that sends a
+        byte just before the deadline and then stalls would buy itself another full timeout —
+        up to twice the configured bound. Driven over a real socket, because the defect is in
+        how the socket's own timeout is set."""
+        import socket
+        import threading
+
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        self.addCleanup(srv.close)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def _serve():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            with conn:
+                conn.recv(65536)
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n"
+                             b"Content-Type: application/json\r\n\r\n")
+                time.sleep(0.9)              # a byte just before a 1 s deadline...
+                try:
+                    conn.sendall(b" ")
+                except OSError:
+                    return
+                stop.wait(30)                # ...then stall
+        threading.Thread(target=_serve, daemon=True).start()
+
+        entry = _entry(base_url=f"http://127.0.0.1:{srv.getsockname()[1]}/v1")
+        started = time.monotonic()
+        out = hl.run_pure_http_leaf(
+            entry, [{"role": "user", "content": "P"}], timeout_s=1.0)
+        elapsed = time.monotonic() - started
+        self.assertEqual(out.transport_error, "response_deadline_exceeded")
+        # Comfortably under 2x, which is what an un-narrowed per-receive timeout would give.
+        self.assertLess(elapsed, 1.6, msg=f"took {elapsed:.1f}s for a 1.0s deadline")
+
     def test_an_oversized_response_is_refused(self) -> None:
         class _Flood:
             def __enter__(self):

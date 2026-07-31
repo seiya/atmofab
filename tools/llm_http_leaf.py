@@ -95,6 +95,22 @@ _MAX_ERROR_BODY_BYTES = 64 * 1024
 _ERROR_DETAIL_CHARS = 400
 
 
+def _set_socket_timeout(response: Any, seconds: float) -> None:
+    """Best-effort: set the underlying socket's timeout, so a blocking receive cannot outlive
+    the caller's deadline. Silent on any object that does not expose one — a test double, or a
+    future response type — because this narrows a bound rather than establishing it."""
+    for attribute in ("fp", "raw", "_sock"):
+        response = getattr(response, attribute, None)
+        if response is None:
+            return
+    settimeout = getattr(response, "settimeout", None)
+    if callable(settimeout):
+        try:
+            settimeout(max(seconds, 0.001))
+        except (OSError, ValueError):            # pragma: no cover - defensive
+            pass
+
+
 def _read_bounded(response: Any, deadline: float,
                   max_bytes: int = _MAX_RESPONSE_BYTES) -> "tuple[bytes | None, str | None]":
     """Read the body under a WALL-CLOCK deadline and a size ceiling.
@@ -114,9 +130,25 @@ def _read_bounded(response: Any, deadline: float,
     chunks: list[bytes] = []
     total = 0
     while True:
-        if time.monotonic() > deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return None, "response_deadline_exceeded"
-        chunk = read_once(_READ_CHUNK_BYTES)
+        # Shrink the SOCKET timeout to what is left. `urlopen(timeout=)` applies to each
+        # receive independently, so a server that sends a byte just before the deadline and
+        # then stalls would otherwise buy itself another full timeout — up to twice the
+        # configured bound (nearly 1800 s at the 900 s default). Best-effort: on any object
+        # that does not expose a socket, the loop still terminates at the deadline, one
+        # socket timeout late, which is where this started.
+        _set_socket_timeout(response, remaining)
+        try:
+            chunk = read_once(_READ_CHUNK_BYTES)
+        except TimeoutError:
+            # The socket timeout we just narrowed is what fired, so report the DEADLINE rather
+            # than a bare `timed out`: the two are the same event here, and only one of them
+            # names the setting the operator can change.
+            if time.monotonic() >= deadline:
+                return None, "response_deadline_exceeded"
+            raise
         if not chunk:
             return b"".join(chunks), None
         total += len(chunk)

@@ -602,8 +602,13 @@ def load_llm_config(path: str | Path) -> LlmConfig:
     `LlmConfig.validate_runnable`."""
     p = Path(path)
     try:
-        text = p.read_text(encoding="utf-8")
-    except OSError as exc:
+        # ONE read, hashed and parsed: `config_sha256(p)` would re-open the file, so a
+        # replacement between the two would resolve the entries from the old bytes while
+        # recording a pin describing the new ones — an invocation claiming a configuration
+        # the run did not use, and a resume that then accepts it.
+        raw = p.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         raise LlmConfigError(
             "llm_config_unreadable", f"cannot read {p}: {exc}", where=str(p)) from exc
     try:
@@ -636,7 +641,16 @@ def load_llm_config(path: str | Path) -> LlmConfig:
     phases_raw = _require_mapping(doc.get("phases") or {}, "phases")
     resolved: dict[tuple[str, str], ResolvedLeafEntry] = {}
     phase_fields: dict[str, dict[str, Any]] = {}
+    seen_phases: set[str] = set()
     for phase, phase_doc in phases_raw.items():
+        if isinstance(phase, str) and phase.strip() in seen_phases:
+            raise LlmConfigError(
+                "llm_config_duplicate_key",
+                f"phase {phase!r} names {phase.strip()!r}, which is already assigned in this "
+                f"document; the later spelling would silently replace the earlier one",
+                where=f"phases.{phase}")
+        if isinstance(phase, str):
+            seen_phases.add(phase.strip())
         if not isinstance(phase, str) or phase.strip() not in LLM_LEAF_PHASES:
             detail = ""
             if isinstance(phase, str) and phase.strip() == "build":
@@ -653,6 +667,12 @@ def load_llm_config(path: str | Path) -> LlmConfig:
             {k: v for k, v in phase_doc.items() if k != "substeps"}, where)
         for substep, substep_doc in substeps_raw.items():
             key = (phase, substep.strip() if isinstance(substep, str) else substep)
+            if key in resolved:
+                raise LlmConfigError(
+                    "llm_config_duplicate_key",
+                    f"substep {substep!r} names {key[1]!r}, which is already assigned under "
+                    f"{phase!r}; the later spelling would silently replace the earlier one",
+                    where=f"{where}.substeps.{substep}")
             if key not in LLM_LEAF_SUBSTEPS:
                 raise LlmConfigError(
                     "llm_config_unknown_substep",
@@ -683,13 +703,19 @@ def load_llm_config(path: str | Path) -> LlmConfig:
 
     return LlmConfig(
         path=str(p),
-        sha256=config_sha256(p),
+        sha256=_sha256_bytes(raw),
         defaults=defaults,
         entries=dict(resolved),
     )
 
 
 # --- hashing / legacy bridge ---------------------------------------------------------
+
+def _sha256_bytes(raw: bytes) -> str:
+    """`"sha256:<hex>"` of bytes already in hand — the same string form `config_sha256`
+    produces for a file, so a snapshot hash and an on-disk hash are directly comparable."""
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
 
 def config_sha256(path: str | Path) -> str:
     """The config file's SHA-256 as `"sha256:<hex>"`, or `"sha256:missing"`.

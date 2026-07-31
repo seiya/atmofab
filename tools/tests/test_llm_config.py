@@ -465,6 +465,20 @@ class RuleTests(_Tmp):
                          "phases:\n  generate:\n    substeps:\n"
                          "      verify:\n        model: a\n      verify:\n        model: b\n")
 
+    def test_duplicate_phase_after_normalization(self) -> None:
+        """`generate` and `" generate "` are distinct YAML keys that name the same phase, so
+        the duplicate-key loader does not see them — the later one silently replaced the
+        earlier provider/model assignment."""
+        self.assert_rule("llm_config_duplicate_key",
+                         'defaults:\n  provider: claude_cli\n'
+                         'phases:\n  generate:\n    model: a\n  " generate ":\n    model: b\n')
+
+    def test_duplicate_substep_after_normalization(self) -> None:
+        self.assert_rule("llm_config_duplicate_key",
+                         'defaults:\n  provider: claude_cli\n'
+                         'phases:\n  generate:\n    substeps:\n      verify:\n'
+                         '        model: a\n      " verify ":\n        model: b\n')
+
     def test_duplicate_field_key(self) -> None:
         self.assert_rule("llm_config_duplicate_key",
                          "defaults:\n  provider: claude_cli\n  model: a\n  model: b\n")
@@ -688,6 +702,30 @@ class MirrorTableDriftTests(unittest.TestCase):
                          len(lc.SUPPORTED_PROVIDERS))
         self.assertEqual(lc.CLI_PROVIDERS | lc.HTTP_PROVIDERS, lc.SUPPORTED_PROVIDERS)
         self.assertEqual(lc.CLI_PROVIDERS & lc.HTTP_PROVIDERS, frozenset())
+
+    def test_the_recorded_hash_describes_the_bytes_that_were_parsed(self) -> None:
+        """Hashing via a SECOND read lets a replacement between the two resolve the entries
+        from the old bytes while recording a pin describing the new ones — an invocation
+        claiming a configuration the run did not use, and a resume that accepts it."""
+        import unittest.mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.yaml"
+            original = "defaults:\n  provider: claude_cli\n  model: original\n"
+            path.write_text(original, encoding="utf-8")
+            real_read_bytes = Path.read_bytes
+
+            def _swap_after_read(self_path):
+                data = real_read_bytes(self_path)
+                if self_path == path:            # the file changes underneath us
+                    path.write_text("defaults:\n  provider: claude_cli\n  model: swapped\n",
+                                    encoding="utf-8")
+                return data
+
+            with unittest.mock.patch.object(Path, "read_bytes", _swap_after_read):
+                cfg = lc.load_llm_config(path)
+            self.assertEqual(cfg.defaults.model, "original")
+            self.assertEqual(cfg.sha256, lc._sha256_bytes(original.encode("utf-8")))
+            self.assertNotEqual(cfg.sha256, lc.config_sha256(path))
 
     def test_config_sha256_agrees_with_the_runtime_hash_primitive(self) -> None:
         """Duplicated primitive, same bytes, same string form — including the missing-file
