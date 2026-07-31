@@ -5631,6 +5631,24 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     # --- threading + equivalence ---------------------------------------------------
 
+    def test_main_hands_the_closure_driver_the_overrides_it_resolved(self) -> None:
+        """`main` dropping these was the defect; a test that calls the closure driver directly
+        supplies them itself and so cannot see it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            captured: dict = {}
+            orig = run_workflow._run_with_dependency_closure
+            run_workflow._run_with_dependency_closure = (   # type: ignore[assignment]
+                lambda **kw: (captured.update(kw) or 0))
+            try:
+                self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-codex",
+                                      "--with-deps"], oid="orch_wd")
+            finally:
+                run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
+            self.assertEqual(captured["llm_config_overrides"], {"model": "gpt-5.6-codex"})
+            self.assertEqual(captured["llm_config"].defaults.model, "gpt-5.6-codex")
+
     def test_llm_config_threads_into_run_conductor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -5845,9 +5863,14 @@ class LlmConfigStartupTests(unittest.TestCase):
                 recorded, repo_root=repo_root, effective_sha256=recorded["sha256"],
                 effective_overrides={"model": "opus"}))
 
-    def _seed_resumable(self, repo_root: Path, oid: str, invocation: dict) -> None:
+    def _seed_resumable(self, repo_root: Path, oid: str, invocation: dict,
+                        *, backend: str = "claude") -> None:
         """An orchestration a resume can find: the meta block both resume gates read, plus the
-        preflight/start-prompt artifacts `_load_resume_params` recovers from."""
+        preflight/start-prompt artifacts `_load_resume_params` recovers from.
+
+        `backend` must match what the run actually used — `_load_resume_params` recovers `llm`
+        from `preflight.json`, and hardcoding `claude` on a codex-pinned orchestration silently
+        skips every codex-specific startup rule."""
         d = repo_root / "workspace" / "orchestrations" / oid
         (d / "launches").mkdir(parents=True, exist_ok=True)
         (d / "orchestration_meta.json").write_text(json.dumps({
@@ -5855,7 +5878,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             "invocation": {"generate_executor": "pure", **invocation},
         }), encoding="utf-8")
         (d / "preflight.json").write_text(
-            json.dumps({"backend": "claude", "probe_command": "claude"}), encoding="utf-8")
+            json.dumps({"backend": backend, "probe_command": backend}), encoding="utf-8")
         (d / "launches" / "orchestration.start.prompt.txt").write_text(
             "end phase: `Build`\nworkflow_mode: `dev`\n"
             "target_spec_ref: `spec/problem/test.md`\n",
@@ -5909,7 +5932,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 "llm_config_path": "configs/llm/mycodex.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
-            })
+            }, backend="codex")
             code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_cx")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             self.assertEqual(kw["llm_config"].defaults.model, "gpt-5.6-codex")

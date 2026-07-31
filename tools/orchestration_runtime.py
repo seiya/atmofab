@@ -10265,13 +10265,12 @@ def _run_live_probe_and_update(
     live_probe = probe_execution_platform(
         backend=backend, agent_command=probe_command, repo_root=repo_root
     )
-    # The cached payload's `providers` map (issue #28) covers providers this probe never
-    # touched, and the `probed_at` written below refreshes the TTL of the WHOLE document. Carry
-    # the map onto the live payload so the gate applies to it here too, rather than certifying
-    # freshness for rows nobody re-examined.
-    cached_providers = cached_payload.get("providers")
-    if isinstance(cached_providers, dict) and cached_providers:
-        live_probe["providers"] = cached_providers
+    # RESIDUAL (issue #28): this probe covers `defaults` only, yet the `probed_at` written
+    # below refreshes the TTL of the WHOLE document, including a `providers` map whose non-
+    # default rows nobody re-examined. Re-ANDing the cached map here would be theatre — the
+    # caller already applied it to the cached payload before reaching this function — so the
+    # gap is recorded rather than papered over. Closing it means re-probing every provider,
+    # which costs a subprocess per CLI provider and a request per HTTP one on every launch.
     if not _preflight_allows_agent_launch(live_probe):
         raise RuntimeError(
             "live preflight gate failed: execution platform required launch capabilities are unavailable"
@@ -17109,6 +17108,18 @@ def record_launch(
     else:
         backend_token = preflight_backend if preflight_backend in SUPPORTED_BACKENDS else "claude"
 
+    # Defense in depth, and BEFORE any durable launch/session/graph mutation — the same rule
+    # the build-recurrence guard and the codex-home transaction check obey. `llm_config` refuses
+    # an HTTP provider on an agentic substep and the conductor refuses one on a node with no
+    # pure path, but this is the authorization gate and must not be the only layer assuming the
+    # other two ran: a non-pure HTTP launch would receive allowed_output_paths, file-tool pins
+    # and a write-authorized capability with no sandbox at all. Raising here leaves no
+    # capability document, no manifest, no agent-graph edge and no session-index row behind.
+    if backend_token in _HTTP_PROVIDER_TOKENS and not _is_pure_launch_request(request_payload):
+        raise RuntimeError(
+            f"record-launch: provider {backend_token!r} runs no confined child process and is "
+            f"admissible only for a pure leaf; this launch is not pure")
+
     # A Codex warm-resume target belongs to one isolated HOME generation.  Prepare
     # the home at the beginning of the launch transaction and reject a stale
     # expectation *before* writing a capability, launch artifacts, or an active
@@ -17608,16 +17619,6 @@ def record_launch(
         # the audit validators (which key on `sandbox_profile` presence) can tell a skipped
         # profile from a missing one.
         if backend_token in _HTTP_PROVIDER_TOKENS:
-            if not is_pure:
-                # Defense in depth. `llm_config` refuses an HTTP provider on an agentic
-                # substep, and the conductor refuses one on a node with no pure path — but
-                # THIS is the authorization gate, and it must not be the only layer that
-                # assumes the other two ran. A non-pure HTTP launch would receive
-                # allowed_output_paths, file-tool pins and a write-authorized capability with
-                # no sandbox at all.
-                raise RuntimeError(
-                    f"record-launch: provider {backend_token!r} runs no confined child "
-                    f"process and is admissible only for a pure leaf; this launch is not pure")
             request_payload.setdefault("leaf_transport", "http")
             response_payload.setdefault("leaf_transport", "http")
             response_payload.setdefault("sandbox_runtime", "none")

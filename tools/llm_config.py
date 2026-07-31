@@ -39,7 +39,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import yaml
 
@@ -81,7 +81,8 @@ PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
 SUPPORTED_PROVIDERS: frozenset[str] = frozenset(PROVIDER_CAPABILITIES)
 
 # Providers that launch a child process (a CLI), vs. providers the conductor speaks to over
-# HTTP from its own process. Used for field applicability, and by preflight to pick a prober.
+# HTTP from its own process. `probe_all_providers` picks a prober by this split, and
+# `test_llm_config` pins that the two partition `SUPPORTED_PROVIDERS`.
 CLI_PROVIDERS: frozenset[str] = frozenset({"claude_cli", "codex_cli"})
 HTTP_PROVIDERS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
 
@@ -174,6 +175,11 @@ _ENTRY_FIELDS: frozenset[str] = frozenset({
 # Fields that only make sense for some providers. Anything not listed applies to all.
 # Fields a provider does not read. Declaring one is an operator error, not a no-op: an ignored
 # `max_output_tokens` on a codex entry looks like a budget that was applied.
+# Rejected when a level whose own provider is this one declares the field; DROPPED when the
+# field merely inherited from a level on another provider. `timeout_s` / `max_output_tokens`
+# are transport-neutral budgets that inherit across a provider switch by design, so
+# "claude everywhere with a raised ceiling, except one leaf on codex" must load — with the
+# ceiling simply not reaching the codex leaf, which has nowhere to apply it.
 _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
     # `timeout_s` bounds an HTTP request; a CLI leaf's wall-clock cap is the conductor's own
     # (`METDSL_LEAF_TIMEOUT_SECONDS`). `max_output_tokens` reaches only the claude transport
@@ -301,7 +307,7 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
     return out
 
 
-def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], frozenset[str]]:
     """Resolve `defaults` -> `phases.<phase>` -> `...substeps.<substep>` into one field map.
 
     Two kinds of field, resolved differently:
@@ -316,7 +322,10 @@ def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
       share its provider. Resolving against effective providers rather than folding pairwise is
       what makes that second half true: pairwise folding drops a field permanently at the first
       switch, so `defaults(claude) -> generate(http) -> generate.verify(claude)` silently lost
-      the operator's `defaults.command` wrapper on that one leaf."""
+      the operator's `defaults.command` wrapper on that one leaf.
+
+    Returns `(fields, declared_on_this_provider)` — the second is what `_finalize_entry` uses
+    to tell a field the operator wrote for THIS provider from one that merely inherited."""
     effective: list[tuple[str, Mapping[str, Any]]] = []
     provider = ""
     for layer in layers:
@@ -325,18 +334,27 @@ def _merge_layers(layers: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     final_provider = provider
 
     merged: dict[str, Any] = {}
+    declared: set[str] = set()
     for layer_provider, layer in effective:
         for key, value in layer.items():
             if key in _PROVIDER_SCOPED_FIELDS and layer_provider != final_provider:
                 continue
             merged[key] = value
+            if layer_provider == final_provider:
+                declared.add(key)
     if final_provider:
         merged["provider"] = final_provider
-    return merged
+    return merged, frozenset(declared)
 
 
-def _finalize_entry(fields: Mapping[str, Any], where: str) -> ResolvedLeafEntry:
-    """Turn a merged field map into a validated `ResolvedLeafEntry`."""
+def _finalize_entry(fields: Mapping[str, Any], where: str,
+                    declared_here: frozenset[str] = frozenset()) -> ResolvedLeafEntry:
+    """Turn a merged field map into a validated `ResolvedLeafEntry`.
+
+    `declared_here` names the fields written by a level that shares this entry's provider —
+    the ones an operator can act on. A field that only INHERITED from a level on another
+    provider and does not apply here is dropped silently, because there is no key in the
+    document to point at and nothing was misconfigured."""
     provider = str(fields.get("provider") or "")
     if not provider:
         raise LlmConfigError(
@@ -350,11 +368,14 @@ def _finalize_entry(fields: Mapping[str, Any], where: str) -> ResolvedLeafEntry:
             where=f"{where}.provider")
 
     for field in sorted(_FIELDS_NOT_APPLICABLE.get(provider, frozenset())):
-        if fields.get(field):
+        if not fields.get(field):
+            continue
+        if field in declared_here:
             raise LlmConfigError(
                 "llm_config_field_not_applicable",
                 f"field {field!r} does not apply to provider {provider!r}",
                 where=f"{where}.{field}")
+        fields = {k: v for k, v in fields.items() if k != field}
 
     allowed = PROVIDER_CAPABILITIES[provider]
     declared = fields.get("capabilities")
@@ -449,7 +470,7 @@ class LlmConfig:
             out[f"{phase}.{substep}"] = entry.provenance()
         return out
 
-    def validate_runnable(self, *, allow_mixed_providers: bool = True) -> None:
+    def validate_runnable(self) -> None:
         """Run-start checks that are deliberately NOT applied at load.
 
         `configs/llm/codex.yaml` ships without a model on purpose (the operator must choose
@@ -461,11 +482,6 @@ class LlmConfig:
                     "llm_config_codex_cli_requires_model",
                     "provider 'codex_cli' has no runtime model alias to resolve: set `model:` "
                     "(or pass the deprecated --agent-model)", where=label)
-        if not allow_mixed_providers and not self.is_uniform:
-            raise LlmConfigError(
-                "llm_config_mixed_providers_not_yet_supported",
-                "this build resolves preflight for a single provider, so every entry must use "
-                f"the same one; found: {', '.join(sorted(self.providers))}", where=self.path)
 
     def _labelled_entries(self) -> list[tuple[str, ResolvedLeafEntry]]:
         out = [("defaults", self.defaults)]
@@ -532,7 +548,7 @@ def load_llm_config(path: str | Path) -> LlmConfig:
 
     defaults_raw = _require_mapping(doc.get("defaults") or {}, "defaults")
     default_fields = _layer_fields(defaults_raw, "defaults")
-    defaults = _finalize_entry(default_fields, "defaults")
+    defaults = _finalize_entry(default_fields, "defaults", frozenset(default_fields))
     if not defaults.supports(CAP_AGENTIC):
         raise LlmConfigError(
             "llm_config_defaults_not_agentic",
@@ -568,10 +584,10 @@ def load_llm_config(path: str | Path) -> LlmConfig:
                     f"{', '.join(sorted(s for p, s in LLM_LEAF_SUBSTEPS if p == phase))}",
                     where=f"{where}.substeps.{substep}")
             sub_where = f"{where}.substeps.{key[1]}"
-            merged = _merge_layers((
+            merged, declared = _merge_layers((
                 default_fields, phase_fields[phase],
                 _layer_fields(_require_mapping(substep_doc or {}, sub_where), sub_where)))
-            entry = _finalize_entry(merged, sub_where)
+            entry = _finalize_entry(merged, sub_where, declared)
             _validate_assignment(key[0], key[1], entry, sub_where)
             resolved[key] = entry
 
@@ -581,8 +597,9 @@ def load_llm_config(path: str | Path) -> LlmConfig:
             continue
         phase, substep = key
         where = f"phases.{phase}"
-        merged = _merge_layers((default_fields, phase_fields.get(phase, {})))
-        entry = _finalize_entry(merged, where if phase in phase_fields else "defaults")
+        merged, declared = _merge_layers((default_fields, phase_fields.get(phase, {})))
+        entry = _finalize_entry(merged, where if phase in phase_fields else "defaults",
+                                declared)
         _validate_assignment(phase, substep, entry,
                              where if phase in phase_fields else "defaults")
         resolved[key] = entry
@@ -711,7 +728,3 @@ def describe_providers(cfg: LlmConfig) -> list[dict[str, str]]:
         }
     return [seen[k] for k in sorted(seen)]
 
-
-def _iter_entries(cfg: LlmConfig) -> Iterable[ResolvedLeafEntry]:
-    yield cfg.defaults
-    yield from cfg.entries.values()

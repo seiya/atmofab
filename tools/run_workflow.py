@@ -2432,7 +2432,9 @@ def _run_main(
 
     # Resume restores the model that the original Codex invocation pinned; an
     # explicit flag is the sole override.  Make every downstream init/launch
-    # consumer use this effective value rather than the raw argparse field.
+    # consumer use this effective value rather than the raw argparse field. The raw one is
+    # kept: it is the only way to tell "the operator passed this" from "we recovered it".
+    raw_agent_model = args.agent_model
     args.agent_model = agent_model_in
 
     try:
@@ -2494,8 +2496,11 @@ def _run_main(
             # --llm-config: the finished phases ran on the recorded file, and this is a
             # continuation of that run, not a new one. Say so rather than dropping the flag in
             # silence — the refusal below covers a DIFFERENT file, and this covers the same one.
+            # `raw_agent_model`, not `args.agent_model`: the latter has already been
+            # overwritten with the value recovered from the record, so reading it here
+            # announced a flag the operator never passed.
             for flag, value in (("--llm-config", args.llm_config), ("--llm", args.llm),
-                                ("--agent-model", args.agent_model),
+                                ("--agent-model", raw_agent_model),
                                 ("--llm-command", args.llm_command)):
                 if value:
                     sys.stderr.write(
@@ -3110,9 +3115,10 @@ def _run_node(
     llm: str,
     llm_command: str,
     # The leaf-model authority. None means "derive it from the deprecated trio above", which is
-    # the same mapping `main` applies — one derivation, not a second source.
+    # the same mapping `main` applies — one derivation, not a second source. The deprecated-flag
+    # OVERRIDES are not threaded here: they are already applied to `llm_config`, and their
+    # literals are recorded by `_build_invocation_record`, which the caller builds.
     llm_config: LlmConfig | None = None,
-    llm_config_overrides: dict[str, str] | None = None,
     workflow_mode: str = DEFAULT_WORKFLOW_MODE,
     agent_model: str | None = None,
     status: str = "",
@@ -4038,8 +4044,7 @@ def _run_with_dependency_closure(
                 llm=llm,
                 llm_command=llm_command,
                 llm_config=llm_config,
-                llm_config_overrides=llm_config_overrides,
-                workflow_mode=workflow_mode,
+                                workflow_mode=workflow_mode,
                 agent_model=agent_model,
                 status=status,
                 run_conductor=run_conductor,
@@ -4222,8 +4227,7 @@ def _run_with_dependency_closure(
             llm=llm,
             llm_command=llm_command,
             llm_config=llm_config,
-            llm_config_overrides=llm_config_overrides,
-            workflow_mode=workflow_mode,
+                        workflow_mode=workflow_mode,
             agent_model=agent_model,
             status=status,
             run_conductor=run_conductor,

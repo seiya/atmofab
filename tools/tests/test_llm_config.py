@@ -142,6 +142,57 @@ class ResolutionTests(_Tmp):
         self.assertEqual(entry.max_output_tokens, 4096)
         self.assertEqual(cfg.entry_for("generate", "verify").command, "claude --flag")
 
+    def test_switching_back_to_the_defaults_provider_re_inherits_from_it(self) -> None:
+        """The other half of the drop rule, and the half a pairwise fold gets wrong: once a
+        phase switches provider, a substep switching BACK must re-inherit from the levels that
+        share its provider — not start from an empty provider surface. Folding pairwise loses
+        the operator's `defaults.command` wrapper on exactly that one leaf, silently."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n"
+            "  provider: claude_cli\n"
+            "  model: claude-model\n"
+            "  command: wrapper-claude --sandbox\n"
+            "phases:\n"
+            "  generate:\n"
+            "    provider: openai_compatible\n"
+            "    base_url: http://localhost:8000/v1\n"
+            "    api_key_env: LOCAL_KEY\n"
+            "    model: local-model\n"
+            "    substeps:\n"
+            "      verify:\n"
+            "        provider: claude_cli\n"
+        ))
+        back = cfg.entry_for("generate", "verify")
+        self.assertEqual(back.provider, "claude_cli")
+        self.assertEqual(back.model, "claude-model")
+        self.assertEqual(back.command, "wrapper-claude --sandbox")
+        # ...and the level that switched away still contributes nothing provider-scoped.
+        self.assertEqual(back.base_url, "")
+        self.assertEqual(back.api_key_env, "")
+        self.assertEqual(cfg.entry_for("generate", "generate").command, "")
+
+    def test_a_transport_neutral_field_inherits_into_a_provider_that_ignores_it(self) -> None:
+        """`max_output_tokens` reaches only the claude transport and `timeout_s` only the HTTP
+        one, but both inherit across a provider switch by design. Rejecting an INHERITED one
+        made "claude everywhere with a raised ceiling, except one leaf on codex" — a core use
+        case — unloadable, and pointed the operator at a key their document does not contain."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n  max_output_tokens: 32000\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: codex_cli\n        model: gpt-5.6-codex\n"))
+        self.assertEqual(cfg.entry_for("compile", "verify").max_output_tokens, 32000)
+        # Dropped where it cannot apply, so nothing downstream reads a budget that is ignored.
+        self.assertIsNone(cfg.entry_for("validate", "judge").max_output_tokens)
+
+    def test_declaring_a_non_applicable_field_on_its_own_provider_is_rejected(self) -> None:
+        """The other side: a field the operator wrote FOR this provider is an error, because
+        there is a key in the document to point at."""
+        self.assert_rule("llm_config_field_not_applicable",
+                         "defaults:\n  provider: codex_cli\n  model: m\n"
+                         "  max_output_tokens: 32000\n")
+        self.assert_rule("llm_config_field_not_applicable",
+                         "defaults:\n  provider: claude_cli\n  timeout_s: 300\n")
+
     def test_provider_switch_without_a_replacement_model_is_rejected_not_inherited(self) -> None:
         """The drop is real: the outer `model` cannot satisfy the HTTP model requirement."""
         self.assert_rule("llm_config_http_requires_model",
@@ -187,10 +238,7 @@ class ResolutionTests(_Tmp):
             "        model: local-model\n"))
         self.assertFalse(cfg.is_uniform)
         self.assertEqual(cfg.providers, frozenset({"claude_cli", "openai_compatible"}))
-        with self.assertRaises(lc.LlmConfigError) as ctx:
-            cfg.validate_runnable(allow_mixed_providers=False)
-        self.assertEqual(ctx.exception.rule, "llm_config_mixed_providers_not_yet_supported")
-        cfg.validate_runnable(allow_mixed_providers=True)
+        cfg.validate_runnable()
 
     def test_provenance_map_is_per_leaf_and_includes_defaults(self) -> None:
         cfg = lc.load_llm_config(self.write(

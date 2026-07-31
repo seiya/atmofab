@@ -3561,10 +3561,11 @@ class Conductor:
         conversation is kept HERE, in memory, for the life of one substep run: each turn sends
         the prior user prompts and assistant replies plus this turn's prompt. That is the same
         thing a forked resume gives the model — its own prior answer and the critique of it —
-        and it is why `_pure_session_resumable` returns False for HTTP: the history does not
-        survive the process, so a cross-restart reopen degrades to the existing cold fallback
-        (full context re-sent with `prior_document`), which is a correct, if more expensive,
-        repair turn.
+        so the repair turn renders the WARM (slim) prompt rather than re-inlining a context the
+        replay already carries (`_pure_session_resumable` reports warm exactly while this
+        history exists). The history does not survive the PROCESS, so a cross-restart reopen
+        degrades to the cold fallback — full context re-sent with `prior_document` — which is a
+        correct, if more expensive, repair turn.
 
         The raw response body is persisted under `launches/` before anything is parsed, so an
         answer the validators reject is still on disk in the form it arrived in."""
@@ -3576,10 +3577,14 @@ class Conductor:
         history = histories.get(key, [])
         messages = [*history, {"role": "user", "content": prompt_text}]
 
-        response = run_pure_http_leaf(
-            entry, messages,
-            timeout_s=entry.timeout_s or float(_leaf_timeout_seconds() or 0) or None,
-            max_output_tokens=entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
+        # Neither ceiling is passed from here: `LEAF_MAX_OUTPUT_TOKENS` is the Claude CLI's,
+        # and `_leaf_timeout_seconds()` caps a PROCESS. The transport owns both defaults for
+        # its own shape (`DEFAULT_MAX_OUTPUT_TOKENS`, `DEFAULT_HTTP_TIMEOUT_SECONDS`) and the
+        # entry overrides them; passing the CLI values here made the entry's own defaults
+        # unreachable and asked every endpoint for 128000 output tokens — which the local
+        # servers this provider exists for reject outright, as a NON-retryable client error on
+        # the first attempt.
+        response = run_pure_http_leaf(entry, messages)
 
         if child_arid:
             path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
@@ -5518,7 +5523,7 @@ clean:
         # the safe degradation the pure launch template has no slot for).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
             target = self._resolve_reuse_resume(repair, phase, substep)
-            if target and self._pure_session_resumable(target, entry):
+            if target and self._pure_session_resumable(target, entry, phase, substep):
                 resume_session_id = target
                 # The outer-reopen excerpt is threaded into the first repair turn's
                 # `repair_findings` (a UTF-8-persisted prompt). Its writers under the pure executor

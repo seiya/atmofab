@@ -140,7 +140,11 @@ def _post_json(
             detail = exc.read().decode("utf-8", "replace")[:400]
         except Exception:                       # noqa: BLE001 - diagnostics only
             detail = ""
-        return None, detail, f"http_status_{exc.code}: {detail or exc.reason}"
+        # `HTTP <code>`, spaced: the conductor classifies a leaf's terminal line with patterns
+        # anchored on `\bhttp\b`, and `http_status_429` is one word to a regex — a terse
+        # rate-limit body would then match nothing, and a transient outage would fail the run
+        # closed instead of being retried.
+        return None, detail, f"HTTP {exc.code} from provider: {detail or exc.reason}"
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
         return None, "", f"{type(exc).__name__}: {exc}"
     text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
@@ -298,7 +302,11 @@ def run_pure_http_leaf(
 # The default `max_tokens` when neither the entry nor the caller names one. Deliberately NOT
 # the CLI leaf's 128000 ceiling: that is a Claude-CLI budget, and sending it verbatim to a local
 # server (vLLM, llama.cpp, Ollama — the endpoints `openai_compatible` is named for) is rejected
-# outright, because it exceeds the model's whole context length. 16384 comfortably holds a
-# CodegenBundle and is accepted by every endpoint these providers target; an operator who needs
-# more sets `max_output_tokens:` on the entry.
-DEFAULT_MAX_OUTPUT_TOKENS = 16384
+# outright as a client error, because it exceeds the model's whole context length.
+#
+# 32768 is sized on the artifact: the largest `CodegenBundle` in this repository is ~45 kB of
+# JSON, which is roughly 15-20k tokens, and a ceiling below that turns every run into a
+# truncation-repair loop — a worse failure than a rejected request, because it is slow and
+# looks like a model problem. An operator whose endpoint cannot take 32768 sets
+# `max_output_tokens:` on the entry; so does one whose model can take more.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768

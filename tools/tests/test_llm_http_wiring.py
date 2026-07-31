@@ -273,11 +273,40 @@ class HttpPureLeafWiringTests(unittest.TestCase):
             {row["backend"] for row in self.config.provenance_map().values()},
             {"claude", "openai_compatible"})
 
-    def test_the_http_leaf_cannot_be_warm_resumed_so_repairs_stay_cold(self) -> None:
+    def test_an_http_repair_is_warm_only_while_the_in_memory_history_exists(self) -> None:
+        """The provider has no session, so the replay is the reopen — and it lives exactly as
+        long as one substep run. Before the first turn, and after the reset a fresh run
+        performs, there is nothing to resume."""
         c = self._conductor()
         entry = c.entry_for("generate", "generate")
-        self.assertFalse(c._pure_session_resumable("some-session", entry))
-        self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
+        self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))     # no session, ever
+        self.assertFalse(c._pure_session_resumable("s", entry, "generate", "generate"))
+        self._serve([json.dumps(_valid_bundle())])
+        c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertTrue(c._pure_session_resumable("s", entry, "generate", "generate"))
+        c.reset_http_history("generate", "generate")
+        self.assertFalse(c._pure_session_resumable("s", entry, "generate", "generate"))
+
+    def test_the_transport_owns_its_own_ceilings(self) -> None:
+        """The conductor passed the CLI leaf's 128000 and the process cap, which made the
+        transport's own defaults unreachable and asked every endpoint for a ceiling it rejects
+        as a client error — non-retryable, on the first attempt."""
+        import tools.llm_http_leaf as hl
+        sent = self._serve([json.dumps(_valid_bundle())])
+        c = self._conductor()
+        c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(sent[0]["max_tokens"], hl.DEFAULT_MAX_OUTPUT_TOKENS)
+        self.assertNotEqual(sent[0]["max_tokens"], wc.LEAF_MAX_OUTPUT_TOKENS)
+
+    def test_an_entrys_own_ceilings_reach_the_request(self) -> None:
+        cfg = self.repo / "sized.yaml"
+        cfg.write_text(_MIXED_CONFIG + "        max_output_tokens: 4096\n"
+                                       "        timeout_s: 30\n", encoding="utf-8")
+        self.config = lc.load_llm_config(cfg)
+        sent = self._serve([json.dumps(_valid_bundle())])
+        c = self._conductor()
+        c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(sent[0]["max_tokens"], 4096)
 
     def test_the_launch_argv_builder_refuses_an_http_entry(self) -> None:
         """Defense in depth: nothing should reach `leaf_command` with an HTTP entry, and if

@@ -30,8 +30,9 @@
 #           api_key_env: LOCAL_LLM_API_KEY
 #           model: qwen2.5-coder-32b-instruct
 #           # Size against the model's CONTEXT WINDOW, not its documented maximum: the
-#           # request is non-streaming, and the default (16384) is conservative.
-#           max_output_tokens: 8192
+#           # request is non-streaming. The default (32768) is sized for a CodegenBundle;
+#           # lower it only if the endpoint cannot take it.
+#           max_output_tokens: 16384
 #
 # HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
 # `generate` leaves, which run as host-mediated pure functions; assigning one to an agentic

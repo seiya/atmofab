@@ -26,6 +26,7 @@ from unittest.mock import patch
 
 from tools import llm_config as lc
 from tools import llm_http_leaf as hl
+from tools import workflow_conductor as wc
 from tools.pure_leaf import PURE_SYSTEM_PROMPT
 
 KEY_ENV = "METDSL_TEST_HTTP_KEY"
@@ -243,12 +244,21 @@ class ErrorTaxonomyTests(unittest.TestCase):
             raise urllib.error.HTTPError(
                 "http://x", 429, "Too Many Requests", {},
                 io.BytesIO(b'{"error": "slow down"}'))
-        self.assertIn("http_status_429", self._error(_rate_limited))
+        message = self._error(_rate_limited)
+        self.assertIn("HTTP 429", message)
+        # SPACED, because the conductor classifies a leaf's terminal line with patterns
+        # anchored on `\bhttp\b`: `http_status_429` is a single word to a regex, so a terse
+        # rate-limit body would match nothing and fail the run closed instead of retrying.
+        self.assertEqual(wc._leaf_infra_error(wc.ProcResult(1, "", message))[0],
+                         "llm_rate_limit")
 
     def test_server_error_status(self) -> None:
         def _boom(*_a, **_k):
             raise urllib.error.HTTPError("http://x", 503, "Unavailable", {}, io.BytesIO(b""))
-        self.assertIn("http_status_503", self._error(_boom))
+        message = self._error(_boom)
+        self.assertIn("HTTP 503", message)
+        self.assertEqual(wc._leaf_infra_error(wc.ProcResult(1, "", message))[0],
+                         "llm_transport_flake")
 
     def test_non_json_body(self) -> None:
         self.assertIn("response_not_json", self._error(_opener("<html>nope</html>")))
@@ -408,12 +418,16 @@ class TransportBoundsTests(unittest.TestCase):
 
     def test_the_default_max_tokens_is_sized_for_the_endpoints_this_targets(self) -> None:
         """Not the CLI leaf's 128000: that exceeds the whole context length of the local
-        servers `openai_compatible` exists for, which reject the request outright."""
+        servers `openai_compatible` exists for, which reject the request outright — as a
+        client error, so on the FIRST attempt and without a retry."""
         seen: list = []
         hl.run_pure_http_leaf(
             _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK, seen))
         self.assertEqual(seen[0]["body"]["max_tokens"], hl.DEFAULT_MAX_OUTPUT_TOKENS)
         self.assertLessEqual(hl.DEFAULT_MAX_OUTPUT_TOKENS, 32768)
+        # And large enough for the artifact: the biggest CodegenBundle in this repository is
+        # ~45 kB of JSON, so a ceiling much below this turns every run into a truncation loop.
+        self.assertGreaterEqual(hl.DEFAULT_MAX_OUTPUT_TOKENS, 32768)
 
 
 if __name__ == "__main__":
