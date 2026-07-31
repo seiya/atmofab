@@ -48,6 +48,16 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     # Re-probe so the in-function imports later in main() succeed.
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
+from tools.llm_config import (
+    LlmConfig,
+    LlmConfigError,
+    apply_defaults_overrides,
+    config_sha256,
+    llm_config_from_legacy,
+    load_llm_config,
+    shipped_config_path,
+)
+
 
 # Orchestration is conductor-only (the deterministic Python phase loop in
 # tools/workflow_conductor.py). The conductor has leaf launchers for claude and
@@ -122,6 +132,20 @@ def _new_orchestration_id() -> str:
     return f"orch_{ts}_{suffix}"
 
 
+def _repo_relative(path: str | Path, repo_root: Path) -> str:
+    """`path` relative to `repo_root` when it lives inside it, else its absolute form.
+
+    Recorded in the invocation block, so a config shipped with the repository reads as
+    `configs/llm/claude.yaml` on any machine while an operator's own file outside the tree keeps
+    the only spelling that can find it again. Relative to the RUN's root, because that is the
+    root the resume gate re-joins it against."""
+    p = Path(path)
+    try:
+        return str(p.resolve().relative_to(Path(repo_root).resolve()))
+    except ValueError:
+        return str(p)
+
+
 def _build_invocation_record(
     *,
     argv: list[str] | None,
@@ -132,6 +156,9 @@ def _build_invocation_record(
     workflow_mode: str,
     agent_model: str | None,
     with_deps: bool,
+    llm_config: LlmConfig | None = None,
+    llm_config_overrides: dict[str, str] | None = None,
+    repo_root: Path = Path("."),
     wait_usage_reset: bool = False,
     closure_id: str | None = None,
     closure_target_spec_ref: str | None = None,
@@ -170,6 +197,18 @@ def _build_invocation_record(
         # rejected with `generate_executor_legacy_removed`.
         "generate_executor": "pure",
     }
+    if llm_config is not None:
+        # The leaf-model authority, pinned three ways. The PATH says which file; the SHA256 of
+        # its BYTES is what a resume re-checks, because a config edited between the launch and
+        # the resume would silently change what the remaining substeps run on; and
+        # `llm_leaf_map` records the resolved per-leaf provider/model so a mixed closure stays
+        # legible to a cost or A/B audit without re-reading a file that may since have changed.
+        record["llm_config_path"] = _repo_relative(llm_config.path, repo_root)
+        record["llm_config_sha256"] = llm_config.sha256
+        record["llm_leaf_map"] = llm_config.provenance_map()
+        # The deprecated flags do not live in the file, so their literals are recorded
+        # separately and compared on resume alongside the hash.
+        record["llm_config_overrides"] = dict(llm_config_overrides or {})
     if agent_model:
         record["agent_model"] = agent_model
     if closure_id:
@@ -1560,6 +1599,8 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
     - llm_command                      ← preflight.json#probe_command
     - until_phase / mode               ← launches/orchestration.start.prompt.txt
     - agent_model                      ← orchestration_meta.json#invocation
+    - llm_config_path / llm_config_sha256 / llm_config_overrides
+                                       ← orchestration_meta.json#invocation
     - closure_id / closure_target_spec_ref / closure_until_phase
                                        ← orchestration_meta.json#invocation
     Missing/unparseable values are returned as None for the caller to validate. The
@@ -1589,6 +1630,11 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
         "until_phase": prompt_params.get("until_phase"),
         "mode": prompt_params.get("mode"),
         "agent_model": _clean(invocation.get("agent_model")),
+        # Leaf-LLM configuration (issue #28). Absent on an orchestration launched before the
+        # field existed — that is the LEGACY branch, recovered through `llm`/`llm_command`/
+        # `agent_model` exactly as before and never rejected.
+        "llm_config_path": _clean(invocation.get("llm_config_path")),
+        "llm_config_sha256": _clean(invocation.get("llm_config_sha256")),
         "closure_id": _clean(invocation.get("closure_id")),
         "closure_target_spec_ref": _clean(invocation.get("closure_target_spec_ref")),
         "closure_until_phase": _clean(invocation.get("closure_until_phase")),
@@ -1638,6 +1684,95 @@ def _generate_executor_resume_rejection(
         ),
         "orchestration_id": orchestration_id,
     }
+
+
+def _recorded_llm_config(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
+    """The recorded leaf-LLM configuration pin of `orchestration_id`.
+
+    Reads only `orchestration_meta.json`, so the closure-member resume gate can validate every
+    member cheaply (no preflight / prompt parse) — the same shape as
+    `_recorded_generate_executor`. An orchestration launched before issue #28 has none of these
+    keys; the caller reads that as the legacy branch, not as a mismatch."""
+    meta = _read_json_if_exists(
+        repo_root / "workspace" / "orchestrations" / orchestration_id / "orchestration_meta.json"
+    ) or {}
+    invocation = meta.get("invocation")
+    invocation = invocation if isinstance(invocation, dict) else {}
+
+    def _clean(value: Any) -> str:
+        return value.strip() if isinstance(value, str) else ""
+
+    overrides = invocation.get("llm_config_overrides")
+    return {
+        "path": _clean(invocation.get("llm_config_path")),
+        "sha256": _clean(invocation.get("llm_config_sha256")),
+        "overrides": {str(k): str(v) for k, v in overrides.items()}
+                     if isinstance(overrides, dict) else {},
+    }
+
+
+def _llm_config_resume_rejection(
+    orchestration_id: str, recorded: dict[str, Any], *,
+    repo_root: Path, effective_path: str, effective_sha256: str,
+    effective_overrides: dict[str, str],
+) -> dict[str, Any] | None:
+    """Fail-close envelope when the leaf-LLM configuration is not the one the run launched with.
+
+    A resume continues an IN-FLIGHT run: its finished phases ran on the models the recorded
+    config named, and its remaining ones would run on whatever the file says now. Silently
+    switching them is the same class of hazard as switching the generate executor
+    (`_generate_executor_resume_rejection`, whose shape this follows), so the file's BYTES are
+    re-hashed and compared, and the deprecated-flag overrides — which are not in the file —
+    are compared as recorded literals.
+
+    Returns None (no rejection) when the orchestration recorded no config pin at all: that is
+    a run predating issue #28, which is recovered through the legacy `llm`/`llm_command`/
+    `agent_model` route and carries no promise to break. Shared by the entry gate in `main()`
+    and the per-member gate in `_run_with_dependency_closure`."""
+    if not recorded.get("path") and not recorded.get("sha256"):
+        return None                       # legacy record: nothing was pinned
+
+    def _fail(detail: str) -> dict[str, Any]:
+        return {
+            "status": "fail",
+            "reason": "llm_config_changed_since_launch",
+            "detail": detail,
+            "orchestration_id": orchestration_id,
+            "recorded_llm_config_path": recorded.get("path", ""),
+            "recorded_llm_config_sha256": recorded.get("sha256", ""),
+            "effective_llm_config_path": effective_path,
+            "effective_llm_config_sha256": effective_sha256,
+        }
+
+    recorded_path = str(recorded.get("path") or "")
+    if recorded_path and recorded_path != effective_path:
+        return _fail(
+            f"cannot resume orchestration {orchestration_id}: it launched with leaf-LLM "
+            f"configuration {recorded_path!r}, but this resume would use "
+            f"{effective_path!r}. Resume without --llm-config (or pass the same file); to "
+            f"change the configuration, start a fresh run."
+        )
+    on_disk = config_sha256(repo_root / recorded_path) if recorded_path else "sha256:missing"
+    if on_disk == "sha256:missing":
+        return _fail(
+            f"cannot resume orchestration {orchestration_id}: its leaf-LLM configuration "
+            f"{recorded_path!r} is gone. Restore that file, or start a fresh run."
+        )
+    if on_disk != str(recorded.get("sha256") or ""):
+        return _fail(
+            f"cannot resume orchestration {orchestration_id}: its leaf-LLM configuration "
+            f"{recorded_path!r} has changed since launch (recorded "
+            f"{recorded.get('sha256')}, now {on_disk}). The phases already run used the "
+            f"recorded models; resuming would silently run the rest on the new ones. Restore "
+            f"the file, or start a fresh run."
+        )
+    if dict(recorded.get("overrides") or {}) != dict(effective_overrides or {}):
+        return _fail(
+            f"cannot resume orchestration {orchestration_id}: its deprecated leaf-LLM flag "
+            f"overrides differ from this resume's ({recorded.get('overrides')} vs "
+            f"{effective_overrides}). Re-pass the original flags, or start a fresh run."
+        )
+    return None
 
 
 class _DeprecatedAliasAction(argparse.Action):
@@ -1707,8 +1842,31 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         choices=SUPPORTED_WORKFLOW_MODES,
         help="Workflow execution mode: dev (default) or prod.",
     )
-    parser.add_argument("--llm", default=None, choices=SUPPORTED_LLMS)
-    parser.add_argument("--llm-command", help="Override backend command used by preflight and optional launch.")
+    parser.add_argument(
+        "--llm-config",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Leaf-LLM configuration file (YAML): which provider/model runs each phase and "
+            "substep. Defaults to configs/llm/claude.yaml. See docs/ORCHESTRATION.md "
+            "'Leaf LLM configuration' for the resolution order, the provider capability "
+            "matrix, and the named rejection rules. Mutually exclusive with --llm."
+        ),
+    )
+    parser.add_argument(
+        "--llm", default=None, choices=SUPPORTED_LLMS,
+        help=(
+            "DEPRECATED (use --llm-config): run every LLM leaf on this backend. Maps onto "
+            "the shipped configs/llm/<backend>.yaml."
+        ),
+    )
+    parser.add_argument(
+        "--llm-command",
+        help=(
+            "DEPRECATED (use --llm-config `command:`): override backend command used by "
+            "preflight and optional launch."
+        ),
+    )
     # NOTE (M-F): the `--generate-executor` flag and the `METDSL_GENERATE_EXECUTOR` env var were
     # removed when legacy generate execution was deleted — `pure` is the only executor. A cold run
     # that still passes `--generate-executor …` therefore fails at argparse ("unrecognized
@@ -1719,6 +1877,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--agent-model",
         default=None,
         help=(
+            "DEPRECATED (use --llm-config `model:`). "
             "Model id (or unpinned alias) of the orchestration agent itself, recorded "
             "on its agent_runs row for cost attribution / reproducibility. Defaults to "
             "the operator's configured claude alias (e.g. 'opus') only for the claude "
@@ -1905,6 +2064,28 @@ def _run_main(
             )
         )
         return 2
+    if args.llm_config and args.llm:
+        print(json.dumps({
+            "status": "fail",
+            "reason": "invalid_startup_input",
+            "detail": (
+                "--llm and --llm-config both name the leaf LLM; pass only one. --llm is the "
+                "deprecated run-wide spelling and maps onto configs/llm/<backend>.yaml, so "
+                "`--llm-config` alone can say everything it said."
+            ),
+        }, ensure_ascii=False))
+        return 2
+    # Deprecation is a warning, not a failure: the trio still works and still maps onto the
+    # shipped configs. Removal is a later issue, and this is the notice that precedes it.
+    for flag, value, replacement in (
+        ("--llm", args.llm, "--llm-config configs/llm/<backend>.yaml"),
+        ("--agent-model", args.agent_model, "the `model:` field of an --llm-config file"),
+        ("--llm-command", args.llm_command, "the `command:` field of an --llm-config file"),
+    ):
+        if value:
+            sys.stderr.write(
+                f"warning: {flag} is deprecated and will be removed; use {replacement} "
+                f"instead (see docs/ORCHESTRATION.md 'Leaf LLM configuration')\n")
     repo_root = Path(args.repo_root).resolve()
 
     # Redirect THIS host interpreter's bytecode cache out of the repo SOURCE tree, as early as
@@ -1967,6 +2148,9 @@ def _run_main(
     resume_recovered_dep_ref: str | None = None
     resume_recovered_llm: str | None = None
     resume_recovered_llm_command: str | None = None
+    # The leaf-LLM configuration pin recorded on the resumed orchestration (empty dict on a
+    # fresh run; all-empty fields on a run that predates issue #28).
+    resume_recorded_llm_config: dict[str, Any] = {}
     # Closure-aware resume state (populated in the resume branch when the resumed
     # orchestration is a node of a `--with-deps` closure).
     resume_is_closure = False
@@ -2186,6 +2370,7 @@ def _run_main(
         resume_recovered_dep_ref = recovered.get("source_dependency_ref")
         resume_recovered_llm = recovered.get("llm")
         resume_recovered_llm_command = recovered.get("llm_command")
+        resume_recorded_llm_config = _recorded_llm_config(repo_root, orchestration_id)
         # Z2 executor fail-close on resume (M-F). Legacy generate execution was removed: `pure` is
         # the only executor. The recorded executor in the immutable invocation block is now used
         # solely to REJECT a resume that would otherwise silently switch execution + write-authority
@@ -2263,7 +2448,7 @@ def _run_main(
             raise ValueError(
                 f"conductor orchestration supports --llm claude|codex, not {llm!r}"
             )
-        if llm == "codex" and (
+        if not args.llm_config and llm == "codex" and (
             not isinstance(agent_model_in, str)
             or not agent_model_in.strip()
             or agent_model_in.strip().lower() == "codex"
@@ -2275,12 +2460,61 @@ def _run_main(
             )
         # Reuse the recovered agent command unless --llm-command was given or the
         # backend actually changed; restating the same --llm must keep the command.
+        # BOTH this rule and the model-belongs-to-its-backend rule above are LEGACY-branch
+        # rules: they reconstruct what the deprecated flag trio meant. A run pinned to an
+        # --llm-config file recovers the file itself instead (below), which already says who
+        # runs what.
         if args.llm_command:
             llm_command = args.llm_command
         elif resume_recovered_llm_command and llm == resume_recovered_llm:
             llm_command = resume_recovered_llm_command
         else:
             llm_command = DEFAULT_LLM_COMMANDS[llm]
+
+        # --- the leaf-LLM configuration (issue #28) --------------------------------------
+        # Three ways in, in priority order, and they converge on ONE object:
+        #   1. --llm-config PATH               — the operator named a file.
+        #   2. a resume whose orchestration recorded a config pin — the SAME file, re-hashed
+        #      and refused if it moved or changed (`_llm_config_resume_rejection`).
+        #   3. the deprecated trio             — mapped onto configs/llm/<backend>.yaml with
+        #      the run-wide model/command applied to `defaults`, which is what makes
+        #      `--llm claude` and `--llm-config configs/llm/claude.yaml` the same run.
+        recorded_pin = resume_recorded_llm_config if resume_mode else {}
+        if args.llm_config:
+            llm_config_path = Path(args.llm_config)
+            llm_config_overrides = {
+                k: v for k, v in (("model", (args.agent_model or "").strip()),
+                                  ("command", (args.llm_command or "").strip())) if v
+            }
+        elif recorded_pin.get("path"):
+            llm_config_path = repo_root / str(recorded_pin["path"])
+            llm_config_overrides = dict(recorded_pin.get("overrides") or {})
+        else:
+            llm_config_path = shipped_config_path(llm, repo_root)
+            # `llm_command` always has a value — `DEFAULT_LLM_COMMANDS[llm]` is the bare binary
+            # name — but that is the default, not an OVERRIDE. Recording it as one would make
+            # `--llm claude` and `--llm-config configs/llm/claude.yaml` resolve to configs that
+            # differ in a field (`command: "claude"` vs `command: ""`) that means the same thing,
+            # which is the equivalence this whole mapping exists to preserve.
+            llm_config_overrides = {
+                k: v for k, v in (
+                    ("model", (agent_model_in or "").strip()),
+                    ("command", "" if llm_command.strip() == DEFAULT_LLM_COMMANDS.get(llm)
+                     else llm_command.strip()),
+                ) if v
+            }
+        llm_config = apply_defaults_overrides(
+            load_llm_config(llm_config_path),
+            model=llm_config_overrides.get("model", ""),
+            command=llm_config_overrides.get("command", ""))
+        # INTERIM (dropped when preflight probes every provider): preflight still certifies a
+        # single backend, so a config that names two would launch a leaf against a provider
+        # nothing probed.
+        llm_config.validate_runnable(allow_mixed_providers=False)
+        # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
+        # single-backend vocabulary; derive it FROM the config so there is one authority.
+        llm = llm_config.defaults.backend_token
+        llm_command = llm_config.defaults.command or llm
         if not spec_ref_in:
             raise ValueError("spec_ref is required unless --resume is set")
         spec_ref = _canonicalize_spec_ref(repo_root, spec_ref_in)
@@ -2293,7 +2527,9 @@ def _run_main(
             source_dependency_ref = _validate_source_dependency_ref(resume_recovered_dep_ref)
         else:
             source_dependency_ref = _discover_source_dependency_ref(repo_root, spec_ref)
-    except ValueError as exc:
+    except (ValueError, LlmConfigError) as exc:
+        # LlmConfigError IS a ValueError, and is named anyway: its `rule` is the operator's
+        # search key and the class is what makes that intent legible here.
         print(
             json.dumps(
                 {
@@ -2305,6 +2541,20 @@ def _run_main(
             )
         )
         return 2
+
+    # Fail-close a resume whose leaf-LLM configuration is no longer the one the run launched
+    # with. Placed AFTER the startup try/except (the effective config must exist to compare)
+    # and BEFORE any orchestration state is touched. The closure driver applies the same gate
+    # to every member it warm-resumes.
+    if resume_mode:
+        rejection = _llm_config_resume_rejection(
+            orchestration_id, resume_recorded_llm_config, repo_root=repo_root,
+            effective_path=_repo_relative(llm_config.path, repo_root),
+            effective_sha256=llm_config.sha256,
+            effective_overrides=llm_config_overrides)
+        if rejection is not None:
+            print(json.dumps(rejection, ensure_ascii=False))
+            return 2
 
     # Startup assertion: validate_pipeline_semantics now fail-closes when the
     # active repo_root's `spec/schema/ir/shape_expr.schema.json` is missing,
@@ -2394,6 +2644,7 @@ def _run_main(
             until_phase=until_phase,
             llm=llm,
             llm_command=llm_command,
+            llm_config=llm_config,
             workflow_mode=workflow_mode,
             agent_model=args.agent_model,
             status=args.status,
@@ -2418,6 +2669,7 @@ def _run_main(
             until_phase=until_phase,
             llm=llm,
             llm_command=llm_command,
+            llm_config=llm_config,
             workflow_mode=workflow_mode,
             agent_model=args.agent_model,
             status=args.status,
@@ -2465,6 +2717,9 @@ def _run_main(
                 until_phase=until_phase,
                 llm=llm,
                 llm_command=llm_command,
+                llm_config=llm_config,
+                llm_config_overrides=llm_config_overrides,
+                repo_root=repo_root,
                 workflow_mode=workflow_mode,
                 agent_model=args.agent_model,
                 with_deps=False,
@@ -2480,6 +2735,7 @@ def _run_main(
             until_phase=until_phase,
             llm=llm,
             llm_command=llm_command,
+            llm_config=llm_config,
             workflow_mode=workflow_mode,
             agent_model=args.agent_model,
             status=args.status,
@@ -2818,11 +3074,15 @@ def _run_node(
     until_phase: str,
     llm: str,
     llm_command: str,
-    workflow_mode: str,
-    agent_model: str | None,
-    status: str,
-    run_conductor: bool,
-    resume_mode: bool,
+    # The leaf-model authority. None means "derive it from the deprecated trio above", which is
+    # the same mapping `main` applies — one derivation, not a second source.
+    llm_config: LlmConfig | None = None,
+    llm_config_overrides: dict[str, str] | None = None,
+    workflow_mode: str = DEFAULT_WORKFLOW_MODE,
+    agent_model: str | None = None,
+    status: str = "",
+    run_conductor: bool = True,
+    resume_mode: bool = False,
     wait_usage_reset: bool = False,
     invocation: dict[str, Any] | None = None,
     closure_until_phase: str | None = None,
@@ -2841,6 +3101,8 @@ def _run_node(
     `orchestration_meta.json#invocation` on the COLD init path only (the resume
     path preserves the existing block); it carries the reproduction record and the
     closure back-link that drives closure-aware resume."""
+    if llm_config is None:
+        llm_config = llm_config_from_legacy(llm, agent_model or "", llm_command)
     env = dict(base_env)
     env["METDSL_ORCHESTRATION_ID"] = orchestration_id
 
@@ -3129,11 +3391,9 @@ def _run_node(
                     spec_ref=spec_ref,
                     source_dependency_ref=source_dependency_ref,
                     until_phase=until_phase,
-                    backend=llm,
-                    agent_model=agent_model or "",
+                    llm_config=llm_config,
                     workflow_mode=workflow_mode,
                     env=env,
-                    llm_command=llm_command,
                     resume=resume_mode,
                     wait_usage_reset=wait_usage_reset,
                 )
@@ -3511,10 +3771,12 @@ def _run_with_dependency_closure(
     until_phase: str,
     llm: str,
     llm_command: str,
-    workflow_mode: str,
-    agent_model: str | None,
-    status: str,
-    run_conductor: bool,
+    llm_config: LlmConfig | None = None,
+    llm_config_overrides: dict[str, str] | None = None,
+    workflow_mode: str = DEFAULT_WORKFLOW_MODE,
+    agent_model: str | None = None,
+    status: str = "",
+    run_conductor: bool = True,
     wait_usage_reset: bool = False,
     stdout_format: str = "jsonl",
     resume: bool = False,
@@ -3546,6 +3808,8 @@ def _run_with_dependency_closure(
     command is captured on every closure node.
     """
     prior_orch_by_spec = prior_orch_by_spec or {}
+    if llm_config is None:
+        llm_config = llm_config_from_legacy(llm, agent_model or "", llm_command)
     ordered, error = _resolve_dependency_closure(repo_root, target_spec_ref)
     if error is not None:
         _emit_closure_event(
@@ -3597,13 +3861,23 @@ def _run_with_dependency_closure(
         # dependency here under the pure-only dispatch. A cold (fresh) dep node records `pure` and
         # is not gated.
         if dep_resume:
-            dep_executor_rejection = _generate_executor_resume_rejection(
-                dep_orch_id, _recorded_generate_executor(repo_root, dep_orch_id)
-            )
-            if dep_executor_rejection is not None:
+            # Twin gate, same reasoning one level down: the leaf-LLM configuration a member
+            # launched with must still be the one on disk, or its remaining phases would run on
+            # different models than its finished ones did.
+            for rejection in (
+                _generate_executor_resume_rejection(
+                    dep_orch_id, _recorded_generate_executor(repo_root, dep_orch_id)),
+                _llm_config_resume_rejection(
+                    dep_orch_id, _recorded_llm_config(repo_root, dep_orch_id),
+                    repo_root=repo_root, effective_path=_repo_relative(llm_config.path, repo_root),
+                    effective_sha256=llm_config.sha256,
+                    effective_overrides=dict(llm_config_overrides or {})),
+            ):
+                if rejection is None:
+                    continue
                 _emit_closure_event(
                     {
-                        **dep_executor_rejection,
+                        **rejection,
                         "failed_dependency_node": node_label,
                         "spec_ref": spec_ref,
                         "dependency_runs": dependency_runs,
@@ -3703,6 +3977,9 @@ def _run_with_dependency_closure(
                 until_phase=dep_until_phase,
                 llm=llm,
                 llm_command=llm_command,
+                llm_config=llm_config,
+                llm_config_overrides=llm_config_overrides,
+                repo_root=repo_root,
                 workflow_mode=workflow_mode,
                 agent_model=agent_model,
                 with_deps=True,
@@ -3720,6 +3997,8 @@ def _run_with_dependency_closure(
                 until_phase=dep_until_phase,
                 llm=llm,
                 llm_command=llm_command,
+                llm_config=llm_config,
+                llm_config_overrides=llm_config_overrides,
                 workflow_mode=workflow_mode,
                 agent_model=agent_model,
                 status=status,
@@ -3816,12 +4095,21 @@ def _run_with_dependency_closure(
     # M-F executor fail-close for the warm-resumed target (mirrors the per-dependency gate above);
     # a cold target records `pure` and is not gated.
     if target_resume:
-        target_executor_rejection = _generate_executor_resume_rejection(
-            target_orchestration_id, _recorded_generate_executor(repo_root, target_orchestration_id)
-        )
-        if target_executor_rejection is not None:
+        for rejection in (
+            _generate_executor_resume_rejection(
+                target_orchestration_id,
+                _recorded_generate_executor(repo_root, target_orchestration_id)),
+            _llm_config_resume_rejection(
+                target_orchestration_id,
+                _recorded_llm_config(repo_root, target_orchestration_id),
+                repo_root=repo_root, effective_path=_repo_relative(llm_config.path, repo_root),
+                effective_sha256=llm_config.sha256,
+                effective_overrides=dict(llm_config_overrides or {})),
+        ):
+            if rejection is None:
+                continue
             _emit_closure_event(
-                {**target_executor_rejection, "dependency_runs": dependency_runs},
+                {**rejection, "dependency_runs": dependency_runs},
                 stdout_format,
             )
             return 2
@@ -3873,6 +4161,9 @@ def _run_with_dependency_closure(
             until_phase=until_phase,
             llm=llm,
             llm_command=llm_command,
+            llm_config=llm_config,
+            llm_config_overrides=llm_config_overrides,
+            repo_root=repo_root,
             workflow_mode=workflow_mode,
             agent_model=agent_model,
             with_deps=True,
@@ -3890,6 +4181,8 @@ def _run_with_dependency_closure(
             until_phase=until_phase,
             llm=llm,
             llm_command=llm_command,
+            llm_config=llm_config,
+            llm_config_overrides=llm_config_overrides,
             workflow_mode=workflow_mode,
             agent_model=agent_model,
             status=status,
