@@ -15839,7 +15839,7 @@ def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
 
 def _probe_claude_backend(
     backend_token: str,
-    command: str,
+    command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
     """A probe specific to the claude backend.
@@ -15857,7 +15857,15 @@ def _probe_claude_backend(
     preventing a false-pass of an empty-output binary impersonating `claude`. The authoritative gate of `multi_agent`
     remains on the launch-time live preflight side of `record_launch`.
     """
-    version_proc = runner([command, "--version"], text=True, capture_output=True, check=False)
+    # SPLIT, like the codex prober and like `Conductor._provider_command_base`: a configured
+    # command may carry flags (`mywrap --flag`), and the leaf is launched with it split. Passing
+    # the whole string as argv[0] probes an executable of that literal name, which does not
+    # exist — so every wrapper failed preflight before any leaf could run.
+    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
+    if not command_argv:
+        raise ValueError("claude command must be non-empty")
+    version_proc = runner([*command_argv, "--version"], text=True, capture_output=True,
+                          check=False)
     # Skip `features list` for claude: the subcommand does not exist in Claude Code CLI
     # and would result in a full chat session response being captured as the probe output,
     # contaminating preflight.json with assistant text.  Mark as advisory (pass=None).
@@ -15868,7 +15876,7 @@ def _probe_claude_backend(
         "multi_agent detection uses --help probe instead."
     )
 
-    help_proc = runner([command, "--help"], text=True, capture_output=True, check=False)
+    help_proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
     help_stdout = help_proc.stdout.strip()
     # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
     # weak proxy — any binary named `claude` that exits 0 (even with no output)
@@ -16287,7 +16295,8 @@ def _probe_claude_mcp_registry(
     # Call `claude mcp list` lightly as an advisory diagnostic. The timeout does not gate.
     try:
         proc = runner(
-            [command, "mcp", "list"],
+            [*(list(command) if not isinstance(command, str) else shlex.split(command)),
+             "mcp", "list"],
             text=True,
             capture_output=True,
             check=False,

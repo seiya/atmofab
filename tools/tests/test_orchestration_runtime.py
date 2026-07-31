@@ -31838,6 +31838,50 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertIsNone(captured.get("llm_config_path"))
             self.assertEqual(captured["config"].sha256, lc_config_sha256(cfg))
 
+    def test_a_claude_wrapper_with_flags_is_probed_as_argv(self) -> None:
+        """A configured `command:` may carry flags, and the leaf is launched with it split
+        (`Conductor._provider_command_base`). The claude prober passed the whole string as
+        argv[0] — an executable of that literal name, which does not exist — so every wrapper
+        failed preflight before any leaf could run. The codex prober already split."""
+        seen: list = []
+
+        def _runner(argv, **_kw):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+        ort._probe_claude_backend("claude", "mywrap --flag", _runner)
+        self.assertEqual(seen[0], ["mywrap", "--flag", "--version"])
+        self.assertTrue(all(a[:2] == ["mywrap", "--flag"] for a in seen), msg=str(seen))
+
+    def test_a_bare_claude_command_is_unchanged(self) -> None:
+        seen: list = []
+
+        def _runner(argv, **_kw):
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "ok", "")
+
+        ort._probe_claude_backend("claude", "claude", _runner)
+        self.assertEqual(seen[0], ["claude", "--version"])
+
+    def test_the_claude_mcp_probe_splits_the_wrapper_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / ".claude").mkdir()
+            (repo_root / ".claude" / "settings.json").write_text(json.dumps({
+                "enabledMcpjsonServers": ["build-runtime"],
+                "permissions": {"allow": ["mcp__build-runtime"]}}), encoding="utf-8")
+            (repo_root / ".mcp.json").write_text(json.dumps({
+                "mcpServers": {"build-runtime": {"command": "python3"}}}), encoding="utf-8")
+            seen: list = []
+
+            def _runner(argv, **_kw):
+                seen.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, "{}", "")
+
+            ort._probe_claude_mcp_registry("mywrap --flag", repo_root, _runner)
+            mcp = [a for a in seen if "mcp" in a]
+            self.assertEqual(mcp, [["mywrap", "--flag", "mcp", "list"]])
+
     def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
         """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but
         the deprecated `--agent-model` / `--llm-command` are not in the file — `run_workflow`
