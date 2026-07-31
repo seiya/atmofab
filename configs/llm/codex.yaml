@@ -1,0 +1,22 @@
+# Shipped leaf-LLM configuration: every LLM leaf on the Codex CLI.
+#
+# The replacement for the deprecated run-wide `--llm codex`, onto which that flag is mapped
+# internally.
+#
+# `model:` is INTENTIONALLY ABSENT, but for the opposite reason to `claude.yaml`: Codex has no
+# runtime alias to resolve, so the OPERATOR must name an explicit model slug. This file
+# therefore LOADS but is not RUNNABLE as shipped — starting a run against it fails with
+# `llm_config_codex_cli_requires_model` (a `validate_runnable` check, not a load check, so the
+# shipped file stays loadable and testable). Supply one either here:
+#
+#   defaults:
+#     provider: codex_cli
+#     model: <explicit-model-slug>
+#
+# or on the command line with the deprecated `--agent-model <explicit-model-slug>`, which
+# overrides `defaults.model`.
+#
+# As in `claude.yaml`, nothing is declared per phase or per substep, so all five LLM leaves
+# inherit `defaults`.
+defaults:
+  provider: codex_cli

@@ -1,0 +1,33 @@
+# Shipped leaf-LLM configuration: every LLM leaf on the Claude Code CLI.
+#
+# This file is the byte-for-byte replacement for the deprecated run-wide `--llm claude`:
+# `run_workflow.py` with no `--llm-config` loads it, and `--llm claude` is mapped onto it
+# internally. `tools/tests/test_llm_config.py` asserts it loads, and
+# `tools/tests/test_workflow_conductor.py` asserts the leaf argv it produces is identical to
+# the one the legacy flag trio produced.
+#
+# `model:` is INTENTIONALLY ABSENT. Claude Code takes an unpinned alias resolved from the
+# operator's own settings at run time (`default_agent_model_for_backend`), and the exact
+# version that ran is recovered afterwards from the leaf transcript. Pinning a version here
+# would freeze a choice the operator deliberately delegates — see the `Model alias not pinned`
+# convention. Pass the deprecated `--agent-model`, or add `model:` here, only to override that.
+#
+# Nothing is declared per phase or per substep, so every one of the five LLM leaves
+# (compile.generate, compile.verify, generate.generate, generate.verify, validate.judge)
+# inherits `defaults` — which is exactly the run-wide behavior this file reproduces. To run one
+# substep elsewhere, add e.g.:
+#
+#   phases:
+#     generate:
+#       substeps:
+#         verify:
+#           provider: openai_compatible
+#           base_url: http://localhost:8000/v1
+#           api_key_env: LOCAL_LLM_API_KEY
+#           model: qwen2.5-coder-32b-instruct
+#
+# HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
+# `generate` leaves, which run as host-mediated pure functions; assigning one to an agentic
+# leaf is rejected at load with `llm_config_capability_insufficient_for_substep`.
+defaults:
+  provider: claude_cli
