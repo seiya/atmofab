@@ -10771,8 +10771,8 @@ def _build_exemplar(request_payload: dict[str, Any]) -> str:
         "copy the exemplar's physics or checks. It is orientation, never a gate and never this "
         "node's spec. It was certified under the gates in force AT ITS TIME, so it may predate "
         "a rule now in your contracts: where the exemplar and a contract disagree, the contract "
-        "wins. In particular, an exemplar certified before the `Generate.gate` gate promoted "
-        "`-Werror=unused-dummy-argument` / `-Werror=unused-variable` can show an ABI-fixed dummy "
+        "wins. In particular, an exemplar certified before the `Generate.gate` gate promoted its "
+        "current `-Werror` classes can show an ABI-fixed dummy "
         "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
         "`associate (unused_<name> => <name>); end associate` per "
         "`docs/workflow/CHECKS_MODULE_CONTRACT.md` §5.",

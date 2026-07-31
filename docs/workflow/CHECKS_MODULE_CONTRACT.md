@@ -208,12 +208,13 @@ This section applies to every leaf-authored Fortran source of any `Generate` nod
   check lints the whole `src/` tree, every leaf-authored source included.
 - **Intentionally-unused dummy arguments.** The deterministic `Generate.gate` syntax check
   compiles the whole staged source set with
-  `-Werror=unused-dummy-argument -Werror=unused-variable`, so an unreferenced dummy
-  argument in any leaf-authored source is a compile failure. When an **interface fixes**
-  the dummy — an inert input the algorithm defines as unused, an ABI-fixed argument such
-  as `name` / `case_id` — it stays a live `intent(in)` dummy and is bound immediately
-  after its declarations with `associate (unused_<name> => <name>); end associate`. An
-  arithmetic no-op (`0*<name>` and equivalents) is forbidden as the binding. `! allow(...)`
+  `-Werror=unused-dummy-argument -Werror=unused-variable -Werror=ampersand`, so an
+  unreferenced dummy argument in any leaf-authored source is a compile failure. When an
+  **interface fixes** the dummy — an inert input the algorithm defines as unused, an
+  ABI-fixed argument such as `name` / `case_id` — it stays a live `intent(in)` dummy and is
+  bound immediately after its declarations with
+  `associate (unused_<name> => <name>); end associate`. An arithmetic no-op (`0*<name>` and
+  equivalents) is forbidden as the binding. `! allow(...)`
   does not suppress this class: fortitude has no unused-symbol rule, and an unknown-rule
   allow is itself rejected under FORT001 / FORT002 (`! allow(C003)` is the only legitimate
   allow directive).
@@ -228,3 +229,9 @@ This section applies to every leaf-authored Fortran source of any `Generate` nod
   node owns no variable at reports `found = .false.` **and** still allocates its array
   (`allocate (arr(0, 0, 0))`), and a `metric_compute` with no metric still assigns `val` /
   `is_na` / `reason_na`.
+- **A continued character literal resumes with a leading `&`** — the third promoted class
+  (`-Werror=ampersand`). gfortran accepts a resume line without one as an extension, which
+  put a counted-`do` spelling written inside a string at a physical line start, where the
+  line-anchored `!$omp` presence floor counted it; issue #25 promotes the class so it cannot.
+  Write `'a message that is &` / `      &continued'`; the same wrap with the resume `&`
+  omitted is a compile failure.

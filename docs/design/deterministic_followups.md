@@ -3374,10 +3374,12 @@ one of them errs toward a false `Generate fail` / `Compile fail` on a source gfo
   runtime copy made the mirror error (`do con&` / `&current` → `do con current`) — both validator copies the first,
   the runtime copy the second, so each was wrong in the direction the other was right — which is why comparing the two
   against each other never flagged it. Inside a character context the join is always tight, including for gfortran's
-  warning-only extension of omitting the resuming `&`.
+  extension of omitting the resuming `&` (issue #25 later promoted that class to a syntax-gate error; the scanner
+  still reads it, because it must agree with the compiler on sources the gate goes on to reject).
 - A **lone-`&` continuation line** must terminate the statement (gfortran: `'&' not allowed by itself`); testing the
   trailing `&` before consuming the leading one read the single ampersand as both markers and glued the next statement
-  on — and gfortran only WARNS (`'&' not allowed by itself`), so the source reaches a gate. Only
+  on — and gfortran only WARNS (`'&' not allowed by itself`), so the source reaches a gate. It still does after issue
+  #25: that diagnostic carries no `-W<class>` tag, so `-Werror=ampersand` does not promote it. Only
   `_iter_fortran_logical_lines`; the other two consumed the leading `&` first.
 - A **blank or comment line inside a wrap** flushed a truncated logical line, so a legally wrapped `subroutine foo(a,
   &` / `! note` / `     & b)` header reached the gates as two fragments. Only `_iter_fortran_logical_lines`; the other
@@ -3393,12 +3395,17 @@ tolerate, the runtime's strips because `_FORTRAN_SUBROUTINE_RE` carries no leadi
 
 **Not the OpenMP floor.** `_validate_openmp_presence_floor` (issue #22) answers the same question with four anchored
 physical-line patterns and no state, and it stays that way. A presence check can anchor its way out of comments and
-out of every CONFORMING literal; these consumers read the JOINED logical line and compare it against a declared
-surface, so they cannot. The residual, measured here and recorded at the floor: gfortran also accepts a literal
-resumed with no `&` (`-Wampersand`, `rc=0`), and a counted-`do` spelling inside such a literal does reach a physical
-line start and would be counted — a false reject on a source `Generate.syntax` passed. Accepted rather than fixed: one
-warning-carrying non-conforming shape, absent from the tree, against re-introducing the state the floor exists
-without.
+out of every literal; these consumers read the JOINED logical line and compare it against a declared surface, so they
+cannot. That claim needed the qualifier "every CONFORMING literal" when it was written here: gfortran also accepts a
+literal resumed with no `&` (`-Wampersand`, `rc=0`), and a counted-`do` spelling inside such a literal does reach a
+physical line start and would be counted — a false reject on a source the syntax gate passed. Recorded here as an
+accepted residual, it was closed at the root by **issue #25**, which promotes `-Werror=ampersand` in the
+`Generate.gate` syntax check: the shape no longer reaches the floor, so the qualifier is gone and the floor keeps its
+statelessness. The doubled-quote escape split by the wrap (`'ab'&` / `'cd'` → `ab'cd`) is NOT a second floor residual
+and cannot become one: the escape-partner resume line necessarily begins with `&` or with a quote, neither of which
+any anchored pattern matches, and a further continuation that would put `do` in column 1 is exactly the shape #25 now
+rejects. It stays a fidelity obligation for the JOINING scanner above (`pending_quote_escape`), where gfortran emits no
+diagnostic at all — so nothing can be promoted there, and nothing needs to be.
 
 **Acceptance.** Every defect was latent: over all 823 `.f90` files in the tree, the pre-change modules (`0bd007e`) and
 these agree EXACTLY on `_list_component_published_subroutines`, `_list_prefixed_subroutines` and

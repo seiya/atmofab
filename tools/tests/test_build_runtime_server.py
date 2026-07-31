@@ -87,7 +87,7 @@ class RunSyntaxCheckTests(unittest.TestCase):
         self.assertEqual(
             argv,
             ["gfortran", "-fsyntax-only", "-std=f2008",
-             "-Werror=unused-dummy-argument", "-Werror=unused-variable",
+             "-Werror=unused-dummy-argument", "-Werror=unused-variable", "-Werror=ampersand",
              "-J", ".mods", "-I", ".mods",
              "a.f90", "b.f90"])
         argv = self.mod._gfortran_syntax_argv("f2018", ".mods", True, ["x.f90"])
@@ -95,6 +95,7 @@ class RunSyntaxCheckTests(unittest.TestCase):
         self.assertIn("-std=f2018", argv)
         self.assertIn("-Werror=unused-dummy-argument", argv)
         self.assertIn("-Werror=unused-variable", argv)
+        self.assertIn("-Werror=ampersand", argv)
         # sources stay last so the compiler reads them after the mod-dir flags
         self.assertEqual(argv[-1], "x.f90")
 
@@ -184,6 +185,7 @@ class RunSyntaxCheckTests(unittest.TestCase):
         self.assertIn("-fopenmp", argv)
         self.assertIn("-Werror=unused-dummy-argument", argv)
         self.assertIn("-Werror=unused-variable", argv)
+        self.assertIn("-Werror=ampersand", argv)
         self.assertEqual(argv[-2:], ["m.f90", "p.f90"])  # topological order
         self.assertTrue(result["ok"])
         self.assertFalse(result["skipped"])
@@ -215,9 +217,10 @@ class RunSyntaxCheckGfortranSmokeTests(unittest.TestCase):
     """Real-compiler smoke: the gate must catch, with the actual gfortran front-end,
     the error classes the retired post_generate text heuristics used to mimic
     (identifier > 63 chars / implicit none spec-list / non-constant STOP code) plus the
-    two promoted warning classes (unused dummy argument / unused variable), and must pass
-    a valid two-file module dependency (define-before-use via .mod written by
-    -fsyntax-only) as well as the associate binding that sanctions an inert dummy."""
+    three promoted warning classes (unused dummy argument / unused variable / a character
+    literal resumed without `&`), and must pass a valid two-file module dependency
+    (define-before-use via .mod written by -fsyntax-only) as well as the associate binding
+    that sanctions an inert dummy."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -303,8 +306,54 @@ class RunSyntaxCheckGfortranSmokeTests(unittest.TestCase):
         self.assertFalse(bad["ok"])
         self.assertFalse(bad["skipped"])
 
+    def test_missing_ampersand_continuation_fails(self) -> None:
+        # gfortran EXTENDS the standard by accepting a continued character literal whose
+        # resume line carries no leading `&`. Left a warning, that shape put a counted-`do`
+        # spelling written inside a string at a PHYSICAL line start, where the fail_closed
+        # OpenMP presence floor (`_validate_openmp_presence_floor`, anchored and stateless)
+        # counted it — a false REJECT on a source this gate had passed. Issue #25 promotes
+        # the class so the shape never reaches the floor; the conforming `&`-led resume
+        # below (`test_conforming_continued_literal_passes`) is unaffected.
+        result = self._check({
+            "amp.f90": "module amp\n  implicit none\ncontains\n"
+                       "  subroutine msg(u)\n    integer, intent(in) :: u\n"
+                       "    write (u, '(a)') 'start&\n"
+                       "do i = 1, n suffix'\n"
+                       "  end subroutine msg\nend module amp\n",
+        })
+        self.assertFalse(result["ok"])
+        self.assertIn("ampersand", result["stderr"])
+
+    def test_conforming_continued_literal_passes(self) -> None:
+        # The promotion must reject only the missing-`&` extension: a literal resumed WITH
+        # the leading `&` is standard f2008 and stays silent.
+        result = self._check({
+            "cont.f90": "module cont\n  implicit none\ncontains\n"
+                        "  subroutine msg(u)\n    integer, intent(in) :: u\n"
+                        "    write (u, '(a)') 'a message that is &\n"
+                        "      &continued'\n"
+                        "  end subroutine msg\nend module cont\n",
+        })
+        self.assertTrue(result["ok"], msg=result.get("stderr"))
+
+    def test_lone_ampersand_line_is_not_promoted_by_werror_ampersand(self) -> None:
+        # A lone-`&` continuation line draws a diagnostic with NO `-W<class>` tag (bare
+        # `f951: Warning: '&' not allowed by itself`), so `-Werror=ampersand` does not
+        # promote it and such a source still reaches a gate. `tools/fortran_lines` states
+        # that as the reason its scanner must keep handling the shape; pinned here because
+        # it is the compiler's answer, not an inference from the flag name.
+        result = self._check({
+            "lone.f90": "module lone\n  implicit none\ncontains\n"
+                        "  subroutine msg(u)\n    integer, intent(in) :: u\n"
+                        "    write (u, '(a)') 'hi'\n"
+                        "&\n"
+                        "  end subroutine msg\nend module lone\n",
+        })
+        self.assertTrue(result["ok"], msg=result.get("stderr"))
+        self.assertIn("not allowed by itself", result["stderr"])
+
     def test_default_on_warning_names_its_file_without_failing_the_gate(self) -> None:
-        # Only the two promoted classes are errors. Other default-on warnings (-Wampersand
+        # Only the three promoted classes are errors. Other default-on warnings (-Wtabs
         # here) still print, anchored to their file, on a source the gate PASSES. The
         # conductor's dependency attribution (`_gate_syntax_check`) relies on exactly this: a
         # staged dependency's filename appearing in a failing stage's output proves nothing
@@ -313,13 +362,12 @@ class RunSyntaxCheckGfortranSmokeTests(unittest.TestCase):
         result = self._check({
             "noisy.f90": "module noisy\n  implicit none\ncontains\n"
                          "  subroutine msg(u)\n    integer, intent(in) :: u\n"
-                         "    write (u, '(a)') 'a message that is &\n"
-                         "      continued'\n"
+                         "\twrite (u, '(a)') 'a message'\n"
                          "  end subroutine msg\nend module noisy\n",
         })
         self.assertTrue(result["ok"], msg=result.get("stderr"))
         self.assertIn("noisy.f90", result["stderr"])
-        self.assertIn("Wampersand", result["stderr"])
+        self.assertIn("Wtabs", result["stderr"])
 
     def test_associate_binding_suppresses_unused_dummy(self) -> None:
         # Pins the sanctioned escape hatch: the very idiom CHECKS_MODULE_CONTRACT §5

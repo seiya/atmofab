@@ -7237,7 +7237,7 @@ clean:
                     # itself must be regenerated / re-certified (its own Generate.gate syntax
                     # check enforces the same rules), which is an operator decision, not a retry.
                     # Reachable because a dependency certified BEFORE a gate rule was added
-                    # (e.g. the promoted -Werror=unused-* classes) is not clean by induction —
+                    # (e.g. any of the promoted -Werror classes) is not clean by induction —
                     # only a dependency certified under the current gate is.
                     #
                     # Attribution re-runs the SAME adapter over the dependency closure ALONE
@@ -7245,12 +7245,11 @@ clean:
                     # closure, so every `use` among the deps resolves within the set). Deciding
                     # this by the compiler's own verdict rather than by reading the diagnostics
                     # keeps it exact and format-agnostic: a dep basename merely APPEARING in
-                    # the excerpt proves nothing (gfortran prints default-on warnings —
-                    # -Wampersand, -Wtabs, -Wunderflow — for a dep that is perfectly clean,
-                    # while the sole Error sits in the node's own leaf-fixable source), and
-                    # mistaking that for a dependency defect would convert a self-repairable
-                    # finding into a permanent fail_closed. A future adapter with a different
-                    # diagnostic format needs no change here.
+                    # the excerpt proves nothing (gfortran prints default-on warnings — -Wtabs,
+                    # -Wunderflow — for a dep that is perfectly clean, while the sole Error sits in
+                    # the node's own leaf-fixable source), and mistaking that for a dependency
+                    # defect would convert a self-repairable finding into a permanent fail_closed.
+                    # A future adapter with a different diagnostic format needs no change here.
                     #
                     # Residual: the OTHER staged file the leaf cannot write is the M3c
                     # host-rendered `<spec_id>_runner.f90` — it sits inside src/ (so it is a

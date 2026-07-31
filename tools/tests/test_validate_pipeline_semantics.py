@@ -590,6 +590,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                 "command": [
                     "gfortran", "-fsyntax-only", "-std=f2008",
                     "-Werror=unused-dummy-argument", "-Werror=unused-variable",
+                    "-Werror=ampersand",
                     "-J", ".mods", "-I", ".mods",
                     "shallow_water2d_model.f90", "shallow_water2d_runner.f90",
                 ],
@@ -15259,10 +15260,12 @@ class OpenmpPresenceFloorGateTests(unittest.TestCase):
     def test_comment_and_literal_mentions_cannot_reach_a_line_start(self) -> None:
         """The anchor, not a parser, is what closes the comment/literal evasions.
 
-        A comment line begins with `!` and a CONFORMING continued character literal resumes with
-        `&`, so neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each
-        of these defeated an earlier, cleverer scanner. (gfortran's warning-only resume-without-`&`
-        extension can reach a line start; that residual is recorded at the floor itself.)"""
+        A comment line begins with `!` and a continued character literal resumes with `&`, so
+        neither can put a `do`, a `do concurrent`, or an `!$omp` at the start of a line. Each of
+        these defeated an earlier, cleverer scanner. That once needed the qualifier "a CONFORMING
+        literal", because gfortran accepts a resume line with no `&` and such a literal CAN reach a
+        line start; issue #25 promotes `-Werror=ampersand` at the `Generate.gate` syntax check, so
+        no such source reaches this floor and the qualifier is gone."""
         loop = "    do i = 1, n\n      u(i) = 0.0_dp\n    end do\n"
         for body, label in (
             ("    ! not real code; do concurrent (i=1:1) is what we would write\n",

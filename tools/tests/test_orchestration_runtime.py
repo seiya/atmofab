@@ -19162,7 +19162,10 @@ class ListPrefixedSubroutinesTests(unittest.TestCase):
         # before a resuming `&` made the scanner eat an `&` the compiler reads as part of the
         # string — and the rest of the literal spilled out as declarations, publishing an
         # operation that exists only inside a string. gfortran compiles the fixture below at
-        # `-std=f2008` with only a `-Wampersand` warning, so it reaches a gate.
+        # `-std=f2008`, emitting `-Wampersand` — which issue #25 promotes to an error at the
+        # syntax gate, so this exact fixture no longer reaches one. The scanner must still read
+        # it the compiler's way: it is a general Fortran reader, and being right only about
+        # sources some other gate happens to admit is what the `\v` defect already was.
         from tools.orchestration_runtime import _list_prefixed_subroutines
         src = ("module dep_mod\n  implicit none\n"
                "  character(*), parameter :: note = 'see &\n"
@@ -28084,7 +28087,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `pure_generate_generate.txt`. (The former check-id literal-presence acceptance gate is
         # gone as of pure-8: the runner-driven per-id checks ABI supplies each id as a literal, so
         # a dropped id is structurally impossible; `post_execute` stays the status backstop.)
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14000,
+        # Bumped 14000->14600: issue #25 — §5 gains the third promoted syntax-gate class,
+        # `-Werror=ampersand`. A continued character literal must resume with a leading `&`;
+        # gfortran accepts a resume line without one as an extension, and that shape put a
+        # counted-`do` spelling written inside a string at a physical line start, where the
+        # line-anchored `!$omp` presence floor counted it and falsely rejected the node. This doc
+        # is the canonical target every other copy of the promoted-class list points at, so the
+        # rule cannot live anywhere else. The doc measures 14500.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14600,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,
@@ -28377,7 +28387,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # written as unconditional, and it is read by exactly the agentic leaves the floor exempts —
         # including the `infrastructure` harness node, where adding directives to the timing loops
         # is itself the defect. Scoping it is the same correction rule (7) and the verify side got.
-        "skills/workflow-generate-generate/SKILL.md": 37400,
+        # Bumped 37400->37600: issue #25 — the checklist gains the third promoted class
+        # (`-Werror=ampersand`), stated as the authoring rule the leaf can act on: a wrapped
+        # character literal resumes with a leading `&`. Inform-over-prohibit — the gate was
+        # already going to reject the shape; without this the leaf learns it from a
+        # `compile_error` and burns a regenerate cycle.
+        "skills/workflow-generate-generate/SKILL.md": 37600,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare

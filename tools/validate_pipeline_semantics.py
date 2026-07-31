@@ -4349,17 +4349,18 @@ def _validate_component_generated_surface(
 #
 # The insight that makes the state unnecessary: anchoring at a PHYSICAL line start puts comments and
 # almost all string literals out of reach. A comment line begins with `!`, so an `!$omp` inside one
-# is never at a line start; and a CONFORMING continued character literal resumes with `&`, so its
-# content is not either. The earlier comment-mention and literal-mention evasions are closed by the
-# anchor rather than by parsing.
+# is never at a line start; and a continued character literal resumes with `&`, so its content is not
+# either. The earlier comment-mention and literal-mention evasions are closed by the anchor rather
+# than by parsing.
 #
-# The residual, measured while consolidating the scanners (issue #23) and stated here rather than
-# left implied: gfortran also ACCEPTS a literal resumed with no `&` at all (`-Wampersand`, a warning,
-# rc=0 — so such a source passes `Generate.syntax`), and then `'start&` / `do i = 1, n suffix'` does
-# put a counted-`do` spelling at a physical line start, inside a string. The floor would count it —
-# a false REJECT on a source `Generate.syntax` passed. ACCEPTED rather than fixed: it is one
-# warning-carrying non-conforming shape, no source in the tree has it, and the alternative is the
-# stateful scanner this floor exists without.
+# That second half needed a qualifier — "a CONFORMING literal" — until issue #25 removed it. gfortran
+# ALSO accepts a literal resumed with no `&` at all, and `'start&` / `do i = 1, n suffix'` then does
+# put a counted-`do` spelling at a physical line start, inside a string; the floor would have counted
+# it, a false REJECT on a source the syntax gate passed. Issue #23 measured that and accepted it;
+# issue #25 closed it at the root instead, by promoting `-Werror=ampersand` in the `Generate.gate`
+# syntax check (`mcp_servers/build_runtime_server.py:_gfortran_syntax_argv`). Such a source is now
+# rejected before any source reaches this gate, so the anchor holds over every literal that gets
+# here, with no state and no qualifier.
 #
 # That joining scanner does live in the tree again, as `tools/fortran_lines` (issue #23) — but for
 # consumers this floor is not: they read the JOINED logical line and compare it against a declared
