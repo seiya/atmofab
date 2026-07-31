@@ -416,6 +416,59 @@ class RuleTests(_Tmp):
                          "        base_url: http://localhost:8000/v1\n"
                          "        api_key_env: LOCAL_KEY\n")
 
+    _HTTP = ("defaults:\n  provider: claude_cli\n"
+             "phases:\n  generate:\n    substeps:\n      generate:\n"
+             "        provider: openai_compatible\n        api_key_env: LOCAL_KEY\n"
+             "        model: m\n        base_url: {url}\n")
+
+    def test_insecure_base_url(self) -> None:
+        """Plain http to a non-loopback host sends the API key in cleartext. The realistic case
+        is a typo or a LAN address, not a deliberate choice."""
+        err = self.assert_rule("llm_config_insecure_base_url",
+                               self._HTTP.format(url="http://192.168.1.9:8000/v1"))
+        self.assertIn("cleartext", str(err))
+
+    def test_loopback_http_is_allowed(self) -> None:
+        """Where the local servers this provider exists for run; the traffic never leaves the
+        host, and requiring https there would make the headline use case impossible."""
+        for url in ("http://localhost:8000/v1", "http://127.0.0.1:8000/v1",
+                    "http://[::1]:8000/v1", "http://myhost.localhost:8000/v1"):
+            cfg = lc.load_llm_config(self.write(self._HTTP.format(url=url), "lb.yaml"))
+            self.assertEqual(cfg.entry_for("generate", "generate").base_url, url)
+
+    def test_https_is_allowed_anywhere(self) -> None:
+        cfg = lc.load_llm_config(
+            self.write(self._HTTP.format(url="https://api.example.com/v1")))
+        self.assertEqual(cfg.entry_for("generate", "generate").base_url,
+                         "https://api.example.com/v1")
+
+    def test_insecure_base_url_has_an_explicit_opt_in(self) -> None:
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {lc._INSECURE_BASE_URL_OPT_IN_ENV: "1"}, clear=False):
+            cfg = lc.load_llm_config(
+                self.write(self._HTTP.format(url="http://192.168.1.9:8000/v1")))
+        self.assertEqual(cfg.entry_for("generate", "generate").base_url,
+                         "http://192.168.1.9:8000/v1")
+
+    def test_duplicate_key(self) -> None:
+        """YAML keeps the last of a repeated key. This file decides which model runs each
+        substep and therefore what a run costs, so a silent resolution is the failure mode a
+        named rejection exists for."""
+        self.assert_rule("llm_config_duplicate_key",
+                         "defaults:\n  provider: claude_cli\n"
+                         "phases:\n  generate:\n    model: a\n  generate:\n    model: b\n")
+
+    def test_duplicate_substep_key(self) -> None:
+        self.assert_rule("llm_config_duplicate_key",
+                         "defaults:\n  provider: claude_cli\n"
+                         "phases:\n  generate:\n    substeps:\n"
+                         "      verify:\n        model: a\n      verify:\n        model: b\n")
+
+    def test_duplicate_field_key(self) -> None:
+        self.assert_rule("llm_config_duplicate_key",
+                         "defaults:\n  provider: claude_cli\n  model: a\n  model: b\n")
+
     def test_capability_exceeds_provider(self) -> None:
         err = self.assert_rule(
             "llm_config_capability_exceeds_provider",

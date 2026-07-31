@@ -5555,6 +5555,7 @@ clean:
         exemplar = self._resolve_exemplar(refs)
         attempt = 0
         usage_waits = 0
+        transient_retries = 0
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
@@ -5834,6 +5835,15 @@ clean:
                         window=plan.window, wait_attempt=usage_waits + 1)
                     usage_waits += 1
                     continue
+            # A transient transport failure (a rate limit, an overloaded provider, a dropped
+            # connection) is re-launched in place rather than fail-closing a run that has
+            # already paid for every earlier phase. `attempt` and the repair carriers are
+            # UNCHANGED — a retry is not a repair turn — exactly as the usage wait above.
+            if category == "pure_transport" and self._pure_transient_retry(
+                    refs=refs, phase=phase, substep=substep, infra_error=infra_error,
+                    child_arid=child_arid, retries_done=transient_retries):
+                transient_retries += 1
+                continue
             # A content violation within budget: warm-resume the SAME producer session for a
             # bounded repair. A transport failure ("pure_transport") is NOT bundle-repairable —
             # it has no fixable document — so it is excluded here and routed fail_closed by
@@ -5993,6 +6003,7 @@ clean:
         last_excerpt: str | None = None
         attempt = 0
         usage_waits = 0
+        transient_retries = 0
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
@@ -6246,6 +6257,15 @@ clean:
                         window=plan.window, wait_attempt=usage_waits + 1)
                     usage_waits += 1
                     continue
+            # A transient transport failure (a rate limit, an overloaded provider, a dropped
+            # connection) is re-launched in place rather than fail-closing a run that has
+            # already paid for every earlier phase. `attempt` and the repair carriers are
+            # UNCHANGED — a retry is not a repair turn — exactly as the usage wait above.
+            if category == "pure_transport" and self._pure_transient_retry(
+                    refs=refs, phase=phase, substep=substep, infra_error=infra_error,
+                    child_arid=child_arid, retries_done=transient_retries):
+                transient_retries += 1
+                continue
             # A schema violation within budget: warm-resume the SAME reviewer session for a bounded
             # repair. A transport failure ("pure_transport") has no fixable verdict, so it is
             # excluded and routed fail_closed by run_phase's transport branch (leaf_returncode != 0).
@@ -8262,6 +8282,7 @@ clean:
         # exemplar) is resolved ABOVE the loop; only the launch itself repeats.
         attempt = 0
         usage_waits = 0
+        transient_retries = 0
         while True:
             child_arid = self.new_agent_run_id()
             request = build_launch_request(
@@ -8453,6 +8474,42 @@ clean:
                       dead_agent_run_id=child_arid, evidence=infra_error[1])
             self._sleep_backoff(delay)
             attempt += 1
+
+    def _pure_transient_retry(
+        self, *, refs: NodeRefs, phase: str, substep: str | None,
+        infra_error: "tuple[str, str] | None", child_arid: str, retries_done: int,
+    ) -> bool:
+        """Tombstone and wait out a transient transport failure on a PURE substep, or False.
+
+        The pure loops already relaunch in place for a usage limit; this extends the same shape
+        to the tags the repo classifies as transient (`_RETRYABLE_LEAF_INFRA_TAGS` — a rate
+        limit, an overloaded provider, a dropped connection). Without it one 429 from an HTTP
+        endpoint, or one dropped CLI connection, fail-closes a run that has already paid for
+        every earlier phase.
+
+        Budgeted SEPARATELY from the usage-limit waits and from the bundle repair turns: a
+        transient tag is never `llm_usage_limit`, and a transport death is never
+        bundle-repairable, so the three cannot compound. The dead arid is tombstoned here
+        because it was finalized as a terminal row and nothing will vouch for it — the same
+        reason, and the same call, as the agentic loop's retry."""
+        if infra_error is None or infra_error[0] not in _RETRYABLE_LEAF_INFRA_TAGS:
+            return False
+        if retries_done >= MAX_LEAF_TRANSIENT_RETRIES:
+            return False
+        tag = infra_error[0]
+        max_attempts = MAX_LEAF_TRANSIENT_RETRIES + 1
+        self._add_superseded_run_ids(
+            [child_arid],
+            reason=(f"leaf_transient_retry_orphan: {tag}; "
+                    f"attempt={retries_done + 1}/{max_attempts}"))
+        delays = _LEAF_RETRY_BACKOFF_SECONDS.get(tag, _DEFAULT_LEAF_RETRY_BACKOFF)
+        delay = delays[min(retries_done, len(delays) - 1)]
+        self.emit("leaf_transient_retry", node_key=refs.node_key, step=phase,
+                  substep=substep, tag=tag, attempt=retries_done + 1,
+                  max_attempts=max_attempts, backoff_seconds=delay,
+                  dead_agent_run_id=child_arid, evidence=infra_error[1])
+        self._sleep_backoff(delay)
+        return True
 
     def _sleep_backoff(self, seconds: float) -> None:
         """Wait out a transient LLM-infrastructure failure before re-launching the leaf.

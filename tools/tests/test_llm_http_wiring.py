@@ -94,7 +94,9 @@ class HttpPureLeafWiringTests(unittest.TestCase):
 
         def _open(request, timeout=None):       # noqa: ANN001 - test double
             captured.append(json.loads(request.data.decode("utf-8")))
-            reply = pending.pop(0) if pending else pending
+            # The LAST reply repeats once the script is exhausted, so a test can drive a
+            # bounded retry loop without listing every attempt.
+            reply = pending.pop(0) if len(pending) > 1 else (pending[0] if pending else "")
             if isinstance(reply, str):
                 reply = {"text": reply}
             if isinstance(reply, dict) and reply.get("raise"):
@@ -246,15 +248,57 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         self.assertNotIn("prior_document", requests[1])
         self.assertTrue(requests[1].get("warm_resume"))
 
-    def test_a_dead_endpoint_is_a_transport_failure_not_a_content_one(self) -> None:
-        self._serve([{"raise": "Connection refused"}])
+    def test_a_dead_endpoint_is_retried_and_then_is_a_transport_failure(self) -> None:
+        """A refused connection is a TRANSIENT tag, so the loop re-launches it within the
+        bounded budget before failing closed — one dropped connection must not lose a run that
+        has already paid for every earlier phase."""
+        sent = self._serve([{"raise": "Connection refused"}])
         c = self._conductor()
+        slept: list = []
+        c._sleep_backoff = slept.append                    # type: ignore[assignment]
         outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
         self.assertEqual(outcome.status, "fail")
         self.assertIsNotNone(outcome.infra_error)
+        self.assertEqual(len(sent), wc.MAX_LEAF_TRANSIENT_RETRIES + 1)
+        self.assertEqual(len(slept), wc.MAX_LEAF_TRANSIENT_RETRIES)
+        self.assertEqual([e["event"] for e in self._events].count("leaf_transient_retry"),
+                         wc.MAX_LEAF_TRANSIENT_RETRIES)
         meta = json.loads((self.repo / self.refs.source_dir() / "bundle_meta.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(meta["failure_category"], "pure_transport")
+
+    def test_a_transient_failure_that_clears_lets_the_substep_pass(self) -> None:
+        """The point of the retry: a 429 that clears must not cost the run."""
+        sent = self._serve([{"raise": "Connection refused"}, json.dumps(_valid_bundle())])
+        c = self._conductor()
+        c._sleep_backoff = lambda _s: None                 # type: ignore[assignment]
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "pass")
+        self.assertEqual(len(sent), 2)
+        # A retry is not a repair turn: the second attempt is a fresh cold launch, not a
+        # slim repair, so it carries the full context and no findings.
+        requests = [payload["--request-json"] for sub, payload in c.calls
+                    if sub == "record-launch" and "--request-json" in payload]
+        self.assertIsNotNone(requests[-1].get("pure_context"))
+        self.assertNotIn("repair", requests[-1])
+
+    def test_a_client_error_is_not_retried(self) -> None:
+        """A 4xx is a deterministic misconfiguration; retrying it three times would report it
+        as a provider outage the operator should wait out."""
+        import urllib.error
+
+        def _open(request, timeout=None):                  # noqa: ANN001 - test double
+            raise urllib.error.HTTPError(
+                "http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":"max_tokens"}'))
+
+        patcher = patch("tools.llm_http_leaf._default_opener", lambda: _open)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        c = self._conductor()
+        c._sleep_backoff = lambda _s: None                 # type: ignore[assignment]
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual([e["event"] for e in self._events].count("leaf_transient_retry"), 0)
 
     # --- the pure-only rule, at run time ---------------------------------------------
 

@@ -37,11 +37,59 @@ where "invalid configuration" without the rule name costs a debugging round-trip
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 import yaml
+
+
+class _NoDuplicateKeyLoader(yaml.SafeLoader):
+    """`yaml.SafeLoader` that refuses a repeated mapping key instead of keeping the last.
+
+    This file decides which model runs each substep, and therefore what a run costs. A
+    duplicated `phases.generate` or `substeps.verify` is an editing accident whose silent
+    resolution is "run something the operator did not intend and cannot see" — the failure mode
+    a named rejection exists for."""
+
+
+def _no_duplicate_keys(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):
+    seen: set = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise LlmConfigError(
+                "llm_config_duplicate_key",
+                f"key {key!r} is defined more than once in the same mapping; YAML keeps only "
+                f"the last, which would silently run a provider/model you cannot see in the "
+                f"document", where=str(key))
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_NoDuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    lambda loader, node: _no_duplicate_keys(loader, node))
+
+
+# An `http://` endpoint sends the API key in cleartext. Loopback is exempt: that is where the
+# local servers this provider exists for run, and the traffic never leaves the host. Anything
+# else needs an explicit opt-in, because the realistic case is a typo or a LAN address, not a
+# deliberate choice.
+_INSECURE_BASE_URL_OPT_IN_ENV = "METDSL_ALLOW_INSECURE_LLM_BASE_URL"
+
+
+def _is_loopback(host: str) -> bool:
+    host = (host or "").strip().strip("[]").lower()
+    if host in ("localhost", "localhost.localdomain") or host.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 # --- capabilities --------------------------------------------------------------------
 
@@ -407,6 +455,10 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 where=f"{where}.capabilities")
         capabilities = frozenset(declared)
 
+    base_url = str(fields.get("base_url") or "")
+    if provider == "anthropic_api" and not base_url:
+        base_url = ANTHROPIC_DEFAULT_BASE_URL
+
     if provider in HTTP_PROVIDERS:
         if not fields.get("base_url") and provider != "anthropic_api":
             raise LlmConfigError(
@@ -418,15 +470,22 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 f"provider {provider!r} requires `api_key_env:` (the NAME of the environment "
                 f"variable holding the key; the key itself is never written to a config)",
                 where=where)
+        parsed = urlparse(base_url)
+        if parsed.scheme == "http" and not _is_loopback(parsed.hostname or ""):
+            if os.environ.get(_INSECURE_BASE_URL_OPT_IN_ENV, "").strip().lower() not in (
+                    "1", "true", "yes"):
+                raise LlmConfigError(
+                    "llm_config_insecure_base_url",
+                    f"`base_url` {base_url!r} is plain http to a non-loopback host, and the "
+                    f"API key named by `api_key_env` would be sent over it in cleartext. Use "
+                    f"https, point at loopback (where the local servers this provider exists "
+                    f"for run), or set {_INSECURE_BASE_URL_OPT_IN_ENV}=1 to accept the risk "
+                    f"deliberately", where=f"{where}.base_url")
         if not fields.get("model"):
             raise LlmConfigError(
                 "llm_config_http_requires_model",
                 f"provider {provider!r} requires an explicit `model:` (an HTTP endpoint has no "
                 f"alias to resolve at runtime)", where=where)
-
-    base_url = str(fields.get("base_url") or "")
-    if provider == "anthropic_api" and not base_url:
-        base_url = ANTHROPIC_DEFAULT_BASE_URL
 
     return ResolvedLeafEntry(
         declared=frozenset(declared_local),
@@ -548,7 +607,7 @@ def load_llm_config(path: str | Path) -> LlmConfig:
         raise LlmConfigError(
             "llm_config_unreadable", f"cannot read {p}: {exc}", where=str(p)) from exc
     try:
-        doc = yaml.safe_load(text)
+        doc = yaml.load(text, Loader=_NoDuplicateKeyLoader)
     except yaml.YAMLError as exc:
         raise LlmConfigError(
             "llm_config_unreadable", f"cannot parse {p} as YAML: {exc}", where=str(p)) from exc
