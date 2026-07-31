@@ -490,6 +490,59 @@ class TransportBoundsTests(unittest.TestCase):
             opener=lambda *_a, **_k: _Flood())
         self.assertIn("response_too_large", str(out.transport_error))
 
+    def test_an_error_body_is_bounded_by_the_same_deadline(self) -> None:
+        """`exc.read()` is an unbounded blocking read, so a gateway that trickles its error
+        page held the run past `timeout_s` — the one bound this transport has."""
+
+        class _TricklingError(urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("http://x", 503, "Unavailable", {}, None)
+
+            def read1(self, _n=None):
+                time.sleep(0.02)
+                return b" "          # never EOF
+
+        def _raise(*_a, **_k):
+            raise _TricklingError()
+
+        started = time.monotonic()
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], timeout_s=0.1, opener=_raise)
+        self.assertLess(time.monotonic() - started, 5.0)
+        # The STATUS still reaches the classifier — that is what makes a 503 retryable.
+        self.assertIn("HTTP 503", str(out.transport_error))
+        self.assertIn("response_deadline_exceeded", str(out.transport_error))
+
+    def test_an_enormous_error_body_is_refused_at_its_own_ceiling(self) -> None:
+        """A diagnostic excerpt of 400 characters does not justify reading 32 MiB."""
+
+        class _FloodError(urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__("http://x", 500, "Boom", {}, None)
+
+            def read1(self, n=65536):
+                return b"x" * n
+
+        def _raise(*_a, **_k):
+            raise _FloodError()
+
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], opener=_raise)
+        self.assertIn("HTTP 500", str(out.transport_error))
+        self.assertIn("response_too_large", str(out.transport_error))
+        self.assertLess(len(out.raw_response), hl._MAX_ERROR_BODY_BYTES)
+
+    def test_a_normal_error_body_still_reaches_the_diagnostic(self) -> None:
+        """The control: bounding must not stop a short error body being reported."""
+        def _raise(*_a, **_k):
+            raise urllib.error.HTTPError(
+                "http://x", 429, "Too Many Requests", {},
+                io.BytesIO(b'{"error": "slow down"}'))
+
+        out = hl.run_pure_http_leaf(_entry(), [{"role": "user", "content": "P"}], opener=_raise)
+        self.assertIn("slow down", str(out.transport_error))
+        self.assertIn("slow down", out.raw_response)
+
     def test_the_default_opener_refuses_redirects(self) -> None:
         """A real redirect through the real opener: `urlopen` would follow it and copy the
         Authorization header onto the new host."""

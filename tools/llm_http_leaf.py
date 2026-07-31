@@ -88,9 +88,15 @@ def _default_opener() -> "Callable[..., Any]":
 # not an answer, and reading it unbounded is how a trickling endpoint holds the run open.
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _READ_CHUNK_BYTES = 65536
+# An error body is only ever a diagnostic excerpt (`_ERROR_DETAIL_CHARS` of it survives), so it
+# gets its own, far smaller ceiling: reading 32 MiB to keep 400 characters is not a bound worth
+# having, and a gateway emitting an enormous error page is exactly when it matters.
+_MAX_ERROR_BODY_BYTES = 64 * 1024
+_ERROR_DETAIL_CHARS = 400
 
 
-def _read_bounded(response: Any, deadline: float) -> "tuple[bytes | None, str | None]":
+def _read_bounded(response: Any, deadline: float,
+                  max_bytes: int = _MAX_RESPONSE_BYTES) -> "tuple[bytes | None, str | None]":
     """Read the body under a WALL-CLOCK deadline and a size ceiling.
 
     `urlopen(timeout=)` is a per-socket-OPERATION timeout: it resets on every recv, so an
@@ -114,8 +120,8 @@ def _read_bounded(response: Any, deadline: float) -> "tuple[bytes | None, str | 
         if not chunk:
             return b"".join(chunks), None
         total += len(chunk)
-        if total > _MAX_RESPONSE_BYTES:
-            return None, f"response_too_large: over {_MAX_RESPONSE_BYTES} bytes"
+        if total > max_bytes:
+            return None, f"response_too_large: over {max_bytes} bytes"
         chunks.append(chunk)
 
 
@@ -170,10 +176,18 @@ def _post_json(
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
+            # Through the SAME bounded reader as a success body. `exc.read()` is an unbounded
+            # blocking read: a gateway that trickles, or that sends an enormous error page, held
+            # the run past `timeout_s` and grew memory without limit — measured, `timeout_s=2`
+            # was still blocked at 25 s on a 503 whose body dribbled.
+            body, body_error = _read_bounded(exc, deadline, _MAX_ERROR_BODY_BYTES)
             # Redact BEFORE the length limit: slicing first can cut through the middle of the
             # key, and the exact-string replace then matches nothing while a prefix of the
             # secret survives into `raw_response` and the emitted event.
-            detail = _redact(exc.read().decode("utf-8", "replace"), secret)[:400]
+            detail = ("" if body is None
+                      else _redact(body.decode("utf-8", "replace"), secret)[:_ERROR_DETAIL_CHARS])
+            if body_error is not None:
+                detail = (detail + f" [error body {body_error}]").strip()
         except Exception:                       # noqa: BLE001 - diagnostics only
             detail = ""
         # `HTTP <code>`, spaced: the conductor classifies a leaf's terminal line with patterns
