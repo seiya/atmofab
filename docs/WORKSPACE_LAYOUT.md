@@ -35,6 +35,7 @@ workspace/
 │       │   ├── <agent_run_id>.response.json       (the launch response written by record-launch)
 │       │   ├── <agent_run_id>.prompt.txt          (the child agent prompt body. 1-to-1 with the leaf launch prompt input; the child is blocked from Reading this file by read_manifest_read_guard)
 │       │   ├── <agent_run_id>.reply.txt           (overwritten by record-reply with the leaf response)
+│       │   ├── <agent_run_id>.http_response.json (an HTTP leaf's raw provider response body, written by the conductor before it is parsed; absent for a CLI leaf)
 │       │   └── <agent_run_id>.parent_return_token (issued by record-launch, consumed by record-child-return)
 │       │
 │       ├── agents/

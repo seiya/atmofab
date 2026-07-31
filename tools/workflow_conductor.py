@@ -4569,6 +4569,15 @@ class Conductor:
             # PER-LAUNCH, not the run's identity: with a mixed config the leaf being recorded
             # here may run on a different provider than its siblings.
             "backend": (entry or self.entry_for(None, None)).backend_token,
+            # The EXECUTABLE this leaf is actually launched through. `record_launch` builds the
+            # bwrap profile's read-only bind of the CLI's install directory from it; it used to
+            # take `preflight.json#probe_command`, which describes `defaults`. Those were the
+            # same object while a run had one `--llm-command`, and stop being once an entry can
+            # carry its own `command:` — the leaf would then be launched inside a sandbox where
+            # its own binary is not bound, and the recorded `sandbox_command` would name a
+            # different executable than the one that ran.
+            "backend_command": _provider_command_base(
+                entry or self.entry_for(None, None))[0],
         }
         argv = [
             "record-launch", *self._oid_args(),

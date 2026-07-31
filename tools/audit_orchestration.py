@@ -625,6 +625,23 @@ def collect_pure_leaf_ab_summary(
     # since a codex node runs the agentic residual leaf, not the pure producer).
     backend = _clean_str(preflight.get("backend"))
     agent_cli_version = _clean_str(preflight.get("agent_version"))
+    # Since issue #28 the leaf LLM is per-`(phase, substep)`, so `preflight.json#backend` and
+    # `#agent_version` describe `defaults` ONLY — and this section exists to attribute PURE-LEAF
+    # A/B metrics, whose leaves are exactly the ones an operator is most likely to have moved
+    # elsewhere. Carry the recorded per-leaf map so the renderer reports what the pure leaves
+    # actually ran on rather than what the orchestration's default was; when it names anything
+    # other than the top-level backend, the version line is the WRONG CLI's and is suppressed.
+    leaf_map = invocation.get("llm_leaf_map")
+    leaf_map = leaf_map if isinstance(leaf_map, dict) else {}
+    pure_leaf_providers = sorted({
+        _clean_str(row.get("backend"))
+        for key, row in leaf_map.items()
+        if key in ("generate.generate", "generate.verify") and isinstance(row, dict)
+        and _clean_str(row.get("backend"))
+    })
+    if pure_leaf_providers and pure_leaf_providers != [backend]:
+        backend = "/".join(pure_leaf_providers)
+        agent_cli_version = ""
 
     source_dirs, pipeline_refs = _pure_source_dirs_of(repo_root, orchestration_id)
     nodes: list[dict[str, Any]] = []
@@ -1000,8 +1017,16 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     # Label the version by the backend that was actually probed. `agent_version` is
     # whichever CLI ran, so a fixed "claude --version" label would misreport every
     # codex orchestration's version as Claude's.
-    version_label = f"{backend} --version" if backend else "backend CLI --version"
-    lines.append(f"- {version_label}: `{version}` (from `preflight.json#agent_version`)")
+    if version:
+        version_label = f"{backend} --version" if backend else "backend CLI --version"
+        lines.append(f"- {version_label}: `{version}` (from `preflight.json#agent_version`)")
+    elif backend:
+        # The pure leaves ran somewhere the preflight's top-level version does not describe
+        # (a per-substep provider). Naming the provider without a version is the honest report;
+        # borrowing the default backend's version would be false provenance.
+        lines.append(f"- pure-leaf provider: `{backend}` "
+                     f"(from `orchestration_meta.json#invocation.llm_leaf_map`; no CLI version "
+                     f"is recorded for it)")
     nodes = summary.get("pure_nodes") or []
     if not summary.get("available") or not nodes:
         # Say which case this is. Under executor=pure, "legacy/agentic run" would

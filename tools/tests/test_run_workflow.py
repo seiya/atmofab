@@ -3437,6 +3437,27 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertIn("orch_c_prev", stdout)
             self.assertEqual(captured, [])       # the member never ran
 
+    def test_the_closure_TARGET_gate_refuses_a_changed_config_too(self) -> None:
+        """A closure resume warm-resumes the target as well as its members, and `main`'s entry
+        gate looked at whichever orchestration the operator named — which may be a dependency."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            path, cfg = self._closure_config(repo_root)
+            self._pin_member(repo_root, "orch_target", "spec/problem/a",
+                             "configs/llm/closure.yaml", cfg.sha256)
+            path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
+                            encoding="utf-8")
+            import tools.llm_config as _lc
+            rc, captured, stdout = self._drive_closure_raw(
+                repo_root, resume=True, prior_orch_by_spec={},
+                llm_config=_lc.load_llm_config(path), llm_config_overrides={})
+            self.assertEqual(rc, 2)
+            self.assertIn("llm_config_changed_since_launch", stdout)
+            self.assertIn("orch_target", stdout)
+            self.assertNotIn("spec/problem/a", [c["spec_ref"] for c in captured])
+
     def test_an_unchanged_closure_member_resumes(self) -> None:
         """The control: the gate must not refuse the run it is meant to allow."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -5603,8 +5624,8 @@ class LlmConfigStartupTests(unittest.TestCase):
                          "can_launch_substep_agents": True}, raw_stdout="{}")
         return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
 
-    def _run(self, repo_root: Path, extra: list[str], *, oid: str = "orch_cfg"
-             ) -> tuple[int, dict, str, list[dict]]:
+    def _run(self, repo_root: Path, extra: list[str], *, oid: str = "orch_cfg",
+             positional: bool = True) -> tuple[int, dict, str, list[dict]]:
         """Run `main` with a fake runtime and a captured conductor. Returns
         (exit code, conductor kwargs, stderr text, parsed stdout lines)."""
         import tools.workflow_conductor as wc
@@ -5619,8 +5640,11 @@ class LlmConfigStartupTests(unittest.TestCase):
             wc.run_conductor = lambda **kw: (captured.update(kw) or "pass")  # type: ignore
             sys.stderr = err
             with redirect_stdout(out):
+                # A positional spec_ref forces the single-node path (`force_single_node`), so
+                # a closure-resume test must omit it — exactly as the operator does.
                 code = run_workflow.main([
-                    "spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                    *(["spec/problem/test.md", "build"] if positional else []),
+                    "--repo-root", str(repo_root),
                     "--orchestration-id", oid, "--stdout-format", "jsonl", *extra])
         finally:
             run_workflow._runtime_command = orig_rt  # type: ignore[assignment]
@@ -5648,6 +5672,32 @@ class LlmConfigStartupTests(unittest.TestCase):
                 run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
             self.assertEqual(captured["llm_config_overrides"], {"model": "gpt-5.6-codex"})
             self.assertEqual(captured["llm_config"].defaults.model, "gpt-5.6-codex")
+
+    def test_main_hands_the_closure_RESUME_driver_the_same_overrides(self) -> None:
+        """The other call site: a closure resume. Dropping it there makes every member gate
+        compare recorded overrides against `{}` and reject with a spurious
+        `llm_config_changed_since_launch`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            self._seed_resumable(repo_root, "orch_cl", {
+                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_sha256": lc.config_sha256(shipped),
+                "llm_config_overrides": {"model": "opus"},
+                "closure_id": "orch_cl", "closure_target_spec_ref": "spec/problem/test.md",
+                "closure_until_phase": "Build",
+            })
+            captured: dict = {}
+            orig = run_workflow._run_with_dependency_closure
+            run_workflow._run_with_dependency_closure = (   # type: ignore[assignment]
+                lambda **kw: (captured.update(kw) or 0))
+            try:
+                self._run(repo_root, ["--resume"], oid="orch_cl", positional=False)
+            finally:
+                run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
+            self.assertEqual(captured.get("llm_config_overrides"), {"model": "opus"},
+                             msg=f"closure driver not reached; captured={sorted(captured)}")
 
     def test_llm_config_threads_into_run_conductor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6002,6 +6052,23 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(lines[-1]["reason"], "llm_config_changed_since_launch")
             self.assertIn("is gone", lines[-1]["detail"])
+
+    def test_a_flag_the_operator_did_not_pass_is_not_announced(self) -> None:
+        """`args.agent_model` is overwritten with the value RECOVERED from the record before
+        the notice runs, so reading it there named a flag nobody typed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            self._seed_resumable(repo_root, "orch_quiet", {
+                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_sha256": lc.config_sha256(shipped),
+                "llm_config_overrides": {},
+                "agent_model": "opus",           # recorded by the original run
+            })
+            code, _, err, _ = self._run(repo_root, ["--resume"], oid="orch_quiet")
+            self.assertEqual(code, 0)
+            self.assertNotIn("--agent-model is ignored", err)
 
     def test_a_flag_dropped_in_favour_of_the_pin_is_announced(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

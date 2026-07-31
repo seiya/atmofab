@@ -17220,17 +17220,29 @@ def record_launch(
                 "record-launch blocked by pre_phase_launch / workflow-launch-check: "
                 f"reason_code={reason_code}"
             )
-    # Fall back to the default command for the preflight's own backend (not a fixed
-    # backend), so a codex preflight without a probe_command still binds ~/.codex — a
-    # hardcoded command would resolve the wrong runtime home in _backend_runtime_bind_paths.
+    # The executable this leaf is launched through, which is what
+    # `_backend_runtime_bind_paths` resolves the sandbox's read-only bind of the CLI install
+    # directory from. Three sources, most specific first:
+    #   1. the launch RESPONSE's `backend_command` — THIS leaf's own, host-authored by the
+    #      conductor from the entry it is about to spawn. Since issue #28 an entry can carry
+    #      its own `command:`, so the run has no single answer; binding a different executable
+    #      than the one in argv puts the leaf's binary outside its own sandbox.
+    #   2. `preflight.json#probe_command` — the run's `defaults`, which is what every launch
+    #      used before per-substep configuration and what a legacy payload still carries.
+    #   3. the default command for the preflight's own backend (not a fixed backend), so a
+    #      codex preflight without a probe_command still binds ~/.codex.
     # `.get`, not `[...]`: an HTTP provider token names no CLI at all (issue #28). The bwrap
     # profile built from it is skipped for those launches — an HTTP leaf runs no
-    # model-directed tool and so has nothing to confine (Phase 5 wires that skip).
+    # model-directed tool and so has nothing to confine.
     backend_command = DEFAULT_BACKEND_COMMANDS.get(backend_token, "")
     if isinstance(preflight_payload, dict):
         probe_command = preflight_payload.get("probe_command")
         if isinstance(probe_command, str) and probe_command.strip():
             backend_command = probe_command.strip()
+    _launch_command = response_payload.get("backend_command") if isinstance(
+        response_payload, dict) else None
+    if isinstance(_launch_command, str) and _launch_command.strip():
+        backend_command = _launch_command.strip()
     root = _orchestration_root(repo_root, orchestration_id)
     launches_root = root / "launches"
     launches_root.mkdir(parents=True, exist_ok=True)

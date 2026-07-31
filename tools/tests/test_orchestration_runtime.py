@@ -32048,10 +32048,55 @@ class MultiProviderPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)
+            before = self._tree(repo_root)
             with self.assertRaises(RuntimeError) as ctx:
                 self._launch(repo_root, "openai_compatible", "substep_run_agentic_001",
                              pure=False)
             self.assertIn("admissible only for a pure leaf", str(ctx.exception))
+            # AND it must refuse before any durable launch state — the same rule the
+            # build-recurrence guard and the codex-home transaction obey. Placed inside the
+            # sandbox block (where it first landed) it raised only after the capability,
+            # manifests, agent-graph edge and session-index row were already written.
+            self.assertEqual(self._tree(repo_root) - before, set())
+
+    @staticmethod
+    def _tree(repo_root: Path) -> set:
+        root = repo_root / "workspace" / "orchestrations" / "orch_001"
+        return {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
+
+    def test_the_sandbox_profile_binds_the_executable_this_leaf_launches(self) -> None:
+        """The profile's read-only bind of the CLI install directory used to come from
+        `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run had one
+        `--llm-command`; with a per-entry `command:` the leaf would be launched inside a sandbox
+        where its own binary is not bound."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bindir:
+            repo_root = Path(tmp)
+            wrapper = Path(bindir) / "claude"
+            wrapper.write_text("#!/bin/sh\nexec claude \"$@\"\n", encoding="utf-8")
+            wrapper.chmod(0o755)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"          # the run's defaults
+            payload["providers"] = {"claude": {"launchable": True, "checks": []}}
+            self._orch_with_preflight(repo_root, payload)
+            out = self._launch(repo_root, "claude", "substep_run_wrapped_001",
+                               extra_response={"backend_command": str(wrapper)})
+            profile = json.loads(
+                (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
+            self.assertEqual(profile["backend_command"], str(wrapper))
+            self.assertIn(bindir, json.dumps(profile))
+
+    def test_a_launch_without_its_own_command_still_uses_the_preflight_one(self) -> None:
+        """The fallback: a legacy response carries no `backend_command`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            payload = _launchable_preflight_dict(backend="claude")
+            payload["probe_command"] = "claude"
+            payload["providers"] = {"claude": {"launchable": True, "checks": []}}
+            self._orch_with_preflight(repo_root, payload)
+            out = self._launch(repo_root, "claude", "substep_run_plain_001")
+            profile = json.loads(
+                (repo_root / out["sandbox_profile_ref"]).read_text(encoding="utf-8"))
+            self.assertEqual(profile["backend_command"], "claude")
 
     def test_write_preflight_refuses_what_the_launch_gate_would_refuse(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
