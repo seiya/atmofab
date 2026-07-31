@@ -37,7 +37,9 @@ fortitude both accept:
 * A **lone-`&` continuation line** (`&`, or `&! note`): testing the trailing `&` before
   consuming the leading one read the single ampersand as both markers, so the buffer stayed
   open and glued the next statement on. gfortran terminates the statement there, with only a
-  `'&' not allowed by itself` WARNING — so such a source reaches a gate. (Only
+  `'&' not allowed by itself` WARNING — so such a source reaches a gate. It still does after
+  issue #25: that diagnostic carries no `-W<class>` tag (bare `f951: Warning: ...`), so
+  `-Werror=ampersand` does not promote it, unlike the missing-`&` literal resume. (Only
   `_iter_fortran_logical_lines`; the other two consumed the leading `&` first.)
 * A **blank or comment line INSIDE a wrap** flushed a truncated logical line, so a legally
   wrapped `subroutine foo(a, &` / `! note` / `     & b)` header arrived at the gates as the
@@ -178,16 +180,18 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
         #
         # Inside a character context the join is ALWAYS tight: a line break cannot insert a blank
         # into a literal. That covers the conforming `&`-led resume and also gfortran's extension
-        # of accepting a resume line with no `&` at all — which matters because it is only a
-        # `-Wampersand` warning, so such a source passes `Generate.syntax` and reaches a gate.
-        # (Verified: `'abc&` / `      def'` compiles with `len == 6`, i.e. `abcdef`, not
-        # `abc def`.) The leading blanks are column padding either way, never content.
+        # of accepting a resume line with no `&` at all. (Verified: `'abc&` / `      def'` compiles
+        # with `len == 6`, i.e. `abcdef`, not `abc def`.) The leading blanks are column padding
+        # either way, never content. The extension no longer reaches a gate — issue #25 promotes
+        # `-Werror=ampersand` in the `Generate.gate` syntax check — but this is a general Fortran
+        # reader, not a gate-shaped one: it must agree with the compiler on what a source MEANS,
+        # including sources the gate will go on to reject, and callers outside that gate's reach.
         #
         # `pending_quote_escape` covers the one case where the compiler's notion of "inside a
         # character context" outlives this scanner's: a doubled-quote escape SPLIT BY THE WRAP.
         # In `'ab'&` / `'cd'` the literal looks closed at end of line, but gfortran's lookahead
         # reads the two quotes as one escaped quote and compiles `ab'cd` (`len == 5`, pinned) —
-        # with no diagnostic at all, so such a source passes `Generate.syntax`. A space there
+        # with no diagnostic at all, so such a source passes the syntax gate. A space there
         # would produce `'ab' 'cd'`, which is not Fortran at all. The lookahead is over the next
         # CONTRIBUTED character, not the next physical line: a wrap line that contributes nothing
         # (`&&`) must not clear it, which is why the memo is only reassigned when this line

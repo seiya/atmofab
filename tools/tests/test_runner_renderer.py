@@ -1455,11 +1455,11 @@ class GfortranSmokeTest(unittest.TestCase):
 
     def _assert_runner_clean_under_promoted_warnings(
             self, ir: dict, sid: str, checks_stub: str) -> None:
-        """The Generate.syntax gate promotes unused-dummy-argument / unused-variable to
-        errors over the whole staged set. The runner is host-rendered, so such a warning is
-        unfixable by the leaf and would spin a futile warm-repair loop — the rendered
-        artifact must be clean under both. The stubs are compiled WITHOUT the flags: only
-        the runner, the artifact the renderer owns, is held to them."""
+        """The `Generate.gate` syntax check promotes unused-dummy-argument / unused-variable /
+        ampersand to errors over the whole staged set. The runner is host-rendered, so such a
+        warning is unfixable by the leaf and would spin a futile warm-repair loop — the
+        rendered artifact must be clean under all three. The stubs are compiled WITHOUT the
+        flags: only the runner, the artifact the renderer owns, is held to them."""
         runner = render_runner(ir, sid, HARNESS)
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -1476,6 +1476,7 @@ class GfortranSmokeTest(unittest.TestCase):
             r = subprocess.run(
                 ["gfortran", "-fsyntax-only", "-std=f2008",
                  "-Werror=unused-dummy-argument", "-Werror=unused-variable",
+                 "-Werror=ampersand",
                  "-J", str(mods), "-I", str(mods), f"{sid}_runner.f90"],
                 cwd=d, capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)

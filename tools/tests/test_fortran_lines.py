@@ -169,9 +169,11 @@ class FortranLogicalLinesTests(unittest.TestCase):
     def test_a_literal_always_joins_tight(self) -> None:
         # A line break cannot insert a blank into a character literal, so the space-join rule
         # stops at the quote. The second form omits the resuming `&` — non-conforming, but
-        # gfortran accepts it with only a `-Wampersand` WARNING, so a source written that way
-        # passes `Generate.syntax` and reaches a gate. Both compile to `abcdef` (pinned with a
-        # compile-time `1/(len(s) - N)` probe against gfortran 14.2 at `-std=f2008`).
+        # gfortran ACCEPTS it as an extension (issue #25 promotes `-Werror=ampersand` at the
+        # syntax gate, so it no longer reaches one; this scanner still reads it, because it must
+        # agree with the compiler on what a source MEANS, including sources the gate rejects).
+        # Both compile to `abcdef` (pinned with a compile-time `1/(len(s) - N)` probe against
+        # gfortran 14.2 at `-std=f2008`).
         for resume, label in (("      &def'", "conforming `&`-led resume"),
                               ("      def'", "gfortran's missing-`&` extension")):
             with self.subTest(resume=label):
@@ -183,7 +185,7 @@ class FortranLogicalLinesTests(unittest.TestCase):
         # adds are ordinary CONTENT to the compiler — the same difference `str.splitlines()`
         # made at the other end of the line. Stripping a `\v` here let the `&` behind it be read
         # as a continuation marker, where gfortran reads both as part of the string: `'abc&` /
-        # `\v&def'` compiles (with only `-Wampersand`) to `abc<VT>&def`, length 8, pinned with
+        # `\v&def'` compiles (`-Wampersand` fires) to `abc<VT>&def`, length 8, pinned with
         # `1/merge(0, 1, (len(sa) == 8) .and. (sa == 'abc'//achar(11)//'&def'))`.
         for ch, name in (("\x0b", "vertical tab"), ("\x1c", "FS"), ("\x85", "NEL"),
                          ("\xa0", "NBSP"), ("\u2028", "LINE SEPARATOR")):
@@ -215,8 +217,9 @@ class FortranLogicalLinesTests(unittest.TestCase):
         # literal looks closed at end of line, but gfortran's lookahead reads the two quotes as
         # one escaped quote. Pinned at `-std=f2008` with `1/merge(0, 1, (len(sa) == 5) .and.
         # (sa == 'ab''cd'))`, which fires — and gfortran emits NO diagnostic, so a source
-        # written this way passes `Generate.syntax`. A space join would emit `'ab' 'cd'`, which
-        # is not Fortran at all.
+        # written this way passes the syntax gate. Unlike the missing-`&` resume, no `-Werror`
+        # closes this one (issue #25 leaves it open, by construction: there is nothing to
+        # promote). A space join would emit `'ab' 'cd'`, which is not Fortran at all.
         for resume, label in (("'cd'", "resume in column 1"),
                               ("     'cd'", "resume indented")):
             with self.subTest(resume=label):

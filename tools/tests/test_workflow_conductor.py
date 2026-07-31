@@ -13125,7 +13125,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
     def test_gate_syntax_check_dep_warning_beside_node_error_is_content_fail(self) -> None:
         # The attribution probe asks the compiler ("does the dependency closure pass on its
         # own?"), never the diagnostics text. A clean dependency still PRINTS default-on
-        # warnings (-Wampersand / -Wtabs / -Wunderflow) that name its file, and gfortran emits
+        # warnings (-Wtabs / -Wunderflow) that name its file, and gfortran emits
         # them in the same run whose only Error is in the node's own source. Attributing by
         # "the dep's filename appears in the output" would convert that self-repairable
         # finding into a permanent fail_closed (re-certifying the dep would pass, so every
@@ -13143,11 +13143,11 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 if self._call_kind(args) == "probe":
                     # the dep compiles clean on its own: the warning does not fail its gate
                     return {"ok": True, "skipped": False, "command_id": "probe",
-                            "stderr": "dep_model.f90:8:12:\n\nWarning: Missing '&' in "
-                                      "continued character constant [-Wampersand]\n"}
+                            "stderr": "dep_model.f90:8:12:\n\nWarning: Nonconforming tab "
+                                      "character at (1) [-Wtabs]\n"}
                 return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
-                        "stderr": "dep_model.f90:8:12:\n\nWarning: Missing '&' in continued "
-                                  "character constant [-Wampersand]\n"
+                        "stderr": "dep_model.f90:8:12:\n\nWarning: Nonconforming tab "
+                                  "character at (1) [-Wtabs]\n"
                                   "spec_x_model.f90:7:8:\n\nError: Function 'undefined_thing' "
                                   "at (1) has no IMPLICIT type\n"}
 

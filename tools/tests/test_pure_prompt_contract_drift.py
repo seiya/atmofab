@@ -119,6 +119,13 @@ PINNED: dict[str, str] = {
     # #22's asymmetry on the reviewer side — it now scopes the floor's guarantee instead of
     # assuming a directive always exists.
     "pure-16": "ad11bb930dad02cf74d16e01e79e37804e05683b7e7281281eec41964cc5f018",
+    # pure-17: rule (3) states the THIRD promoted syntax-gate class, `-Werror=ampersand` (issue
+    # #25) — a continued character literal must resume with a leading `&`. gfortran accepts a
+    # resume line without one as an extension, and that shape put a counted-`do` spelling written
+    # inside a string at a physical line start, where the fail_closed OpenMP presence floor
+    # counted it and falsely rejected the node. The producer is now told the rule it is judged
+    # by, which is the same asymmetry correction pure-16 made for impl_defaults.
+    "pure-17": "67de1716fdaa1c5a461015b869bf63e168a31136ea28ce246935678f74a176ec",
 }
 
 

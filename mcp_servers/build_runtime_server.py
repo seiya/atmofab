@@ -762,15 +762,20 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
 # the same interface. Module files are compiler-/version-specific formats: every call
 # gets its own scratch dir and must never share Build's $(OBJDIR).
 #
-# Two warning classes are promoted to errors over the whole staged set:
-# unused-dummy-argument and unused-variable. A dummy an interface fixes but the algorithm
-# never consumes (an inert input, an ABI-fixed `name` / `case_id`) must stay a live dummy
-# bound by `associate (unused_<name> => <name>); end associate` — the canonical idiom is
+# Three warning classes are promoted to errors over the whole staged set:
+# unused-dummy-argument, unused-variable and ampersand. A dummy an interface fixes but the
+# algorithm never consumes (an inert input, an ABI-fixed `name` / `case_id`) must stay a live
+# dummy bound by `associate (unused_<name> => <name>); end associate` — the canonical idiom is
 # docs/workflow/CHECKS_MODULE_CONTRACT.md §5, and this gate is what makes it load-bearing
-# rather than advisory. Only these two classes are promoted: promoting -Wall/-Wextra
-# wholesale would reject correct-as-written sources — -Wcompare-reals fires on the harness
-# self-test runner's deliberate bitwise equality comparisons, which are the point of the
-# assertion.
+# rather than advisory. The third promotes gfortran's extension of resuming a continued
+# character literal with NO leading `&`: accepting it (issue #23 measured it at rc=0) let a
+# counted-`do` spelling written inside a string reach a PHYSICAL line start, where the
+# fail_closed OpenMP presence floor — anchored at line starts, deliberately stateless — counted
+# it and falsely rejected a source this gate had passed (issue #25). Rejecting the shape here
+# is what makes the floor's anchoring argument sound; a conforming literal resumes with `&` and
+# is unaffected. Only these three classes are promoted: promoting -Wall/-Wextra wholesale would
+# reject correct-as-written sources — -Wcompare-reals fires on the harness self-test runner's
+# deliberate bitwise equality comparisons, which are the point of the assertion.
 
 _FORTRAN_SYNTAX_SOURCE_SUFFIXES = (".f90", ".f95", ".f03", ".f08")
 _SYNTAX_SCRATCH_DIR_NAME = ".mods"
@@ -782,7 +787,7 @@ def _gfortran_syntax_argv(
     argv = [
         "gfortran", "-fsyntax-only", f"-std={std}",
         # `-Werror=<class>` self-enables the warning, so no companion `-W<class>` is needed.
-        "-Werror=unused-dummy-argument", "-Werror=unused-variable",
+        "-Werror=unused-dummy-argument", "-Werror=unused-variable", "-Werror=ampersand",
         "-J", scratch_dir, "-I", scratch_dir,
     ]
     if openmp:
