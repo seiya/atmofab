@@ -31,7 +31,9 @@ workspace/
 │       │
 │       ├── launches/
 │       │   ├── orchestration.start.prompt.txt     (startup-parameter carrier written by run_workflow.py; read back on --resume, not an LLM prompt)
-│       │   ├── <agent_run_id>.request.json        (the launch request written by record-launch)
+│       │   ├── <agent_run_id>.request.input.json  (the request payload the conductor handed to record-launch, written BEFORE the call and kept as evidence. A single argv element is capped at 128 KiB, so the payload always travels as a file. Written even when record-launch then fails, so a sibling-less one is expected — and it deliberately does NOT match the `*.request.json` scans)
+│       │   ├── <agent_run_id>.request.json        (the launch request written by record-launch; the enriched form, with launch_prompt_full etc. added)
+│       │   ├── <agent_run_id>.agent_run.input.json (the record-agent-run payload the conductor handed to finalize-child, same file transport and evidence rule)
 │       │   ├── <agent_run_id>.response.json       (the launch response written by record-launch)
 │       │   ├── <agent_run_id>.prompt.txt          (the child agent prompt body. 1-to-1 with the leaf launch prompt input; the child is blocked from Reading this file by read_manifest_read_guard)
 │       │   ├── <agent_run_id>.reply.txt           (overwritten by record-reply with the leaf response)
@@ -170,6 +172,8 @@ workspace/
 | `launches/<arid>.prompt.txt` | `record-launch` | runtime | **self Read forbidden** (read_manifest_read_guard) | the canonical artifact 1-to-1 with the leaf launch prompt input (for audit / replay) |
 | `launches/<arid>.reply.txt` | `record-launch` (provisional) → `record-reply` (overwrite) | runtime | runtime / validator / parent orchestration agent | the leaf final response |
 | `launches/<arid>.parent_return_token` | `record-launch` | runtime | parent agent (for record-child-return) | prevents forgery by an arbitrary caller |
+| `launches/<arid>.request.input.json` | before `record-launch` | conductor | operator (audit) | the payload passed as `--request-json-file` (a single argv element is capped at 128 KiB). Kept, never cleaned up: if `record-launch` itself fails there is no sibling `.request.json`, and that lone file is the only record of what was sent |
+| `launches/<arid>.agent_run.input.json` | before `finalize-child` | conductor | operator (audit) | the payload passed as `--agent-run-json-file`; the reply text goes over stdin and is persisted by the runtime as `.reply.txt` |
 | `capabilities/<arid>.json` | `record-launch` | runtime | **only self can Read** | includes `capability_token` / `write_roots` |
 | `output_manifests/<arid>.json` | `record-launch` | runtime | self can Read | `allowed_output_paths` / `allowed_file_tool_paths` / `allowed_tmp_root` |
 | `read_manifests/<arid>.json` | `record-launch` | runtime | self can Read | `allowed_read_roots` / `denied_read_roots` |

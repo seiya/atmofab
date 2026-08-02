@@ -521,10 +521,33 @@ class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
     so the happy-path control flow + bookkeeping wiring can be asserted offline."""
 
-    def runtime(self, args):  # type: ignore[override]
+    def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
+        """Keep the evidence payload in memory instead of on disk.
+
+        Most tests here pin `repo_root=Path("/tmp/repo")`, and the fake only overrides
+        `runtime`, so the real writer would litter a shared host path (tmpfs inode
+        exhaustion has bitten this repo before). The real write path is covered by
+        `LaunchPayloadFileTransportTests` against a real Conductor in a TemporaryDirectory.
+        """
+        store = self.__dict__.setdefault("evidence", {})
+        store[filename] = payload
+        return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
+
+    def _resolve_evidence(self, rel):
+        return self.__dict__.setdefault("evidence", {})[rel.rsplit("/", 1)[-1]]
+
+    def runtime(self, args, *, input=None):  # type: ignore[override]
         sub = args[0]
         # capture the call (subcommand + parsed result-json/agent-run-json if present)
         captured: dict = {}
+        # The conductor sends the large payloads as files; capture them under the legacy
+        # inline flag names so every downstream assertion reads one stable key.
+        for flag, inline in (("--request-json-file", "--request-json"),
+                             ("--agent-run-json-file", "--agent-run-json")):
+            if flag in args:
+                captured[inline] = self._resolve_evidence(args[args.index(flag) + 1])
+        if "--reply-from-stdin" in args:
+            captured["--reply-text"] = input
         for flag in ("--result-json", "--agent-run-json", "--request-json"):
             if flag in args:
                 captured[flag] = json.loads(args[args.index(flag) + 1])
@@ -946,7 +969,7 @@ class ConsumeResumeDirectiveTest(unittest.TestCase):
             encoding="utf-8")
 
         class _C(_FakeConductor):
-            def runtime(self, args):  # type: ignore[override]
+            def runtime(self, args, *, input=None):  # type: ignore[override]
                 if args[0] == "check-step-completed":
                     if not generate_completed and "generate" in args:
                         return {}
@@ -955,9 +978,9 @@ class ConsumeResumeDirectiveTest(unittest.TestCase):
                     if reopen_raises:
                         raise RuntimeError("reopen-phase: trigger not found")
                     if reopen_noop:
-                        super().runtime(args)  # still record the call
+                        super().runtime(args, input=input)  # still record the call
                         return {"status": "noop"}
-                return super().runtime(args)
+                return super().runtime(args, input=input)
 
         c = _C(repo_root=repo_root, orchestration_id=self.OID,
                orchestration_agent_run_id="ORCH", backend="claude", env={})
@@ -15415,6 +15438,100 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 offenders.append(f"{fn.attr} at line {node.lineno}")
         self.assertEqual(offenders, [])
 
+
+
+class LaunchPayloadFileTransportTests(unittest.TestCase):
+    """The bookkeeping payloads must never ride in an argv element, at any size.
+
+    Linux caps a single argv element at MAX_ARG_STRLEN (128 KiB): a launch request
+    carrying the IR, the controlled spec and the dependency facts blows past it for a
+    larger node and execve fails with E2BIG before the runtime starts. advdiff1d only
+    ever fit at 69% of the cap, which is why this went unnoticed until sw2d.
+
+    These assert on SIZE-INDEPENDENCE (no argv element grows with the payload), not on
+    "a 200 KB payload happens to work" — E2BIG lives in execve, so it cannot be
+    reproduced in-process, and a size branch is exactly the regression to prevent.
+    Unlike the in-memory fakes above, these drive the real evidence writer.
+    """
+
+    BIG = "x" * 200_000
+
+    def _conductor(self, repo_root: Path) -> wc.Conductor:
+        c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_payload_file",
+                         orchestration_agent_run_id="ORCH", backend="claude", env={})
+        c.seen: list[tuple[list[str], str | None]] = []                # type: ignore[attr-defined]
+
+        def _capture(args, *, input=None):
+            c.seen.append((list(args), input))                         # type: ignore[attr-defined]
+            return {}
+
+        c.runtime = _capture                                           # type: ignore[assignment]
+        return c
+
+    def _launches(self, repo_root: Path) -> Path:
+        return repo_root / "workspace" / "orchestrations" / "orch_payload_file" / "launches"
+
+    def _assert_no_huge_argv(self, argv: list[str]) -> None:
+        oversized = [a[:60] for a in argv if len(a) >= 10_000]
+        self.assertEqual(oversized, [], f"payload rode in argv: {oversized}")
+
+    def test_record_launch_sends_the_request_as_a_kept_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = self._conductor(repo_root)
+            request = {"agent_role": "substep", "pure_context": self.BIG}
+
+            c.record_launch("child-1", request)
+
+            argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
+            self._assert_no_huge_argv(argv)
+            self.assertNotIn("--request-json", argv)
+            self.assertIn("--request-json-file", argv)
+            rel = argv[argv.index("--request-json-file") + 1]
+            self.assertEqual(
+                rel,
+                "workspace/orchestrations/orch_payload_file/launches/child-1.request.input.json")
+            # Parse-compare: the writer emits indented, non-ASCII-escaped JSON, so the raw
+            # text is not the input text.
+            self.assertEqual(
+                json.loads((repo_root / rel).read_text(encoding="utf-8")), request)
+
+    def test_finalize_child_sends_the_reply_on_stdin_and_the_row_as_a_kept_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = self._conductor(repo_root)
+            agent_run = {"agent_run_id": "child-1", "status": "pass", "notes": self.BIG}
+
+            c.finalize_child("child-1", "tok", self.BIG, agent_run)
+
+            argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
+            self._assert_no_huge_argv(argv)
+            self.assertNotIn("--reply-text", argv)
+            self.assertIn("--reply-from-stdin", argv)
+            self.assertEqual(stdin, self.BIG)
+            rel = argv[argv.index("--agent-run-json-file") + 1]
+            self.assertEqual(
+                rel,
+                "workspace/orchestrations/orch_payload_file/launches/"
+                "child-1.agent_run.input.json")
+            self.assertEqual(
+                json.loads((repo_root / rel).read_text(encoding="utf-8")), agent_run)
+
+    def test_reply_from_stdin_without_input_does_not_inherit_the_tty(self) -> None:
+        """Forgetting `input=` is a HANG, not an error — the subprocess blocks on the
+        conductor's own stdin. The guard turns it into the runtime's dispatch error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            c = wc.Conductor(repo_root=Path(tmp), orchestration_id="orch_payload_file",
+                             orchestration_agent_run_id="ORCH", backend="claude", env={})
+            seen: dict = {}
+
+            def _fake_run(cmd, **kwargs):
+                seen.update(kwargs)
+                return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+            with mock.patch.object(subprocess, "run", _fake_run):
+                c.runtime(["finalize-child", "--reply-from-stdin"])
+            self.assertEqual(seen.get("input"), "")
 
 
 if __name__ == "__main__":  # pragma: no cover

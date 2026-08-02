@@ -3211,11 +3211,17 @@ class Conductor:
         }
         print(json.dumps(payload, ensure_ascii=False), flush=True)
 
-    def runtime(self, args: list[str]) -> dict[str, Any]:
+    def runtime(self, args: list[str], *, input: str | None = None) -> dict[str, Any]:
         """Call an orchestration_runtime.py subcommand; return parsed JSON stdout."""
+        if "--reply-from-stdin" in args and input is None:
+            # Not passing `input` leaves stdin inherited from the conductor's own tty, so
+            # the child blocks forever on read() instead of failing. An empty reply is a
+            # clean dispatch-time error ("requires --reply-text or --reply-from-stdin").
+            input = ""
         proc = subprocess.run(
             ["python3", "tools/orchestration_runtime.py", *args],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False,
+            input=input,
         )
         if proc.returncode != 0:
             detail = proc.stderr.strip() or proc.stdout.strip() or f"exit={proc.returncode}"
@@ -4601,6 +4607,25 @@ class Conductor:
     def _oid_args(self) -> list[str]:
         return ["--repo-root", ".", "--orchestration-id", self.orchestration_id]
 
+    def _write_launch_input_evidence(self, filename: str, payload: dict[str, Any]) -> str:
+        """Persist a bookkeeping payload as a file and return its repo-root-relative path.
+
+        A single argv element is capped at MAX_ARG_STRLEN (128 KiB on Linux), and a launch
+        request carrying the IR, the controlled spec and the dependency facts exceeds that
+        for larger nodes — execve then fails with E2BIG before the runtime starts. So the
+        payload always travels as a file, with no size branch: a size branch is exactly how
+        this stayed invisible until a node grew past the cap.
+
+        The file is kept, never cleaned up: it is the evidence of what was handed to the
+        runtime, and it survives a call that failed before writing anything of its own.
+        `.input.json` deliberately falls outside the `*.request.json` glob the orphan
+        tombstone scan and validate_workspace_root use.
+        """
+        from tools.orchestration_runtime import _write_json
+        rel = f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
+        _write_json(self.repo_root / rel, payload)
+        return rel
+
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
                       expected_codex_home_generation: int | None = None) -> dict[str, Any]:
@@ -4621,11 +4646,13 @@ class Conductor:
             "backend_command": _provider_command_base(
                 entry or self.entry_for(None, None))[0],
         }
+        request_ref = self._write_launch_input_evidence(
+            f"{child_arid}.request.input.json", request)
         argv = [
             "record-launch", *self._oid_args(),
             "--parent-agent-run-id", self.orchestration_agent_run_id,
             "--child-agent-run-id", child_arid,
-            "--request-json", json.dumps(request),
+            "--request-json-file", request_ref,
             "--response-json", json.dumps(response),
         ]
         if expected_codex_home_generation is not None:
@@ -4634,13 +4661,18 @@ class Conductor:
 
     def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
+        # The reply is the leaf's verbatim final message and can carry generated source, so
+        # it goes over stdin (the runtime persists it to launches/<arid>.reply.txt itself —
+        # no second copy). The agent_run payload travels as a kept evidence file.
+        agent_run_ref = self._write_launch_input_evidence(
+            f"{child_arid}.agent_run.input.json", agent_run_json)
         return self.runtime([
             "finalize-child", *self._oid_args(),
             "--agent-run-id", child_arid,
             "--return-token", return_token,
-            "--reply-text", reply_text,
-            "--agent-run-json", json.dumps(agent_run_json),
-        ])
+            "--reply-from-stdin",
+            "--agent-run-json-file", agent_run_ref,
+        ], input=reply_text)
 
     def _write_lineage(self, refs: NodeRefs) -> list[dict[str, str]]:
         """Author/refresh the pipeline `lineage.json` host-side (runtime-owned).
