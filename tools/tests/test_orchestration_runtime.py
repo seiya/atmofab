@@ -32519,7 +32519,10 @@ class JsonPayloadFileArgTests(unittest.TestCase):
         with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("done")):
             code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
         self.assertEqual(code, 1)
-        self.assertIn("finalize-child --agent-run-json-file", stderr.getvalue())
+        # Anchor on the colon the message format puts after the label: the inline label
+        # is a PREFIX of the file one, so an unanchored assertion cannot tell the two
+        # branches apart and passes with the ternary collapsed to a constant.
+        self.assertIn("finalize-child --agent-run-json-file:", stderr.getvalue())
         self.assertNotIn("record-agent-run", stderr.getvalue())
 
         stderr = io.StringIO()
@@ -32528,7 +32531,7 @@ class JsonPayloadFileArgTests(unittest.TestCase):
                 "--reply-text", "done", "--agent-run-json",
                 json.dumps({"agent_run_id": "child-1", "agent_backend": "claude"})))
         self.assertEqual(code, 1)
-        self.assertIn("finalize-child --agent-run-json", stderr.getvalue())
+        self.assertIn("finalize-child --agent-run-json:", stderr.getvalue())
 
     def test_empty_stdin_reply_is_a_dispatch_error_not_a_silent_pass(self) -> None:
         """The conductor's `input=""` guard against a hung read is only a remedy if the

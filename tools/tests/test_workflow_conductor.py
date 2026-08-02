@@ -15511,8 +15511,8 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             self.assertEqual(
                 rel,
                 "workspace/orchestrations/orch_payload_file/launches/child-1.request.input.json")
-            # Parse-compare: the writer emits indented, non-ASCII-escaped JSON, so the raw
-            # text is not the input text.
+            # Parse-compare: the writer emits indented, ASCII-escaped JSON, so the raw text
+            # is not the input text.
             self.assertEqual(
                 json.loads((repo_root / rel).read_text(encoding="utf-8")), request)
 
