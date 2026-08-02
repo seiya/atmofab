@@ -1546,31 +1546,47 @@ shell_tool                       stable             true
         raised before any model turn."""
         from tools.orchestration_runtime import _probe_claude_backend
 
-        def _runner(refusal: str):  # type: ignore[no-untyped-def]
+        # The real help mentions stdin in an UNRELATED flag, so a bare "stdin" match is
+        # satisfied by any build that dumps its usage on an argument error — the ordinary
+        # commander.js behavior — while supporting no stdin input at all.
+        help_text = ("Usage: claude [options] [command] [prompt]\n"
+                     "  --replay-user-messages  Re-emit user messages from stdin back on "
+                     "stdout\n")
+
+        def _runner(refusal: str, returncode: int = 1):  # type: ignore[no-untyped-def]
             def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
                 if cmd[-1] == "--version":
                     return _FakeCompletedProcess(0, stdout="1.0.0 (Claude Code)")
                 if cmd[-1] == "--help":
-                    return _FakeCompletedProcess(0, stdout="Usage: claude [options] [prompt]")
+                    return _FakeCompletedProcess(0, stdout=help_text)
                 if cmd[-1] == "-p":
                     self.assertEqual(kwargs.get("input"), "")
-                    return _FakeCompletedProcess(1, stdout="", stderr=refusal)
+                    return _FakeCompletedProcess(returncode, stdout="", stderr=refusal)
                 raise AssertionError(cmd)
             return runner
+
+        from tools.orchestration_runtime import _can_launch_from_help_fallback_checks
 
         real = ("Error: Input must be provided either through stdin or as a prompt "
                 "argument when using --print")
         checks, _, _, _ = _probe_claude_backend("claude", "claude", _runner(real))
-        by_name = {check["name"]: check for check in checks}
-        self.assertTrue(by_name["claude_prompt_stdin"]["pass"])
+        self.assertTrue({c["name"]: c for c in checks}["claude_prompt_stdin"]["pass"])
 
-        checks, _, _, _ = _probe_claude_backend(
-            "claude", "claude", _runner("Error: a prompt argument is required"))
-        by_name = {check["name"]: check for check in checks}
-        self.assertFalse(by_name["claude_prompt_stdin"]["pass"])
-        # And that failure must block the launch, not sit there as advisory.
-        from tools.orchestration_runtime import _can_launch_from_help_fallback_checks
-        self.assertFalse(_can_launch_from_help_fallback_checks("claude", checks))
+        for label, refusal, code in (
+            # No stdin support, but the usage dump carries the word.
+            ("usage dump", "error: missing required argument 'prompt'\n" + help_text, 1),
+            ("silent refusal", "Error: a prompt argument is required", 1),
+            # Accepted the empty prompt instead of refusing: it spent a model turn, so the
+            # probe is no longer free and says nothing about the input channel.
+            ("accepted", real, 0),
+        ):
+            with self.subTest(case=label):
+                checks, _, _, _ = _probe_claude_backend(
+                    "claude", "claude", _runner(refusal, code))
+                by_name = {c["name"]: c for c in checks}
+                self.assertFalse(by_name["claude_prompt_stdin"]["pass"])
+                # And that failure must block the launch, not sit there as advisory.
+                self.assertFalse(_can_launch_from_help_fallback_checks("claude", checks))
 
     def test_probe_codex_backend_rejects_fresh_exec_missing_model_flag(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend

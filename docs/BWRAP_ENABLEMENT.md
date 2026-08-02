@@ -98,10 +98,15 @@ Both forms are certified at preflight, by different probes because the two CLIs 
 differently. `codex_prompt_stdin` requires BOTH codex helps to document the sentinel: a
 codex that stopped treating `-` as a sentinel would take it as a one-character prompt and
 answer something plausible, so the loss is silent. `claude_prompt_stdin` runs `claude -p`
-on empty input and requires the refusal to name `stdin`; that path fails loudly rather
-than silently, but the claude contract is the ABSENCE of a positional argument, which
-`claude --help` documents nowhere, so the CLI's own refusal is the only machine-readable
-statement of it. Both probes cost zero tokens and reach no model.
+on empty input and requires a non-zero exit whose message contains `through stdin`; that
+path fails loudly rather than silently, but the claude contract is the ABSENCE of a
+positional argument, which `claude --help` states nowhere, so the CLI's own refusal is the
+only machine-readable statement of it. The match is the refusal's own wording, not the bare
+word: `claude --help` does contain `stdin`, in an unrelated `--replay-user-messages` flag,
+so a build that dumped its usage on an argument error would otherwise certify itself while
+supporting no stdin input at all. The non-zero exit is what keeps the probe free — a build
+that accepted the empty prompt would spend a model turn. Both probes cost zero tokens and
+reach no model.
 
 The whole JSONL event stream of each Codex leaf is kept at
 `agents/<arid>/dialogs/leaf.stdout.jsonl`. `leaf.stdout.log` holds only the extracted final

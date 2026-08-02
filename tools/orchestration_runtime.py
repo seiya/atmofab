@@ -15901,7 +15901,7 @@ def _probe_claude_backend(
 
     # The leaf prompt travels on stdin, not argv (a single argv element is capped at
     # 128 KiB and a node's prompt exceeds it), and the claude contract is the ABSENCE of a
-    # positional prompt — `claude --help` documents no stdin behavior, so there is no help
+    # positional prompt — which `claude --help` states nowhere, so there is no help
     # substring to match the way the codex sentinel is matched. Instead ask the CLI to
     # refuse an empty `-p`: it answers with the one message that names its input channels,
     # before any model turn (measured: exit 1 in ~1.8 s, zero tokens, no API call).
@@ -15940,7 +15940,14 @@ def _probe_claude_backend(
         },
         {
             "name": f"{backend_token}_prompt_stdin",
-            "pass": "stdin" in stdin_probe_text,
+            # The REFUSAL's own wording, and a non-zero exit to prove it refused. A bare
+            # "stdin" would be satisfied by the help text — `--replay-user-messages`
+            # mentions it — so any build that dumps usage on an argument error would pass
+            # while supporting no stdin input at all. "through stdin" appears in the
+            # refusal and not in the help. The non-zero exit is what keeps the probe free:
+            # a build that instead ACCEPTED the empty prompt would spend a model turn.
+            "pass": (stdin_probe_proc.returncode != 0
+                     and "through stdin" in stdin_probe_text),
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
         {
