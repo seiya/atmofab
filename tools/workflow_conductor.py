@@ -4621,9 +4621,17 @@ class Conductor:
         `.input.json` deliberately falls outside the `*.request.json` glob the orphan
         tombstone scan and validate_workspace_root use.
         """
-        from tools.orchestration_runtime import _write_json
+        from tools.orchestration_runtime import _atomic_write_text
         rel = f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
-        _write_json(self.repo_root / rel, payload)
+        # `ensure_ascii=True`, not `_write_json`'s `False`: the argv form this replaces
+        # encoded with the same default, which made it unconditionally immune to a lone
+        # surrogate. A UTF-8 file write is not — and `usage` / `agent_model` reach the
+        # agent-run row straight from `json.loads` of the provider envelope, with no
+        # encodability gate in between, so a provider emitting a `\udXXX` escape would
+        # otherwise crash the conductor here where it previously did not. The escaped
+        # file decodes back to the identical object.
+        _atomic_write_text(self.repo_root / rel,
+                           json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
         return rel
 
     def record_launch(self, child_arid: str, request: dict[str, Any],

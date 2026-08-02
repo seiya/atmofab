@@ -530,13 +530,13 @@ class _FakeConductor(wc.Conductor):
         exhaustion has bitten this repo before). The real write path is covered by
         `LaunchPayloadFileTransportTests` against a real Conductor in a TemporaryDirectory.
         """
-        # Round-trip through the encoder the real writer uses. Storing the dict by
-        # reference would drop the serializability net the inline `json.dumps` used to
+        # Round-trip through the same encoder call the real writer uses. Storing the dict
+        # by reference would drop the serializability net the inline `json.dumps` used to
         # give every fake finalize: a Path / set / datetime landing in the agent-run row
         # would then ship green and die at the first real finalize_child. It also keeps
         # the captured payload a snapshot rather than a live alias of the caller's dict.
         store = self.__dict__.setdefault("evidence", {})
-        store[filename] = json.loads(json.dumps(payload, ensure_ascii=False))
+        store[filename] = json.loads(json.dumps(payload, ensure_ascii=True))
         return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
 
     def _resolve_evidence(self, rel):
@@ -15089,6 +15089,18 @@ class LeafEntryThreadingTests(unittest.TestCase):
         base.update(kw)
         return wc.Conductor(**base)
 
+    def _scratch_repo_root(self) -> Path:
+        """A throwaway repo_root for a REAL `Conductor` whose `runtime` is stubbed.
+
+        `record_launch` / `finalize_child` write their payload evidence file under
+        `repo_root` before calling `runtime`, so the shared `/tmp/repo` these tests used
+        to pin would collect real files on every run (this repo has exhausted tmpfs
+        inodes that way before).
+        """
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        return Path(d)
+
     def _config_text(self, text: str) -> lc.LlmConfig:
         """Load an inline config document from a scratch file (the loader reads bytes, and the
         sha256 it records is the file's, so an on-disk file is what it wants)."""
@@ -15325,7 +15337,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         Reverting it to the run-wide identity left the whole suite green."""
         recorded: list[dict] = []
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=self._scratch_repo_root(), orchestration_id="o",
+            orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
@@ -15343,7 +15356,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         `command:` the leaf would be launched inside a sandbox where its binary is not bound."""
         recorded: list[dict] = []
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=self._scratch_repo_root(), orchestration_id="o",
+            orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "  command: /opt/wrap/claude --sandbox\n"
@@ -15522,6 +15536,24 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
                 "child-1.agent_run.input.json")
             self.assertEqual(
                 json.loads((repo_root / rel).read_text(encoding="utf-8")), agent_run)
+
+    def test_a_lone_surrogate_survives_the_evidence_write(self) -> None:
+        """The argv form encoded with `json.dumps`'s ensure_ascii default, so it could not
+        trip over a lone surrogate. A UTF-8 file write can. `usage` / `agent_model` reach
+        the agent-run row straight from the provider envelope with no encodability gate,
+        so losing that immunity would crash the conductor on a `\\udXXX` a provider emitted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = self._conductor(repo_root)
+            payload = {"agent_run_id": "child-1", "agent_model": "m\ud800odel"}
+
+            c.finalize_child("child-1", "tok", "done", payload)
+
+            argv, _ = c.seen[-1]                                   # type: ignore[attr-defined]
+            rel = argv[argv.index("--agent-run-json-file") + 1]
+            self.assertEqual(
+                json.loads((repo_root / rel).read_text(encoding="utf-8")), payload)
 
     def test_the_real_execve_accepts_the_file_form_and_still_rejects_the_inline_one(self) -> None:
         """The one test that crosses the real subprocess boundary.

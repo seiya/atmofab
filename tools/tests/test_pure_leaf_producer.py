@@ -196,7 +196,7 @@ class _PureFakeConductor(wc.Conductor):
         # Round-trip through the encoder the real writer uses — see the note on
         # `_FakeConductor._write_launch_input_evidence` in test_workflow_conductor.py.
         store = self.__dict__.setdefault("evidence", {})
-        store[filename] = json.loads(json.dumps(payload, ensure_ascii=False))
+        store[filename] = json.loads(json.dumps(payload, ensure_ascii=True))
         return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
 
     def _resolve_evidence(self, rel):

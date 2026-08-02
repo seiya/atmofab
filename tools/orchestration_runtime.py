@@ -20619,9 +20619,15 @@ def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
         )
 
 
-def _validate_record_agent_run_fields(payload: dict[str, Any]) -> None:
-    """Validate the required fields of record-agent-run --agent-run-json at CLI dispatch time."""
-    label = "record-agent-run --agent-run-json"
+def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None = None) -> None:
+    """Validate the required fields of the record-agent-run payload at CLI dispatch time.
+
+    `label` names the argument the operator actually passed. `finalize-child` runs this
+    same validator before its own checks, so the default would send an operator to inspect
+    a subcommand they did not run and a flag the conductor never passes (it always uses
+    `--agent-run-json-file`).
+    """
+    label = label or "record-agent-run --agent-run-json"
     for key in ("agent_run_id", "agent_backend", "status"):
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -21592,7 +21598,11 @@ def main(argv: list[str] | None = None) -> int:
             print("finalize-child requires --reply-text or --reply-from-stdin", file=sys.stderr)
             return 1
         try:
-            _validate_record_agent_run_fields(agent_run_payload)
+            _validate_record_agent_run_fields(
+                agent_run_payload,
+                label=("finalize-child --agent-run-json-file"
+                       if args.agent_run_json is None else "finalize-child --agent-run-json"),
+            )
             result = finalize_child(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
