@@ -20573,6 +20573,25 @@ def _json_arg(raw: str) -> dict[str, Any]:
     return value
 
 
+def _json_file_arg(raw: str) -> dict[str, Any]:
+    """Read a JSON object payload from a file path instead of an argv element.
+
+    Linux caps a single argv element at MAX_ARG_STRLEN (128 KiB); an inlined launch
+    request (IR + controlled spec + dependency facts) exceeds it for larger nodes and
+    execve fails with E2BIG before the process starts. The caller writes the payload to
+    `workspace/orchestrations/<oid>/launches/<arid>.{request,agent_run}.input.json`
+    (kept as evidence) and passes that path here.
+    """
+    try:
+        text = Path(raw).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"cannot read json payload file {raw!r}: {exc}") from exc
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError("json payload must be object")
+    return value
+
+
 def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
     """Validate the required fields of record-launch --response-json at CLI dispatch time."""
     label = "record-launch --response-json"
@@ -20894,8 +20913,17 @@ def main(argv: list[str] | None = None) -> int:
     launch_parser.add_argument("--child-agent-run-id", required=True,
                                help="UUID pre-generated for the child agent. "
                                     "For Claude Code this also becomes agent_session_id.")
-    launch_parser.add_argument("--request-json", required=True, type=_json_arg,
-                               help=_RECORD_LAUNCH_REQUEST_HELP)
+    launch_request_group = launch_parser.add_mutually_exclusive_group(required=True)
+    launch_request_group.add_argument("--request-json", type=_json_arg,
+                                      help=_RECORD_LAUNCH_REQUEST_HELP)
+    launch_request_group.add_argument("--request-json-file", type=_json_file_arg,
+                                      help=("Path to a file holding the same payload the inline "
+                                            "request-json form takes. Use this form always: a "
+                                            "single argv element is capped at MAX_ARG_STRLEN "
+                                            "(128 KiB) and an inlined request exceeds it for "
+                                            "larger nodes (execve E2BIG). The conductor writes "
+                                            "workspace/orchestrations/<oid>/launches/"
+                                            "<child_arid>.request.input.json and keeps it as evidence."))
     launch_parser.add_argument("--response-json", required=True, type=_json_arg,
                                help=_RECORD_LAUNCH_RESPONSE_HELP)
     launch_parser.add_argument("--relation-type", default="launch")
@@ -20978,7 +21006,14 @@ def main(argv: list[str] | None = None) -> int:
     finalize_parser.add_argument("--reply-text")
     finalize_parser.add_argument("--reply-from-stdin", action="store_true")
     finalize_parser.add_argument("--reply-excerpt", default=None)
-    finalize_parser.add_argument("--agent-run-json", required=True, type=_json_arg)
+    finalize_agent_run_group = finalize_parser.add_mutually_exclusive_group(required=True)
+    finalize_agent_run_group.add_argument("--agent-run-json", type=_json_arg)
+    finalize_agent_run_group.add_argument(
+        "--agent-run-json-file", type=_json_file_arg,
+        help=("Path to a file holding the same payload the inline agent-run-json form takes. "
+              "A single argv element is capped at MAX_ARG_STRLEN (128 KiB); the conductor writes "
+              "workspace/orchestrations/<oid>/launches/<arid>.agent_run.input.json and keeps it "
+              "as evidence. Pair it with the reply-from-stdin flag for the reply text."))
 
     step_parser = subparsers.add_parser(
         "write-step-result",
@@ -21482,6 +21517,9 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id=args.orchestration_id,
         )
     elif args.command == "record-launch":
+        request_payload = (
+            args.request_json if args.request_json is not None else args.request_json_file
+        )
         try:
             _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
@@ -21489,7 +21527,7 @@ def main(argv: list[str] | None = None) -> int:
                 orchestration_id=args.orchestration_id,
                 parent_agent_run_id=args.parent_agent_run_id,
                 child_agent_run_id=args.child_agent_run_id,
-                request_payload=args.request_json,
+                request_payload=request_payload,
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
                 expected_codex_home_generation=args.expected_codex_home_generation,
@@ -21536,6 +21574,9 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
     elif args.command == "finalize-child":
+        agent_run_payload = (
+            args.agent_run_json if args.agent_run_json is not None else args.agent_run_json_file
+        )
         if args.reply_from_stdin:
             reply_text = sys.stdin.read()
         else:
@@ -21544,14 +21585,14 @@ def main(argv: list[str] | None = None) -> int:
             print("finalize-child requires --reply-text or --reply-from-stdin", file=sys.stderr)
             return 1
         try:
-            _validate_record_agent_run_fields(args.agent_run_json)
+            _validate_record_agent_run_fields(agent_run_payload)
             result = finalize_child(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
                 agent_run_id=args.agent_run_id,
                 return_token=args.return_token,
                 reply_text=reply_text,
-                agent_run_payload=args.agent_run_json,
+                agent_run_payload=agent_run_payload,
                 reply_excerpt=args.reply_excerpt,
             )
         except (ValueError, RuntimeError) as exc:

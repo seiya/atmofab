@@ -32407,5 +32407,116 @@ class SiblingUniformScopeTests(unittest.TestCase):
             self.assertEqual(out["status"], "needs_manual")
 
 
+class JsonPayloadFileArgTests(unittest.TestCase):
+    """`--request-json-file` / `--agent-run-json-file`: the argv-size escape hatch.
+
+    A single argv element is capped at MAX_ARG_STRLEN (128 KiB on Linux), so an
+    inlined launch request larger than that makes `execve` fail with E2BIG before
+    the process starts. The file variants must be exactly equivalent to the inline
+    ones — a normalization that lands on only one side is the regression these pin.
+    """
+
+    _RESPONSE = {
+        "agent_run_id": "child-1",
+        "agent_session_id": "child-1",
+        "started_at": "2026-08-02T00:00:00Z",
+        "backend": "claude",
+    }
+
+    def _launch_argv(self, *payload_args: str) -> list[str]:
+        return [
+            "record-launch",
+            "--repo-root", ".",
+            "--orchestration-id", "orch_001",
+            "--parent-agent-run-id", "parent-1",
+            "--child-agent-run-id", "child-1",
+            *payload_args,
+            "--response-json", json.dumps(self._RESPONSE),
+        ]
+
+    def _finalize_argv(self, *payload_args: str) -> list[str]:
+        return [
+            "finalize-child",
+            "--repo-root", ".",
+            "--orchestration-id", "orch_001",
+            "--agent-run-id", "child-1",
+            "--return-token", "tok",
+            *payload_args,
+        ]
+
+    def _write_json(self, payload: Any) -> str:
+        tmp = Path(tempfile.mkdtemp()) / "payload.json"
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return str(tmp)
+
+    def test_record_launch_argv_and_file_variants_are_equivalent(self) -> None:
+        request = {"agent_role": "substep", "node_key": "component/x@0.1.0", "blob": "y" * 4096}
+        path = self._write_json(request)
+        captured: list[dict[str, Any]] = []
+        with patch.object(ort, "record_launch",
+                          side_effect=lambda **kw: captured.append(kw) or {}):
+            self.assertEqual(main(self._launch_argv("--request-json", json.dumps(request))), 0)
+            self.assertEqual(main(self._launch_argv("--request-json-file", path)), 0)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0], captured[1])
+        self.assertEqual(captured[0]["request_payload"], request)
+
+    def test_finalize_child_argv_and_file_variants_are_equivalent(self) -> None:
+        agent_run = {"agent_run_id": "child-1", "agent_backend": "claude", "status": "completed",
+                     "agent_role": "substep", "node_key": "component/x@0.1.0",
+                     "agent_session_id": "child-1"}
+        path = self._write_json(agent_run)
+        captured: list[dict[str, Any]] = []
+        with patch.object(ort, "finalize_child",
+                          side_effect=lambda **kw: captured.append(kw) or {}):
+            self.assertEqual(main(self._finalize_argv(
+                "--reply-text", "done", "--agent-run-json", json.dumps(agent_run))), 0)
+            with patch.object(sys, "stdin", io.StringIO("done")):
+                self.assertEqual(main(self._finalize_argv(
+                    "--reply-from-stdin", "--agent-run-json-file", path)), 0)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0], captured[1])
+        self.assertEqual(captured[0]["agent_run_payload"], agent_run)
+        self.assertEqual(captured[0]["reply_text"], "done")
+
+    def _expect_argparse_error(self, argv: list[str], needle: str) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                main(argv)
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn(needle, stderr.getvalue())
+
+    def test_record_launch_rejects_both_and_neither(self) -> None:
+        path = self._write_json({"a": 1})
+        self._expect_argparse_error(
+            self._launch_argv("--request-json", "{}", "--request-json-file", path),
+            "not allowed with argument")
+        self._expect_argparse_error(self._launch_argv(), "is required")
+
+    def test_finalize_child_rejects_both_and_neither(self) -> None:
+        path = self._write_json({"a": 1})
+        self._expect_argparse_error(
+            self._finalize_argv("--reply-text", "x",
+                                "--agent-run-json", "{}", "--agent-run-json-file", path),
+            "not allowed with argument")
+        self._expect_argparse_error(self._finalize_argv("--reply-text", "x"), "is required")
+
+    def test_missing_payload_file_is_an_argparse_error_not_a_traceback(self) -> None:
+        """A bare OSError from the type callable escapes argparse as a traceback."""
+        missing = str(Path(tempfile.mkdtemp()) / "absent.json")
+        self._expect_argparse_error(
+            self._launch_argv("--request-json-file", missing), "cannot read json payload file")
+
+    def test_non_object_payload_file_is_rejected(self) -> None:
+        path = self._write_json([1, 2])
+        self._expect_argparse_error(
+            self._launch_argv("--request-json-file", path), "json payload must be object")
+        self._expect_argparse_error(
+            self._finalize_argv("--reply-text", "x", "--agent-run-json-file", path),
+            "json payload must be object")
+
+
 if __name__ == "__main__":
     unittest.main()
