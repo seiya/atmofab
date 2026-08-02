@@ -542,10 +542,19 @@ class _StdinSink:
         self.closed_by_writer = True
 
     def await_prompt(self, timeout: float = 10.0) -> bytes:
-        """Block until the writer thread has closed stdin, then return what it wrote."""
+        """Block until the writer thread has closed stdin, then return what it wrote.
+
+        Raises rather than returning on timeout: returning `self.written` anyway made this
+        pass with `stdin.close()` deleted from the feeder — the payload is already there,
+        and only the wall clock showed the two silent 10 s waits.
+        """
         deadline = time.monotonic() + timeout
         while not self.closed_by_writer and time.monotonic() < deadline:
             time.sleep(0.005)
+        if not self.closed_by_writer:
+            raise AssertionError(
+                "the leaf's stdin was never closed: a CLI reading the prompt from stdin "
+                f"would block until the leaf timeout (wrote {len(self.written)} bytes)")
         return self.written
 
 
@@ -6087,7 +6096,7 @@ class LeafSpawnTest(unittest.TestCase):
             register if register is not None else (lambda *a: None))
         with patch.object(wc.subprocess, "Popen", _FakePopen):
             result = c._spawn_codex_json_leaf(
-                ["codex", "exec"], {}, child_arid, resume=resume,
+                ["codex", "exec"], {}, child_arid, prompt_text="P", resume=resume,
                 timeout_context=timeout_context)
         # The pipes are BINARY: the conductor reads fixed-size blocks off the raw fd and
         # decodes them itself, because a text-mode stream can only be read a line at a time
@@ -6201,7 +6210,7 @@ class LeafSpawnTest(unittest.TestCase):
                         patch.object(wc.os, "getpgid", lambda pid: 999), \
                         patch.object(wc.os, "killpg", _killpg):
                     with self.assertRaises(type(exc)):
-                        c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                        c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
                 # The whole GROUP is signalled, not just the direct child: the CLI
                 # spawns tool subprocesses that would otherwise outlive the leaf and
                 # keep writing after the orchestration is cancelled.
@@ -6250,7 +6259,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Returned rather than blocked, and still reports the leaf as dead so the
         # substep loop terminalizes it as a transport failure.
         self.assertNotEqual(proc.returncode, 0)
@@ -8060,7 +8069,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIn("usage limit reached", proc.stderr)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_usage_limit")
         self.assertNotIn("leaf_stream_abandoned", proc.stderr)   # it DID finish
@@ -8217,7 +8226,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", _killpg), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(out):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIs(proc.timed_out, True)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
         self.assertNotEqual(proc.returncode, 0)
@@ -8267,7 +8276,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(out):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "the cap must not be spent on an already-exited leaf")
         self.assertIs(proc.timed_out, False)
@@ -8318,7 +8327,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(out):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")   # must not raise
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")   # must not raise
         self.assertIs(proc.timed_out, True)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
         self.assertIn("leaf_timeout", out.getvalue())
@@ -8363,7 +8372,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIs(proc.timed_out, False)            # the cap was never reached
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("codex thread registration failed", proc.stderr)
@@ -8412,7 +8421,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(out):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "a leaf that never stops talking must still be capped")
         self.assertIs(proc.timed_out, True)
@@ -8471,7 +8480,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Every line is in the raw capture, including the ones queued past the break...
         self.assertEqual(proc.raw_stdout.count("tool_call"), backlog)
         # ...and the value-carrying events in that backlog are folded in: the billed usage and
@@ -8539,7 +8548,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "a dead pump must not leave the read waiting for the cap")
         self.assertIn("leaf_stdout_read_error", proc.stderr)
@@ -8609,7 +8618,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.1), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         # Bounded by the grace, not by the cap (3600s) and not by the flood.
         self.assertLess(elapsed, 10.0)
@@ -8670,7 +8679,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.5), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         # Bounded, despite a producer that never stops.
         self.assertLess(elapsed, 10.0)
@@ -8727,7 +8736,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertEqual(proc.stdout, "done")            # the turn still lands...
         self.assertIn("codex: starting", proc.stderr)    # ...with what was drained...
         self.assertIn("leaf_stderr_read_error", proc.stderr)   # ...and why it stopped
@@ -8779,7 +8788,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertTrue(chatty_stderr.finished.is_set(),
                         "the drain must read to EOF, not stop at the budget")
         self.assertEqual(chatty_stderr.bytes_written, stderr_total,
@@ -8843,7 +8852,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         _current, peak = tracemalloc.get_traced_memory()
         growth = peak - baseline
         # THE ACCEPTANCE, and the only assertion here a line-based reader cannot also satisfy:
@@ -8900,7 +8909,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # The turn on the far side of the oversized record still lands: the read resynchronized
         # at the newline rather than discarding what followed.
         self.assertEqual(proc.stdout, "done")
@@ -8955,7 +8964,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertEqual(proc.stdout, "done")          # nothing raised, the turn still lands
         self.assertIn("あ", proc.raw_stdout)       # ...whole, not two escaped halves
         self.assertIn("\\xff", proc.raw_stdout)        # ...and the bad byte is escaped
@@ -9097,7 +9106,7 @@ class LeafSpawnTest(unittest.TestCase):
                         patch.object(wc.os, "getpgid", lambda pid: 999), \
                         patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                         redirect_stdout(io.StringIO()):
-                    proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A") \
+                    proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P") \
                         if backend == "codex" else \
                         c.spawn_leaf("P", {"HOME": "/h"}, session_id="A", child_arid="A")
                 # Still bounded — this is not a licence to keep the whole stream...
@@ -9160,7 +9169,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIn("leaf_stream_abandoned", proc.stderr)   # it DID give up on the stream
         # ...and the cause it had already read came back with it, so the attempt still routes.
         self.assertIn("Connection closed mid-response", proc.stderr)
@@ -9346,7 +9355,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertTrue(proc.stderr.startswith("diagnostics: 日"), proc.stderr)
         # The truncated character is ESCAPED, not dropped: the bytes the leaf wrote are all
         # accounted for, and the result is still something a UTF-8 artifact can hold.
@@ -9390,7 +9399,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Bounded by the retained event count, not by how long the leaf kept failing.
         self.assertLess(len(proc.stderr), wc.LEAF_FAILURE_EVENTS_MAX * 2100)
         self.assertIn("leaf_failure_events_truncated", proc.stderr)
@@ -9571,7 +9580,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIs(proc.timed_out, True)
         self.assertTrue(in_flight, "the pump must have queued something")
         # Never more than the byte budget plus the one record that crossed it — NOT the 2048
@@ -9646,7 +9655,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIn("leaf_stream_abandoned", proc.stderr)   # it did give up on the stream
         abandoned.set()                                        # ...now let the pump resume
         pump = [t for t in made if "pump" in t.name][0]
@@ -9709,7 +9718,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05):
             with self.assertRaises(KeyboardInterrupt):
-                c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Measured as a PLATEAU in what the flood gets through, the same way the abandoned
         # drain is: a reader parked on a pipe that has gone SILENT stays parked until the
         # process exits (nothing can close a pipe a descendant holds), so what is observable
@@ -9788,7 +9797,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                     redirect_stdout(io.StringIO()):
-                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A"), registrations
+                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P"), registrations
 
         proc, registrations = _drive(turn_failed=False)
         self.assertIs(proc.timed_out, False)          # a clean finish, not a wedge
@@ -9846,7 +9855,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertLess(len(proc.raw_stdout), 6_000)
         self.assertIn("leaf_stdout_capture_truncated", proc.raw_stdout)
         # ...including when ONE record is larger than the whole budget: a codex tool result
@@ -9857,7 +9866,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertLess(len(proc.raw_stdout), 400)
         # The stream is still PARSED past the budget — only the retention is bounded — so the
         # leaf's answer, usage and terminal event are not lost with it.
@@ -9908,7 +9917,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 10.0, "the later exit must be noticed, not waited out")
         self.assertIs(proc.timed_out, False)
@@ -10006,7 +10015,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(out):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "the conductor must not wait for a pipe that never closes")
         self.assertIs(proc.timed_out, True)
@@ -10067,7 +10076,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         # Returned in the teardown grace, NOT in the remainder of the 2h cap: the leaf is
         # already dead, so waiting the cap out would be a silent multi-hour stall on a leaf
@@ -10164,7 +10173,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                     redirect_stdout(io.StringIO()):
-                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
 
         never_closes = threading.Event()
         self.addCleanup(never_closes.set)
@@ -15527,24 +15536,18 @@ class LeafPromptStdinTransportTests(unittest.TestCase):
         self.assertNotIn("prompt_text", params)
         self.assertEqual(params[1], "entry")
 
-    def test_no_backend_argv_grows_with_the_prompt(self) -> None:
-        for backend, model in (("claude", "opus"), ("codex", "gpt-5.6-sol")):
-            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
-                c = wc.Conductor(repo_root=Path(tmp), orchestration_id="o",
-                                 orchestration_agent_run_id="O", backend=backend,
-                                 agent_model=model, env={})
-                for kwargs in ({}, {"resume_session_id": "t1"},
-                               {"resume_session_id": "t1", "pure": True}):
-                    argv = c.leaf_command(**kwargs)
-                    oversized = [a[:40] for a in argv if len(a) >= 10_000]
-                    self.assertEqual(oversized, [], f"{backend} {kwargs}: {oversized}")
-
     def test_the_leaf_prompt_reaches_a_real_child_on_stdin_not_argv(self) -> None:
         """Crosses the real subprocess boundary, which the stubbed leaf tests cannot.
 
         200 KB is well past a 64 KiB pipe buffer, so this also pins that the write is
         off-thread: a blocking write from the calling thread would deadlock against a
         child that prints before draining stdin, which is what this child does.
+
+        The child is read with `wait()` + `read()`, never `communicate()`: `communicate()`
+        closes `process.stdin` itself, so it hands the child an EOF the feeder did not
+        produce and the test survives deleting the feeder's own `close()` — which in
+        production (both spawn paths use `wait()`) would park every leaf on
+        `sys.stdin.read()` until the leaf timeout.
         """
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "fake_cli.py"
@@ -15558,27 +15561,54 @@ class LeafPromptStdinTransportTests(unittest.TestCase):
             process = subprocess.Popen(
                 [sys.executable, str(script), "-p"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            wc.Conductor._feed_prompt_stdin(process, self.BIG)
-            out, _err = process.communicate(timeout=60)
+            try:
+                wc.Conductor._feed_prompt_stdin(process, self.BIG)
+                # The child cannot finish until it sees EOF, so an unclosed stdin is a
+                # TimeoutExpired here rather than a passing assertion.
+                self.assertEqual(process.wait(timeout=30), 0)
+                out = process.stdout.read()
+            finally:
+                process.kill()
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    if pipe is not None:
+                        try:
+                            pipe.close()
+                        except (OSError, ValueError):
+                            pass
+                process.wait(timeout=30)
 
             received, _, argv_tail = out.decode().strip().partition(" ")
             self.assertEqual(int(received), len(self.BIG))
             self.assertEqual(argv_tail, "-p")
 
-    def test_a_child_that_never_reads_stdin_does_not_wedge_the_conductor(self) -> None:
-        """The writer thread must absorb the EPIPE rather than raise out of the leaf path."""
+    def test_a_child_that_never_reads_stdin_does_not_raise_out_of_the_writer(self) -> None:
+        """The EPIPE must be ABSORBED, not merely survived.
+
+        Asserting only that the thread terminates passes with the handler removed — the
+        `BrokenPipeError` just escapes into a daemon thread. `threading.excepthook` is what
+        distinguishes the two.
+        """
+        escaped: list[threading.ExceptHookArgs] = []
         with tempfile.TemporaryDirectory() as tmp:
             script = Path(tmp) / "deaf_cli.py"
             script.write_text("import sys; sys.stdout.write('done\\n')\n", encoding="utf-8")
             process = subprocess.Popen(
                 [sys.executable, str(script)],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            thread = wc.Conductor._feed_prompt_stdin(process, self.BIG)
-            out, _err = process.communicate(timeout=60)
+            original_hook = threading.excepthook
+            threading.excepthook = escaped.append          # type: ignore[assignment]
+            try:
+                thread = wc.Conductor._feed_prompt_stdin(process, self.BIG)
+                out, _err = process.communicate(timeout=60)
+                assert thread is not None
+                thread.join(30)
+            finally:
+                threading.excepthook = original_hook       # type: ignore[assignment]
             self.assertEqual(out.decode().strip(), "done")
-            assert thread is not None
-            thread.join(30)
             self.assertFalse(thread.is_alive())
+            self.assertEqual(
+                [type(e.exc_value).__name__ for e in escaped], [],
+                "the writer thread must swallow the broken pipe, not raise out of it")
 
 
 class LaunchPayloadFileTransportTests(unittest.TestCase):

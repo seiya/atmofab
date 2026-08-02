@@ -4144,7 +4144,10 @@ class Conductor:
 
     def _spawn_codex_json_leaf(
         self, argv: list[str], child_env: dict[str, str], child_arid: str | None,
-        *, entry: ResolvedLeafEntry | None = None, prompt_text: str = "",
+        # No default: an omitted prompt would launch a codex leaf blocked on the `-`
+        # sentinel with an empty instruction set — silently, which is the failure the
+        # `codex_prompt_stdin` preflight check exists to prevent.
+        *, prompt_text: str, entry: ResolvedLeafEntry | None = None,
         resume: bool = False,
         timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:

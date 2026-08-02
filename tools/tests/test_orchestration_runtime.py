@@ -281,6 +281,14 @@ class _FakeCompletedProcess:
 # travels on stdin (a single argv element is capped at 128 KiB) and `codex_prompt_stdin`
 # certifies that support by substring. The two subcommands word it differently, and only
 # `resume` documents the bare `-` form, so the fixtures must not share one sentence.
+# The real `claude -p` refusal on an empty stdin prompt, verbatim (exit 1, no model turn).
+# `_probe_claude_backend` certifies stdin support by reading it: the claude contract is the
+# ABSENCE of a positional prompt, which `--help` documents nowhere.
+_CLAUDE_EMPTY_PROMPT_REFUSAL = (
+    "Error: Input must be provided either through stdin or as a prompt argument "
+    "when using --print"
+)
+
 _CODEX_EXEC_HELP = (
     "--model --json --output-schema --sandbox --ignore-rules --config "
     "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
@@ -614,6 +622,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="Usage: claude [options] [command] [prompt]\n")
             raise AssertionError(args)
@@ -632,6 +644,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(0, stdout="multi_agent experimental false\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="Usage: claude [options] [command] [prompt]\n")
             raise AssertionError(args)
@@ -648,6 +664,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="error\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(1, stderr="error\n")
             raise AssertionError(args)
@@ -666,6 +686,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="   \n")  # exit 0, no real output
             raise AssertionError(args)
@@ -688,6 +712,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(
                     0, stdout="Usage: claude [options] [command] [prompt]\n"
@@ -943,6 +971,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="Usage: claude ...\n")
             if args[0] == "claude" and args[1:] == ["mcp", "list"]:
@@ -1468,6 +1500,77 @@ shell_tool                       stable             true
         checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
+
+    def test_probe_codex_backend_rejects_a_help_that_drops_the_stdin_sentinel(self) -> None:
+        """Each subcommand separately, because the leaf prompt only travels on stdin.
+
+        A codex that took `-` as a literal prompt would not fail — it would answer a
+        one-character instruction, silently. The two subcommands document the sentinel in
+        their own words, so a CLI can lose it on one and keep it on the other.
+        """
+        from tools.orchestration_runtime import _probe_codex_backend
+
+        def _runner_missing(where: str):  # type: ignore[no-untyped-def]
+            def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+                if cmd[-1] == "--version":
+                    return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+                if cmd[-2:] == ["features", "list"]:
+                    return _FakeCompletedProcess(0, stdout="hooks available true")
+                if cmd[-2:] == ["exec", "--help"]:
+                    return _FakeCompletedProcess(
+                        0, stdout=_CODEX_EXEC_HELP if where != "exec" else "--model --json")
+                if cmd[-3:] == ["exec", "resume", "--help"]:
+                    return _FakeCompletedProcess(
+                        0, stdout=(_CODEX_EXEC_RESUME_HELP if where != "resume"
+                                   else "--model --json"))
+                raise AssertionError(cmd)
+            return runner
+
+        for where in ("exec", "resume"):
+            with self.subTest(dropped_by=where):
+                checks, _, _, _ = _probe_codex_backend("codex", "codex", _runner_missing(where))
+                by_name = {check["name"]: check for check in checks}
+                self.assertFalse(by_name["codex_prompt_stdin"]["pass"])
+                # The evidence must be the help that actually lacks it: reporting only the
+                # `exec` text answers a resume-side failure with a help that documents stdin.
+                self.assertIn("exec resume:", by_name["codex_prompt_stdin"]["detail"])
+
+        checks, _, _, _ = _probe_codex_backend("codex", "codex", _runner_missing("neither"))
+        by_name = {check["name"]: check for check in checks}
+        self.assertTrue(by_name["codex_prompt_stdin"]["pass"])
+
+    def test_probe_claude_backend_requires_the_cli_to_name_stdin_as_an_input(self) -> None:
+        """The claude contract is the ABSENCE of a positional prompt, which `--help` does
+        not document — so the probe asks the CLI to refuse an empty `-p` and reads the one
+        message that names its input channels. Zero tokens: it is argument validation,
+        raised before any model turn."""
+        from tools.orchestration_runtime import _probe_claude_backend
+
+        def _runner(refusal: str):  # type: ignore[no-untyped-def]
+            def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+                if cmd[-1] == "--version":
+                    return _FakeCompletedProcess(0, stdout="1.0.0 (Claude Code)")
+                if cmd[-1] == "--help":
+                    return _FakeCompletedProcess(0, stdout="Usage: claude [options] [prompt]")
+                if cmd[-1] == "-p":
+                    self.assertEqual(kwargs.get("input"), "")
+                    return _FakeCompletedProcess(1, stdout="", stderr=refusal)
+                raise AssertionError(cmd)
+            return runner
+
+        real = ("Error: Input must be provided either through stdin or as a prompt "
+                "argument when using --print")
+        checks, _, _, _ = _probe_claude_backend("claude", "claude", _runner(real))
+        by_name = {check["name"]: check for check in checks}
+        self.assertTrue(by_name["claude_prompt_stdin"]["pass"])
+
+        checks, _, _, _ = _probe_claude_backend(
+            "claude", "claude", _runner("Error: a prompt argument is required"))
+        by_name = {check["name"]: check for check in checks}
+        self.assertFalse(by_name["claude_prompt_stdin"]["pass"])
+        # And that failure must block the launch, not sit there as advisory.
+        from tools.orchestration_runtime import _can_launch_from_help_fallback_checks
+        self.assertFalse(_can_launch_from_help_fallback_checks("claude", checks))
 
     def test_probe_codex_backend_rejects_fresh_exec_missing_model_flag(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend

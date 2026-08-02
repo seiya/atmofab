@@ -15727,6 +15727,7 @@ def _probe_codex_backend(
     exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
     exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
     resume_help_text = (resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or "")
+    resume_help_detail = resume_help_text.strip() or f"exit={resume_help_proc.returncode}"
     checks = [
         {
             "name": f"{backend_token}_version_available",
@@ -15791,7 +15792,10 @@ def _probe_codex_backend(
                 and "read from stdin" in exec_help_text
                 and "read from stdin" in resume_help_text
             ),
-            "detail": exec_help_detail,
+            # BOTH helps, because the predicate spans both: reporting only the `exec` one
+            # would answer a resume-side failure with a help text that visibly documents
+            # stdin support.
+            "detail": f"exec: {exec_help_detail}\nexec resume: {resume_help_detail}",
         },
         {
             "name": "codex_project_hook_trust_bypass",
@@ -15824,10 +15828,14 @@ def _can_launch_from_help_fallback_checks(
     features_list_ok = passes.get(f"{backend_token}_features_list_available") is True
     help_pass = passes.get(f"{backend_token}_help_probe_available")
     multi_ok = passes.get("multi_agent_enabled") is True
+    # The leaf prompt reaches the CLI only over stdin, so a build that stopped accepting it
+    # there could not be launched at all. Gated, not advisory, for the same reason
+    # `codex_prompt_stdin` gates the codex side.
+    stdin_ok = passes.get(f"{backend_token}_prompt_stdin") is True
     # When `pass` is None, --help was not run (multi_agent already determined by features list).
     # In that case, delegate to `features_list_ok` and do not silently treat `None` as False-equivalent.
     help_confirms_launch = help_pass is True
-    return version_ok and multi_ok and (features_list_ok or help_confirms_launch)
+    return version_ok and multi_ok and stdin_ok and (features_list_ok or help_confirms_launch)
 
 
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
@@ -15891,6 +15899,16 @@ def _probe_claude_backend(
         "multi_agent detection uses --help probe instead."
     )
 
+    # The leaf prompt travels on stdin, not argv (a single argv element is capped at
+    # 128 KiB and a node's prompt exceeds it), and the claude contract is the ABSENCE of a
+    # positional prompt — `claude --help` documents no stdin behavior, so there is no help
+    # substring to match the way the codex sentinel is matched. Instead ask the CLI to
+    # refuse an empty `-p`: it answers with the one message that names its input channels,
+    # before any model turn (measured: exit 1 in ~1.8 s, zero tokens, no API call).
+    stdin_probe_proc = runner([*command_argv, "-p"], text=True, capture_output=True,
+                              check=False, input="")
+    stdin_probe_text = (stdin_probe_proc.stdout or "") + "\n" + (stdin_probe_proc.stderr or "")
+
     help_proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
     help_stdout = help_proc.stdout.strip()
     # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
@@ -15919,6 +15937,11 @@ def _probe_claude_backend(
             "name": f"{backend_token}_help_probe_available",
             "pass": help_probe_pass,
             "detail": help_probe_detail,
+        },
+        {
+            "name": f"{backend_token}_prompt_stdin",
+            "pass": "stdin" in stdin_probe_text,
+            "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
         {
             "name": "multi_agent_enabled",

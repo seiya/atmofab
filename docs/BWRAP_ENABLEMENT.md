@@ -92,9 +92,16 @@ The leaf prompt is **not** an argv element on either backend. A single argv elem
 at `MAX_ARG_STRLEN` (128 KiB on Linux) and a node's rendered prompt exceeds it, so `execve`
 fails with `E2BIG` before the model starts. The conductor writes the prompt to the leaf's
 stdin instead: `claude -p` with no prompt argument, and `codex exec` / `codex exec resume`
-with the `-` stdin sentinel as the positional prompt. The `codex_prompt_stdin` preflight check
-requires both codex helps to document that support; a CLI that dropped it would read an empty
-instruction set and answer nothing.
+with the `-` stdin sentinel as the positional prompt.
+
+Both forms are certified at preflight, by different probes because the two CLIs fail
+differently. `codex_prompt_stdin` requires BOTH codex helps to document the sentinel: a
+codex that stopped treating `-` as a sentinel would take it as a one-character prompt and
+answer something plausible, so the loss is silent. `claude_prompt_stdin` runs `claude -p`
+on empty input and requires the refusal to name `stdin`; that path fails loudly rather
+than silently, but the claude contract is the ABSENCE of a positional argument, which
+`claude --help` documents nowhere, so the CLI's own refusal is the only machine-readable
+statement of it. Both probes cost zero tokens and reach no model.
 
 The whole JSONL event stream of each Codex leaf is kept at
 `agents/<arid>/dialogs/leaf.stdout.jsonl`. `leaf.stdout.log` holds only the extracted final
