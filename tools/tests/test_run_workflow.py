@@ -61,6 +61,24 @@ def tearDownModule() -> None:
         _CLAIM_ROOT_TMPDIR.cleanup()
 
 
+def _unallocatable_pid() -> int:
+    """A pid the kernel can never hand out — so a driver block carrying it is foreign
+    to every process, including this one.
+
+    Fixtures that fabricate "another process's driver" as `{**our_identity, "pid": X}`
+    have X as their only discriminator in `_is_own_driver`, so a merely *unlikely* X
+    (a `pid + 1` neighbour, or a fixed constant like 424242) leaves a rare
+    nondeterministic failure. `pid_max` is the exclusive upper bound on allocation, so
+    `pid_max + 1` is out of range by construction — and `/proc/<it>` can never exist,
+    which keeps the real probe answering `dead` if a caller forgets to force a verdict.
+    """
+    try:
+        pid_max = int(Path("/proc/sys/kernel/pid_max").read_text(encoding="utf-8"))
+    except (OSError, ValueError):  # non-Linux: fall back to the 64-bit PID_MAX_LIMIT
+        pid_max = 4 * 1024 * 1024
+    return pid_max + 1
+
+
 @contextmanager
 def _forced_liveness():
     """Route `_probe_driver_liveness` to a `driver.verdict` field on the seeded meta.
@@ -2117,8 +2135,14 @@ class RunWorkflowTests(unittest.TestCase):
             (d / "orchestration_meta.json").write_text(
                 json.dumps({"orchestration_id": oid, "status": "running",
                             "spec_ref": "spec/problem/test.md",
-                            # Another process's driver block.
-                            "driver": {**identity, "pid": identity["pid"] + 1}}),
+                            # Another process's driver block. Both the verdict and the
+                            # pid are pinned by construction: a `pid + 1` neighbour with
+                            # our own start ticks can accidentally denote a live
+                            # same-tick sibling, which makes the cold guard refuse
+                            # before the runtime (hence the interrupt) is ever reached
+                            # — issue #32. `dead` is the intended scenario here.
+                            "driver": {**identity, "pid": _unallocatable_pid(),
+                                       "verdict": "dead"}}),
                 encoding="utf-8")
             observed: list[list[str]] = []
 
@@ -2129,7 +2153,7 @@ class RunWorkflowTests(unittest.TestCase):
             original = run_workflow._runtime_command
             run_workflow._runtime_command = interrupting_runtime  # type: ignore[assignment]
             try:
-                with redirect_stdout(io.StringIO()):
+                with self._forced_liveness(), redirect_stdout(io.StringIO()):
                     with self.assertRaises(KeyboardInterrupt):
                         run_workflow.main(
                             ["spec/problem/test.md", "build", "--repo-root",
@@ -2138,6 +2162,64 @@ class RunWorkflowTests(unittest.TestCase):
             finally:
                 run_workflow._runtime_command = original  # type: ignore[assignment]
             self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+
+    def test_interrupt_cannot_fire_when_a_live_foreign_driver_holds_the_id(self) -> None:
+        # The `alive` half of the case above, on purpose: when the reused
+        # `--orchestration-id` names a LIVE foreign driver, the cold guard refuses
+        # before the runtime runs, so no interrupt can be raised and the other run's
+        # meta stays untouched. (This is the mechanism that used to make the neighbor
+        # test flaky — issue #32 — pinned here deliberately.)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_someone_elses_live"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            d = repo_root / "workspace" / "orchestrations" / oid
+            d.mkdir(parents=True, exist_ok=True)
+            seeded = {"orchestration_id": oid, "status": "running",
+                      "spec_ref": "spec/problem/test.md",
+                      # Foreign by construction — see the neighbor above.
+                      "driver": {**identity, "pid": _unallocatable_pid(),
+                                 "verdict": "alive"}}
+            meta_path = d / "orchestration_meta.json"
+            meta_path.write_text(json.dumps(seeded), encoding="utf-8")
+            observed: list[list[str]] = []
+
+            def interrupting_runtime(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                raise KeyboardInterrupt()
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = interrupting_runtime  # type: ignore[assignment]
+            buf = io.StringIO()
+            code = None
+            reached_runtime = None
+            try:
+                with self._forced_liveness(), redirect_stdout(buf):
+                    try:
+                        code = run_workflow.main(
+                            ["spec/problem/test.md", "build", "--repo-root",
+                             str(repo_root), "--orchestration-id", oid,
+                             "--stdout-format", "jsonl"])
+                    except KeyboardInterrupt as exc:
+                        # Caught, not propagated: an escaping KeyboardInterrupt aborts
+                        # the whole pytest session (and reads like an operator Ctrl-C),
+                        # which would hide the regression instead of reporting it.
+                        reached_runtime = exc
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            if reached_runtime is not None:
+                self.fail(
+                    "cold guard let the run reach the runtime despite a live foreign "
+                    f"driver: {observed}")
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "concurrent_orchestration_running")
+            # ("the runtime was never reached" is pinned by the `reached_runtime`
+            # check above — the stub cannot be entered without raising.)
+            self.assertEqual(
+                json.loads(meta_path.read_text(encoding="utf-8")), seeded)
 
     def test_interrupt_preserves_an_already_terminal_status(self) -> None:
         # The conductor/runtime may have recorded a more specific terminal outcome
