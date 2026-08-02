@@ -9,6 +9,7 @@ assembled. The decision-table tests pin the deterministic failure routing.
 from __future__ import annotations
 
 import copy
+import errno
 import glob
 import io
 import json
@@ -18,6 +19,7 @@ import select
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -517,14 +519,81 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual(wc.classify_verify_severity("critical", "prod").action, "escalate")
 
 
+class _StdinSink:
+    """A leaf `Popen`'s stdin, as a process double sees it.
+
+    The leaf prompt travels on stdin (a single argv element is capped at 128 KiB), so a
+    double WITHOUT a stdin lets `Conductor._feed_prompt_stdin` no-op and a dropped feeder
+    call ship green. Retains what was written after `close()`, which `io.BytesIO` does not.
+    """
+
+    def __init__(self) -> None:
+        self.written = b""
+        self.closed_by_writer = False
+
+    def write(self, data: bytes) -> int:
+        self.written += bytes(data)
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed_by_writer = True
+
+    def await_prompt(self, timeout: float = 10.0) -> bytes:
+        """Block until the writer thread has closed stdin, then return what it wrote.
+
+        Raises rather than returning on timeout: returning `self.written` anyway made this
+        pass with `stdin.close()` deleted from the feeder — the payload is already there,
+        and only the wall clock showed the two silent 10 s waits.
+        """
+        deadline = time.monotonic() + timeout
+        while not self.closed_by_writer and time.monotonic() < deadline:
+            time.sleep(0.005)
+        if not self.closed_by_writer:
+            raise AssertionError(
+                "the leaf's stdin was never closed: a CLI reading the prompt from stdin "
+                f"would block until the leaf timeout (wrote {len(self.written)} bytes)")
+        return self.written
+
+
 class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
     so the happy-path control flow + bookkeeping wiring can be asserted offline."""
 
-    def runtime(self, args):  # type: ignore[override]
+    def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
+        """Keep the evidence payload in memory instead of on disk.
+
+        Most tests here pin `repo_root=Path("/tmp/repo")`, and the fake only overrides
+        `runtime`, so the real writer would litter a shared host path (tmpfs inode
+        exhaustion has bitten this repo before). The real write path is covered by
+        `LaunchPayloadFileTransportTests` against a real Conductor in a TemporaryDirectory.
+        """
+        # Round-trip through the same encoder call the real writer uses. Storing the dict
+        # by reference would drop the serializability net the inline `json.dumps` used to
+        # give every fake finalize: a Path / set / datetime landing in the agent-run row
+        # would then ship green and die at the first real finalize_child. It also keeps
+        # the captured payload a snapshot rather than a live alias of the caller's dict.
+        store = self.__dict__.setdefault("evidence", {})
+        store[filename] = json.loads(json.dumps(payload, ensure_ascii=True))
+        return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
+
+    def _resolve_evidence(self, rel):
+        return self.__dict__.setdefault("evidence", {})[rel.rsplit("/", 1)[-1]]
+
+    def runtime(self, args, *, input=None):  # type: ignore[override]
         sub = args[0]
         # capture the call (subcommand + parsed result-json/agent-run-json if present)
         captured: dict = {}
+        # The conductor sends the large payloads as files; capture them under the legacy
+        # inline flag names so every downstream assertion reads one stable key.
+        for flag, inline in (("--request-json-file", "--request-json"),
+                             ("--agent-run-json-file", "--agent-run-json")):
+            if flag in args:
+                captured[inline] = self._resolve_evidence(args[args.index(flag) + 1])
+        if "--reply-from-stdin" in args:
+            captured["--reply-text"] = input
         for flag in ("--result-json", "--agent-run-json", "--request-json"):
             if flag in args:
                 captured[flag] = json.loads(args[args.index(flag) + 1])
@@ -946,7 +1015,7 @@ class ConsumeResumeDirectiveTest(unittest.TestCase):
             encoding="utf-8")
 
         class _C(_FakeConductor):
-            def runtime(self, args):  # type: ignore[override]
+            def runtime(self, args, *, input=None):  # type: ignore[override]
                 if args[0] == "check-step-completed":
                     if not generate_completed and "generate" in args:
                         return {}
@@ -955,9 +1024,9 @@ class ConsumeResumeDirectiveTest(unittest.TestCase):
                     if reopen_raises:
                         raise RuntimeError("reopen-phase: trigger not found")
                     if reopen_noop:
-                        super().runtime(args)  # still record the call
+                        super().runtime(args, input=input)  # still record the call
                         return {"status": "noop"}
-                return super().runtime(args)
+                return super().runtime(args, input=input)
 
         c = _C(repo_root=repo_root, orchestration_id=self.OID,
                orchestration_agent_run_id="ORCH", backend="claude", env={})
@@ -5945,48 +6014,48 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command("PROMPT"), ["mywrap", "--model", "Z", "-p", "PROMPT"])
+        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "-p"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
-        self.assertEqual(c2.leaf_command("P"), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "P"])
+        self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command("P"), ["claude", "-p", "P"])
+        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "-p"])
         self.assertEqual(
-            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command("P"),
-            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "P"],
+            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
+            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
         )
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
-            c.leaf_command("P", session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "-p", "P"],
+            c.leaf_command(session_id="arid-1"),
+            ["claude", "--session-id", "arid-1", "-p"],
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
-            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command("P", session_id="arid-1"),
-            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "P"],
+            self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(session_id="arid-1"),
+            ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
         )
 
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
-            c.leaf_command("P", session_id="new-arid", resume_session_id="producer-arid"),
+            c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
             ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "-p", "P"],
+             "--session-id", "new-arid", "-p"],
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
         c = self._c(backend="codex", agent_model="gpt-5.6-sol")
         self.assertEqual(
-            c.leaf_command("repair", resume_session_id="thread-123"),
+            c.leaf_command(resume_session_id="thread-123"),
             ["codex", "exec", "resume", "--model", "gpt-5.6-sol", "thread-123",
-             "--dangerously-bypass-hook-trust", "--json", "repair"],
+             "--dangerously-bypass-hook-trust", "--json", "-"],
         )
 
     def test_codex_leaf_rejects_generic_model_alias(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit model slug"):
-            self._c(backend="codex", agent_model="codex").leaf_command("P")
+            self._c(backend="codex", agent_model="codex").leaf_command()
 
     # --- codex JSONL stream handling -----------------------------------------
 
@@ -6027,7 +6096,7 @@ class LeafSpawnTest(unittest.TestCase):
             register if register is not None else (lambda *a: None))
         with patch.object(wc.subprocess, "Popen", _FakePopen):
             result = c._spawn_codex_json_leaf(
-                ["codex", "exec"], {}, child_arid, resume=resume,
+                ["codex", "exec"], {}, child_arid, prompt_text="P", resume=resume,
                 timeout_context=timeout_context)
         # The pipes are BINARY: the conductor reads fixed-size blocks off the raw fd and
         # decodes them itself, because a text-mode stream can only be read a line at a time
@@ -6141,7 +6210,7 @@ class LeafSpawnTest(unittest.TestCase):
                         patch.object(wc.os, "getpgid", lambda pid: 999), \
                         patch.object(wc.os, "killpg", _killpg):
                     with self.assertRaises(type(exc)):
-                        c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                        c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
                 # The whole GROUP is signalled, not just the direct child: the CLI
                 # spawns tool subprocesses that would otherwise outlive the leaf and
                 # keep writing after the orchestration is cancelled.
@@ -6190,7 +6259,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Returned rather than blocked, and still reports the leaf as dead so the
         # substep loop terminalizes it as a transport failure.
         self.assertNotEqual(proc.returncode, 0)
@@ -6731,6 +6800,9 @@ class LeafSpawnTest(unittest.TestCase):
                 def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                     captured["argv"] = argv
                     captured["popen_kwargs"] = kw
+                    # A real stdin double: the prompt travels on it now, and a double
+                    # without one would let a dropped feeder call pass unnoticed.
+                    self.stdin = captured["stdin_sink"] = _StdinSink()
                     self.stdout, self.stderr = claude_pipes.pop(0)
 
                 def wait(self, timeout=None):  # type: ignore[no-untyped-def]
@@ -6752,6 +6824,11 @@ class LeafSpawnTest(unittest.TestCase):
                 # be read a line at a time and a line bounds nothing.
                 self.assertIsNone(captured["popen_kwargs"].get("text"))
                 self.assertIsNone(captured["popen_kwargs"].get("errors"))
+                # The prompt rides stdin, so the pipe must be requested — and no argv
+                # element may carry it (a single one is capped at 128 KiB).
+                self.assertIs(captured["popen_kwargs"].get("stdin"), subprocess.PIPE)
+                self.assertNotIn("P", captured["argv"])
+                self.assertEqual(captured["stdin_sink"].await_prompt(), b"P")
                 # A leaf that returned normally is not a conductor kill.
                 self.assertIs(
                     self._c(repo_root=repo, env={}).spawn_leaf(
@@ -6773,6 +6850,8 @@ class LeafSpawnTest(unittest.TestCase):
 
                     def __init__(self, argv, **kw):  # type: ignore[no-untyped-def]
                         captured["argv"] = argv
+                        captured["popen_kwargs"] = kw
+                        self.stdin = captured["stdin_sink"] = _StdinSink()
                         self.stdout, self.stderr = codex_pipes.pop(0)
                     def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                         return 0
@@ -6793,6 +6872,12 @@ class LeafSpawnTest(unittest.TestCase):
                     c_codex.spawn_leaf("P", {"HOME": "/h"}, profile=profile)
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
+                # Same on the codex path: stdin pipe requested, prompt off argv (argv ends
+                # with codex's `-` stdin sentinel instead).
+                self.assertIs(captured["popen_kwargs"].get("stdin"), subprocess.PIPE)
+                self.assertNotIn("P", captured["argv"])
+                self.assertEqual(captured["argv"][-1], "-")
+                self.assertEqual(captured["stdin_sink"].await_prompt(), b"P")
                 # profile missing → fail closed (never launch unconfined)
                 captured.clear()
                 with self.assertRaises(RuntimeError):
@@ -7984,7 +8069,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIn("usage limit reached", proc.stderr)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_usage_limit")
         self.assertNotIn("leaf_stream_abandoned", proc.stderr)   # it DID finish
@@ -8141,7 +8226,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", _killpg), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(out):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIs(proc.timed_out, True)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
         self.assertNotEqual(proc.returncode, 0)
@@ -8191,7 +8276,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(out):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "the cap must not be spent on an already-exited leaf")
         self.assertIs(proc.timed_out, False)
@@ -8242,7 +8327,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(out):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")   # must not raise
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")   # must not raise
         self.assertIs(proc.timed_out, True)
         self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
         self.assertIn("leaf_timeout", out.getvalue())
@@ -8287,7 +8372,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIs(proc.timed_out, False)            # the cap was never reached
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("codex thread registration failed", proc.stderr)
@@ -8336,7 +8421,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(out):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "a leaf that never stops talking must still be capped")
         self.assertIs(proc.timed_out, True)
@@ -8395,7 +8480,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Every line is in the raw capture, including the ones queued past the break...
         self.assertEqual(proc.raw_stdout.count("tool_call"), backlog)
         # ...and the value-carrying events in that backlog are folded in: the billed usage and
@@ -8463,7 +8548,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "a dead pump must not leave the read waiting for the cap")
         self.assertIn("leaf_stdout_read_error", proc.stderr)
@@ -8533,7 +8618,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.1), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         # Bounded by the grace, not by the cap (3600s) and not by the flood.
         self.assertLess(elapsed, 10.0)
@@ -8594,7 +8679,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.5), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         # Bounded, despite a producer that never stops.
         self.assertLess(elapsed, 10.0)
@@ -8651,7 +8736,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertEqual(proc.stdout, "done")            # the turn still lands...
         self.assertIn("codex: starting", proc.stderr)    # ...with what was drained...
         self.assertIn("leaf_stderr_read_error", proc.stderr)   # ...and why it stopped
@@ -8703,7 +8788,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertTrue(chatty_stderr.finished.is_set(),
                         "the drain must read to EOF, not stop at the budget")
         self.assertEqual(chatty_stderr.bytes_written, stderr_total,
@@ -8767,7 +8852,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         _current, peak = tracemalloc.get_traced_memory()
         growth = peak - baseline
         # THE ACCEPTANCE, and the only assertion here a line-based reader cannot also satisfy:
@@ -8824,7 +8909,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # The turn on the far side of the oversized record still lands: the read resynchronized
         # at the newline rather than discarding what followed.
         self.assertEqual(proc.stdout, "done")
@@ -8879,7 +8964,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertEqual(proc.stdout, "done")          # nothing raised, the turn still lands
         self.assertIn("あ", proc.raw_stdout)       # ...whole, not two escaped halves
         self.assertIn("\\xff", proc.raw_stdout)        # ...and the bad byte is escaped
@@ -9021,7 +9106,7 @@ class LeafSpawnTest(unittest.TestCase):
                         patch.object(wc.os, "getpgid", lambda pid: 999), \
                         patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                         redirect_stdout(io.StringIO()):
-                    proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A") \
+                    proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P") \
                         if backend == "codex" else \
                         c.spawn_leaf("P", {"HOME": "/h"}, session_id="A", child_arid="A")
                 # Still bounded — this is not a licence to keep the whole stream...
@@ -9084,7 +9169,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIn("leaf_stream_abandoned", proc.stderr)   # it DID give up on the stream
         # ...and the cause it had already read came back with it, so the attempt still routes.
         self.assertIn("Connection closed mid-response", proc.stderr)
@@ -9270,7 +9355,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertTrue(proc.stderr.startswith("diagnostics: 日"), proc.stderr)
         # The truncated character is ESCAPED, not dropped: the bytes the leaf wrote are all
         # accounted for, and the result is still something a UTF-8 artifact can hold.
@@ -9314,7 +9399,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Bounded by the retained event count, not by how long the leaf kept failing.
         self.assertLess(len(proc.stderr), wc.LEAF_FAILURE_EVENTS_MAX * 2100)
         self.assertIn("leaf_failure_events_truncated", proc.stderr)
@@ -9495,7 +9580,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIs(proc.timed_out, True)
         self.assertTrue(in_flight, "the pump must have queued something")
         # Never more than the byte budget plus the one record that crossed it — NOT the 2048
@@ -9570,7 +9655,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertIn("leaf_stream_abandoned", proc.stderr)   # it did give up on the stream
         abandoned.set()                                        # ...now let the pump resume
         pump = [t for t in made if "pump" in t.name][0]
@@ -9633,7 +9718,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05):
             with self.assertRaises(KeyboardInterrupt):
-                c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Measured as a PLATEAU in what the flood gets through, the same way the abandoned
         # drain is: a reader parked on a pipe that has gone SILENT stays parked until the
         # process exits (nothing can close a pipe a descendant holds), so what is observable
@@ -9712,7 +9797,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                     redirect_stdout(io.StringIO()):
-                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A"), registrations
+                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P"), registrations
 
         proc, registrations = _drive(turn_failed=False)
         self.assertIs(proc.timed_out, False)          # a clean finish, not a wedge
@@ -9770,7 +9855,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertLess(len(proc.raw_stdout), 6_000)
         self.assertIn("leaf_stdout_capture_truncated", proc.raw_stdout)
         # ...including when ONE record is larger than the whole budget: a codex tool result
@@ -9781,7 +9866,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                 redirect_stdout(io.StringIO()):
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         self.assertLess(len(proc.raw_stdout), 400)
         # The stream is still PARSED past the budget — only the retention is bounded — so the
         # leaf's answer, usage and terminal event are not lost with it.
@@ -9832,7 +9917,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.05), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 10.0, "the later exit must be noticed, not waited out")
         self.assertIs(proc.timed_out, False)
@@ -9930,7 +10015,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(out):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0, "the conductor must not wait for a pipe that never closes")
         self.assertIs(proc.timed_out, True)
@@ -9991,7 +10076,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                 redirect_stdout(io.StringIO()):
             started = time.monotonic()
-            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+            proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
             elapsed = time.monotonic() - started
         # Returned in the teardown grace, NOT in the remainder of the 2h cap: the leaf is
         # already dead, so waiting the cap out would be a silent multi-hour stall on a leaf
@@ -10088,7 +10173,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc.os, "killpg", lambda pgid, sig: None), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
                     redirect_stdout(io.StringIO()):
-                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A")
+                return c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
 
         never_closes = threading.Event()
         self.addCleanup(never_closes.set)
@@ -15060,6 +15145,18 @@ class LeafEntryThreadingTests(unittest.TestCase):
         base.update(kw)
         return wc.Conductor(**base)
 
+    def _scratch_repo_root(self) -> Path:
+        """A throwaway repo_root for a REAL `Conductor` whose `runtime` is stubbed.
+
+        `record_launch` / `finalize_child` write their payload evidence file under
+        `repo_root` before calling `runtime`, so the shared `/tmp/repo` these tests used
+        to pin would collect real files on every run (this repo has exhausted tmpfs
+        inodes that way before).
+        """
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        return Path(d)
+
     def _config_text(self, text: str) -> lc.LlmConfig:
         """Load an inline config document from a scratch file (the loader reads bytes, and the
         sha256 it records is the file's, so an on-disk file is what it wants)."""
@@ -15091,8 +15188,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 {"session_id": "arid-1", "pure": True},                    # pure cold
                 {"session_id": "n", "resume_session_id": "p", "pure": True},   # pure warm
             ):
-                self.assertEqual(legacy.leaf_command("P", le, **kwargs),
-                                 configured.leaf_command("P", ce, **kwargs),
+                self.assertEqual(legacy.leaf_command(le, **kwargs),
+                                 configured.leaf_command(ce, **kwargs),
                                  msg=f"{phase}.{substep} {kwargs}")
 
     def test_claude_legacy_trio_and_shipped_config_produce_identical_argv(self) -> None:
@@ -15118,13 +15215,13 @@ class LeafEntryThreadingTests(unittest.TestCase):
         so the shipped files' effect on the argv is visible in one place. Both now DECLARE a
         model and an effort, so both reach the CLI."""
         c = self._configured("claude")
-        self.assertEqual(c.leaf_command("P", c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "-p", "P"])
+        self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
+                         ["claude", "--model", "opus", "--effort", "medium", "-p"])
         k = self._configured("codex")
-        judge = k.leaf_command("P", k.entry_for("validate", "judge"))
+        judge = k.leaf_command(k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
         self.assertIn('model_reasoning_effort="medium"', judge)
-        self.assertEqual(judge[-2:], ["--json", "P"])
+        self.assertEqual(judge[-2:], ["--json", "-"])
 
     def test_a_declared_claude_model_actually_reaches_the_launch(self) -> None:
         """Per-substep model selection is the point of the feature. Recording `model: haiku`
@@ -15135,11 +15232,11 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
-        judge = c.leaf_command("P", c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "-p", "P"])
+        judge = c.leaf_command(c.entry_for("validate", "judge"))
+        self.assertEqual(judge, ["claude", "--model", "haiku", "-p"])
         # ...and only that leaf.
-        self.assertEqual(c.leaf_command("P", c.entry_for("generate", "generate")),
-                         ["claude", "-p", "P"])
+        self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
+                         ["claude", "-p"])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -15147,8 +15244,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
-            self.assertEqual(c.leaf_command("P", c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "-p", "P"], msg=f"{phase}.{substep}")
+            self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
+                             ["claude", "--model", "haiku", "-p"], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -15160,9 +15257,9 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
-        self.assertEqual(c.leaf_command("P", c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "-p", "P"])
-        judge = c.leaf_command("P", c.entry_for("validate", "judge"))
+        self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
+                         ["claude", "--effort", "xhigh", "-p"])
+        judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
         self.assertIn("--config", judge)
@@ -15177,9 +15274,9 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                 "  effort: xhigh\n"))
         entry = c.entry_for("generate", "generate")
-        for argv in (c.leaf_command("P", entry),
-                     c.leaf_command("P", entry, resume_session_id="t1"),
-                     c.leaf_command("P", entry, resume_session_id="t1", pure=True)):
+        for argv in (c.leaf_command(entry),
+                     c.leaf_command(entry, resume_session_id="t1"),
+                     c.leaf_command(entry, resume_session_id="t1", pure=True)):
             self.assertIn('model_reasoning_effort="xhigh"', argv)
 
     def test_an_absent_effort_says_nothing(self) -> None:
@@ -15187,8 +15284,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        self.assertEqual(c.leaf_command("P", c.entry_for("compile", "verify")),
-                         ["claude", "-p", "P"])
+        self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
+                         ["claude", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model from the deprecated `--agent-model`, or from
@@ -15202,7 +15299,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command("P", entry), ["claude", "-p", "P"])
+        self.assertEqual(c.leaf_command(entry), ["claude", "-p"])
 
     # --- capability predicates replace the backend tests --------------------------------
 
@@ -15296,7 +15393,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         Reverting it to the run-wide identity left the whole suite green."""
         recorded: list[dict] = []
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=self._scratch_repo_root(), orchestration_id="o",
+            orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
@@ -15314,7 +15412,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         `command:` the leaf would be launched inside a sandbox where its binary is not bound."""
         recorded: list[dict] = []
         c = wc.Conductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
+            repo_root=self._scratch_repo_root(), orchestration_id="o",
+            orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "  command: /opt/wrap/claude --sandbox\n"
@@ -15327,7 +15426,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             c.record_launch(f"arid-{substep}", {}, entry)
             # THE claim: what is recorded is argv[0] of what `spawn_leaf` would launch.
             self.assertEqual(recorded[-1]["backend_command"],
-                             c.leaf_command("P", entry)[0], msg=f"{phase}.{substep}")
+                             c.leaf_command(entry)[0], msg=f"{phase}.{substep}")
         self.assertEqual([r["backend_command"] for r in recorded],
                          ["/opt/wrap/claude", "/opt/other/claude"])
 
@@ -15415,6 +15514,250 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 offenders.append(f"{fn.attr} at line {node.lineno}")
         self.assertEqual(offenders, [])
 
+
+
+class LeafPromptStdinTransportTests(unittest.TestCase):
+    """The leaf prompt must never be an argv element, at any size.
+
+    It embeds the node's whole closed context, so a large node's prompt exceeds
+    MAX_ARG_STRLEN (128 KiB) and `execve` fails with E2BIG before the model starts —
+    measured at 123,086 B (94% of the cap) on an existing run, ~155 KB projected for
+    `problem/shallow_water2d@0.4.0`. Fixing only the bookkeeping payload moved that
+    failure one step later, into `spawn_leaf`.
+    """
+
+    BIG = "x" * 200_000
+
+    def test_leaf_command_cannot_be_handed_a_prompt_at_all(self) -> None:
+        """Structural, not incidental: the parameter is gone, so no future edit can put
+        the prompt back on argv by passing it here."""
+        import inspect
+        params = list(inspect.signature(wc.Conductor.leaf_command).parameters)
+        self.assertNotIn("prompt_text", params)
+        self.assertEqual(params[1], "entry")
+
+    def test_the_leaf_prompt_reaches_a_real_child_on_stdin_not_argv(self) -> None:
+        """Crosses the real subprocess boundary, which the stubbed leaf tests cannot.
+
+        200 KB is well past a 64 KiB pipe buffer, so this also pins that the write is
+        off-thread: a blocking write from the calling thread would deadlock against a
+        child that prints before draining stdin, which is what this child does.
+
+        The child is read with `wait()` + `read()`, never `communicate()`: `communicate()`
+        closes `process.stdin` itself, so it hands the child an EOF the feeder did not
+        produce and the test survives deleting the feeder's own `close()` — which in
+        production (both spawn paths use `wait()`) would park every leaf on
+        `sys.stdin.read()` until the leaf timeout.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_cli.py"
+            script.write_text(
+                "import sys\n"
+                "sys.stderr.write('noise before reading stdin\\n')\n"
+                "sys.stderr.flush()\n"
+                "data = sys.stdin.buffer.read()\n"
+                "sys.stdout.write('%d %s\\n' % (len(data), ' '.join(sys.argv[1:])))\n",
+                encoding="utf-8")
+            process = subprocess.Popen(
+                [sys.executable, str(script), "-p"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                wc.Conductor._feed_prompt_stdin(process, self.BIG)
+                # The child cannot finish until it sees EOF, so an unclosed stdin is a
+                # TimeoutExpired here rather than a passing assertion.
+                self.assertEqual(process.wait(timeout=30), 0)
+                out = process.stdout.read()
+            finally:
+                process.kill()
+                for pipe in (process.stdin, process.stdout, process.stderr):
+                    if pipe is not None:
+                        try:
+                            pipe.close()
+                        except (OSError, ValueError):
+                            pass
+                process.wait(timeout=30)
+
+            received, _, argv_tail = out.decode().strip().partition(" ")
+            self.assertEqual(int(received), len(self.BIG))
+            self.assertEqual(argv_tail, "-p")
+
+    def test_a_child_that_never_reads_stdin_does_not_raise_out_of_the_writer(self) -> None:
+        """The EPIPE must be ABSORBED, not merely survived.
+
+        Asserting only that the thread terminates passes with the handler removed — the
+        `BrokenPipeError` just escapes into a daemon thread. `threading.excepthook` is what
+        distinguishes the two.
+        """
+        escaped: list[threading.ExceptHookArgs] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "deaf_cli.py"
+            script.write_text("import sys; sys.stdout.write('done\\n')\n", encoding="utf-8")
+            process = subprocess.Popen(
+                [sys.executable, str(script)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            original_hook = threading.excepthook
+            threading.excepthook = escaped.append          # type: ignore[assignment]
+            try:
+                thread = wc.Conductor._feed_prompt_stdin(process, self.BIG)
+                out, _err = process.communicate(timeout=60)
+                assert thread is not None
+                thread.join(30)
+            finally:
+                threading.excepthook = original_hook       # type: ignore[assignment]
+            self.assertEqual(out.decode().strip(), "done")
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(
+                [type(e.exc_value).__name__ for e in escaped], [],
+                "the writer thread must swallow the broken pipe, not raise out of it")
+
+
+class LaunchPayloadFileTransportTests(unittest.TestCase):
+    """The bookkeeping payloads must never ride in an argv element, at any size.
+
+    Linux caps a single argv element at MAX_ARG_STRLEN (128 KiB): a launch request
+    carrying the IR, the controlled spec and the dependency facts blows past it for a
+    larger node and execve fails with E2BIG before the runtime starts. advdiff1d only
+    ever fit at 69% of the cap, which is why this went unnoticed until sw2d.
+
+    These assert on SIZE-INDEPENDENCE (no argv element grows with the payload), not on
+    "a 200 KB payload happens to work" — E2BIG lives in execve, so it cannot be
+    reproduced in-process, and a size branch is exactly the regression to prevent.
+    Unlike the in-memory fakes above, these drive the real evidence writer.
+    """
+
+    BIG = "x" * 200_000
+
+    def _conductor(self, repo_root: Path) -> wc.Conductor:
+        c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_payload_file",
+                         orchestration_agent_run_id="ORCH", backend="claude", env={})
+        c.seen: list[tuple[list[str], str | None]] = []                # type: ignore[attr-defined]
+
+        def _capture(args, *, input=None):
+            c.seen.append((list(args), input))                         # type: ignore[attr-defined]
+            return {}
+
+        c.runtime = _capture                                           # type: ignore[assignment]
+        return c
+
+    def _launches(self, repo_root: Path) -> Path:
+        return repo_root / "workspace" / "orchestrations" / "orch_payload_file" / "launches"
+
+    def _assert_no_huge_argv(self, argv: list[str]) -> None:
+        oversized = [a[:60] for a in argv if len(a) >= 10_000]
+        self.assertEqual(oversized, [], f"payload rode in argv: {oversized}")
+
+    def test_record_launch_sends_the_request_as_a_kept_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = self._conductor(repo_root)
+            request = {"agent_role": "substep", "pure_context": self.BIG}
+
+            c.record_launch("child-1", request)
+
+            argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
+            self._assert_no_huge_argv(argv)
+            self.assertNotIn("--request-json", argv)
+            self.assertIn("--request-json-file", argv)
+            rel = argv[argv.index("--request-json-file") + 1]
+            self.assertEqual(
+                rel,
+                "workspace/orchestrations/orch_payload_file/launches/child-1.request.input.json")
+            # Parse-compare: the writer emits indented, ASCII-escaped JSON, so the raw text
+            # is not the input text.
+            self.assertEqual(
+                json.loads((repo_root / rel).read_text(encoding="utf-8")), request)
+
+    def test_finalize_child_sends_the_reply_on_stdin_and_the_row_as_a_kept_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = self._conductor(repo_root)
+            agent_run = {"agent_run_id": "child-1", "status": "pass", "notes": self.BIG}
+
+            c.finalize_child("child-1", "tok", self.BIG, agent_run)
+
+            argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
+            self._assert_no_huge_argv(argv)
+            self.assertNotIn("--reply-text", argv)
+            self.assertIn("--reply-from-stdin", argv)
+            self.assertEqual(stdin, self.BIG)
+            rel = argv[argv.index("--agent-run-json-file") + 1]
+            self.assertEqual(
+                rel,
+                "workspace/orchestrations/orch_payload_file/launches/"
+                "child-1.agent_run.input.json")
+            self.assertEqual(
+                json.loads((repo_root / rel).read_text(encoding="utf-8")), agent_run)
+
+    def test_a_lone_surrogate_survives_the_evidence_write(self) -> None:
+        """The argv form encoded with `json.dumps`'s ensure_ascii default, so it could not
+        trip over a lone surrogate. A UTF-8 file write can. `usage` / `agent_model` reach
+        the agent-run row straight from the provider envelope with no encodability gate,
+        so losing that immunity would crash the conductor on a `\\udXXX` a provider emitted.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            c = self._conductor(repo_root)
+            payload = {"agent_run_id": "child-1", "agent_model": "m\ud800odel"}
+
+            c.finalize_child("child-1", "tok", "done", payload)
+
+            argv, _ = c.seen[-1]                                   # type: ignore[attr-defined]
+            rel = argv[argv.index("--agent-run-json-file") + 1]
+            self.assertEqual(
+                json.loads((repo_root / rel).read_text(encoding="utf-8")), payload)
+
+    def test_the_real_execve_accepts_the_file_form_and_still_rejects_the_inline_one(self) -> None:
+        """The one test that crosses the real subprocess boundary.
+
+        Everything else here stubs `runtime`, so it can only pin the argv SHAPE. E2BIG
+        lives in execve and is trivially reproducible through a real spawn, so pin the
+        actual hazard: the same 200 KB payload passes as a file and dies inline.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            payload_path = Path(tmp) / "request.json"
+            payload_text = json.dumps({"agent_role": "substep", "pure_context": self.BIG})
+            payload_path.write_text(payload_text, encoding="utf-8")
+            # repo_root is the real checkout (runtime() runs `python3
+            # tools/orchestration_runtime.py` relative to it); --repo-root points at the
+            # throwaway dir so the call touches nothing in the checkout.
+            c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_execve",
+                             orchestration_agent_run_id="ORCH", backend="claude",
+                             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+            common = [
+                "record-launch", "--repo-root", tmp,
+                "--orchestration-id", "orch_execve",
+                "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                "--response-json", json.dumps({
+                    "agent_run_id": "c", "agent_session_id": "c",
+                    "started_at": "2026-08-02T00:00:00Z", "backend": "claude"}),
+            ]
+
+            # File form: reaches the subcommand and fails on its own merits.
+            with self.assertRaises(RuntimeError) as run_err:
+                c.runtime([*common, "--request-json-file", str(payload_path)])
+            self.assertIn("preflight missing", str(run_err.exception))
+
+            # Inline form: never starts.
+            with self.assertRaises(OSError) as os_err:
+                c.runtime([*common, "--request-json", payload_text])
+            self.assertEqual(os_err.exception.errno, errno.E2BIG)
+
+    def test_reply_from_stdin_without_input_does_not_inherit_the_tty(self) -> None:
+        """Forgetting `input=` is a HANG, not an error — the subprocess blocks on the
+        conductor's own stdin. The guard turns it into the runtime's dispatch error."""
+        with tempfile.TemporaryDirectory() as tmp:
+            c = wc.Conductor(repo_root=Path(tmp), orchestration_id="orch_payload_file",
+                             orchestration_agent_run_id="ORCH", backend="claude", env={})
+            seen: dict = {}
+
+            def _fake_run(cmd, **kwargs):
+                seen.update(kwargs)
+                return subprocess.CompletedProcess(cmd, 0, "{}", "")
+
+            with mock.patch.object(subprocess, "run", _fake_run):
+                c.runtime(["finalize-child", "--reply-from-stdin"])
+            self.assertEqual(seen.get("input"), "")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -3211,11 +3211,17 @@ class Conductor:
         }
         print(json.dumps(payload, ensure_ascii=False), flush=True)
 
-    def runtime(self, args: list[str]) -> dict[str, Any]:
+    def runtime(self, args: list[str], *, input: str | None = None) -> dict[str, Any]:
         """Call an orchestration_runtime.py subcommand; return parsed JSON stdout."""
+        if "--reply-from-stdin" in args and input is None:
+            # Not passing `input` leaves stdin inherited from the conductor's own tty, so
+            # the child blocks forever on read() instead of failing. An empty reply is a
+            # clean dispatch-time error ("requires --reply-text or --reply-from-stdin").
+            input = ""
         proc = subprocess.run(
             ["python3", "tools/orchestration_runtime.py", *args],
             cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False,
+            input=input,
         )
         if proc.returncode != 0:
             detail = proc.stderr.strip() or proc.stdout.strip() or f"exit={proc.returncode}"
@@ -3393,7 +3399,6 @@ class Conductor:
 
     def leaf_command(
         self,
-        prompt_text: str,
         entry: ResolvedLeafEntry | None = None,
         *,
         session_id: str | None = None,
@@ -3403,6 +3408,16 @@ class Conductor:
         """Headless command to run one substep body as an isolated leaf agent.
         Honors the entry's custom `command` (wrapper + flags) so the conductor launches the
         same executable/model as the configured provider, not a hard-coded binary.
+
+        THE PROMPT IS NOT AN ARGUMENT — `spawn_leaf` writes it to the child's stdin. It
+        embeds the node's whole closed context (IR, controlled spec, resolved dependency
+        sources) and a single argv element is capped at MAX_ARG_STRLEN (128 KiB), so a
+        large node's prompt made `execve` fail with E2BIG before the model started
+        (measured: 123,086 B = 94% of the cap on an existing run, and ~155 KB projected
+        for `problem/shallow_water2d@0.4.0`). It is absent from this signature rather
+        than merely unused, so no future edit can put it back on argv by accident.
+        Both CLIs read it from stdin: `claude -p` with no prompt argument, and
+        `codex exec [resume] … -` (the documented stdin sentinel).
 
         For the claude backend, `session_id` pins the leaf's Claude Code session id
         to its `agent_run_id` (so the per-arid transcript is addressable and a later
@@ -3451,7 +3466,7 @@ class Conductor:
             if pure:
                 from tools.pure_leaf import pure_leaf_flags
                 flags += pure_leaf_flags()
-            return [*base, *flags, "-p", prompt_text]
+            return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
             # session identity and is registered before a later hook can authorize
@@ -3486,12 +3501,16 @@ class Conductor:
                 # does not assert would leave the gate green on a CLI that dropped it.
                 pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
                                      "--output-schema", str(schema)]
+            # `-` is the documented stdin sentinel for the positional prompt on BOTH
+            # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
+            # when the prompt is absent, but `codex exec resume` documents only the `-`
+            # form, and an omitted positional there would be read as the session id.
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
                         "--dangerously-bypass-hook-trust", *effort_flags, *pure_resume_flags,
-                        "--json", prompt_text]
+                        "--json", "-"]
             return [*base, "exec", "--model", model, "--dangerously-bypass-hook-trust",
-                    *effort_flags, *pure_flags, "--json", prompt_text]
+                    *effort_flags, *pure_flags, "--json", "-"]
         raise ValueError(
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")
@@ -3507,6 +3526,48 @@ class Conductor:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"type": "object"}) + "\n", encoding="utf-8")
         return path
+
+    @staticmethod
+    def _feed_prompt_stdin(process: Any, prompt_text: str) -> threading.Thread | None:
+        """Write the leaf prompt to the child's stdin and close it, on its own thread.
+
+        Off-thread because the prompt is unbounded and a pipe buffer is not (64 KiB by
+        default): a blocking write from this thread would deadlock against a CLI that
+        prints anything to stdout before draining its stdin, and this path exists
+        precisely for the prompts too large to fit in argv.
+
+        Closing is what makes the CLI stop waiting for more input, so it happens on every
+        exit — including a leaf killed mid-write, where the write raises `BrokenPipeError`
+        and there is nothing left to say. Encoded with `surrogateescape` to match what
+        argv did: `os.fsencode` accepted the surrogateescape range, and a prompt is host
+        text that may carry one from a leaf's captured output.
+
+        The `stdin is None` exit is for the process doubles the leaf tests substitute for
+        `Popen`; a real `Popen` here always requested `stdin=PIPE`. It is therefore NOT the
+        guard that proves the prompt is delivered — that is
+        `test_the_leaf_prompt_reaches_a_real_child_on_stdin_not_argv`, which spawns an
+        actual subprocess.
+        """
+        stdin = getattr(process, "stdin", None)
+        if stdin is None:
+            return None
+        payload = prompt_text.encode("utf-8", "surrogateescape")
+
+        def _write() -> None:
+            try:
+                stdin.write(payload)
+                stdin.flush()
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    stdin.close()
+                except (OSError, ValueError):
+                    pass
+
+        thread = threading.Thread(target=_write, daemon=True)
+        thread.start()
+        return thread
 
     def _bwrap_enabled(self) -> bool:
         """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap
@@ -3744,8 +3805,7 @@ class Conductor:
         # _ensure_codex_feature_cache). Memoized; no-op for claude.
         self._ensure_codex_feature_cache(entry)
         argv = self.leaf_command(
-            prompt_text, entry,
-            session_id=session_id, resume_session_id=resume_session_id, pure=pure)
+            entry, session_id=session_id, resume_session_id=resume_session_id, pure=pure)
         # Wrap the leaf in the bwrap sandbox that record-launch already built (repo
         # read-only; writes confined to the child's write_roots + workspace/tmp).
         # record-launch records sandbox_enforced=True for every backend, so applying it
@@ -3783,6 +3843,7 @@ class Conductor:
                 # `"resume" in argv` scan can be satisfied by leaf-controlled text.
                 return self._spawn_codex_json_leaf(
                     argv, child_env, child_arid, entry=entry,
+                    prompt_text=prompt_text,
                     resume=bool(resume_session_id),
                     timeout_context=timeout_context)
             # A raw Popen, not `subprocess.run(timeout=)`: on a timeout `run` calls `kill()`,
@@ -3795,6 +3856,9 @@ class Conductor:
             # and is left to the same fate the interrupt path already leaves it to.)
             process = subprocess.Popen(
                 argv, cwd=self.repo_root, env=child_env,
+                # The prompt rides stdin, not argv (see `leaf_command`). `claude -p` with
+                # no prompt argument reads it from here.
+                stdin=subprocess.PIPE,
                 # BINARY pipes, drained by this function's own reader threads: see
                 # `LEAF_STREAM_READ_BLOCK_BYTES`. The decode is lenient there for the same
                 # reason it always was here — a SIGKILL that truncates a multi-byte character
@@ -3819,6 +3883,7 @@ class Conductor:
                     f"cannot launch sandboxed leaf — executable not found "
                     f"(bwrap missing on this host?): {exc}") from exc
             raise
+        self._feed_prompt_stdin(process, prompt_text)
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
         # be armed: a deterministic substep never reaches spawn_leaf, the usage-reset wait happens
         # BETWEEN launches, and the `/usage` probe carries its own timeout.
@@ -4079,7 +4144,11 @@ class Conductor:
 
     def _spawn_codex_json_leaf(
         self, argv: list[str], child_env: dict[str, str], child_arid: str | None,
-        *, entry: ResolvedLeafEntry | None = None, resume: bool = False,
+        # No default: an omitted prompt would launch a codex leaf blocked on the `-`
+        # sentinel with an empty instruction set — silently, which is the failure the
+        # `codex_prompt_stdin` preflight check exists to prevent.
+        *, prompt_text: str, entry: ResolvedLeafEntry | None = None,
+        resume: bool = False,
         timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
         entry = entry if entry is not None else self.entry_for(None, None)
@@ -4089,6 +4158,9 @@ class Conductor:
         # final response, but its thread is intentionally not indexed.
         process = subprocess.Popen(
             argv, cwd=self.repo_root, env=child_env,
+            # The prompt rides stdin, not argv (see `leaf_command`): argv ends with the `-`
+            # sentinel that tells `codex exec` to read the instructions from here.
+            stdin=subprocess.PIPE,
             # BINARY pipes: the readers below take fixed-size blocks off the raw fd and do
             # their own incremental decode (see `_iter_stream_blocks`), because a text-mode
             # stream can only be read a line at a time and a line is not a bound on anything.
@@ -4101,6 +4173,7 @@ class Conductor:
         )
         assert process.stdout is not None
         assert process.stderr is not None
+        self._feed_prompt_stdin(process, prompt_text)
         # Set when the conductor gives up on the streams: the reader threads survive the call
         # (see the abandon path below), and this is what stops them appending — and reading —
         # once nobody is listening.
@@ -4601,6 +4674,33 @@ class Conductor:
     def _oid_args(self) -> list[str]:
         return ["--repo-root", ".", "--orchestration-id", self.orchestration_id]
 
+    def _write_launch_input_evidence(self, filename: str, payload: dict[str, Any]) -> str:
+        """Persist a bookkeeping payload as a file and return its repo-root-relative path.
+
+        A single argv element is capped at MAX_ARG_STRLEN (128 KiB on Linux), and a launch
+        request carrying the IR, the controlled spec and the dependency facts exceeds that
+        for larger nodes — execve then fails with E2BIG before the runtime starts. So the
+        payload always travels as a file, with no size branch: a size branch is exactly how
+        this stayed invisible until a node grew past the cap.
+
+        The file is kept, never cleaned up: it is the evidence of what was handed to the
+        runtime, and it survives a call that failed before writing anything of its own.
+        `.input.json` deliberately falls outside the `*.request.json` glob the orphan
+        tombstone scan and validate_workspace_root use.
+        """
+        from tools.orchestration_runtime import _atomic_write_text
+        rel = f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
+        # `ensure_ascii=True`, not `_write_json`'s `False`: the argv form this replaces
+        # encoded with the same default, which made it unconditionally immune to a lone
+        # surrogate. A UTF-8 file write is not — and `usage` / `agent_model` reach the
+        # agent-run row straight from `json.loads` of the provider envelope, with no
+        # encodability gate in between, so a provider emitting a `\udXXX` escape would
+        # otherwise crash the conductor here where it previously did not. The escaped
+        # file decodes back to the identical object.
+        _atomic_write_text(self.repo_root / rel,
+                           json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
+        return rel
+
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
                       expected_codex_home_generation: int | None = None) -> dict[str, Any]:
@@ -4621,11 +4721,13 @@ class Conductor:
             "backend_command": _provider_command_base(
                 entry or self.entry_for(None, None))[0],
         }
+        request_ref = self._write_launch_input_evidence(
+            f"{child_arid}.request.input.json", request)
         argv = [
             "record-launch", *self._oid_args(),
             "--parent-agent-run-id", self.orchestration_agent_run_id,
             "--child-agent-run-id", child_arid,
-            "--request-json", json.dumps(request),
+            "--request-json-file", request_ref,
             "--response-json", json.dumps(response),
         ]
         if expected_codex_home_generation is not None:
@@ -4634,13 +4736,20 @@ class Conductor:
 
     def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
+        # The reply goes over stdin rather than argv. Every current call site composes it
+        # host-side within the ~2000-char reply budget, so it is small today — but it is
+        # declared as the leaf's verbatim final message, and stdin costs nothing and is
+        # already persisted by the runtime as launches/<arid>.reply.txt (no second copy).
+        # The agent_run payload travels as a kept evidence file.
+        agent_run_ref = self._write_launch_input_evidence(
+            f"{child_arid}.agent_run.input.json", agent_run_json)
         return self.runtime([
             "finalize-child", *self._oid_args(),
             "--agent-run-id", child_arid,
             "--return-token", return_token,
-            "--reply-text", reply_text,
-            "--agent-run-json", json.dumps(agent_run_json),
-        ])
+            "--reply-from-stdin",
+            "--agent-run-json-file", agent_run_ref,
+        ], input=reply_text)
 
     def _write_lineage(self, refs: NodeRefs) -> list[dict[str, str]]:
         """Author/refresh the pipeline `lineage.json` host-side (runtime-owned).

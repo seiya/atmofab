@@ -277,13 +277,28 @@ class _FakeCompletedProcess:
 # command the CLI actually rejects. `--dangerously-bypass-approvals-and-sandbox` is
 # carried in both because the real helps carry it: it is the one live string that most
 # nearly collides with a `--sandbox` substring match, so the fixtures must exercise it.
+# The prompt sentence is carried verbatim from each real help, because the leaf prompt
+# travels on stdin (a single argv element is capped at 128 KiB) and `codex_prompt_stdin`
+# certifies that support by substring. The two subcommands word it differently, and only
+# `resume` documents the bare `-` form, so the fixtures must not share one sentence.
+# The real `claude -p` refusal on an empty stdin prompt, verbatim (exit 1, no model turn).
+# `_probe_claude_backend` certifies stdin support by reading it: the claude contract is the
+# ABSENCE of a positional prompt, which `--help` documents nowhere.
+_CLAUDE_EMPTY_PROMPT_REFUSAL = (
+    "Error: Input must be provided either through stdin or as a prompt argument "
+    "when using --print"
+)
+
 _CODEX_EXEC_HELP = (
     "--model --json --output-schema --sandbox --ignore-rules --config "
-    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
+    "Initial instructions for the agent. If not provided as an argument (or if `-` is "
+    "used), instructions are read from stdin."
 )
 _CODEX_EXEC_RESUME_HELP = (
     "--model --json --output-schema --ignore-rules --config "
-    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
+    "Prompt to send after resuming the session. If `-` is used, read from stdin."
 )
 
 
@@ -297,6 +312,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
+            {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
             {"name": "codex_hooks_enabled" if legacy_hooks else "hooks_enabled", "pass": True},
@@ -606,6 +622,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="Usage: claude [options] [command] [prompt]\n")
             raise AssertionError(args)
@@ -624,6 +644,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(0, stdout="multi_agent experimental false\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="Usage: claude [options] [command] [prompt]\n")
             raise AssertionError(args)
@@ -640,6 +664,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="error\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(1, stderr="error\n")
             raise AssertionError(args)
@@ -658,6 +686,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="   \n")  # exit 0, no real output
             raise AssertionError(args)
@@ -680,6 +712,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(
                     0, stdout="Usage: claude [options] [command] [prompt]\n"
@@ -935,6 +971,10 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if args[0] == "claude" and args[1:] == ["features", "list"]:
                 return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                # The zero-token stdin-support probe: the CLI's own refusal names its
+                # input channels. See `_probe_claude_backend`.
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
                 return _FakeCompletedProcess(0, stdout="Usage: claude ...\n")
             if args[0] == "claude" and args[1:] == ["mcp", "list"]:
@@ -1460,6 +1500,93 @@ shell_tool                       stable             true
         checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
+
+    def test_probe_codex_backend_rejects_a_help_that_drops_the_stdin_sentinel(self) -> None:
+        """Each subcommand separately, because the leaf prompt only travels on stdin.
+
+        A codex that took `-` as a literal prompt would not fail — it would answer a
+        one-character instruction, silently. The two subcommands document the sentinel in
+        their own words, so a CLI can lose it on one and keep it on the other.
+        """
+        from tools.orchestration_runtime import _probe_codex_backend
+
+        def _runner_missing(where: str):  # type: ignore[no-untyped-def]
+            def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+                if cmd[-1] == "--version":
+                    return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+                if cmd[-2:] == ["features", "list"]:
+                    return _FakeCompletedProcess(0, stdout="hooks available true")
+                if cmd[-2:] == ["exec", "--help"]:
+                    return _FakeCompletedProcess(
+                        0, stdout=_CODEX_EXEC_HELP if where != "exec" else "--model --json")
+                if cmd[-3:] == ["exec", "resume", "--help"]:
+                    return _FakeCompletedProcess(
+                        0, stdout=(_CODEX_EXEC_RESUME_HELP if where != "resume"
+                                   else "--model --json"))
+                raise AssertionError(cmd)
+            return runner
+
+        for where in ("exec", "resume"):
+            with self.subTest(dropped_by=where):
+                checks, _, _, _ = _probe_codex_backend("codex", "codex", _runner_missing(where))
+                by_name = {check["name"]: check for check in checks}
+                self.assertFalse(by_name["codex_prompt_stdin"]["pass"])
+                # The evidence must be the help that actually lacks it: reporting only the
+                # `exec` text answers a resume-side failure with a help that documents stdin.
+                self.assertIn("exec resume:", by_name["codex_prompt_stdin"]["detail"])
+
+        checks, _, _, _ = _probe_codex_backend("codex", "codex", _runner_missing("neither"))
+        by_name = {check["name"]: check for check in checks}
+        self.assertTrue(by_name["codex_prompt_stdin"]["pass"])
+
+    def test_probe_claude_backend_requires_the_cli_to_name_stdin_as_an_input(self) -> None:
+        """The claude contract is the ABSENCE of a positional prompt, which `--help` does
+        not document — so the probe asks the CLI to refuse an empty `-p` and reads the one
+        message that names its input channels. Zero tokens: it is argument validation,
+        raised before any model turn."""
+        from tools.orchestration_runtime import _probe_claude_backend
+
+        # The real help mentions stdin in an UNRELATED flag, so a bare "stdin" match is
+        # satisfied by any build that dumps its usage on an argument error — the ordinary
+        # commander.js behavior — while supporting no stdin input at all.
+        help_text = ("Usage: claude [options] [command] [prompt]\n"
+                     "  --replay-user-messages  Re-emit user messages from stdin back on "
+                     "stdout\n")
+
+        def _runner(refusal: str, returncode: int = 1):  # type: ignore[no-untyped-def]
+            def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+                if cmd[-1] == "--version":
+                    return _FakeCompletedProcess(0, stdout="1.0.0 (Claude Code)")
+                if cmd[-1] == "--help":
+                    return _FakeCompletedProcess(0, stdout=help_text)
+                if cmd[-1] == "-p":
+                    self.assertEqual(kwargs.get("input"), "")
+                    return _FakeCompletedProcess(returncode, stdout="", stderr=refusal)
+                raise AssertionError(cmd)
+            return runner
+
+        from tools.orchestration_runtime import _can_launch_from_help_fallback_checks
+
+        real = ("Error: Input must be provided either through stdin or as a prompt "
+                "argument when using --print")
+        checks, _, _, _ = _probe_claude_backend("claude", "claude", _runner(real))
+        self.assertTrue({c["name"]: c for c in checks}["claude_prompt_stdin"]["pass"])
+
+        for label, refusal, code in (
+            # No stdin support, but the usage dump carries the word.
+            ("usage dump", "error: missing required argument 'prompt'\n" + help_text, 1),
+            ("silent refusal", "Error: a prompt argument is required", 1),
+            # Accepted the empty prompt instead of refusing: it spent a model turn, so the
+            # probe is no longer free and says nothing about the input channel.
+            ("accepted", real, 0),
+        ):
+            with self.subTest(case=label):
+                checks, _, _, _ = _probe_claude_backend(
+                    "claude", "claude", _runner(refusal, code))
+                by_name = {c["name"]: c for c in checks}
+                self.assertFalse(by_name["claude_prompt_stdin"]["pass"])
+                # And that failure must block the launch, not sit there as advisory.
+                self.assertFalse(_can_launch_from_help_fallback_checks("claude", checks))
 
     def test_probe_codex_backend_rejects_fresh_exec_missing_model_flag(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend
@@ -12885,6 +13012,7 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
+            {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
         ],
@@ -32405,6 +32533,181 @@ class SiblingUniformScopeTests(unittest.TestCase):
             legacy = [r for r in filled if r["agent_run_id"] == "legacy"][0]
             self.assertNotIn("agent_model", legacy)
             self.assertEqual(out["status"], "needs_manual")
+
+
+class LaunchInputEvidenceKeepAwayTests(unittest.TestCase):
+    """`launches/<arid>.request.input.json` must stay invisible to the `*.request.json` scans.
+
+    The conductor writes the evidence file BEFORE record-launch runs, so a lone one
+    (no sibling `.request.json`) is exactly the record-launch-failed case. Treating it
+    as a launch record would make the resume path tombstone an arid that was never
+    launched. Pinned so a future rename cannot land inside the glob.
+    """
+
+    def test_orphan_tombstoning_ignores_a_lone_request_input_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_evidence_keepaway"
+            init_orchestration(repo_root=repo_root, orchestration_id=oid)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            launches = root / "launches"
+            launches.mkdir(exist_ok=True)
+            evidence_only = "evidence-only-arid"
+            launched = "genuinely-launched-arid"
+            (launches / f"{evidence_only}.request.input.json").write_text(
+                "{}", encoding="utf-8")
+            (launches / f"{launched}.request.json").write_text("{}", encoding="utf-8")
+            (launches / f"{launched}.request.input.json").write_text("{}", encoding="utf-8")
+
+            written = ort._write_orphan_launch_tombstones(repo_root, oid, [])
+
+            self.assertEqual(written, [launched])
+            self.assertFalse((launches / f"{evidence_only}.pruned.json").exists())
+
+
+class JsonPayloadFileArgTests(unittest.TestCase):
+    """`--request-json-file` / `--agent-run-json-file`: the argv-size escape hatch.
+
+    A single argv element is capped at MAX_ARG_STRLEN (128 KiB on Linux), so an
+    inlined launch request larger than that makes `execve` fail with E2BIG before
+    the process starts. The file variants must be exactly equivalent to the inline
+    ones — a normalization that lands on only one side is the regression these pin.
+    """
+
+    _RESPONSE = {
+        "agent_run_id": "child-1",
+        "agent_session_id": "child-1",
+        "started_at": "2026-08-02T00:00:00Z",
+        "backend": "claude",
+    }
+
+    def _launch_argv(self, *payload_args: str) -> list[str]:
+        return [
+            "record-launch",
+            "--repo-root", ".",
+            "--orchestration-id", "orch_001",
+            "--parent-agent-run-id", "parent-1",
+            "--child-agent-run-id", "child-1",
+            *payload_args,
+            "--response-json", json.dumps(self._RESPONSE),
+        ]
+
+    def _finalize_argv(self, *payload_args: str) -> list[str]:
+        return [
+            "finalize-child",
+            "--repo-root", ".",
+            "--orchestration-id", "orch_001",
+            "--agent-run-id", "child-1",
+            "--return-token", "tok",
+            *payload_args,
+        ]
+
+    def _write_json(self, payload: Any) -> str:
+        tmp = Path(tempfile.mkdtemp()) / "payload.json"
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        self.addCleanup(lambda: tmp.unlink(missing_ok=True))
+        return str(tmp)
+
+    def test_record_launch_argv_and_file_variants_are_equivalent(self) -> None:
+        request = {"agent_role": "substep", "node_key": "component/x@0.1.0", "blob": "y" * 4096}
+        path = self._write_json(request)
+        captured: list[dict[str, Any]] = []
+        with patch.object(ort, "record_launch",
+                          side_effect=lambda **kw: captured.append(kw) or {}):
+            self.assertEqual(main(self._launch_argv("--request-json", json.dumps(request))), 0)
+            self.assertEqual(main(self._launch_argv("--request-json-file", path)), 0)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0], captured[1])
+        self.assertEqual(captured[0]["request_payload"], request)
+
+    def test_finalize_child_argv_and_file_variants_are_equivalent(self) -> None:
+        agent_run = {"agent_run_id": "child-1", "agent_backend": "claude", "status": "completed",
+                     "agent_role": "substep", "node_key": "component/x@0.1.0",
+                     "agent_session_id": "child-1"}
+        path = self._write_json(agent_run)
+        captured: list[dict[str, Any]] = []
+        with patch.object(ort, "finalize_child",
+                          side_effect=lambda **kw: captured.append(kw) or {}):
+            self.assertEqual(main(self._finalize_argv(
+                "--reply-text", "done", "--agent-run-json", json.dumps(agent_run))), 0)
+            with patch.object(sys, "stdin", io.StringIO("done")):
+                self.assertEqual(main(self._finalize_argv(
+                    "--reply-from-stdin", "--agent-run-json-file", path)), 0)
+        self.assertEqual(len(captured), 2)
+        self.assertEqual(captured[0], captured[1])
+        self.assertEqual(captured[0]["agent_run_payload"], agent_run)
+        self.assertEqual(captured[0]["reply_text"], "done")
+
+    def test_a_bad_payload_error_names_the_argument_the_caller_actually_passed(self) -> None:
+        """The shared record-agent-run validator runs FIRST on the finalize-child path, so
+        its default label would send an operator to a subcommand they did not run and a
+        flag the conductor never passes."""
+        path = self._write_json({"agent_run_id": "child-1", "agent_backend": "claude"})
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("done")):
+            code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
+        self.assertEqual(code, 1)
+        # Anchor on the colon the message format puts after the label: the inline label
+        # is a PREFIX of the file one, so an unanchored assertion cannot tell the two
+        # branches apart and passes with the ternary collapsed to a constant.
+        self.assertIn("finalize-child --agent-run-json-file:", stderr.getvalue())
+        self.assertNotIn("record-agent-run", stderr.getvalue())
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            code = main(self._finalize_argv(
+                "--reply-text", "done", "--agent-run-json",
+                json.dumps({"agent_run_id": "child-1", "agent_backend": "claude"})))
+        self.assertEqual(code, 1)
+        self.assertIn("finalize-child --agent-run-json:", stderr.getvalue())
+
+    def test_empty_stdin_reply_is_a_dispatch_error_not_a_silent_pass(self) -> None:
+        """The conductor's `input=""` guard against a hung read is only a remedy if the
+        runtime rejects the empty reply it produces. Pinned here, on the runtime side."""
+        path = self._write_json(
+            {"agent_run_id": "child-1", "agent_backend": "claude", "status": "completed"})
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("")):
+            code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
+        self.assertEqual(code, 1)
+        self.assertIn("requires --reply-text or --reply-from-stdin", stderr.getvalue())
+
+    def _expect_argparse_error(self, argv: list[str], needle: str) -> None:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                main(argv)
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn(needle, stderr.getvalue())
+
+    def test_record_launch_rejects_both_and_neither(self) -> None:
+        path = self._write_json({"a": 1})
+        self._expect_argparse_error(
+            self._launch_argv("--request-json", "{}", "--request-json-file", path),
+            "not allowed with argument")
+        self._expect_argparse_error(self._launch_argv(), "is required")
+
+    def test_finalize_child_rejects_both_and_neither(self) -> None:
+        path = self._write_json({"a": 1})
+        self._expect_argparse_error(
+            self._finalize_argv("--reply-text", "x",
+                                "--agent-run-json", "{}", "--agent-run-json-file", path),
+            "not allowed with argument")
+        self._expect_argparse_error(self._finalize_argv("--reply-text", "x"), "is required")
+
+    def test_missing_payload_file_is_an_argparse_error_not_a_traceback(self) -> None:
+        """A bare OSError from the type callable escapes argparse as a traceback."""
+        missing = str(Path(tempfile.mkdtemp()) / "absent.json")
+        self._expect_argparse_error(
+            self._launch_argv("--request-json-file", missing), "cannot read json payload file")
+
+    def test_non_object_payload_file_is_rejected(self) -> None:
+        path = self._write_json([1, 2])
+        self._expect_argparse_error(
+            self._launch_argv("--request-json-file", path), "json payload must be object")
+        self._expect_argparse_error(
+            self._finalize_argv("--reply-text", "x", "--agent-run-json-file", path),
+            "json payload must be object")
 
 
 if __name__ == "__main__":

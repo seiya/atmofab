@@ -100,6 +100,39 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
                 f"Script under live workspace/tmp/<arid>/ must not be flagged: {violations}",
             )
 
+    def test_launch_input_evidence_file_is_not_a_launch_record(self) -> None:
+        """Keep-away pin: `<arid>.request.input.json` must never be read as a launch.
+
+        The conductor keeps the payload it handed to record-launch as
+        `launches/<arid>.request.input.json`. It is written BEFORE record-launch runs,
+        so it exists even for a launch that never happened — treating it as a launch
+        record would vouch for an arid the runtime never issued a capability for.
+        The `*.request.json` glob excludes it today; this pins that a future rename
+        cannot quietly fold it in.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = "evidence-only-agent-run-id-001"
+            orch_dir = repo_root / "workspace" / "orchestrations" / "orch_evidence"
+            (orch_dir / "launches").mkdir(parents=True, exist_ok=True)
+            (orch_dir / "launches" / f"{arid}.request.input.json").write_text(
+                json.dumps({"agent_run_id": arid}), encoding="utf-8"
+            )
+            (orch_dir / "agent_runs.jsonl").write_text("", encoding="utf-8")
+            (orch_dir / "orchestration_meta.json").write_text(
+                json.dumps({"status": "running"}), encoding="utf-8"
+            )
+            tmp_script = repo_root / "workspace" / "tmp" / arid / "helper.py"
+            tmp_script.parent.mkdir(parents=True, exist_ok=True)
+            tmp_script.write_text("print('helper')\n", encoding="utf-8")
+
+            violations, _ = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(
+                any(str(tmp_script) in v for v in violations),
+                "an evidence-only .request.input.json must not exempt workspace/tmp/<arid>/: "
+                f"{violations}",
+            )
+
     def test_flags_python_script_under_workspace_tmp_for_TERMINATED_agent(self) -> None:
         """Adv-2: cleanup leakage scenario — terminal entry exists in
         agent_runs.jsonl but tmp dir survives. Must be flagged."""

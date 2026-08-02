@@ -9898,7 +9898,7 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_version_available", "codex_features_list_available", "hooks_enabled",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
     "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-    "codex_exec_pure_isolation_flags", "codex_exec_resume",
+    "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
     "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
 })
 
@@ -15727,6 +15727,7 @@ def _probe_codex_backend(
     exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
     exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
     resume_help_text = (resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or "")
+    resume_help_detail = resume_help_text.strip() or f"exit={resume_help_proc.returncode}"
     checks = [
         {
             "name": f"{backend_token}_version_available",
@@ -15779,6 +15780,24 @@ def _probe_codex_backend(
                        or f"exit={resume_help_proc.returncode}"),
         },
         {
+            # The leaf prompt is NOT an argv element (a single one is capped at 128 KiB and
+            # a node's prompt exceeds it); `leaf_command` ends both codex argvs with the `-`
+            # stdin sentinel. A CLI that stopped honouring it would read the leaf's whole
+            # prompt as an empty instruction set and answer nothing, so the sentinel is
+            # certified like a flag — on BOTH subcommands, which document it separately.
+            "name": "codex_prompt_stdin",
+            "pass": (
+                exec_help_proc.returncode == 0
+                and resume_help_proc.returncode == 0
+                and "read from stdin" in exec_help_text
+                and "read from stdin" in resume_help_text
+            ),
+            # BOTH helps, because the predicate spans both: reporting only the `exec` one
+            # would answer a resume-side failure with a help text that visibly documents
+            # stdin support.
+            "detail": f"exec: {exec_help_detail}\nexec resume: {resume_help_detail}",
+        },
+        {
             "name": "codex_project_hook_trust_bypass",
             "pass": (exec_help_proc.returncode == 0
                      and "--dangerously-bypass-hook-trust" in exec_help_text),
@@ -15809,10 +15828,14 @@ def _can_launch_from_help_fallback_checks(
     features_list_ok = passes.get(f"{backend_token}_features_list_available") is True
     help_pass = passes.get(f"{backend_token}_help_probe_available")
     multi_ok = passes.get("multi_agent_enabled") is True
+    # The leaf prompt reaches the CLI only over stdin, so a build that stopped accepting it
+    # there could not be launched at all. Gated, not advisory, for the same reason
+    # `codex_prompt_stdin` gates the codex side.
+    stdin_ok = passes.get(f"{backend_token}_prompt_stdin") is True
     # When `pass` is None, --help was not run (multi_agent already determined by features list).
     # In that case, delegate to `features_list_ok` and do not silently treat `None` as False-equivalent.
     help_confirms_launch = help_pass is True
-    return version_ok and multi_ok and (features_list_ok or help_confirms_launch)
+    return version_ok and multi_ok and stdin_ok and (features_list_ok or help_confirms_launch)
 
 
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
@@ -15876,6 +15899,16 @@ def _probe_claude_backend(
         "multi_agent detection uses --help probe instead."
     )
 
+    # The leaf prompt travels on stdin, not argv (a single argv element is capped at
+    # 128 KiB and a node's prompt exceeds it), and the claude contract is the ABSENCE of a
+    # positional prompt — which `claude --help` states nowhere, so there is no help
+    # substring to match the way the codex sentinel is matched. Instead ask the CLI to
+    # refuse an empty `-p`: it answers with the one message that names its input channels,
+    # before any model turn (measured: exit 1 in ~1.8 s, zero tokens, no API call).
+    stdin_probe_proc = runner([*command_argv, "-p"], text=True, capture_output=True,
+                              check=False, input="")
+    stdin_probe_text = (stdin_probe_proc.stdout or "") + "\n" + (stdin_probe_proc.stderr or "")
+
     help_proc = runner([*command_argv, "--help"], text=True, capture_output=True, check=False)
     help_stdout = help_proc.stdout.strip()
     # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
@@ -15904,6 +15937,18 @@ def _probe_claude_backend(
             "name": f"{backend_token}_help_probe_available",
             "pass": help_probe_pass,
             "detail": help_probe_detail,
+        },
+        {
+            "name": f"{backend_token}_prompt_stdin",
+            # The REFUSAL's own wording, and a non-zero exit to prove it refused. A bare
+            # "stdin" would be satisfied by the help text — `--replay-user-messages`
+            # mentions it — so any build that dumps usage on an argument error would pass
+            # while supporting no stdin input at all. "through stdin" appears in the
+            # refusal and not in the help. The non-zero exit is what keeps the probe free:
+            # a build that instead ACCEPTED the empty prompt would spend a model turn.
+            "pass": (stdin_probe_proc.returncode != 0
+                     and "through stdin" in stdin_probe_text),
+            "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
         {
             "name": "multi_agent_enabled",
@@ -18831,15 +18876,22 @@ def finalize_child(
     arid = agent_run_id.strip() if isinstance(agent_run_id, str) else ""
     if not arid:
         raise ValueError("finalize-child requires non-empty --agent-run-id")
+    # The payload flags come in two forms (inline / file), and the conductor always uses
+    # the file one — so every message here names both, or an operator is sent to inspect
+    # an argument that was never passed.
     if not isinstance(reply_text, str) or not reply_text.strip():
-        raise ValueError("finalize-child requires non-empty --reply-text")
+        raise ValueError(
+            "finalize-child requires a non-empty reply (--reply-text or --reply-from-stdin)")
     if not isinstance(agent_run_payload, dict):
-        raise ValueError("finalize-child requires --agent-run-json to be a JSON object")
+        raise ValueError(
+            "finalize-child requires the agent-run payload "
+            "(--agent-run-json / --agent-run-json-file) to be a JSON object")
     payload_arid = agent_run_payload.get("agent_run_id")
     if not (isinstance(payload_arid, str) and payload_arid.strip() == arid):
         raise ValueError(
-            f"finalize-child: --agent-run-json agent_run_id ({payload_arid!r}) must equal "
-            f"--agent-run-id ({arid!r})"
+            f"finalize-child: agent-run payload agent_run_id ({payload_arid!r}) must equal "
+            f"--agent-run-id ({arid!r}). When the payload came from --agent-run-json-file, "
+            f"the offending file is launches/{arid}.agent_run.input.json"
         )
     if reply_excerpt is None:
         first_line = next((ln.strip() for ln in reply_text.splitlines() if ln.strip()), "")
@@ -20573,6 +20625,25 @@ def _json_arg(raw: str) -> dict[str, Any]:
     return value
 
 
+def _json_file_arg(raw: str) -> dict[str, Any]:
+    """Read a JSON object payload from a file path instead of an argv element.
+
+    Linux caps a single argv element at MAX_ARG_STRLEN (128 KiB); an inlined launch
+    request (IR + controlled spec + dependency facts) exceeds it for larger nodes and
+    execve fails with E2BIG before the process starts. The caller writes the payload to
+    `workspace/orchestrations/<oid>/launches/<arid>.{request,agent_run}.input.json`
+    (kept as evidence) and passes that path here.
+    """
+    try:
+        text = Path(raw).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"cannot read json payload file {raw!r}: {exc}") from exc
+    value = json.loads(text)
+    if not isinstance(value, dict):
+        raise argparse.ArgumentTypeError("json payload must be object")
+    return value
+
+
 def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
     """Validate the required fields of record-launch --response-json at CLI dispatch time."""
     label = "record-launch --response-json"
@@ -20593,9 +20664,15 @@ def _validate_record_launch_response_fields(payload: dict[str, Any]) -> None:
         )
 
 
-def _validate_record_agent_run_fields(payload: dict[str, Any]) -> None:
-    """Validate the required fields of record-agent-run --agent-run-json at CLI dispatch time."""
-    label = "record-agent-run --agent-run-json"
+def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None = None) -> None:
+    """Validate the required fields of the record-agent-run payload at CLI dispatch time.
+
+    `label` names the argument the operator actually passed. `finalize-child` runs this
+    same validator before its own checks, so the default would send an operator to inspect
+    a subcommand they did not run and a flag the conductor never passes (it always uses
+    `--agent-run-json-file`).
+    """
+    label = label or "record-agent-run --agent-run-json"
     for key in ("agent_run_id", "agent_backend", "status"):
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
@@ -20894,8 +20971,17 @@ def main(argv: list[str] | None = None) -> int:
     launch_parser.add_argument("--child-agent-run-id", required=True,
                                help="UUID pre-generated for the child agent. "
                                     "For Claude Code this also becomes agent_session_id.")
-    launch_parser.add_argument("--request-json", required=True, type=_json_arg,
-                               help=_RECORD_LAUNCH_REQUEST_HELP)
+    launch_request_group = launch_parser.add_mutually_exclusive_group(required=True)
+    launch_request_group.add_argument("--request-json", type=_json_arg,
+                                      help=_RECORD_LAUNCH_REQUEST_HELP)
+    launch_request_group.add_argument("--request-json-file", type=_json_file_arg,
+                                      help=("Path to a file holding the same payload the inline "
+                                            "request-json form takes. Use this form always: a "
+                                            "single argv element is capped at MAX_ARG_STRLEN "
+                                            "(128 KiB) and an inlined request exceeds it for "
+                                            "larger nodes (execve E2BIG). The conductor writes "
+                                            "workspace/orchestrations/<oid>/launches/"
+                                            "<child_arid>.request.input.json and keeps it as evidence."))
     launch_parser.add_argument("--response-json", required=True, type=_json_arg,
                                help=_RECORD_LAUNCH_RESPONSE_HELP)
     launch_parser.add_argument("--relation-type", default="launch")
@@ -20978,7 +21064,14 @@ def main(argv: list[str] | None = None) -> int:
     finalize_parser.add_argument("--reply-text")
     finalize_parser.add_argument("--reply-from-stdin", action="store_true")
     finalize_parser.add_argument("--reply-excerpt", default=None)
-    finalize_parser.add_argument("--agent-run-json", required=True, type=_json_arg)
+    finalize_agent_run_group = finalize_parser.add_mutually_exclusive_group(required=True)
+    finalize_agent_run_group.add_argument("--agent-run-json", type=_json_arg)
+    finalize_agent_run_group.add_argument(
+        "--agent-run-json-file", type=_json_file_arg,
+        help=("Path to a file holding the same payload the inline agent-run-json form takes. "
+              "A single argv element is capped at MAX_ARG_STRLEN (128 KiB); the conductor writes "
+              "workspace/orchestrations/<oid>/launches/<arid>.agent_run.input.json and keeps it "
+              "as evidence. Pair it with the reply-from-stdin flag for the reply text."))
 
     step_parser = subparsers.add_parser(
         "write-step-result",
@@ -21482,6 +21575,9 @@ def main(argv: list[str] | None = None) -> int:
             orchestration_id=args.orchestration_id,
         )
     elif args.command == "record-launch":
+        request_payload = (
+            args.request_json if args.request_json is not None else args.request_json_file
+        )
         try:
             _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
@@ -21489,7 +21585,7 @@ def main(argv: list[str] | None = None) -> int:
                 orchestration_id=args.orchestration_id,
                 parent_agent_run_id=args.parent_agent_run_id,
                 child_agent_run_id=args.child_agent_run_id,
-                request_payload=args.request_json,
+                request_payload=request_payload,
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
                 expected_codex_home_generation=args.expected_codex_home_generation,
@@ -21536,6 +21632,9 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
     elif args.command == "finalize-child":
+        agent_run_payload = (
+            args.agent_run_json if args.agent_run_json is not None else args.agent_run_json_file
+        )
         if args.reply_from_stdin:
             reply_text = sys.stdin.read()
         else:
@@ -21544,14 +21643,18 @@ def main(argv: list[str] | None = None) -> int:
             print("finalize-child requires --reply-text or --reply-from-stdin", file=sys.stderr)
             return 1
         try:
-            _validate_record_agent_run_fields(args.agent_run_json)
+            _validate_record_agent_run_fields(
+                agent_run_payload,
+                label=("finalize-child --agent-run-json-file"
+                       if args.agent_run_json is None else "finalize-child --agent-run-json"),
+            )
             result = finalize_child(
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
                 agent_run_id=args.agent_run_id,
                 return_token=args.return_token,
                 reply_text=reply_text,
-                agent_run_payload=args.agent_run_json,
+                agent_run_payload=agent_run_payload,
                 reply_excerpt=args.reply_excerpt,
             )
         except (ValueError, RuntimeError) as exc:

@@ -120,11 +120,13 @@ workspace/
       orchestration_checkpoint.json
       agent_graph.json
       agent_runs.jsonl
-      launches/
+      launches/                          # excerpt; the full inventory is docs/WORKSPACE_LAYOUT.md
+        <agent_run_id>.request.input.json
         <agent_run_id>.request.json
         <agent_run_id>.response.json
         <agent_run_id>.prompt.txt
         <agent_run_id>.reply.txt
+        <agent_run_id>.agent_run.input.json
       agents/
         <agent_run_id>/
           dialogs/

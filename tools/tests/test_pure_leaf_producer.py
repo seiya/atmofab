@@ -190,10 +190,30 @@ class _PureFakeConductor(wc.Conductor):
 
     envelopes: list[str] = []
 
-    def runtime(self, args):  # type: ignore[override]
+    def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
+        # In-memory: this fixture's repo_root is a shared throwaway path, and the real
+        # write path is pinned separately in test_workflow_conductor.py.
+        # Round-trip through the encoder the real writer uses — see the note on
+        # `_FakeConductor._write_launch_input_evidence` in test_workflow_conductor.py.
+        store = self.__dict__.setdefault("evidence", {})
+        store[filename] = json.loads(json.dumps(payload, ensure_ascii=True))
+        return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
+
+    def _resolve_evidence(self, rel):
+        return self.__dict__.setdefault("evidence", {})[rel.rsplit("/", 1)[-1]]
+
+    def runtime(self, args, *, input=None):  # type: ignore[override]
         sub = args[0]
         self.calls = getattr(self, "calls", [])
         captured: dict = {}
+        # The payload files carry what the inline flags used to; capture under the
+        # inline key so assertions stay on one stable name.
+        for flag, inline in (("--request-json-file", "--request-json"),
+                             ("--agent-run-json-file", "--agent-run-json")):
+            if flag in args:
+                captured[inline] = self._resolve_evidence(args[args.index(flag) + 1])
+        if "--reply-from-stdin" in args:
+            captured["--reply-text"] = input
         for flag in ("--agent-run-json", "--request-json", "--run-ids", "--reason"):
             if flag in args and flag != "--run-ids":
                 captured[flag] = json.loads(args[args.index(flag) + 1]) \
@@ -1417,11 +1437,11 @@ class _RenderingFakeConductor(_PureFakeConductor):
         # reason to build — the wiring under test is whether the resolved value reaches the render.
         return self.exemplar_value
 
-    def runtime(self, args):  # type: ignore[override]
-        out = super().runtime(args)
+    def runtime(self, args, *, input=None):  # type: ignore[override]
+        out = super().runtime(args, input=input)
         if args[0] != "record-launch":
             return out
-        request = json.loads(args[args.index("--request-json") + 1])
+        request = self._resolve_evidence(args[args.index("--request-json-file") + 1])
         self.requests = getattr(self, "requests", [])
         self.requests.append(request)
         prepared = ort.prepare_launch_request_payload(dict(request))

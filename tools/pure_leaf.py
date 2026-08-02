@@ -157,8 +157,10 @@ def pure_leaf_flags() -> list[str]:
                             which is how the host reads `result` / `model` / `usage`
                             without touching the session transcript (~/.claude is not read).
 
-    `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the `-p <prompt>`
-    body are added by `Conductor.leaf_command` around this set. `--bare` and
+    `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
+    are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:
+    the prompt is written to the leaf's stdin, because a single argv element is capped at
+    128 KiB and a node's prompt exceeds it. `--bare` and
     `--no-session-persistence` are intentionally NOT here: `--bare` forces API-key auth
     (breaking the subscription billing the operator requires), and
     `--no-session-persistence` would break the warm-resume repair path.

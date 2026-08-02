@@ -421,39 +421,38 @@ class LeafCommandPureBranchTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", backend=backend, env={})
 
     def test_pure_claude_command_includes_flags(self):
-        argv = self._conductor("claude").leaf_command(
-            "PROMPT", session_id="arid-1", pure=True)
+        argv = self._conductor("claude").leaf_command(session_id="arid-1", pure=True)
         self.assertEqual(argv[0], "claude")
         self.assertIn("--session-id", argv)
         for flag in pl.pure_leaf_flags():
             if flag:  # the empty "" value of --tools is order-checked below
                 self.assertIn(flag, argv)
-        # the -p body is last, the prompt after it
-        self.assertEqual(argv[-2:], ["-p", "PROMPT"])
+        # `-p` is last and NOTHING follows it: the prompt goes on stdin, because a single
+        # argv element is capped at 128 KiB and a node's prompt exceeds it.
+        self.assertEqual(argv[-1], "-p")
         # --tools "" is a value pair
         self.assertEqual(argv[argv.index("--tools") + 1], "")
 
     def test_pure_warm_resume_prefixes_resume_flags(self):
-        argv = self._conductor("claude").leaf_command(
-            "PROMPT", session_id="arid-2", resume_session_id="arid-1", pure=True)
+        argv = self._conductor("claude").leaf_command(session_id="arid-2", resume_session_id="arid-1", pure=True)
         self.assertEqual(argv[argv.index("--resume") + 1], "arid-1")
         self.assertIn("--fork-session", argv)
         self.assertIn("--output-format", argv)
 
     def test_non_pure_claude_has_no_pure_flags(self):
-        argv = self._conductor("claude").leaf_command("PROMPT", session_id="a")
+        argv = self._conductor("claude").leaf_command(session_id="a")
         self.assertNotIn("--strict-mcp-config", argv)
         self.assertNotIn("--disable-slash-commands", argv)
 
     def test_codex_pure_uses_structured_readonly_approximation(self):
-        argv = self._conductor("codex").leaf_command(
-            "PROMPT", session_id="arid-1", pure=True)
+        argv = self._conductor("codex").leaf_command(session_id="arid-1", pure=True)
         self.assertEqual(argv[:2], ["codex", "exec"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("--output-schema", argv)
         self.assertNotIn("--ignore-user-config", argv)
         self.assertIn("--ignore-rules", argv)
-        self.assertEqual(argv[-2:], ["--json", "PROMPT"])
+        # `-` is codex's stdin sentinel for the positional prompt, not the prompt itself.
+        self.assertEqual(argv[-2:], ["--json", "-"])
 
     def test_codex_pure_warm_resume_omits_the_exec_only_sandbox_flag(self):
         """`codex exec resume` takes NO `--sandbox`; passing it aborts at argv parsing.
@@ -464,7 +463,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         override that `exec` and `exec resume` share instead of being dropped.
         """
         argv = self._conductor("codex").leaf_command(
-            "REPAIR", session_id="arid-2", resume_session_id="thread-1", pure=True)
+            session_id="arid-2", resume_session_id="thread-1", pure=True)
         self.assertEqual(argv[:3], ["codex", "exec", "resume"])
         self.assertNotIn("--sandbox", argv)
         # The PAIR, not `argv.index("--config") + 1`: a second `--config` (the reasoning
@@ -475,7 +474,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertIn("--ignore-rules", argv)
         self.assertIn("--output-schema", argv)
         self.assertIn("thread-1", argv)
-        self.assertEqual(argv[-2:], ["--json", "REPAIR"])
+        self.assertEqual(argv[-2:], ["--json", "-"])
 
     def test_codex_resume_argv_options_are_all_preflight_certified(self):
         """Every option the resume argv emits must be one the resume probe checks.
@@ -489,10 +488,13 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         required = set(CODEX_EXEC_RESUME_REQUIRED_FLAGS)
         for pure in (False, True):
             argv = self._conductor("codex").leaf_command(
-                "REPAIR", session_id="a", resume_session_id="thread-1", pure=pure)
+                session_id="a", resume_session_id="thread-1", pure=pure)
             # No short-form aliasing: the argv must emit exactly the spellings the
             # probe asserts, so a CLI that drops an alias cannot pass the preflight.
-            emitted = {part for part in argv if part.startswith("-")}
+            # The bare `-` is excluded: it is the value of the positional prompt (codex's
+            # stdin sentinel), not an option, and it is certified by its own preflight
+            # check `codex_prompt_stdin` rather than by a flag-name substring.
+            emitted = {part for part in argv if part.startswith("-") and part != "-"}
             self.assertTrue(
                 emitted <= required,
                 f"uncertified resume options (pure={pure}): {sorted(emitted - required)}",

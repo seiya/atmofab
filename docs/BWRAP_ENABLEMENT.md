@@ -88,6 +88,26 @@ parsing. The `codex_exec_resume` preflight check probes `exec resume --help` for
 option set the resume argv emits (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`); probing `exec --help`
 alone would certify a command the CLI rejects.
 
+The leaf prompt is **not** an argv element on either backend. A single argv element is capped
+at `MAX_ARG_STRLEN` (128 KiB on Linux) and a node's rendered prompt exceeds it, so `execve`
+fails with `E2BIG` before the model starts. The conductor writes the prompt to the leaf's
+stdin instead: `claude -p` with no prompt argument, and `codex exec` / `codex exec resume`
+with the `-` stdin sentinel as the positional prompt.
+
+Both forms are certified at preflight, by different probes because the two CLIs fail
+differently. `codex_prompt_stdin` requires BOTH codex helps to document the sentinel: a
+codex that stopped treating `-` as a sentinel would take it as a one-character prompt and
+answer something plausible, so the loss is silent. `claude_prompt_stdin` runs `claude -p`
+on empty input and requires a non-zero exit whose message contains `through stdin`; that
+path fails loudly rather than silently, but the claude contract is the ABSENCE of a
+positional argument, which `claude --help` states nowhere, so the CLI's own refusal is the
+only machine-readable statement of it. The match is the refusal's own wording, not the bare
+word: `claude --help` does contain `stdin`, in an unrelated `--replay-user-messages` flag,
+so a build that dumped its usage on an argument error would otherwise certify itself while
+supporting no stdin input at all. The non-zero exit is what keeps the probe free — a build
+that accepted the empty prompt would spend a model turn. Both probes cost zero tokens and
+reach no model.
+
 The whole JSONL event stream of each Codex leaf is kept at
 `agents/<arid>/dialogs/leaf.stdout.jsonl`. `leaf.stdout.log` holds only the extracted final
 `agent_message`, so the `.jsonl` file is the sole record of what the leaf actually did and is
