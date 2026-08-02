@@ -18831,15 +18831,22 @@ def finalize_child(
     arid = agent_run_id.strip() if isinstance(agent_run_id, str) else ""
     if not arid:
         raise ValueError("finalize-child requires non-empty --agent-run-id")
+    # The payload flags come in two forms (inline / file), and the conductor always uses
+    # the file one — so every message here names both, or an operator is sent to inspect
+    # an argument that was never passed.
     if not isinstance(reply_text, str) or not reply_text.strip():
-        raise ValueError("finalize-child requires non-empty --reply-text")
+        raise ValueError(
+            "finalize-child requires a non-empty reply (--reply-text or --reply-from-stdin)")
     if not isinstance(agent_run_payload, dict):
-        raise ValueError("finalize-child requires --agent-run-json to be a JSON object")
+        raise ValueError(
+            "finalize-child requires the agent-run payload "
+            "(--agent-run-json / --agent-run-json-file) to be a JSON object")
     payload_arid = agent_run_payload.get("agent_run_id")
     if not (isinstance(payload_arid, str) and payload_arid.strip() == arid):
         raise ValueError(
-            f"finalize-child: --agent-run-json agent_run_id ({payload_arid!r}) must equal "
-            f"--agent-run-id ({arid!r})"
+            f"finalize-child: agent-run payload agent_run_id ({payload_arid!r}) must equal "
+            f"--agent-run-id ({arid!r}). When the payload came from --agent-run-json-file, "
+            f"the offending file is launches/{arid}.agent_run.input.json"
         )
     if reply_excerpt is None:
         first_line = next((ln.strip() for ln in reply_text.splitlines() if ln.strip()), "")

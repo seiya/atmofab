@@ -193,8 +193,10 @@ class _PureFakeConductor(wc.Conductor):
     def _write_launch_input_evidence(self, filename, payload):  # type: ignore[override]
         # In-memory: this fixture's repo_root is a shared throwaway path, and the real
         # write path is pinned separately in test_workflow_conductor.py.
+        # Round-trip through the encoder the real writer uses — see the note on
+        # `_FakeConductor._write_launch_input_evidence` in test_workflow_conductor.py.
         store = self.__dict__.setdefault("evidence", {})
-        store[filename] = payload
+        store[filename] = json.loads(json.dumps(payload, ensure_ascii=False))
         return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
 
     def _resolve_evidence(self, rel):

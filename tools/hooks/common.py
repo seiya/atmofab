@@ -1561,10 +1561,17 @@ class _CliManagedPath:
 
 _CLI_MANAGED_PATHS: list[_CliManagedPath] = [
     _CliManagedPath(
-        re.compile(r"workspace/orchestrations/[^/]+/launches/[^/]+\.(?:response\.json|reply\.txt|prompt\.txt|request\.json|request\.input\.json|agent_run\.input\.json)$"),
-        "python3 tools/orchestration_runtime.py record-launch ... "
-        "(*.request.input.json / *.agent_run.input.json are the payload files the conductor "
-        "hands to record-launch / finalize-child, kept as evidence)",
+        re.compile(r"workspace/orchestrations/[^/]+/launches/[^/]+\.(?:response\.json|reply\.txt|prompt\.txt|request\.json)$"),
+        "python3 tools/orchestration_runtime.py record-launch ...",
+    ),
+    # Separate entry, not a widening of the one above: no subcommand produces these. The
+    # conductor writes them itself, BEFORE the call, as the evidence of what it sent — so
+    # "re-run record-launch" would be the wrong remedy to print.
+    _CliManagedPath(
+        re.compile(r"workspace/orchestrations/[^/]+/launches/[^/]+\.(?:request|agent_run)\.input\.json$"),
+        "nothing — these are the payload files the conductor writes for itself before "
+        "record-launch / finalize-child, kept as the evidence of what was sent. "
+        "They are never authored or edited by an agent",
     ),
     _CliManagedPath(
         re.compile(r"workspace/orchestrations/[^/]+/agent_runs\.jsonl$"),

@@ -32510,6 +32510,17 @@ class JsonPayloadFileArgTests(unittest.TestCase):
         self.assertEqual(captured[0]["agent_run_payload"], agent_run)
         self.assertEqual(captured[0]["reply_text"], "done")
 
+    def test_empty_stdin_reply_is_a_dispatch_error_not_a_silent_pass(self) -> None:
+        """The conductor's `input=""` guard against a hung read is only a remedy if the
+        runtime rejects the empty reply it produces. Pinned here, on the runtime side."""
+        path = self._write_json(
+            {"agent_run_id": "child-1", "agent_backend": "claude", "status": "completed"})
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), patch.object(sys, "stdin", io.StringIO("")):
+            code = main(self._finalize_argv("--reply-from-stdin", "--agent-run-json-file", path))
+        self.assertEqual(code, 1)
+        self.assertIn("requires --reply-text or --reply-from-stdin", stderr.getvalue())
+
     def _expect_argparse_error(self, argv: list[str], needle: str) -> None:
         stderr = io.StringIO()
         with redirect_stderr(stderr):

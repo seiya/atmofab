@@ -4661,9 +4661,11 @@ class Conductor:
 
     def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
-        # The reply is the leaf's verbatim final message and can carry generated source, so
-        # it goes over stdin (the runtime persists it to launches/<arid>.reply.txt itself —
-        # no second copy). The agent_run payload travels as a kept evidence file.
+        # The reply goes over stdin rather than argv. Every current call site composes it
+        # host-side within the ~2000-char reply budget, so it is small today — but it is
+        # declared as the leaf's verbatim final message, and stdin costs nothing and is
+        # already persisted by the runtime as launches/<arid>.reply.txt (no second copy).
+        # The agent_run payload travels as a kept evidence file.
         agent_run_ref = self._write_launch_input_evidence(
             f"{child_arid}.agent_run.input.json", agent_run_json)
         return self.runtime([

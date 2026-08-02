@@ -9,6 +9,7 @@ assembled. The decision-table tests pin the deterministic failure routing.
 from __future__ import annotations
 
 import copy
+import errno
 import glob
 import io
 import json
@@ -529,8 +530,13 @@ class _FakeConductor(wc.Conductor):
         exhaustion has bitten this repo before). The real write path is covered by
         `LaunchPayloadFileTransportTests` against a real Conductor in a TemporaryDirectory.
         """
+        # Round-trip through the encoder the real writer uses. Storing the dict by
+        # reference would drop the serializability net the inline `json.dumps` used to
+        # give every fake finalize: a Path / set / datetime landing in the agent-run row
+        # would then ship green and die at the first real finalize_child. It also keeps
+        # the captured payload a snapshot rather than a live alias of the caller's dict.
         store = self.__dict__.setdefault("evidence", {})
-        store[filename] = payload
+        store[filename] = json.loads(json.dumps(payload, ensure_ascii=False))
         return f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
 
     def _resolve_evidence(self, rel):
@@ -15516,6 +15522,43 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
                 "child-1.agent_run.input.json")
             self.assertEqual(
                 json.loads((repo_root / rel).read_text(encoding="utf-8")), agent_run)
+
+    def test_the_real_execve_accepts_the_file_form_and_still_rejects_the_inline_one(self) -> None:
+        """The one test that crosses the real subprocess boundary.
+
+        Everything else here stubs `runtime`, so it can only pin the argv SHAPE. E2BIG
+        lives in execve and is trivially reproducible through a real spawn, so pin the
+        actual hazard: the same 200 KB payload passes as a file and dies inline.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            payload_path = Path(tmp) / "request.json"
+            payload_text = json.dumps({"agent_role": "substep", "pure_context": self.BIG})
+            payload_path.write_text(payload_text, encoding="utf-8")
+            # repo_root is the real checkout (runtime() runs `python3
+            # tools/orchestration_runtime.py` relative to it); --repo-root points at the
+            # throwaway dir so the call touches nothing in the checkout.
+            c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_execve",
+                             orchestration_agent_run_id="ORCH", backend="claude",
+                             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin")})
+            common = [
+                "record-launch", "--repo-root", tmp,
+                "--orchestration-id", "orch_execve",
+                "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                "--response-json", json.dumps({
+                    "agent_run_id": "c", "agent_session_id": "c",
+                    "started_at": "2026-08-02T00:00:00Z", "backend": "claude"}),
+            ]
+
+            # File form: reaches the subcommand and fails on its own merits.
+            with self.assertRaises(RuntimeError) as run_err:
+                c.runtime([*common, "--request-json-file", str(payload_path)])
+            self.assertIn("preflight missing", str(run_err.exception))
+
+            # Inline form: never starts.
+            with self.assertRaises(OSError) as os_err:
+                c.runtime([*common, "--request-json", payload_text])
+            self.assertEqual(os_err.exception.errno, errno.E2BIG)
 
     def test_reply_from_stdin_without_input_does_not_inherit_the_tty(self) -> None:
         """Forgetting `input=` is a HANG, not an error — the subprocess blocks on the
