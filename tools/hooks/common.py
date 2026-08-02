@@ -1561,8 +1561,10 @@ class _CliManagedPath:
 
 _CLI_MANAGED_PATHS: list[_CliManagedPath] = [
     _CliManagedPath(
-        re.compile(r"workspace/orchestrations/[^/]+/launches/[^/]+\.(?:response\.json|reply\.txt|prompt\.txt|request\.json)$"),
-        "python3 tools/orchestration_runtime.py record-launch ...",
+        re.compile(r"workspace/orchestrations/[^/]+/launches/[^/]+\.(?:response\.json|reply\.txt|prompt\.txt|request\.json|request\.input\.json|agent_run\.input\.json)$"),
+        "python3 tools/orchestration_runtime.py record-launch ... "
+        "(*.request.input.json / *.agent_run.input.json are the payload files the conductor "
+        "hands to record-launch / finalize-child, kept as evidence)",
     ),
     _CliManagedPath(
         re.compile(r"workspace/orchestrations/[^/]+/agent_runs\.jsonl$"),

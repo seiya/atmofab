@@ -2793,25 +2793,29 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             self.assertEqual(body.get("decision"), "block")
 
     def test_write_tool_blocks_cli_managed_internal_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch = "orch_ext_hooks_006"
-            run_id = "step_run_ext_hooks_006"
-            cli_managed_path = (
-                f"workspace/orchestrations/{orch}/launches/{run_id}.reply.txt"
-            )
-            self._setup_orchestration_for_write(
-                repo_root,
-                orch=orch,
-                run_id=run_id,
-                allowed_output_paths=[cli_managed_path],
-                allowed_file_tool_paths=[cli_managed_path],
-            )
-            code, body = self._invoke_write_hook(
-                orch=orch, repo_root=repo_root, file_path=cli_managed_path
-            )
-            self.assertEqual(code, 2)
-            self.assertEqual(body.get("decision"), "block")
+        # `.request.input.json` / `.agent_run.input.json` are the payload files the
+        # conductor hands to record-launch / finalize-child and keeps as evidence of
+        # what was actually sent; a leaf editing one would rewrite that evidence.
+        for suffix in ("reply.txt", "request.input.json", "agent_run.input.json"):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                orch = "orch_ext_hooks_006"
+                run_id = "step_run_ext_hooks_006"
+                cli_managed_path = (
+                    f"workspace/orchestrations/{orch}/launches/{run_id}.{suffix}"
+                )
+                self._setup_orchestration_for_write(
+                    repo_root,
+                    orch=orch,
+                    run_id=run_id,
+                    allowed_output_paths=[cli_managed_path],
+                    allowed_file_tool_paths=[cli_managed_path],
+                )
+                code, body = self._invoke_write_hook(
+                    orch=orch, repo_root=repo_root, file_path=cli_managed_path
+                )
+                self.assertEqual(code, 2)
+                self.assertEqual(body.get("decision"), "block")
 
     def test_bash_redirect_to_managed_artifact_is_blocked(self) -> None:
         """Phase-2: a Bash command that WRITES (file redirect) to a managed

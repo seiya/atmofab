@@ -32407,6 +32407,36 @@ class SiblingUniformScopeTests(unittest.TestCase):
             self.assertEqual(out["status"], "needs_manual")
 
 
+class LaunchInputEvidenceKeepAwayTests(unittest.TestCase):
+    """`launches/<arid>.request.input.json` must stay invisible to the `*.request.json` scans.
+
+    The conductor writes the evidence file BEFORE record-launch runs, so a lone one
+    (no sibling `.request.json`) is exactly the record-launch-failed case. Treating it
+    as a launch record would make the resume path tombstone an arid that was never
+    launched. Pinned so a future rename cannot land inside the glob.
+    """
+
+    def test_orphan_tombstoning_ignores_a_lone_request_input_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_evidence_keepaway"
+            init_orchestration(repo_root=repo_root, orchestration_id=oid)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            launches = root / "launches"
+            launches.mkdir(exist_ok=True)
+            evidence_only = "evidence-only-arid"
+            launched = "genuinely-launched-arid"
+            (launches / f"{evidence_only}.request.input.json").write_text(
+                "{}", encoding="utf-8")
+            (launches / f"{launched}.request.json").write_text("{}", encoding="utf-8")
+            (launches / f"{launched}.request.input.json").write_text("{}", encoding="utf-8")
+
+            written = ort._write_orphan_launch_tombstones(repo_root, oid, [])
+
+            self.assertEqual(written, [launched])
+            self.assertFalse((launches / f"{evidence_only}.pruned.json").exists())
+
+
 class JsonPayloadFileArgTests(unittest.TestCase):
     """`--request-json-file` / `--agent-run-json-file`: the argv-size escape hatch.
 
