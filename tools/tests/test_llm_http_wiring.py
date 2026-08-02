@@ -414,7 +414,7 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         anything did, building a CLI argv out of it is the wrong recovery."""
         c = self._conductor()
         with self.assertRaises(ValueError) as ctx:
-            c.leaf_command("P", c.entry_for("generate", "generate"))
+            c.leaf_command(c.entry_for("generate", "generate"))
         self.assertIn("launches no CLI leaf", str(ctx.exception))
 
 

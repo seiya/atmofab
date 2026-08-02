@@ -88,6 +88,14 @@ parsing. The `codex_exec_resume` preflight check probes `exec resume --help` for
 option set the resume argv emits (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`); probing `exec --help`
 alone would certify a command the CLI rejects.
 
+The leaf prompt is **not** an argv element on either backend. A single argv element is capped
+at `MAX_ARG_STRLEN` (128 KiB on Linux) and a node's rendered prompt exceeds it, so `execve`
+fails with `E2BIG` before the model starts. The conductor writes the prompt to the leaf's
+stdin instead: `claude -p` with no prompt argument, and `codex exec` / `codex exec resume`
+with the `-` stdin sentinel as the positional prompt. The `codex_prompt_stdin` preflight check
+requires both codex helps to document that support; a CLI that dropped it would read an empty
+instruction set and answer nothing.
+
 The whole JSONL event stream of each Codex leaf is kept at
 `agents/<arid>/dialogs/leaf.stdout.jsonl`. `leaf.stdout.log` holds only the extracted final
 `agent_message`, so the `.jsonl` file is the sole record of what the leaf actually did and is

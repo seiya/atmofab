@@ -3399,7 +3399,6 @@ class Conductor:
 
     def leaf_command(
         self,
-        prompt_text: str,
         entry: ResolvedLeafEntry | None = None,
         *,
         session_id: str | None = None,
@@ -3409,6 +3408,16 @@ class Conductor:
         """Headless command to run one substep body as an isolated leaf agent.
         Honors the entry's custom `command` (wrapper + flags) so the conductor launches the
         same executable/model as the configured provider, not a hard-coded binary.
+
+        THE PROMPT IS NOT AN ARGUMENT — `spawn_leaf` writes it to the child's stdin. It
+        embeds the node's whole closed context (IR, controlled spec, resolved dependency
+        sources) and a single argv element is capped at MAX_ARG_STRLEN (128 KiB), so a
+        large node's prompt made `execve` fail with E2BIG before the model started
+        (measured: 123,086 B = 94% of the cap on an existing run, and ~155 KB projected
+        for `problem/shallow_water2d@0.4.0`). It is absent from this signature rather
+        than merely unused, so no future edit can put it back on argv by accident.
+        Both CLIs read it from stdin: `claude -p` with no prompt argument, and
+        `codex exec [resume] … -` (the documented stdin sentinel).
 
         For the claude backend, `session_id` pins the leaf's Claude Code session id
         to its `agent_run_id` (so the per-arid transcript is addressable and a later
@@ -3457,7 +3466,7 @@ class Conductor:
             if pure:
                 from tools.pure_leaf import pure_leaf_flags
                 flags += pure_leaf_flags()
-            return [*base, *flags, "-p", prompt_text]
+            return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
             # session identity and is registered before a later hook can authorize
@@ -3492,12 +3501,16 @@ class Conductor:
                 # does not assert would leave the gate green on a CLI that dropped it.
                 pure_resume_flags = ["--ignore-rules", "--config", 'sandbox_mode="read-only"',
                                      "--output-schema", str(schema)]
+            # `-` is the documented stdin sentinel for the positional prompt on BOTH
+            # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
+            # when the prompt is absent, but `codex exec resume` documents only the `-`
+            # form, and an omitted positional there would be read as the session id.
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
                         "--dangerously-bypass-hook-trust", *effort_flags, *pure_resume_flags,
-                        "--json", prompt_text]
+                        "--json", "-"]
             return [*base, "exec", "--model", model, "--dangerously-bypass-hook-trust",
-                    *effort_flags, *pure_flags, "--json", prompt_text]
+                    *effort_flags, *pure_flags, "--json", "-"]
         raise ValueError(
             f"provider {entry.provider!r} launches no CLI leaf (it is not a spawnable "
             f"backend); this substep must not have reached spawn_leaf")
@@ -3513,6 +3526,48 @@ class Conductor:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"type": "object"}) + "\n", encoding="utf-8")
         return path
+
+    @staticmethod
+    def _feed_prompt_stdin(process: Any, prompt_text: str) -> threading.Thread | None:
+        """Write the leaf prompt to the child's stdin and close it, on its own thread.
+
+        Off-thread because the prompt is unbounded and a pipe buffer is not (64 KiB by
+        default): a blocking write from this thread would deadlock against a CLI that
+        prints anything to stdout before draining its stdin, and this path exists
+        precisely for the prompts too large to fit in argv.
+
+        Closing is what makes the CLI stop waiting for more input, so it happens on every
+        exit — including a leaf killed mid-write, where the write raises `BrokenPipeError`
+        and there is nothing left to say. Encoded with `surrogateescape` to match what
+        argv did: `os.fsencode` accepted the surrogateescape range, and a prompt is host
+        text that may carry one from a leaf's captured output.
+
+        The `stdin is None` exit is for the process doubles the leaf tests substitute for
+        `Popen`; a real `Popen` here always requested `stdin=PIPE`. It is therefore NOT the
+        guard that proves the prompt is delivered — that is
+        `test_the_leaf_prompt_reaches_a_real_child_on_stdin_not_argv`, which spawns an
+        actual subprocess.
+        """
+        stdin = getattr(process, "stdin", None)
+        if stdin is None:
+            return None
+        payload = prompt_text.encode("utf-8", "surrogateescape")
+
+        def _write() -> None:
+            try:
+                stdin.write(payload)
+                stdin.flush()
+            except (OSError, ValueError):
+                pass
+            finally:
+                try:
+                    stdin.close()
+                except (OSError, ValueError):
+                    pass
+
+        thread = threading.Thread(target=_write, daemon=True)
+        thread.start()
+        return thread
 
     def _bwrap_enabled(self) -> bool:
         """bwrap leaf sandboxing is unconditionally MANDATORY (Phase-2; Linux+bwrap
@@ -3750,8 +3805,7 @@ class Conductor:
         # _ensure_codex_feature_cache). Memoized; no-op for claude.
         self._ensure_codex_feature_cache(entry)
         argv = self.leaf_command(
-            prompt_text, entry,
-            session_id=session_id, resume_session_id=resume_session_id, pure=pure)
+            entry, session_id=session_id, resume_session_id=resume_session_id, pure=pure)
         # Wrap the leaf in the bwrap sandbox that record-launch already built (repo
         # read-only; writes confined to the child's write_roots + workspace/tmp).
         # record-launch records sandbox_enforced=True for every backend, so applying it
@@ -3789,6 +3843,7 @@ class Conductor:
                 # `"resume" in argv` scan can be satisfied by leaf-controlled text.
                 return self._spawn_codex_json_leaf(
                     argv, child_env, child_arid, entry=entry,
+                    prompt_text=prompt_text,
                     resume=bool(resume_session_id),
                     timeout_context=timeout_context)
             # A raw Popen, not `subprocess.run(timeout=)`: on a timeout `run` calls `kill()`,
@@ -3801,6 +3856,9 @@ class Conductor:
             # and is left to the same fate the interrupt path already leaves it to.)
             process = subprocess.Popen(
                 argv, cwd=self.repo_root, env=child_env,
+                # The prompt rides stdin, not argv (see `leaf_command`). `claude -p` with
+                # no prompt argument reads it from here.
+                stdin=subprocess.PIPE,
                 # BINARY pipes, drained by this function's own reader threads: see
                 # `LEAF_STREAM_READ_BLOCK_BYTES`. The decode is lenient there for the same
                 # reason it always was here — a SIGKILL that truncates a multi-byte character
@@ -3825,6 +3883,7 @@ class Conductor:
                     f"cannot launch sandboxed leaf — executable not found "
                     f"(bwrap missing on this host?): {exc}") from exc
             raise
+        self._feed_prompt_stdin(process, prompt_text)
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
         # be armed: a deterministic substep never reaches spawn_leaf, the usage-reset wait happens
         # BETWEEN launches, and the `/usage` probe carries its own timeout.
@@ -4085,7 +4144,8 @@ class Conductor:
 
     def _spawn_codex_json_leaf(
         self, argv: list[str], child_env: dict[str, str], child_arid: str | None,
-        *, entry: ResolvedLeafEntry | None = None, resume: bool = False,
+        *, entry: ResolvedLeafEntry | None = None, prompt_text: str = "",
+        resume: bool = False,
         timeout_context: dict[str, str] | None = None,
     ) -> ProcResult:
         entry = entry if entry is not None else self.entry_for(None, None)
@@ -4095,6 +4155,9 @@ class Conductor:
         # final response, but its thread is intentionally not indexed.
         process = subprocess.Popen(
             argv, cwd=self.repo_root, env=child_env,
+            # The prompt rides stdin, not argv (see `leaf_command`): argv ends with the `-`
+            # sentinel that tells `codex exec` to read the instructions from here.
+            stdin=subprocess.PIPE,
             # BINARY pipes: the readers below take fixed-size blocks off the raw fd and do
             # their own incremental decode (see `_iter_stream_blocks`), because a text-mode
             # stream can only be read a line at a time and a line is not a bound on anything.
@@ -4107,6 +4170,7 @@ class Conductor:
         )
         assert process.stdout is not None
         assert process.stderr is not None
+        self._feed_prompt_stdin(process, prompt_text)
         # Set when the conductor gives up on the streams: the reader threads survive the call
         # (see the abandon path below), and this is what stops them appending — and reading —
         # once nobody is listening.

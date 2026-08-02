@@ -277,13 +277,20 @@ class _FakeCompletedProcess:
 # command the CLI actually rejects. `--dangerously-bypass-approvals-and-sandbox` is
 # carried in both because the real helps carry it: it is the one live string that most
 # nearly collides with a `--sandbox` substring match, so the fixtures must exercise it.
+# The prompt sentence is carried verbatim from each real help, because the leaf prompt
+# travels on stdin (a single argv element is capped at 128 KiB) and `codex_prompt_stdin`
+# certifies that support by substring. The two subcommands word it differently, and only
+# `resume` documents the bare `-` form, so the fixtures must not share one sentence.
 _CODEX_EXEC_HELP = (
     "--model --json --output-schema --sandbox --ignore-rules --config "
-    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
+    "Initial instructions for the agent. If not provided as an argument (or if `-` is "
+    "used), instructions are read from stdin."
 )
 _CODEX_EXEC_RESUME_HELP = (
     "--model --json --output-schema --ignore-rules --config "
-    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox"
+    "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
+    "Prompt to send after resuming the session. If `-` is used, read from stdin."
 )
 
 
@@ -297,6 +304,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
+            {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
             {"name": "codex_hooks_enabled" if legacy_hooks else "hooks_enabled", "pass": True},
@@ -12885,6 +12893,7 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "codex_exec_output_schema", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
+            {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
         ],

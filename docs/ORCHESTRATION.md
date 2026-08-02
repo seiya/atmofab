@@ -91,7 +91,7 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 - The conductor is responsible only for the progress control of the whole workflow, and must not directly generate the phase-body artifacts (e.g. `spec.ir.yaml`, `diagnostics.json`).
 - As a substitute for workflow execution, a script that batch-automates the progress of multiple phases and artifact generation must not be newly generated or executed.
 - The `Build` step is a deterministic process that calls the MCP `compile_project` and requires no LLM inference. The `step agent` limits its responsibility to the MCP call and recording the result.
-- The conductor directly launches each substep of `Compile` / `Generate` / `Validate` as a leaf (`record-launch` + a `claude -p` / `codex exec` subprocess).
+- The conductor directly launches each substep of `Compile` / `Generate` / `Validate` as a leaf (`record-launch` + a `claude -p` / `codex exec` subprocess). The rendered launch prompt is delivered on the leaf's **stdin**, never as an argv element: a single argv element is capped at 128 KiB and a node's prompt exceeds it (`execve` fails with `E2BIG` before the model starts). `Conductor.leaf_command` therefore takes no prompt argument at all.
 
 ### capability / write_root
 - The changes to phase artifacts permitted to a child `agent` must be limited to under the `write_root` permitted by the capability token.

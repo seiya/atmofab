@@ -9898,7 +9898,7 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
     "codex_version_available", "codex_features_list_available", "hooks_enabled",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
     "sandbox_bwrap_exec", "codex_exec_json_streaming", "codex_exec_output_schema",
-    "codex_exec_pure_isolation_flags", "codex_exec_resume",
+    "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
     "codex_project_hooks_validated", "codex_project_hook_trust_bypass",
 })
 
@@ -15777,6 +15777,21 @@ def _probe_codex_backend(
             ),
             "detail": (resume_help_proc.stdout.strip() or resume_help_proc.stderr.strip()
                        or f"exit={resume_help_proc.returncode}"),
+        },
+        {
+            # The leaf prompt is NOT an argv element (a single one is capped at 128 KiB and
+            # a node's prompt exceeds it); `leaf_command` ends both codex argvs with the `-`
+            # stdin sentinel. A CLI that stopped honouring it would read the leaf's whole
+            # prompt as an empty instruction set and answer nothing, so the sentinel is
+            # certified like a flag — on BOTH subcommands, which document it separately.
+            "name": "codex_prompt_stdin",
+            "pass": (
+                exec_help_proc.returncode == 0
+                and resume_help_proc.returncode == 0
+                and "read from stdin" in exec_help_text
+                and "read from stdin" in resume_help_text
+            ),
+            "detail": exec_help_detail,
         },
         {
             "name": "codex_project_hook_trust_bypass",
