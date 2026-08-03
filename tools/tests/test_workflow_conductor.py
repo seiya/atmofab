@@ -11056,9 +11056,17 @@ class WriteMakefileTest(unittest.TestCase):
             for label, ir_text in cases:
                 ir_path.write_text(ir_text, encoding="utf-8")
                 conductor_authors = c._conductor_authors_makefile(refs)
-                # reconstruct the runtime's _resolved_makefile_host_authored verbatim
-                bs = (_impl_resolved_build_system(repo, refs.ir_ref) or "")
+                # Reconstruct the runtime's `_resolved_makefile_host_authored` VERBATIM
+                # (orchestration_runtime.record_launch): `.strip().lower()` on the
+                # build_system half, and the language half compared unstripped. An earlier
+                # version of this reconstruction omitted that normalization, which made the
+                # test agree with itself for `build_system: "   "` while the live pair
+                # diverged into the authored-by-nobody state — i.e. it could not detect the
+                # very divergence class it exists to guard.
+                _bs_resolved = _impl_resolved_build_system(repo, refs.ir_ref)
                 lang = _impl_resolved_language(repo, refs.ir_ref)
+                bs = (_bs_resolved or "").strip().lower() if isinstance(
+                    _bs_resolved, str) else ""
                 runtime_host_authored = (
                     (bs or "make") == "make"
                     and (lang or "fortran") == "fortran")

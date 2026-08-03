@@ -3708,9 +3708,17 @@ def _resolve_dependency_closure(
         versions has a coherent artifact chain — so we keep all of them, not
         just the highest, to avoid re-running a dependency that an older
         matching version already satisfies.
-      - `error`: None on success; else `{reason, detail}` for a cycle,
-        unresolvable dependency, version conflict, malformed/missing deps.yaml,
-        or catalog corruption (all fail-closed — no node is run).
+      - `error`: None on success; else `{reason, detail}` (all fail-closed — no
+        node is run). Resolution failures: a cycle, an unresolvable dependency, a
+        version conflict, malformed/missing deps.yaml, catalog corruption. This
+        function ALSO applies the two spec-input identity gates to every visited
+        spec — the target included, since it is on no edge — because a dependency
+        that is already ready is skipped before it ever reaches `resolve_node`:
+        `spec_id_too_long` (runner_renderer.MAX_SPEC_ID_LEN) and
+        `infra_dep_count_invalid` (exactly one `infrastructure` direct dep on a
+        non-infrastructure spec). An unconfirmable `spec_kind` is reported as
+        `spec_catalog_corrupt` rather than as a dep-count violation — see
+        `_kind_for_gate`.
 
     Edges come from `<spec_ref>/deps.yaml` resolved against `spec_catalog.yaml`
     via the canonical runtime helpers (`_parse_dep_entries`,

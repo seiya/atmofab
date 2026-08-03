@@ -11172,7 +11172,7 @@ def _validate_toolchain_backend_supported(
                 f"{derived_path}: impl_defaults.toolchain.{key} must be a plain non-empty "
                 f"string token; found {value!r}. The conductor reads the PARSED value while "
                 f"record_launch decides src/Makefile authorship by LINE-SCANNING this file, "
-                f"and for a value that is not a plain token the two reach different answers: "
+                f"and for a value that is not a plain token the two CAN reach different answers: "
                 f"measured, `language: null` (likewise `~` / `no` / `off` / `0` / `[]`) "
                 f"leaves src/Makefile double-owned, while `build_system: 5` or "
                 f"`build_system: \"   \"` leaves it authored by nobody. The bare `{key}:` and "
@@ -11215,10 +11215,15 @@ def _validate_toolchain_backend_supported(
              "the only implemented physical backend is (make, fortran) — the host-authored "
              "src/Makefile and src/<spec_id>_runner.f90 exist for make+fortran only, and "
              "the non-(make, fortran) node path has been removed")
+    def _declared(key: str, default: str) -> str:
+        # Report what the author wrote. An absent key is "absent (defaults to X)", never a
+        # value they never typed, and a present one is echoed verbatim rather than normalized.
+        return repr(tc[key]) if key in tc else f"absent (defaults to {default!r})"
+
     violations.append(
         f"{derived_path}: impl_defaults.toolchain declares "
-        f"(build_system={tc.get('build_system', 'make')!r}, "
-        f"language={tc.get('language', 'fortran')!r}); {scope} "
+        f"(build_system={_declared('build_system', 'make')}, "
+        f"language={_declared('language', 'fortran')}); {scope} "
         "(docs/workflow/phases/phase_01_compile.md). The controlled_spec is "
         "language-neutral, so nothing in it pins another toolchain: re-author "
         "impl_defaults.toolchain to build_system 'make'"
@@ -11949,7 +11954,11 @@ def _validate_infrastructure_generated_signatures(
         _fail_closed_if_infra("IR spec.ir.yaml is not a mapping")
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "infrastructure":
+    # `.strip()`-normalized like every other `meta.spec_kind` reader. Matching exactly here
+    # while the compile gates strip made them disagree: a padded value passed compile as an
+    # infrastructure node and then fail-closed HERE with "meta.spec_kind is not
+    # 'infrastructure'" — an accurate-sounding message about an IR compile had accepted.
+    if str(meta.get("spec_kind") or "").strip() != "infrastructure":
         _fail_closed_if_infra("IR meta.spec_kind is not 'infrastructure'")
         return
     # Past this point the IR confirms an infrastructure node, so a missing/unresolvable

@@ -14423,32 +14423,61 @@ class ChecksSourceGateTests(unittest.TestCase):
 
 
 class SpecKindNormalizationParityTests(unittest.TestCase):
-    """Every `meta.spec_kind` reader in the compile stage must spell the comparison the same
-    way. A gate that matches exactly while its neighbours strip does not fail loudly — it
-    SKIPS, so a padded value silently buys an exemption somewhere and no violation is raised
-    anywhere. That is how the infrastructure public-API gate lost the non-fortran-harness
-    rejection while the toolchain gate was exempting the same node."""
+    """Every `meta.spec_kind` comparison in this module must spell itself the same way:
+    `.strip()`, no case folding.
 
-    _READERS = (
-        "_ir_is_m3c_physics",
-        "_validate_harness_dependency_consistency",
-        "_validate_toolchain_backend_supported",
-        "_validate_infrastructure_public_api",
-        "_validate_component_public_api",
-        "_validate_component_generated_surface",
-    )
+    A gate that normalizes differently from its neighbours does not fail loudly — it SKIPS.
+    A padded or mis-cased value then buys an exemption from one gate while the gate that
+    would have caught the node treats it as a different kind, and NO violation is raised
+    anywhere. That is exactly how `spec_kind: "  infrastructure  "` once took the toolchain
+    gate's language exemption while the infrastructure public-API gate — the only enforcement
+    of the fortran-only language backend — skipped the node entirely.
 
-    def test_no_compile_stage_reader_compares_spec_kind_unnormalized(self) -> None:
-        import inspect
-        for name in self._READERS:
-            src = inspect.getsource(getattr(vps, name))
-            for line in src.splitlines():
-                if 'meta.get("spec_kind")' not in line:
-                    continue
-                self.assertIn(".strip()", line,
-                              f"{name}: `{line.strip()}` compares spec_kind without "
-                              "normalizing; a padded value would skip this gate while its "
-                              "siblings still apply, exempting a node nothing then checks")
+    The scan is over the module AST rather than a hand-listed set of functions: the failure
+    mode is a NEW reader that nobody remembers to add to the list, so a list cannot be the
+    check. Comparisons are found wherever they are written, in either quote style; a
+    `spec_kind` lookup that is not part of a comparison (building a message, say) is ignored.
+    """
+
+    @staticmethod
+    def _spec_kind_comparisons():
+        """(lineno, source_segment) for every Compare whose operands read `spec_kind`."""
+        import ast
+        source = Path(vps.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        def reads_spec_kind(node) -> bool:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and sub.value == "spec_kind":
+                    return True
+            return False
+
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare) and reads_spec_kind(node):
+                out.append((node.lineno, ast.get_source_segment(source, node) or ""))
+        return out
+
+    def test_the_scan_finds_the_readers_it_is_meant_to_guard(self) -> None:
+        # Guard against the guard going vacuous: if a refactor moves every comparison out of
+        # this shape, the parity test below would pass by examining nothing.
+        found = self._spec_kind_comparisons()
+        self.assertGreaterEqual(len(found), 6, found)
+
+    def test_every_spec_kind_comparison_strips_and_does_not_case_fold(self) -> None:
+        for lineno, segment in self._spec_kind_comparisons():
+            flat = " ".join(segment.split())
+            self.assertIn(
+                ".strip()", flat,
+                f"{vps.__file__}:{lineno}: `{flat}` compares spec_kind without normalizing; "
+                "a padded value would skip this gate while its siblings still apply, "
+                "exempting a node that nothing then checks")
+            self.assertNotIn(
+                ".lower()", flat,
+                f"{vps.__file__}:{lineno}: `{flat}` case-folds spec_kind; every other reader "
+                "(and the conductor's `_conductor_authors_runner`) compares case-sensitively, "
+                "so folding here would exempt a `spec_kind: Infrastructure` node that the "
+                "rest of the pipeline treats as a physics node")
 
 
 class ToolchainBackendGateTests(unittest.TestCase):
@@ -14586,6 +14615,15 @@ class ToolchainBackendGateTests(unittest.TestCase):
         msg = v[0]
         self.assertIn("impl_defaults.toolchain", msg)
         self.assertIn("(make, fortran)", msg)
+        # The message reports what the author WROTE. A present key is echoed verbatim (not
+        # normalized — `CMake` must not come back as `'cmake'`), and an absent key is named
+        # as absent rather than as a declaration nobody made.
+        self.assertIn("build_system='cmake'", msg)
+        absent_bs = self._run(toolchain={"language": "cpp"})[0]
+        self.assertIn("build_system=absent (defaults to 'make')", absent_bs)
+        self.assertNotIn("build_system='make'", absent_bs)
+        cased = self._run(toolchain={"build_system": "CMake", "language": "fortran"})[0]
+        self.assertIn("build_system='CMake'", cased)
         self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
         # An actionable remedy: the controlled_spec pins no toolchain, so a re-author fixes it.
         self.assertIn("re-author", msg)
@@ -14629,14 +14667,14 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 2, v)
         self.assertFalse(any("only implemented physical backend" in x for x in v), v)
 
-    def test_a_present_but_empty_value_fires_whatever_spelling_produced_it(self) -> None:
-        # The conductor coerces every falsy/non-string value to the default; record_launch
-        # line-scans the file and sees the literal token instead, so the two disagree about
-        # who authors src/Makefile. `null` is only one spelling of that shape — YAML 1.1
-        # resolves `no` / `off` to False, and `0` / `[]` / `""` land the same way — so the
-        # check is on the parsed SHAPE, not on the word "null".
-        # A truthy non-string (`language: 5`, `language: true`) belongs here too: the
-        # conductor stringifies it, so it is no more the token it looks like than `null` is.
+    def test_a_present_but_non_token_value_fires_whatever_spelling_produced_it(self) -> None:
+        # The check is on the parsed SHAPE — "a plain non-empty string" — never on a
+        # predicted consequence, because the consequence is not the same across the branch:
+        # a falsy value is coerced to the default by the conductor and read as a literal
+        # token by record_launch's line scan, while a truthy non-string is STRINGIFIED by
+        # the conductor and so is not the token it looks like either. `null` is one spelling
+        # among many: YAML 1.1 resolves `no` / `off` to False, and `0` / `[]` / `""` /
+        # `"   "` / `5` / `true` all land in the same branch.
         for key in ("build_system", "language"):
             for value in (None, False, 0, [], "", "   ", 5, True):
                 v = self._run(toolchain={key: value})
@@ -14701,6 +14739,20 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(self._run(toolchain=[]), [])
         self.assertEqual(self._run(toolchain=""), [])
         self.assertEqual(self._run(impl_defaults=[]), [])
+
+    def test_a_non_mapping_ir_is_another_gates_business(self) -> None:
+        # An IR that parses cleanly but is not a mapping (a top-level list) reaches the gate
+        # as a `list`. Without the isinstance guard, `.get` raises inside Compile.static —
+        # a conductor_error instead of the other gates' violation. The unparseable-YAML test
+        # below cannot cover this: it is caught one branch earlier by the YAMLError handler.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text("- a\n- b\n")
+            violations: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            self.assertEqual(violations, [])
 
     def test_missing_or_unparseable_ir_is_another_gates_business(self) -> None:
         with tempfile.TemporaryDirectory() as t:
