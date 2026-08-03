@@ -1084,7 +1084,17 @@ class InfraDepCountGateTest(unittest.TestCase):
         # The harness authors its own self-test runner, so it declares no harness of its own.
         for count in (0, 1, 5):
             self.assertIsNone(infra_dep_count_violation("infrastructure", count), count)
-        self.assertIsNone(infra_dep_count_violation("  Infrastructure  ", 0))
+        self.assertIsNone(infra_dep_count_violation("  infrastructure  ", 0))
+
+    def test_the_exemption_is_case_sensitive_like_every_downstream_reader(self) -> None:
+        # `_conductor_authors_runner` / `_pure_leaf_substep` /
+        # `_validate_toolchain_backend_supported` all compare the stripped value with no case
+        # folding. Lower-casing HERE would exempt `Infrastructure` at spec-input and then let
+        # all three treat it as a physics node — the removed leaf-authored-runner path, with
+        # no gate firing anywhere. It must fail closed instead.
+        for spelling in ("Infrastructure", "INFRASTRUCTURE", "infraStructure"):
+            self.assertIsNotNone(infra_dep_count_violation(spelling, 0), spelling)
+            self.assertIsNone(infra_dep_count_violation(spelling, 1), spelling)
 
     def test_message_names_the_rule_the_count_and_the_canonical_doc(self) -> None:
         msg = infra_dep_count_violation("component", 2)

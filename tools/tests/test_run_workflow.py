@@ -3754,6 +3754,87 @@ class DependencyClosureTests(unittest.TestCase):
         self.assertEqual(err["reason"], "infra_dep_count_invalid")
         self.assertIn("spec/component/b", err["detail"])
 
+    def test_a_dependencys_kind_comes_from_its_edge_not_a_second_lookup(self) -> None:
+        # The edge short-circuit is the structural half of the rule: a dependency's kind was
+        # already fixed by the catalog-validated edge that pulled it in. Pin it directly —
+        # a spec_id lookup would answer the same way for a REGISTERED dep, so only an edge
+        # whose spec dir does not match its registered spec_id can tell the two apart.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                # `b` lives in a directory whose basename is NOT its spec_id, so a
+                # `Path(spec_ref).name` lookup finds nothing and only the edge knows the kind.
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b_dir/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        components=[("b", ">=0.1.0")])
+            _write_deps(repo_root, "spec/component/b_dir", "infrastructure", "b",
+                        infrastructure=[])
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            # Without the edge short-circuit the self-declared `infrastructure` would exempt
+            # `b` and the closure would resolve.
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "infra_dep_count_invalid")
+            self.assertIn("spec/component/b_dir", err["detail"])
+
+    def test_an_unconfirmable_kind_reports_the_registry_not_the_dep_count(self) -> None:
+        # The verdict rests on the kind. When the catalog cannot confirm it, rejecting on the
+        # dep count sends the operator to edit deps.yaml during what is actually a registry
+        # problem — and the count may well be right for the node's true kind.
+        def run(catalog_text, extra_specs=()):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                (repo_root / "spec" / "registry").mkdir(parents=True)
+                if catalog_text is not None:
+                    (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
+                        catalog_text, encoding="utf-8")
+                _write_deps(repo_root, "spec/component/z", "component", "z",
+                            infrastructure=[])
+                for ref, kind, sid in extra_specs:
+                    _write_deps(repo_root, ref, kind, sid, infrastructure=[])
+                from tools.orchestration_runtime import _load_spec_catalog
+                _load_spec_catalog.cache_clear()
+                return run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/component/z")
+
+        # Corrupt registry: the reason names the registry, not the dependency count.
+        ordered, err = run("{ this is not a catalog\n")
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+        # Same spec_id registered under two kinds: spec_id must be unique repo-wide
+        # (docs/SPEC.md req. 4), and `resolve_node` returns the FIRST match without noticing
+        # the duplicate — so resolving it here by catalog order would make the two capture
+        # points disagree by luck of ordering.
+        dup = ("catalog_version: 0.2.0\nupdated_at: 2026-06-18\nspecs:\n"
+               "  - spec_kind: component\n    spec_id: z\n    spec_version: \"0.1.0\"\n"
+               "    deps_path: spec/component/z/deps.yaml\n"
+               "  - spec_kind: infrastructure\n    spec_id: z\n    spec_version: \"0.1.0\"\n"
+               "    deps_path: spec/component/z/deps.yaml\n")
+        ordered, err = run(dup)
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+        self.assertIn("multiple spec_kinds", err["detail"])
+        self.assertIn("docs/SPEC.md req. 4", err["detail"])
+
+    def test_an_unconfirmable_kind_still_honors_a_declared_exemption(self) -> None:
+        # The suppression above covers only the REJECTION half. A declared `infrastructure`
+        # leaf must still launch under a missing registry — the lazy-catalog property that
+        # predates this gate.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_deps(repo_root, "spec/infrastructure/h", "infrastructure", "h")
+            # Intentionally NO spec/registry/spec_catalog.yaml on disk.
+            from tools.orchestration_runtime import _load_spec_catalog
+            _load_spec_catalog.cache_clear()
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/infrastructure/h")
+            self.assertIsNone(err)
+            self.assertEqual(ordered, [])
+
     def test_a_registered_harness_target_is_exempt_without_a_declared_kind(self) -> None:
         # The mirror of the test above: the catalog must also be able to EXEMPT. A harness
         # deps.yaml that omits the (schema-less) `spec_kind` line must not be read as a

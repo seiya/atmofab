@@ -8372,8 +8372,10 @@ clean:
         entry = self.entry_for(phase, substep)
         # RUNTIME half of the pure-only rule. Config validation rejects an HTTP provider on an
         # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node's M3c shape:
-        # a harness self-test, a c/cpp/mixed node, or a physics node with no infra dep has no
-        # bundle representation for its runner and falls through to the shared agentic loop.
+        # the `infrastructure` harness self-test has no bundle representation for its runner
+        # and falls through to the shared agentic loop. (The other former non-M3c shapes — a
+        # c/cpp/mixed toolchain, a physics node without exactly one infra dep — are rejected
+        # upstream now, so a non-M3c IR reaching here is hand-crafted.)
         # An entry that cannot run that loop must fail here, not launch into it.
         if not entry.supports(CAP_AGENTIC) and not self._pure_leaf_substep(refs, phase, substep):
             detail = (

@@ -126,7 +126,15 @@ def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | Non
     quiet loss of the harness path rather than an error. That non-M3c physical path
     has been removed — the only live leaf-authored runner is an ``infrastructure``
     node's own self-test — so the degradation is now a hard rejection."""
-    kind = spec_kind.strip().lower() if isinstance(spec_kind, str) else ""
+    # `.strip()` and NOTHING else — the exemption must be spelled exactly as every
+    # downstream reader spells it. `_conductor_authors_runner`, `_pure_leaf_substep` and
+    # `_validate_toolchain_backend_supported` all compare `str(...).strip() ==
+    # "infrastructure"` with no case folding, so a `spec_kind: Infrastructure` that this
+    # gate lower-cased into an exemption would be treated as a PHYSICS node by all three —
+    # exempted here and then silently landed on the removed leaf-authored-runner path, with
+    # no gate firing anywhere. Being case-sensitive here makes that shape a spec-input
+    # rejection instead, which is the direction that fails closed.
+    kind = spec_kind.strip() if isinstance(spec_kind, str) else ""
     if kind == "infrastructure":
         return None
     if infra_dep_count == 1:

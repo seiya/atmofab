@@ -28331,13 +28331,17 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # exactly-one infrastructure dependency (spec-input) and the (make, fortran) toolchain
         # gate. A leaf that hits either needs the remedy in the doc it is pointed at, not just
         # in the violation string.
-        # Bumped 48400->49600 (review): the first draft of the two paragraphs above stated a
-        # FALSE rationale — that a non-(make, fortran) node used to hard-fail at the Build
-        # backstop. That backstop tests build_system only, so the (make, c/cpp/mixed) half
-        # passed it and silently lost host authorship instead; and the zero-infra-dep half has
-        # no render backstop at all. A leaf reading the short version would look for a failure
-        # in the wrong place. Stating each half separately is what the extra bytes buy.
-        "docs/workflow/phases/phase_01_compile.md": 49600,
+        # Bumped 48400->50400 (review rounds 1-2): the two new deterministic rules — exactly
+        # one infrastructure dep, and the (make, fortran) toolchain — needed their REMEDIES
+        # stated here, not just their existence, because this is the doc the compile leaf is
+        # pointed at when either fires. Round 1 removed a false rationale (the Build backstop
+        # tests build_system only, so the c/cpp/mixed half never reached it) and round 2 moved
+        # the rest of that archaeology into the gate's docstring, which no leaf force-reads.
+        # What remains and costs bytes is leaf-actionable: state both toolchain keys
+        # explicitly (V6 + the post_generate gates read `language`), and the three SHAPE
+        # rejections — non-mapping, explicit null, untrimmed — each of which exists because
+        # two host readers disagree about who authors src/Makefile.
+        "docs/workflow/phases/phase_01_compile.md": 50400,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

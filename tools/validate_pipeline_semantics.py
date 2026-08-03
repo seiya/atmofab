@@ -11033,31 +11033,55 @@ def _validate_toolchain_backend_supported(
     (``_conductor_authors_makefile``) and ``src/<spec_id>_runner.f90``
     (``_conductor_authors_runner``) — is make+fortran only, and the in-process build /
     execute path is likewise make-only (``_require_make_build_system``). A node whose IR
-    named another toolchain used to slip past every one of those predicates. The two halves
-    failed differently, and both late: a non-``make`` ``build_system`` reached the Build
-    stage's ``_require_make_build_system`` backstop (a hard fail, phases later, with no
-    repair route), while a non-``fortran`` ``language`` under ``make`` passed that backstop
-    — it tests ``build_system`` only — and merely lost host authorship of the runner and
-    Makefile, degrading to the removed leaf-authored-runner path with NO gate firing at
-    all.
+    named another toolchain used to slip past every one of those predicates, and the two
+    halves failed differently — both late, and neither with a message naming the toolchain:
+    a non-``make`` ``build_system`` reached the Build stage's ``_require_make_build_system``
+    backstop (a hard fail, phases later, with no repair route), while a non-``fortran``
+    ``language`` under ``make`` passed that backstop — it tests ``build_system`` only — and
+    lost host authorship of the runner and Makefile. On a node with a harness dependency the
+    language half was caught one gate earlier, by
+    ``_validate_harness_dependency_consistency``, but only INDIRECTLY: it fires because the
+    derived ``harness_<language>_<class>`` id no longer matches the declared dependency, so
+    it reads as a wrong-harness defect and its remedy points at ``dependency.direct_deps``.
 
-    Catching it here makes the defect cheap and REPAIRABLE: ``impl_defaults.toolchain`` is
-    authored content, so the violation routes (via ``classify_compile_static_failure`` →
-    ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm ``compile.generate`` re-author. The
-    Build backstop stays as defense-in-depth.
+    Naming the toolchain here makes the defect cheap, REPAIRABLE and correctly attributed:
+    ``impl_defaults.toolchain`` is authored content, so the violation routes (via
+    ``classify_compile_static_failure`` → ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm
+    ``compile.generate`` re-author. The Build backstop stays as defense-in-depth.
 
-    An ``infrastructure`` node is exempt (the harness is certified per ``(language,
-    hardware)`` target and owns its own build). Absent ``build_system`` / ``language``
-    default to make / fortran — the SAME defaults ``_conductor_authors_makefile`` and
-    ``_conductor_authors_runner`` apply — so an IR that omits the toolchain passes here
-    exactly as it is host-rendered in the conductor. The comparison mirrors the conductor's
-    byte-for-byte (``.lower()`` and nothing else): a value the conductor would NOT accept,
-    such as ``"make "``, must fail HERE as a repairable violation rather than pass a
-    more-forgiving gate and then silently miss host authorship. A missing / unparseable
-    ``spec.ir.yaml`` is another gate's responsibility, but a present-and-wrong-SHAPE
-    ``impl_defaults`` / ``toolchain`` (a string, a list) is this gate's: the conductor
-    keeps a truthy non-dict and raises ``AttributeError`` on it mid-Generate, so it is
-    rejected here as a compile violation instead."""
+    An ``infrastructure`` node is exempt from the (make, fortran) PAIR — the harness is
+    certified per ``(language, hardware)`` target and owns its own build — but not from the
+    SHAPE checks below, which are about readers disagreeing, not about which backend is
+    supported.
+
+    Absent ``build_system`` / ``language`` default to make / fortran, the SAME defaults
+    ``_conductor_authors_makefile`` and ``_conductor_authors_runner`` apply, so an IR that
+    omits the toolchain passes here exactly as it is host-rendered in the conductor. That
+    equivalence is why the defaults exist; it is NOT a licence to omit the keys, which V6
+    and ``docs/IMPL_PLAN_SPEC.md`` require and which ``post_generate`` gates read (an absent
+    ``language`` silently skips the fortran syntax-check evidence gate).
+
+    Three SHAPE checks close divergences between the host readers of these two keys:
+
+    - a truthy non-mapping ``toolchain`` (a string, a list) — the conductor's ``tc =
+      (impl.get("toolchain") or {})`` keeps it and raises ``AttributeError`` mid-Generate.
+      A truthy non-mapping ``impl_defaults`` does NOT crash the conductor (that read IS
+      isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
+      rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
+      sides identically and is left alone.
+    - an explicitly-null value (``build_system:`` with no value). The conductor coerces
+      ``None`` to the default and host-authors the Makefile, but ``record_launch``'s
+      line-scanning readers (``_impl_resolved_build_system`` / ``_impl_resolved_language``)
+      read the literal token ``'null'``, conclude the Makefile is NOT host-authored, and
+      inject the Makefile write-pin — handing the generate leaf write authority over a file
+      the host also authors. A double-owned ``src/Makefile`` is exactly what
+      ``_conductor_authors_makefile``'s single-source-of-truth contract exists to prevent.
+    - a value that is not equal to its stripped form (``"make "``). The conductor
+      lower-cases but does NOT strip, while the line scanner and the Build backstop DO — so
+      the same IR makes them disagree about who authors the Makefile. The pair comparison
+      below is therefore also ``.lower()``-only, mirroring the conductor byte-for-byte.
+
+    A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return
@@ -11068,16 +11092,16 @@ def _validate_toolchain_backend_supported(
     if not isinstance(ir, dict):
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if str(meta.get("spec_kind") or "").strip() == "infrastructure":
-        return
+    is_infrastructure = str(meta.get("spec_kind") or "").strip() == "infrastructure"
     raw_impl = ir.get("impl_defaults")
     if raw_impl and not isinstance(raw_impl, dict):
         violations.append(
             f"{derived_path}: impl_defaults must be a mapping (found "
-            f"{type(raw_impl).__name__}); the conductor reads "
-            "impl_defaults.toolchain off it and would fail mid-Generate "
-            "(docs/workflow/phases/phase_01_compile.md). Re-author impl_defaults as the "
-            "documented target/toolchain/selected/abstract mapping.")
+            f"{type(raw_impl).__name__}); every impl_defaults gate reads it through "
+            "`isinstance(..., dict)` and silently no-ops on any other shape, so the whole "
+            "section would go unchecked (docs/workflow/phases/phase_01_compile.md). "
+            "Re-author impl_defaults as the documented target/toolchain/selected/abstract "
+            "mapping.")
         return
     impl = raw_impl if isinstance(raw_impl, dict) else {}
     raw_tc = impl.get("toolchain")
@@ -11085,10 +11109,37 @@ def _validate_toolchain_backend_supported(
         violations.append(
             f"{derived_path}: impl_defaults.toolchain must be a mapping (found "
             f"{type(raw_tc).__name__}); the conductor reads `language` / `build_system` off "
-            "it and would fail mid-Generate (docs/workflow/phases/phase_01_compile.md). "
+            "it unguarded and would fail mid-Generate "
+            "(docs/workflow/phases/phase_01_compile.md). "
             "Re-author it as `{language: fortran, build_system: make, ...}`.")
         return
     tc = raw_tc if isinstance(raw_tc, dict) else {}
+    shape_bad = False
+    for key in ("build_system", "language"):
+        if key not in tc:
+            continue
+        value = tc[key]
+        if value is None:
+            shape_bad = True
+            violations.append(
+                f"{derived_path}: impl_defaults.toolchain.{key} is present but null. The "
+                "conductor reads that as the default and host-authors src/Makefile, while "
+                "record_launch's line-scanning reader sees the literal 'null', concludes "
+                "the Makefile is leaf-authored, and pins it into the generate leaf's write "
+                "set — leaving src/Makefile double-owned "
+                "(docs/workflow/phases/phase_01_compile.md). Give the key an explicit "
+                f"value ({'make' if key == 'build_system' else 'fortran'}) or remove it.")
+        elif isinstance(value, str) and value != value.strip():
+            shape_bad = True
+            violations.append(
+                f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
+                "leading or trailing whitespace. The conductor lower-cases but does not "
+                "strip, while the Build backstop and record_launch's reader do, so the "
+                "same IR makes them disagree about who authors src/Makefile "
+                "(docs/workflow/phases/phase_01_compile.md). Write the bare token "
+                f"({value.strip()!r}).")
+    if shape_bad or is_infrastructure:
+        return
     build_system = str(tc.get("build_system") or "make").lower()
     language = str(tc.get("language") or "fortran").lower()
     if (build_system, language) == ("make", "fortran"):
@@ -11101,8 +11152,10 @@ def _validate_toolchain_backend_supported(
         "node path has been removed (docs/workflow/phases/phase_01_compile.md). The "
         "controlled_spec is language-neutral, so nothing in it pins another toolchain: "
         "re-author impl_defaults.toolchain to build_system 'make' and language 'fortran' "
-        "(or omit the keys, which defaults to exactly that). Both values are compared "
-        "case-insensitively but NOT trimmed, exactly as the conductor reads them.")
+        "(both keys stated explicitly — V6 requires every fixed impl_defaults sub-key to "
+        "have a value, and the post_generate lint/syntax gates read `language`). The two "
+        "values are compared case-insensitively but NOT trimmed, exactly as the conductor "
+        "reads them.")
 
 
 def _validate_harness_render_preconditions(

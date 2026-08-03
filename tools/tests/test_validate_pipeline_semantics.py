@@ -14497,23 +14497,61 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertIn("re-author", msg)
         self.assertIn("language-neutral", msg)
 
-    def test_untrimmed_values_fire_because_the_conductor_does_not_trim(self) -> None:
+    def test_untrimmed_values_fire_because_the_host_readers_disagree_on_them(self) -> None:
         # `_conductor_authors_makefile` / `_conductor_authors_runner` lower-case but do NOT
-        # strip, so `"make "` is not `make` to them: the node would silently miss host
-        # authorship and take the removed leaf-authored path. (The Build backstop does strip,
-        # so it does not catch this either.) The gate must mirror the conductor exactly and
-        # turn the shape into a repairable violation.
-        for tc in ({"build_system": "make ", "language": "fortran"},
-                   {"build_system": "make", "language": " fortran"},
-                   {"build_system": "make ", "language": "fortran"}):
+        # strip, while the Build backstop and record_launch's line-scanning reader DO — so
+        # `"make "` makes them disagree about who authors src/Makefile. The gate turns the
+        # shape into a repairable violation naming the offending key.
+        for tc, key in (({"build_system": "make ", "language": "fortran"}, "build_system"),
+                        ({"build_system": "make", "language": " fortran"}, "language"),
+                        ({"build_system": "make\u00a0", "language": "fortran"}, "build_system")):
             v = self._run(toolchain=tc)
             self.assertEqual(len(v), 1, (tc, v))
-            self.assertIn("NOT trimmed", v[0])
+            self.assertIn(f"impl_defaults.toolchain.{key}", v[0])
+            self.assertIn("leading or trailing whitespace", v[0])
+        # Both keys padded -> one violation each, and the pair check does not also fire
+        # (its message would name a value nobody wrote).
+        v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
+        self.assertEqual(len(v), 2, v)
+        self.assertFalse(any("only implemented physical backend" in x for x in v), v)
+
+    def test_explicit_null_fires_because_it_double_owns_the_makefile(self) -> None:
+        # The conductor coerces None to the default and host-authors src/Makefile, but
+        # record_launch's line-scanning reader sees the literal 'null', concludes the
+        # Makefile is leaf-authored, and pins it into the leaf's write set. The file would be
+        # owned twice. An ABSENT key is a different thing and stays legal here.
+        for key in ("build_system", "language"):
+            v = self._run(toolchain={key: None})
+            self.assertEqual(len(v), 1, (key, v))
+            self.assertIn(f"impl_defaults.toolchain.{key} is present but null", v[0])
+            self.assertIn("double-owned", v[0])
+        self.assertEqual(self._run(toolchain={}), [])
+
+    def test_shape_checks_apply_to_an_infrastructure_node_too(self) -> None:
+        # The harness is exempt from the (make, fortran) PAIR — it is certified per
+        # (language, hardware) target — but not from the shape checks, which are about the
+        # host readers disagreeing with each other, not about which backend is supported.
+        # `_conductor_authors_makefile` does not exempt infrastructure either, so a padded
+        # value there suppresses the Makefile pin while nobody authors the file.
+        v = self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "make ", "language": "fortran"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("leading or trailing whitespace", v[0])
+        v = self._run(spec_kind="infrastructure", toolchain={"language": None})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("present but null", v[0])
+        # ...and the pair check still does not fire for it.
+        self.assertEqual(
+            self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "cmake", "language": "c"}), [])
 
     def test_non_mapping_impl_defaults_or_toolchain_fires(self) -> None:
-        # The conductor keeps a truthy non-dict (`impl.get("toolchain") or {}`) and raises
-        # AttributeError on it mid-Generate — a conductor_error, not a repairable Compile
-        # violation. Reject the shape here instead.
+        # A truthy non-dict `toolchain` reaches the conductor's unguarded
+        # `impl.get("toolchain") or {}` and raises AttributeError mid-Generate — a
+        # conductor_error, not a repairable Compile violation. A truthy non-dict
+        # `impl_defaults` does NOT crash (that read IS isinstance-guarded) but silently
+        # disables every impl_defaults gate. Both are rejected here; a FALSY non-dict is
+        # coerced to {} identically by both sides and stays legal.
         for bad in ("make", ["make"], 7):
             v = self._run(toolchain=bad)
             self.assertEqual(len(v), 1, (bad, v))

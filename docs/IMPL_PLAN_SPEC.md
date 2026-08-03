@@ -42,7 +42,7 @@ Rules:
 - `target.class` other than `cpu` / `gpu` does not change the `toolchain` rule above; it affects only the `target` / `abstract` completion.
 - When `toolchain.language` / `toolchain.standard` / `toolchain.build_system` are undefined in `impl_defaults`, it is a `fail` in `Compile.verify`.
 - When `target.architecture` is undefined, it is a `fail` in `Compile.verify`.
-- `toolchain.build_system` is `make`. It is also the value an absent key defaults to, in both the conductor and the `Compile.static` gate.
+- `toolchain.build_system` is `make`. It is also the value an absent key defaults to, in both the conductor and the `Compile.static` gate — but the key is still **stated explicitly**, per the `Compile.verify` `fail` rule above and V6 (`docs/workflow/phases/phase_01_compile.md`); the shared default exists so that the gate and the conductor read the same IR the same way, not so the key may be omitted. The same holds for `toolchain.language` (`fortran`), which the `post_generate` lint and syntax-evidence gates also read.
 
 ## 3. Optional items (environment-dependent)
 - `toolchain.compiler` / `toolchain.linker` are **optional**.
