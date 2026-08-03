@@ -4906,7 +4906,9 @@ class Conductor:
         Model B), so the conductor
         authors it too and the generate leaf must not. Single source of truth for the live
         author call AND the write-authorization removal, so they cannot disagree (which would
-        orphan the Makefile, or leave it double-owned). c/cpp/mixed keep LLM authoring."""
+        orphan the Makefile, or leave it double-owned). A node that is not make+fortran keeps LLM
+        authoring — which since the toolchain gate landed means only an `infrastructure` node
+        on a future non-fortran language, every physics node being rejected at compile."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
@@ -10777,7 +10779,12 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
             spec_path = str(Path(entry["controlled_spec_path"]).parent)
             _infra_count = _direct_infra_dep_count(repo_root, spec_path)
             if _infra_count is None:
-                if str(kind).strip().lower() != "infrastructure":
+                # `.strip()` and nothing else — the SAME spelling rule as
+                # `infra_dep_count_violation` (called below) and as every downstream reader.
+                # Lower-casing only here would exempt a `spec_kind: Infrastructure` node
+                # whose deps.yaml is unreadable, while the well-formed sibling shape is
+                # rejected: the broken input admitted and the correct one refused.
+                if str(kind).strip() != "infrastructure":
                     raise ValueError(
                         f"spec-input rejected: {spec_path}/deps.yaml is missing or its "
                         f"dependency schema is malformed, so the required exactly one "

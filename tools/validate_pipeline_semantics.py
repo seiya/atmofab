@@ -11049,10 +11049,12 @@ def _validate_toolchain_backend_supported(
     ``classify_compile_static_failure`` → ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm
     ``compile.generate`` re-author. The Build backstop stays as defense-in-depth.
 
-    An ``infrastructure`` node is exempt from the (make, fortran) PAIR — the harness is
-    certified per ``(language, hardware)`` target and owns its own build — but not from the
-    SHAPE checks below, which are about readers disagreeing, not about which backend is
-    supported.
+An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness is
+    certified per ``(language, hardware)`` target, so another language is a legitimate
+    future harness. It is NOT exempt from ``make`` — ``_require_make_build_system`` is
+    kind-agnostic, so a non-make harness would die at Build, late and unrepairable, which is
+    the failure class this gate exists to remove — nor from the SHAPE checks below, which
+    are about the host's readers disagreeing rather than about which backend is supported.
 
     Absent ``build_system`` / ``language`` default to make / fortran, the SAME defaults
     ``_conductor_authors_makefile`` and ``_conductor_authors_runner`` apply, so an IR that
@@ -11069,17 +11071,25 @@ def _validate_toolchain_backend_supported(
       isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
       rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
       sides identically and is left alone.
-    - an explicitly-null value (``build_system:`` with no value). The conductor coerces
-      ``None`` to the default and host-authors the Makefile, but ``record_launch``'s
-      line-scanning readers (``_impl_resolved_build_system`` / ``_impl_resolved_language``)
-      read the literal token ``'null'``, conclude the Makefile is NOT host-authored, and
-      inject the Makefile write-pin — handing the generate leaf write authority over a file
-      the host also authors. A double-owned ``src/Makefile`` is exactly what
-      ``_conductor_authors_makefile``'s single-source-of-truth contract exists to prevent.
-    - a value that is not equal to its stripped form (``"make "``). The conductor
-      lower-cases but does NOT strip, while the line scanner and the Build backstop DO — so
-      the same IR makes them disagree about who authors the Makefile. The pair comparison
-      below is therefore also ``.lower()``-only, mirroring the conductor byte-for-byte.
+    - a key present with a NULL value. ``language:`` (no value) and ``language: null`` are
+      the same ``None`` once the IR is parsed, but ``record_launch`` decides Makefile
+      authorship from line-scanning readers (``_impl_resolved_build_system`` /
+      ``_impl_resolved_language``) that read the file TEXTUALLY and do tell them apart.
+      Measured, ``language: null`` is the harmful spelling: the scanner returns the literal
+      ``'null'``, concludes the Makefile is leaf-authored, and injects the write-pin while
+      the conductor host-authors the file anyway — a DOUBLE-OWNED ``src/Makefile``, exactly
+      what ``_conductor_authors_makefile``'s single-source-of-truth contract exists to
+      prevent. (``build_system: null`` merely makes the two readers disagree silently; the
+      bare-key spellings agree.) Because the parsed IR cannot tell which spelling is on
+      disk, a null-valued key is rejected outright — give it a value or remove it. An
+      ABSENT key is a different thing and stays legal.
+    - a value that is not equal to its stripped form (``"make "``). The conductor compares
+      with ``.lower()`` and no ``.strip()``, so a padded value is not the token it looks
+      like and host authorship of the Makefile and the runner silently flips off. For
+      ``build_system`` it is worse: ``record_launch``'s reader DOES strip, so it concludes
+      the host authored the file and suppresses the leaf's write-pin — leaving
+      ``src/Makefile`` authored by NOBODY. The pair comparison below is likewise
+      ``.lower()``-only, mirroring the conductor byte-for-byte.
 
     A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
     derived_path = ir_dir / "spec.ir.yaml"
@@ -11122,38 +11132,51 @@ def _validate_toolchain_backend_supported(
         if value is None:
             shape_bad = True
             violations.append(
-                f"{derived_path}: impl_defaults.toolchain.{key} is present but null. The "
-                "conductor reads that as the default and host-authors src/Makefile, while "
-                "record_launch's line-scanning reader sees the literal 'null', concludes "
-                "the Makefile is leaf-authored, and pins it into the generate leaf's write "
-                "set — leaving src/Makefile double-owned "
-                "(docs/workflow/phases/phase_01_compile.md). Give the key an explicit "
-                f"value ({'make' if key == 'build_system' else 'fortran'}) or remove it.")
+                f"{derived_path}: impl_defaults.toolchain.{key} is present but null. Once "
+                "parsed, that is indistinguishable from the bare `{key}:` spelling — but "
+                "record_launch decides src/Makefile authorship from a LINE SCAN of this "
+                "file, which does tell them apart: `language: null` makes it read the "
+                "literal 'null', conclude the leaf authors the Makefile, and pin it into "
+                "the leaf's write set while the conductor host-authors it too, leaving the "
+                "file double-owned (docs/workflow/phases/phase_01_compile.md). Since the "
+                "parsed IR cannot tell which spelling is on disk, give the key an explicit "
+                f"value ({'make' if key == 'build_system' else 'fortran'}) or remove it "
+                "entirely — an absent key is legal and takes that same default.")
         elif isinstance(value, str) and value != value.strip():
             shape_bad = True
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
-                "leading or trailing whitespace. The conductor lower-cases but does not "
-                "strip, while the Build backstop and record_launch's reader do, so the "
-                "same IR makes them disagree about who authors src/Makefile "
+                "leading or trailing whitespace. The conductor compares this value with "
+                "`.lower()` and no `.strip()`, so it is not the token it looks like and "
+                "host authorship of src/Makefile and the runner silently flips off; for "
+                "build_system, record_launch's reader DOES strip, so it concludes the host "
+                "authored the file and suppresses the leaf's write-pin, leaving "
+                "src/Makefile authored by nobody "
                 "(docs/workflow/phases/phase_01_compile.md). Write the bare token "
                 f"({value.strip()!r}).")
-    if shape_bad or is_infrastructure:
+    if shape_bad:
         return
     build_system = str(tc.get("build_system") or "make").lower()
     language = str(tc.get("language") or "fortran").lower()
-    if (build_system, language) == ("make", "fortran"):
+    bad = build_system != "make" or (language != "fortran" and not is_infrastructure)
+    if not bad:
         return
+    scope = ("build_system must be 'make' on every node, an infrastructure node included: "
+             "the in-process build / execute path is make-only and kind-agnostic "
+             "(_require_make_build_system)"
+             if is_infrastructure else
+             "the only implemented physical backend is (make, fortran) — the host-authored "
+             "src/Makefile and src/<spec_id>_runner.f90 exist for make+fortran only, and "
+             "the non-(make, fortran) node path has been removed")
     violations.append(
         f"{derived_path}: impl_defaults.toolchain declares "
-        f"(build_system={build_system!r}, language={language!r}); the only implemented "
-        "physical backend is (make, fortran) — the host-authored src/Makefile and "
-        "src/<spec_id>_runner.f90 exist for make+fortran only, and the non-(make, fortran) "
-        "node path has been removed (docs/workflow/phases/phase_01_compile.md). The "
-        "controlled_spec is language-neutral, so nothing in it pins another toolchain: "
-        "re-author impl_defaults.toolchain to build_system 'make' and language 'fortran' "
-        "(both keys stated explicitly — V6 requires every fixed impl_defaults sub-key to "
-        "have a value, and the post_generate lint/syntax gates read `language`). The two "
+        f"(build_system={build_system!r}, language={language!r}); {scope} "
+        "(docs/workflow/phases/phase_01_compile.md). The controlled_spec is "
+        "language-neutral, so nothing in it pins another toolchain: re-author "
+        "impl_defaults.toolchain to build_system 'make'"
+        + ("" if is_infrastructure else " and language 'fortran'")
+        + " (keys stated explicitly — V6 requires every fixed impl_defaults sub-key to "
+        "have a value, and the post_generate lint/syntax gates read `language`). The "
         "values are compared case-insensitively but NOT trimmed, exactly as the conductor "
         "reads them.")
 

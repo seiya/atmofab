@@ -3785,17 +3785,14 @@ class DependencyClosureTests(unittest.TestCase):
         # The verdict rests on the kind. When the catalog cannot confirm it, rejecting on the
         # dep count sends the operator to edit deps.yaml during what is actually a registry
         # problem — and the count may well be right for the node's true kind.
-        def run(catalog_text, extra_specs=()):
+        def run(catalog_text, declared_kind="component"):
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
                 (repo_root / "spec" / "registry").mkdir(parents=True)
-                if catalog_text is not None:
-                    (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
-                        catalog_text, encoding="utf-8")
-                _write_deps(repo_root, "spec/component/z", "component", "z",
+                (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
+                    catalog_text, encoding="utf-8")
+                _write_deps(repo_root, "spec/component/z", declared_kind, "z",
                             infrastructure=[])
-                for ref, kind, sid in extra_specs:
-                    _write_deps(repo_root, ref, kind, sid, infrastructure=[])
                 from tools.orchestration_runtime import _load_spec_catalog
                 _load_spec_catalog.cache_clear()
                 return run_workflow._resolve_dependency_closure(
@@ -3819,21 +3816,35 @@ class DependencyClosureTests(unittest.TestCase):
         self.assertEqual(err["reason"], "spec_catalog_corrupt")
         self.assertIn("multiple spec_kinds", err["detail"])
         self.assertIn("docs/SPEC.md req. 4", err["detail"])
+        # Reported even when the declared kind WOULD have exempted the node. An exemption
+        # granted on an unresolvable kind is as unfounded as a rejection, and honoring it
+        # would let a spec self-declare `infrastructure` to skip the gate — after the whole
+        # closure has been billed, since resolve_node only refuses the target at the end.
+        ordered, err = run(dup, declared_kind="infrastructure")
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
 
-    def test_an_unconfirmable_kind_still_honors_a_declared_exemption(self) -> None:
-        # The suppression above covers only the REJECTION half. A declared `infrastructure`
-        # leaf must still launch under a missing registry — the lazy-catalog property that
-        # predates this gate.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            _write_deps(repo_root, "spec/infrastructure/h", "infrastructure", "h")
-            # Intentionally NO spec/registry/spec_catalog.yaml on disk.
-            from tools.orchestration_runtime import _load_spec_catalog
-            _load_spec_catalog.cache_clear()
-            ordered, err = run_workflow._resolve_dependency_closure(
-                repo_root, "spec/infrastructure/h")
-            self.assertIsNone(err)
-            self.assertEqual(ordered, [])
+    def test_an_unregistered_spec_is_judged_by_its_declared_kind(self) -> None:
+        # Registered under no kind at all is NOT the same as "the registry could not answer":
+        # the declared value decides, exemption included. That is safe because an
+        # unregistered spec_ref is refused by resolve_node (target) and by
+        # `_matching_dep_versions` (dependency edge) whatever it declares, so it can never
+        # reach a phase — and reporting a registry defect here would mislabel a plain
+        # unregistered-spec mistake.
+        for declared, expect_err in (("component", "infra_dep_count_invalid"),
+                                     ("infrastructure", None)):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _write_catalog(repo_root, [
+                    {"spec_kind": "component", "spec_id": "other", "spec_version": "0.1.0",
+                     "deps_path": "spec/component/other/deps.yaml"},
+                ])
+                _write_deps(repo_root, "spec/component/z", declared, "z", infrastructure=[])
+                from tools.orchestration_runtime import _load_spec_catalog
+                _load_spec_catalog.cache_clear()
+                _, err = run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/component/z")
+                self.assertEqual((err or {}).get("reason"), expect_err, declared)
 
     def test_a_registered_harness_target_is_exempt_without_a_declared_kind(self) -> None:
         # The mirror of the test above: the catalog must also be able to EXEMPT. A harness
@@ -4350,6 +4361,10 @@ class DependencyClosureTests(unittest.TestCase):
         # otherwise-launchable leaf --with-deps run. The harness is the only spec
         # kind that legitimately declares no dependency at all (every other kind
         # must declare its one `infrastructure` edge), so it is the leaf case.
+        # This also pins the surviving half of the infra-count gate's registry handling:
+        # with no catalog to confirm the kind, the DECLARED `infrastructure` may still grant
+        # the exemption (only a rejection resting on an unconfirmable kind is suppressed and
+        # re-reported as the registry defect).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _write_deps(repo_root, "spec/infrastructure/leaf", "infrastructure", "leaf")

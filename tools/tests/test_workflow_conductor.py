@@ -5292,6 +5292,30 @@ class NodeAllocationTest(unittest.TestCase):
             node_key, _ = wc.resolve_node(repo, "spec/x/n1")
             self.assertEqual(node_key, "infrastructure/n1@0.1.0")
 
+    def test_the_unreadable_deps_exemption_uses_the_same_spelling_rule(self) -> None:
+        # The two branches of the spec-input gate sit 12 lines apart and must agree on how
+        # `spec_kind` is spelled. `infra_dep_count_violation` is case-SENSITIVE (every
+        # downstream reader compares the stripped value without folding); if this branch
+        # lower-cased, a `spec_kind: Infrastructure` node would be REJECTED when its
+        # deps.yaml is well-formed and ADMITTED when it is unreadable — the broken input
+        # let through and the correct one refused, with the mis-cased node then invisible to
+        # every reader that decides host authorship.
+        for infra_entries, expect_raise in ((None, True), (0, True)):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind="Infrastructure",
+                                            infra_entries=infra_entries)
+                if expect_raise:
+                    with self.assertRaises(ValueError) as ctx:
+                        wc.resolve_node(repo, "spec/x/n1")
+                    self.assertIn("spec-input rejected", str(ctx.exception))
+        # The canonical lower-case spelling is exempt on both branches.
+        for infra_entries in (None, 0):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind="infrastructure",
+                                            infra_entries=infra_entries)
+                self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
+                                 "infrastructure/n1@0.1.0")
+
     def test_resolve_node_rejects_unreadable_deps_on_a_non_infra_node(self) -> None:
         # The exactly-one precondition cannot be PROVEN without a well-formed deps.yaml,
         # so absence fails closed rather than reading as "zero". An infrastructure node

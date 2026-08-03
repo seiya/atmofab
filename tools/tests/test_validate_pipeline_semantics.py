@@ -14480,11 +14480,21 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, (lang, v))
             self.assertIn(repr(lang), v[0])
 
-    def test_infrastructure_kind_is_exempt(self) -> None:
-        # The harness is certified per (language, hardware) target and owns its own build.
+    def test_infrastructure_kind_is_exempt_from_the_language_half_only(self) -> None:
+        # The harness is certified per (language, hardware) target, so another language is a
+        # legitimate future harness. `make` is NOT exempt: `_require_make_build_system` is
+        # kind-agnostic, so a non-make harness would die at Build — late and unrepairable,
+        # the failure class this gate exists to remove.
         self.assertEqual(
             self._run(spec_kind="infrastructure",
-                      toolchain={"build_system": "cmake", "language": "c"}), [])
+                      toolchain={"build_system": "make", "language": "c"}), [])
+        v = self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "cmake", "language": "fortran"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("build_system must be 'make' on every node", v[0])
+        self.assertIn("_require_make_build_system", v[0])
+        # ...and its remedy does not order the harness to become fortran.
+        self.assertNotIn("language 'fortran'", v[0])
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
         v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
@@ -14496,6 +14506,13 @@ class ToolchainBackendGateTests(unittest.TestCase):
         # An actionable remedy: the controlled_spec pins no toolchain, so a re-author fixes it.
         self.assertIn("re-author", msg)
         self.assertIn("language-neutral", msg)
+        # The remedy must NOT invite omitting the keys. It once did, which contradicted V6
+        # and silently skipped the post_generate Fortran syntax-evidence gate (an absent
+        # `language` makes it return without checking). Pin the corrected wording, or the
+        # next edit reintroduces the old one with every test still green.
+        self.assertIn("stated explicitly", msg)
+        self.assertIn("V6", msg)
+        self.assertNotIn("omit the keys", msg)
 
     def test_untrimmed_values_fire_because_the_host_readers_disagree_on_them(self) -> None:
         # `_conductor_authors_makefile` / `_conductor_authors_runner` lower-case but do NOT
@@ -14540,10 +14557,10 @@ class ToolchainBackendGateTests(unittest.TestCase):
         v = self._run(spec_kind="infrastructure", toolchain={"language": None})
         self.assertEqual(len(v), 1, v)
         self.assertIn("present but null", v[0])
-        # ...and the pair check still does not fire for it.
+        # ...and the language half still does not fire for it.
         self.assertEqual(
             self._run(spec_kind="infrastructure",
-                      toolchain={"build_system": "cmake", "language": "c"}), [])
+                      toolchain={"build_system": "make", "language": "c"}), [])
 
     def test_non_mapping_impl_defaults_or_toolchain_fires(self) -> None:
         # A truthy non-dict `toolchain` reaches the conductor's unguarded
@@ -14556,9 +14573,16 @@ class ToolchainBackendGateTests(unittest.TestCase):
             v = self._run(toolchain=bad)
             self.assertEqual(len(v), 1, (bad, v))
             self.assertIn("impl_defaults.toolchain must be a mapping", v[0])
+            self.assertIn("unguarded", v[0])
             v = self._run(impl_defaults=bad)
             self.assertEqual(len(v), 1, (bad, v))
             self.assertIn("impl_defaults must be a mapping", v[0])
+            # The reason must be the true one. `impl_defaults` is read through an
+            # isinstance guard everywhere, so the conductor does NOT crash on it — the
+            # harm is that every impl_defaults gate silently no-ops. Only a non-mapping
+            # `toolchain` crashes, and only that message may say so.
+            self.assertIn("silently no-ops", v[0])
+            self.assertNotIn("would fail mid-Generate", v[0])
         # Falsy non-dicts are the "absent" case and keep the make/fortran defaults.
         self.assertEqual(self._run(toolchain=[]), [])
         self.assertEqual(self._run(toolchain=""), [])

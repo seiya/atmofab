@@ -2241,8 +2241,13 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
         # is a sibling's model + checks — NOT the pre-M3c model + runner (injecting a
         # 600-line self-authored runner would be misleading prior art). Both files must be
         # present (a pre-M3c sibling without a checks.f90 is skipped, not partially injected).
-        # Mirror the conductor's `_conductor_authors_runner` predicate exactly (make ∧ fortran ∧
-        # non-infra ∧ one infra dep) so the exemplar shape matches what the leaf actually authors.
+        # Mirror the conductor's `_conductor_authors_runner` predicate (make ∧ fortran ∧
+        # non-infra ∧ one infra dep) so the exemplar shape matches what the leaf actually
+        # authors. Not byte-identical: this site normalizes with `.strip().lower()` where the
+        # conductor uses `.lower()` alone, so an untrimmed value would read as M3c here and
+        # not there. Unreachable in a live run — `_validate_toolchain_backend_supported`
+        # rejects an untrimmed toolchain value at compile — and the difference only picks a
+        # different exemplar, never a different authored artifact.
         build_system = (str(toolchain.get("build_system") or "make").strip().lower()
                         if isinstance(toolchain, dict) else "make")
         dep = ir_doc.get("dependency") if isinstance(ir_doc.get("dependency"), dict) else {}
