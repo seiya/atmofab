@@ -4184,17 +4184,18 @@ def _validate_generate_outputs_for_generation(
         src_dir, violations, build_system=_build_system, language=_language
     )
     # The cheap deterministic runner backstops (name / forbidden-output / json-serialization
-    # / snapshot-filename) run against every runner — leaf-authored (infra self-test / legacy)
-    # or host-rendered (M3c). (The two LLM-fabrication heuristics — constant-heavy diagnostics
-    # and non-physical case_path input — were removed in M3d: they were unreliable
-    # `problem/`-scoped guesses with a known false-positive history, and once the physics
-    # nodes host-render there is little leaf-authored physics-runner surface left for them to
-    # police. NOTE they are NOT a full no-op: the legacy leaf-authored-runner path stays live —
-    # the `infrastructure` harness self-test, any non-`(fortran, make)` node, and any node
-    # without an infra dep (the catalog currently holds no such physics node, since the
-    # advection_diffusion family opted into the harness, but nothing pins that). Removing the
-    # heuristics accepts that fabrication in those runners is caught by the LLM verify/judge +
-    # these deterministic backstops, not by the two deleted heuristics.)
+    # / snapshot-filename) run against every runner — leaf-authored (the `infrastructure`
+    # harness self-test) or host-rendered (M3c). (The two LLM-fabrication heuristics —
+    # constant-heavy diagnostics and non-physical case_path input — were removed in M3d: they
+    # were unreliable `problem/`-scoped guesses with a known false-positive history, and once
+    # the physics nodes host-render there is little leaf-authored physics-runner surface left
+    # for them to police. NOTE they are NOT a full no-op: the leaf-authored-runner path stays
+    # live for the harness self-test. What used to make it live for physics nodes too — a node
+    # without an infra dep, or a non-`(fortran, make)` toolchain — is now pinned shut: the
+    # infra-dep count is a spec-input rejection (`runner_renderer.infra_dep_count_violation`)
+    # and the toolchain is a compile.static violation (`_validate_toolchain_backend_supported`).
+    # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
+    # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
     runner_files = sorted(src_dir.glob("*_runner.f90"))
     _validate_runner_source_files(
         execution, runner_files, violations,
@@ -10113,6 +10114,7 @@ def _validate_compile_stage_impl(
     _validate_infrastructure_public_api(repo_root, ir_dir, violations)
     _validate_component_public_api(repo_root, ir_dir, violations)
     _validate_harness_dependency_consistency(repo_root, ir_dir, violations)
+    _validate_toolchain_backend_supported(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
     _validate_impl_defaults_knobs(repo_root, ir_dir, violations)
 
@@ -11021,6 +11023,60 @@ def _validate_harness_dependency_consistency(
             f"(language={language}, class={hw_class}): expected {expected!r}")
 
 
+def _validate_toolchain_backend_supported(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """Deterministic compile gate: the only implemented physical backend is
+    ``(build_system=make, language=fortran)``.
+
+    Everything the host authors for a physics node — ``src/Makefile``
+    (``_conductor_authors_makefile``) and ``src/<spec_id>_runner.f90``
+    (``_conductor_authors_runner``) — is make+fortran only, and the in-process build /
+    execute path is likewise make-only (``_require_make_build_system``). A node whose IR
+    named another toolchain used to slip past every one of those predicates and degrade to
+    the removed leaf-authored-runner path; the Build stage then hard-failed at the
+    ``_require_make_build_system`` backstop, phases later, with no repair route.
+
+    Catching it here makes the defect cheap and REPAIRABLE: ``impl_defaults.toolchain`` is
+    authored content, so the violation routes (via ``classify_compile_static_failure`` →
+    ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm ``compile.generate`` re-author. The
+    Build backstop stays as defense-in-depth.
+
+    An ``infrastructure`` node is exempt (the harness is certified per ``(language,
+    hardware)`` target and owns its own build). Absent ``build_system`` / ``language``
+    default to make / fortran — the SAME defaults ``_conductor_authors_makefile`` and
+    ``_conductor_authors_runner`` apply — so an IR that omits the toolchain passes here
+    exactly as it is host-rendered in the conductor. A missing / unparseable
+    ``spec.ir.yaml`` is another gate's responsibility."""
+    derived_path = ir_dir / "spec.ir.yaml"
+    if not derived_path.exists():
+        return
+    try:
+        ir = _read_yaml(derived_path)
+    except (json.JSONDecodeError, yaml.YAMLError):
+        return
+    if not isinstance(ir, dict):
+        return
+    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+    if str(meta.get("spec_kind") or "").strip() == "infrastructure":
+        return
+    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
+    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
+    build_system = str(tc.get("build_system") or "make").strip().lower()
+    language = str(tc.get("language") or "fortran").strip().lower()
+    if (build_system, language) == ("make", "fortran"):
+        return
+    violations.append(
+        f"{derived_path}: impl_defaults.toolchain declares "
+        f"(build_system={build_system!r}, language={language!r}); the only implemented "
+        "physical backend is (make, fortran) — the host-authored src/Makefile and "
+        "src/<spec_id>_runner.f90 exist for make+fortran only, and the non-(make, fortran) "
+        "node path has been removed (docs/workflow/phases/phase_01_compile.md). The "
+        "controlled_spec is language-neutral, so nothing in it pins another toolchain: "
+        "re-author impl_defaults.toolchain to build_system 'make' and language 'fortran' "
+        "(or omit the keys, which defaults to exactly that).")
+
+
 def _validate_harness_render_preconditions(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
@@ -11047,19 +11103,21 @@ def _validate_harness_render_preconditions(
     EXCLUDED (by ``ir_content_violations``, via ``RenderError.identity``): node-identity defects
     a re-author cannot repair — the spec_id / derived-name length and >1 infra dep. These are
     NOT hoisted here (routing an unrepairable defect to a warm-resume retry would only spin).
-    Neither identity defect can reach the render backstop from a live run. M3d bounds spec_id
-    length at SPEC-INPUT, before any phase runs: ``runner_renderer.spec_id_length_violation`` is
-    the canonical capture point, enforced unconditionally by ``resolve_node`` (workflow_conductor)
-    and mirrored over the whole closure by run_workflow's dependency visit — so a spec_id over 55
-    is an early, clear rejection rather than a late workflow-kill, and the derived
-    ``<spec_id>_runner``/``_checks``/``_model`` names (spec_id + 7) stay inside the f2008 63-char
-    limit. A node declaring >1 infrastructure dep is not M3c (``_conductor_authors_runner``
-    requires exactly one), so its runner is never host-rendered. The renderer keeps both as
-    defense-in-depth backstops. The catalog's former over-length offender (a 61-char
-    ``advection_diffusion`` profile node) has since been renamed, and no catalog ``spec_id``
-    now exceeds the bound — the gate stands as a guard on future additions.
+    Neither identity defect can reach the render backstop from a live run: BOTH are bounded at
+    SPEC-INPUT, before any phase runs, by ``runner_renderer.spec_id_length_violation`` and
+    ``runner_renderer.infra_dep_count_violation`` — enforced unconditionally by ``resolve_node``
+    (workflow_conductor) and mirrored over the whole closure by run_workflow's dependency visit.
+    So a spec_id over 55 is an early, clear rejection rather than a late workflow-kill (and the
+    derived ``<spec_id>_runner``/``_checks``/``_model`` names, spec_id + 7, stay inside the f2008
+    63-char limit), and a node declaring anything other than exactly one infrastructure dep never
+    starts at all. The renderer keeps both as defense-in-depth backstops. The catalog's former
+    over-length offender (a 61-char ``advection_diffusion`` profile node) has since been renamed,
+    and no catalog ``spec_id`` now exceeds the bound — the gate stands as a guard on future
+    additions.
 
-    No-op only when the node is not M3c (legacy leaf-authored runner)."""
+    No-op only when the node is not M3c — an ``infrastructure`` node (whose self-test runner is
+    leaf-authored), or a hand-crafted IR that names another toolchain, which its sibling gate
+    ``_validate_toolchain_backend_supported`` rejects in the same pass."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return

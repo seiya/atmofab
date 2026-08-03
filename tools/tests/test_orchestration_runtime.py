@@ -28326,7 +28326,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # axis (`backend_overrides.cpu_openmp` -> the literal `openmp`), which is where the live
         # 4-threads-measured-as-1 defect actually sits, plus the "closed table, not exhaustive"
         # correction. 47000 left 2 bytes of headroom, which is not a ceiling, it is a tripwire.
-        "docs/workflow/phases/phase_01_compile.md": 47600,
+        # Bumped 47600->48400: the non-M3c physical path was removed, which turned two silent
+        # degradations into stated rules the compile leaf must be able to read here — the
+        # exactly-one infrastructure dependency (spec-input) and the (make, fortran) toolchain
+        # gate. A leaf that hits either needs the remedy in the doc it is pointed at, not just
+        # in the violation string.
+        "docs/workflow/phases/phase_01_compile.md": 48400,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

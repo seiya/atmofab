@@ -7801,6 +7801,52 @@ end program shallow_water2d_runner
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
 
+    def test_validate_compile_stage_rejects_an_unsupported_toolchain(self) -> None:
+        # Wiring test: `_validate_toolchain_backend_supported` must fire THROUGH the full
+        # compile stage, not only when invoked directly. The minimal tree's impl_defaults
+        # default to make/fortran, so only the toolchain block is swapped here.
+        preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._plant_tests_md(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["x", "y"],
+                io_contract=self._io_contract_with_predicates(preds),
+                impl_resolved={
+                    "target": {"class": "cpu", "backend": "cpp", "architecture": "x86_64"},
+                    "toolchain": {"language": "cpp", "standard": "c++17",
+                                  "build_system": "cmake"},
+                    "selected": {"backend_key": "cpu/x86_64/cpp/cmake"},
+                    "abstract": {"parallelism": "none", "layout": "scalar_interfaces",
+                                 "fusion": "none"},
+                    "backend_overrides": [],
+                },
+                dependency_resolved={
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "direct_deps": [{"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0", "kind": "component", "operations": ["dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux"]}],
+                    "transitive_deps": [], "topo_level": 1,
+                    "all_nodes": [
+                        {"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
+                         "topo_level": 0},
+                        {"node_key": "problem/shallow_water2d@0.3.0", "topo_level": 1}]},
+            )
+            ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
+                       "/shallow-water2d_20260415_001/spec.ir.yaml")
+            doc = json.loads(ir_path.read_text())
+            doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}}]}
+            ir_path.write_text(json.dumps(doc))
+            v = validate_compile_stage(
+                repo_root, "workspace",
+                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
+            self.assertTrue(
+                any("only implemented physical backend is (make, fortran)" in x for x in v), v)
+
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
         gated (`_validate_ir_source_refs_tests`) and the test-id pins read the file through it."""
@@ -14373,6 +14419,94 @@ class ChecksSourceGateTests(unittest.TestCase):
         bad = _CHECKS_OK.replace(
             "    ok = .true.\n", "    ok = .true.\n    ! writes verdict.json\n")
         self.assertTrue(any("verdict.json" in v for v in self._run(bad)))
+
+
+class ToolchainBackendGateTests(unittest.TestCase):
+    """`_validate_toolchain_backend_supported` (compile stage): (make, fortran) is the only
+    implemented physical backend. A node naming another toolchain used to slip past every
+    host-authoring predicate and degrade to the removed leaf-authored-runner path, then
+    hard-fail phases later at the Build-stage `_require_make_build_system` backstop."""
+
+    def _run(self, *, spec_kind="component", toolchain: dict | None | str = "absent",
+             impl_defaults: dict | None | str = "default") -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            ir: dict = {"meta": {"spec_kind": spec_kind, "spec_id": "bx"}}
+            if impl_defaults != "default":
+                if impl_defaults is not None:
+                    ir["impl_defaults"] = impl_defaults
+            else:
+                impl: dict = {"target": {"class": "cpu"}}
+                if toolchain != "absent":
+                    impl["toolchain"] = toolchain
+                ir["impl_defaults"] = impl
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+            violations: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            return violations
+
+    def test_make_fortran_passes(self) -> None:
+        self.assertEqual(
+            self._run(toolchain={"build_system": "make", "language": "fortran"}), [])
+        # Case is normalized before comparison.
+        self.assertEqual(
+            self._run(toolchain={"build_system": "Make", "language": "Fortran"}), [])
+
+    def test_defaults_match_the_conductors_own(self) -> None:
+        # `_conductor_authors_makefile` / `_conductor_authors_runner` read an absent
+        # build_system as "make" and an absent language as "fortran". This gate must apply
+        # the SAME defaults, or an IR that omits the toolchain would be rejected here while
+        # the conductor host-renders it happily.
+        self.assertEqual(self._run(toolchain="absent"), [])
+        self.assertEqual(self._run(toolchain={}), [])
+        self.assertEqual(self._run(toolchain={"standard": "f2008"}), [])
+        self.assertEqual(self._run(toolchain={"build_system": "make"}), [])
+        self.assertEqual(self._run(toolchain={"language": "fortran"}), [])
+        self.assertEqual(self._run(impl_defaults=None), [])
+        self.assertEqual(self._run(impl_defaults={}), [])
+
+    def test_other_build_systems_fire(self) -> None:
+        for bs in ("cmake", "meson", "ninja"):
+            v = self._run(toolchain={"build_system": bs, "language": "fortran"})
+            self.assertEqual(len(v), 1, (bs, v))
+            self.assertIn(repr(bs), v[0])
+
+    def test_other_languages_fire(self) -> None:
+        for lang in ("c", "cpp", "mixed", "python"):
+            v = self._run(toolchain={"build_system": "make", "language": lang})
+            self.assertEqual(len(v), 1, (lang, v))
+            self.assertIn(repr(lang), v[0])
+
+    def test_infrastructure_kind_is_exempt(self) -> None:
+        # The harness is certified per (language, hardware) target and owns its own build.
+        self.assertEqual(
+            self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "cmake", "language": "c"}), [])
+
+    def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
+        v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
+        self.assertEqual(len(v), 1)
+        msg = v[0]
+        self.assertIn("impl_defaults.toolchain", msg)
+        self.assertIn("(make, fortran)", msg)
+        self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
+        # An actionable remedy: the controlled_spec pins no toolchain, so a re-author fixes it.
+        self.assertIn("re-author", msg)
+        self.assertIn("language-neutral", msg)
+
+    def test_missing_or_unparseable_ir_is_another_gates_business(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            violations: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            self.assertEqual(violations, [])
+            (ir_dir / "spec.ir.yaml").write_text("[not: a: mapping\n")
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            self.assertEqual(violations, [])
 
 
 class HarnessDependencyConsistencyTests(unittest.TestCase):
