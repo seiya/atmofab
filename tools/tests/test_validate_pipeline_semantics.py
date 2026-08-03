@@ -7768,7 +7768,8 @@ end program shallow_water2d_runner
         # Wiring test: a traversal case_id must be rejected THROUGH the full compile stage
         # (`_validate_case_ids` is called from `_validate_compile_stage_impl`), not only when the
         # gate is invoked directly. This is the non-M3c path — the minimal tree declares no
-        # infrastructure dep, so the M3c render precondition does not fire.
+        # infrastructure dep, so the M3c render precondition does not fire. (Spec-input rejects
+        # that shape upstream; the compile gates keep it covered for a hand-crafted IR.)
         preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
                   "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
         with tempfile.TemporaryDirectory() as tmp:
@@ -14537,6 +14538,8 @@ class HarnessDependencyConsistencyTests(unittest.TestCase):
         self.assertEqual(self._run(), [])
 
     def test_no_infra_dep_is_noop(self) -> None:
+        # Defense-in-depth only: spec-input rejects a non-infrastructure spec with zero infra
+        # deps, so a live run never reaches here with that shape.
         self.assertEqual(self._run(infra_ids=[]), [])
 
     def test_infra_node_is_noop(self) -> None:
@@ -14554,6 +14557,8 @@ class HarnessDependencyConsistencyTests(unittest.TestCase):
         self.assertTrue(any("expected 'harness_fortran_cpu'" in x for x in v), v)
 
     def test_two_infra_deps(self) -> None:
+        # Also rejected upstream at spec-input; this keeps the compile-side statement of the
+        # rule for a hand-crafted IR (defense-in-depth).
         v = self._run(infra_ids=["harness_fortran_cpu", "harness_other_cpu"])
         self.assertTrue(any("exactly one infrastructure" in x for x in v), v)
 
@@ -16330,7 +16335,8 @@ class CaseIdGrammarGateTests(unittest.TestCase):
     """`_validate_case_ids` (compile stage): a case_id becomes the per-case snapshot PATH
     (`raw/state_snapshots/<case_id>.json`) for EVERY node kind, so a `/` or `..` lets the run
     write outside its directory. Unlike the M3c render precondition, this gate applies to
-    non-M3c (leaf-authored-runner) nodes too — the wider surface the review found open."""
+    non-M3c nodes too (the infrastructure self-test, and any hand-crafted IR) — the wider
+    surface the review found open."""
 
     def _run(self, case_ids: list) -> list[str]:
         ir = {"case": {"test_case_set": [{"case_id": c} for c in case_ids]}}
@@ -16354,7 +16360,8 @@ class CaseIdGrammarGateTests(unittest.TestCase):
 
     def test_applies_without_any_infrastructure_dep(self) -> None:
         # The IR here has no `dependency` block at all (a non-M3c node), yet the gate fires —
-        # this is the gap `_validate_harness_render_preconditions` (M3c-only) left open.
+        # this is the gap `_validate_harness_render_preconditions` (M3c-only) left open. Such a
+        # shape is rejected upstream at spec-input now; the gate stays as defense-in-depth.
         self.assertEqual(len(self._run(["../escape"])), 1)
 
 

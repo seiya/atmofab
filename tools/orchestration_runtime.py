@@ -2238,7 +2238,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
             return None
         # R1/M3c-β: an M3c target (a physics node with exactly one infrastructure/harness
         # dependency) authors model + checks (its runner is host-rendered), so its exemplar
-        # is a sibling's model + checks — NOT the pre-M3c model + runner (injecting a legacy
+        # is a sibling's model + checks — NOT the pre-M3c model + runner (injecting a
         # 600-line self-authored runner would be misleading prior art). Both files must be
         # present (a pre-M3c sibling without a checks.f90 is skipped, not partially injected).
         # Mirror the conductor's `_conductor_authors_runner` predicate exactly (make ∧ fortran ∧
@@ -2251,7 +2251,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
                           and d["node_key"].split("/", 1)[0].strip() == "infrastructure")
                       or (isinstance(d, str) and d.split("/", 1)[0].strip() == "infrastructure")]
         target_is_m3c = (self_kind != "infrastructure" and build_system == "make"
-                         and len(infra_deps) == 1)
+                         and language == "fortran" and len(infra_deps) == 1)
 
         catalog = _catalog_family_index(repo_root)
         self_family = next(
@@ -3073,8 +3073,8 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "METDSL_HTTP_PREFLIGHT_SKIP_REACHABILITY
 # Consolidated runner-output contract. Read by Validate.judge (§1/§3 are what it
 # recomputes against the runner's emitted diagnostics.json / raw evidence) and by a
 # runner-authoring Generate leaf. M3d node-aware: an M3c PHYSICS generate leaf drops it
-# (it authors model+checks, host-rendered runner); a NON-M3c generate leaf (infra
-# self-test / legacy no-harness node) keeps it — its runner's spec cites §4. See
+# (it authors model+checks, host-rendered runner); a NON-M3c generate leaf (the
+# infrastructure self-test) keeps it — its runner's spec cites §4. See
 # leaf_contract_doc_refs.
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
@@ -11659,8 +11659,8 @@ def leaf_contract_doc_refs(step: str | None, *, is_m3c_physics: bool = False) ->
     elif step_norm == "validate":
         refs.append(RUNNER_OUTPUT_CONTRACT_REF)
     elif step_norm == "generate" and not is_m3c_physics:
-        # A runner-authoring generate leaf (infra self-test / legacy no-harness node)
-        # keeps the runner-output contract; an M3c physics leaf authors no runner.
+        # A runner-authoring generate leaf (the infrastructure self-test) keeps the
+        # runner-output contract; an M3c physics leaf authors no runner.
         refs.append(RUNNER_OUTPUT_CONTRACT_REF)
     if step_norm == "generate":
         refs.append(CHECKS_MODULE_CONTRACT_REF)

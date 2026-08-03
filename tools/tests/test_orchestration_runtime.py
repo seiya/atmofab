@@ -28056,7 +28056,7 @@ class LeafContractDocPolicyTests(unittest.TestCase):
             return build_skill_must_read_refs(payload)
 
         # A non-M3c generate leaf (no runner_host_authored flag) keeps the runner-output
-        # contract — it authors a runner (infra self-test / legacy node).
+        # contract — it authors a runner (the infrastructure self-test).
         gen = refs_for("generate", "generate")
         self.assertIn("docs/AGENT_CONTRACT.md", gen)
         self.assertIn("docs/workflow/CHECKS_MODULE_CONTRACT.md", gen)

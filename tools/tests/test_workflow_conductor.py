@@ -267,14 +267,16 @@ class BuildLaunchRequestTest(unittest.TestCase):
         # so it must NOT re-add RUNNER (a drift would leak it back in).
         self.assertNotIn(RUN, build_skill_must_read_refs(m3c))
 
-        legacy = wc.build_launch_request(
+        # A runner-authoring node — the `infrastructure` harness self-test — keeps the
+        # RUNNER contract in its must-read set.
+        leaf_authored = wc.build_launch_request(
             self._generate_refs(), step="generate", substep="generate",
             orchestration_id="o", orchestration_agent_run_id="p",
             child_agent_run_id="c", agent_model="m", workflow_mode="dev",
             runner_host_authored=False)
-        self.assertNotIn("runner_host_authored", legacy)  # non-M3c: not stamped
-        self.assertIn(RUN, legacy["skill_must_read_refs"])
-        self.assertIn(RUN, build_skill_must_read_refs(legacy))
+        self.assertNotIn("runner_host_authored", leaf_authored)  # non-M3c: not stamped
+        self.assertIn(RUN, leaf_authored["skill_must_read_refs"])
+        self.assertIn(RUN, build_skill_must_read_refs(leaf_authored))
 
 
 class ReuseResumeAndFindingsTest(unittest.TestCase):
@@ -11302,10 +11304,12 @@ class WriteRunnerTest(unittest.TestCase):
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
     def _write_consumer_ir(self, repo: Path, refs: wc.NodeRefs, *, infra=1,
-                           bare_string: bool = False) -> None:
+                           bare_string: bool = False, spec_kind: str | None = None) -> None:
         from tools.tests.test_runner_renderer import _boundary_ir
         import yaml as _yaml
         ir = _boundary_ir()
+        if spec_kind is not None:
+            ir.setdefault("meta", {})["spec_kind"] = spec_kind
         ids = ["harness_fortran_cpu"] * infra
         if infra == 2:
             ids = ["harness_fortran_cpu", "harness_other_cpu"]
@@ -11374,10 +11378,12 @@ class WriteRunnerTest(unittest.TestCase):
             c = self._conductor(repo)
             self._write_consumer_ir(repo, refs, infra=1)
             self.assertTrue(c._conductor_authors_runner(refs))
-            # zero infra deps -> legacy path (leaf-authored runner)
+            # Zero / two infra deps -> not M3c, so the conductor does not host-render. Neither
+            # count can reach here from a live run any more (spec-input rejects both), but the
+            # predicate must stay fail-safe for a hand-crafted IR: it declines to render rather
+            # than rendering glue against a harness it cannot identify.
             self._write_consumer_ir(repo, refs, infra=0)
             self.assertFalse(c._conductor_authors_runner(refs))
-            # two infra deps -> not M3c
             self._write_consumer_ir(repo, refs, infra=2)
             self.assertFalse(c._conductor_authors_runner(refs))
 
@@ -11688,11 +11694,14 @@ class WriteRunnerTest(unittest.TestCase):
             self.assertIn(
                 "$(DEP_OBJS) $(MODEL_OBJ) $(CHECKS_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN)", text)
 
-    def test_makefile_no_checks_rule_for_legacy_node(self) -> None:
+    def test_makefile_no_checks_rule_for_non_checks_node(self) -> None:
+        # The no-CHECKS Makefile shape is live for the `infrastructure` harness node: it authors
+        # its own self-test runner (no fixed-ABI `<spec_id>_checks` module) and declares no
+        # harness dependency of its own.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=0)  # legacy leaf, no harness dep
+            self._write_consumer_ir(repo, refs, infra=0, spec_kind="infrastructure")
             self._conductor(repo)._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
             self.assertNotIn("CHECKS_SRC", text)
@@ -11717,13 +11726,13 @@ class WriteRunnerTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", child_agent_run_id="c",
             agent_model="m", workflow_mode="prod", runner_host_authored=True)
         self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
-        # default (legacy) keeps the runner
-        legacy = wc.build_launch_request(
+        # Default (runner-authoring node — the infrastructure self-test) keeps the runner.
+        leaf_authored = wc.build_launch_request(
             refs, step="generate", substep="generate", orchestration_id="o",
             orchestration_agent_run_id="ORCH", child_agent_run_id="c",
             agent_model="m", workflow_mode="prod")
         self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90",
-                      legacy["allowed_output_paths"])
+                      leaf_authored["allowed_output_paths"])
 
     def test_phase_required_outputs_symmetry(self) -> None:
         refs = self._refs()
@@ -11731,8 +11740,9 @@ class WriteRunnerTest(unittest.TestCase):
                                         runner_host_authored=True)
         self.assertIn(f"{refs.source_dir()}/src/{self.SID}_checks.f90", m3c)
         self.assertNotIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", m3c)
-        legacy = wc.phase_required_outputs(refs, "generate")
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", legacy)
+        # Runner-authoring node (the infrastructure self-test) still requires the runner.
+        leaf_authored = wc.phase_required_outputs(refs, "generate")
+        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", leaf_authored)
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
@@ -11776,7 +11786,9 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
     def test_claude_non_m3c_is_agentic_residual(self) -> None:
         # (c) claude but non-M3c (0 or 2 infra deps): no bundle representation for the runner, so
-        # the node keeps the agentic leaf.
+        # the node keeps the agentic leaf. Spec-input rejects both counts on a live physics node,
+        # so this pins the fail-SAFE dispatch for a hand-crafted IR — the agentic loop, never a
+        # bundle producer asked to render glue against an unidentifiable harness.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12467,7 +12479,8 @@ class DeterministicBuildTest(unittest.TestCase):
                 self.assertEqual(d.reason, f"validate_execute_{category}")
 
     def test_snapshot_gap_on_leaf_authored_runner_still_routes_generate(self) -> None:
-        """A non-M3c node's runner IS leaf-authored, so the gap is a Generate defect."""
+        """A non-M3c node's runner IS leaf-authored, so the gap is a Generate defect. Live case:
+        the `infrastructure` harness self-test, whose runner the leaf writes."""
         import tempfile
         ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                    wc.SubstepOutcome("ex", "fail", [], 0)]

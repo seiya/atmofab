@@ -10979,9 +10979,9 @@ def _validate_harness_dependency_consistency(
     surfacing as a render / link failure, because the runner glue is host-rendered against
     exactly this harness.
 
-    No-op when the node declares NO infrastructure dependency (a pre-M3c legacy node keeps
-    its leaf-authored runner — the mass opt-in is M3d) or when the node is itself an
-    infrastructure node. Routes (via ``classify_compile_static_failure``) back to
+    No-op when the node is itself an infrastructure node, or when it declares NO infrastructure
+    dependency — a shape spec-input rejects on every non-infrastructure spec, so the no-op is
+    reachable only from a hand-crafted IR. Routes (via ``classify_compile_static_failure``) back to
     ``compile.generate`` to re-author ``dependency.direct_deps``."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():

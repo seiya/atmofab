@@ -4919,9 +4919,11 @@ class Conductor:
         dependency. On such a node the runner is glue over the certified harness plumbing + the
         leaf-authored `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness
         interface (`tools/runner_renderer.render_runner`) — the leaf authors model+checks, not
-        the runner. Nodes without an infra dep keep the leaf-authored runner (legacy path); an
-        `infrastructure` node authors its own self-test runner (not glue). Migration is per-node
-        (add the infra dep to deps.yaml + recompile), with no flag day. Single source of truth for
+        the runner. An `infrastructure` node authors its own self-test runner (not glue), and is
+        the only live leaf-authored-runner node: a physics node that is not make+fortran with
+        exactly one infra dep is rejected upstream (spec-input for the dep count,
+        `_validate_toolchain_backend_supported` for the toolchain), so the False branch here is a
+        fail-safe for a hand-crafted IR rather than a live path. Single source of truth for
         the live render call (`_write_runner`), the write-authorization swap (`build_launch_request`
         / `phase_required_outputs`), and the Makefile CHECKS rule, so they cannot disagree."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
@@ -4949,10 +4951,12 @@ class Conductor:
         `_conductor_authors_runner`) — the shape the CodegenBundle v1 producer can express (the leaf
         authors model+checks; the host renders the runner glue + the Makefile).
 
-        A non-M3c node (harness self-test, c/cpp/mixed, a physics node with no infra dep) has no
-        bundle representation for its runner, so those fall through to the shared AGENTIC leaf loop
-        in `run_substep`. That is a recorded RESIDUAL of the
-        migration scope, not a selectable executor: their invocation record still stamps
+        A non-M3c node has no bundle representation for its runner, so it falls through to the
+        shared AGENTIC leaf loop in `run_substep`. Live case: the `infrastructure` harness
+        self-test. The former non-M3c physics shapes (c/cpp/mixed, or no infra dep) no longer
+        reach a run — spec-input rejects the dep count and the compile.static toolchain gate
+        rejects the backend — so for a hand-crafted non-M3c IR this dispatch is a FAIL-SAFE to
+        the agentic loop, not a selectable executor: their invocation record still stamps
         `generate_executor=pure` (a provenance stamp), and they are not rejected on resume.
 
         Both generate LLM substeps go pure on an M3c Claude or Codex node: `(generate, generate)` (the
