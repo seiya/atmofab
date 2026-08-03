@@ -11646,9 +11646,10 @@ def leaf_contract_doc_refs(step: str | None, *, is_m3c_physics: bool = False) ->
     glue over the certified harness, so the contract binds nothing it writes). A
     NON-M3c generate leaf still authors a runner and KEEPS the contract: the
     `infrastructure` harness self-test (whose controlled_spec §3 cites §4 here for
-    numeric serialization) and a legacy no-harness `problem`/`component` node (which
-    hand-rolls its own JSON emission and needs the descriptor rules directly). This is
-    exactly "exclude from the physics-node must-read", node-aware.
+    numeric serialization), which hand-rolls its own JSON emission and needs the
+    descriptor rules directly — and is now the only such node, the non-M3c physics
+    shapes being rejected upstream. This is exactly "exclude from the physics-node
+    must-read", node-aware.
 
     Canonical: docs/design/leaf_must_read_restructure.md.
     """

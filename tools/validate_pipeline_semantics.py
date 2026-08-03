@@ -10997,7 +10997,7 @@ def _validate_harness_dependency_consistency(
         return
     infra = _infra_direct_dep_node_keys(ir)
     if not infra:
-        return  # no harness dependency declared -> legacy path, nothing to pin
+        return  # no harness dependency declared (spec-input rejects it) -> nothing to pin
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     target = impl.get("target") if isinstance(impl.get("target"), dict) else {}

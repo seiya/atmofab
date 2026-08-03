@@ -1456,6 +1456,12 @@ Unit suite green (1972).
 
 ## R1 / M3d — recovery: spec-input spec_id bound, heuristic deletion, node-aware runner-contract narrowing (IMPLEMENTED 2026-07-08)
 
+> **STATUS NOTE (2026-08-03).** The `legacy` / non-`M3c` PHYSICS path described below has since
+> been removed. A non-`infrastructure` spec that does not declare exactly one `infrastructure`
+> dependency is rejected at spec-input, and a node whose toolchain is not `(make, fortran)` is a
+> `Compile.static` violation. The only leaf-authored runner left is an `infrastructure` node's
+> self-test. The history below is left as written.
+
 Canonical plan: `~/.claude/plans/dapper-baking-thompson.md` (M3d). With the harness host-render path
 proven (M3c-β / billed E2E #3), M3d recovers the now-obsolete leaf-authored-runner scaffolding and
 adds the mass-opt-in prerequisite gate. Five parts:
@@ -2053,6 +2059,12 @@ string conflates absence and ambiguity and cannot distinguish them — but every
 in turn under `--with-deps`, where the precise `_spec_ref_candidates` check catches it.
 
 ### R3-core follow-up — the path-traversal case_id was gated only for M3c nodes (review round 6)
+
+> **STATUS NOTE (2026-08-03).** The `legacy` / non-`M3c` PHYSICS path described below has since
+> been removed. A non-`infrastructure` spec that does not declare exactly one `infrastructure`
+> dependency is rejected at spec-input, and a node whose toolchain is not `(make, fortran)` is a
+> `Compile.static` violation. The only leaf-authored runner left is an `infrastructure` node's
+> self-test. The history below is left as written.
 
 Bug (4) above put a case_id safe-token gate in `runner_renderer._case_ids`, but that runs only for M3c host-rendered
 nodes. A **non-M3c** physics node has a leaf-authored runner (contractually building `raw/state_snapshots/'//trim(

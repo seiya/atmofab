@@ -18,9 +18,9 @@
 > owns the ABI — keep it, this doc, and the distilled paragraph in step.
 >
 > **§5 (Fortran legality and gate guards) is the one section with a wider
-> scope**: it binds **every** `Generate` leaf that authors Fortran — including a
-> non-M3c node (an `infrastructure` harness self-test, a legacy node with no
-> harness dependency) that hand-authors its own `<spec_id>_runner.f90`. Sections
+> scope**: it binds **every** `Generate` leaf that authors Fortran — including the
+> non-M3c node kind (an `infrastructure` harness self-test) that hand-authors its
+> own `<spec_id>_runner.f90`. Sections
 > 1-4 (the checks-module ABI) apply to an M3c node only.
 
 The rendered runner is glue: it drives this module's callbacks and emits the
@@ -194,7 +194,8 @@ value (`found=.true.`), and `found=.false.` for the earlier cases.
 ## 5. Fortran legality and gate guards
 
 This section applies to every leaf-authored Fortran source of any `Generate` node
-(the model, this checks module, and a hand-authored runner on a non-M3c node).
+(the model, this checks module, and the hand-authored runner of an `infrastructure`
+node's self-test).
 
 - **`intent(out)` character dummies** must be fixed-length (`character(len=4)`)
   or a deferred-length allocatable (`character(len=:), allocatable`) — an

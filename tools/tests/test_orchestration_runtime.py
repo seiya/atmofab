@@ -28023,7 +28023,7 @@ class LeafContractDocPolicyTests(unittest.TestCase):
         RUN = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
         CHK = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
         self.assertEqual(leaf_contract_doc_refs("compile"), [AC, P1])
-        # M3d node-aware: a NON-M3c generate leaf (infra self-test / legacy no-harness
+        # M3d node-aware: a NON-M3c generate leaf (the infrastructure self-test
         # node) still authors a runner, so it KEEPS the runner-output contract + the
         # checks ABI. The default (no flag) is that safe superset.
         self.assertEqual(leaf_contract_doc_refs("generate"), [AC, RUN, CHK])
@@ -28169,7 +28169,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # runner (orch_20260629T065607Z_011f8fc6).
         # Bumped 8500->9200: R1/M3c-β scope note — on an M3c node the runner is host-rendered,
         # so this doc describes the rendered output + scopes its authoring rules to a
-        # leaf-authored runner (infra self-test / legacy no-harness node).
+        # leaf-authored runner (the infrastructure self-test).
         # Bumped 9200->9600: the metrics_basis entry shape (required_raw_variables as direct
         # sibling keys of test_id, never wrapped under `values`) plus a correct/wrong pair.
         # The rule lived only in gate code before, and a runner-authoring leaf that wrapped the
