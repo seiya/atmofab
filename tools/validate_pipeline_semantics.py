@@ -11033,9 +11033,13 @@ def _validate_toolchain_backend_supported(
     (``_conductor_authors_makefile``) and ``src/<spec_id>_runner.f90``
     (``_conductor_authors_runner``) — is make+fortran only, and the in-process build /
     execute path is likewise make-only (``_require_make_build_system``). A node whose IR
-    named another toolchain used to slip past every one of those predicates and degrade to
-    the removed leaf-authored-runner path; the Build stage then hard-failed at the
-    ``_require_make_build_system`` backstop, phases later, with no repair route.
+    named another toolchain used to slip past every one of those predicates. The two halves
+    failed differently, and both late: a non-``make`` ``build_system`` reached the Build
+    stage's ``_require_make_build_system`` backstop (a hard fail, phases later, with no
+    repair route), while a non-``fortran`` ``language`` under ``make`` passed that backstop
+    — it tests ``build_system`` only — and merely lost host authorship of the runner and
+    Makefile, degrading to the removed leaf-authored-runner path with NO gate firing at
+    all.
 
     Catching it here makes the defect cheap and REPAIRABLE: ``impl_defaults.toolchain`` is
     authored content, so the violation routes (via ``classify_compile_static_failure`` →
@@ -11046,8 +11050,14 @@ def _validate_toolchain_backend_supported(
     hardware)`` target and owns its own build). Absent ``build_system`` / ``language``
     default to make / fortran — the SAME defaults ``_conductor_authors_makefile`` and
     ``_conductor_authors_runner`` apply — so an IR that omits the toolchain passes here
-    exactly as it is host-rendered in the conductor. A missing / unparseable
-    ``spec.ir.yaml`` is another gate's responsibility."""
+    exactly as it is host-rendered in the conductor. The comparison mirrors the conductor's
+    byte-for-byte (``.lower()`` and nothing else): a value the conductor would NOT accept,
+    such as ``"make "``, must fail HERE as a repairable violation rather than pass a
+    more-forgiving gate and then silently miss host authorship. A missing / unparseable
+    ``spec.ir.yaml`` is another gate's responsibility, but a present-and-wrong-SHAPE
+    ``impl_defaults`` / ``toolchain`` (a string, a list) is this gate's: the conductor
+    keeps a truthy non-dict and raises ``AttributeError`` on it mid-Generate, so it is
+    rejected here as a compile violation instead."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return
@@ -11060,10 +11070,27 @@ def _validate_toolchain_backend_supported(
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     if str(meta.get("spec_kind") or "").strip() == "infrastructure":
         return
-    impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
-    tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    build_system = str(tc.get("build_system") or "make").strip().lower()
-    language = str(tc.get("language") or "fortran").strip().lower()
+    raw_impl = ir.get("impl_defaults")
+    if raw_impl and not isinstance(raw_impl, dict):
+        violations.append(
+            f"{derived_path}: impl_defaults must be a mapping (found "
+            f"{type(raw_impl).__name__}); the conductor reads "
+            "impl_defaults.toolchain off it and would fail mid-Generate "
+            "(docs/workflow/phases/phase_01_compile.md). Re-author impl_defaults as the "
+            "documented target/toolchain/selected/abstract mapping.")
+        return
+    impl = raw_impl if isinstance(raw_impl, dict) else {}
+    raw_tc = impl.get("toolchain")
+    if raw_tc and not isinstance(raw_tc, dict):
+        violations.append(
+            f"{derived_path}: impl_defaults.toolchain must be a mapping (found "
+            f"{type(raw_tc).__name__}); the conductor reads `language` / `build_system` off "
+            "it and would fail mid-Generate (docs/workflow/phases/phase_01_compile.md). "
+            "Re-author it as `{language: fortran, build_system: make, ...}`.")
+        return
+    tc = raw_tc if isinstance(raw_tc, dict) else {}
+    build_system = str(tc.get("build_system") or "make").lower()
+    language = str(tc.get("language") or "fortran").lower()
     if (build_system, language) == ("make", "fortran"):
         return
     violations.append(
@@ -11074,7 +11101,8 @@ def _validate_toolchain_backend_supported(
         "node path has been removed (docs/workflow/phases/phase_01_compile.md). The "
         "controlled_spec is language-neutral, so nothing in it pins another toolchain: "
         "re-author impl_defaults.toolchain to build_system 'make' and language 'fortran' "
-        "(or omit the keys, which defaults to exactly that).")
+        "(or omit the keys, which defaults to exactly that). Both values are compared "
+        "case-insensitively but NOT trimmed, exactly as the conductor reads them.")
 
 
 def _validate_harness_render_preconditions(
@@ -11103,14 +11131,16 @@ def _validate_harness_render_preconditions(
     EXCLUDED (by ``ir_content_violations``, via ``RenderError.identity``): node-identity defects
     a re-author cannot repair — the spec_id / derived-name length and >1 infra dep. These are
     NOT hoisted here (routing an unrepairable defect to a warm-resume retry would only spin).
-    Neither identity defect can reach the render backstop from a live run: BOTH are bounded at
+    Neither identity defect can reach the render backstop from a live run. BOTH are bounded at
     SPEC-INPUT, before any phase runs, by ``runner_renderer.spec_id_length_violation`` and
     ``runner_renderer.infra_dep_count_violation`` — enforced unconditionally by ``resolve_node``
     (workflow_conductor) and mirrored over the whole closure by run_workflow's dependency visit.
     So a spec_id over 55 is an early, clear rejection rather than a late workflow-kill (and the
     derived ``<spec_id>_runner``/``_checks``/``_model`` names, spec_id + 7, stay inside the f2008
     63-char limit), and a node declaring anything other than exactly one infrastructure dep never
-    starts at all. The renderer keeps both as defense-in-depth backstops. The catalog's former
+    starts at all. The renderer keeps the spec_id bound and the >1-infra case as defense-in-depth
+    backstops; the ZERO-infra case has no renderer backstop at all (with no infrastructure dep the
+    runner is never host-rendered), which is why spec-input is its only capture point. The catalog's former
     over-length offender (a 61-char ``advection_diffusion`` profile node) has since been renamed,
     and no catalog ``spec_id`` now exceeds the bound — the gate stands as a guard on future
     additions.

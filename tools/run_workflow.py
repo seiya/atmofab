@@ -3749,6 +3749,39 @@ def _resolve_dependency_closure(
     done: set[str] = set()
     error: dict[str, str] | None = None
 
+    def _kind_for_gate(spec_ref: str, deps_doc: dict) -> Any:
+        """The `spec_kind` the infra-dep-count gate judges `spec_ref` by.
+
+        Kind decides EXEMPTION (an `infrastructure` spec declares no harness of its own), so
+        it must not be self-declared: `deps.yaml`'s top-level `spec_kind` is carried by no
+        schema — `_parse_dep_entries` validates only the `dependencies` block — and a spec
+        that writes `spec_kind: infrastructure` there would exempt itself from the gate while
+        `resolve_node` (which reads the CATALOG) still rejects it, phases and billed
+        dependency runs later.
+
+        So the catalog is authoritative wherever it can answer. For a dependency that is
+        already true structurally — `kindid_by_ref` was set from the catalog-validated edge
+        that pulled it in, before the recursion. For the TARGET (on no edge yet) look the
+        spec_id up in the catalog directly. The `deps.yaml` value is used only when the
+        catalog cannot answer at all, which preserves the lazy-catalog property: a leaf
+        target must stay launchable under a missing / corrupt / silent registry, exactly as
+        before this gate existed.
+        """
+        edge_kind = (kindid_by_ref.get(spec_ref) or (None,))[0]
+        if edge_kind:
+            return edge_kind
+        spec_id = Path(spec_ref).name
+        try:
+            kinds = {k for (k, sid) in _get_catalog() if sid == spec_id}
+        except (SpecCatalogCorruption, RuntimeError, OSError):
+            kinds = set()
+        if len(kinds) == 1:
+            return next(iter(kinds))
+        # No catalog answer (missing/corrupt registry, unregistered spec, or the same
+        # spec_id registered under several kinds — which `resolve_node` would reject on its
+        # own terms). Fall back to the declared value rather than blocking the run here.
+        return deps_doc.get("spec_kind")
+
     def visit(spec_ref: str) -> None:
         nonlocal error
         if error is not None or spec_ref in done:
@@ -3789,13 +3822,10 @@ def _resolve_dependency_closure(
         # non-infrastructure spec declares EXACTLY ONE `infrastructure` (runner-harness)
         # dependency. `resolve_node` gates each node's own run, but an ALREADY-READY
         # dependency is skipped before it reaches `_run_node` → resolve_node, so gating only
-        # there could let a violating ready dep slip past. The target's own kind comes from
-        # its deps.yaml `spec_kind` (a target is not on any edge yet, and reading it here
-        # preserves the lazy-catalog property for a leaf `infrastructure` target); a
-        # dependency's kind comes from the catalog-validated edge that pulled it in.
+        # there could let a violating ready dep slip past.
         # A missing/malformed deps.yaml keeps its existing reason (both checks above run
         # first), so this check only ever sees a readable, well-formed dependency schema.
-        own_kind = (kindid_by_ref.get(spec_ref) or (None,))[0] or deps_doc.get("spec_kind")
+        own_kind = _kind_for_gate(spec_ref, deps_doc)
         infra_count = sum(1 for kind, _sid, _c in entries if kind == "infrastructure")
         _infra_violation = infra_dep_count_violation(own_kind, infra_count)
         if _infra_violation:

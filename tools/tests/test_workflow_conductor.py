@@ -5301,7 +5301,12 @@ class NodeAllocationTest(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 wc.resolve_node(repo, "spec/x/n1")
             self.assertIn("spec-input rejected", str(ctx.exception))
-            self.assertIn("deps.yaml", str(ctx.exception))
+            # Pin the ABSENCE branch specifically: "deps.yaml" alone also appears in the
+            # count message ("...dependency in deps.yaml; found 0"), so asserting only that
+            # cannot tell "unprovable" from "proved zero" — and reading absence as zero is
+            # exactly the fail-open this branch exists to prevent.
+            self.assertIn("is missing or its dependency schema is malformed",
+                          str(ctx.exception))
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
             (repo / "spec" / "x" / "n1" / "deps.yaml").write_text(

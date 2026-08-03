@@ -28331,7 +28331,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # exactly-one infrastructure dependency (spec-input) and the (make, fortran) toolchain
         # gate. A leaf that hits either needs the remedy in the doc it is pointed at, not just
         # in the violation string.
-        "docs/workflow/phases/phase_01_compile.md": 48400,
+        # Bumped 48400->49600 (review): the first draft of the two paragraphs above stated a
+        # FALSE rationale — that a non-(make, fortran) node used to hard-fail at the Build
+        # backstop. That backstop tests build_system only, so the (make, c/cpp/mixed) half
+        # passed it and silently lost host authorship instead; and the zero-infra-dep half has
+        # no render backstop at all. A leaf reading the short version would look for a failure
+        # in the wrong place. Stating each half separately is what the extra bytes buy.
+        "docs/workflow/phases/phase_01_compile.md": 49600,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28406,7 +28412,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # canonical names" would leave the leaf to guess which of its five habits is canonical.
         # Bumped 26300->26700 (review): same two additions as phase_01 — the `cpu_openmp`
         # section-name alias and the case-insensitive matching note. The IR author is gated on both.
-        "skills/workflow-compile-generate/SKILL.md": 26700,
+        # Bumped 26700->26800: the two toolchain bullets were replaced by one that states the
+        # (make, fortran)-only rule the Compile.static gate enforces. They previously told this
+        # leaf to adopt `cuda_fortran` on a gpu node and to pick freely from
+        # make/cmake/meson/ninja — i.e. to author an IR its own phase now rejects, which a warm
+        # re-author would reproduce verbatim. The forbidden spellings are named explicitly for
+        # the same reason the knob-alias table is: an unnamed alias is one the leaf re-derives.
+        "skills/workflow-compile-generate/SKILL.md": 26800,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity

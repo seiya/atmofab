@@ -7,7 +7,10 @@
 > spec (`spec/component/demo/dep_chain/{demo_dep_base,demo_dep_top}`) is also authored. The
 > ONLY outstanding item is the **billed E2E run**
 > (`run_workflow.py spec/component/demo/dep_chain/demo_dep_top validate --llm claude --with-deps`
-> to `meta=pass` + `aggregate_verdict=pass`). The "前提（完了済み）" / main-task wording below
+> to `meta=pass` + `aggregate_verdict=pass`). **STATUS NOTE (2026-08-03): that 2-node spec was
+> deleted** — it declared no `infrastructure` dependency, a shape now rejected at spec-input —
+> so the command above no longer resolves; a dependency-closure run is exercised by the shipped
+> `problem` specs instead. The "前提（完了済み）" / main-task wording below
 > predates that and is kept only for historical context — defer to the
 > "Part 2 — dependency nodes" / "D1 (PRIMARY)" status in `docs/design/deterministic_followups.md`.
 

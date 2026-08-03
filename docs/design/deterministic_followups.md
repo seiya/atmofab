@@ -9,6 +9,11 @@ Priority key: **P1** blocks auto-repair; **P2** data/robustness; **P3** latent.
 
 ## Follow-up: deterministic `src/Makefile` (2026-06-24)
 
+> **STATUS NOTE (2026-08-03).** The non-`M3c` PHYSICS shapes named below (`c`/`cpp`/`mixed`,
+> and a node with no `infrastructure` dependency) no longer occur: the toolchain is a
+> `Compile.static` violation and the dep count a spec-input rejection. The only
+> leaf-authored runner left is an `infrastructure` node's self-test. History kept as written.
+
 The `src/Makefile` is a pure function of known inputs (pinned `<spec_id>_model/runner.f90`
 names, the fixed `use`-graph, structured `impl_defaults.toolchain`/`target`), yet the LLM
 authored it and a large static validator rejected deviations (regenerate-loop cost). It is now
@@ -3166,6 +3171,11 @@ removal), plus the filed residuals (the `controlled_spec` interim inline's remov
 ABI, `compile.generate` authoring variance).
 
 ## M-F — legacy generate-executor removal (LANDED 2026-07-18)
+
+> **STATUS NOTE (2026-08-03).** The non-`M3c` PHYSICS shapes named below (`c`/`cpp`/`mixed`,
+> and a node with no `infrastructure` dependency) no longer occur: the toolchain is a
+> `Compile.static` violation and the dep count a spec-input rejection. The only
+> leaf-authored runner left is an `infrastructure` node's self-test. History kept as written.
 
 The final `Z2` migration milestone: legacy generate execution is deleted so `pure` is the ONLY generate-executor. This
 is *migration-scope* removal only — the broad hook / preflight / contract-doc teardown remains `Z4`.

@@ -14497,6 +14497,35 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertIn("re-author", msg)
         self.assertIn("language-neutral", msg)
 
+    def test_untrimmed_values_fire_because_the_conductor_does_not_trim(self) -> None:
+        # `_conductor_authors_makefile` / `_conductor_authors_runner` lower-case but do NOT
+        # strip, so `"make "` is not `make` to them: the node would silently miss host
+        # authorship and take the removed leaf-authored path. (The Build backstop does strip,
+        # so it does not catch this either.) The gate must mirror the conductor exactly and
+        # turn the shape into a repairable violation.
+        for tc in ({"build_system": "make ", "language": "fortran"},
+                   {"build_system": "make", "language": " fortran"},
+                   {"build_system": "make ", "language": "fortran"}):
+            v = self._run(toolchain=tc)
+            self.assertEqual(len(v), 1, (tc, v))
+            self.assertIn("NOT trimmed", v[0])
+
+    def test_non_mapping_impl_defaults_or_toolchain_fires(self) -> None:
+        # The conductor keeps a truthy non-dict (`impl.get("toolchain") or {}`) and raises
+        # AttributeError on it mid-Generate — a conductor_error, not a repairable Compile
+        # violation. Reject the shape here instead.
+        for bad in ("make", ["make"], 7):
+            v = self._run(toolchain=bad)
+            self.assertEqual(len(v), 1, (bad, v))
+            self.assertIn("impl_defaults.toolchain must be a mapping", v[0])
+            v = self._run(impl_defaults=bad)
+            self.assertEqual(len(v), 1, (bad, v))
+            self.assertIn("impl_defaults must be a mapping", v[0])
+        # Falsy non-dicts are the "absent" case and keep the make/fortran defaults.
+        self.assertEqual(self._run(toolchain=[]), [])
+        self.assertEqual(self._run(toolchain=""), [])
+        self.assertEqual(self._run(impl_defaults=[]), [])
+
     def test_missing_or_unparseable_ir_is_another_gates_business(self) -> None:
         with tempfile.TemporaryDirectory() as t:
             tmp = Path(t)

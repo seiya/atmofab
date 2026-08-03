@@ -10780,7 +10780,11 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
                         f"spec-input rejected: {spec_path}/deps.yaml is missing or its "
                         f"dependency schema is malformed, so the required exactly one "
                         f"`infrastructure` (runner-harness) dependency cannot be verified "
-                        f"(docs/workflow/phases/phase_01_compile.md) "
+                        f"(docs/workflow/phases/phase_01_compile.md). Author a deps.yaml "
+                        f"whose `dependencies:` block holds exactly the keys `components` / "
+                        f"`profiles` / `infrastructure` (a typo such as `infrastructures:` "
+                        f"makes the whole file malformed; see spec/problem/dynamics/"
+                        f"advection_diffusion/advdiff1d_linear/deps.yaml) "
                         f"(from spec_ref {spec_ref})")
             else:
                 _infra_violation = infra_dep_count_violation(kind, _infra_count)

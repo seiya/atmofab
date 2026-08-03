@@ -55,12 +55,14 @@ def build_dependency_graph(
         are sorted deterministically (the sidecar is re-authored every compile,
         so byte reproducibility is required).
       - ``error``: ``None`` on success; else ``{reason, detail}`` — fail-closed
-        with NO partial graph. Reasons mirror
-        ``run_workflow._resolve_dependency_closure`` exactly (``dependency_cycle``
+        with NO partial graph. Reasons are the RESOLUTION subset of
+        ``run_workflow._resolve_dependency_closure``'s (``dependency_cycle``
         / ``dependency_unresolvable`` / ``dependency_version_conflict`` /
         ``dependency_identity_conflict`` / ``dependency_deps_unreadable`` /
         ``dependency_deps_malformed`` / ``dependency_spec_ref_unresolved`` /
-        ``spec_catalog_corrupt``).
+        ``spec_catalog_corrupt``). That closure additionally applies the spec-input
+        identity gates (``spec_id_too_long`` / ``infra_dep_count_invalid``), which this
+        builder deliberately does not: it derives a graph, it does not gate a run.
 
     Edges come from the canonical runtime helpers (``_read_deps_yaml`` /
     ``_parse_dep_entries`` / ``_matching_dep_versions`` / ``resolve_spec_ref_for``
