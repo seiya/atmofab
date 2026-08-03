@@ -5252,7 +5252,9 @@ class NodeAllocationTest(unittest.TestCase):
         (repo / "spec" / "registry").mkdir(parents=True)
         (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
             "specs:\n"
-            f"  - spec_kind: {spec_kind}\n"
+            # Quoted so a padded value survives the YAML parse (a plain scalar is
+            # stripped by the parser, which would make the padding untestable).
+            f"  - spec_kind: \"{spec_kind}\"\n"
             "    spec_id: n1\n"
             "    spec_version: \"0.1.0\"\n"
             "    controlled_spec_path: spec/x/n1/controlled_spec.md\n",
@@ -5334,13 +5336,18 @@ class NodeAllocationTest(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     wc.resolve_node(repo, "spec/x/n1")
                 self.assertIn("spec-input rejected", str(ctx.exception))
-        # The canonical lower-case spelling is exempt on both branches.
+        # The canonical spelling is exempt on both branches — including when the catalog
+        # pads it, which pins the `.strip()` half of the rule the same way the mis-cased
+        # loop above pins the no-case-folding half. `resolve_node` reads the raw catalog
+        # entry, so without the strip a padded kind would be exempt on one branch and
+        # rejected on the other.
         for infra_entries in (None, 0):
-            with tempfile.TemporaryDirectory() as tmp:
-                repo = self._mini_spec_repo(tmp, spec_kind="infrastructure",
-                                            infra_entries=infra_entries)
-                self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
-                                 "infrastructure/n1@0.1.0")
+            for spelling in ("infrastructure", "  infrastructure  "):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = self._mini_spec_repo(tmp, spec_kind=spelling,
+                                                infra_entries=infra_entries)
+                    self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
+                                     f"{spelling}/n1@0.1.0")
 
     def test_resolve_node_rejects_unreadable_deps_on_a_non_infra_node(self) -> None:
         # The exactly-one precondition cannot be PROVEN without a well-formed deps.yaml,

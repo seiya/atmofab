@@ -14422,6 +14422,35 @@ class ChecksSourceGateTests(unittest.TestCase):
         self.assertTrue(any("verdict.json" in v for v in self._run(bad)))
 
 
+class SpecKindNormalizationParityTests(unittest.TestCase):
+    """Every `meta.spec_kind` reader in the compile stage must spell the comparison the same
+    way. A gate that matches exactly while its neighbours strip does not fail loudly — it
+    SKIPS, so a padded value silently buys an exemption somewhere and no violation is raised
+    anywhere. That is how the infrastructure public-API gate lost the non-fortran-harness
+    rejection while the toolchain gate was exempting the same node."""
+
+    _READERS = (
+        "_ir_is_m3c_physics",
+        "_validate_harness_dependency_consistency",
+        "_validate_toolchain_backend_supported",
+        "_validate_infrastructure_public_api",
+        "_validate_component_public_api",
+        "_validate_component_generated_surface",
+    )
+
+    def test_no_compile_stage_reader_compares_spec_kind_unnormalized(self) -> None:
+        import inspect
+        for name in self._READERS:
+            src = inspect.getsource(getattr(vps, name))
+            for line in src.splitlines():
+                if 'meta.get("spec_kind")' not in line:
+                    continue
+                self.assertIn(".strip()", line,
+                              f"{name}: `{line.strip()}` compares spec_kind without "
+                              "normalizing; a padded value would skip this gate while its "
+                              "siblings still apply, exempting a node nothing then checks")
+
+
 class ToolchainBackendGateTests(unittest.TestCase):
     """`_validate_toolchain_backend_supported` (compile stage): (make, fortran) is the only
     implemented physical backend. A node naming another toolchain used to slip past every
@@ -14535,6 +14564,21 @@ class ToolchainBackendGateTests(unittest.TestCase):
                 vps._validate_infrastructure_public_api(tmp, ir_dir, v)
                 self.assertTrue(any("Fortran language backend" in x for x in v),
                                 f"{spelling}: nothing rejected the non-fortran harness: {v}")
+        # The hand-off also requires the OTHER gate to reject the spellings this one does
+        # NOT exempt — otherwise the pair would agree only where it happens to be tested.
+        # Case folding there would silently widen it past what the exemption assumes.
+        with _tf.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_kind": "Infrastructure", "spec_id": "harness_c_cpu"},
+                "impl_defaults": {"toolchain": {"build_system": "make", "language": "c"},
+                                  "target": {"class": "cpu"}},
+            }))
+            v = []
+            vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+            self.assertEqual(v, [], "the sibling gate must not case-fold either")
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
         v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
@@ -14566,6 +14610,9 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, (tc, v))
             self.assertIn(f"impl_defaults.toolchain.{key}", v[0])
             self.assertIn("leading or trailing whitespace", v[0])
+            # The remedy must quote the STRIPPED token; echoing the padded value back would
+            # tell the author to write exactly what was just rejected.
+            self.assertIn(f"Write the bare token ({tc[key].strip()!r})", v[0])
         # Each key states ITS OWN measured consequence, not a shared story: a padded
         # build_system orphans src/Makefile (conductor declines, the scanner strips and still
         # names the host, so the leaf's pin is suppressed); a padded language is consistent
@@ -14588,20 +14635,28 @@ class ToolchainBackendGateTests(unittest.TestCase):
         # who authors src/Makefile. `null` is only one spelling of that shape — YAML 1.1
         # resolves `no` / `off` to False, and `0` / `[]` / `""` land the same way — so the
         # check is on the parsed SHAPE, not on the word "null".
+        # A truthy non-string (`language: 5`, `language: true`) belongs here too: the
+        # conductor stringifies it, so it is no more the token it looks like than `null` is.
         for key in ("build_system", "language"):
-            for value in (None, False, 0, [], "", "   "):
+            for value in (None, False, 0, [], "", "   ", 5, True):
                 v = self._run(toolchain={key: value})
                 self.assertEqual(len(v), 1, (key, value, v))
-                self.assertIn(f"impl_defaults.toolchain.{key} must be a non-empty string "
-                              "token", v[0])
-        # Only `language` actually double-owns the file; `build_system` merely makes the two
-        # readers disagree. Each message states its own consequence, not a shared story.
-        self.assertIn("double-owned", self._run(toolchain={"language": None})[0])
-        self.assertNotIn("double-owned", self._run(toolchain={"build_system": None})[0])
+                self.assertIn(f"impl_defaults.toolchain.{key} must be a plain non-empty "
+                              "string token", v[0])
+                # The remedy names the token for THIS key, and carries no un-rendered
+                # placeholder.
+                self.assertIn(
+                    f"explicit value ({'make' if key == 'build_system' else 'fortran'})",
+                    v[0])
+                self.assertNotIn("{key}", v[0])
+        # The branch spans three measured outcomes, so the message cites the extremes rather
+        # than claiming one consequence for the value at hand — a per-value story has been
+        # wrong three times here. Both extremes must stay named.
+        msg = self._run(toolchain={"language": None})[0]
+        self.assertIn("double-owned", msg)
+        self.assertIn("authored by nobody", msg)
         # An ABSENT key is a different thing and stays legal.
         self.assertEqual(self._run(toolchain={}), [])
-        # The remedy must not contain an un-rendered placeholder.
-        self.assertNotIn("{key}", self._run(toolchain={"language": None})[0])
 
     def test_shape_checks_apply_to_an_infrastructure_node_too(self) -> None:
         # The harness is exempt from the `fortran` half — it is certified per
@@ -14615,7 +14670,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertIn("leading or trailing whitespace", v[0])
         v = self._run(spec_kind="infrastructure", toolchain={"language": None})
         self.assertEqual(len(v), 1, v)
-        self.assertIn("must be a non-empty string token", v[0])
+        self.assertIn("must be a plain non-empty string token", v[0])
         # ...and the language half still does not fire for it.
         self.assertEqual(
             self._run(spec_kind="infrastructure",

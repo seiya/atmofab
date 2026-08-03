@@ -60,8 +60,10 @@ order, direct-only one-hop closure, dependency-Makefile rules, staging copy / le
 non-fortran no-op / unbuilt-dep + malformed-IR fail-closed; conductor↔runtime authorship agreement).
 
 **Still UNVERIFIED end-to-end:** the wired path has never run through a real
-`compile→generate→build→validate`. A minimal 2-node dependency spec is now authored (the
-`demo_dep_base`/`demo_dep_top` chain — see D1 below), but running
+`compile→generate→build→validate`. A minimal 2-node dependency spec was authored (the
+`demo_dep_base`/`demo_dep_top` chain — see D1 below; **deleted 2026-08-03**, it declared no
+`infrastructure` dependency and that shape is now rejected at spec-input, so a closure run is
+exercised by the shipped `problem` specs instead), but running
 `run_workflow.py <ref> validate --llm claude --with-deps` to `meta=pass` +
 `aggregate_verdict=pass` (billed, long) is the only way to confirm and remains outstanding.
 

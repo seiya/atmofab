@@ -4310,7 +4310,10 @@ def _validate_component_generated_surface(
     if not isinstance(ir, dict):
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "component":
+    # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
+    # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
+    # the infrastructure twin had (`_validate_infrastructure_public_api`).
+    if str(meta.get("spec_kind") or "").strip() != "component":
         return
     public_api = ir.get("public_api")
     if not isinstance(public_api, dict) or "published_operations" not in public_api:
@@ -11086,18 +11089,20 @@ def _validate_toolchain_backend_supported(
       isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
       rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
       sides identically and is left alone.
-    - a key present with a NULL value. ``language:`` (no value) and ``language: null`` are
-      the same ``None`` once the IR is parsed, but ``record_launch`` decides Makefile
-      authorship from line-scanning readers (``_impl_resolved_build_system`` /
-      ``_impl_resolved_language``) that read the file TEXTUALLY and do tell them apart.
-      Measured, ``language: null`` is the harmful spelling: the scanner returns the literal
-      ``'null'``, concludes the Makefile is leaf-authored, and injects the write-pin while
-      the conductor host-authors the file anyway — a DOUBLE-OWNED ``src/Makefile``, exactly
-      what ``_conductor_authors_makefile``'s single-source-of-truth contract exists to
-      prevent. (``build_system: null`` merely makes the two readers disagree silently; the
-      bare-key spellings agree.) Because the parsed IR cannot tell which spelling is on
-      disk, a null-valued key is rejected outright — give it a value or remove it. An
-      ABSENT key is a different thing and stays legal.
+    - a key present with a value that is not a plain non-empty string. ``language:`` (no
+      value) and ``language: null`` are the same ``None`` once the IR is parsed, but
+      ``record_launch`` decides Makefile authorship from line-scanning readers
+      (``_impl_resolved_build_system`` / ``_impl_resolved_language``) that read the file
+      TEXTUALLY and do tell them apart. Measured, the branch spans three outcomes:
+      ``language: null`` (likewise ``~`` / ``no`` / ``off`` / ``0`` / ``[]``) leaves a
+      DOUBLE-OWNED ``src/Makefile`` — the scanner returns the literal token, concludes the
+      Makefile is leaf-authored and injects the write-pin while the conductor host-authors
+      it anyway, exactly what ``_conductor_authors_makefile``'s single-source-of-truth
+      contract exists to prevent; ``build_system: 5`` / ``true`` / ``"   "`` leaves it
+      authored by NOBODY; and the bare-key and ``""`` spellings agree harmlessly. Because
+      the parsed IR cannot tell the harmless ones from the rest, every such value is
+      rejected — give the key a plain token or remove it. An ABSENT key is a different
+      thing and stays legal.
     - a value that is not equal to its stripped form (``"make "``). The conductor compares
       with ``.lower()`` and no ``.strip()``, so a padded value is not the token it looks
       like and host authorship of the Makefile and the runner silently flips off. For
@@ -11155,28 +11160,27 @@ def _validate_toolchain_backend_supported(
         value = tc[key]
         if not isinstance(value, str) or not value.strip():
             shape_bad = True
-            # `key: null`, `key: ~`, `key: no` (YAML 1.1 boolean False), `key: 0` and
-            # `key: []` all parse falsy, and the conductor coerces every one to the default.
-            # record_launch does NOT: it decides src/Makefile authorship by LINE-SCANNING
-            # this file, so it sees the literal token and reaches a different answer. The
-            # bare `key:` and `key: ""` spellings are the exception — the scanner's
-            # `val.lower() or None` collapses them to the same answer as absent, so those two
-            # agree. They are rejected anyway because the PARSED value cannot tell any of
-            # these six apart, which is the whole reason the divergence is invisible here.
-            consequence = (
-                "with `language: null` / `no` / `0` / `[]` that means the leaf is pinned to "
-                "write src/Makefile while the conductor host-authors it too, leaving the "
-                "file double-owned"
-                if key == "language" else
-                "with `build_system: null` / `no` / `0` / `[]` the scan reports a non-make "
-                "build system, which silently disables the make-only MCP preset enforcement")
+            # Measured over the two readers, this branch spans three outcomes — which is why
+            # the message states the RULE and cites the extremes rather than claiming one
+            # consequence for the value at hand:
+            #   language: null / ~ / no / off / 0 / []  -> src/Makefile DOUBLE-OWNED
+            #   build_system: 5 / true / "   "          -> src/Makefile authored by NOBODY
+            #   `key:` (bare) and `key: ""`             -> both readers agree (harmless)
+            # The harmless pair is rejected anyway because the PARSED value cannot be told
+            # from the harmful ones; only the line scan can, and that is the whole defect.
             violations.append(
-                f"{derived_path}: impl_defaults.toolchain.{key} must be a non-empty string "
-                f"token; found {value!r}. The conductor coerces it to the default, but "
-                f"record_launch line-scans this file instead of reading the parsed IR, and "
-                f"{consequence} (docs/workflow/phases/phase_01_compile.md). Give the key an "
-                f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or "
-                f"remove it entirely — an ABSENT key is legal and takes that same default.")
+                f"{derived_path}: impl_defaults.toolchain.{key} must be a plain non-empty "
+                f"string token; found {value!r}. The conductor reads the PARSED value while "
+                f"record_launch decides src/Makefile authorship by LINE-SCANNING this file, "
+                f"and for a value that is not a plain token the two reach different answers: "
+                f"measured, `language: null` (likewise `~` / `no` / `off` / `0` / `[]`) "
+                f"leaves src/Makefile double-owned, while `build_system: 5` or "
+                f"`build_system: \"   \"` leaves it authored by nobody. The bare `{key}:` and "
+                f"`{key}: \"\"` spellings happen to be harmless, but the parsed IR cannot tell "
+                f"them from the rest, so every present-but-not-a-plain-token value is "
+                f"rejected (docs/workflow/phases/phase_01_compile.md). Give the key an "
+                f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or remove "
+                f"it entirely — an ABSENT key is legal and takes that same default.")
         elif value != value.strip():
             shape_bad = True
             # Measured: `build_system: "make "` orphans the file (conductor declines, scanner
@@ -11213,7 +11217,8 @@ def _validate_toolchain_backend_supported(
              "the non-(make, fortran) node path has been removed")
     violations.append(
         f"{derived_path}: impl_defaults.toolchain declares "
-        f"(build_system={build_system!r}, language={language!r}); {scope} "
+        f"(build_system={tc.get('build_system', 'make')!r}, "
+        f"language={tc.get('language', 'fortran')!r}); {scope} "
         "(docs/workflow/phases/phase_01_compile.md). The controlled_spec is "
         "language-neutral, so nothing in it pins another toolchain: re-author "
         "impl_defaults.toolchain to build_system 'make'"
@@ -11390,7 +11395,10 @@ def _validate_component_public_api(
         return
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "component":
+    # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
+    # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
+    # the infrastructure twin had (`_validate_infrastructure_public_api`).
+    if str(meta.get("spec_kind") or "").strip() != "component":
         return  # name-surface pin is component-only (infra has its own fuller gate)
 
     spec_id = meta.get("spec_id")
