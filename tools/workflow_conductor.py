@@ -10717,6 +10717,22 @@ def _next_seq(parent: Path, prefix: str) -> str:
 _SPEC_REF_FILE_NAMES = frozenset({"controlled_spec.md", "tests.md", "deps.yaml"})
 
 
+def _direct_infra_dep_count(repo_root: Path, spec_path: str) -> int | None:
+    """Count of `infrastructure` direct dependencies declared in <spec_path>/deps.yaml.
+
+    Returns None when the file is missing or its dependency schema is malformed: the
+    exactly-one precondition then cannot be PROVEN from the spec input, so the caller
+    fails closed rather than reading the absence as "zero"."""
+    from tools.orchestration_runtime import _parse_dep_entries, _read_deps_yaml
+    deps_doc = _read_deps_yaml(repo_root, spec_path)
+    if not isinstance(deps_doc, dict):
+        return None
+    entries, well_formed = _parse_dep_entries(deps_doc)
+    if not well_formed:
+        return None
+    return sum(1 for kind, _sid, _constraint in entries if kind == "infrastructure")
+
+
 def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     """Resolve (node_key, spec_path) from spec_ref via spec_catalog.yaml.
 
@@ -10727,17 +10743,22 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     ref = Path(spec_ref.strip().rstrip("/"))
     spec_dir = ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref
     spec_id = spec_dir.name
-    # M3d spec-input gate: bound spec_id length before any phase runs. A spec_id
-    # over MAX_SPEC_ID_LEN is a node-IDENTITY defect (the compile.static hoist
-    # excludes it because a re-author cannot shorten a spec_id) that would otherwise
-    # fail-close at conductor render time on a harness-backed node — a workflow-kill.
-    # This is the canonical capture point (see runner_renderer.spec_id_length_violation).
-    # Deliberately spec-input (pre-IR), so it is language/phase-agnostic: the 55-char
-    # bound reflects the f2008 identifier limit of the ONLY current backend (fortran),
-    # where every >55 spec_id is doomed regardless of phase. It also rejects a >55 spec
-    # on a Compile-only run — acceptable while every backend is fortran. When a backend
-    # with a different identifier limit is added, move the bound to a language-aware point.
-    from tools.runner_renderer import spec_id_length_violation
+    # M3d spec-input gates: bound both node-IDENTITY preconditions before any phase runs.
+    # (1) spec_id length. A spec_id over MAX_SPEC_ID_LEN is a node-IDENTITY defect (the
+    # compile.static hoist excludes it because a re-author cannot shorten a spec_id) that
+    # would otherwise fail-close at conductor render time on a harness-backed node — a
+    # workflow-kill. This is the canonical capture point (see
+    # runner_renderer.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
+    # language/phase-agnostic: the 55-char bound reflects the f2008 identifier limit of the
+    # ONLY current backend (fortran), where every >55 spec_id is doomed regardless of phase.
+    # It also rejects a >55 spec on a Compile-only run — acceptable while every backend is
+    # fortran. When a backend with a different identifier limit is added, move the bound to
+    # a language-aware point.
+    # (2) infrastructure direct-dependency count (see
+    # runner_renderer.infra_dep_count_violation), checked below once the catalog fixes the
+    # node's spec_kind. Same rationale: a re-author cannot repair a node's dependency
+    # identity, and the non-M3c physical path it used to degrade to has been removed.
+    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
     _sid_violation = spec_id_length_violation(spec_id)
     if _sid_violation:
         raise ValueError(
@@ -10748,6 +10769,20 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
             kind = entry["spec_kind"]
             version = entry["spec_version"]
             spec_path = str(Path(entry["controlled_spec_path"]).parent)
+            _infra_count = _direct_infra_dep_count(repo_root, spec_path)
+            if _infra_count is None:
+                if str(kind).strip().lower() != "infrastructure":
+                    raise ValueError(
+                        f"spec-input rejected: {spec_path}/deps.yaml is missing or its "
+                        f"dependency schema is malformed, so the required exactly one "
+                        f"`infrastructure` (runner-harness) dependency cannot be verified "
+                        f"(docs/workflow/phases/phase_01_compile.md) "
+                        f"(from spec_ref {spec_ref})")
+            else:
+                _infra_violation = infra_dep_count_violation(kind, _infra_count)
+                if _infra_violation:
+                    raise ValueError(
+                        f"spec-input rejected: {_infra_violation} (from spec_ref {spec_ref})")
             return f"{kind}/{spec_id}@{version}", spec_path
     raise ValueError(
         f"spec_id not found in spec_catalog.yaml: {spec_id} (from spec_ref {spec_ref})")

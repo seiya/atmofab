@@ -28,6 +28,7 @@ from tools.runner_renderer import (
     RenderError,
     _HARNESS_V3_INTERFACE,
     assert_harness_pin,
+    infra_dep_count_violation,
     ir_content_violations,
     render_runner,
     spec_id_length_violation,
@@ -1061,6 +1062,48 @@ class SpecIdLengthGateTest(unittest.TestCase):
         # Surrounding whitespace is stripped before measuring.
         self.assertIsNone(spec_id_length_violation("  short  "))
         self.assertIsNotNone(spec_id_length_violation("  " + "z" * (MAX_SPEC_ID_LEN + 1) + "  "))
+
+
+class InfraDepCountGateTest(unittest.TestCase):
+    """Spec-input gate: `infra_dep_count_violation` requires EXACTLY ONE `infrastructure`
+    direct dependency on every non-infrastructure spec. Sibling of the spec_id bound: both
+    are node-IDENTITY preconditions a Compile re-author cannot repair, so both are captured
+    at spec-input. Zero and >1 used to degrade silently to the removed leaf-authored-runner
+    path; they are hard rejections now."""
+
+    def test_exactly_one_passes(self) -> None:
+        for kind in ("component", "profile", "problem"):
+            self.assertIsNone(infra_dep_count_violation(kind, 1), kind)
+
+    def test_zero_and_more_than_one_violate(self) -> None:
+        for kind in ("component", "profile", "problem"):
+            for count in (0, 2, 3):
+                self.assertIsNotNone(infra_dep_count_violation(kind, count), (kind, count))
+
+    def test_infrastructure_kind_is_exempt_at_every_count(self) -> None:
+        # The harness authors its own self-test runner, so it declares no harness of its own.
+        for count in (0, 1, 5):
+            self.assertIsNone(infra_dep_count_violation("infrastructure", count), count)
+        self.assertIsNone(infra_dep_count_violation("  Infrastructure  ", 0))
+
+    def test_message_names_the_rule_the_count_and_the_canonical_doc(self) -> None:
+        msg = infra_dep_count_violation("component", 2)
+        self.assertIsNotNone(msg)
+        self.assertIn("exactly one", msg)
+        self.assertIn("infrastructure", msg)
+        self.assertIn("found 2", msg)
+        self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
+        # A remedy the author can act on: the field to add and a spec to copy it from.
+        self.assertIn("infrastructure_id", msg)
+        self.assertIn("advdiff1d_linear/deps.yaml", msg)
+        self.assertIn("found 0", infra_dep_count_violation("problem", 0))
+
+    def test_unknown_or_non_string_kind_is_not_exempt(self) -> None:
+        # Only the literal `infrastructure` kind is exempt; anything else must declare one.
+        self.assertIsNotNone(infra_dep_count_violation(None, 0))
+        self.assertIsNotNone(infra_dep_count_violation("", 0))
+        self.assertIsNotNone(infra_dep_count_violation(123, 0))
+        self.assertIsNone(infra_dep_count_violation(None, 1))
 
 
 class LineWidthTest(unittest.TestCase):

@@ -3725,7 +3725,7 @@ def _resolve_dependency_closure(
         _read_deps_yaml,
         resolve_spec_ref_for,
     )
-    from tools.runner_renderer import spec_id_length_violation
+    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
 
     # The catalog is loaded lazily — only once a dependency edge is actually
     # encountered. A leaf target (empty deps.yaml) needs no catalog, so a
@@ -3783,6 +3783,25 @@ def _resolve_dependency_closure(
             error = {
                 "reason": "dependency_deps_malformed",
                 "detail": f"{spec_ref}/deps.yaml has a malformed dependency schema",
+            }
+            return
+        # M3d spec-input gate at closure-build (sibling of the spec_id bound above): every
+        # non-infrastructure spec declares EXACTLY ONE `infrastructure` (runner-harness)
+        # dependency. `resolve_node` gates each node's own run, but an ALREADY-READY
+        # dependency is skipped before it reaches `_run_node` → resolve_node, so gating only
+        # there could let a violating ready dep slip past. The target's own kind comes from
+        # its deps.yaml `spec_kind` (a target is not on any edge yet, and reading it here
+        # preserves the lazy-catalog property for a leaf `infrastructure` target); a
+        # dependency's kind comes from the catalog-validated edge that pulled it in.
+        # A missing/malformed deps.yaml keeps its existing reason (both checks above run
+        # first), so this check only ever sees a readable, well-formed dependency schema.
+        own_kind = (kindid_by_ref.get(spec_ref) or (None,))[0] or deps_doc.get("spec_kind")
+        infra_count = sum(1 for kind, _sid, _c in entries if kind == "infrastructure")
+        _infra_violation = infra_dep_count_violation(own_kind, infra_count)
+        if _infra_violation:
+            error = {
+                "reason": "infra_dep_count_invalid",
+                "detail": f"{spec_ref}: {_infra_violation}",
             }
             return
         for kind, sid, constraint in entries:

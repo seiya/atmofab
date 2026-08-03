@@ -5239,6 +5239,81 @@ class NodeAllocationTest(unittest.TestCase):
         self.assertIn("spec-input rejected", str(ctx.exception))
         self.assertIn(str(MAX_SPEC_ID_LEN + 3), str(ctx.exception))
 
+    def _mini_spec_repo(self, tmp: str, *, spec_kind: str,
+                        infra_entries: int | None) -> Path:
+        """A tmp repo with one catalog entry `n1` of `spec_kind`, and its deps.yaml
+        declaring `infra_entries` infrastructure deps (None -> no deps.yaml at all)."""
+        repo = Path(tmp)
+        spec_dir = repo / "spec" / "x" / "n1"
+        spec_dir.mkdir(parents=True)
+        (repo / "spec" / "registry").mkdir(parents=True)
+        (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+            "specs:\n"
+            f"  - spec_kind: {spec_kind}\n"
+            "    spec_id: n1\n"
+            "    spec_version: \"0.1.0\"\n"
+            "    controlled_spec_path: spec/x/n1/controlled_spec.md\n",
+            encoding="utf-8")
+        if infra_entries is not None:
+            lines = ["spec_id: n1", f"spec_kind: {spec_kind}", "dependencies:",
+                     "  components: []", "  profiles: []"]
+            if infra_entries:
+                lines.append("  infrastructure:")
+                for i in range(infra_entries):
+                    lines.append(f"    - infrastructure_id: harness_{i}")
+                    lines.append("      version_constraint: \">=0.1.0\"")
+            (spec_dir / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return repo
+
+    def test_resolve_node_requires_exactly_one_infra_dep(self) -> None:
+        # Spec-input gate (sibling of the spec_id bound): zero or >1 infrastructure direct
+        # deps used to degrade silently to the removed leaf-authored-runner path. Both are
+        # rejected before any phase runs; the message names the rule and the count.
+        for count in (0, 2):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind="component",
+                                            infra_entries=count)
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec-input rejected", str(ctx.exception))
+                self.assertIn("exactly one", str(ctx.exception))
+                self.assertIn(f"found {count}", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            node_key, _ = wc.resolve_node(repo, "spec/x/n1")
+            self.assertEqual(node_key, "component/n1@0.1.0")
+
+    def test_resolve_node_exempts_an_infrastructure_spec(self) -> None:
+        # The harness authors its own self-test runner, so it declares no harness dep.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="infrastructure", infra_entries=0)
+            node_key, _ = wc.resolve_node(repo, "spec/x/n1")
+            self.assertEqual(node_key, "infrastructure/n1@0.1.0")
+
+    def test_resolve_node_rejects_unreadable_deps_on_a_non_infra_node(self) -> None:
+        # The exactly-one precondition cannot be PROVEN without a well-formed deps.yaml,
+        # so absence fails closed rather than reading as "zero". An infrastructure node
+        # is exempt (it declares none either way).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=None)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("spec-input rejected", str(ctx.exception))
+            self.assertIn("deps.yaml", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            (repo / "spec" / "x" / "n1" / "deps.yaml").write_text(
+                "spec_id: n1\nspec_kind: component\ndependencies:\n  bogus_key: []\n",
+                encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("malformed", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="infrastructure",
+                                        infra_entries=None)
+            node_key, _ = wc.resolve_node(repo, "spec/x/n1")
+            self.assertEqual(node_key, "infrastructure/n1@0.1.0")
+
     def test_resolve_node_accepts_file_style_spec_ref(self) -> None:
         base = "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2"
         expected = ("component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0",)
