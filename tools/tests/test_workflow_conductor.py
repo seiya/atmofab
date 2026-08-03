@@ -5242,9 +5242,10 @@ class NodeAllocationTest(unittest.TestCase):
         self.assertIn(str(MAX_SPEC_ID_LEN + 3), str(ctx.exception))
 
     def _mini_spec_repo(self, tmp: str, *, spec_kind: str,
-                        infra_entries: int | None) -> Path:
+                        infra_entries: int | None, other_entries: int = 0) -> Path:
         """A tmp repo with one catalog entry `n1` of `spec_kind`, and its deps.yaml
-        declaring `infra_entries` infrastructure deps (None -> no deps.yaml at all)."""
+        declaring `infra_entries` infrastructure deps (None -> no deps.yaml at all) plus
+        `other_entries` component and profile deps each."""
         repo = Path(tmp)
         spec_dir = repo / "spec" / "x" / "n1"
         spec_dir.mkdir(parents=True)
@@ -5257,8 +5258,15 @@ class NodeAllocationTest(unittest.TestCase):
             "    controlled_spec_path: spec/x/n1/controlled_spec.md\n",
             encoding="utf-8")
         if infra_entries is not None:
-            lines = ["spec_id: n1", f"spec_kind: {spec_kind}", "dependencies:",
-                     "  components: []", "  profiles: []"]
+            lines = ["spec_id: n1", f"spec_kind: {spec_kind}", "dependencies:"]
+            for key, field in (("components", "component_id"), ("profiles", "profile_id")):
+                if not other_entries:
+                    lines.append(f"  {key}: []")
+                    continue
+                lines.append(f"  {key}:")
+                for i in range(other_entries):
+                    lines.append(f"    - {field}: {key}_{i}")
+                    lines.append("      version_constraint: \">=0.1.0\"")
             if infra_entries:
                 lines.append("  infrastructure:")
                 for i in range(infra_entries):
@@ -5284,6 +5292,23 @@ class NodeAllocationTest(unittest.TestCase):
             repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
             node_key, _ = wc.resolve_node(repo, "spec/x/n1")
             self.assertEqual(node_key, "component/n1@0.1.0")
+
+    def test_only_infrastructure_entries_are_counted(self) -> None:
+        # The count is over `infrastructure` entries ALONE. Counting every direct dependency
+        # would reject every real spec in the catalog — advdiff1d_linear declares 3
+        # components + 1 profile + 1 infrastructure — while the tmp fixtures, which declare
+        # only the harness edge, would all still pass and hide it.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1,
+                                        other_entries=3)
+            self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0], "component/n1@0.1.0")
+        # ...and components/profiles do not substitute for the missing harness edge either.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=0,
+                                        other_entries=3)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("found 0", str(ctx.exception))
 
     def test_resolve_node_exempts_an_infrastructure_spec(self) -> None:
         # The harness authors its own self-test runner, so it declares no harness dep.

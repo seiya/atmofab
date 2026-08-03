@@ -14510,6 +14510,32 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("(make, fortran)", v[0])
 
+    def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
+        # This gate exempts an infrastructure node from the `fortran` half on the grounds
+        # that `_validate_infrastructure_public_api` — the only enforcement of the
+        # fortran-only language backend — rejects a non-fortran harness itself. That hand-off
+        # holds only while both gates spell the exemption the same way. They did not: this
+        # one strips, the other matched exactly, so a padded `meta.spec_kind` took the
+        # exemption here AND was skipped there, and a non-fortran harness produced no
+        # violation anywhere in the pass. Pin the hand-off at every spelling this gate exempts.
+        import tempfile as _tf
+        for spelling in ("infrastructure", "  infrastructure  "):
+            with _tf.TemporaryDirectory() as td:
+                tmp = Path(td)
+                ir_dir = tmp / "ir"
+                ir_dir.mkdir()
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                    "meta": {"spec_kind": spelling, "spec_id": "harness_c_cpu"},
+                    "impl_defaults": {"toolchain": {"build_system": "make", "language": "c"},
+                                      "target": {"class": "cpu"}},
+                }))
+                v: list[str] = []
+                vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
+                self.assertEqual(v, [], f"{spelling}: exempt from the language half")
+                vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+                self.assertTrue(any("Fortran language backend" in x for x in v),
+                                f"{spelling}: nothing rejected the non-fortran harness: {v}")
+
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
         v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
         self.assertEqual(len(v), 1)
@@ -14540,6 +14566,16 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, (tc, v))
             self.assertIn(f"impl_defaults.toolchain.{key}", v[0])
             self.assertIn("leading or trailing whitespace", v[0])
+        # Each key states ITS OWN measured consequence, not a shared story: a padded
+        # build_system orphans src/Makefile (conductor declines, the scanner strips and still
+        # names the host, so the leaf's pin is suppressed); a padded language is consistent
+        # about ownership but silently drops the node out of M3c.
+        bs_msg = self._run(toolchain={"build_system": "make "})[0]
+        lang_msg = self._run(toolchain={"language": " fortran"})[0]
+        self.assertIn("authored by nobody", bs_msg)
+        self.assertNotIn("authored by nobody", lang_msg)
+        self.assertIn("stops being an M3c node", lang_msg)
+        self.assertNotIn("stops being an M3c node", bs_msg)
         # Both keys padded -> one violation each, and the pair check does not also fire
         # (its message would name a value nobody wrote).
         v = self._run(toolchain={"build_system": "make ", "language": "fortran "})

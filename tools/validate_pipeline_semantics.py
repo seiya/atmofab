@@ -11049,7 +11049,7 @@ def _validate_toolchain_backend_supported(
     ``classify_compile_static_failure`` → ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm
     ``compile.generate`` re-author. The Build backstop stays as defense-in-depth.
 
-An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness is
+    An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness is
     certified per ``(language, hardware)`` target, so another language is a legitimate
     future harness. It is NOT exempt from ``make`` — ``_require_make_build_system`` is
     kind-agnostic, so a non-make harness would die at Build, late and unrepairable, which is
@@ -11057,13 +11057,17 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
     are about the host's readers disagreeing rather than about which backend is supported.
 
     That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
-    runs earlier in the same pass and rejects a non-fortran harness outright, naming the
-    missing ``tools/lang_backend_fortran``-style backend — which is the accurate remedy for
-    that shape, and better than a second violation from here saying "use fortran". The
-    carve-out exists so that when a language backend IS added, this gate does not have to be
-    edited too. ``spec_kind`` is compared with ``.strip()`` and no case folding, the same
-    spelling rule as ``runner_renderer.infra_dep_count_violation`` and
-    ``_conductor_authors_runner``; the value is the IR's self-declared ``meta.spec_kind``,
+    — in the same pass, so the order does not matter, both violations land in one list —
+    rejects a non-fortran harness outright, naming the missing
+    ``tools/lang_backend_fortran``-style backend, which is the accurate remedy for that
+    shape and better than a second violation from here saying "use fortran". The carve-out
+    exists so that when a language backend IS added, this gate does not have to be edited
+    too. That hand-off only holds while both gates spell the exemption the SAME way: they
+    now agree on ``.strip()`` with no case folding (as do
+    ``runner_renderer.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
+    divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
+    exemption while the other gate's exact match skipped the node, so a non-fortran harness
+    produced no violation at all. The value is the IR's self-declared ``meta.spec_kind``,
     which a physics node cannot abuse to take the exemption because declaring it drags in
     that same infrastructure public-API gate.
 
@@ -11101,6 +11105,15 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
       the host authored the file and suppresses the leaf's write-pin — leaving
       ``src/Makefile`` authored by NOBODY. (The pair comparison below is ``.lower()``-only
       too, but that is unobservable: this check returns first for every untrimmed value.)
+
+    RESIDUAL, deliberately not closed here: these checks read the PARSED mapping, so they
+    catch only the divergences a parse can see. Spellings that parse to the right token but
+    line-scan to a different one — a duplicate ``language:`` key, a block scalar
+    (``language: >-`` / ``|-``), a YAML alias — still reach the same double-owned
+    ``src/Makefile``. The root cause is that ``_impl_resolved_build_system`` /
+    ``_impl_resolved_language`` line-scan the file at all (and unscoped to
+    ``impl_defaults.toolchain`` at that); a gate over the parsed IR structurally cannot fix
+    it, and growing this one to chase text spellings would only look like it had.
 
     A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
     derived_path = ir_dir / "spec.ir.yaml"
@@ -11142,37 +11155,48 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
         value = tc[key]
         if not isinstance(value, str) or not value.strip():
             shape_bad = True
-            # `key:` (bare), `key: null`, `key: no` (YAML 1.1 boolean False), `key: 0`,
-            # `key: []` and `key: ""` are all falsy-or-non-string once parsed, and the
-            # conductor coerces every one of them to the default. record_launch does NOT:
-            # it decides src/Makefile authorship by LINE-SCANNING this file, so it sees the
-            # literal token (`null`, `no`, `0`, `[]`) and reaches a different answer.
+            # `key: null`, `key: ~`, `key: no` (YAML 1.1 boolean False), `key: 0` and
+            # `key: []` all parse falsy, and the conductor coerces every one to the default.
+            # record_launch does NOT: it decides src/Makefile authorship by LINE-SCANNING
+            # this file, so it sees the literal token and reaches a different answer. The
+            # bare `key:` and `key: ""` spellings are the exception — the scanner's
+            # `val.lower() or None` collapses them to the same answer as absent, so those two
+            # agree. They are rejected anyway because the PARSED value cannot tell any of
+            # these six apart, which is the whole reason the divergence is invisible here.
             consequence = (
-                "record_launch's line scan reads the literal token, concludes the leaf "
-                "authors src/Makefile, and pins it into the leaf's write set while the "
-                "conductor host-authors it too — leaving the file double-owned"
+                "with `language: null` / `no` / `0` / `[]` that means the leaf is pinned to "
+                "write src/Makefile while the conductor host-authors it too, leaving the "
+                "file double-owned"
                 if key == "language" else
-                "record_launch's line scan reads the literal token and disagrees with the "
-                "conductor about who authors src/Makefile")
+                "with `build_system: null` / `no` / `0` / `[]` the scan reports a non-make "
+                "build system, which silently disables the make-only MCP preset enforcement")
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} must be a non-empty string "
                 f"token; found {value!r}. The conductor coerces it to the default, but "
+                f"record_launch line-scans this file instead of reading the parsed IR, and "
                 f"{consequence} (docs/workflow/phases/phase_01_compile.md). Give the key an "
                 f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or "
-                f"remove it entirely — an ABSENT key is legal and takes that same default, "
-                f"but a present-and-empty one is not, because the parsed IR cannot tell the "
-                f"two apart and the line scan can.")
+                f"remove it entirely — an ABSENT key is legal and takes that same default.")
         elif value != value.strip():
             shape_bad = True
+            # Measured: `build_system: "make "` orphans the file (conductor declines, scanner
+            # strips and still reports the host as author, so the leaf's pin is suppressed).
+            # `language: " fortran"` is consistent — both decline and the leaf is pinned — but
+            # the node has silently stopped being M3c, which is its own defect.
+            consequence = (
+                "record_launch's line scan — which does strip — still reports the host as "
+                "the author and suppresses the leaf's write-pin, so src/Makefile ends up "
+                "authored by nobody"
+                if key == "build_system" else
+                "the node silently stops being an M3c node: its runner is no longer "
+                "host-rendered and its checks-module ABI no longer applies")
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
                 "leading or trailing whitespace. The conductor compares this value with "
-                "`.lower()` and no `.strip()`, so it is not the token it looks like and "
-                "host authorship of src/Makefile and the runner silently flips off, while "
-                "record_launch's line scan — which does strip — still reports the host as "
-                "the author and suppresses the leaf's write-pin: src/Makefile then ends up "
-                "authored by nobody (docs/workflow/phases/phase_01_compile.md). Write the "
-                f"bare token ({value.strip()!r}).")
+                "`.lower()` and no `.strip()`, so it is not the token it looks like: host "
+                f"authorship silently flips off, and {consequence} "
+                "(docs/workflow/phases/phase_01_compile.md). Write the bare token "
+                f"({value.strip()!r}).")
     if shape_bad:
         return
     build_system = str(tc.get("build_system") or "make").lower()
@@ -11460,7 +11484,14 @@ def _validate_infrastructure_public_api(
         return
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "infrastructure":
+    # `.strip()`-normalized, the same spelling rule as every other reader of `meta.spec_kind`
+    # (`_conductor_authors_runner`, `_validate_toolchain_backend_supported`,
+    # `_validate_harness_dependency_consistency`). An exact match here was the outlier, and it
+    # left a hole: `spec_kind: "  infrastructure  "` took the toolchain gate's language
+    # exemption (that gate strips) while this gate — the ONLY enforcement of the fortran-only
+    # language backend — skipped the node, so a non-fortran harness produced no violation at
+    # all in the whole pass.
+    if str(meta.get("spec_kind") or "").strip() != "infrastructure":
         return  # exact-published-surface contract is infrastructure-only
 
     # The §5.1 signature pin renders the structured signatures to the target language, and only a
