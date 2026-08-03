@@ -11056,6 +11056,17 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
     the failure class this gate exists to remove — nor from the SHAPE checks below, which
     are about the host's readers disagreeing rather than about which backend is supported.
 
+    That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
+    runs earlier in the same pass and rejects a non-fortran harness outright, naming the
+    missing ``tools/lang_backend_fortran``-style backend — which is the accurate remedy for
+    that shape, and better than a second violation from here saying "use fortran". The
+    carve-out exists so that when a language backend IS added, this gate does not have to be
+    edited too. ``spec_kind`` is compared with ``.strip()`` and no case folding, the same
+    spelling rule as ``runner_renderer.infra_dep_count_violation`` and
+    ``_conductor_authors_runner``; the value is the IR's self-declared ``meta.spec_kind``,
+    which a physics node cannot abuse to take the exemption because declaring it drags in
+    that same infrastructure public-API gate.
+
     Absent ``build_system`` / ``language`` default to make / fortran, the SAME defaults
     ``_conductor_authors_makefile`` and ``_conductor_authors_runner`` apply, so an IR that
     omits the toolchain passes here exactly as it is host-rendered in the conductor. That
@@ -11088,8 +11099,8 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
       like and host authorship of the Makefile and the runner silently flips off. For
       ``build_system`` it is worse: ``record_launch``'s reader DOES strip, so it concludes
       the host authored the file and suppresses the leaf's write-pin — leaving
-      ``src/Makefile`` authored by NOBODY. The pair comparison below is likewise
-      ``.lower()``-only, mirroring the conductor byte-for-byte.
+      ``src/Makefile`` authored by NOBODY. (The pair comparison below is ``.lower()``-only
+      too, but that is unobservable: this check returns first for every untrimmed value.)
 
     A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
     derived_path = ir_dir / "spec.ir.yaml"
@@ -11129,31 +11140,39 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
         if key not in tc:
             continue
         value = tc[key]
-        if value is None:
+        if not isinstance(value, str) or not value.strip():
             shape_bad = True
+            # `key:` (bare), `key: null`, `key: no` (YAML 1.1 boolean False), `key: 0`,
+            # `key: []` and `key: ""` are all falsy-or-non-string once parsed, and the
+            # conductor coerces every one of them to the default. record_launch does NOT:
+            # it decides src/Makefile authorship by LINE-SCANNING this file, so it sees the
+            # literal token (`null`, `no`, `0`, `[]`) and reaches a different answer.
+            consequence = (
+                "record_launch's line scan reads the literal token, concludes the leaf "
+                "authors src/Makefile, and pins it into the leaf's write set while the "
+                "conductor host-authors it too — leaving the file double-owned"
+                if key == "language" else
+                "record_launch's line scan reads the literal token and disagrees with the "
+                "conductor about who authors src/Makefile")
             violations.append(
-                f"{derived_path}: impl_defaults.toolchain.{key} is present but null. Once "
-                "parsed, that is indistinguishable from the bare `{key}:` spelling — but "
-                "record_launch decides src/Makefile authorship from a LINE SCAN of this "
-                "file, which does tell them apart: `language: null` makes it read the "
-                "literal 'null', conclude the leaf authors the Makefile, and pin it into "
-                "the leaf's write set while the conductor host-authors it too, leaving the "
-                "file double-owned (docs/workflow/phases/phase_01_compile.md). Since the "
-                "parsed IR cannot tell which spelling is on disk, give the key an explicit "
-                f"value ({'make' if key == 'build_system' else 'fortran'}) or remove it "
-                "entirely — an absent key is legal and takes that same default.")
-        elif isinstance(value, str) and value != value.strip():
+                f"{derived_path}: impl_defaults.toolchain.{key} must be a non-empty string "
+                f"token; found {value!r}. The conductor coerces it to the default, but "
+                f"{consequence} (docs/workflow/phases/phase_01_compile.md). Give the key an "
+                f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or "
+                f"remove it entirely — an ABSENT key is legal and takes that same default, "
+                f"but a present-and-empty one is not, because the parsed IR cannot tell the "
+                f"two apart and the line scan can.")
+        elif value != value.strip():
             shape_bad = True
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
                 "leading or trailing whitespace. The conductor compares this value with "
                 "`.lower()` and no `.strip()`, so it is not the token it looks like and "
-                "host authorship of src/Makefile and the runner silently flips off; for "
-                "build_system, record_launch's reader DOES strip, so it concludes the host "
-                "authored the file and suppresses the leaf's write-pin, leaving "
-                "src/Makefile authored by nobody "
-                "(docs/workflow/phases/phase_01_compile.md). Write the bare token "
-                f"({value.strip()!r}).")
+                "host authorship of src/Makefile and the runner silently flips off, while "
+                "record_launch's line scan — which does strip — still reports the host as "
+                "the author and suppresses the leaf's write-pin: src/Makefile then ends up "
+                "authored by nobody (docs/workflow/phases/phase_01_compile.md). Write the "
+                f"bare token ({value.strip()!r}).")
     if shape_bad:
         return
     build_system = str(tc.get("build_system") or "make").lower()
@@ -11177,8 +11196,8 @@ An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness
         + ("" if is_infrastructure else " and language 'fortran'")
         + " (keys stated explicitly — V6 requires every fixed impl_defaults sub-key to "
         "have a value, and the post_generate lint/syntax gates read `language`). The "
-        "values are compared case-insensitively but NOT trimmed, exactly as the conductor "
-        "reads them.")
+        "values are compared case-insensitively; an untrimmed value never reaches this "
+        "comparison because the shape check above rejects it first.")
 
 
 def _validate_harness_render_preconditions(

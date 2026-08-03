@@ -1103,10 +1103,16 @@ class InfraDepCountGateTest(unittest.TestCase):
         self.assertIn("infrastructure", msg)
         self.assertIn("found 2", msg)
         self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
-        # A remedy the author can act on: the field to add and a spec to copy it from.
-        self.assertIn("infrastructure_id", msg)
+        # A remedy the author can act on, pointing the way the error actually goes: too
+        # many entries must be REMOVED, and telling the author to add one more would be
+        # actively wrong.
+        self.assertIn("Remove 1 of them", msg)
+        self.assertNotIn("Add the single", msg)
         self.assertIn("advdiff1d_linear/deps.yaml", msg)
-        self.assertIn("found 0", infra_dep_count_violation("problem", 0))
+        zero = infra_dep_count_violation("problem", 0)
+        self.assertIn("found 0", zero)
+        self.assertIn("Add the single `infrastructure_id` entry", zero)
+        self.assertIn("Remove 2 of them", infra_dep_count_violation("component", 3))
 
     def test_unknown_or_non_string_kind_is_not_exempt(self) -> None:
         # Only the literal `infrastructure` kind is exempt; anything else must declare one.

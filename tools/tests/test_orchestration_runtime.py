@@ -28341,7 +28341,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # explicitly (V6 + the post_generate gates read `language`), and the three SHAPE
         # rejections — non-mapping, explicit null, untrimmed — each of which exists because
         # two host readers disagree about who authors src/Makefile.
-        "docs/workflow/phases/phase_01_compile.md": 50400,
+        # Bumped 50400->50700 (review round 4): the toolchain gate's scope widened twice
+        # under review — `make` now binds every node kind, and the present-but-empty check
+        # covers every spelling that lands falsy (`null`, the bare key, YAML-1.1 `no`/`off`,
+        # `0`, `[]`, `""`), not just the word "null". A leaf told only "no nulls" would keep
+        # writing `language: no`. The mechanism prose was moved to the gate docstring, which
+        # no leaf force-reads; what is left here is the rule and its remedy.
+        "docs/workflow/phases/phase_01_compile.md": 50700,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the

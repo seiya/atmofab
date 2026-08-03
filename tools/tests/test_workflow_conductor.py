@@ -5300,14 +5300,15 @@ class NodeAllocationTest(unittest.TestCase):
         # deps.yaml is well-formed and ADMITTED when it is unreadable — the broken input
         # let through and the correct one refused, with the mis-cased node then invisible to
         # every reader that decides host authorship.
-        for infra_entries, expect_raise in ((None, True), (0, True)):
+        # Both branches: infra_entries=None is the unreadable-deps.yaml branch, 0 the
+        # well-formed one. Neither may exempt the mis-cased kind.
+        for infra_entries in (None, 0):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = self._mini_spec_repo(tmp, spec_kind="Infrastructure",
                                             infra_entries=infra_entries)
-                if expect_raise:
-                    with self.assertRaises(ValueError) as ctx:
-                        wc.resolve_node(repo, "spec/x/n1")
-                    self.assertIn("spec-input rejected", str(ctx.exception))
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec-input rejected", str(ctx.exception))
         # The canonical lower-case spelling is exempt on both branches.
         for infra_entries in (None, 0):
             with tempfile.TemporaryDirectory() as tmp:

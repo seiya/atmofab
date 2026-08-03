@@ -139,13 +139,17 @@ def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | Non
         return None
     if infra_dep_count == 1:
         return None
+    remedy = (
+        "Add the single `infrastructure_id` entry" if infra_dep_count < 1
+        else f"Remove {infra_dep_count - 1} of them, keeping the one harness this node "
+             "builds against")
     return (
         f"a non-infrastructure spec must declare exactly one `infrastructure` "
         f"(runner-harness) dependency in deps.yaml; found {infra_dep_count}. The runner "
         f"glue is host-rendered against exactly that harness, and the former "
         f"leaf-authored-runner path for a node without it has been removed "
-        f"(docs/workflow/phases/phase_01_compile.md). Add the single `infrastructure_id` "
-        f"entry (see spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml)."
+        f"(docs/workflow/phases/phase_01_compile.md). {remedy} "
+        f"(see spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml)."
     )
 
 

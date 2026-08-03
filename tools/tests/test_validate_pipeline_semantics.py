@@ -14493,8 +14493,22 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("build_system must be 'make' on every node", v[0])
         self.assertIn("_require_make_build_system", v[0])
-        # ...and its remedy does not order the harness to become fortran.
-        self.assertNotIn("language 'fortran'", v[0])
+        # ...and its remedy names only build_system, never ordering the harness to become
+        # fortran. Anchored on the remedy clause itself, so a reformat of the declared-value
+        # prefix (which renders `language='fortran'`) cannot make this vacuous either way.
+        remedy = v[0].split("re-author impl_defaults.toolchain to ", 1)[1]
+        self.assertTrue(remedy.startswith("build_system 'make' ("), remedy[:60])
+
+    def test_the_infrastructure_exemption_is_case_sensitive(self) -> None:
+        # The exemption is spelled `.strip()`-only, the same rule as
+        # `runner_renderer.infra_dep_count_violation` and `_conductor_authors_runner` — whose
+        # comments cite THIS gate as their reason for not case-folding. Pin it at the reader
+        # they name, or the claim is asserted in three places and held in none.
+        self.assertEqual(self._run(spec_kind="  infrastructure  ",
+                                   toolchain={"language": "c"}), [])
+        v = self._run(spec_kind="Infrastructure", toolchain={"language": "c"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("(make, fortran)", v[0])
 
     def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
         v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
@@ -14532,20 +14546,29 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 2, v)
         self.assertFalse(any("only implemented physical backend" in x for x in v), v)
 
-    def test_explicit_null_fires_because_it_double_owns_the_makefile(self) -> None:
-        # The conductor coerces None to the default and host-authors src/Makefile, but
-        # record_launch's line-scanning reader sees the literal 'null', concludes the
-        # Makefile is leaf-authored, and pins it into the leaf's write set. The file would be
-        # owned twice. An ABSENT key is a different thing and stays legal here.
+    def test_a_present_but_empty_value_fires_whatever_spelling_produced_it(self) -> None:
+        # The conductor coerces every falsy/non-string value to the default; record_launch
+        # line-scans the file and sees the literal token instead, so the two disagree about
+        # who authors src/Makefile. `null` is only one spelling of that shape — YAML 1.1
+        # resolves `no` / `off` to False, and `0` / `[]` / `""` land the same way — so the
+        # check is on the parsed SHAPE, not on the word "null".
         for key in ("build_system", "language"):
-            v = self._run(toolchain={key: None})
-            self.assertEqual(len(v), 1, (key, v))
-            self.assertIn(f"impl_defaults.toolchain.{key} is present but null", v[0])
-            self.assertIn("double-owned", v[0])
+            for value in (None, False, 0, [], "", "   "):
+                v = self._run(toolchain={key: value})
+                self.assertEqual(len(v), 1, (key, value, v))
+                self.assertIn(f"impl_defaults.toolchain.{key} must be a non-empty string "
+                              "token", v[0])
+        # Only `language` actually double-owns the file; `build_system` merely makes the two
+        # readers disagree. Each message states its own consequence, not a shared story.
+        self.assertIn("double-owned", self._run(toolchain={"language": None})[0])
+        self.assertNotIn("double-owned", self._run(toolchain={"build_system": None})[0])
+        # An ABSENT key is a different thing and stays legal.
         self.assertEqual(self._run(toolchain={}), [])
+        # The remedy must not contain an un-rendered placeholder.
+        self.assertNotIn("{key}", self._run(toolchain={"language": None})[0])
 
     def test_shape_checks_apply_to_an_infrastructure_node_too(self) -> None:
-        # The harness is exempt from the (make, fortran) PAIR — it is certified per
+        # The harness is exempt from the `fortran` half — it is certified per
         # (language, hardware) target — but not from the shape checks, which are about the
         # host readers disagreeing with each other, not about which backend is supported.
         # `_conductor_authors_makefile` does not exempt infrastructure either, so a padded
@@ -14556,7 +14579,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertIn("leading or trailing whitespace", v[0])
         v = self._run(spec_kind="infrastructure", toolchain={"language": None})
         self.assertEqual(len(v), 1, v)
-        self.assertIn("present but null", v[0])
+        self.assertIn("must be a non-empty string token", v[0])
         # ...and the language half still does not fire for it.
         self.assertEqual(
             self._run(spec_kind="infrastructure",

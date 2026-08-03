@@ -2243,7 +2243,10 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
         # present (a pre-M3c sibling without a checks.f90 is skipped, not partially injected).
         # Mirror the conductor's `_conductor_authors_runner` predicate (make ∧ fortran ∧
         # non-infra ∧ one infra dep) so the exemplar shape matches what the leaf actually
-        # authors. Not byte-identical: this site normalizes with `.strip().lower()` where the
+        # authors. The `fortran` half is carried by the early return above (a non-fortran
+        # target has no exemplar at all), so it is not repeated here — writing it out again
+        # would look load-bearing while being unreachable-true and unpinnable by any test.
+        # Not byte-identical either: this site normalizes with `.strip().lower()` where the
         # conductor uses `.lower()` alone, so an untrimmed value would read as M3c here and
         # not there. Unreachable in a live run — `_validate_toolchain_backend_supported`
         # rejects an untrimmed toolchain value at compile — and the difference only picks a
@@ -2256,7 +2259,7 @@ def _resolve_exemplar_source(repo_root: Path, ir_ref: Any) -> dict[str, Any] | N
                           and d["node_key"].split("/", 1)[0].strip() == "infrastructure")
                       or (isinstance(d, str) and d.split("/", 1)[0].strip() == "infrastructure")]
         target_is_m3c = (self_kind != "infrastructure" and build_system == "make"
-                         and language == "fortran" and len(infra_deps) == 1)
+                         and len(infra_deps) == 1)
 
         catalog = _catalog_family_index(repo_root)
         self_family = next(

@@ -3749,11 +3749,11 @@ def _resolve_dependency_closure(
     done: set[str] = set()
     error: dict[str, str] | None = None
 
-    # Sentinel for "the registry answered, and its answer is self-contradictory". It is an
-    # object() rather than a string on purpose: `infra_dep_count_violation` exempts only the
-    # exact string "infrastructure" and treats a non-string as unexempt, so a kind that
-    # reduces to this sentinel can never be waved through — which is what lets the caller
-    # report it with the single `_registry_defect and _infra_violation` condition.
+    # Sentinel for "the registry answered, and its answer is self-contradictory". An
+    # object() rather than a string so it can never match the `infrastructure` exemption.
+    # Note it is NOT sufficient on its own: `infra_dep_count_violation` returns None for a
+    # count of exactly 1 before the kind matters at all, so the caller must test for this
+    # sentinel explicitly rather than relying on a violation being produced.
     _UNRESOLVABLE_KIND = object()
 
     def _kind_for_gate(spec_ref: str, deps_doc: dict) -> tuple[Any, str | None]:
@@ -3761,7 +3761,8 @@ def _resolve_dependency_closure(
 
         Returns `(kind, registry_defect_detail)`. The detail is non-None when the catalog
         could not answer authoritatively, and the two cases differ in how the caller must
-        treat it — see below.
+        treat it — see below. The comment at the call site is the authority on which one
+        suppresses a rejection and which one is reported outright.
 
         Kind decides EXEMPTION (an `infrastructure` spec declares no harness of its own), so
         it must not be self-declared: `deps.yaml`'s top-level `spec_kind` is carried by no
@@ -3789,9 +3790,9 @@ def _resolve_dependency_closure(
           catalog order would make the two capture points disagree by luck of ordering.
           Here there is no lazy-catalog property to protect (the registry WAS read, it is
           simply self-contradictory), so `_UNRESOLVABLE_KIND` is returned and the caller
-          reports the registry defect unconditionally. Returning the declared value instead
-          would let a spec self-declare `infrastructure` and skip the gate entirely — the
-          exact bypass this function exists to close, and one that costs a full billed
+          reports the registry defect for ANY dep count. Returning the declared value
+          instead would let a spec self-declare `infrastructure` and skip the gate entirely
+          — the exact bypass this function exists to close, and one that costs a full billed
           dependency closure before `resolve_node` refuses the target.
         """
         edge_kind = (kindid_by_ref.get(spec_ref) or (None,))[0]
@@ -3868,16 +3869,16 @@ def _resolve_dependency_closure(
         own_kind, _registry_defect = _kind_for_gate(spec_ref, deps_doc)
         infra_count = sum(1 for kind, _sid, _c in entries if kind == "infrastructure")
         _infra_violation = infra_dep_count_violation(own_kind, infra_count)
-        # A multi-kind registry defect always lands here: `_UNRESOLVABLE_KIND` is not a
-        # string, so `infra_dep_count_violation` can never exempt it and always produces a
-        # violation — which this branch then re-reports as the registry defect it really is.
-        # That is deliberate: an EXEMPTION granted on an unknown kind would be as unfounded
-        # as a rejection, and honoring a self-declared `infrastructure` there would skip the
-        # gate outright. An unreadable registry is different — there the declared value MAY
-        # still grant the exemption, and only the rejection half is suppressed: pointing the
-        # operator at deps.yaml during a registry outage sends them to the wrong file, and
-        # the dep count may well be correct for the node's true kind.
-        if _registry_defect and _infra_violation:
+        # `_UNRESOLVABLE_KIND` is reported whatever the dep count says — including the
+        # count that would otherwise PASS. `infra_dep_count_violation` short-circuits on a
+        # count of exactly 1 without consulting the kind, so a multi-kind spec_id declaring
+        # one harness dep would otherwise sail through and leave the two capture points to
+        # disagree by luck of catalog order, which is the whole reason the sentinel exists.
+        # An unreadable registry is different: there the declared value MAY still grant the
+        # exemption, and only the rejection half is suppressed — pointing the operator at
+        # deps.yaml during a registry outage sends them to the wrong file, and the dep count
+        # may well be correct for the node's true kind.
+        if _registry_defect and (own_kind is _UNRESOLVABLE_KIND or _infra_violation):
             error = {
                 "reason": "spec_catalog_corrupt",
                 "detail": _registry_defect,

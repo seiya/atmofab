@@ -3785,14 +3785,16 @@ class DependencyClosureTests(unittest.TestCase):
         # The verdict rests on the kind. When the catalog cannot confirm it, rejecting on the
         # dep count sends the operator to edit deps.yaml during what is actually a registry
         # problem — and the count may well be right for the node's true kind.
-        def run(catalog_text, declared_kind="component"):
+        def run(catalog_text, declared_kind="component", infra=0):
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
                 (repo_root / "spec" / "registry").mkdir(parents=True)
                 (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
                     catalog_text, encoding="utf-8")
                 _write_deps(repo_root, "spec/component/z", declared_kind, "z",
-                            infrastructure=[])
+                            infrastructure=[(_HARNESS_ID, ">=0.1.0")] * infra)
+                if infra:
+                    _write_deps(repo_root, _HARNESS_REF, "infrastructure", _HARNESS_ID)
                 from tools.orchestration_runtime import _load_spec_catalog
                 _load_spec_catalog.cache_clear()
                 return run_workflow._resolve_dependency_closure(
@@ -3821,6 +3823,13 @@ class DependencyClosureTests(unittest.TestCase):
         # would let a spec self-declare `infrastructure` to skip the gate — after the whole
         # closure has been billed, since resolve_node only refuses the target at the end.
         ordered, err = run(dup, declared_kind="infrastructure")
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+        # ...and even at the dep count that would otherwise PASS. The count check
+        # short-circuits on exactly 1 before the kind is consulted at all, so relying on a
+        # violation being produced would leave the common, well-formed shape unreported —
+        # the two capture points then disagree by luck of catalog order, silently.
+        ordered, err = run(dup, declared_kind="component", infra=1)
         self.assertEqual(ordered, [])
         self.assertEqual(err["reason"], "spec_catalog_corrupt")
 
