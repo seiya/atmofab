@@ -2380,8 +2380,12 @@ class RunWorkflowTests(unittest.TestCase):
                      "--orchestration-id", "orch_huge_detail"])
             self.assertEqual(code, 2, out["reason"])
             status = next(c for c in observed if c and c[0] == "set-status")
-            self.assertLessEqual(
-                len(status[status.index("--reason-detail") + 1]), 200)
+            recorded = status[status.index("--reason-detail") + 1]
+            # Truncated to the cap, and truncated only — an empty or over-eager cut
+            # would satisfy "short enough" while destroying the diagnostic the
+            # operator reads out of `orchestration_meta.json#reason_detail`.
+            self.assertEqual(len(recorded), 200)
+            self.assertTrue(out["detail"].startswith(recorded))
             # The envelope itself is NOT truncated — it never crosses an argv boundary,
             # and it is the operator's full diagnostic.
             self.assertIn(huge, out["detail"])
@@ -2427,6 +2431,49 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 set_status[0][set_status[0].index("--reason-code") + 1],
                 "runtime_command_failed")
+
+    def test_a_runtime_command_failure_leaves_another_runs_meta_alone(self) -> None:
+        # The ownership half of the case above. `init` failing means this invocation
+        # committed nothing, so a reused `--orchestration-id` that happens to name a
+        # foreign `running` orchestration must not be terminalized: the other run's
+        # driver is still the only thing entitled to decide its outcome.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_rtfail_someone_elses"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            d = repo_root / "workspace" / "orchestrations" / oid
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": oid, "status": "running",
+                            "spec_ref": "spec/problem/test.md",
+                            # Foreign by construction — unallocatable pid plus an
+                            # explicit `dead` verdict, so the cold guard lets the run
+                            # reach the runtime (issue #32).
+                            "driver": {**identity, "pid": _unallocatable_pid(),
+                                       "verdict": "dead"}}),
+                encoding="utf-8")
+            observed: list[list[str]] = []
+
+            def runtime_whose_init_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                raise RuntimeError("runtime command failed (init): exit 1")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_init_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._forced_liveness(), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "runtime_command_failed")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
 
     def test_unwritable_workspace_tmp_reports_instead_of_escaping(self) -> None:
         # `workspace/tmp` is the driver's FIRST write into the workspace, so on a

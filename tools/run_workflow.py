@@ -3507,8 +3507,9 @@ def _run_node(
             # orchestration already committed whenever the preflight subprocess (or a
             # set-status inside the snapshot handler above) fails. Returning the
             # envelope without terminalizing would leave exactly the stuck `running`
-            # this whole path exists to prevent — the guards make it a no-op in the
-            # pre-commit case, which is the one the `init` failure tests pin.
+            # this whole path exists to prevent. In the pre-commit case (a failing
+            # `init`) the ownership guard makes it a no-op, so a reused
+            # `--orchestration-id` naming a foreign run is still left alone.
             _terminalize_owned_orchestration(
                 repo_root, env, orchestration_id, init_committed=init_committed,
                 driver_identity=driver_identity,
