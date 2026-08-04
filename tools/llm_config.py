@@ -890,13 +890,16 @@ def resolve_default_config_path(repo_root: str | Path) -> Path:
     samples = "\n  ".join(
         f"cp {SAMPLE_CONFIG_DIR}/{name} {DEFAULT_CONFIG_FILENAME}"
         for name in SAMPLE_CONFIG_NAMES)
+    # No `where=`: `LlmConfigError.__str__` appends " (at <where>)", which would land on the
+    # LAST line of the `cp` list above and render as part of a command the operator is being
+    # told to copy. The path is already named in the first sentence — this is the first message
+    # a new operator sees, and it has to be paste-safe.
     raise LlmConfigError(
         "llm_config_default_missing",
         f"no leaf-LLM configuration at {path}. This file decides which model runs each LLM "
         f"leaf; there is no default to fall back to, because a run resolved from a file nobody "
         f"chose is a run nobody can reproduce. Copy one of the samples and edit it, or pass "
-        f"--llm-config <path> to name a different one:\n  {samples}",
-        where=str(path))
+        f"--llm-config <path> to name a different one:\n  {samples}")
 
 
 def apply_defaults_overrides(

@@ -222,6 +222,14 @@ class DefaultConfigPathTests(unittest.TestCase):
         for name in lc.SAMPLE_CONFIG_NAMES:
             self.assertIn(f"cp docs/examples/{name} llm.yaml", message)
             self.assertTrue((SAMPLE_DIR / name).exists(), msg=name)
+        # Every `cp` line must be PASTE-SAFE. The message ends with the list, and
+        # `LlmConfigError.__str__` appends " (at <where>)" whenever `where` is set — which
+        # would land on the last command and make it fail for anyone who copies it. This is the
+        # first message a new operator ever sees.
+        for line in message.splitlines():
+            if line.strip().startswith("cp "):
+                self.assertTrue(line.strip().endswith(" llm.yaml"), msg=line)
+        self.assertEqual(ctx.exception.where, "")
 
 
 
