@@ -16571,13 +16571,13 @@ def probe_all_providers(
     # while the probes certify another. `llm_config_path` remains for callers that have no
     # snapshot to hand.
     #
-    # The resolved defaults MUST be reapplied either way. This runs in the `preflight`
-    # SUBPROCESS, which reloads the file and so starts from the file's own `defaults`; the
-    # caller sends the values it resolved. Probing without them certifies a command the run
-    # will not launch: an operator whose wrapper works but whose bare CLI is absent fails
-    # preflight, and one whose bare CLI is present gets a green `providers` row authorizing a
-    # wrapper nothing probed. Re-applying a value the file already declares is a no-op, so
-    # nothing has to track which is which.
+    # The overrides are the `defaults` the CALLER resolved. This runs in the `preflight`
+    # SUBPROCESS, which reloads the file and would otherwise re-derive them independently, so
+    # applying them keeps ONE authority for what gets probed rather than two derivations that
+    # can drift. Today they always equal what the file declares — nothing in `run_workflow`
+    # overrides it since the run-wide flag trio was removed — so this is a no-op in value; it
+    # is not a no-op in structure, and that is deliberate: a caller that ever resolves
+    # `defaults` differently must not silently probe a command the run will not launch.
     if config is None:
         config = load_llm_config(llm_config_path)
     cfg = apply_defaults_overrides(
@@ -20892,10 +20892,11 @@ def main(argv: list[str] | None = None) -> int:
             "fields, which keep describing --backend / defaults)."
         ),
     )
-    # The RESOLVED `defaults` of the configuration the run will actually use. They may differ
-    # from what the FILE declares, so a probe that only reloads the path would certify a
-    # different command than the run launches. Re-applying a value the file already declares is
-    # a no-op, so these are sent unconditionally.
+    # The `defaults` the CALLER resolved, so this subprocess probes what the run will launch
+    # instead of re-deriving them from the file it reloads. Since the run-wide flag trio was
+    # removed nothing overrides the file, so they always equal what it declares — sent
+    # unconditionally, because re-applying a declared value is a no-op and nothing then has to
+    # track which values came from where.
     preflight_parser.add_argument("--llm-config-defaults-model", default=None)
     preflight_parser.add_argument("--llm-config-defaults-command", default=None)
     # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the

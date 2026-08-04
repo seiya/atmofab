@@ -14773,7 +14773,7 @@ class CodexFeatureCacheTest(unittest.TestCase):
             doc = json.loads(path.read_text(encoding="utf-8"))
             self.assertIs(doc["enabled"], True)
 
-    def test_codex_probe_uses_custom_llm_command(self) -> None:
+    def test_codex_probe_uses_the_configured_command(self) -> None:
         # A configured `command:` wrapper must be probed verbatim (same prefix the leaf
         # runs via leaf_command), not the hardcoded `codex` — else the host certifies a
         # different executable than the leaf will use.

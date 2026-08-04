@@ -1589,21 +1589,22 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
     No dedicated params file is persisted: every value is recovered from artifacts
     that run_workflow.py already writes on every start.
     - spec_ref / source_dependency_ref ← orchestration_meta.json
-    - llm                              ← preflight.json#backend
-    - llm_command                      ← preflight.json#probe_command
     - until_phase / mode               ← launches/orchestration.start.prompt.txt
     - agent_model                      ← orchestration_meta.json#invocation
-    - llm_config_path / llm_config_sha256 / llm_config_overrides
-                                       ← orchestration_meta.json#invocation
     - closure_id / closure_target_spec_ref / closure_until_phase
                                        ← orchestration_meta.json#invocation
+
+    The leaf-LLM configuration pin is deliberately NOT here: the resume gates read it through
+    `_recorded_llm_config`, which every closure member is validated with too. `preflight.json`
+    is likewise no longer read — a resume re-runs preflight, and the backend it would have
+    recovered is derived from the recorded configuration instead. That is what makes a run
+    that died before `write_preflight` resumable.
     Missing/unparseable values are returned as None for the caller to validate. The
     `closure_*` keys are set only when the run was a `--with-deps` node (older
     orchestrations lack the `invocation` block → None → single-node resume).
     """
     orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
     meta = _read_json_if_exists(orch_root / "orchestration_meta.json") or {}
-    preflight = _read_json_if_exists(orch_root / "preflight.json") or {}
     prompt_path = orch_root / "launches" / "orchestration.start.prompt.txt"
     prompt_text = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
     prompt_params = _extract_prompt_params(prompt_text)
@@ -1616,20 +1617,12 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
     return {
         "spec_ref": _clean(meta.get("spec_ref")) or prompt_params.get("spec_ref"),
         "source_dependency_ref": _clean(meta.get("source_dependency_ref")),
-        "llm": _clean(preflight.get("backend")),
-        # probe_command is the agent command run_workflow used for both preflight and launch
-        # on the original run. Recovered for provenance only: a resume derives the effective
-        # command from the RECORDED configuration's `defaults.command`, which is where a
-        # wrapper / non-PATH binary is named now.
-        "llm_command": _clean(preflight.get("probe_command")),
         "until_phase": prompt_params.get("until_phase"),
         "mode": prompt_params.get("mode"),
         "agent_model": _clean(invocation.get("agent_model")),
         # Leaf-LLM configuration (issue #28). Absent on an orchestration launched before the
-        # field existed — that is the LEGACY branch, recovered through `llm`/`llm_command`/
-        # `agent_model` exactly as before and never rejected.
-        "llm_config_path": _clean(invocation.get("llm_config_path")),
-        "llm_config_sha256": _clean(invocation.get("llm_config_sha256")),
+        # field existed, which is now REFUSED (`llm_config_legacy_flags_removed`) rather than
+        # recovered: the run-wide flags that named such a run's models are gone.
         "closure_id": _clean(invocation.get("closure_id")),
         "closure_target_spec_ref": _clean(invocation.get("closure_target_spec_ref")),
         "closure_until_phase": _clean(invocation.get("closure_until_phase")),
@@ -1941,8 +1934,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Resume the latest orchestration (or --orchestration-id) from its checkpoint. "
-            "spec_ref / until_phase / --llm / --mode are recovered from the resumed "
-            "orchestration when omitted. When the resumed orchestration is a node of a "
+            "spec_ref / until_phase / --mode are recovered from the resumed orchestration "
+            "when omitted, and the leaf-LLM configuration is the one it launched with (an "
+            "--llm-config passed here is announced and ignored). When the resumed "
+            "orchestration is a node of a "
             "--with-deps closure (recorded in orchestration_meta.json#invocation), the "
             "whole closure is re-derived and continued to the target — not just one node."
         ),
@@ -2204,11 +2199,12 @@ def _run_main(
     # argparse. On RESUME the recorded executor is recovered below and a non-`pure` record is
     # rejected fail-closed (`generate_executor_legacy_removed`) — legacy runs cannot be resumed.
 
-    # Resolve effective startup inputs. With --resume, omitted spec_ref /
-    # until_phase / --llm / --mode are recovered from the target orchestration's
-    # existing artifacts (orchestration_meta.json + preflight.json + the start
-    # prompt). Without --resume the defaults (claude / dev) apply. (`resume_mode` is
-    # resolved above, before the executor block, which gates on it.)
+    # Resolve effective startup inputs. With --resume, omitted spec_ref / until_phase / --mode
+    # are recovered from the target orchestration's existing artifacts
+    # (orchestration_meta.json + the start prompt); the leaf-LLM configuration comes from the
+    # recorded pin. Without --resume, `--mode` defaults to dev and the configuration defaults
+    # to `./llm.yaml`, whose ABSENCE is a startup failure rather than a fallback.
+    # (`resume_mode` is resolved above, before the executor block, which gates on it.)
     # Recovered resume metadata (populated in the resume branch). The reuse decision
     # in the try block compares the effective spec against these to tell an actual change
     # from an explicit no-op restate.
@@ -3362,12 +3358,12 @@ def _run_node(
                 # `providers` reads exactly what it always did.
                 "--llm-config",
                 str(llm_config.path),
-                # ...and probe the EFFECTIVE configuration. Preflight is a subprocess, so it
-                # reloads the file, and a deprecated-flag override lives only in this process's
-                # object — without it the probe certifies a command this run will not launch.
-                # The RESOLVED defaults are what is sent, not "which fields were overridden":
-                # re-applying a value the file already declares is a no-op, so one pair of
-                # arguments covers both cases and nothing has to track the provenance.
+                # ...and the `defaults` THIS process resolved. Preflight is a subprocess that
+                # reloads the file, so it would otherwise re-derive them independently; sending
+                # them keeps one authority for what gets probed. Since the trio was removed
+                # nothing in this driver overrides the file, so the values are always the ones
+                # the file declares and re-applying them is a no-op — the argument pair is what
+                # keeps that a PROPERTY of the resolution rather than of the transport.
                 "--llm-config-defaults-model",
                 llm_config.defaults.model,
                 "--llm-config-defaults-command",

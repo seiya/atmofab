@@ -99,7 +99,7 @@ Build-output-in-`write_roots` check under the sandbox).
 ## Usage
 
 ```
-python3 tools/run_workflow.py <spec_ref> <until_phase> --llm claude
+python3 tools/run_workflow.py <spec_ref> <until_phase>
 ```
 
 `tools/audit_orchestration.py` reports per-run token/turn cost.

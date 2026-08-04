@@ -960,6 +960,12 @@ class RunWorkflowTests(unittest.TestCase):
             init_call = next(c for c in calls if c and c[0] == "init")
             idx = init_call.index("--agent-model")
             self.assertEqual(init_call[idx + 1], "gpt-5.3-codex")
+            # ...and this is genuinely a CODEX resume. Without this the test passed identically
+            # against a claude configuration: the backend comes from the recorded pin, so a
+            # fixture that pinned the shared `./llm.yaml` made `backend="codex"` reach nothing.
+            self.assertEqual(out["llm"], "codex")
+            preflight = next(c for c in calls if c and c[0] == "preflight")
+            self.assertEqual(preflight[preflight.index("--backend") + 1], "codex")
 
     def test_a_configured_claude_command_omits_the_opus_default(self) -> None:
         """A configured `command:` may launch a non-Opus model, so the Opus default must NOT
@@ -6231,8 +6237,11 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     def test_preflight_is_told_the_resolved_defaults_so_it_probes_what_will_launch(self) -> None:
         """Preflight is a subprocess that only gets the PATH, and it re-applies these onto the
-        file it reloads. They are the resolved values, so a wrapper the file names is what gets
-        probed rather than the bare binary."""
+        file it reloads. What is asserted here is that `main` sends the `defaults` IT resolved
+        — the transport, not its effect: the values equal the file's own today, so a preflight
+        that ignored them would still probe the right command. `test_orchestration_runtime`'s
+        `test_the_probed_command_is_the_one_the_run_will_launch` covers the effect by supplying
+        an override the file does not declare."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
@@ -6465,9 +6474,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         """An orchestration a resume can find: the meta block both resume gates read, plus the
         preflight/start-prompt artifacts `_load_resume_params` recovers from.
 
-        `backend` must match what the run actually used — `_load_resume_params` recovers `llm`
-        from `preflight.json`, and hardcoding `claude` on a codex-pinned orchestration silently
-        skips every codex-specific startup rule."""
+        `backend` must match what the PIN says — the resume derives its backend from the
+        recorded configuration, so hardcoding `claude` on a codex-pinned orchestration would
+        silently skip every codex-specific startup rule."""
         d = repo_root / "workspace" / "orchestrations" / oid
         (d / "launches").mkdir(parents=True, exist_ok=True)
         (d / "orchestration_meta.json").write_text(json.dumps({
@@ -6516,6 +6525,24 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(kw, {})
             self.assertEqual(lines[-1]["reason"], "llm_config_legacy_flags_removed")
             self.assertEqual(lines[-1]["orchestration_id"], "orch_old")
+
+    def test_a_legacy_record_is_refused_before_the_default_is_even_resolved(self) -> None:
+        """This is what the ENTRY gate buys, and it is invisible while a `./llm.yaml` happens
+        to exist: without the early check, a pre-#28 resume on a machine that has not created
+        one yet stops at `llm_config_default_missing` and tells the operator to `cp` a sample
+        — for a run that can never be resumed no matter what they copy."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            (repo_root / "llm.yaml").unlink()          # the operator has not created one
+            self._seed_resumable(repo_root, "orch_old_nodefault",
+                                 {"llm": "claude", "agent_model": "opus"})
+            code, kw, _, lines = self._run(
+                repo_root, ["--resume"], oid="orch_old_nodefault")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})
+            self.assertEqual(lines[-1]["reason"], "llm_config_legacy_flags_removed")
+            self.assertNotIn("llm_config_default_missing", lines[-1]["detail"])
 
     def test_a_closure_member_with_no_pin_is_refused_too(self) -> None:
         """The entry gate never sees a member, so the closure gate has to carry the same
@@ -6697,14 +6724,53 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     def test_every_closure_node_gets_its_own_snapshot(self) -> None:
         """Each closure node is its own orchestration with its own resume gate, so a snapshot
-        written only for the target would leave every dependency's refusal unactionable."""
+        written only for the target would leave every dependency's refusal unactionable.
+
+        Driven through the REAL `_run_node` (only the runtime subprocess is faked): calling the
+        writer directly for two ids would prove nothing but that the path join uses its
+        argument, and would stay green with the call deleted from `_run_node` entirely."""
+        from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = _sample_config("claude")
-            for oid in ("orch_dep", "orch_tgt"):
-                run_workflow._write_llm_config_snapshot(repo_root, oid, cfg)
-                self.assertEqual(self._snapshot(repo_root, oid).read_bytes(), cfg.raw)
+            DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
+            _load_spec_catalog.cache_clear()
+            self._runtime_calls = []
+            orig_ready = run_workflow._dependency_node_ready
+            orig_rt = run_workflow._runtime_command
+            real_run_node = run_workflow._run_node
+            ran: set[str] = set()
+
+            def _tracking_run_node(**kw):
+                ran.add(kw["spec_ref"])
+                return real_run_node(**kw)
+
+            try:
+                run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
+                run_workflow._dependency_node_ready = (            # type: ignore[assignment]
+                    lambda root, node, stages: node["spec_ref"] in ran)
+                run_workflow._run_node = _tracking_run_node        # type: ignore[assignment]
+                with redirect_stdout(io.StringIO()):
+                    rc = run_workflow.main([
+                        "spec/problem/a", "compile", "--with-deps",
+                        "--repo-root", str(repo_root),
+                        "--orchestration-id", "orch_snap_tgt",
+                        "--no-run-conductor", "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._run_node = real_run_node             # type: ignore[assignment]
+                run_workflow._dependency_node_ready = orig_ready   # type: ignore[assignment]
+                run_workflow._runtime_command = orig_rt            # type: ignore[assignment]
+            self.assertEqual(rc, 0)
+            self.assertEqual(ran, {"spec/component/c", "spec/component/b", "spec/problem/a"})
+            written = sorted(
+                p.parent.name for p in
+                (repo_root / "workspace" / "orchestrations").glob(
+                    f"*/{run_workflow.LLM_CONFIG_SNAPSHOT_NAME}"))
+            # One per node of the diamond (c, b, a), not just the target.
+            self.assertEqual(len(written), 3, msg=written)
+            for oid in written:
+                self.assertEqual(self._snapshot(repo_root, oid).read_bytes(),
+                                 _sample_config("claude").raw)
 
     def test_the_refusal_names_the_snapshot_only_when_there_is_one(self) -> None:
         """Pre-snapshot records have none, and naming a file the operator will not find is

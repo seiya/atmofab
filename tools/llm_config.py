@@ -633,11 +633,20 @@ class LlmConfig:
         can still read, diff and test — while still failing before a run that would launch
         `codex exec --model ''`."""
         for label, entry in self._labelled_entries():
-            if entry.provider == "codex_cli" and not entry.model:
+            if entry.provider != "codex_cli":
+                continue
+            # The generic `codex` alias is as unusable as no model at all — the CLI resolves it
+            # to whatever it currently prefers, so the leaf's recorded provenance would not name
+            # what ran. It used to be caught by the run-wide flag guard in `run_workflow`; with
+            # that gone this is the only place left that can catch it BEFORE init and preflight
+            # have created an orchestration the operator then has to clean up.
+            if not entry.model or entry.model.strip().lower() == "codex":
+                got = f"{entry.model.strip()!r}" if entry.model.strip() else "no model"
                 raise LlmConfigError(
                     "llm_config_codex_cli_requires_model",
-                    "provider 'codex_cli' has no runtime model alias to resolve: set `model:` "
-                    "for this entry or in `defaults`", where=label)
+                    f"provider 'codex_cli' has no runtime model alias to resolve ({got}): set "
+                    f"`model:` to an explicit slug for this entry or in `defaults`",
+                    where=label)
 
     def _labelled_entries(self) -> list[tuple[str, ResolvedLeafEntry]]:
         out = [("defaults", self.defaults)]

@@ -768,6 +768,24 @@ class RuleTests(_Tmp):
         lc.load_llm_config(self.write(
             "defaults:\n  provider: codex_cli\n  model: some-slug\n")).validate_runnable()
 
+    def test_codex_requires_model_rejects_the_generic_alias_too(self) -> None:
+        """`codex` is an alias the CLI resolves to whatever it currently prefers, so a leaf
+        launched with it records provenance that does not name what ran — as unusable as no
+        model at all. Caught HERE, at run start, because the run-wide flag guard that used to
+        catch it is gone and everything later has already created an orchestration."""
+        for slug in ("codex", "CODEX", "  codex  "):
+            cfg = lc.load_llm_config(self.write(
+                f"defaults:\n  provider: codex_cli\n  model: {slug!r}\n", "alias.yaml"))
+            with self.assertRaises(lc.LlmConfigError) as ctx:
+                cfg.validate_runnable()
+            self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model",
+                             msg=slug)
+            self.assertIn("explicit slug", str(ctx.exception), msg=slug)
+        # ...and a real slug that merely CONTAINS it is fine.
+        lc.load_llm_config(self.write(
+            "defaults:\n  provider: codex_cli\n  model: gpt-5.6-codex\n",
+            "real.yaml")).validate_runnable()
+
     def test_codex_requires_model_catches_a_per_substep_omission(self) -> None:
         cfg = lc.load_llm_config(self.write(
             "defaults:\n  provider: claude_cli\n"
