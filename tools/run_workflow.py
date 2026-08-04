@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import traceback
 import uuid
 
 try:
@@ -3673,6 +3674,43 @@ def _run_node(
         ):
             _terminalize_interrupted_orchestration(repo_root, env, orchestration_id)
         raise
+    except Exception as exc:  # noqa: BLE001 - backstop: no escape may leave `running`
+        # Backstop for host-side failures no specific handler above names: an OSError
+        # from `orch_tmp.mkdir` / the prompt write on a full disk or read-only
+        # workspace, a non-OSError escaping the snapshot writer, or a programming
+        # error on this path. Without it the exception reaches
+        # `raise SystemExit(main())` — a traceback instead of the fail envelope every
+        # other failure here emits, and the orchestration stays `running` forever: an
+        # implicit --resume refuses it and a cold re-run silently starts over,
+        # discarding the checkpoint. The traceback still goes to stderr, so a genuine
+        # bug stays debuggable while stdout keeps its envelope contract. Ownership and
+        # terminal-status handling mirror the interrupt clause above: only a run this
+        # invocation committed (or provably owns via the meta's `driver` block) is
+        # terminalized, a more specific terminal status recorded before the exception
+        # wins, and a failing set-status is swallowed — the envelope must still print.
+        try:
+            traceback.print_exc(file=sys.stderr)
+        except Exception:  # noqa: BLE001 - reporting must not displace the envelope
+            pass
+        detail = f"{type(exc).__name__}: {exc}"
+        meta_now = _read_orchestration_meta(repo_root, orchestration_id)
+        if init_committed or _is_own_driver(meta_now, driver_identity):
+            current = str(meta_now.get("status") or "").strip().lower()
+            if current not in _RESUMABLE_TERMINAL_STATUSES:
+                try:
+                    _runtime_command(
+                        repo_root, env,
+                        ["set-status", "--repo-root", str(repo_root),
+                         "--orchestration-id", orchestration_id, "--status", "fail",
+                         "--reason-code", "driver_exception",
+                         "--reason-detail", detail[:200]],
+                    )
+                except Exception:  # noqa: BLE001 - best-effort, like the interrupt path
+                    pass
+        print(json.dumps({
+            "status": "fail", "reason": "driver_exception", "detail": detail,
+            "orchestration_id": orchestration_id}, ensure_ascii=False))
+        return 2
     finally:
         if run_log_file is not None:
             sys.stdout = saved_stdout

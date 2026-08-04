@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -2267,6 +2267,205 @@ class RunWorkflowTests(unittest.TestCase):
             )
             calls = self._run_cold_with_conductor(repo_root, oid, KeyboardInterrupt())
             self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
+
+    @staticmethod
+    @contextmanager
+    def _mkdir_boom(name: str, parent_name: str, exc: BaseException):
+        """Raise `exc` from exactly one `Path.mkdir` target, passing every other through.
+
+        A blanket `Path.mkdir` failure would abort somewhere unrelated (the spec tree, the
+        run-log dir) and the test would pass for the wrong reason."""
+        real = Path.mkdir
+
+        def boom(self, *a, **k):  # type: ignore[no-untyped-def]
+            if self.name == name and self.parent.name == parent_name:
+                raise exc
+            return real(self, *a, **k)
+
+        with mock.patch.object(Path, "mkdir", boom):
+            yield
+
+    def test_unexpected_oserror_after_init_terminalizes_and_reports(self) -> None:
+        # The #37 window: `init` has committed (the meta says `running`), and a host-side
+        # OSError — here the `workspace/tmp/<arid>` mkdir on a full disk — happens before
+        # any handler that names it. Without the backstop it escapes to
+        # `raise SystemExit(main())`: a traceback instead of the envelope, and an
+        # orchestration stuck at `running` that only an explicit resume can clear.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            err = io.StringIO()
+            with self._mkdir_boom(
+                "orch_agent_run_002", "tmp",
+                OSError(28, "No space left on device"),
+            ), redirect_stderr(err):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", "orch_boom_nospace"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["status"], "fail")
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertEqual(out["orchestration_id"], "orch_boom_nospace")
+            self.assertIn("No space left on device", out["detail"])
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            self.assertEqual(set_status[0][set_status[0].index("--status") + 1], "fail")
+            self.assertEqual(
+                set_status[0][set_status[0].index("--reason-code") + 1],
+                "driver_exception")
+            # The traceback still reaches stderr: a genuine bug stays debuggable while
+            # stdout keeps its envelope contract.
+            self.assertIn("Traceback", err.getvalue())
+
+    def test_unexpected_exception_before_init_commit_reports_without_terminalizing(
+        self,
+    ) -> None:
+        # Nothing was committed, so there is no `running` to clear — but the stdout
+        # envelope contract covers the whole function, so it still prints and exits 2.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            observed: list[list[str]] = []
+
+            def runtime_that_dies_on_init(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    raise ValueError("boom")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_that_dies_on_init  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", "orch_pre_init_boom",
+                         "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            # Type-prefixed: a bare `KeyError` would stringify to just `'key'`.
+            self.assertEqual(out["detail"], "ValueError: boom")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+
+    def test_unexpected_exception_during_init_terminalizes_a_meta_this_run_committed(
+        self,
+    ) -> None:
+        # The `init_committed` flag only flips when the runtime call RETURNS, so an
+        # exception raised after the meta is on disk falls back to the durable evidence:
+        # a `driver` block naming THIS process was written by this invocation's init.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_exc_mid_init"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            observed: list[list[str]] = []
+
+            def runtime_that_commits_then_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    d = repo_root / "workspace" / "orchestrations" / oid
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "orchestration_meta.json").write_text(
+                        json.dumps({"orchestration_id": oid, "status": "running",
+                                    "spec_ref": "spec/problem/test.md",
+                                    "driver": {**identity, "recorded_at": "now"}}),
+                        encoding="utf-8")
+                    raise ValueError("boom")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_that_commits_then_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            self.assertEqual(
+                set_status[0][set_status[0].index("--reason-code") + 1],
+                "driver_exception")
+
+    def test_unexpected_exception_during_init_leaves_another_runs_meta_alone(self) -> None:
+        # The mirror: a reused `--orchestration-id` naming an orchestration this
+        # invocation did NOT write must not be terminalized just because we crashed
+        # near its id.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_exc_someone_elses"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            d = repo_root / "workspace" / "orchestrations" / oid
+            d.mkdir(parents=True, exist_ok=True)
+            seeded = {"orchestration_id": oid, "status": "running",
+                      "spec_ref": "spec/problem/test.md",
+                      # Foreign by construction: an unallocatable pid plus an explicit
+                      # `dead` verdict, so no live same-tick sibling can make the cold
+                      # guard refuse before the runtime is reached — issue #32.
+                      "driver": {**identity, "pid": _unallocatable_pid(),
+                                 "verdict": "dead"}}
+            meta_path = d / "orchestration_meta.json"
+            meta_path.write_text(json.dumps(seeded), encoding="utf-8")
+            seeded_bytes = meta_path.read_bytes()
+            observed: list[list[str]] = []
+
+            def raising_runtime(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                raise ValueError("boom")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = raising_runtime  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._forced_liveness(), redirect_stderr(io.StringIO()), \
+                        redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+            self.assertEqual(meta_path.read_bytes(), seeded_bytes)
+
+    def test_unexpected_exception_preserves_an_already_terminal_status(self) -> None:
+        # A more specific terminal status recorded before the exception wins: the
+        # generic `driver_exception` must not clobber e.g. a `fail_closed` narrative.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_exc_terminal"
+            orch_dir = repo_root / "workspace" / "orchestrations" / oid
+            orch_dir.mkdir(parents=True, exist_ok=True)
+            (orch_dir / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": oid, "status": "fail_closed",
+                            "spec_ref": "spec/problem/test.md"}),
+                encoding="utf-8",
+            )
+            with self._mkdir_boom(
+                "orch_agent_run_002", "tmp",
+                OSError(28, "No space left on device"),
+            ), redirect_stderr(io.StringIO()):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", oid])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
 
     def test_resume_refuses_running_latest_without_explicit_id(self) -> None:
         # Implicit `--resume` must not auto-attach to a non-terminal (running) latest.
@@ -5262,6 +5461,13 @@ class StdoutFormatTests(unittest.TestCase):
             (f({"status": "fail", "orchestration_id": "orch_1",
                 "reason": "preflight_failed", "detail": "x"}) or "")
             .startswith("[FAIL]"),
+        )
+        # The driver-exception backstop's envelope rides the same generic fail branch,
+        # so its reason is part of the pinned operator-visible vocabulary too.
+        self.assertEqual(
+            f({"status": "fail", "orchestration_id": "orch_1",
+               "reason": "driver_exception", "detail": "OSError: [Errno 28] boom"}),
+            "[FAIL] reason=driver_exception orch=orch_1 detail=OSError: [Errno 28] boom",
         )
         # Unknown event shapes return None so the caller falls back to JSON.
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
