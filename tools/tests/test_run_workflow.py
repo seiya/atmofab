@@ -3097,11 +3097,13 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 2)
             # `code == 2` alone is satisfied by ANY startup refusal — including the one the
             # seeding above exists to avoid — so the envelope is read. What that pins is the
-            # BEHAVIOUR (a nonexistent spec_ref is refused, by name, before anything launches),
-            # not which line raised: `_canonicalize_spec_ref` and `_discover_source_dependency_
-            # ref` both run `_resolve_existing_ref_path` on this ref under the same
-            # `field_name`, so deleting either one alone leaves the envelope byte-identical.
-            # The redundancy is the reason a single-site mutation here proves nothing.
+            # BEHAVIOUR (a nonexistent spec_ref is refused, and the refusal names it), not
+            # which line raised: on this cold path `_canonicalize_spec_ref` and
+            # `_discover_source_dependency_ref` both run `_resolve_existing_ref_path` on the
+            # ref under the same `field_name`, so deleting either alone leaves the envelope
+            # byte-identical. That redundancy is why a single-site mutation here proves
+            # nothing — and it is cold-path only: a resume that reuses its recovered
+            # dependency ref skips the second check entirely.
             payload = json.loads(buf.getvalue().strip().splitlines()[-1])
             self.assertEqual(payload["reason"], "invalid_startup_input")
             self.assertIn("spec/problem/missing.md", payload["detail"])
