@@ -4,8 +4,10 @@
 > `Generate.generate` leaf produces exactly one `CodegenBundle`; the host validates
 > it with `validate_bundle` (the post-generate gate), writes the declared files, and
 > assembles the build graph. On a residual node that stays on the agentic leaf (a node
-> whose runner/Makefile are not host-rendered — the pure executor is the only executor
-> since `M-F`, but such a node cannot be expressed as a pure producer), no bundle is produced — the agentic `Generate.generate` leaf writes
+> whose runner/Makefile are not host-rendered — since the non-M3c physics path was
+> removed, that is the `infrastructure` harness self-test; the pure executor is the only
+> executor since `M-F`, but such a node cannot be expressed as a pure producer), no
+> bundle is produced — the agentic `Generate.generate` leaf writes
 > the Fortran sources directly, as described in
 > `docs/workflow/phases/phase_02_generate.md` together with `CHECKS_MODULE_CONTRACT.md`.
 > This document is the canonical contract for the bundle document itself; the schema

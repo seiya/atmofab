@@ -3708,9 +3708,17 @@ def _resolve_dependency_closure(
         versions has a coherent artifact chain — so we keep all of them, not
         just the highest, to avoid re-running a dependency that an older
         matching version already satisfies.
-      - `error`: None on success; else `{reason, detail}` for a cycle,
-        unresolvable dependency, version conflict, malformed/missing deps.yaml,
-        or catalog corruption (all fail-closed — no node is run).
+      - `error`: None on success; else `{reason, detail}` (all fail-closed — no
+        node is run). Resolution failures: a cycle, an unresolvable dependency, a
+        version conflict, malformed/missing deps.yaml, catalog corruption. This
+        function ALSO applies the two spec-input identity gates to every visited
+        spec — the target included, since it is on no edge — because a dependency
+        that is already ready is skipped before it ever reaches `resolve_node`:
+        `spec_id_too_long` (runner_renderer.MAX_SPEC_ID_LEN) and
+        `infra_dep_count_invalid` (exactly one `infrastructure` direct dep on a
+        non-infrastructure spec). An unconfirmable `spec_kind` is reported as
+        `spec_catalog_corrupt` rather than as a dep-count violation — see
+        `_kind_for_gate`.
 
     Edges come from `<spec_ref>/deps.yaml` resolved against `spec_catalog.yaml`
     via the canonical runtime helpers (`_parse_dep_entries`,
@@ -3725,13 +3733,15 @@ def _resolve_dependency_closure(
         _read_deps_yaml,
         resolve_spec_ref_for,
     )
-    from tools.runner_renderer import spec_id_length_violation
+    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
 
-    # The catalog is loaded lazily — only once a dependency edge is actually
-    # encountered. A leaf target (empty deps.yaml) needs no catalog, so a
-    # missing/corrupt registry must not turn an otherwise-launchable leaf
-    # workflow into a failure (matching the runtime readiness path, which
-    # treats no-deps specs as vacuously ready without the catalog).
+    # A missing/corrupt registry must not turn an otherwise-launchable leaf workflow into
+    # a failure (matching the runtime readiness path, which treats no-deps specs as
+    # vacuously ready without the catalog). The load is lazy, but since the infra-dep gate
+    # `_kind_for_gate` needs the target's kind, the ATTEMPT now happens for every visited
+    # spec, not only once an edge is encountered — the leaf property is preserved by that
+    # function swallowing the load error and falling back to the declared kind, not by
+    # never reaching the catalog.
     catalog_cache: dict[tuple[str, str], tuple[str, ...]] | None = None
 
     def _get_catalog() -> dict[tuple[str, str], tuple[str, ...]]:
@@ -3748,6 +3758,81 @@ def _resolve_dependency_closure(
     visiting: set[str] = set()
     done: set[str] = set()
     error: dict[str, str] | None = None
+
+    # Sentinel for "the registry answered, and its answer is self-contradictory". An
+    # object() rather than a string so it can never match the `infrastructure` exemption.
+    # Note it is NOT sufficient on its own: `infra_dep_count_violation` returns None for a
+    # count of exactly 1 before the kind matters at all, so the caller must test for this
+    # sentinel explicitly rather than relying on a violation being produced.
+    _UNRESOLVABLE_KIND = object()
+
+    def _kind_for_gate(spec_ref: str, deps_doc: dict) -> tuple[Any, str | None]:
+        """The `spec_kind` the infra-dep-count gate judges `spec_ref` by.
+
+        Returns `(kind, registry_defect_detail)`. The detail is non-None when the catalog
+        could not answer authoritatively, and the two cases differ in how the caller must
+        treat it — see below. The comment at the call site is the authority on which one
+        suppresses a rejection and which one is reported outright.
+
+        Kind decides EXEMPTION (an `infrastructure` spec declares no harness of its own), so
+        it must not be self-declared: `deps.yaml`'s top-level `spec_kind` is carried by no
+        schema — `_parse_dep_entries` validates only the `dependencies` block — and a spec
+        that writes `spec_kind: infrastructure` there would exempt itself from the gate while
+        `resolve_node` (which reads the CATALOG) still rejects it, phases and billed
+        dependency runs later.
+
+        So the catalog is authoritative wherever it can answer. For a dependency that is
+        already true structurally — `kindid_by_ref` was set from the catalog-validated edge
+        that pulled it in, before the recursion. For the TARGET (on no edge yet) look the
+        spec_id up in the catalog directly.
+
+        Two shapes leave the catalog unable to answer:
+        - the registry is missing / corrupt / unreadable. The declared value is still
+          returned, so a declared `infrastructure` leaf stays launchable under a silent
+          registry — the lazy-catalog property this function must not break. The caller
+          therefore uses the detail to suppress only the REJECTION half (the half that
+          needs proof); downgrading a repo-wide registry outage into "your deps.yaml is
+          wrong" would send the operator to edit a file that is not the problem, which is
+          the same reason `_load_spec_catalog` raises instead of returning `{}`.
+        - the spec_id is registered under more than one `spec_kind`. `docs/SPEC.md` req. 4
+          requires spec_id to be unique repository-wide, and `resolve_node` does NOT detect
+          the duplicate — it returns the FIRST matching entry — so resolving it here by
+          catalog order would make the two capture points disagree by luck of ordering.
+          Here there is no lazy-catalog property to protect (the registry WAS read, it is
+          simply self-contradictory), so `_UNRESOLVABLE_KIND` is returned and the caller
+          reports the registry defect for ANY dep count. Returning the declared value
+          instead would let a spec self-declare `infrastructure` and skip the gate entirely
+          — the exact bypass this function exists to close, and one that costs a full billed
+          dependency closure before `resolve_node` refuses the target.
+        """
+        edge_kind = (kindid_by_ref.get(spec_ref) or (None,))[0]
+        if edge_kind:
+            return edge_kind, None
+        spec_id = Path(spec_ref).name
+        try:
+            kinds = {k for (k, sid) in _get_catalog() if sid == spec_id}
+        except (SpecCatalogCorruption, RuntimeError, OSError) as exc:
+            return deps_doc.get("spec_kind"), (
+                f"spec/registry/spec_catalog.yaml could not be read ({exc}), so the "
+                f"spec_kind of {spec_ref} could not be confirmed")
+        if len(kinds) == 1:
+            return next(iter(kinds)), None
+        if len(kinds) > 1:
+            # Reported by the caller whatever the dep count says — see the
+            # `_registry_defect` branch there, and the `_UNRESOLVABLE_KIND` note above it.
+            # Unlike the unreadable-registry case there is no lazy-catalog property to
+            # protect: the registry WAS read, it is simply self-contradictory.
+            return _UNRESOLVABLE_KIND, (
+                f"spec_id {spec_id!r} is registered under multiple spec_kinds "
+                f"{sorted(kinds)} in spec/registry/spec_catalog.yaml; spec_id must be "
+                f"unique repository-wide (docs/SPEC.md req. 4), and until it is, this "
+                f"spec's kind cannot be resolved")
+        # Registered under no kind at all: an unregistered spec. The declared value decides
+        # here — including the exemption, so a self-declared `infrastructure` does pass this
+        # gate. That is not a hole worth closing here: an unregistered spec_ref is rejected
+        # by `resolve_node` (target) and by `_matching_dep_versions` (dependency edge)
+        # regardless of what it declares, so it can never reach a phase.
+        return deps_doc.get("spec_kind"), None
 
     def visit(spec_ref: str) -> None:
         nonlocal error
@@ -3783,6 +3868,37 @@ def _resolve_dependency_closure(
             error = {
                 "reason": "dependency_deps_malformed",
                 "detail": f"{spec_ref}/deps.yaml has a malformed dependency schema",
+            }
+            return
+        # M3d spec-input gate at closure-build (sibling of the spec_id bound above): every
+        # non-infrastructure spec declares EXACTLY ONE `infrastructure` (runner-harness)
+        # dependency. `resolve_node` gates each node's own run, but an ALREADY-READY
+        # dependency is skipped before it reaches `_run_node` → resolve_node, so gating only
+        # there could let a violating ready dep slip past.
+        # A missing/malformed deps.yaml keeps its existing reason (both checks above run
+        # first), so this check only ever sees a readable, well-formed dependency schema.
+        own_kind, _registry_defect = _kind_for_gate(spec_ref, deps_doc)
+        infra_count = sum(1 for kind, _sid, _c in entries if kind == "infrastructure")
+        _infra_violation = infra_dep_count_violation(own_kind, infra_count)
+        # `_UNRESOLVABLE_KIND` is reported whatever the dep count says — including the
+        # count that would otherwise PASS. `infra_dep_count_violation` short-circuits on a
+        # count of exactly 1 without consulting the kind, so a multi-kind spec_id declaring
+        # one harness dep would otherwise sail through and leave the two capture points to
+        # disagree by luck of catalog order, which is the whole reason the sentinel exists.
+        # An unreadable registry is different: there the declared value MAY still grant the
+        # exemption, and only the rejection half is suppressed — pointing the operator at
+        # deps.yaml during a registry outage sends them to the wrong file, and the dep count
+        # may well be correct for the node's true kind.
+        if _registry_defect and (own_kind is _UNRESOLVABLE_KIND or _infra_violation):
+            error = {
+                "reason": "spec_catalog_corrupt",
+                "detail": _registry_defect,
+            }
+            return
+        if _infra_violation:
+            error = {
+                "reason": "infra_dep_count_invalid",
+                "detail": f"{spec_ref}: {_infra_violation}",
             }
             return
         for kind, sid, constraint in entries:

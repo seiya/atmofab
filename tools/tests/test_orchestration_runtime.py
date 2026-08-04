@@ -28023,7 +28023,7 @@ class LeafContractDocPolicyTests(unittest.TestCase):
         RUN = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
         CHK = "docs/workflow/CHECKS_MODULE_CONTRACT.md"
         self.assertEqual(leaf_contract_doc_refs("compile"), [AC, P1])
-        # M3d node-aware: a NON-M3c generate leaf (infra self-test / legacy no-harness
+        # M3d node-aware: a NON-M3c generate leaf (the infrastructure self-test
         # node) still authors a runner, so it KEEPS the runner-output contract + the
         # checks ABI. The default (no flag) is that safe superset.
         self.assertEqual(leaf_contract_doc_refs("generate"), [AC, RUN, CHK])
@@ -28056,7 +28056,7 @@ class LeafContractDocPolicyTests(unittest.TestCase):
             return build_skill_must_read_refs(payload)
 
         # A non-M3c generate leaf (no runner_host_authored flag) keeps the runner-output
-        # contract — it authors a runner (infra self-test / legacy node).
+        # contract — it authors a runner (the infrastructure self-test).
         gen = refs_for("generate", "generate")
         self.assertIn("docs/AGENT_CONTRACT.md", gen)
         self.assertIn("docs/workflow/CHECKS_MODULE_CONTRACT.md", gen)
@@ -28169,7 +28169,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # runner (orch_20260629T065607Z_011f8fc6).
         # Bumped 8500->9200: R1/M3c-β scope note — on an M3c node the runner is host-rendered,
         # so this doc describes the rendered output + scopes its authoring rules to a
-        # leaf-authored runner (infra self-test / legacy no-harness node).
+        # leaf-authored runner (the infrastructure self-test).
         # Bumped 9200->9600: the metrics_basis entry shape (required_raw_variables as direct
         # sibling keys of test_id, never wrapped under `values`) plus a correct/wrong pair.
         # The rule lived only in gate code before, and a runner-authoring leaf that wrapped the
@@ -28326,7 +28326,28 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # axis (`backend_overrides.cpu_openmp` -> the literal `openmp`), which is where the live
         # 4-threads-measured-as-1 defect actually sits, plus the "closed table, not exhaustive"
         # correction. 47000 left 2 bytes of headroom, which is not a ceiling, it is a tripwire.
-        "docs/workflow/phases/phase_01_compile.md": 47600,
+        # Bumped 47600->48400: the non-M3c physical path was removed, which turned two silent
+        # degradations into stated rules the compile leaf must be able to read here — the
+        # exactly-one infrastructure dependency (spec-input) and the (make, fortran) toolchain
+        # gate. A leaf that hits either needs the remedy in the doc it is pointed at, not just
+        # in the violation string.
+        # Bumped 48400->50400 (review rounds 1-2): the two new deterministic rules — exactly
+        # one infrastructure dep, and the (make, fortran) toolchain — needed their REMEDIES
+        # stated here, not just their existence, because this is the doc the compile leaf is
+        # pointed at when either fires. Round 1 removed a false rationale (the Build backstop
+        # tests build_system only, so the c/cpp/mixed half never reached it) and round 2 moved
+        # the rest of that archaeology into the gate's docstring, which no leaf force-reads.
+        # What remains and costs bytes is leaf-actionable: state both toolchain keys
+        # explicitly (V6 + the post_generate gates read `language`), and the three SHAPE
+        # rejections — non-mapping, explicit null, untrimmed — each of which exists because
+        # two host readers disagree about who authors src/Makefile.
+        # Bumped 50400->50700 (review round 4): the toolchain gate's scope widened twice
+        # under review — `make` now binds every node kind, and the present-but-empty check
+        # covers every spelling that lands falsy (`null`, the bare key, YAML-1.1 `no`/`off`,
+        # `0`, `[]`, `""`), not just the word "null". A leaf told only "no nulls" would keep
+        # writing `language: no`. The mechanism prose was moved to the gate docstring, which
+        # no leaf force-reads; what is left here is the rule and its remedy.
+        "docs/workflow/phases/phase_01_compile.md": 50700,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28401,7 +28422,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # canonical names" would leave the leaf to guess which of its five habits is canonical.
         # Bumped 26300->26700 (review): same two additions as phase_01 — the `cpu_openmp`
         # section-name alias and the case-insensitive matching note. The IR author is gated on both.
-        "skills/workflow-compile-generate/SKILL.md": 26700,
+        # Bumped 26700->26800: the two toolchain bullets were replaced by one that states the
+        # (make, fortran)-only rule the Compile.static gate enforces. They previously told this
+        # leaf to adopt `cuda_fortran` on a gpu node and to pick freely from
+        # make/cmake/meson/ninja — i.e. to author an IR its own phase now rejects, which a warm
+        # re-author would reproduce verbatim. The forbidden spellings are named explicitly for
+        # the same reason the knob-alias table is: an unnamed alias is one the leaf re-derives.
+        "skills/workflow-compile-generate/SKILL.md": 26800,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity

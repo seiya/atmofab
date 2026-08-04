@@ -267,14 +267,16 @@ class BuildLaunchRequestTest(unittest.TestCase):
         # so it must NOT re-add RUNNER (a drift would leak it back in).
         self.assertNotIn(RUN, build_skill_must_read_refs(m3c))
 
-        legacy = wc.build_launch_request(
+        # A runner-authoring node — the `infrastructure` harness self-test — keeps the
+        # RUNNER contract in its must-read set.
+        leaf_authored = wc.build_launch_request(
             self._generate_refs(), step="generate", substep="generate",
             orchestration_id="o", orchestration_agent_run_id="p",
             child_agent_run_id="c", agent_model="m", workflow_mode="dev",
             runner_host_authored=False)
-        self.assertNotIn("runner_host_authored", legacy)  # non-M3c: not stamped
-        self.assertIn(RUN, legacy["skill_must_read_refs"])
-        self.assertIn(RUN, build_skill_must_read_refs(legacy))
+        self.assertNotIn("runner_host_authored", leaf_authored)  # non-M3c: not stamped
+        self.assertIn(RUN, leaf_authored["skill_must_read_refs"])
+        self.assertIn(RUN, build_skill_must_read_refs(leaf_authored))
 
 
 class ReuseResumeAndFindingsTest(unittest.TestCase):
@@ -5238,6 +5240,156 @@ class NodeAllocationTest(unittest.TestCase):
             wc.resolve_node(REPO_ROOT, "spec/" + overlong)
         self.assertIn("spec-input rejected", str(ctx.exception))
         self.assertIn(str(MAX_SPEC_ID_LEN + 3), str(ctx.exception))
+
+    def _mini_spec_repo(self, tmp: str, *, spec_kind: str,
+                        infra_entries: int | None, other_entries: int = 0) -> Path:
+        """A tmp repo with one catalog entry `n1` of `spec_kind`, and its deps.yaml
+        declaring `infra_entries` infrastructure deps (None -> no deps.yaml at all) plus
+        `other_entries` component and profile deps each."""
+        repo = Path(tmp)
+        spec_dir = repo / "spec" / "x" / "n1"
+        spec_dir.mkdir(parents=True)
+        (repo / "spec" / "registry").mkdir(parents=True)
+        (repo / "spec" / "registry" / "spec_catalog.yaml").write_text(
+            "specs:\n"
+            # Quoted so a padded value survives the YAML parse (a plain scalar is
+            # stripped by the parser, which would make the padding untestable).
+            f"  - spec_kind: \"{spec_kind}\"\n"
+            "    spec_id: n1\n"
+            "    spec_version: \"0.1.0\"\n"
+            "    controlled_spec_path: spec/x/n1/controlled_spec.md\n",
+            encoding="utf-8")
+        if infra_entries is not None:
+            lines = ["spec_id: n1", f"spec_kind: {spec_kind}", "dependencies:"]
+            for key, field in (("components", "component_id"), ("profiles", "profile_id")):
+                if not other_entries:
+                    lines.append(f"  {key}: []")
+                    continue
+                lines.append(f"  {key}:")
+                for i in range(other_entries):
+                    lines.append(f"    - {field}: {key}_{i}")
+                    lines.append("      version_constraint: \">=0.1.0\"")
+            if infra_entries:
+                lines.append("  infrastructure:")
+                for i in range(infra_entries):
+                    lines.append(f"    - infrastructure_id: harness_{i}")
+                    lines.append("      version_constraint: \">=0.1.0\"")
+            (spec_dir / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return repo
+
+    def test_resolve_node_requires_exactly_one_infra_dep(self) -> None:
+        # Spec-input gate (sibling of the spec_id bound): zero or >1 infrastructure direct
+        # deps used to degrade silently to the removed leaf-authored-runner path. Both are
+        # rejected before any phase runs; the message names the rule and the count.
+        for count in (0, 2):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind="component",
+                                            infra_entries=count)
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec-input rejected", str(ctx.exception))
+                self.assertIn("exactly one", str(ctx.exception))
+                self.assertIn(f"found {count}", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            node_key, _ = wc.resolve_node(repo, "spec/x/n1")
+            self.assertEqual(node_key, "component/n1@0.1.0")
+
+    def test_only_infrastructure_entries_are_counted(self) -> None:
+        # The count is over `infrastructure` entries ALONE. Counting every direct dependency
+        # would reject every real spec in the catalog — advdiff1d_linear declares 3
+        # components + 1 profile + 1 infrastructure — while the tmp fixtures, which declare
+        # only the harness edge, would all still pass and hide it.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1,
+                                        other_entries=3)
+            self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0], "component/n1@0.1.0")
+        # ...and components/profiles do not substitute for the missing harness edge either.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=0,
+                                        other_entries=3)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("found 0", str(ctx.exception))
+
+    def test_resolve_node_exempts_an_infrastructure_spec(self) -> None:
+        # The harness authors its own self-test runner, so it declares no harness dep.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="infrastructure", infra_entries=0)
+            node_key, _ = wc.resolve_node(repo, "spec/x/n1")
+            self.assertEqual(node_key, "infrastructure/n1@0.1.0")
+
+    def test_the_unreadable_deps_exemption_uses_the_same_spelling_rule(self) -> None:
+        # The two branches of the spec-input gate sit 12 lines apart and must agree on how
+        # `spec_kind` is spelled. `infra_dep_count_violation` is case-SENSITIVE (every
+        # downstream reader compares the stripped value without folding); if this branch
+        # lower-cased, a `spec_kind: Infrastructure` node would be REJECTED when its
+        # deps.yaml is well-formed and ADMITTED when it is unreadable — the broken input
+        # let through and the correct one refused, with the mis-cased node then invisible to
+        # every reader that decides host authorship.
+        # Both branches: infra_entries=None is the unreadable-deps.yaml branch, 0 the
+        # well-formed one. Neither may exempt the mis-cased kind.
+        for infra_entries in (None, 0):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = self._mini_spec_repo(tmp, spec_kind="Infrastructure",
+                                            infra_entries=infra_entries)
+                with self.assertRaises(ValueError) as ctx:
+                    wc.resolve_node(repo, "spec/x/n1")
+                self.assertIn("spec-input rejected", str(ctx.exception))
+        # The canonical spelling is exempt on both branches — including when the catalog
+        # pads it, which pins the `.strip()` half of the rule the same way the mis-cased
+        # loop above pins the no-case-folding half. `resolve_node` reads the raw catalog
+        # entry, so without the strip a padded kind would be exempt on one branch and
+        # rejected on the other.
+        for infra_entries in (None, 0):
+            for spelling in ("infrastructure", "  infrastructure  "):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = self._mini_spec_repo(tmp, spec_kind=spelling,
+                                                infra_entries=infra_entries)
+                    self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
+                                     f"{spelling}/n1@0.1.0")
+
+    def test_a_deps_yaml_that_is_not_a_mapping_is_rejected_not_crashed(self) -> None:
+        # A deps.yaml whose top level parses to a LIST is readable and well-formed YAML but
+        # not a dependency document. `_direct_infra_dep_count`'s isinstance guard turns it
+        # into a clean spec-input rejection; without it the `.get` raises inside resolve_node.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            (repo / "spec" / "x" / "n1" / "deps.yaml").write_text(
+                "- components\n- profiles\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("is missing or its dependency schema is malformed",
+                          str(ctx.exception))
+
+    def test_resolve_node_rejects_unreadable_deps_on_a_non_infra_node(self) -> None:
+        # The exactly-one precondition cannot be PROVEN without a well-formed deps.yaml,
+        # so absence fails closed rather than reading as "zero". An infrastructure node
+        # is exempt (it declares none either way).
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=None)
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("spec-input rejected", str(ctx.exception))
+            # Pin the ABSENCE branch specifically: "deps.yaml" alone also appears in the
+            # count message ("...dependency in deps.yaml; found 0"), so asserting only that
+            # cannot tell "unprovable" from "proved zero" — and reading absence as zero is
+            # exactly the fail-open this branch exists to prevent.
+            self.assertIn("is missing or its dependency schema is malformed",
+                          str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            (repo / "spec" / "x" / "n1" / "deps.yaml").write_text(
+                "spec_id: n1\nspec_kind: component\ndependencies:\n  bogus_key: []\n",
+                encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("malformed", str(ctx.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="infrastructure",
+                                        infra_entries=None)
+            node_key, _ = wc.resolve_node(repo, "spec/x/n1")
+            self.assertEqual(node_key, "infrastructure/n1@0.1.0")
 
     def test_resolve_node_accepts_file_style_spec_ref(self) -> None:
         base = "spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2"
@@ -10917,14 +11069,29 @@ class WriteMakefileTest(unittest.TestCase):
             for label, ir_text in cases:
                 ir_path.write_text(ir_text, encoding="utf-8")
                 conductor_authors = c._conductor_authors_makefile(refs)
-                # reconstruct the runtime's _resolved_makefile_host_authored verbatim
-                bs = (_impl_resolved_build_system(repo, refs.ir_ref) or "")
-                lang = _impl_resolved_language(repo, refs.ir_ref)
-                runtime_host_authored = (
-                    (bs or "make") == "make"
-                    and (lang or "fortran") == "fortran")
+                runtime_host_authored = _runtime_makefile_host_authored(repo, refs.ir_ref)
                 self.assertEqual(conductor_authors, runtime_host_authored,
                                  f"conductor/runtime disagree for {label!r}")
+
+        # The reconstruction above is only load-bearing if it can actually SEE a divergence.
+        # None of the cases carries whitespace, and one cannot simply be added: for
+        # `build_system: "   "` the live pair genuinely disagrees (the conductor compares
+        # unstripped and declines; record_launch strips, concludes the host authored it, and
+        # suppresses the leaf's pin — so src/Makefile is authored by nobody). That shape is
+        # kept out of production by `_validate_toolchain_backend_supported`, not by this
+        # agreement. Pin the divergence itself, so a reconstruction that quietly stops
+        # mirroring record_launch — as it once did, omitting `.strip().lower()` — fails here.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            ir_path = repo / refs.ir_ref / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                'impl_defaults:\n  toolchain:\n    language: fortran\n'
+                '    build_system: "   "\n', encoding="utf-8")
+            c = self._conductor(repo)
+            self.assertFalse(c._conductor_authors_makefile(refs))
+            self.assertTrue(_runtime_makefile_host_authored(repo, refs.ir_ref))
 
     # --- Part 2 (Model B): dependency Makefile rendering. The non-leaf branch DOES run live —
     # run_phase authors for every make+fortran node (leaf OR dependency; _conductor_authors_
@@ -11208,6 +11375,24 @@ class WriteMakefileTest(unittest.TestCase):
             self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir), [])
 
 
+def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
+    """`record_launch`'s `_resolved_makefile_host_authored`, reconstructed VERBATIM
+    (orchestration_runtime, the `request_payload["_resolved_makefile_host_authored"]`
+    assignment): `.strip().lower()` on the build_system half, the language half compared
+    unstripped.
+
+    ONE copy, shared by the agreement cases and the divergence pin below. An earlier version
+    omitted the build_system normalization, which made the test agree with itself for
+    `build_system: "   "` exactly where the live pair diverges — and a second, independent
+    copy in the divergence pin left the loop's copy unguarded all over again."""
+    from tools.orchestration_runtime import (
+        _impl_resolved_build_system, _impl_resolved_language)
+    bs_resolved = _impl_resolved_build_system(repo, ir_ref)
+    lang = _impl_resolved_language(repo, ir_ref)
+    bs = (bs_resolved or "").strip().lower() if isinstance(bs_resolved, str) else ""
+    return (bs or "make") == "make" and (lang or "fortran") == "fortran"
+
+
 class WriteRunnerTest(unittest.TestCase):
     """R1/M3c-β: the conductor host-renders `<spec_id>_runner.f90` for an M3c physics node
     (make+fortran, non-infra, exactly one infrastructure/harness dep), and the Makefile
@@ -11227,10 +11412,12 @@ class WriteRunnerTest(unittest.TestCase):
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
     def _write_consumer_ir(self, repo: Path, refs: wc.NodeRefs, *, infra=1,
-                           bare_string: bool = False) -> None:
+                           bare_string: bool = False, spec_kind: str | None = None) -> None:
         from tools.tests.test_runner_renderer import _boundary_ir
         import yaml as _yaml
         ir = _boundary_ir()
+        if spec_kind is not None:
+            ir.setdefault("meta", {})["spec_kind"] = spec_kind
         ids = ["harness_fortran_cpu"] * infra
         if infra == 2:
             ids = ["harness_fortran_cpu", "harness_other_cpu"]
@@ -11299,10 +11486,12 @@ class WriteRunnerTest(unittest.TestCase):
             c = self._conductor(repo)
             self._write_consumer_ir(repo, refs, infra=1)
             self.assertTrue(c._conductor_authors_runner(refs))
-            # zero infra deps -> legacy path (leaf-authored runner)
+            # Zero / two infra deps -> not M3c, so the conductor does not host-render. Neither
+            # count can reach here from a live run any more (spec-input rejects both), but the
+            # predicate must stay fail-safe for a hand-crafted IR: it declines to render rather
+            # than rendering glue against a harness it cannot identify.
             self._write_consumer_ir(repo, refs, infra=0)
             self.assertFalse(c._conductor_authors_runner(refs))
-            # two infra deps -> not M3c
             self._write_consumer_ir(repo, refs, infra=2)
             self.assertFalse(c._conductor_authors_runner(refs))
 
@@ -11613,11 +11802,14 @@ class WriteRunnerTest(unittest.TestCase):
             self.assertIn(
                 "$(DEP_OBJS) $(MODEL_OBJ) $(CHECKS_OBJ) $(RUNNER_OBJ) -o $(BINDIR)/$(BIN)", text)
 
-    def test_makefile_no_checks_rule_for_legacy_node(self) -> None:
+    def test_makefile_no_checks_rule_for_non_checks_node(self) -> None:
+        # The no-CHECKS Makefile shape is live for the `infrastructure` harness node: it authors
+        # its own self-test runner (no fixed-ABI `<spec_id>_checks` module) and declares no
+        # harness dependency of its own.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            self._write_consumer_ir(repo, refs, infra=0)  # legacy leaf, no harness dep
+            self._write_consumer_ir(repo, refs, infra=0, spec_kind="infrastructure")
             self._conductor(repo)._write_makefile(refs)
             text = (repo / refs.source_dir() / "src" / "Makefile").read_text(encoding="utf-8")
             self.assertNotIn("CHECKS_SRC", text)
@@ -11642,13 +11834,13 @@ class WriteRunnerTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", child_agent_run_id="c",
             agent_model="m", workflow_mode="prod", runner_host_authored=True)
         self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
-        # default (legacy) keeps the runner
-        legacy = wc.build_launch_request(
+        # Default (runner-authoring node — the infrastructure self-test) keeps the runner.
+        leaf_authored = wc.build_launch_request(
             refs, step="generate", substep="generate", orchestration_id="o",
             orchestration_agent_run_id="ORCH", child_agent_run_id="c",
             agent_model="m", workflow_mode="prod")
         self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90",
-                      legacy["allowed_output_paths"])
+                      leaf_authored["allowed_output_paths"])
 
     def test_phase_required_outputs_symmetry(self) -> None:
         refs = self._refs()
@@ -11656,8 +11848,9 @@ class WriteRunnerTest(unittest.TestCase):
                                         runner_host_authored=True)
         self.assertIn(f"{refs.source_dir()}/src/{self.SID}_checks.f90", m3c)
         self.assertNotIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", m3c)
-        legacy = wc.phase_required_outputs(refs, "generate")
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", legacy)
+        # Runner-authoring node (the infrastructure self-test) still requires the runner.
+        leaf_authored = wc.phase_required_outputs(refs, "generate")
+        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", leaf_authored)
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
@@ -11701,7 +11894,9 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
     def test_claude_non_m3c_is_agentic_residual(self) -> None:
         # (c) claude but non-M3c (0 or 2 infra deps): no bundle representation for the runner, so
-        # the node keeps the agentic leaf.
+        # the node keeps the agentic leaf. Spec-input rejects both counts on a live physics node,
+        # so this pins the fail-SAFE dispatch for a hand-crafted IR — the agentic loop, never a
+        # bundle producer asked to render glue against an unidentifiable harness.
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12392,7 +12587,8 @@ class DeterministicBuildTest(unittest.TestCase):
                 self.assertEqual(d.reason, f"validate_execute_{category}")
 
     def test_snapshot_gap_on_leaf_authored_runner_still_routes_generate(self) -> None:
-        """A non-M3c node's runner IS leaf-authored, so the gap is a Generate defect."""
+        """A non-M3c node's runner IS leaf-authored, so the gap is a Generate defect. Live case:
+        the `infrastructure` harness self-test, whose runner the leaf writes."""
         import tempfile
         ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
                    wc.SubstepOutcome("ex", "fail", [], 0)]

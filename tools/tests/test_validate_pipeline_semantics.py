@@ -7768,7 +7768,8 @@ end program shallow_water2d_runner
         # Wiring test: a traversal case_id must be rejected THROUGH the full compile stage
         # (`_validate_case_ids` is called from `_validate_compile_stage_impl`), not only when the
         # gate is invoked directly. This is the non-M3c path — the minimal tree declares no
-        # infrastructure dep, so the M3c render precondition does not fire.
+        # infrastructure dep, so the M3c render precondition does not fire. (Spec-input rejects
+        # that shape upstream; the compile gates keep it covered for a hand-crafted IR.)
         preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
                   "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
         with tempfile.TemporaryDirectory() as tmp:
@@ -7800,6 +7801,52 @@ end program shallow_water2d_runner
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
+
+    def test_validate_compile_stage_rejects_an_unsupported_toolchain(self) -> None:
+        # Wiring test: `_validate_toolchain_backend_supported` must fire THROUGH the full
+        # compile stage, not only when invoked directly. The minimal tree's impl_defaults
+        # default to make/fortran, so only the toolchain block is swapped here.
+        preds = [{"test_id": "t1", "expected_outcome": "pass", "target_cases": ["c1"],
+                  "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq", "value": "pass"}]}}]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._plant_tests_md(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["x", "y"],
+                io_contract=self._io_contract_with_predicates(preds),
+                impl_resolved={
+                    "target": {"class": "cpu", "backend": "cpp", "architecture": "x86_64"},
+                    "toolchain": {"language": "cpp", "standard": "c++17",
+                                  "build_system": "cmake"},
+                    "selected": {"backend_key": "cpu/x86_64/cpp/cmake"},
+                    "abstract": {"parallelism": "none", "layout": "scalar_interfaces",
+                                 "fusion": "none"},
+                    "backend_overrides": [],
+                },
+                dependency_resolved={
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "direct_deps": [{"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0", "kind": "component", "operations": ["dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux"]}],
+                    "transitive_deps": [], "topo_level": 1,
+                    "all_nodes": [
+                        {"node_key": "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
+                         "topo_level": 0},
+                        {"node_key": "problem/shallow_water2d@0.3.0", "topo_level": 1}]},
+            )
+            ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
+                       "/shallow-water2d_20260415_001/spec.ir.yaml")
+            doc = json.loads(ir_path.read_text())
+            doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}}]}
+            ir_path.write_text(json.dumps(doc))
+            v = validate_compile_stage(
+                repo_root, "workspace",
+                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
+            self.assertTrue(
+                any("only implemented physical backend is (make, fortran)" in x for x in v), v)
 
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
@@ -14375,6 +14422,557 @@ class ChecksSourceGateTests(unittest.TestCase):
         self.assertTrue(any("verdict.json" in v for v in self._run(bad)))
 
 
+class SpecKindNormalizationParityTests(unittest.TestCase):
+    """Every `meta.spec_kind` VALUE comparison in this module must spell itself the same way:
+    `.strip()`, and no case folding.
+
+    A gate that normalizes differently from its neighbours does not fail loudly — it SKIPS.
+    A padded or mis-cased value then buys an exemption from one gate while the gate that
+    would have caught the node treats it as a different kind, and NO violation is raised
+    anywhere. That is exactly how `spec_kind: "  infrastructure  "` once took the toolchain
+    gate's language exemption while the infrastructure public-API gate — the only enforcement
+    of the fortran-only language backend — skipped the node entirely.
+
+    The scan walks the module AST rather than a hand-listed set of functions, because the
+    failure mode is a NEW reader that nobody remembers to add to a list. It judges the
+    COMPARISON, resolving a value bound to a local first: `kind = meta.get("spec_kind")`
+    followed by `if str(kind or "").strip() == "component"` normalizes correctly and must not
+    be flagged, while the same hoist without the `.strip()` must be. An assignment on its own
+    decides nothing, so it is never a finding by itself — that shortcut was the previous
+    version's false-positive source (it flagged `detail = f"...{meta.get('spec_kind')}"`).
+
+    Ignored on purpose: a comparison against a non-literal (`== SOME_CONST`, `in KNOWN_KINDS`)
+    does not decide a kind from a fixed vocabulary, and a value handed to a call that is not a
+    string method is treated as normalized by that call rather than second-guessed here.
+    """
+
+    # String operations this scan can reason about. Anything else wrapping the value is
+    # somebody else's normalization contract.
+    _STRING_OPS = frozenset({"str", "strip", "lstrip", "rstrip",
+                             "lower", "upper", "casefold", "title"})
+    # ...of which these change case, which the parity rule forbids inline.
+    _CASE_OPS = ("lower", "upper", "casefold", "title")
+
+    @classmethod
+    def _is_spec_kind_read(cls, node) -> bool:
+        """True when `node` IS a read of `meta.spec_kind`, modulo string-op wrappers."""
+        import ast
+        seen = 0
+        while seen < 12:
+            seen += 1
+            if isinstance(node, ast.BoolOp) and node.values:
+                node = node.values[0]
+                continue
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if name == "get":
+                    return bool(node.args) and isinstance(node.args[0], ast.Constant) \
+                        and node.args[0].value == "spec_kind"
+                if name in cls._STRING_OPS:
+                    if isinstance(fn, ast.Attribute):
+                        node = fn.value
+                    elif node.args:
+                        node = node.args[0]
+                    else:
+                        return False
+                    continue
+                return False
+            if isinstance(node, ast.Subscript):
+                sl = node.slice
+                return isinstance(sl, ast.Constant) and sl.value == "spec_kind"
+            return False
+        return False
+
+    @classmethod
+    def _kind_literal(cls, node) -> bool:
+        """A fixed kind vocabulary: one string literal, or a literal collection of them."""
+        import ast
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str) and node.value != "spec_kind"
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return bool(node.elts) and all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
+        return False
+
+    @classmethod
+    def _spec_kind_sites(cls, source: str | None = None):
+        """(lineno, expression) for each comparison that decides a kind from meta.spec_kind.
+
+        `source` defaults to the module under guard; the self-tests below feed their own
+        snippets through this SAME function, so the guard's carve-outs cannot drift from what
+        it claims to ignore.
+        """
+        import ast
+        if source is None:
+            source = Path(vps.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        def seg(node) -> str:
+            return " ".join((ast.get_source_segment(source, node) or "").split())
+
+        def own_nodes(scope):
+            """Every node of `scope` except those belonging to a nested function, so a
+            site is attributed to exactly one scope and never counted twice."""
+            out = []
+            stack = list(ast.iter_child_nodes(scope))
+            while stack:
+                node = stack.pop()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                out.append(node)
+                stack.extend(ast.iter_child_nodes(node))
+            return out
+
+        sites = []
+        scopes = [tree] + [n for n in ast.walk(tree)
+                           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        for scope in scopes:
+            scope_nodes = own_nodes(scope)
+            # Locals bound to a spec_kind read, so a hoisted value is judged together with
+            # the comparison that uses it.
+            bound: dict[str, str] = {}
+            for node in scope_nodes:
+                target = value = None
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    if len(targets) == 1 and isinstance(targets[0], ast.Name):
+                        target, value = targets[0].id, node.value
+                elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+                    target, value = node.target.id, node.value
+                if target and cls._is_spec_kind_read(value):
+                    bound[target] = seg(value)
+
+            for node in scope_nodes:
+                if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                    continue
+                # No filter on the operator: what decides a kind is comparing a spec_kind
+                # READ against a fixed kind LITERAL, and those two requirements already
+                # exclude `is None`, `"spec_kind" not in meta` and `== SOME_CONST`. An
+                # operator allowlist on top would be a branch no test could distinguish.
+                op = node.ops[0]
+                left, right = node.left, node.comparators[0]
+                # `x in ("a","b")` puts the value on the left; `==` may put it either side.
+                pairs = ([(left, right)] if isinstance(op, (ast.In, ast.NotIn))
+                         else [(left, right), (right, left)])
+                for value_side, literal_side in pairs:
+                    if not cls._kind_literal(literal_side):
+                        continue
+                    names = {n.id for n in ast.walk(value_side)
+                             if isinstance(n, ast.Name) and n.id in bound}
+                    if cls._is_spec_kind_read(value_side):
+                        sites.append((node.lineno, seg(value_side)))
+                    elif names:
+                        # Judge the binding and the comparison together — either may carry
+                        # the normalization.
+                        sites.append((node.lineno,
+                                      " ".join(bound[n] for n in sorted(names))
+                                      + " ; " + seg(value_side)))
+                    break
+        return sites
+
+    def test_the_scan_finds_the_sites_it_is_meant_to_guard(self) -> None:
+        # Vacuity guard: if a refactor moves every comparison out of the shapes above, the
+        # parity assertion would pass by examining nothing. The floor is the count of
+        # DISTINCT reader lines that exist today, so deleting one also trips it.
+        lines = {lineno for lineno, _seg in self._spec_kind_sites()}
+        self.assertGreaterEqual(len(lines), 7, sorted(lines))
+
+    @classmethod
+    def _parity_problems(cls, sites) -> list[str]:
+        """The rule itself, applied to a site list. Shared by the module check and the
+        reachability check below, so neither half of the rule can go unexercised."""
+        problems = []
+        for lineno, expression in sites:
+            if ".strip()" not in expression:
+                problems.append(
+                    f"{lineno}: `{expression}` decides a spec_kind without normalizing; a "
+                    "padded value would skip this gate while its siblings still apply, "
+                    "exempting a node that nothing then checks")
+            for case_op in cls._CASE_OPS:
+                if f".{case_op}()" in expression:
+                    problems.append(
+                        f"{lineno}: `{expression}` case-folds spec_kind; every other reader "
+                        "(and the conductor's `_conductor_authors_runner`) compares "
+                        "case-sensitively, so folding here would exempt a `spec_kind: "
+                        "Infrastructure` node the rest of the pipeline treats as a physics "
+                        "node")
+        return problems
+
+    def test_every_spec_kind_site_strips_and_does_not_case_fold(self) -> None:
+        problems = self._parity_problems(self._spec_kind_sites())
+        self.assertEqual(problems, [], f"{vps.__file__}: " + "; ".join(problems))
+
+    def test_the_scan_ignores_shapes_that_do_not_decide_a_kind(self) -> None:
+        # Correct code written in these shapes must not be flagged: a false positive accuses
+        # a sound gate of skipping, and the next round "fixes" it into something worse. Each
+        # line exercises a different carve-out.
+        benign = (
+            "KEY = 'spec_kind'\n"
+            "def f(meta, entry, KNOWN, WANTED):\n"
+            "    detail = f\"kind={meta.get('spec_kind')!r}\"\n"      # message building
+            "    payload = {'spec_kind': meta.get('spec_kind')}\n"    # dict literal
+            "    if 'spec_kind' not in meta:\n"                       # membership on the KEY
+            "        return\n"
+            "    if meta.get('spec_kind') is None:\n"                 # identity, not a kind
+            "        return\n"
+            "    if entry['spec_kind'] in KNOWN:\n"                   # vocabulary not literal
+            "        return\n"
+            "    if meta.get('spec_kind') == WANTED:\n"               # comparand not literal
+            "        return\n"
+            "    if _norm_kind(meta.get('spec_kind')) != 'infrastructure':\n"  # delegated
+            "        return\n"
+            "    return detail, payload, KEY\n"
+        )
+        self.assertEqual(self._spec_kind_sites(benign), [])
+
+    def test_a_hoist_normalized_at_the_comparison_is_seen_and_accepted(self) -> None:
+        # The binding and the comparison are judged TOGETHER: either may carry the
+        # `.strip()`. Flagging this would be a false positive; not seeing it at all would
+        # mean the hoist shape is unguarded.
+        snippet = ("def f(meta):\n"
+                   "    raw = meta.get('spec_kind')\n"
+                   "    if str(raw or '').strip() == 'component':\n"
+                   "        return\n")
+        found = self._spec_kind_sites(snippet)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn(".strip()", found[0][1])
+
+    def test_the_scan_catches_every_shape_it_exists_for(self) -> None:
+        # ...and it must still catch these, or the carve-outs above have turned it off. Each
+        # line is a real way to get the rule wrong.
+        offending = {
+            "inline compare": "def f(meta):\n"
+                              "    if meta.get('spec_kind') != 'infrastructure':\n"
+                              "        return\n",
+            "hoisted assign": "def f(meta):\n"
+                              "    kind = str(meta.get('spec_kind') or '')\n"
+                              "    if kind == 'component':\n"
+                              "        return\n",
+            "annotated hoist": "def f(meta):\n"
+                               "    kind: str = str(meta.get('spec_kind') or '')\n"
+                               "    if kind == 'component':\n"
+                               "        return\n",
+            "walrus hoist": "def f(meta):\n"
+                            "    if (kind := meta.get('spec_kind')) == 'component':\n"
+                            "        return kind\n",
+            "subscript read": "def f(meta):\n"
+                              "    if meta['spec_kind'] == 'profile':\n"
+                              "        return\n",
+            "literal vocabulary": "def f(meta):\n"
+                                  "    if meta.get('spec_kind') in ('component', 'profile'):\n"
+                                  "        return\n",
+        }
+        for label, snippet in offending.items():
+            found = self._spec_kind_sites(snippet)
+            self.assertEqual(len(found), 1, f"{label}: {found}")
+            self.assertNotIn(".strip()", found[0][1], label)
+
+    def test_the_case_folding_half_is_reachable(self) -> None:
+        # The no-case-folding assertion is the half round 7 added; without a site that folds,
+        # nothing would ever exercise it. Every spelling of an inline fold must be seen.
+        # Spelled out rather than read from `_CASE_OPS`: deriving the cases from the
+        # constant under test lets a narrowed constant narrow its own coverage.
+        for case_op in ("lower", "upper", "casefold", "title"):
+            snippet = ("def f(meta):\n"
+                       f"    if str(meta.get('spec_kind') or '').strip().{case_op}() "
+                       "== 'component':\n"
+                       "        return\n")
+            found = self._spec_kind_sites(snippet)
+            self.assertEqual(len(found), 1, (case_op, found))
+            # ...and the RULE must reject it. Asserting only that the scan sees the site
+            # would leave `_CASE_OPS` free to shrink and take this test's coverage with it.
+            self.assertTrue(self._parity_problems(found), case_op)
+
+
+class ToolchainBackendGateTests(unittest.TestCase):
+    """`_validate_toolchain_backend_supported` (compile stage): (make, fortran) is the only
+    implemented physical backend. A node naming another toolchain used to slip past every
+    host-authoring predicate and degrade to the removed leaf-authored-runner path, then
+    hard-fail phases later at the Build-stage `_require_make_build_system` backstop."""
+
+    def _run(self, *, spec_kind="component", toolchain: dict | None | str = "absent",
+             impl_defaults: dict | None | str = "default") -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            ir: dict = {"meta": {"spec_kind": spec_kind, "spec_id": "bx"}}
+            if impl_defaults != "default":
+                if impl_defaults is not None:
+                    ir["impl_defaults"] = impl_defaults
+            else:
+                impl: dict = {"target": {"class": "cpu"}}
+                if toolchain != "absent":
+                    impl["toolchain"] = toolchain
+                ir["impl_defaults"] = impl
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(ir))
+            violations: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            return violations
+
+    def test_make_fortran_passes(self) -> None:
+        self.assertEqual(
+            self._run(toolchain={"build_system": "make", "language": "fortran"}), [])
+        # Case is normalized before comparison.
+        self.assertEqual(
+            self._run(toolchain={"build_system": "Make", "language": "Fortran"}), [])
+
+    def test_defaults_match_the_conductors_own(self) -> None:
+        # `_conductor_authors_makefile` / `_conductor_authors_runner` read an absent
+        # build_system as "make" and an absent language as "fortran". This gate must apply
+        # the SAME defaults, or an IR that omits the toolchain would be rejected here while
+        # the conductor host-renders it happily.
+        self.assertEqual(self._run(toolchain="absent"), [])
+        self.assertEqual(self._run(toolchain={}), [])
+        self.assertEqual(self._run(toolchain={"standard": "f2008"}), [])
+        self.assertEqual(self._run(toolchain={"build_system": "make"}), [])
+        self.assertEqual(self._run(toolchain={"language": "fortran"}), [])
+        self.assertEqual(self._run(impl_defaults=None), [])
+        self.assertEqual(self._run(impl_defaults={}), [])
+
+    def test_other_build_systems_fire(self) -> None:
+        for bs in ("cmake", "meson", "ninja"):
+            v = self._run(toolchain={"build_system": bs, "language": "fortran"})
+            self.assertEqual(len(v), 1, (bs, v))
+            self.assertIn(repr(bs), v[0])
+
+    def test_other_languages_fire(self) -> None:
+        for lang in ("c", "cpp", "mixed", "python"):
+            v = self._run(toolchain={"build_system": "make", "language": lang})
+            self.assertEqual(len(v), 1, (lang, v))
+            self.assertIn(repr(lang), v[0])
+
+    def test_infrastructure_kind_is_exempt_from_the_language_half_only(self) -> None:
+        # The harness is certified per (language, hardware) target, so another language is a
+        # legitimate future harness. `make` is NOT exempt: `_require_make_build_system` is
+        # kind-agnostic, so a non-make harness would die at Build — late and unrepairable,
+        # the failure class this gate exists to remove.
+        self.assertEqual(
+            self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "make", "language": "c"}), [])
+        v = self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "cmake", "language": "fortran"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("build_system must be 'make' on every node", v[0])
+        self.assertIn("_require_make_build_system", v[0])
+        # ...and its remedy names only build_system, never ordering the harness to become
+        # fortran. Anchored on the remedy clause itself, so a reformat of the declared-value
+        # prefix (which renders `language='fortran'`) cannot make this vacuous either way.
+        remedy = v[0].split("re-author impl_defaults.toolchain to ", 1)[1]
+        self.assertTrue(remedy.startswith("build_system 'make' ("), remedy[:60])
+
+    def test_the_infrastructure_exemption_is_case_sensitive(self) -> None:
+        # The exemption is spelled `.strip()`-only, the same rule as
+        # `runner_renderer.infra_dep_count_violation` and `_conductor_authors_runner` — whose
+        # comments cite THIS gate as their reason for not case-folding. Pin it at the reader
+        # they name, or the claim is asserted in three places and held in none.
+        self.assertEqual(self._run(spec_kind="  infrastructure  ",
+                                   toolchain={"language": "c"}), [])
+        v = self._run(spec_kind="Infrastructure", toolchain={"language": "c"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("(make, fortran)", v[0])
+
+    def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
+        # This gate exempts an infrastructure node from the `fortran` half on the grounds
+        # that `_validate_infrastructure_public_api` — the only enforcement of the
+        # fortran-only language backend — rejects a non-fortran harness itself. That hand-off
+        # holds only while both gates spell the exemption the same way. They did not: this
+        # one strips, the other matched exactly, so a padded `meta.spec_kind` took the
+        # exemption here AND was skipped there, and a non-fortran harness produced no
+        # violation anywhere in the pass. Pin the hand-off at every spelling this gate exempts.
+        import tempfile as _tf
+        for spelling in ("infrastructure", "  infrastructure  "):
+            with _tf.TemporaryDirectory() as td:
+                tmp = Path(td)
+                ir_dir = tmp / "ir"
+                ir_dir.mkdir()
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                    "meta": {"spec_kind": spelling, "spec_id": "harness_c_cpu"},
+                    "impl_defaults": {"toolchain": {"build_system": "make", "language": "c"},
+                                      "target": {"class": "cpu"}},
+                }))
+                v: list[str] = []
+                vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
+                self.assertEqual(v, [], f"{spelling}: exempt from the language half")
+                vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+                self.assertTrue(any("Fortran language backend" in x for x in v),
+                                f"{spelling}: nothing rejected the non-fortran harness: {v}")
+        # The hand-off also requires the OTHER gate to reject the spellings this one does
+        # NOT exempt — otherwise the pair would agree only where it happens to be tested.
+        # Case folding there would silently widen it past what the exemption assumes.
+        with _tf.TemporaryDirectory() as td:
+            tmp = Path(td)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                "meta": {"spec_kind": "Infrastructure", "spec_id": "harness_c_cpu"},
+                "impl_defaults": {"toolchain": {"build_system": "make", "language": "c"},
+                                  "target": {"class": "cpu"}},
+            }))
+            v = []
+            vps._validate_infrastructure_public_api(tmp, ir_dir, v)
+            self.assertEqual(v, [], "the sibling gate must not case-fold either")
+
+    def test_message_names_the_supported_backend_and_the_remedy(self) -> None:
+        v = self._run(toolchain={"build_system": "cmake", "language": "cpp"})
+        self.assertEqual(len(v), 1)
+        msg = v[0]
+        self.assertIn("impl_defaults.toolchain", msg)
+        self.assertIn("(make, fortran)", msg)
+        # The message reports what the author WROTE. A present key is echoed verbatim (not
+        # normalized — `CMake` must not come back as `'cmake'`), and an absent key is named
+        # as absent rather than as a declaration nobody made.
+        self.assertIn("build_system='cmake'", msg)
+        absent_bs = self._run(toolchain={"language": "cpp"})[0]
+        self.assertIn("build_system=absent (defaults to 'make')", absent_bs)
+        self.assertNotIn("build_system='make'", absent_bs)
+        cased = self._run(toolchain={"build_system": "CMake", "language": "fortran"})[0]
+        self.assertIn("build_system='CMake'", cased)
+        self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
+        # An actionable remedy: the controlled_spec pins no toolchain, so a re-author fixes it.
+        self.assertIn("re-author", msg)
+        self.assertIn("language-neutral", msg)
+        # The remedy must NOT invite omitting the keys. It once did, which contradicted V6
+        # and silently skipped the post_generate Fortran syntax-evidence gate (an absent
+        # `language` makes it return without checking). Pin the corrected wording, or the
+        # next edit reintroduces the old one with every test still green.
+        self.assertIn("stated explicitly", msg)
+        self.assertIn("V6", msg)
+        self.assertNotIn("omit the keys", msg)
+
+    def test_untrimmed_values_fire_because_the_host_readers_disagree_on_them(self) -> None:
+        # `_conductor_authors_makefile` / `_conductor_authors_runner` lower-case but do NOT
+        # strip, while the Build backstop and record_launch's line-scanning reader DO — so
+        # `"make "` makes them disagree about who authors src/Makefile. The gate turns the
+        # shape into a repairable violation naming the offending key.
+        for tc, key in (({"build_system": "make ", "language": "fortran"}, "build_system"),
+                        ({"build_system": "make", "language": " fortran"}, "language"),
+                        ({"build_system": "make\u00a0", "language": "fortran"}, "build_system")):
+            v = self._run(toolchain=tc)
+            self.assertEqual(len(v), 1, (tc, v))
+            self.assertIn(f"impl_defaults.toolchain.{key}", v[0])
+            self.assertIn("leading or trailing whitespace", v[0])
+            # The remedy must quote the STRIPPED token; echoing the padded value back would
+            # tell the author to write exactly what was just rejected.
+            self.assertIn(f"Write the bare token ({tc[key].strip()!r})", v[0])
+        # Each key states ITS OWN measured consequence, not a shared story: a padded
+        # build_system orphans src/Makefile (conductor declines, the scanner strips and still
+        # names the host, so the leaf's pin is suppressed); a padded language is consistent
+        # about ownership but silently drops the node out of M3c.
+        bs_msg = self._run(toolchain={"build_system": "make "})[0]
+        lang_msg = self._run(toolchain={"language": " fortran"})[0]
+        self.assertIn("authored by nobody", bs_msg)
+        self.assertNotIn("authored by nobody", lang_msg)
+        self.assertIn("stops being an M3c node", lang_msg)
+        self.assertNotIn("stops being an M3c node", bs_msg)
+        # Both keys padded -> one violation each, and the pair check does not also fire
+        # (its message would name a value nobody wrote).
+        v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
+        self.assertEqual(len(v), 2, v)
+        self.assertFalse(any("only implemented physical backend" in x for x in v), v)
+
+    def test_a_present_but_non_token_value_fires_whatever_spelling_produced_it(self) -> None:
+        # The check is on the parsed SHAPE — "a plain non-empty string" — never on a
+        # predicted consequence, because the consequence is not the same across the branch:
+        # a falsy value is coerced to the default by the conductor while record_launch's
+        # line scan reads the literal token — except for the bare key and `""`, where the
+        # scan also yields nothing and the two agree — and a truthy non-string is
+        # STRINGIFIED by the conductor, so it is not the token it looks like either. `null` is one spelling
+        # among many: YAML 1.1 resolves `no` / `off` to False, and `0` / `[]` / `""` /
+        # `"   "` / `5` / `true` all land in the same branch.
+        for key in ("build_system", "language"):
+            for value in (None, False, 0, [], "", "   ", 5, True):
+                v = self._run(toolchain={key: value})
+                self.assertEqual(len(v), 1, (key, value, v))
+                self.assertIn(f"impl_defaults.toolchain.{key} must be a plain non-empty "
+                              "string token", v[0])
+                # The remedy names the token for THIS key, and carries no un-rendered
+                # placeholder.
+                self.assertIn(
+                    f"explicit value ({'make' if key == 'build_system' else 'fortran'})",
+                    v[0])
+                self.assertNotIn("{key}", v[0])
+        # The branch spans three measured outcomes, so the message cites the extremes rather
+        # than claiming one consequence for the value at hand — a per-value story has been
+        # wrong three times here. Both extremes must stay named.
+        msg = self._run(toolchain={"language": None})[0]
+        self.assertIn("double-owned", msg)
+        self.assertIn("authored by nobody", msg)
+        # An ABSENT key is a different thing and stays legal.
+        self.assertEqual(self._run(toolchain={}), [])
+
+    def test_shape_checks_apply_to_an_infrastructure_node_too(self) -> None:
+        # The harness is exempt from the `fortran` half — it is certified per
+        # (language, hardware) target — but not from the shape checks, which are about the
+        # host readers disagreeing with each other, not about which backend is supported.
+        # `_conductor_authors_makefile` does not exempt infrastructure either, so a padded
+        # value there suppresses the Makefile pin while nobody authors the file.
+        v = self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "make ", "language": "fortran"})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("leading or trailing whitespace", v[0])
+        v = self._run(spec_kind="infrastructure", toolchain={"language": None})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("must be a plain non-empty string token", v[0])
+        # ...and the language half still does not fire for it.
+        self.assertEqual(
+            self._run(spec_kind="infrastructure",
+                      toolchain={"build_system": "make", "language": "c"}), [])
+
+    def test_non_mapping_impl_defaults_or_toolchain_fires(self) -> None:
+        # A truthy non-dict `toolchain` reaches the conductor's unguarded
+        # `impl.get("toolchain") or {}` and raises AttributeError mid-Generate — a
+        # conductor_error, not a repairable Compile violation. A truthy non-dict
+        # `impl_defaults` does NOT crash (that read IS isinstance-guarded) but silently
+        # disables every impl_defaults gate. Both are rejected here; a FALSY non-dict is
+        # coerced to {} identically by both sides and stays legal.
+        for bad in ("make", ["make"], 7):
+            v = self._run(toolchain=bad)
+            self.assertEqual(len(v), 1, (bad, v))
+            self.assertIn("impl_defaults.toolchain must be a mapping", v[0])
+            self.assertIn("unguarded", v[0])
+            v = self._run(impl_defaults=bad)
+            self.assertEqual(len(v), 1, (bad, v))
+            self.assertIn("impl_defaults must be a mapping", v[0])
+            # The reason must be the true one. `impl_defaults` is read through an
+            # isinstance guard everywhere, so the conductor does NOT crash on it — the
+            # harm is that every impl_defaults gate silently no-ops. Only a non-mapping
+            # `toolchain` crashes, and only that message may say so.
+            self.assertIn("silently no-ops", v[0])
+            self.assertNotIn("would fail mid-Generate", v[0])
+        # Falsy non-dicts are the "absent" case and keep the make/fortran defaults.
+        self.assertEqual(self._run(toolchain=[]), [])
+        self.assertEqual(self._run(toolchain=""), [])
+        self.assertEqual(self._run(impl_defaults=[]), [])
+
+    def test_a_non_mapping_ir_is_another_gates_business(self) -> None:
+        # An IR that parses cleanly but is not a mapping (a top-level list) reaches the gate
+        # as a `list`. Without the isinstance guard, `.get` raises inside Compile.static —
+        # a conductor_error instead of the other gates' violation. The unparseable-YAML test
+        # below cannot cover this: it is caught one branch earlier by the YAMLError handler.
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            (ir_dir / "spec.ir.yaml").write_text("- a\n- b\n")
+            violations: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            self.assertEqual(violations, [])
+
+    def test_missing_or_unparseable_ir_is_another_gates_business(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            ir_dir = tmp / "ir"
+            ir_dir.mkdir()
+            violations: list[str] = []
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            self.assertEqual(violations, [])
+            (ir_dir / "spec.ir.yaml").write_text("[not: a: mapping\n")
+            vps._validate_toolchain_backend_supported(tmp, ir_dir, violations)
+            self.assertEqual(violations, [])
+
+
 class HarnessDependencyConsistencyTests(unittest.TestCase):
     """R1/M3c-β `_validate_harness_dependency_consistency` (compile stage)."""
 
@@ -14403,6 +15001,8 @@ class HarnessDependencyConsistencyTests(unittest.TestCase):
         self.assertEqual(self._run(), [])
 
     def test_no_infra_dep_is_noop(self) -> None:
+        # Defense-in-depth only: spec-input rejects a non-infrastructure spec with zero infra
+        # deps, so a live run never reaches here with that shape.
         self.assertEqual(self._run(infra_ids=[]), [])
 
     def test_infra_node_is_noop(self) -> None:
@@ -14420,6 +15020,8 @@ class HarnessDependencyConsistencyTests(unittest.TestCase):
         self.assertTrue(any("expected 'harness_fortran_cpu'" in x for x in v), v)
 
     def test_two_infra_deps(self) -> None:
+        # Also rejected upstream at spec-input; this keeps the compile-side statement of the
+        # rule for a hand-crafted IR (defense-in-depth).
         v = self._run(infra_ids=["harness_fortran_cpu", "harness_other_cpu"])
         self.assertTrue(any("exactly one infrastructure" in x for x in v), v)
 
@@ -16196,7 +16798,8 @@ class CaseIdGrammarGateTests(unittest.TestCase):
     """`_validate_case_ids` (compile stage): a case_id becomes the per-case snapshot PATH
     (`raw/state_snapshots/<case_id>.json`) for EVERY node kind, so a `/` or `..` lets the run
     write outside its directory. Unlike the M3c render precondition, this gate applies to
-    non-M3c (leaf-authored-runner) nodes too — the wider surface the review found open."""
+    non-M3c nodes too (the infrastructure self-test, and any hand-crafted IR) — the wider
+    surface the review found open."""
 
     def _run(self, case_ids: list) -> list[str]:
         ir = {"case": {"test_case_set": [{"case_id": c} for c in case_ids]}}
@@ -16220,7 +16823,8 @@ class CaseIdGrammarGateTests(unittest.TestCase):
 
     def test_applies_without_any_infrastructure_dep(self) -> None:
         # The IR here has no `dependency` block at all (a non-M3c node), yet the gate fires —
-        # this is the gap `_validate_harness_render_preconditions` (M3c-only) left open.
+        # this is the gap `_validate_harness_render_preconditions` (M3c-only) left open. Such a
+        # shape is rejected upstream at spec-input now; the gate stays as defense-in-depth.
         self.assertEqual(len(self._run(["../escape"])), 1)
 
 

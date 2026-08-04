@@ -342,7 +342,8 @@ class HttpPureLeafWiringTests(unittest.TestCase):
 
     def test_a_pure_only_provider_on_a_non_m3c_node_fails_closed(self) -> None:
         """Config validation cannot see node shape. A node with no pure path would otherwise
-        take the shared agentic loop with a provider that cannot run it."""
+        take the shared agentic loop with a provider that cannot run it. The live non-M3c node
+        is the `infrastructure` harness self-test, which authors its own runner."""
         c = self._conductor()
         c._conductor_authors_makefile = lambda refs: False   # type: ignore[assignment]
         outcome = c.run_substep(self.refs, "generate", "generate")

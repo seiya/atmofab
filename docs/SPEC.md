@@ -123,7 +123,7 @@ releases/
 6. `component_id` requires the form `^[a-z][a-z0-9_]{2,63}$`, and the recommended form is `<domain>_<family>_<operator>_<dim>d_<scheme>`. A `component spec`'s `component_id` is its `spec_id`, so the 55-character bound of requirement 4 applies to it as well.
 7. `operation_id` requires the form `<component_id>__<action>`.
 8. The published names of the generated code require compatibility management, and a change that breaks `major` compatibility is separated into a different name.
-9. Every `spec` declares its dependencies in `deps.yaml`, and direct path references (relative `import`) are forbidden.
+9. Every `spec` declares its dependencies in `deps.yaml`, and direct path references (relative `import`) are forbidden. Every `spec` whose `spec_kind` is not `infrastructure` declares **exactly one** `infrastructure` (R1 harness) direct dependency: its runner is host-rendered glue over that harness, and there is no other runner path. An `infrastructure spec` declares none (it authors its own self-test runner). Like the `spec_id` bound of requirement 4, this is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike; zero or more than one is an error there, resolved only by editing `deps.yaml`.
 10. A `problem spec` must declare its dependent `component` and adopted `profile`.
 11. Unregistered dependencies, unimplemented dependencies, and compatibility-violating dependencies are not allowed.
 12. `releases/registry/component_catalog.yaml` holds the per-`component` responsibility, the published `operation`, compatibility information, and implementation state.

@@ -14,8 +14,9 @@
 > `CHECKS_MODULE_CONTRACT.md`) and the harness owns the JSON assembly + verdict fold.
 > Since M3d this doc is **not a must-read for a physics `Generate` leaf** (it authors
 > no runner). It IS still a must-read for a runner-authoring `Generate` leaf — the
-> `infrastructure` harness self-test (whose §3 cites §4 here) or a legacy no-harness
-> node — and for `Validate.judge`. The *authoring* rules below also survive as
+> `infrastructure` harness self-test, whose §3 cites §4 here, and the only node kind
+> that authors its own runner — and for `Validate.judge`. The *authoring* rules below
+> also survive as
 > **deterministic backstops** (name / forbidden-output / JSON-descriptor /
 > snapshot-filename gates in `validate_pipeline_semantics.py`).
 

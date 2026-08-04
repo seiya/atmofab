@@ -109,6 +109,50 @@ def spec_id_length_violation(spec_id: Any) -> str | None:
     return None
 
 
+def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | None:
+    """Spec-input bound on the number of ``infrastructure`` direct dependencies.
+
+    Returns an actionable violation message unless the node declares EXACTLY ONE
+    ``infrastructure`` (runner-harness) direct dependency, or is itself an
+    ``infrastructure`` spec (the harness authors its own self-test runner, so it
+    declares none). Sibling of ``spec_id_length_violation``: both are node-IDENTITY
+    preconditions a Compile re-author cannot repair, so both are captured at
+    spec-input rather than hoisted into the compile.static gate (routing an
+    unrepairable defect to a warm-resume retry would only spin).
+
+    Before this gate, a physics node with zero or >1 infrastructure deps silently
+    degraded to the leaf-authored-runner path: ``_conductor_authors_runner`` requires
+    exactly one, so the runner was simply never host-rendered and the failure was a
+    quiet loss of the harness path rather than an error. That non-M3c physical path
+    has been removed — the only live leaf-authored runner is an ``infrastructure``
+    node's own self-test — so the degradation is now a hard rejection."""
+    # `.strip()` and NOTHING else — the exemption must be spelled exactly as every
+    # downstream reader spells it. `_conductor_authors_runner`, `_pure_leaf_substep` and
+    # `_validate_toolchain_backend_supported` all compare `str(...).strip() ==
+    # "infrastructure"` with no case folding, so a `spec_kind: Infrastructure` that this
+    # gate lower-cased into an exemption would be treated as a PHYSICS node by all three —
+    # exempted here and then silently landed on the removed leaf-authored-runner path, with
+    # no gate firing anywhere. Being case-sensitive here makes that shape a spec-input
+    # rejection instead, which is the direction that fails closed.
+    kind = spec_kind.strip() if isinstance(spec_kind, str) else ""
+    if kind == "infrastructure":
+        return None
+    if infra_dep_count == 1:
+        return None
+    remedy = (
+        "Add the single `infrastructure_id` entry" if infra_dep_count < 1
+        else f"Remove {infra_dep_count - 1} of them, keeping the one harness this node "
+             "builds against")
+    return (
+        f"a non-infrastructure spec must declare exactly one `infrastructure` "
+        f"(runner-harness) dependency in deps.yaml; found {infra_dep_count}. The runner "
+        f"glue is host-rendered against exactly that harness, and the former "
+        f"leaf-authored-runner path for a node without it has been removed "
+        f"(docs/workflow/phases/phase_01_compile.md). {remedy} "
+        f"(see spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml)."
+    )
+
+
 # The deterministic Generate.gate lint-checker column limit (fortitude S001). The rendered runner must stay
 # within it because it is host-authored (a leaf cannot edit it to fix an overlong line).
 MAX_RENDERED_LINE = 100

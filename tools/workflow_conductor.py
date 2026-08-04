@@ -4906,7 +4906,9 @@ class Conductor:
         Model B), so the conductor
         authors it too and the generate leaf must not. Single source of truth for the live
         author call AND the write-authorization removal, so they cannot disagree (which would
-        orphan the Makefile, or leave it double-owned). c/cpp/mixed keep LLM authoring."""
+        orphan the Makefile, or leave it double-owned). A node that is not make+fortran keeps LLM
+        authoring — which since the toolchain gate landed means only an `infrastructure` node
+        on a future non-fortran language, every physics node being rejected at compile."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
@@ -4919,9 +4921,11 @@ class Conductor:
         dependency. On such a node the runner is glue over the certified harness plumbing + the
         leaf-authored `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness
         interface (`tools/runner_renderer.render_runner`) — the leaf authors model+checks, not
-        the runner. Nodes without an infra dep keep the leaf-authored runner (legacy path); an
-        `infrastructure` node authors its own self-test runner (not glue). Migration is per-node
-        (add the infra dep to deps.yaml + recompile), with no flag day. Single source of truth for
+        the runner. An `infrastructure` node authors its own self-test runner (not glue), and is
+        the only live leaf-authored-runner node: a physics node that is not make+fortran with
+        exactly one infra dep is rejected upstream (spec-input for the dep count,
+        `_validate_toolchain_backend_supported` for the toolchain), so the False branch here is a
+        fail-safe for a hand-crafted IR rather than a live path. Single source of truth for
         the live render call (`_write_runner`), the write-authorization swap (`build_launch_request`
         / `phase_required_outputs`), and the Makefile CHECKS rule, so they cannot disagree."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
@@ -4949,10 +4953,12 @@ class Conductor:
         `_conductor_authors_runner`) — the shape the CodegenBundle v1 producer can express (the leaf
         authors model+checks; the host renders the runner glue + the Makefile).
 
-        A non-M3c node (harness self-test, c/cpp/mixed, a physics node with no infra dep) has no
-        bundle representation for its runner, so those fall through to the shared AGENTIC leaf loop
-        in `run_substep`. That is a recorded RESIDUAL of the
-        migration scope, not a selectable executor: their invocation record still stamps
+        A non-M3c node has no bundle representation for its runner, so it falls through to the
+        shared AGENTIC leaf loop in `run_substep`. Live case: the `infrastructure` harness
+        self-test. The former non-M3c physics shapes (c/cpp/mixed, or no infra dep) no longer
+        reach a run — spec-input rejects the dep count and the compile.static toolchain gate
+        rejects the backend — so for a hand-crafted non-M3c IR this dispatch is a FAIL-SAFE to
+        the agentic loop, not a selectable executor: their invocation record still stamps
         `generate_executor=pure` (a provenance stamp), and they are not rejected on resume.
 
         Both generate LLM substeps go pure on an M3c Claude or Codex node: `(generate, generate)` (the
@@ -8368,8 +8374,10 @@ clean:
         entry = self.entry_for(phase, substep)
         # RUNTIME half of the pure-only rule. Config validation rejects an HTTP provider on an
         # agentic SUBSTEP, but `_pure_leaf_substep` additionally requires the node's M3c shape:
-        # a harness self-test, a c/cpp/mixed node, or a physics node with no infra dep has no
-        # bundle representation for its runner and falls through to the shared agentic loop.
+        # the `infrastructure` harness self-test has no bundle representation for its runner
+        # and falls through to the shared agentic loop. (The other former non-M3c shapes — a
+        # c/cpp/mixed toolchain, a physics node without exactly one infra dep — are rejected
+        # upstream now, so a non-M3c IR reaching here is hand-crafted.)
         # An entry that cannot run that loop must fail here, not launch into it.
         if not entry.supports(CAP_AGENTIC) and not self._pure_leaf_substep(refs, phase, substep):
             detail = (
@@ -10717,6 +10725,22 @@ def _next_seq(parent: Path, prefix: str) -> str:
 _SPEC_REF_FILE_NAMES = frozenset({"controlled_spec.md", "tests.md", "deps.yaml"})
 
 
+def _direct_infra_dep_count(repo_root: Path, spec_path: str) -> int | None:
+    """Count of `infrastructure` direct dependencies declared in <spec_path>/deps.yaml.
+
+    Returns None when the file is missing or its dependency schema is malformed: the
+    exactly-one precondition then cannot be PROVEN from the spec input, so the caller
+    fails closed rather than reading the absence as "zero"."""
+    from tools.orchestration_runtime import _parse_dep_entries, _read_deps_yaml
+    deps_doc = _read_deps_yaml(repo_root, spec_path)
+    if not isinstance(deps_doc, dict):
+        return None
+    entries, well_formed = _parse_dep_entries(deps_doc)
+    if not well_formed:
+        return None
+    return sum(1 for kind, _sid, _constraint in entries if kind == "infrastructure")
+
+
 def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     """Resolve (node_key, spec_path) from spec_ref via spec_catalog.yaml.
 
@@ -10727,17 +10751,22 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     ref = Path(spec_ref.strip().rstrip("/"))
     spec_dir = ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref
     spec_id = spec_dir.name
-    # M3d spec-input gate: bound spec_id length before any phase runs. A spec_id
-    # over MAX_SPEC_ID_LEN is a node-IDENTITY defect (the compile.static hoist
-    # excludes it because a re-author cannot shorten a spec_id) that would otherwise
-    # fail-close at conductor render time on a harness-backed node — a workflow-kill.
-    # This is the canonical capture point (see runner_renderer.spec_id_length_violation).
-    # Deliberately spec-input (pre-IR), so it is language/phase-agnostic: the 55-char
-    # bound reflects the f2008 identifier limit of the ONLY current backend (fortran),
-    # where every >55 spec_id is doomed regardless of phase. It also rejects a >55 spec
-    # on a Compile-only run — acceptable while every backend is fortran. When a backend
-    # with a different identifier limit is added, move the bound to a language-aware point.
-    from tools.runner_renderer import spec_id_length_violation
+    # M3d spec-input gates: bound both node-IDENTITY preconditions before any phase runs.
+    # (1) spec_id length. A spec_id over MAX_SPEC_ID_LEN is a node-IDENTITY defect (the
+    # compile.static hoist excludes it because a re-author cannot shorten a spec_id) that
+    # would otherwise fail-close at conductor render time on a harness-backed node — a
+    # workflow-kill. This is the canonical capture point (see
+    # runner_renderer.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
+    # language/phase-agnostic: the 55-char bound reflects the f2008 identifier limit of the
+    # ONLY current backend (fortran), where every >55 spec_id is doomed regardless of phase.
+    # It also rejects a >55 spec on a Compile-only run — acceptable while every backend is
+    # fortran. When a backend with a different identifier limit is added, move the bound to
+    # a language-aware point.
+    # (2) infrastructure direct-dependency count (see
+    # runner_renderer.infra_dep_count_violation), checked below once the catalog fixes the
+    # node's spec_kind. Same rationale: a re-author cannot repair a node's dependency
+    # identity, and the non-M3c physical path it used to degrade to has been removed.
+    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
     _sid_violation = spec_id_length_violation(spec_id)
     if _sid_violation:
         raise ValueError(
@@ -10748,6 +10777,29 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
             kind = entry["spec_kind"]
             version = entry["spec_version"]
             spec_path = str(Path(entry["controlled_spec_path"]).parent)
+            _infra_count = _direct_infra_dep_count(repo_root, spec_path)
+            if _infra_count is None:
+                # `.strip()` and nothing else — the SAME spelling rule as
+                # `infra_dep_count_violation` (called below) and as every downstream reader.
+                # Lower-casing only here would exempt a `spec_kind: Infrastructure` node
+                # whose deps.yaml is unreadable, while the well-formed sibling shape is
+                # rejected: the broken input admitted and the correct one refused.
+                if str(kind).strip() != "infrastructure":
+                    raise ValueError(
+                        f"spec-input rejected: {spec_path}/deps.yaml is missing or its "
+                        f"dependency schema is malformed, so the required exactly one "
+                        f"`infrastructure` (runner-harness) dependency cannot be verified "
+                        f"(docs/workflow/phases/phase_01_compile.md). Author a deps.yaml "
+                        f"whose `dependencies:` block holds exactly the keys `components` / "
+                        f"`profiles` / `infrastructure` (a typo such as `infrastructures:` "
+                        f"makes the whole file malformed; see spec/problem/dynamics/"
+                        f"advection_diffusion/advdiff1d_linear/deps.yaml) "
+                        f"(from spec_ref {spec_ref})")
+            else:
+                _infra_violation = infra_dep_count_violation(kind, _infra_count)
+                if _infra_violation:
+                    raise ValueError(
+                        f"spec-input rejected: {_infra_violation} (from spec_ref {spec_ref})")
             return f"{kind}/{spec_id}@{version}", spec_path
     raise ValueError(
         f"spec_id not found in spec_catalog.yaml: {spec_id} (from spec_ref {spec_ref})")

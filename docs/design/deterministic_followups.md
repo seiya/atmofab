@@ -9,6 +9,11 @@ Priority key: **P1** blocks auto-repair; **P2** data/robustness; **P3** latent.
 
 ## Follow-up: deterministic `src/Makefile` (2026-06-24)
 
+> **STATUS NOTE (2026-08-03).** The non-`M3c` PHYSICS shapes named below (`c`/`cpp`/`mixed`,
+> and a node with no `infrastructure` dependency) no longer occur: the toolchain is a
+> `Compile.static` violation and the dep count a spec-input rejection. The only
+> leaf-authored runner left is an `infrastructure` node's self-test. History kept as written.
+
 The `src/Makefile` is a pure function of known inputs (pinned `<spec_id>_model/runner.f90`
 names, the fixed `use`-graph, structured `impl_defaults.toolchain`/`target`), yet the LLM
 authored it and a large static validator rejected deviations (regenerate-loop cost). It is now
@@ -55,8 +60,10 @@ order, direct-only one-hop closure, dependency-Makefile rules, staging copy / le
 non-fortran no-op / unbuilt-dep + malformed-IR fail-closed; conductor↔runtime authorship agreement).
 
 **Still UNVERIFIED end-to-end:** the wired path has never run through a real
-`compile→generate→build→validate`. A minimal 2-node dependency spec is now authored (the
-`demo_dep_base`/`demo_dep_top` chain — see D1 below), but running
+`compile→generate→build→validate`. A minimal 2-node dependency spec was authored (the
+`demo_dep_base`/`demo_dep_top` chain — see D1 below; **deleted 2026-08-03**, it declared no
+`infrastructure` dependency and that shape is now rejected at spec-input, so a closure run is
+exercised by the shipped `problem` specs instead), but running
 `run_workflow.py <ref> validate --llm claude --with-deps` to `meta=pass` +
 `aggregate_verdict=pass` (billed, long) is the only way to confirm and remains outstanding.
 
@@ -1456,6 +1463,12 @@ Unit suite green (1972).
 
 ## R1 / M3d — recovery: spec-input spec_id bound, heuristic deletion, node-aware runner-contract narrowing (IMPLEMENTED 2026-07-08)
 
+> **STATUS NOTE (2026-08-03).** The `legacy` / non-`M3c` PHYSICS path described below has since
+> been removed. A non-`infrastructure` spec that does not declare exactly one `infrastructure`
+> dependency is rejected at spec-input, and a node whose toolchain is not `(make, fortran)` is a
+> `Compile.static` violation. The only leaf-authored runner left is an `infrastructure` node's
+> self-test. The history below is left as written.
+
 Canonical plan: `~/.claude/plans/dapper-baking-thompson.md` (M3d). With the harness host-render path
 proven (M3c-β / billed E2E #3), M3d recovers the now-obsolete leaf-authored-runner scaffolding and
 adds the mass-opt-in prerequisite gate. Five parts:
@@ -2053,6 +2066,12 @@ string conflates absence and ambiguity and cannot distinguish them — but every
 in turn under `--with-deps`, where the precise `_spec_ref_candidates` check catches it.
 
 ### R3-core follow-up — the path-traversal case_id was gated only for M3c nodes (review round 6)
+
+> **STATUS NOTE (2026-08-03).** The `legacy` / non-`M3c` PHYSICS path described below has since
+> been removed. A non-`infrastructure` spec that does not declare exactly one `infrastructure`
+> dependency is rejected at spec-input, and a node whose toolchain is not `(make, fortran)` is a
+> `Compile.static` violation. The only leaf-authored runner left is an `infrastructure` node's
+> self-test. The history below is left as written.
 
 Bug (4) above put a case_id safe-token gate in `runner_renderer._case_ids`, but that runs only for M3c host-rendered
 nodes. A **non-M3c** physics node has a leaf-authored runner (contractually building `raw/state_snapshots/'//trim(
@@ -3154,6 +3173,11 @@ removal), plus the filed residuals (the `controlled_spec` interim inline's remov
 ABI, `compile.generate` authoring variance).
 
 ## M-F — legacy generate-executor removal (LANDED 2026-07-18)
+
+> **STATUS NOTE (2026-08-03).** The non-`M3c` PHYSICS shapes named below (`c`/`cpp`/`mixed`,
+> and a node with no `infrastructure` dependency) no longer occur: the toolchain is a
+> `Compile.static` violation and the dep count a spec-input rejection. The only
+> leaf-authored runner left is an `infrastructure` node's self-test. History kept as written.
 
 The final `Z2` migration milestone: legacy generate execution is deleted so `pure` is the ONLY generate-executor. This
 is *migration-scope* removal only — the broad hook / preflight / contract-doc teardown remains `Z4`.

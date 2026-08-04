@@ -25,9 +25,9 @@ This structure satisfies the following.
 - `target.class` (cpu/gpu etc.)
 - `target.backend` — the parallel-backend token, e.g. `openmp`, `cuda`, `mpi` (canonical field definition: `docs/workflow/phases/phase_01_compile.md`). The composite identifier such as `cpu_openmp_x86_64` belongs in `selected.backend_key`, NOT here: the `Generate.gate` `!$omp` floor keys off `target.backend == "openmp"`, so a composite value here silently disables it (the knob-name gate is backend-agnostic by design)
 - `target.architecture` (e.g. `x86_64`, `aarch64`, `nvidia_sm80`)
-- `toolchain.language` (e.g. `fortran`, `cpp`, `cuda_fortran`)
+- `toolchain.language` (`fortran` — the only implemented value; see the rules below)
 - `toolchain.standard` (the language standard spelled the way the compiler names it — e.g. `f2008`, `c++17`; it is passed verbatim as `-std=<value>`, so `2008` is rejected by the compiler driver)
-- `toolchain.build_system` (e.g. `make`, `cmake`, `meson`, `ninja`)
+- `toolchain.build_system` (`make` — the only implemented value; see the rules below)
 - `abstract` (language-independent knobs; the parallelization family has canonical key names — `parallelization` / `parallel_scope` / `parallel_granularity`, per `spec/schema/ir/impl_defaults.schema.json`)
 - `backend_overrides` (language/backend-dependent knobs; under `openmp`: `num_threads` / `schedule` / `chunk_size` / `collapse` / `nested`, same canonical source)
 - `selected.backend_key`
@@ -35,14 +35,14 @@ This structure satisfies the following.
 Rules:
 - **The programming language must be fixed in `Compile`.**
 - **The target architecture must be fixed in `Compile`.**
-- `toolchain.language` is fixed at `Compile` time. When the user does not explicitly specify the programming language, `target.class=cpu` must adopt `fortran`, and `target.class=gpu` must adopt `cuda_fortran`.
-- A deviation from the default of `toolchain.language` is permitted only when the user explicitly specifies the programming language.
+- **`toolchain.build_system` is `make` on every `spec_kind`, and `toolchain.language` is `fortran` on every `spec_kind` other than `infrastructure`.** That pair is the only implemented physical backend: the `runner` and `src/Makefile` are host-authored for `make` + `fortran` alone, and the deterministic `Compile.static` gate `_validate_toolchain_backend_supported` (`docs/workflow/phases/phase_01_compile.md`) fails any other pair, routing back to `Compile.generate` for a re-author. This holds regardless of `target.class` and regardless of any language the user names — a `controlled_spec` is language-neutral by construction, so it never pins a toolchain. Adding another backend is a repository-level change (a host-side `runner` renderer and `Makefile` writer for it), not a per-spec decision.
+- `toolchain.language` is fixed at `Compile` time.
 - When the user does not explicitly specify the loop parallelization method for `target.class=cpu`, the generator applies `OpenMP` to parallelizable loops.
 - When the user explicitly specifies the loop parallelization method, that specification takes precedence. Forcing `OpenMP` onto a non-parallelizable loop is forbidden.
-- When `target.class` is other than `cpu` / `gpu`, default-value completion of `toolchain.language` is forbidden.
+- `target.class` other than `cpu` / `gpu` does not change the `toolchain` rule above; it affects only the `target` / `abstract` completion.
 - When `toolchain.language` / `toolchain.standard` / `toolchain.build_system` are undefined in `impl_defaults`, it is a `fail` in `Compile.verify`.
 - When `target.architecture` is undefined, it is a `fail` in `Compile.verify`.
-- When `toolchain.language` is a `fortran` / `c` / `cpp` / `mixed` family, `toolchain.build_system` is one of `make` / `cmake` / `meson` / `ninja`. The default is `make`.
+- `toolchain.build_system` is `make`. It is also the value an absent key defaults to, in both the conductor and the `Compile.static` gate — but the key is still **stated explicitly**, per the `Compile.verify` `fail` rule above and V6 (`docs/workflow/phases/phase_01_compile.md`); the shared default exists so that the gate and the conductor read the same IR the same way, not so the key may be omitted. The same holds for `toolchain.language` (`fortran`), which the `post_generate` lint and syntax-evidence gates also read.
 
 ## 3. Optional items (environment-dependent)
 - `toolchain.compiler` / `toolchain.linker` are **optional**.

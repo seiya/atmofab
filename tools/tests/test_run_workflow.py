@@ -3390,9 +3390,28 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertEqual(payload.get("detail"), "missing tools: jq,git")
 
 
+# Every non-infrastructure spec must declare exactly one `infrastructure` (runner-harness)
+# direct dependency (runner_renderer.infra_dep_count_violation), so a fixture registry is only
+# usable if the harness node itself is registered and readable. `_write_catalog` seeds it and
+# `_write_deps` declares the edge by default, matching the shipped spec corpus — which means
+# every closure below legitimately contains the harness node.
+_HARNESS_ID = "harness_fortran_cpu"
+_HARNESS_REF = "spec/infrastructure/harness_fortran_cpu"
+
+
 def _write_catalog(repo_root: Path, entries: list[dict]) -> None:
     """Write a minimal spec_catalog.yaml from a list of {spec_kind, spec_id,
-    spec_version, deps_path} dicts."""
+    spec_version, deps_path} dicts.
+
+    Unless the caller registers an `infrastructure` spec itself, the runner harness is
+    appended (and its deps.yaml written), so the default `_write_deps` harness edge
+    resolves."""
+    if not any(e.get("spec_kind") == "infrastructure" for e in entries):
+        entries = list(entries) + [
+            {"spec_kind": "infrastructure", "spec_id": _HARNESS_ID,
+             "spec_version": "0.7.0", "deps_path": f"{_HARNESS_REF}/deps.yaml"},
+        ]
+        _write_deps(repo_root, _HARNESS_REF, "infrastructure", _HARNESS_ID)
     lines = ["catalog_version: 0.2.0", "updated_at: 2026-06-18", "specs:"]
     for e in entries:
         lines.append(f"  - spec_kind: {e['spec_kind']}")
@@ -3407,9 +3426,17 @@ def _write_catalog(repo_root: Path, entries: list[dict]) -> None:
 
 def _write_deps(repo_root: Path, spec_ref: str, spec_kind: str, spec_id: str,
                 components: list[tuple[str, str]] | None = None,
-                profiles: list[tuple[str, str]] | None = None) -> None:
-    """Write a deps.yaml under <spec_ref>/. components/profiles are
-    (id, version_constraint) tuples."""
+                profiles: list[tuple[str, str]] | None = None,
+                infrastructure: list[tuple[str, str]] | None = None) -> None:
+    """Write a deps.yaml under <spec_ref>/. components/profiles/infrastructure are
+    (id, version_constraint) tuples.
+
+    `infrastructure` defaults to the single harness edge every non-infrastructure spec is
+    required to declare (an `infrastructure` spec defaults to none). Pass an explicit list
+    — including `[]` — to exercise the count gate."""
+    if infrastructure is None:
+        infrastructure = ([] if spec_kind == "infrastructure"
+                          else [(_HARNESS_ID, ">=0.1.0")])
     d = repo_root / spec_ref
     d.mkdir(parents=True, exist_ok=True)
     lines = [f"spec_id: {spec_id}", f"spec_kind: {spec_kind}", "dependencies:"]
@@ -3425,25 +3452,33 @@ def _write_deps(repo_root: Path, spec_ref: str, spec_kind: str, spec_id: str,
         lines.append(f"      version_constraint: \"{c}\"")
     if not profiles:
         lines[-1] = "  profiles: []"
+    if infrastructure:
+        lines.append("  infrastructure:")
+        for iid, c in infrastructure:
+            lines.append(f"    - infrastructure_id: {iid}")
+            lines.append(f"      version_constraint: \"{c}\"")
     (d / "deps.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class DependencyClosureTests(unittest.TestCase):
     def _seed_diamond(self, repo_root: Path) -> None:
-        # problem A → components B, C ; B → component C ; C leaf.
+        # problem A → component B + harness C ; B → harness C ; C leaf.
+        # C plays the runner-harness role every non-infrastructure spec must declare
+        # exactly once, so the diamond needs no extra node to satisfy that rule.
         _write_catalog(repo_root, [
             {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
              "deps_path": "spec/problem/a/deps.yaml"},
             {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
              "deps_path": "spec/component/b/deps.yaml"},
-            {"spec_kind": "component", "spec_id": "c", "spec_version": "0.1.0",
+            {"spec_kind": "infrastructure", "spec_id": "c", "spec_version": "0.1.0",
              "deps_path": "spec/component/c/deps.yaml"},
         ])
         _write_deps(repo_root, "spec/problem/a", "problem", "a",
-                    components=[("b", ">=0.1.0 <1.0.0"), ("c", ">=0.1.0 <1.0.0")])
+                    components=[("b", ">=0.1.0 <1.0.0")],
+                    infrastructure=[("c", ">=0.1.0 <1.0.0")])
         _write_deps(repo_root, "spec/component/b", "component", "b",
-                    components=[("c", ">=0.1.0 <1.0.0")])
-        _write_deps(repo_root, "spec/component/c", "component", "c")
+                    infrastructure=[("c", ">=0.1.0 <1.0.0")])
+        _write_deps(repo_root, "spec/component/c", "infrastructure", "c")
 
     def _seed_prior_member(self, repo_root: Path, orch_id: str, spec_ref: str,
                            *, executor: str | None = "pure",
@@ -3626,6 +3661,245 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(ordered, [])
             self.assertEqual(err["reason"], "spec_id_too_long")
             self.assertIn(str(MAX_SPEC_ID_LEN), err["detail"])
+
+    def test_infra_dep_count_violation_fails_closed(self) -> None:
+        # Closure-build mirror of resolve_node's spec-input gate: every non-infrastructure
+        # spec in the closure — target included — declares exactly one `infrastructure`
+        # dependency. Gating only per-node would let an ALREADY-READY dependency (skipped
+        # before `_run_node` → resolve_node) slip past.
+        def closure(target_infra, dep_infra):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _write_catalog(repo_root, [
+                    {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                     "deps_path": "spec/problem/a/deps.yaml"},
+                    {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                     "deps_path": "spec/component/b/deps.yaml"},
+                ])
+                _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                            components=[("b", ">=0.1.0")], infrastructure=target_infra)
+                _write_deps(repo_root, "spec/component/b", "component", "b",
+                            infrastructure=dep_infra)
+                return run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a")
+
+        one = [(_HARNESS_ID, ">=0.1.0")]
+        two = [(_HARNESS_ID, ">=0.1.0"), (_HARNESS_ID, ">=0.1.0")]
+        # Target declares none.
+        ordered, err = closure([], one)
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "infra_dep_count_invalid")
+        self.assertIn("spec/problem/a", err["detail"])
+        self.assertIn("exactly one", err["detail"])
+        # Dependency declares two.
+        ordered, err = closure(one, two)
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "infra_dep_count_invalid")
+        self.assertIn("spec/component/b", err["detail"])
+        self.assertIn("found 2", err["detail"])
+        # Both declare exactly one -> resolves.
+        ordered, err = closure(one, one)
+        self.assertIsNone(err)
+        self.assertEqual([n["spec_id"] for n in ordered], [_HARNESS_ID, "b"])
+
+    def test_infrastructure_dependency_is_exempt_from_the_count_gate(self) -> None:
+        # The harness node itself declares no infrastructure dependency, and it is a
+        # closure member of every other node — so the gate must exempt its kind.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/component/b", "component", "b")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/component/b")
+            self.assertIsNone(err)
+            self.assertEqual([n["spec_id"] for n in ordered], [_HARNESS_ID])
+
+    def test_the_catalog_kind_outranks_a_self_declared_spec_kind(self) -> None:
+        # Kind decides EXEMPTION from the count gate, and deps.yaml's top-level `spec_kind`
+        # is carried by no schema — a spec could write `spec_kind: infrastructure` there and
+        # exempt itself, while resolve_node (which reads the catalog) still rejects it after
+        # every dependency in the closure has already been billed. The catalog wins.
+        one = [(_HARNESS_ID, ">=0.1.0")]
+
+        def closure(target_declares, target_infra, dep_declares, dep_infra):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _write_catalog(repo_root, [
+                    {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                     "deps_path": "spec/problem/a/deps.yaml"},
+                    {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                     "deps_path": "spec/component/b/deps.yaml"},
+                ])
+                _write_deps(repo_root, "spec/problem/a", target_declares, "a",
+                            components=[("b", ">=0.1.0")], infrastructure=target_infra)
+                _write_deps(repo_root, "spec/component/b", dep_declares, "b",
+                            infrastructure=dep_infra)
+                return run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/problem/a")
+
+        # Baseline: the same shapes with honest kinds and one harness edge each resolve.
+        ordered, err = closure("problem", one, "component", one)
+        self.assertIsNone(err)
+        # The TARGET lies: registered `problem`, self-declares `infrastructure`, zero infra.
+        ordered, err = closure("infrastructure", [], "component", one)
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "infra_dep_count_invalid")
+        self.assertIn("spec/problem/a", err["detail"])
+        # A DEPENDENCY lies the same way; its kind comes from the catalog-validated edge.
+        ordered, err = closure("problem", one, "infrastructure", [])
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "infra_dep_count_invalid")
+        self.assertIn("spec/component/b", err["detail"])
+
+    def test_a_dependencys_kind_comes_from_its_edge_not_a_second_lookup(self) -> None:
+        # The edge short-circuit is the structural half of the rule: a dependency's kind was
+        # already fixed by the catalog-validated edge that pulled it in. Pin it directly —
+        # a spec_id lookup would answer the same way for a REGISTERED dep, so only an edge
+        # whose spec dir does not match its registered spec_id can tell the two apart.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "problem", "spec_id": "a", "spec_version": "0.3.0",
+                 "deps_path": "spec/problem/a/deps.yaml"},
+                # `b` lives in a directory whose basename is NOT its spec_id, so a
+                # `Path(spec_ref).name` lookup finds nothing and only the edge knows the kind.
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b_dir/deps.yaml"},
+            ])
+            _write_deps(repo_root, "spec/problem/a", "problem", "a",
+                        components=[("b", ">=0.1.0")])
+            _write_deps(repo_root, "spec/component/b_dir", "infrastructure", "b",
+                        infrastructure=[])
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/problem/a")
+            # Without the edge short-circuit the self-declared `infrastructure` would exempt
+            # `b` and the closure would resolve.
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "infra_dep_count_invalid")
+            self.assertIn("spec/component/b_dir", err["detail"])
+
+    def test_an_unconfirmable_kind_reports_the_registry_not_the_dep_count(self) -> None:
+        # The verdict rests on the kind. When the catalog cannot confirm it, rejecting on the
+        # dep count sends the operator to edit deps.yaml during what is actually a registry
+        # problem — and the count may well be right for the node's true kind.
+        def run(catalog_text, declared_kind="component", infra=0):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                (repo_root / "spec" / "registry").mkdir(parents=True)
+                (repo_root / "spec" / "registry" / "spec_catalog.yaml").write_text(
+                    catalog_text, encoding="utf-8")
+                _write_deps(repo_root, "spec/component/z", declared_kind, "z",
+                            infrastructure=[(_HARNESS_ID, ">=0.1.0")] * infra)
+                if infra:
+                    _write_deps(repo_root, _HARNESS_REF, "infrastructure", _HARNESS_ID)
+                from tools.orchestration_runtime import _load_spec_catalog
+                _load_spec_catalog.cache_clear()
+                return run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/component/z")
+
+        # Corrupt registry: the reason names the registry, not the dependency count.
+        ordered, err = run("{ this is not a catalog\n")
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+        # Same spec_id registered under two kinds: spec_id must be unique repo-wide
+        # (docs/SPEC.md req. 4), and `resolve_node` returns the FIRST match without noticing
+        # the duplicate — so resolving it here by catalog order would make the two capture
+        # points disagree by luck of ordering.
+        dup = ("catalog_version: 0.2.0\nupdated_at: 2026-06-18\nspecs:\n"
+               "  - spec_kind: component\n    spec_id: z\n    spec_version: \"0.1.0\"\n"
+               "    deps_path: spec/component/z/deps.yaml\n"
+               "  - spec_kind: infrastructure\n    spec_id: z\n    spec_version: \"0.1.0\"\n"
+               "    deps_path: spec/component/z/deps.yaml\n")
+        ordered, err = run(dup)
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+        self.assertIn("multiple spec_kinds", err["detail"])
+        self.assertIn("docs/SPEC.md req. 4", err["detail"])
+        # Reported even when the declared kind WOULD have exempted the node. An exemption
+        # granted on an unresolvable kind is as unfounded as a rejection, and honoring it
+        # would let a spec self-declare `infrastructure` to skip the gate — after the whole
+        # closure has been billed, since resolve_node only refuses the target at the end.
+        ordered, err = run(dup, declared_kind="infrastructure")
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+        # ...and even at the dep count that would otherwise PASS. The count check
+        # short-circuits on exactly 1 before the kind is consulted at all, so relying on a
+        # violation being produced would leave the common, well-formed shape unreported —
+        # the two capture points then disagree by luck of catalog order, silently.
+        ordered, err = run(dup, declared_kind="component", infra=1)
+        self.assertEqual(ordered, [])
+        self.assertEqual(err["reason"], "spec_catalog_corrupt")
+
+    def test_an_unregistered_spec_is_judged_by_its_declared_kind(self) -> None:
+        # Registered under no kind at all is NOT the same as "the registry could not answer":
+        # the declared value decides, exemption included. That is safe because an
+        # unregistered spec_ref is refused by resolve_node (target) and by
+        # `_matching_dep_versions` (dependency edge) whatever it declares, so it can never
+        # reach a phase — and reporting a registry defect here would mislabel a plain
+        # unregistered-spec mistake.
+        for declared, expect_err in (("component", "infra_dep_count_invalid"),
+                                     ("infrastructure", None)):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                _write_catalog(repo_root, [
+                    {"spec_kind": "component", "spec_id": "other", "spec_version": "0.1.0",
+                     "deps_path": "spec/component/other/deps.yaml"},
+                ])
+                _write_deps(repo_root, "spec/component/z", declared, "z", infrastructure=[])
+                from tools.orchestration_runtime import _load_spec_catalog
+                _load_spec_catalog.cache_clear()
+                _, err = run_workflow._resolve_dependency_closure(
+                    repo_root, "spec/component/z")
+                self.assertEqual((err or {}).get("reason"), expect_err, declared)
+
+    def test_a_registered_harness_target_is_exempt_without_a_declared_kind(self) -> None:
+        # The mirror of the test above: the catalog must also be able to EXEMPT. A harness
+        # deps.yaml that omits the (schema-less) `spec_kind` line must not be read as a
+        # non-infrastructure spec and told to add a harness dependency to itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "infrastructure", "spec_id": "h", "spec_version": "0.7.0",
+                 "deps_path": "spec/infrastructure/h/deps.yaml"},
+            ])
+            (repo_root / "spec" / "infrastructure" / "h").mkdir(parents=True)
+            (repo_root / "spec" / "infrastructure" / "h" / "deps.yaml").write_text(
+                "dependencies:\n  components: []\n  profiles: []\n", encoding="utf-8")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/infrastructure/h")
+            self.assertIsNone(err)
+            self.assertEqual(ordered, [])
+
+    def test_malformed_deps_keeps_its_own_reason(self) -> None:
+        # The count gate runs AFTER the readable/well-formed checks, so an unreadable or
+        # schema-broken deps.yaml still reports the reason that names the real defect.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+            ])
+            (repo_root / "spec" / "component" / "b").mkdir(parents=True)
+            (repo_root / "spec" / "component" / "b" / "deps.yaml").write_text(
+                "spec_id: b\nspec_kind: component\ndependencies:\n  infrastructures: []\n",
+                encoding="utf-8")
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/component/b")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "dependency_deps_malformed")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _write_catalog(repo_root, [
+                {"spec_kind": "component", "spec_id": "b", "spec_version": "0.1.0",
+                 "deps_path": "spec/component/b/deps.yaml"},
+            ])
+            ordered, err = run_workflow._resolve_dependency_closure(
+                repo_root, "spec/component/b")
+            self.assertEqual(ordered, [])
+            self.assertEqual(err["reason"], "dependency_deps_unreadable")
 
     def test_unresolvable_dependency_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4044,7 +4318,7 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(calls, ["spec/component/c"])
             last = json.loads(buf.getvalue().strip().splitlines()[-1])
             self.assertEqual(last["reason"], "dependency_not_ready_after_run")
-            self.assertEqual(last["failed_dependency_node"], "component/c@0.1.0")
+            self.assertEqual(last["failed_dependency_node"], "infrastructure/c@0.1.0")
 
     def test_driver_stops_on_first_dependency_failure(self) -> None:
         from tools.orchestration_runtime import _load_spec_catalog
@@ -4088,18 +4362,24 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(calls, ["spec/component/c"])
             last = json.loads(buf.getvalue().strip().splitlines()[-1])
             self.assertEqual(last["reason"], "dependency_node_failed")
-            self.assertEqual(last["failed_dependency_node"], "component/c@0.1.0")
+            self.assertEqual(last["failed_dependency_node"], "infrastructure/c@0.1.0")
 
     def test_leaf_target_closure_does_not_require_catalog(self) -> None:
         # A leaf target (empty deps) must resolve to an empty closure without
         # loading the catalog, so a missing/corrupt registry does not break an
-        # otherwise-launchable leaf --with-deps run.
+        # otherwise-launchable leaf --with-deps run. The harness is the only spec
+        # kind that legitimately declares no dependency at all (every other kind
+        # must declare its one `infrastructure` edge), so it is the leaf case.
+        # This also pins the surviving half of the infra-count gate's registry handling:
+        # with no catalog to confirm the kind, the DECLARED `infrastructure` may still grant
+        # the exemption (only a rejection resting on an unconfirmable kind is suppressed and
+        # re-reported as the registry defect).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            _write_deps(repo_root, "spec/component/leaf", "component", "leaf")
+            _write_deps(repo_root, "spec/infrastructure/leaf", "infrastructure", "leaf")
             # Intentionally NO spec/registry/spec_catalog.yaml on disk.
             ordered, err = run_workflow._resolve_dependency_closure(
-                repo_root, "spec/component/leaf")
+                repo_root, "spec/infrastructure/leaf")
             self.assertIsNone(err)
             self.assertEqual(ordered, [])
 
@@ -4211,7 +4491,7 @@ class DependencyClosureTests(unittest.TestCase):
             # Same reason code the entry-point resume gate uses for an explicit-id
             # refusal: a consumer must not need to know which gate refused.
             self.assertEqual(last["reason"], "orchestration_driver_alive")
-            self.assertEqual(last["failed_dependency_node"], "component/c@0.1.0")
+            self.assertEqual(last["failed_dependency_node"], "infrastructure/c@0.1.0")
 
     def test_cold_closure_blocks_on_live_orchestration_for_a_node(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -4184,17 +4184,18 @@ def _validate_generate_outputs_for_generation(
         src_dir, violations, build_system=_build_system, language=_language
     )
     # The cheap deterministic runner backstops (name / forbidden-output / json-serialization
-    # / snapshot-filename) run against every runner — leaf-authored (infra self-test / legacy)
-    # or host-rendered (M3c). (The two LLM-fabrication heuristics — constant-heavy diagnostics
-    # and non-physical case_path input — were removed in M3d: they were unreliable
-    # `problem/`-scoped guesses with a known false-positive history, and once the physics
-    # nodes host-render there is little leaf-authored physics-runner surface left for them to
-    # police. NOTE they are NOT a full no-op: the legacy leaf-authored-runner path stays live —
-    # the `infrastructure` harness self-test, any non-`(fortran, make)` node, and any node
-    # without an infra dep (the catalog currently holds no such physics node, since the
-    # advection_diffusion family opted into the harness, but nothing pins that). Removing the
-    # heuristics accepts that fabrication in those runners is caught by the LLM verify/judge +
-    # these deterministic backstops, not by the two deleted heuristics.)
+    # / snapshot-filename) run against every runner — leaf-authored (the `infrastructure`
+    # harness self-test) or host-rendered (M3c). (The two LLM-fabrication heuristics —
+    # constant-heavy diagnostics and non-physical case_path input — were removed in M3d: they
+    # were unreliable `problem/`-scoped guesses with a known false-positive history, and once
+    # the physics nodes host-render there is little leaf-authored physics-runner surface left
+    # for them to police. NOTE they are NOT a full no-op: the leaf-authored-runner path stays
+    # live for the harness self-test. What used to make it live for physics nodes too — a node
+    # without an infra dep, or a non-`(fortran, make)` toolchain — is now pinned shut: the
+    # infra-dep count is a spec-input rejection (`runner_renderer.infra_dep_count_violation`)
+    # and the toolchain is a compile.static violation (`_validate_toolchain_backend_supported`).
+    # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
+    # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
     runner_files = sorted(src_dir.glob("*_runner.f90"))
     _validate_runner_source_files(
         execution, runner_files, violations,
@@ -4309,7 +4310,10 @@ def _validate_component_generated_surface(
     if not isinstance(ir, dict):
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "component":
+    # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
+    # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
+    # the infrastructure twin had (`_validate_infrastructure_public_api`).
+    if str(meta.get("spec_kind") or "").strip() != "component":
         return
     public_api = ir.get("public_api")
     if not isinstance(public_api, dict) or "published_operations" not in public_api:
@@ -10113,6 +10117,7 @@ def _validate_compile_stage_impl(
     _validate_infrastructure_public_api(repo_root, ir_dir, violations)
     _validate_component_public_api(repo_root, ir_dir, violations)
     _validate_harness_dependency_consistency(repo_root, ir_dir, violations)
+    _validate_toolchain_backend_supported(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
     _validate_impl_defaults_knobs(repo_root, ir_dir, violations)
 
@@ -10977,9 +10982,9 @@ def _validate_harness_dependency_consistency(
     surfacing as a render / link failure, because the runner glue is host-rendered against
     exactly this harness.
 
-    No-op when the node declares NO infrastructure dependency (a pre-M3c legacy node keeps
-    its leaf-authored runner — the mass opt-in is M3d) or when the node is itself an
-    infrastructure node. Routes (via ``classify_compile_static_failure``) back to
+    No-op when the node is itself an infrastructure node, or when it declares NO infrastructure
+    dependency — a shape spec-input rejects on every non-infrastructure spec, so the no-op is
+    reachable only from a hand-crafted IR. Routes (via ``classify_compile_static_failure``) back to
     ``compile.generate`` to re-author ``dependency.direct_deps``."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
@@ -10995,7 +11000,7 @@ def _validate_harness_dependency_consistency(
         return
     infra = _infra_direct_dep_node_keys(ir)
     if not infra:
-        return  # no harness dependency declared -> legacy path, nothing to pin
+        return  # no harness dependency declared (spec-input rejects it) -> nothing to pin
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     target = impl.get("target") if isinstance(impl.get("target"), dict) else {}
@@ -11019,6 +11024,214 @@ def _validate_harness_dependency_consistency(
             f"{derived_path}: declared infrastructure dependency {infra[0]!r} (spec_id "
             f"{dep_spec!r}) does not match the harness derived from this node's target "
             f"(language={language}, class={hw_class}): expected {expected!r}")
+
+
+def _validate_toolchain_backend_supported(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """Deterministic compile gate: the only implemented physical backend is
+    ``(build_system=make, language=fortran)``.
+
+    Everything the host authors for a physics node — ``src/Makefile``
+    (``_conductor_authors_makefile``) and ``src/<spec_id>_runner.f90``
+    (``_conductor_authors_runner``) — is make+fortran only, and the in-process build /
+    execute path is likewise make-only (``_require_make_build_system``). A node whose IR
+    named another toolchain used to slip past every one of those predicates, and the two
+    halves failed differently — both late, and neither with a message naming the toolchain:
+    a non-``make`` ``build_system`` reached the Build stage's ``_require_make_build_system``
+    backstop (a hard fail, phases later, with no repair route), while a non-``fortran``
+    ``language`` under ``make`` passed that backstop — it tests ``build_system`` only — and
+    lost host authorship of the runner and Makefile. On a node with a harness dependency the
+    language half was caught one gate earlier, by
+    ``_validate_harness_dependency_consistency``, but only INDIRECTLY: it fires because the
+    derived ``harness_<language>_<class>`` id no longer matches the declared dependency, so
+    it reads as a wrong-harness defect and its remedy points at ``dependency.direct_deps``.
+
+    Naming the toolchain here makes the defect cheap, REPAIRABLE and correctly attributed:
+    ``impl_defaults.toolchain`` is authored content, so the violation routes (via
+    ``classify_compile_static_failure`` → ``COMPILE_STATIC_FAILURE_ROUTING``) back to a warm
+    ``compile.generate`` re-author. The Build backstop stays as defense-in-depth.
+
+    An ``infrastructure`` node is exempt from the ``fortran`` half only: the harness is
+    certified per ``(language, hardware)`` target, so another language is a legitimate
+    future harness. It is NOT exempt from ``make`` — ``_require_make_build_system`` is
+    kind-agnostic, so a non-make harness would die at Build, late and unrepairable, which is
+    the failure class this gate exists to remove — nor from the SHAPE checks below, which
+    are about the host's readers disagreeing rather than about which backend is supported.
+
+    That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
+    — in the same pass, so the order does not matter, both violations land in one list —
+    rejects a non-fortran harness outright, naming the missing
+    ``tools/lang_backend_fortran``-style backend, which is the accurate remedy for that
+    shape and better than a second violation from here saying "use fortran". The carve-out
+    exists so that when a language backend IS added, this gate does not have to be edited
+    too. That hand-off only holds while both gates spell the exemption the SAME way: they
+    now agree on ``.strip()`` with no case folding (as do
+    ``runner_renderer.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
+    divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
+    exemption while the other gate's exact match skipped the node, so a non-fortran harness
+    produced no violation at all. The value is the IR's self-declared ``meta.spec_kind``,
+    which a physics node cannot abuse to take the exemption because declaring it drags in
+    that same infrastructure public-API gate.
+
+    Absent ``build_system`` / ``language`` default to make / fortran, the SAME defaults
+    ``_conductor_authors_makefile`` and ``_conductor_authors_runner`` apply, so an IR that
+    omits the toolchain passes here exactly as it is host-rendered in the conductor. That
+    equivalence is why the defaults exist; it is NOT a licence to omit the keys, which V6
+    and ``docs/IMPL_PLAN_SPEC.md`` require and which ``post_generate`` gates read (an absent
+    ``language`` silently skips the fortran syntax-check evidence gate).
+
+    Three SHAPE checks close divergences between the host readers of these two keys:
+
+    - a truthy non-mapping ``toolchain`` (a string, a list) — the conductor's ``tc =
+      (impl.get("toolchain") or {})`` keeps it and raises ``AttributeError`` mid-Generate.
+      A truthy non-mapping ``impl_defaults`` does NOT crash the conductor (that read IS
+      isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
+      rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
+      sides identically and is left alone.
+    - a key present with a value that is not a plain non-empty string. ``language:`` (no
+      value) and ``language: null`` are the same ``None`` once the IR is parsed, but
+      ``record_launch`` decides Makefile authorship from line-scanning readers
+      (``_impl_resolved_build_system`` / ``_impl_resolved_language``) that read the file
+      TEXTUALLY and do tell them apart. Measured, the branch spans three outcomes:
+      ``language: null`` (likewise ``~`` / ``no`` / ``off`` / ``0`` / ``[]``) leaves a
+      DOUBLE-OWNED ``src/Makefile`` — the scanner returns the literal token, concludes the
+      Makefile is leaf-authored and injects the write-pin while the conductor host-authors
+      it anyway, exactly what ``_conductor_authors_makefile``'s single-source-of-truth
+      contract exists to prevent; ``build_system: 5`` / ``true`` / ``"   "`` leaves it
+      authored by NOBODY; and the bare-key and ``""`` spellings agree harmlessly. Because
+      the parsed IR cannot tell the harmless ones from the rest, every such value is
+      rejected — give the key a plain token or remove it. An ABSENT key is a different
+      thing and stays legal.
+    - a value that is not equal to its stripped form (``"make "``). The conductor compares
+      with ``.lower()`` and no ``.strip()``, so a padded value is not the token it looks
+      like and host authorship of the Makefile and the runner silently flips off. For
+      ``build_system`` it is worse: ``record_launch``'s reader DOES strip, so it concludes
+      the host authored the file and suppresses the leaf's write-pin — leaving
+      ``src/Makefile`` authored by NOBODY. (The pair comparison below is ``.lower()``-only
+      too, but that is unobservable: this check returns first for every untrimmed value.)
+
+    RESIDUAL, deliberately not closed here: these checks read the PARSED mapping, so they
+    catch only the divergences a parse can see. Spellings that parse to the right token but
+    line-scan to a different one — a duplicate ``language:`` key, a block scalar
+    (``language: >-`` / ``|-``), a YAML alias — still reach the same double-owned
+    ``src/Makefile``. The root cause is that ``_impl_resolved_build_system`` /
+    ``_impl_resolved_language`` line-scan the file at all (and unscoped to
+    ``impl_defaults.toolchain`` at that); a gate over the parsed IR structurally cannot fix
+    it, and growing this one to chase text spellings would only look like it had.
+
+    A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
+    derived_path = ir_dir / "spec.ir.yaml"
+    if not derived_path.exists():
+        return
+    try:
+        ir = _read_yaml(derived_path)
+    except (json.JSONDecodeError, yaml.YAMLError):
+        return
+    if not isinstance(ir, dict):
+        return
+    meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
+    is_infrastructure = str(meta.get("spec_kind") or "").strip() == "infrastructure"
+    raw_impl = ir.get("impl_defaults")
+    if raw_impl and not isinstance(raw_impl, dict):
+        violations.append(
+            f"{derived_path}: impl_defaults must be a mapping (found "
+            f"{type(raw_impl).__name__}); every impl_defaults gate reads it through "
+            "`isinstance(..., dict)` and silently no-ops on any other shape, so the whole "
+            "section would go unchecked (docs/workflow/phases/phase_01_compile.md). "
+            "Re-author impl_defaults as the documented target/toolchain/selected/abstract "
+            "mapping.")
+        return
+    impl = raw_impl if isinstance(raw_impl, dict) else {}
+    raw_tc = impl.get("toolchain")
+    if raw_tc and not isinstance(raw_tc, dict):
+        violations.append(
+            f"{derived_path}: impl_defaults.toolchain must be a mapping (found "
+            f"{type(raw_tc).__name__}); the conductor reads `language` / `build_system` off "
+            "it unguarded and would fail mid-Generate "
+            "(docs/workflow/phases/phase_01_compile.md). "
+            "Re-author it as `{language: fortran, build_system: make, ...}`.")
+        return
+    tc = raw_tc if isinstance(raw_tc, dict) else {}
+    shape_bad = False
+    for key in ("build_system", "language"):
+        if key not in tc:
+            continue
+        value = tc[key]
+        if not isinstance(value, str) or not value.strip():
+            shape_bad = True
+            # Measured over the two readers, this branch spans three outcomes — which is why
+            # the message states the RULE and cites the extremes rather than claiming one
+            # consequence for the value at hand:
+            #   language: null / ~ / no / off / 0 / []  -> src/Makefile DOUBLE-OWNED
+            #   build_system: 5 / true / "   "          -> src/Makefile authored by NOBODY
+            #   `key:` (bare) and `key: ""`             -> both readers agree (harmless)
+            # The harmless pair is rejected anyway because the PARSED value cannot be told
+            # from the harmful ones; only the line scan can, and that is the whole defect.
+            violations.append(
+                f"{derived_path}: impl_defaults.toolchain.{key} must be a plain non-empty "
+                f"string token; found {value!r}. The conductor reads the PARSED value while "
+                f"record_launch decides src/Makefile authorship by LINE-SCANNING this file, "
+                f"and for a value that is not a plain token the two CAN reach different answers: "
+                f"measured, `language: null` (likewise `~` / `no` / `off` / `0` / `[]`) "
+                f"leaves src/Makefile double-owned, while `build_system: 5` or "
+                f"`build_system: \"   \"` leaves it authored by nobody. The bare `{key}:` and "
+                f"`{key}: \"\"` spellings happen to be harmless, but the parsed IR cannot tell "
+                f"them from the rest, so every present-but-not-a-plain-token value is "
+                f"rejected (docs/workflow/phases/phase_01_compile.md). Give the key an "
+                f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or remove "
+                f"it entirely — an ABSENT key is legal and takes that same default.")
+        elif value != value.strip():
+            shape_bad = True
+            # Measured: `build_system: "make "` orphans the file (conductor declines, scanner
+            # strips and still reports the host as author, so the leaf's pin is suppressed).
+            # `language: " fortran"` is consistent — both decline and the leaf is pinned — but
+            # the node has silently stopped being M3c, which is its own defect.
+            consequence = (
+                "record_launch's line scan — which does strip — still reports the host as "
+                "the author and suppresses the leaf's write-pin, so src/Makefile ends up "
+                "authored by nobody"
+                if key == "build_system" else
+                "the node silently stops being an M3c node: its runner is no longer "
+                "host-rendered and its checks-module ABI no longer applies")
+            violations.append(
+                f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
+                "leading or trailing whitespace. The conductor compares this value with "
+                "`.lower()` and no `.strip()`, so it is not the token it looks like: host "
+                f"authorship silently flips off, and {consequence} "
+                "(docs/workflow/phases/phase_01_compile.md). Write the bare token "
+                f"({value.strip()!r}).")
+    if shape_bad:
+        return
+    build_system = str(tc.get("build_system") or "make").lower()
+    language = str(tc.get("language") or "fortran").lower()
+    bad = build_system != "make" or (language != "fortran" and not is_infrastructure)
+    if not bad:
+        return
+    scope = ("build_system must be 'make' on every node, an infrastructure node included: "
+             "the in-process build / execute path is make-only and kind-agnostic "
+             "(_require_make_build_system)"
+             if is_infrastructure else
+             "the only implemented physical backend is (make, fortran) — the host-authored "
+             "src/Makefile and src/<spec_id>_runner.f90 exist for make+fortran only, and "
+             "the non-(make, fortran) node path has been removed")
+    def _declared(key: str, default: str) -> str:
+        # Report what the author wrote. An absent key is "absent (defaults to X)", never a
+        # value they never typed, and a present one is echoed verbatim rather than normalized.
+        return repr(tc[key]) if key in tc else f"absent (defaults to {default!r})"
+
+    violations.append(
+        f"{derived_path}: impl_defaults.toolchain declares "
+        f"(build_system={_declared('build_system', 'make')}, "
+        f"language={_declared('language', 'fortran')}); {scope} "
+        "(docs/workflow/phases/phase_01_compile.md). The controlled_spec is "
+        "language-neutral, so nothing in it pins another toolchain: re-author "
+        "impl_defaults.toolchain to build_system 'make'"
+        + ("" if is_infrastructure else " and language 'fortran'")
+        + " (keys stated explicitly — V6 requires every fixed impl_defaults sub-key to "
+        "have a value, and the post_generate lint/syntax gates read `language`). The "
+        "values are compared case-insensitively; an untrimmed value never reaches this "
+        "comparison because the shape check above rejects it first.")
 
 
 def _validate_harness_render_preconditions(
@@ -11047,19 +11260,23 @@ def _validate_harness_render_preconditions(
     EXCLUDED (by ``ir_content_violations``, via ``RenderError.identity``): node-identity defects
     a re-author cannot repair — the spec_id / derived-name length and >1 infra dep. These are
     NOT hoisted here (routing an unrepairable defect to a warm-resume retry would only spin).
-    Neither identity defect can reach the render backstop from a live run. M3d bounds spec_id
-    length at SPEC-INPUT, before any phase runs: ``runner_renderer.spec_id_length_violation`` is
-    the canonical capture point, enforced unconditionally by ``resolve_node`` (workflow_conductor)
-    and mirrored over the whole closure by run_workflow's dependency visit — so a spec_id over 55
-    is an early, clear rejection rather than a late workflow-kill, and the derived
-    ``<spec_id>_runner``/``_checks``/``_model`` names (spec_id + 7) stay inside the f2008 63-char
-    limit. A node declaring >1 infrastructure dep is not M3c (``_conductor_authors_runner``
-    requires exactly one), so its runner is never host-rendered. The renderer keeps both as
-    defense-in-depth backstops. The catalog's former over-length offender (a 61-char
-    ``advection_diffusion`` profile node) has since been renamed, and no catalog ``spec_id``
-    now exceeds the bound — the gate stands as a guard on future additions.
+    Neither identity defect can reach the render backstop from a live run. BOTH are bounded at
+    SPEC-INPUT, before any phase runs, by ``runner_renderer.spec_id_length_violation`` and
+    ``runner_renderer.infra_dep_count_violation`` — enforced unconditionally by ``resolve_node``
+    (workflow_conductor) and mirrored over the whole closure by run_workflow's dependency visit.
+    So a spec_id over 55 is an early, clear rejection rather than a late workflow-kill (and the
+    derived ``<spec_id>_runner``/``_checks``/``_model`` names, spec_id + 7, stay inside the f2008
+    63-char limit), and a node declaring anything other than exactly one infrastructure dep never
+    starts at all. The renderer keeps the spec_id bound and the >1-infra case as defense-in-depth
+    backstops; the ZERO-infra case has no renderer backstop at all (with no infrastructure dep the
+    runner is never host-rendered), which is why spec-input is its only capture point. The catalog's former
+    over-length offender (a 61-char ``advection_diffusion`` profile node) has since been renamed,
+    and no catalog ``spec_id`` now exceeds the bound — the gate stands as a guard on future
+    additions.
 
-    No-op only when the node is not M3c (legacy leaf-authored runner)."""
+    No-op only when the node is not M3c — an ``infrastructure`` node (whose self-test runner is
+    leaf-authored), or a hand-crafted IR that names another toolchain, which its sibling gate
+    ``_validate_toolchain_backend_supported`` rejects in the same pass."""
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
         return
@@ -11183,7 +11400,10 @@ def _validate_component_public_api(
         return
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "component":
+    # `.strip()`-normalized, like every other `meta.spec_kind` reader. An exact match here
+    # let `spec_kind: "  component  "` skip the public-API name pin entirely — the same gap
+    # the infrastructure twin had (`_validate_infrastructure_public_api`).
+    if str(meta.get("spec_kind") or "").strip() != "component":
         return  # name-surface pin is component-only (infra has its own fuller gate)
 
     spec_id = meta.get("spec_id")
@@ -11277,7 +11497,14 @@ def _validate_infrastructure_public_api(
         return
 
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "infrastructure":
+    # `.strip()`-normalized, the same spelling rule as every other reader of `meta.spec_kind`
+    # (`_conductor_authors_runner`, `_validate_toolchain_backend_supported`,
+    # `_validate_harness_dependency_consistency`). An exact match here was the outlier, and it
+    # left a hole: `spec_kind: "  infrastructure  "` took the toolchain gate's language
+    # exemption (that gate strips) while this gate — the ONLY enforcement of the fortran-only
+    # language backend — skipped the node, so a non-fortran harness produced no violation at
+    # all in the whole pass.
+    if str(meta.get("spec_kind") or "").strip() != "infrastructure":
         return  # exact-published-surface contract is infrastructure-only
 
     # The §5.1 signature pin renders the structured signatures to the target language, and only a
@@ -11727,7 +11954,11 @@ def _validate_infrastructure_generated_signatures(
         _fail_closed_if_infra("IR spec.ir.yaml is not a mapping")
         return
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
-    if meta.get("spec_kind") != "infrastructure":
+    # `.strip()`-normalized like every other `meta.spec_kind` reader. Matching exactly here
+    # while the compile gates strip made them disagree: a padded value passed compile as an
+    # infrastructure node and then fail-closed HERE with "meta.spec_kind is not
+    # 'infrastructure'" — an accurate-sounding message about an IR compile had accepted.
+    if str(meta.get("spec_kind") or "").strip() != "infrastructure":
         _fail_closed_if_infra("IR meta.spec_kind is not 'infrastructure'")
         return
     # Past this point the IR confirms an infrastructure node, so a missing/unresolvable
