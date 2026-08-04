@@ -3818,10 +3818,10 @@ def _resolve_dependency_closure(
         if len(kinds) == 1:
             return next(iter(kinds)), None
         if len(kinds) > 1:
-            # Reported by the caller whatever the dep count says — see the `_registry_defect`
-        # branch there, and the `_UNRESOLVABLE_KIND` note above it. Unlike
-            # the unreadable-registry case there is no lazy-catalog property to protect: the
-            # registry WAS read, it is simply self-contradictory.
+            # Reported by the caller whatever the dep count says — see the
+            # `_registry_defect` branch there, and the `_UNRESOLVABLE_KIND` note above it.
+            # Unlike the unreadable-registry case there is no lazy-catalog property to
+            # protect: the registry WAS read, it is simply self-contradictory.
             return _UNRESOLVABLE_KIND, (
                 f"spec_id {spec_id!r} is registered under multiple spec_kinds "
                 f"{sorted(kinds)} in spec/registry/spec_catalog.yaml; spec_id must be "
