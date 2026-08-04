@@ -16793,8 +16793,9 @@ def init_orchestration(
     spec_ref: str | None = None,
     source_dependency_ref: str | None = None,
     status: str = "running",
-    # claude is the primary/default backend (it is what every shipped sample's `defaults`
-    # names); codex remains a supported choice, selected in the leaf-LLM configuration.
+    # claude is the primary/default backend: it is what `docs/examples/llm_claude.example.yaml`
+    # — the sample the first-run instructions copy — names in `defaults`. codex remains a fully
+    # supported choice, selected in the leaf-LLM configuration rather than here.
     agent_backend: str = "claude",
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,

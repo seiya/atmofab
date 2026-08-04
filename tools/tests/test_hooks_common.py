@@ -1123,7 +1123,8 @@ class ForbidPythonInlineWriteNewPatternsTests(unittest.TestCase):
         self.assertNotEqual(policy, "forbid_python_inline_write")
 
     def test_allows_normal_python_script(self) -> None:
-        decision = self._call("python3 tools/run_workflow.py spec generate --llm claude")
+        decision = self._call(
+            "python3 tools/run_workflow.py spec generate --llm-config llm.yaml")
         # Should NOT block on forbid_python_inline_write (may still block on tools-direct-read
         # if workflow mode active; we only verify not blocked by inline-write policy)
         policy = (decision.audit_detail or {}).get("policy", "")

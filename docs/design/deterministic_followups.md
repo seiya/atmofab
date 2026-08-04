@@ -64,7 +64,7 @@ non-fortran no-op / unbuilt-dep + malformed-IR fail-closed; conductor↔runtime 
 `demo_dep_base`/`demo_dep_top` chain — see D1 below; **deleted 2026-08-03**, it declared no
 `infrastructure` dependency and that shape is now rejected at spec-input, so a closure run is
 exercised by the shipped `problem` specs instead), but running
-`run_workflow.py <ref> validate --llm claude --with-deps` to `meta=pass` +
+`run_workflow.py <ref> validate --with-deps` to `meta=pass` +
 `aggregate_verdict=pass` (billed, long) is the only way to confirm and remains outstanding.
 
 ## Follow-up: deterministic binary name (2026-06-24)

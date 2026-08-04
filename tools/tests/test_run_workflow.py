@@ -3081,18 +3081,26 @@ class RunWorkflowTests(unittest.TestCase):
             # would stop earlier, at `llm_config_default_missing`, and this test would pass
             # for a reason that has nothing to do with the spec.
             _seed_default_llm_config_into(repo_root)
-            code = run_workflow.main(
-                [
-                    "spec/problem/missing.md",
-                    "build",
-                    "--repo-root",
-                    str(repo_root),
-                    "--orchestration-id",
-                    "orch_missing",
-                    "--no-run-conductor",
-                ]
-            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main(
+                    [
+                        "spec/problem/missing.md",
+                        "build",
+                        "--repo-root",
+                        str(repo_root),
+                        "--orchestration-id",
+                        "orch_missing",
+                        "--no-run-conductor",
+                    ]
+                )
             self.assertEqual(code, 2)
+            # `code == 2` alone is satisfied by any startup refusal, so it survived deleting
+            # the existence check this test names. The envelope has to say which one fired.
+            payload = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(payload["reason"], "invalid_startup_input")
+            self.assertIn("spec/problem/missing.md", payload["detail"])
+            self.assertNotIn("llm_config", payload["detail"])
 
     def test_main_returns_structured_error_when_init_runtime_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
