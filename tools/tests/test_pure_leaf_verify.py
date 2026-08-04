@@ -26,6 +26,7 @@ from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.test_pure_leaf_producer import (
     _NODE, _SPEC_ID, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 
 def _verdict(status: str = "pass", *, severity: str | None = None,
@@ -76,7 +77,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                backend="claude", env={})
+                llm_config=_cfg("claude"), env={})
         c.envelopes = envelopes
         oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         return c, refs, oc
@@ -205,7 +206,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         # wait_usage_reset ON: the opt-in that would otherwise park the run for hours.
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={}, wait_usage_reset=True)
+               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
         c.slept = []
         oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         self.assertEqual(oc.status, "fail")
@@ -240,7 +241,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={}, wait_usage_reset=True)
+               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
         c.procs = [wc.ProcResult(1, "", f"usage limit reached|{int(now) + 300}"),
                    wc.ProcResult(0, _envelope(_verdict("pass")), "")]
         c.slept = []
@@ -284,7 +285,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={}, wait_usage_reset=True)
+               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
         c.procs = [wc.ProcResult(1, recorded_stdout, ""),
                    wc.ProcResult(0, _envelope(_verdict("pass")), "")]
         c.slept = []
@@ -328,7 +329,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         refs = _verify_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={}, wait_usage_reset=True)
+               llm_config=_cfg("claude"), env={}, wait_usage_reset=True)
         c.procs = [wc.ProcResult(1, RECORDED_ABORT_ENVELOPE, ""),
                    wc.ProcResult(0, _envelope(_verdict("pass")), "")]
         c.slept = []
@@ -386,7 +387,7 @@ class PureVerifySubstepTests(unittest.TestCase):
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={})
+               llm_config=_cfg("claude"), env={})
         c.envelopes = [_envelope(_verdict("pass"))]
         oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         self.assertEqual(oc.status, "pass")
@@ -410,7 +411,7 @@ class PureVerifySubstepTests(unittest.TestCase):
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={})
+               llm_config=_cfg("claude"), env={})
         c.envelopes = [_envelope(_verdict("pass"))]
         oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         self.assertTrue(finalized.get("did"))
@@ -511,7 +512,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
             refs = _verify_node(repo)
             (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   backend="claude", env={})
+                   llm_config=_cfg("claude"), env={})
             c.envelopes = [_envelope(bad)]
             oc = c._run_pure_verify_substep(refs, "generate", "verify", ())  # must not raise
             self.assertEqual(oc.status, "fail")
@@ -533,7 +534,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
             refs = _verify_node(repo)
             (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   backend="claude", env={})
+                   llm_config=_cfg("claude"), env={})
             c.envelopes = [_envelope({"verification_status": "pass"})]  # schema-invalid -> repair
             with mock.patch.object(pl, "verify_verdict_violations",
                                    return_value=["bad field value \ud800 here"]):

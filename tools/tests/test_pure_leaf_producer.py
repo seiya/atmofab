@@ -29,6 +29,7 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 _NODE = "problem/shallow_water2d@0.3.0"
 _SAFE = wc.node_key_safe(_NODE)
@@ -262,7 +263,7 @@ def _conductor(repo: Path) -> _PureFakeConductor:
     (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
     return _PureFakeConductor(
         repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-        backend="claude", env={})
+        llm_config=_cfg("claude"), env={})
 
 
 # ======================================================================================
@@ -873,7 +874,7 @@ class PureProducerSubstepTests(unittest.TestCase):
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={})
+               llm_config=_cfg("claude"), env={})
         c.envelopes = [_envelope(_valid_bundle())]
         oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
         self.assertEqual(oc.status, "pass")
@@ -987,7 +988,7 @@ class PureProducerSubstepTests(unittest.TestCase):
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={})
+               llm_config=_cfg("claude"), env={})
         c.envelopes = [_envelope(_valid_bundle())]
         oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
         self.assertTrue(finalized.get("did"))            # the window WAS closed (finalize ran)
@@ -1029,7 +1030,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         refs = _write_node(repo)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-               backend="claude", env={})
+               llm_config=_cfg("claude"), env={})
         bad = _valid_bundle()
         del bad["capability_requirements"]  # persistently schema-invalid -> exhaustion
         c.envelopes = [_envelope(bad)]
@@ -1062,7 +1063,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
     def _conductor(self, repo: Path, procs: list, **kw) -> "_C":
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = self._C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                    backend="claude", env={}, **kw)
+                    llm_config=_cfg("claude"), env={}, **kw)
         c.procs = procs
         c.slept = []
         return c
@@ -1322,7 +1323,7 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
             refs = _write_node(repo)
             (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   backend="claude", env={})
+                   llm_config=_cfg("claude"), env={})
             c.envelopes = [_envelope(bad)]
             oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())  # must not raise
             self.assertEqual(oc.status, "fail")
@@ -1343,7 +1344,7 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
             refs = _write_node(repo)
             (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   backend="claude", env={})
+                   llm_config=_cfg("claude"), env={})
             c.envelopes = [_envelope(_valid_bundle())]  # valid doc; validator forces the violation
             oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())  # must not raise
             self.assertEqual(oc.status, "fail")
@@ -1478,7 +1479,7 @@ class PureProducerExemplarTests(unittest.TestCase):
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _RenderingFakeConductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            backend="claude", env={})
+            llm_config=_cfg("claude"), env={})
         c.exemplar_value = self._EXEMPLAR
         c.envelopes = envelopes
         oc = c._run_pure_generate_substep(refs, "generate", "generate", repair, ())

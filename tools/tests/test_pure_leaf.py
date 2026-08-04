@@ -19,6 +19,7 @@ from pathlib import Path
 
 from tools import pure_leaf as pl
 from tools import workflow_conductor as wc
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 
 def _envelope(**overrides) -> str:
@@ -418,7 +419,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
     def _conductor(self, backend: str) -> wc.Conductor:
         return wc.Conductor(
             repo_root=Path(self._tmp.name), orchestration_id="o",
-            orchestration_agent_run_id="ORCH", backend=backend, env={})
+            orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_pure_claude_command_includes_flags(self):
         argv = self._conductor("claude").leaf_command(session_id="arid-1", pure=True)

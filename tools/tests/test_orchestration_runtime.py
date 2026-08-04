@@ -107,6 +107,7 @@ from tools.orchestration_runtime import (
     default_agent_model_for_backend,
     resolve_claude_model_from_transcript,
 )
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 _FIX_IR_REF = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
 _FIX_PIPE_REF = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
@@ -31051,7 +31052,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
         cap: dict = {}
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", backend="claude", env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             calls = {"n": 0}
 

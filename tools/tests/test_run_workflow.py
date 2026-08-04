@@ -20,6 +20,15 @@ from tools import llm_config as lc
 from tools import run_workflow
 from tools.validate_pipeline_semantics import _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SAMPLE_DIR = REPO_ROOT / "docs" / "examples"
+
+
+def _sample_config(backend: str = "claude") -> lc.LlmConfig:
+    """The committed sample configuration for a CLI backend — what an operator copies to the
+    `./llm.yaml` a run loads by default."""
+    return lc.load_llm_config(SAMPLE_DIR / f"llm_{backend}.example.yaml")
+
 
 def _seed_shape_expr_schema_into(repo_root: Path) -> None:
     """Copy the validator-bundled shape_expr.schema.json into a tmp repo so
@@ -5211,7 +5220,7 @@ class SubstepEventTests(unittest.TestCase):
             orchestration_agent_run_id = "orch_agent_run"
             workflow_mode = "dev"
             # `__init__` is bypassed, so the leaf-model authority is supplied directly.
-            llm_config = wc.llm_config_from_legacy("claude")
+            llm_config = _sample_config("claude")
 
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})
@@ -5287,7 +5296,7 @@ class SubstepEventTests(unittest.TestCase):
             orchestration_agent_run_id = "orch_agent_run"
             workflow_mode = "dev"
             # `__init__` is bypassed, so the leaf-model authority is supplied directly.
-            llm_config = wc.llm_config_from_legacy("claude")
+            llm_config = _sample_config("claude")
 
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})

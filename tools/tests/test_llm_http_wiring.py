@@ -30,6 +30,7 @@ from tools.tests.test_pure_leaf_producer import (
     _valid_bundle,
     _write_node,
 )
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 KEY_ENV = "METDSL_TEST_HTTP_KEY"
 
@@ -355,7 +356,7 @@ class HttpPureLeafWiringTests(unittest.TestCase):
     def test_an_agentic_provider_on_a_non_m3c_node_is_untouched(self) -> None:
         c = _HttpConductor(
             repo_root=self.repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            env={KEY_ENV: "sk-test"}, backend="claude", agent_model="opus")
+            env={KEY_ENV: "sk-test"}, llm_config=_cfg("claude", agent_model="opus"))
         c._conductor_authors_makefile = lambda refs: False   # type: ignore[assignment]
         self.assertFalse(c._pure_leaf_substep(self.refs, "generate", "generate"))
         entry = c.entry_for("generate", "generate")

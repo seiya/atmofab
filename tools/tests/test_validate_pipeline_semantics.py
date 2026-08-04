@@ -44,6 +44,7 @@ from tools.validate_pipeline_semantics import (
     validate_post_build_stage,
     validate_post_generate_stage,
 )
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 
 # The mock spec the shared fixture's IR points at through `meta.source_refs` (the real IR's only
@@ -11531,7 +11532,7 @@ class MakefileBinNotPinnedTest(unittest.TestCase):
         # the Makefile BIN default (the conductor imposes it via build/execute overrides).
         import tools.workflow_conductor as wc
         c = wc.Conductor(repo_root=Path("/tmp/r"), orchestration_id="o",
-                         orchestration_agent_run_id="O", backend="claude", env={})
+                         orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
         refs = wc.NodeRefs(node_key="component/foo@0.1.0", spec_path="spec/component/foo",
                            ir_id="i", pipeline_id="p", source_id="s", binary_id="b")
         self.assertEqual(c._resolve_exe_name(refs), "foo_runner")

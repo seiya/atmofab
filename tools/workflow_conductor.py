@@ -37,7 +37,7 @@ import signal
 import subprocess
 import threading
 import time
-from dataclasses import InitVar, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -52,7 +52,6 @@ from tools.llm_config import (
     CAP_WARM_RESUME,
     LlmConfig,
     ResolvedLeafEntry,
-    llm_config_from_legacy,
 )
 
 
@@ -3118,23 +3117,8 @@ class Conductor:
     repo_root: Path
     orchestration_id: str
     orchestration_agent_run_id: str
-    # `backend` / `agent_model` / `llm_command` are the DEPRECATED run-wide trio, kept as
-    # constructor inputs only: they are folded into `llm_config` by `__post_init__` and are
-    # never consulted again. `InitVar` keeps them off the INSTANCE, but a default value still
-    # leaves a CLASS attribute behind, which would answer `self.backend` with `""` — exactly
-    # the silent-wrong-branch this conversion exists to prevent. The three class attributes are
-    # deleted below the class body, so any surviving read raises `AttributeError`;
-    # `test_the_deprecated_trio_leaves_no_readable_attribute` pins that.
-    backend: InitVar[str] = ""
     env: dict[str, str] = field(default_factory=dict)
-    # Unpinned spec-side alias (never a pinned version — that would go stale as
-    # versions update). The EXACT version each leaf actually ran is resolved from
-    # its session transcript and recorded onto its agent_runs row in _agent_run_json.
-    agent_model: InitVar[str] = "opus"
     workflow_mode: str = "dev"
-    # The resolved backend command (may be a wrapper with flags, e.g. from
-    # --llm-command); empty falls back to the bare backend name.
-    llm_command: InitVar[str] = ""
     # --wait-usage-reset (opt-in, default OFF): when a leaf dies of an `llm_usage_limit` whose
     # terminal line carries a RESOLVABLE reset instant (machine epoch, else TZ-anchored human form —
     # the latter is what the real CLI emits), wait it out in place and re-launch the substep instead
@@ -3142,14 +3126,17 @@ class Conductor:
     wait_usage_reset: bool = False
     # THE leaf-model authority (issue #28). One `ResolvedLeafEntry` per LLM leaf, so a launch
     # carries its provider, model, command/endpoint and CAPABILITIES instead of a run-wide
-    # name every call site re-interprets. None means "build it from the deprecated trio", which
-    # is what keeps `--llm claude` and `--llm-config configs/llm/claude.yaml` the same run.
+    # name every call site re-interprets. REQUIRED — the `None` default exists only because
+    # `env` above it is defaulted, and `__post_init__` refuses it: there is no run-wide backend
+    # identity left to reconstruct one from, and a conductor that quietly invented a
+    # configuration would launch models nobody chose.
     llm_config: LlmConfig | None = None
 
-    def __post_init__(self, backend: str, agent_model: str, llm_command: str) -> None:
+    def __post_init__(self) -> None:
         if self.llm_config is None:
-            self.llm_config = llm_config_from_legacy(
-                backend or "claude", agent_model, llm_command)
+            raise TypeError(
+                "Conductor requires llm_config: the leaf-model authority is the only thing "
+                "that says which provider and model each leaf launches")
         self._resolve_claude_model_aliases()
         # Codex writes its bookkeeping through the JSON-transaction helper, so a crashed prior
         # run may leave a half-applied transaction to roll forward. Keyed on "does ANY entry
@@ -3169,9 +3156,9 @@ class Conductor:
     def _resolve_claude_model_aliases(self) -> None:
         """Fill in the runtime alias for every model-less `claude_cli` entry, ONCE.
 
-        `configs/llm/claude.yaml` deliberately ships without a `model:` — Claude Code takes an
-        unpinned alias resolved from the operator's settings. That resolution reads the
-        operator's home, so it happens exactly here (at construction) rather than per launch:
+        A `claude_cli` entry that names no `model:` is taking Claude Code's unpinned alias,
+        resolved from the operator's own settings. That resolution reads the operator's home,
+        so it happens exactly here (at construction) rather than per launch:
         one read, one value, and every recorded launch of the run agrees about what it asked
         for."""
         cfg = self.llm_config
@@ -10585,18 +10572,6 @@ clean:
         return "pass"
 
 
-# The deprecated trio are `InitVar`s, which keeps them off the instance but still leaves their
-# DEFAULTS as class attributes — so `self.backend` would answer `""` on a codex run rather than
-# raising. Delete them: this conversion's whole safety argument is that a site still asking the
-# RUN what backend it is, instead of asking the LEAF's entry, fails loudly.
-for _legacy_attr in ("backend", "agent_model", "llm_command"):
-    try:
-        delattr(Conductor, _legacy_attr)
-    except AttributeError:                    # pragma: no cover - already absent
-        pass
-del _legacy_attr
-
-
 # --- phase deliverables (step_result.required_outputs) -------------------------
 #
 # validation_stage and required_outputs per phase, grounded in real step_result.json
@@ -10884,23 +10859,19 @@ def prepare_node(conductor: "Conductor", node_key: str, spec_path: str) -> NodeR
 
 def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   orchestration_agent_run_id: str, spec_ref: str,
-                  source_dependency_ref: str, until_phase: str, backend: str = "",
-                  agent_model: str = "", workflow_mode: str = "dev",
-                  env: dict[str, str] | None = None,
-                  llm_command: str = "", resume: bool = False,
-                  wait_usage_reset: bool = False,
-                  llm_config: LlmConfig | None = None) -> str:
+                  source_dependency_ref: str, until_phase: str,
+                  llm_config: LlmConfig, workflow_mode: str = "dev",
+                  env: dict[str, str] | None = None, resume: bool = False,
+                  wait_usage_reset: bool = False) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
     Resolves the node, allocates+reserves ids (or, on resume, reuses the checkpointed
     ids), and runs the deterministic phase loop. Returns the terminal orchestration
     status (pass | fail | fail_closed).
 
-    `llm_config` is the leaf-model authority; the `backend` / `agent_model` / `llm_command`
-    trio is the deprecated run-wide spelling, folded into the shipped config for that backend
-    when no `llm_config` is given."""
+    `llm_config` is the leaf-model authority, and is required: the caller has already loaded
+    and pinned the operator's configuration, so there is nothing here to reconstruct one
+    from."""
     root = Path(repo_root)
-    if llm_config is None:
-        llm_config = llm_config_from_legacy(backend or "claude", agent_model, llm_command)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
     # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
     llm_config.validate_runnable()
