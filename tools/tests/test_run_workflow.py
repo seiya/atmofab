@@ -3095,8 +3095,13 @@ class RunWorkflowTests(unittest.TestCase):
                     ]
                 )
             self.assertEqual(code, 2)
-            # `code == 2` alone is satisfied by any startup refusal, so it survived deleting
-            # the existence check this test names. The envelope has to say which one fired.
+            # `code == 2` alone is satisfied by ANY startup refusal — including the one the
+            # seeding above exists to avoid — so the envelope is read. What that pins is the
+            # BEHAVIOUR (a nonexistent spec_ref is refused, by name, before anything launches),
+            # not which line raised: `_canonicalize_spec_ref` and `_discover_source_dependency_
+            # ref` both run `_resolve_existing_ref_path` on this ref under the same
+            # `field_name`, so deleting either one alone leaves the envelope byte-identical.
+            # The redundancy is the reason a single-site mutation here proves nothing.
             payload = json.loads(buf.getvalue().strip().splitlines()[-1])
             self.assertEqual(payload["reason"], "invalid_startup_input")
             self.assertIn("spec/problem/missing.md", payload["detail"])
