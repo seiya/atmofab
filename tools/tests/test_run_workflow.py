@@ -2309,10 +2309,13 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIn("No space left on device", out["detail"])
             set_status = [c for c in observed if c and c[0] == "set-status"]
             self.assertEqual(len(set_status), 1, observed)
-            self.assertEqual(set_status[0][set_status[0].index("--status") + 1], "fail")
-            self.assertEqual(
-                set_status[0][set_status[0].index("--reason-code") + 1],
-                "driver_exception")
+            argv = set_status[0]
+            # WHICH orchestration is terminalized is the whole point of the guards —
+            # stamping the wrong id would leave the crashed one `running` forever.
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1],
+                             "orch_boom_nospace")
+            self.assertEqual(argv[argv.index("--status") + 1], "fail")
+            self.assertEqual(argv[argv.index("--reason-code") + 1], "driver_exception")
             # The traceback still reaches stderr: a genuine bug stays debuggable while
             # stdout keeps its envelope contract.
             self.assertIn("Traceback", err.getvalue())
@@ -2427,10 +2430,65 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(out["reason"], "runtime_command_failed")
             set_status = [c for c in observed if c and c[0] == "set-status"]
             self.assertEqual(len(set_status), 1, observed)
-            self.assertEqual(set_status[0][set_status[0].index("--status") + 1], "fail")
-            self.assertEqual(
-                set_status[0][set_status[0].index("--reason-code") + 1],
-                "runtime_command_failed")
+            argv = set_status[0]
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1], oid)
+            self.assertEqual(argv[argv.index("--status") + 1], "fail")
+            self.assertEqual(argv[argv.index("--reason-code") + 1],
+                             "runtime_command_failed")
+            # This is the path the truncation exists for — a `_runtime_command`
+            # RuntimeError embeds the runtime subprocess's own stderr — so the detail
+            # must actually carry it rather than be dropped on the floor.
+            self.assertIn("exit 1", argv[argv.index("--reason-detail") + 1])
+
+    def test_a_runtime_command_failure_during_init_terminalizes_our_own_meta(
+        self,
+    ) -> None:
+        # `init_committed` only flips when the runtime call RETURNS, and this handler
+        # spans `init` too: an `init` that wrote the `running` meta and then failed —
+        # here by answering without an `orchestration_agent_run_id` — reaches the
+        # handler with `init_committed` still False. The `driver` block is then the
+        # only proof the run is ours, and without it the orchestration stays `running`.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_init_committed_then_failed"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            observed: list[list[str]] = []
+
+            def runtime_that_commits_then_answers_short(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    d = repo_root / "workspace" / "orchestrations" / oid
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "orchestration_meta.json").write_text(
+                        json.dumps({"orchestration_id": oid, "status": "running",
+                                    "spec_ref": "spec/problem/test.md",
+                                    "driver": {**identity, "recorded_at": "now"}}),
+                        encoding="utf-8")
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok"}, raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_that_commits_then_answers_short  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "runtime_command_failed")
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            argv = set_status[0]
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1], oid)
+            self.assertEqual(argv[argv.index("--reason-code") + 1],
+                             "runtime_command_failed")
 
     def test_a_runtime_command_failure_leaves_another_runs_meta_alone(self) -> None:
         # The ownership half of the case above. `init` failing means this invocation
@@ -2445,7 +2503,8 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIsNotNone(identity)
             d = repo_root / "workspace" / "orchestrations" / oid
             d.mkdir(parents=True, exist_ok=True)
-            (d / "orchestration_meta.json").write_text(
+            meta_path = d / "orchestration_meta.json"
+            meta_path.write_text(
                 json.dumps({"orchestration_id": oid, "status": "running",
                             "spec_ref": "spec/problem/test.md",
                             # Foreign by construction — unallocatable pid plus an
@@ -2454,6 +2513,7 @@ class RunWorkflowTests(unittest.TestCase):
                             "driver": {**identity, "pid": _unallocatable_pid(),
                                        "verdict": "dead"}}),
                 encoding="utf-8")
+            seeded_bytes = meta_path.read_bytes()
             observed: list[list[str]] = []
 
             def runtime_whose_init_dies(root, env, args):  # type: ignore[no-untyped-def]
@@ -2474,6 +2534,29 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 2, out)
             self.assertEqual(out["reason"], "runtime_command_failed")
             self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+            self.assertEqual(meta_path.read_bytes(), seeded_bytes)
+
+    def test_backstop_still_reports_when_the_traceback_print_fails(self) -> None:
+        # The stderr report is diagnostics; the stdout envelope is the contract. A
+        # broken stderr (a closed pipe — the shape this repo has been bitten by) must
+        # not displace the envelope, or a caller parsing stdout sees nothing at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            with mock.patch("traceback.print_exc",
+                            side_effect=BrokenPipeError("closed stderr")):
+                with self._mkdir_boom(
+                    "orch_agent_run_002", "tmp",
+                    OSError(28, "No space left on device"),
+                ):
+                    code, out, observed = self._run_main_with_fake_runtime(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", "orch_stderr_gone"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            # ...and the terminalization still happened, too.
+            self.assertEqual(
+                len([c for c in observed if c and c[0] == "set-status"]), 1, observed)
 
     def test_unwritable_workspace_tmp_reports_instead_of_escaping(self) -> None:
         # `workspace/tmp` is the driver's FIRST write into the workspace, so on a
