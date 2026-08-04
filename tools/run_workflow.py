@@ -1712,6 +1712,39 @@ def _recorded_llm_config(repo_root: Path, orchestration_id: str) -> dict[str, An
     }
 
 
+LLM_CONFIG_SNAPSHOT_NAME = "llm_config_snapshot.yaml"
+
+
+def _llm_config_snapshot_path(repo_root: Path, orchestration_id: str) -> Path:
+    """Where a run keeps a copy of the configuration bytes it launched with."""
+    return (repo_root / "workspace" / "orchestrations" / orchestration_id
+            / LLM_CONFIG_SNAPSHOT_NAME)
+
+
+def _write_llm_config_snapshot(
+    repo_root: Path, orchestration_id: str, llm_config: LlmConfig
+) -> None:
+    """Persist the launched configuration's BYTES into the orchestration workspace.
+
+    The default configuration is an operator-owned file that no version control has a copy of,
+    so an edit between the launch and a resume is unrecoverable: the resume gate refuses (it
+    must — the finished phases ran on the recorded bytes), and without this there is nothing
+    left to restore the file FROM. The snapshot makes the refusal actionable instead of
+    terminal. Same reasoning as the `launches/<arid>.request.input.json` evidence files.
+
+    `llm_config.raw` is the snapshot that was hashed and resolved, not a second read: re-reading
+    would capture whatever the file says now, which is precisely the state this exists to
+    survive. Cold init only, and never overwritten — a resume must not replace launch-time
+    bytes with today's."""
+    if not llm_config.raw:
+        return
+    path = _llm_config_snapshot_path(repo_root, orchestration_id)
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(llm_config.raw)
+
+
 def _llm_config_legacy_pin_rejection(
     orchestration_id: str, recorded: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -1786,11 +1819,20 @@ def _llm_config_resume_rejection(
             f"{effective_path!r}. Resume without --llm-config (or pass the same file); to "
             f"change the configuration, start a fresh run."
         )
+    # Only when it is actually there: a record from before the snapshot existed has none, and
+    # naming a file the operator will not find is worse than naming nothing.
+    snapshot = _llm_config_snapshot_path(repo_root, orchestration_id)
+    from_snapshot = (
+        f" A copy of the configuration this run launched with is kept at "
+        f"{_repo_relative(str(snapshot), repo_root)}; restore the file from it."
+        if snapshot.exists() else ""
+    )
     on_disk = config_sha256(repo_root / recorded_path) if recorded_path else "sha256:missing"
     if on_disk == "sha256:missing":
         return _fail(
             f"cannot resume orchestration {orchestration_id}: its leaf-LLM configuration "
             f"{recorded_path!r} is gone. Restore that file, or start a fresh run."
+            + from_snapshot
         )
     if on_disk == "sha256:unreadable":
         return _fail(
@@ -1812,7 +1854,7 @@ def _llm_config_resume_rejection(
                 f"{recorded_path!r} has changed since launch (recorded "
                 f"{recorded.get('sha256')}, {label} {digest}). The phases already run used the "
                 f"recorded models; resuming would silently run the rest on the new ones. "
-                f"Restore the file, or start a fresh run."
+                f"Restore the file, or start a fresh run." + from_snapshot
             )
     if dict(recorded.get("overrides") or {}) != dict(effective_overrides or {}):
         return _fail(
@@ -3260,6 +3302,11 @@ def _run_node(
                     "runtime command failed (init): missing orchestration_agent_run_id in init result"
                 )
             init_committed = True
+            # Right after init: the orchestration directory now exists, and this is still
+            # before any leaf launches, so the snapshot is inside every leaf's FS-diff write
+            # baseline rather than an unauthorized write appearing mid-run.
+            if not resume_mode:
+                _write_llm_config_snapshot(repo_root, orchestration_id, llm_config)
             orch_tmp = tmp_parent / orchestration_agent_run_id
             orch_tmp.mkdir(parents=True, exist_ok=True)
             env["TMPDIR"] = str(orch_tmp)

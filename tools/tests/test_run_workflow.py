@@ -6557,6 +6557,98 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(kw["llm_config"].providers, frozenset({"claude_cli"}))
             self.assertIn("--llm-config is ignored on --resume", err)
 
+    # --- the launch-time snapshot ----------------------------------------------------
+
+    def _snapshot(self, repo_root: Path, oid: str) -> Path:
+        return (repo_root / "workspace" / "orchestrations" / oid
+                / run_workflow.LLM_CONFIG_SNAPSHOT_NAME)
+
+    def test_a_cold_run_snapshots_the_bytes_it_recorded_the_hash_of(self) -> None:
+        """The default configuration is an operator-owned file no version control has a copy
+        of, so an edit between the launch and a resume is otherwise unrecoverable. The snapshot
+        must be the SAME bytes the pin describes — a second read would capture whatever the
+        file says now, which is exactly the state this exists to survive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = repo_root / "configs" / "llm" / "snap.yaml"
+            cfg.write_text("defaults:\n  provider: claude_cli\n  model: launched\n",
+                           encoding="utf-8")
+            code, _, _, lines = self._run(
+                repo_root, ["--llm-config", "configs/llm/snap.yaml"], oid="orch_snapw")
+            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+            snapshot = self._snapshot(repo_root, "orch_snapw")
+            self.assertTrue(snapshot.exists())
+            self.assertEqual(snapshot.read_bytes(), cfg.read_bytes())
+            self.assertEqual(lc._sha256_bytes(snapshot.read_bytes()),
+                             self._invocation()["llm_config_sha256"])
+
+    def test_a_resume_does_not_overwrite_the_launch_time_snapshot(self) -> None:
+        """It is a record of what the run LAUNCHED with. Refreshing it on resume would make it
+        agree with whatever the operator has since written, i.e. destroy the only copy of the
+        bytes the finished phases actually ran on."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = repo_root / "configs" / "llm" / "claude.yaml"
+            self._seed_resumable(repo_root, "orch_snapr", {
+                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_sha256": lc.config_sha256(cfg),
+            })
+            snapshot = self._snapshot(repo_root, "orch_snapr")
+            snapshot.write_bytes(b"defaults:\n  provider: claude_cli\n  model: at-launch\n")
+            code, _, _, lines = self._run(repo_root, ["--resume"], oid="orch_snapr")
+            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+            self.assertEqual(snapshot.read_bytes(),
+                             b"defaults:\n  provider: claude_cli\n  model: at-launch\n")
+
+    def test_every_closure_node_gets_its_own_snapshot(self) -> None:
+        """Each closure node is its own orchestration with its own resume gate, so a snapshot
+        written only for the target would leave every dependency's refusal unactionable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = _sample_config("claude")
+            for oid in ("orch_dep", "orch_tgt"):
+                run_workflow._write_llm_config_snapshot(repo_root, oid, cfg)
+                self.assertEqual(self._snapshot(repo_root, oid).read_bytes(), cfg.raw)
+
+    def test_the_refusal_names_the_snapshot_only_when_there_is_one(self) -> None:
+        """Pre-snapshot records have none, and naming a file the operator will not find is
+        worse than naming nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            recorded = {"path": "configs/llm/claude.yaml", "sha256": "sha256:aaa",
+                        "overrides": {}}
+            out = self._rejection(recorded, repo_root=repo_root)
+            assert out is not None
+            self.assertIn("is gone", out["detail"])
+            self.assertNotIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
+            # ...and with a snapshot on disk, the refusal says where to restore it from.
+            run_workflow._write_llm_config_snapshot(repo_root, "orch_x", _sample_config())
+            out = self._rejection(recorded, repo_root=repo_root)
+            assert out is not None
+            self.assertIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
+            self.assertIn("restore the file from it", out["detail"])
+
+    def test_a_changed_file_refusal_names_the_snapshot_too(self) -> None:
+        """The other arm an operator can act on: the file still exists, but not as launched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "configs" / "llm").mkdir(parents=True)
+            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            recorded = {"path": "configs/llm/claude.yaml",
+                        "sha256": lc.config_sha256(path), "overrides": {}}
+            run_workflow._write_llm_config_snapshot(repo_root, "orch_x", _sample_config())
+            path.write_text("defaults:\n  provider: claude_cli\n  model: edited\n",
+                            encoding="utf-8")
+            out = self._rejection(recorded, repo_root=repo_root,
+                                  effective_sha256=lc.config_sha256(path))
+            assert out is not None
+            self.assertIn("has changed since launch", out["detail"])
+            self.assertIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
+
     def test_llm_config_is_resolved_against_repo_root_not_the_process_cwd(self) -> None:
         """Every other path this driver resolves is repo-root-relative. Resolving this one
         against the CWD ran one file and recorded a spelling naming another."""

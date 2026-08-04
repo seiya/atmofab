@@ -589,6 +589,12 @@ class LlmConfig:
     sha256: str
     defaults: ResolvedLeafEntry
     entries: Mapping[tuple[str, str], ResolvedLeafEntry]
+    # The exact bytes `sha256` describes and `entries` were resolved from. Carried so a caller
+    # can persist a snapshot of the launched configuration WITHOUT a second read — which would
+    # be a different file if the operator edits it in between, and would then hash to something
+    # the recorded pin does not describe. Defaults to empty for the hand-built instances in
+    # tests, which have no file behind them.
+    raw: bytes = b""
 
     def entry_for(self, phase: str | None, substep: str | None) -> ResolvedLeafEntry:
         """The entry for one launch. `(None, None)` — a launch with no phase/substep, i.e.
@@ -804,6 +810,7 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
         sha256=_sha256_bytes(raw),
         defaults=defaults,
         entries=dict(resolved),
+        raw=raw,
     )
 
 
@@ -948,7 +955,7 @@ def apply_defaults_overrides(
 
     new_defaults = _override(cfg.defaults, cfg.defaults, is_defaults=True)
     entries = {k: _override(e, cfg.defaults) for k, e in cfg.entries.items()}
-    return LlmConfig(path=cfg.path, sha256=cfg.sha256,
+    return LlmConfig(path=cfg.path, sha256=cfg.sha256, raw=cfg.raw,
                      defaults=new_defaults, entries=entries)
 
 
