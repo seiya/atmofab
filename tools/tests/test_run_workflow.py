@@ -2619,6 +2619,55 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(
                 len([c for c in observed if c and c[0] == "set-status"]), 1, observed)
 
+    def test_the_backstop_envelope_goes_through_the_tee(self) -> None:
+        # Every other backstop test forces `--stdout-format jsonl`, which hides WHICH
+        # stream the envelope is printed to. It must be the installed tee, not the
+        # saved real stdout: the tee is what renders the human form the operator
+        # actually reads (`human` is the default) and what mirrors the event into
+        # `run_logs/run_*.jsonl`, the only copy that outlives the terminal.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_tee_render"
+            # Non-ASCII, so the JSONL copy also pins that the payload is written
+            # readably rather than escaped into \uXXXX.
+            boom = OSError(28, "ディスクに空きがありません")
+
+            def fake_runtime_command(root, env, args):  # type: ignore[no-untyped-def]
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = fake_runtime_command  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._mkdir_boom("orch_agent_run_002", "tmp", boom), \
+                        redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "human"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            self.assertEqual(code, 2, buf.getvalue())
+            terminal = buf.getvalue().strip().splitlines()[-1]
+            self.assertTrue(terminal.startswith("[FAIL] reason=driver_exception"),
+                            terminal)
+            self.assertIn("ディスクに空きがありません", terminal)
+            logs = sorted(
+                (repo_root / "workspace" / "orchestrations" / oid / "run_logs")
+                .glob("run_*.jsonl"))
+            self.assertEqual(len(logs), 1, logs)
+            events = [json.loads(line)
+                      for line in logs[0].read_text(encoding="utf-8").splitlines()
+                      if line.strip()]
+            envelope = events[-1]
+            self.assertEqual(envelope["reason"], "driver_exception")
+            self.assertIn("ディスクに空きがありません", envelope["detail"])
+
     def test_a_terminal_status_is_preserved_whatever_its_spelling(self) -> None:
         # `set-status` writes the operator's `--status` through verbatim, and the
         # RUNBOOK documents a manual `set-status` recovery an operator types by hand.
