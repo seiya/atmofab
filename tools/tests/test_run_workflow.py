@@ -3077,6 +3077,10 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
+            # Seeded so the run reaches the spec check: without a default configuration it
+            # would stop earlier, at `llm_config_default_missing`, and this test would pass
+            # for a reason that has nothing to do with the spec.
+            _seed_default_llm_config_into(repo_root)
             code = run_workflow.main(
                 [
                     "spec/problem/missing.md",
@@ -3290,6 +3294,10 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
+            # As above: the dependency check runs AFTER configuration resolution, so without
+            # this the assertions below are satisfied by `llm_config_default_missing` and the
+            # check they name could be deleted outright with the test still green.
+            _seed_default_llm_config_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -6472,11 +6480,11 @@ class LlmConfigStartupTests(unittest.TestCase):
     def _seed_resumable(self, repo_root: Path, oid: str, invocation: dict,
                         *, backend: str = "claude") -> None:
         """An orchestration a resume can find: the meta block both resume gates read, plus the
-        preflight/start-prompt artifacts `_load_resume_params` recovers from.
+        start-prompt artifact `_load_resume_params` recovers `until_phase` / `mode` from.
 
-        `backend` must match what the PIN says — the resume derives its backend from the
-        recorded configuration, so hardcoding `claude` on a codex-pinned orchestration would
-        silently skip every codex-specific startup rule."""
+        `preflight.json` is written for fixture realism — production always has one — but
+        nothing on the resume path reads it any more, so `backend` reaches only that file.
+        What makes a test using this helper a CODEX resume is the configuration it pins."""
         d = repo_root / "workspace" / "orchestrations" / oid
         (d / "launches").mkdir(parents=True, exist_ok=True)
         (d / "orchestration_meta.json").write_text(json.dumps({
@@ -6702,6 +6710,29 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(snapshot.read_bytes(), cfg.read_bytes())
             self.assertEqual(lc._sha256_bytes(snapshot.read_bytes()),
                              self._invocation()["llm_config_sha256"])
+
+    def test_a_cold_re_init_of_the_same_id_replaces_the_snapshot(self) -> None:
+        """Reusing an `--orchestration-id` cold rewrites `invocation` with the NEW
+        configuration's hash. A snapshot that skipped an existing file would then describe the
+        PREVIOUS run — and the refusal that names it would be unactionable forever: restoring
+        from it reproduces bytes whose hash still does not match, so the resume refuses again
+        with the same instruction. The invariant is that these bytes are what
+        `invocation.llm_config_sha256` describes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            snapshot = self._snapshot(repo_root, "orch_reinit")
+            for name, model in (("first.yaml", "was-launched-first"),
+                                ("second.yaml", "launched-on-the-re-run")):
+                cfg = repo_root / name
+                cfg.write_text(f"defaults:\n  provider: claude_cli\n  model: {model}\n",
+                               encoding="utf-8")
+                code, _, _, lines = self._run(
+                    repo_root, ["--llm-config", name], oid="orch_reinit")
+                self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+                self.assertEqual(snapshot.read_bytes(), cfg.read_bytes(), msg=name)
+                self.assertEqual(lc._sha256_bytes(snapshot.read_bytes()),
+                                 self._invocation()["llm_config_sha256"], msg=name)
 
     def test_a_resume_does_not_overwrite_the_launch_time_snapshot(self) -> None:
         """It is a record of what the run LAUNCHED with. Refreshing it on resume would make it

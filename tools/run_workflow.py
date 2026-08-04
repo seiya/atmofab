@@ -1724,13 +1724,20 @@ def _write_llm_config_snapshot(
 
     `llm_config.raw` is the snapshot that was hashed and resolved, not a second read: re-reading
     would capture whatever the file says now, which is precisely the state this exists to
-    survive. Cold init only, and never overwritten — a resume must not replace launch-time
-    bytes with today's."""
+    survive.
+
+    COLD INIT ONLY — a resume must not replace launch-time bytes with today's — and the CALLER
+    is what enforces that (`if not resume_mode`). This function deliberately does NOT skip an
+    existing file: a cold run may reuse an `--orchestration-id`, which rewrites `invocation`
+    with the new configuration's hash, and a stale snapshot beside it would satisfy neither the
+    record nor the operator. The refusal that names this file would then be unactionable
+    forever — restoring from it reproduces the PREVIOUS run's bytes, whose hash still does not
+    match, so the resume refuses again with the same instruction. The invariant is "these bytes
+    are what `invocation.llm_config_sha256` describes", and only an unconditional write on the
+    cold path keeps it."""
     if not llm_config.raw:
         return
     path = _llm_config_snapshot_path(repo_root, orchestration_id)
-    if path.exists():
-        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(llm_config.raw)
 

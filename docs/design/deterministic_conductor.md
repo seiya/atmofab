@@ -82,8 +82,8 @@ writable for auth + session transcript) and records `sandbox_enforced: true`. `s
 there is no opt-out. The conductor **fails closed** — a leaf with no usable profile (a
 missing/invalid file, or a caller with no `child_arid` such as the read-only diagnostician)
 raises rather than launching unconfined; the diagnostician's failure is caught and routed
-to `fail_closed`. The backend type (not the launch command string, which may be a custom
-`--llm-command` wrapper) keys the config-home bind, and a creatable-but-absent home (e.g.
+to `fail_closed`. The backend type (not the launch command string, which may be a
+configured `command:` wrapper) keys the config-home bind, and a creatable-but-absent home (e.g.
 `~/.codex` in a fresh env) is created before binding. `sandbox_enforced: true` is a
 runtime-**required invariant** — preflight and `record-launch` reject anything else
 (writing a `sandbox_not_enforced` violation). This is sound precisely because enforcement

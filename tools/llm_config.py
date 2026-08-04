@@ -928,8 +928,8 @@ def apply_defaults_overrides(
 
             DECLARATION, not value equality: a `validate.judge.model: opus` written next to a
             `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
-            run-wide `sonnet` must not move it. `defaults` itself is always overridable —
-            that is what a run-wide value overrides."""
+            `sonnet` must not move it. `defaults` itself is always overridable — that is what
+            a run-wide value overrides."""
             return is_defaults or field not in entry.declared
 
         changes: dict[str, Any] = {}

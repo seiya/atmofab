@@ -1777,7 +1777,13 @@ class GenerateExecutorFlagTests(unittest.TestCase):
         prev = os.environ.pop("METDSL_GENERATE_EXECUTOR", None)
         try:
             with redirect_stdout(buf):
-                rc = rw.main(["spec/nonexistent_xyz", "generate"])
+                # `--llm-config` explicitly: this runs against the real checkout, whose
+                # `./llm.yaml` is the operator's own and may or may not exist. Without it the
+                # run stops at `llm_config_default_missing` on a clean machine and at the
+                # bogus spec on a configured one — the same assertion for two different
+                # reasons.
+                rc = rw.main(["spec/nonexistent_xyz", "generate",
+                              "--llm-config", "docs/examples/llm_claude.example.yaml"])
             self.assertEqual(rc, 2)
             self.assertIn("invalid_startup_input", buf.getvalue())
             self.assertNotIn("generate_executor_invalid", buf.getvalue())
@@ -1798,7 +1804,13 @@ class GenerateExecutorFlagTests(unittest.TestCase):
         os.environ["METDSL_GENERATE_EXECUTOR"] = "pur"
         try:
             with redirect_stdout(buf):
-                rc = rw.main(["spec/nonexistent_xyz", "generate"])
+                # `--llm-config` explicitly: this runs against the real checkout, whose
+                # `./llm.yaml` is the operator's own and may or may not exist. Without it the
+                # run stops at `llm_config_default_missing` on a clean machine and at the
+                # bogus spec on a configured one — the same assertion for two different
+                # reasons.
+                rc = rw.main(["spec/nonexistent_xyz", "generate",
+                              "--llm-config", "docs/examples/llm_claude.example.yaml"])
             self.assertEqual(rc, 2)
             self.assertIn("invalid_startup_input", buf.getvalue())
             self.assertNotIn("generate_executor_invalid", buf.getvalue())
