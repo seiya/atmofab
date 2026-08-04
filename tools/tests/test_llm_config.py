@@ -3,10 +3,11 @@
 Three things are verified here, in descending order of how expensive it would be to get them
 wrong:
 
-1. **The shipped configs load.** `configs/llm/*.yaml` are the files `run_workflow.py` reaches
-   for when nobody passes `--llm-config`, and an untested YAML file in this repository has a
-   documented history of drifting silently (`docs/examples/*.yaml`). Loading them here is the
-   condition under which YAML was chosen as the format.
+1. **The samples load.** `docs/examples/llm_*.example.yaml` are what an operator copies to the
+   `./llm.yaml` that `run_workflow.py` reads when nobody passes `--llm-config`, and an untested
+   YAML file in this repository has a documented history of drifting silently. Loading them here
+   is the condition under which YAML was chosen as the format — and the reason these particular
+   `docs/examples` files are not part of that history.
 2. **Every named rejection rule fires, exactly once, on its own input.** The rule name is the
    operator's search key, so a rule that silently changed name (or was shadowed by an earlier
    check) is a real regression.
@@ -53,12 +54,72 @@ class _Tmp(unittest.TestCase):
         return ctx.exception
 
 
-class ShippedConfigTests(unittest.TestCase):
-    def test_claude_shipped_config_loads_uniform_claude_cli(self) -> None:
-        cfg = lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT))
+SAMPLE_DIR = REPO_ROOT / "docs" / "examples"
+
+
+def _discovered_samples() -> dict[str, Path]:
+    """Every leaf-LLM sample on disk, DISCOVERED rather than listed.
+
+    A sample nobody loads is the drift this file exists to prevent, so a new one must be picked
+    up without editing the test — and `test_the_samples_are_the_documented_four` separately
+    pins the set, so a deletion or a rename still reds a test."""
+    return {p.name: p for p in sorted(SAMPLE_DIR.glob("llm_*.example.yaml"))}
+
+
+def _sample_body(path: Path) -> dict:
+    """The sample's document with its comments stripped — what a reader without the prose sees."""
+    text = path.read_text(encoding="utf-8")
+    body = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+    return yaml.safe_load(body)
+
+
+class SampleConfigTests(unittest.TestCase):
+    """`docs/examples/llm_*.example.yaml` are the files an operator copies to `./llm.yaml`.
+
+    An untested YAML file in this repository has a documented history of drifting silently
+    (`docs/examples/*.yaml`), and these are the documents that decide which model runs each
+    leaf. Loading them here is the condition under which YAML was chosen as the format."""
+
+    def test_the_samples_are_the_documented_four(self) -> None:
+        self.assertEqual(set(_discovered_samples()), set(lc.SAMPLE_CONFIG_NAMES))
+        self.assertEqual(lc.SAMPLE_CONFIG_DIR, "docs/examples")
+
+    def test_every_sample_loads_resolves_every_leaf_and_is_runnable(self) -> None:
+        for name, path in _discovered_samples().items():
+            cfg = lc.load_llm_config(path)
+            self.assertEqual(sorted(cfg.entries), sorted(lc.LLM_LEAF_SUBSTEPS), msg=name)
+            cfg.validate_runnable()
+
+    def test_every_sample_spells_out_every_leaf(self) -> None:
+        """The samples answer "what runs where, and how hard does it think" by being READ.
+        Inheritance is legal and right once the copy is the operator's own; it is the wrong
+        choice for the sample, where a reader would have to re-derive the answer.
+
+        `effort` is required only where the entry's provider HAS one: `anthropic_api` expresses
+        the same idea as a thinking token budget, and writing a level there is rejected."""
+        for name, path in _discovered_samples().items():
+            document = _sample_body(path)
+            declared = {
+                (phase, substep)
+                for phase, phase_doc in (document.get("phases") or {}).items()
+                for substep in ((phase_doc or {}).get("substeps") or {})
+            }
+            self.assertEqual(declared, set(lc.LLM_LEAF_SUBSTEPS), msg=name)
+            for phase, phase_doc in document["phases"].items():
+                for substep, entry in phase_doc["substeps"].items():
+                    where = f"{name} {phase}.{substep}"
+                    self.assertIn("provider", entry, msg=where)
+                    inapplicable = lc._FIELDS_NOT_APPLICABLE.get(entry["provider"], frozenset())
+                    for field in ("model", "effort"):
+                        if field in inapplicable:
+                            self.assertNotIn(field, entry, msg=where)
+                            continue
+                        self.assertIn(field, entry, msg=where)
+
+    def test_the_claude_sample_is_uniform_and_names_unpinned_aliases(self) -> None:
+        cfg = lc.load_llm_config(SAMPLE_DIR / "llm_claude.example.yaml")
         self.assertEqual(cfg.providers, frozenset({"claude_cli"}))
         self.assertTrue(cfg.is_uniform)
-        self.assertEqual(sorted(cfg.entries), sorted(lc.LLM_LEAF_SUBSTEPS))
         for (phase, substep), entry in cfg.entries.items():
             self.assertEqual(entry.backend_token, "claude")
             # An unpinned ALIAS, never a version — versions move, and the exact one that ran is
@@ -66,40 +127,16 @@ class ShippedConfigTests(unittest.TestCase):
             self.assertNotRegex(entry.model, r"-\d+-\d+$")
             self.assertIn(entry.model, ("opus", "sonnet"), msg=f"{phase}.{substep}")
 
-    def test_the_shipped_configs_spell_out_every_leaf(self) -> None:
-        """The shipped files answer "what runs where, and how hard does it think" by being
-        READ. Inheritance is legal and right for a file an operator writes; it is the wrong
-        choice for the default, where a reader would have to re-derive the answer."""
-        for backend in ("claude", "codex"):
-            text = lc.shipped_config_path(backend, REPO_ROOT).read_text(encoding="utf-8")
-            body = "\n".join(line for line in text.splitlines()
-                              if not line.lstrip().startswith("#"))
-            document = yaml.safe_load(body)
-            declared = {
-                (phase, substep)
-                for phase, phase_doc in (document.get("phases") or {}).items()
-                for substep in ((phase_doc or {}).get("substeps") or {})
-            }
-            self.assertEqual(declared, set(lc.LLM_LEAF_SUBSTEPS), msg=backend)
-            for phase, phase_doc in document["phases"].items():
-                for substep, entry in phase_doc["substeps"].items():
-                    for field in ("provider", "model", "effort"):
-                        self.assertIn(field, entry, msg=f"{backend} {phase}.{substep}")
-
-    def test_claude_shipped_config_is_runnable_without_a_model(self) -> None:
-        lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT)).validate_runnable()
-
-    def test_codex_shipped_config_carries_an_explicit_slug(self) -> None:
-        """Codex has no alias to resolve, so every launch must carry a slug. The shipped file
-        names one rather than failing at run start; blanking it still trips the rule."""
-        cfg = lc.load_llm_config(lc.shipped_config_path("codex", REPO_ROOT))
+    def test_the_codex_sample_carries_an_explicit_slug(self) -> None:
+        """Codex has no alias to resolve, so every launch must carry a slug. The sample names
+        one rather than failing at run start; blanking it still trips the rule."""
+        cfg = lc.load_llm_config(SAMPLE_DIR / "llm_codex.example.yaml")
         self.assertEqual(cfg.providers, frozenset({"codex_cli"}))
         for entry in cfg.entries.values():
             self.assertTrue(entry.model)
             self.assertNotEqual(entry.model.lower(), "codex")
-        cfg.validate_runnable()
 
-    def test_the_shipped_configs_economise_only_the_leaf_the_measurements_allow(self) -> None:
+    def test_the_cli_samples_economise_only_the_leaf_the_measurements_allow(self) -> None:
         """Two separate claims, and the difference between them is the point.
 
         EFFORT is uniform at the current generation's own default. Both CLIs default to
@@ -117,19 +154,39 @@ class ShippedConfigTests(unittest.TestCase):
         and `compile.verify` is the safe one: smallest, re-ran in 3 of 93 nodes, reads an IR the
         deterministic `compile.static` gate already proved clean, and re-read downstream by two
         other leaves. `validate.judge` is NOT economised despite never being re-run once in 69
-        nodes, because nothing follows it to catch what it misses."""
-        for backend in ("claude", "codex"):
-            cfg = lc.load_llm_config(lc.shipped_config_path(backend, REPO_ROOT))
+        nodes, because nothing follows it to catch what it misses.
+
+        The mixed HTTP samples are out of scope: their `generate` leaves run a different
+        provider's model entirely, so "same model as generate.generate" says nothing there."""
+        for name in ("llm_claude.example.yaml", "llm_codex.example.yaml"):
+            cfg = lc.load_llm_config(SAMPLE_DIR / name)
+            self.assertLessEqual(cfg.providers, lc.CLI_PROVIDERS, msg=name)
             top = cfg.entry_for("generate", "generate")
-            self.assertEqual(top.effort, "medium", msg=backend)
+            self.assertEqual(top.effort, "medium", msg=name)
             for (phase, substep), entry in cfg.entries.items():
-                where = f"{backend} {phase}.{substep}"
+                where = f"{name} {phase}.{substep}"
                 self.assertEqual(entry.effort, top.effort, msg=where)
                 if (phase, substep) == ("compile", "verify"):
                     self.assertNotEqual(entry.model, top.model,
                                         msg=f"{where} is the leaf meant to be economised")
                     continue
                 self.assertEqual(entry.model, top.model, msg=where)
+
+    def test_the_http_samples_put_the_http_provider_on_exactly_the_two_pure_leaves(self) -> None:
+        """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
+        does not load at all (`llm_config_capability_insufficient_for_substep`, covered by
+        `CapabilityTests`); what is checked here is that the samples USE the whole admissible
+        surface rather than demonstrating one leaf and leaving the other agentic."""
+        for name in ("llm_openai_compatible.example.yaml", "llm_anthropic_api.example.yaml"):
+            cfg = lc.load_llm_config(SAMPLE_DIR / name)
+            provider = name[len("llm_"):-len(".example.yaml")]
+            self.assertIn(provider, lc.HTTP_PROVIDERS, msg=name)
+            on_http = {key for key, entry in cfg.entries.items() if entry.is_http}
+            self.assertEqual(on_http, set(lc.PURE_CAPABLE_SUBSTEPS), msg=name)
+            for key in on_http:
+                self.assertEqual(cfg.entries[key].provider, provider, msg=f"{name} {key}")
+            # ...and `defaults` stays agentic, which is what runs the `escalate` diagnostician.
+            self.assertFalse(cfg.defaults.is_http, msg=name)
 
     def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,6 +196,35 @@ class ShippedConfigTests(unittest.TestCase):
                 lc.load_llm_config(path).validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
 
+
+class DefaultConfigPathTests(unittest.TestCase):
+    def test_the_default_is_repo_root_slash_llm_yaml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(lc.default_config_path(tmp), Path(tmp) / "llm.yaml")
+            self.assertEqual(lc.DEFAULT_CONFIG_FILENAME, "llm.yaml")
+
+    def test_resolving_returns_the_file_when_it_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            self.assertEqual(lc.resolve_default_config_path(tmp), path)
+
+    def test_a_missing_default_names_the_path_and_the_command_that_creates_it(self) -> None:
+        """There is deliberately no fallback: a run resolved from a file nobody chose is a run
+        nobody can reproduce. The refusal has to carry the fix, because the operator's next
+        question is "then where do I get one"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(lc.LlmConfigError) as ctx:
+                lc.resolve_default_config_path(tmp)
+        self.assertEqual(ctx.exception.rule, "llm_config_default_missing")
+        message = str(ctx.exception)
+        self.assertIn(str(Path(tmp) / "llm.yaml"), message)
+        for name in lc.SAMPLE_CONFIG_NAMES:
+            self.assertIn(f"cp docs/examples/{name} llm.yaml", message)
+            self.assertTrue((SAMPLE_DIR / name).exists(), msg=name)
+
+
+class ShippedConfigPathTests(unittest.TestCase):
     def test_shipped_config_path_points_into_the_repository(self) -> None:
         for backend in ("claude", "codex"):
             self.assertTrue(lc.shipped_config_path(backend).exists())

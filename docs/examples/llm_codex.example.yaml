@@ -1,0 +1,97 @@
+# Sample leaf-LLM configuration: every LLM leaf on the Codex CLI.
+#
+# Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
+# `--llm-config`:
+#
+#     cp docs/examples/llm_codex.example.yaml llm.yaml
+#
+# CHECK `model:` BEFORE THE FIRST RUN. Unlike Claude, Codex has no unpinned alias to resolve —
+# every launch must carry an explicit slug, and the generic `codex` alias is rejected precisely
+# so that no leaf runs without authoritative model provenance. The slugs below are the coding
+# models the CLI lists in `~/.codex/models_cache.json`; if your account serves others, replace
+# them. Blanking a slug is also fine: a run then stops at `llm_config_codex_cli_requires_model`
+# before launching anything, rather than mid-phase.
+#
+#     gpt-5.6-sol     frontier agentic coding      gpt-5.6-luna   fast and affordable
+#     gpt-5.6-terra   balanced, everyday work
+#
+# EVERY phase, substep, provider, model and effort is written out, even though the resolution
+# rules would let all five leaves inherit one `defaults` block. The file is the answer to
+# "what runs where, and how hard does it think" — a reader should get that answer by reading it,
+# not by re-deriving it from an inheritance chain. Omission still works and is the right choice
+# once the copy is yours to edit; it is the wrong choice for the sample.
+#
+# The five entries below are the complete set of LLM leaves. Every other substep
+# (compile.static, generate.gate, validate.pre_judge / execute / post_judge, and the whole
+# build phase) is deterministic and runs in-process, so naming one here is rejected.
+#
+#   model    An explicit slug, required.
+#   effort   `low` | `medium` | `high` | `xhigh` | `max` | `ultra`, passed as
+#            `codex --config model_reasoning_effort="<level>"` (Codex has no `--effort` flag).
+#            These are the CLI's own words, read off `supported_reasoning_levels`; they are NOT
+#            the OpenAI API's `reasoning_effort` list, which has `none`/`minimal` and no `ultra`.
+#            Luna serves every level but `ultra`.
+#
+# WHY `medium`. It is `default_reasoning_level` for every gpt-5.6 model, and the predecessor
+# gpt-5.5 defaulted to `xhigh` — the vendor lowered the default as the model got better. A
+# sample should not override that without evidence about the model it will run on.
+#
+# The measured table in `llm_claude.example.yaml` is NOT that evidence: it was recorded almost
+# entirely on Opus 4.8, and a re-run rate belongs to the (model, effort, task) triple. What it does
+# establish is structural and survives a model change — re-runs were 20% of every token spent and
+# they concentrate in the leaves that WRITE, so `generate.generate` (45% of tokens, seen at 7
+# attempts against a `MAX_ATTEMPTS_PER_PHASE` of 3, where crossing the cap fails the PHASE rather
+# than costing one more attempt) is the last place to save money, not the first. Hence the single
+# economy is a model tier on `compile.verify`: smallest leaf, re-ran in 3 of 93 nodes, reads an
+# IR the deterministic gate already proved clean, and re-read downstream by two other leaves.
+#
+# HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
+# `generate` leaves, which run as host-mediated pure functions; see
+# `llm_openai_compatible.example.yaml` and `llm_anthropic_api.example.yaml` in this directory for
+# worked examples of each.
+defaults:
+  provider: codex_cli
+  model: gpt-5.6-sol
+  effort: medium
+
+phases:
+  compile:
+    substeps:
+      # Authors spec.ir.yaml from the controlled spec: the hardest structured task in the run,
+      # 26.7% of all tokens, and every later leaf reads what it wrote.
+      generate:
+        provider: codex_cli
+        model: gpt-5.6-sol
+        effort: medium
+      # Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR. The cheapest leaf
+      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
+      # same IR afterwards. The only leaf this file economises, and it does so by model tier —
+      # effort stays at the generation default here as everywhere else.
+      verify:
+        provider: codex_cli
+        model: gpt-5.6-terra
+        effort: medium
+
+  generate:
+    substeps:
+      # The CodegenBundle producer — 45.3% of all tokens and the only leaf that routinely
+      # re-runs (30.2% of its spend is re-runs, tail to 7 attempts). The last leaf to economise.
+      generate:
+        provider: codex_cli
+        model: gpt-5.6-sol
+        effort: medium
+      # The verdict reviewer, reached only on a source the deterministic gate already accepted —
+      # but it re-ran in 12 of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
+      verify:
+        provider: codex_cli
+        model: gpt-5.6-sol
+        effort: medium
+
+  validate:
+    substeps:
+      # The independent semantic check. Never re-run in 69 of 69 nodes, so its cost is perfectly
+      # predictable — and still not economised, because nothing runs after it to catch a miss.
+      judge:
+        provider: codex_cli
+        model: gpt-5.6-sol
+        effort: medium

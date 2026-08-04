@@ -1,0 +1,88 @@
+# Sample leaf-LLM configuration: the two `generate` leaves on a local OpenAI-compatible server,
+# everything else on the Claude Code CLI.
+#
+# Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
+# `--llm-config`:
+#
+#     cp docs/examples/llm_openai_compatible.example.yaml llm.yaml
+#
+# WHY ONLY THOSE TWO. `openai_compatible` is one request and one response: no session to reopen,
+# no tools to grant, and no agentic loop. `generate.generate` and `generate.verify` are the only
+# LLM leaves that can run as host-mediated PURE functions (one typed document in, one JSON
+# document out), so they are the only ones an HTTP provider is admissible on. Assigning one to
+# `compile.generate`, `compile.verify` or `validate.judge` is rejected at load with
+# `llm_config_capability_insufficient_for_substep`, and so is putting one in `defaults` (which
+# also runs the `escalate` diagnostician) — that one is `llm_config_defaults_not_agentic`.
+#
+# The pure path is additionally gated on the node's M3c shape at run time, so a pure-only
+# provider reaching a non-M3c node fails that node closed rather than silently launching an
+# agentic session on it.
+#
+# EVERY phase, substep and provider is written out, even though the resolution rules would let
+# the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a
+# reader should get that answer by reading it, not by re-deriving it from an inheritance chain.
+#
+#   base_url         MUST carry the API version segment: the request appends /chat/completions.
+#                    (`anthropic_api` is the opposite — it appends /v1/messages, so give that one
+#                    a bare host, or omit `base_url` entirely and take its default.)
+#                    Plain `http` is accepted only for a LOOPBACK host, which is where the local
+#                    servers this provider exists for run. Anything else would send the API key
+#                    in cleartext and is rejected with `llm_config_insecure_base_url` unless
+#                    `METDSL_ALLOW_INSECURE_LLM_BASE_URL=1` accepts that deliberately.
+#   api_key_env      The NAME of the environment variable holding the key, never the key. A
+#                    configuration file is read, copied and diffed; a key in it is a key leaked.
+#   model            Required, and an exact slug: an HTTP endpoint has no alias to resolve at
+#                    runtime the way `claude --model opus` does.
+#   effort           `minimal` | `low` | `medium` | `high` — the OpenAI API's `reasoning_effort`
+#                    vocabulary, which is NOT the Codex CLI's (that one has `ultra` and no
+#                    `minimal`). Sent in the request body; delete the line to send nothing.
+#   max_output_tokens  Size it against the model's CONTEXT WINDOW, not its documented maximum:
+#                    the request is non-streaming, so the whole completion is bought before any
+#                    of it is read. The default (32768) is sized for a CodegenBundle.
+#
+# `command` does not apply here and declaring it is rejected: there is no child process to wrap.
+defaults:
+  provider: claude_cli
+  model: opus
+  effort: medium
+
+phases:
+  compile:
+    substeps:
+      # Agentic: authors spec.ir.yaml from the controlled spec, holding a workspace and tools.
+      generate:
+        provider: claude_cli
+        model: opus
+        effort: medium
+      # Agentic: semantic cross-reference (V1/V3/V5) over a deterministically-clean IR.
+      verify:
+        provider: claude_cli
+        model: sonnet
+        effort: medium
+
+  generate:
+    substeps:
+      # PURE: the CodegenBundle producer. One typed document in, one JSON document out.
+      generate:
+        provider: openai_compatible
+        base_url: http://localhost:8000/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: qwen2.5-coder-32b-instruct
+        effort: medium
+        max_output_tokens: 32768
+      # PURE: the verdict reviewer over the bundle above.
+      verify:
+        provider: openai_compatible
+        base_url: http://localhost:8000/v1
+        api_key_env: LOCAL_LLM_API_KEY
+        model: qwen2.5-coder-32b-instruct
+        effort: medium
+        max_output_tokens: 16384
+
+  validate:
+    substeps:
+      # Agentic: the independent semantic check, and the last leaf of the run.
+      judge:
+        provider: claude_cli
+        model: opus
+        effort: medium

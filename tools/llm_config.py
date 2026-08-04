@@ -839,6 +839,49 @@ def config_sha256(path: str | Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+# The operator-owned configuration `run_workflow.py` loads when nobody passes `--llm-config`,
+# resolved against `--repo-root`. It is deliberately NOT a tracked file: editing which model runs
+# which leaf is an operator decision, and making it a tracked file forces every operator who
+# makes one to carry a permanent local diff.
+DEFAULT_CONFIG_FILENAME = "llm.yaml"
+
+# The samples to copy it from, in the order the missing-file message offers them.
+SAMPLE_CONFIG_DIR = "docs/examples"
+SAMPLE_CONFIG_NAMES: tuple[str, ...] = (
+    "llm_claude.example.yaml",
+    "llm_codex.example.yaml",
+    "llm_openai_compatible.example.yaml",
+    "llm_anthropic_api.example.yaml",
+)
+
+
+def default_config_path(repo_root: str | Path) -> Path:
+    """`<repo_root>/llm.yaml` — the default configuration, whether or not it exists."""
+    return Path(repo_root) / DEFAULT_CONFIG_FILENAME
+
+
+def resolve_default_config_path(repo_root: str | Path) -> Path:
+    """`default_config_path`, existence-checked.
+
+    There is deliberately NO fallback to a shipped or installed copy. A run that silently used
+    some other file would resolve its models from a document the operator never opened, and the
+    recorded pin would then name a path the resume gate cannot reconcile with what they see. A
+    missing default is a startup failure that names the file and the command that creates it."""
+    path = default_config_path(repo_root)
+    if path.exists():
+        return path
+    samples = "\n  ".join(
+        f"cp {SAMPLE_CONFIG_DIR}/{name} {DEFAULT_CONFIG_FILENAME}"
+        for name in SAMPLE_CONFIG_NAMES)
+    raise LlmConfigError(
+        "llm_config_default_missing",
+        f"no leaf-LLM configuration at {path}. This file decides which model runs each LLM "
+        f"leaf; there is no default to fall back to, because a run resolved from a file nobody "
+        f"chose is a run nobody can reproduce. Copy one of the samples and edit it, or pass "
+        f"--llm-config <path> to name a different one:\n  {samples}",
+        where=str(path))
+
+
 def shipped_config_path(backend: str, repo_root: str | Path | None = None) -> Path:
     """The shipped config that reproduces run-wide `--llm <backend>`.
 
