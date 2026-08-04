@@ -2392,6 +2392,10 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(len(recorded), 200)
             self.assertTrue(recorded.startswith("OSError: [Errno 28] HEAD-CONTEXT"))
             self.assertTrue(recorded.endswith("ACTUAL-ROOT-CAUSE"))
+            # The elision marker is the only signal that the middle is gone; without
+            # it a spliced head+tail reads as one coherent sentence and the operator
+            # draws a conclusion about a message that was never written.
+            self.assertIn("...", recorded)
             # The envelope itself is untruncated — it never crosses an argv boundary.
             self.assertIn(huge, out["detail"])
 
@@ -2614,6 +2618,36 @@ class RunWorkflowTests(unittest.TestCase):
             # ...and the terminalization still happened, too.
             self.assertEqual(
                 len([c for c in observed if c and c[0] == "set-status"]), 1, observed)
+
+    def test_a_terminal_status_is_preserved_whatever_its_spelling(self) -> None:
+        # `set-status` writes the operator's `--status` through verbatim, and the
+        # RUNBOOK documents a manual `set-status` recovery an operator types by hand.
+        # So a terminal status can reach the guard as `FAIL_CLOSED` or ` fail_closed `,
+        # and a case-sensitive comparison would miss it and overwrite the specific
+        # narrative with the generic `driver_exception`.
+        for spelling in ("FAIL_CLOSED", " fail_closed "):
+            with self.subTest(spelling=spelling):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    self._seed_spec_tree(repo_root)
+                    oid = "orch_terminal_spelling"
+                    orch_dir = repo_root / "workspace" / "orchestrations" / oid
+                    orch_dir.mkdir(parents=True, exist_ok=True)
+                    (orch_dir / "orchestration_meta.json").write_text(
+                        json.dumps({"orchestration_id": oid, "status": spelling,
+                                    "spec_ref": "spec/problem/test.md"}),
+                        encoding="utf-8")
+                    with self._mkdir_boom(
+                        "orch_agent_run_002", "tmp",
+                        OSError(28, "No space left on device"),
+                    ), redirect_stderr(io.StringIO()):
+                        code, out, observed = self._run_main_with_fake_runtime(
+                            ["spec/problem/test.md", "build", "--repo-root",
+                             str(repo_root), "--orchestration-id", oid])
+                    self.assertEqual(code, 2, out)
+                    self.assertEqual(out["reason"], "driver_exception")
+                    self.assertEqual(
+                        [c for c in observed if c and c[0] == "set-status"], [])
 
     def test_unwritable_workspace_tmp_reports_instead_of_escaping(self) -> None:
         # `workspace/tmp` is the driver's FIRST write into the workspace, so on a
@@ -5790,6 +5824,43 @@ class StdoutFormatTests(unittest.TestCase):
         # Unknown event shapes return None so the caller falls back to JSON.
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
         self.assertIsNone(f({"hello": "world"}))
+
+
+class ReasonDetailTruncationTests(unittest.TestCase):
+    """`--reason-detail` crosses a subprocess argv boundary, where Linux caps one
+    element at MAX_ARG_STRLEN. The cut therefore has to be bounded — and has to keep
+    the part that says WHY, which for a `_runtime_command` RuntimeError is the tail."""
+
+    def test_a_detail_at_or_under_the_limit_is_passed_through_byte_identical(self) -> None:
+        # The `<=` boundary specifically: a detail of exactly the limit needs no
+        # eliding, and eliding it anyway destroys three characters of a message that
+        # fitted, for nothing.
+        f = run_workflow._truncate_reason_detail
+        limit = run_workflow._REASON_DETAIL_LIMIT
+        for length in (0, 1, limit - 1, limit):
+            with self.subTest(length=length):
+                detail = "y" * length
+                self.assertEqual(f(detail), detail)
+
+    def test_an_oversized_detail_keeps_both_ends_within_the_limit(self) -> None:
+        f = run_workflow._truncate_reason_detail
+        limit = run_workflow._REASON_DETAIL_LIMIT
+        for length in (limit + 1, limit * 5, 200_000):
+            with self.subTest(length=length):
+                detail = "WHICH-COMMAND" + "z" * length + "WHY-IT-DIED"
+                out = f(detail)
+                self.assertEqual(len(out), limit)
+                self.assertTrue(out.startswith("WHICH-COMMAND"))
+                self.assertTrue(out.endswith("WHY-IT-DIED"))
+                self.assertIn("...", out)
+
+    def test_the_cut_is_by_codepoint_so_a_multibyte_detail_stays_readable(self) -> None:
+        # Slicing bytes would split a character and hand the runtime a mojibake
+        # argument; 200 codepoints is at most 800 bytes, far under MAX_ARG_STRLEN.
+        f = run_workflow._truncate_reason_detail
+        out = f("日" * 5_000)
+        self.assertEqual(len(out), run_workflow._REASON_DETAIL_LIMIT)
+        self.assertEqual(out.replace("...", ""), "日" * (len(out) - 3))
 
 
 class SubstepEventTests(unittest.TestCase):
