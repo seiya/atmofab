@@ -2374,7 +2374,7 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
-            huge = "x" * 200_000
+            huge = "HEAD-CONTEXT " + "x" * 200_000 + " ACTUAL-ROOT-CAUSE"
             with self._mkdir_boom(
                 "orch_agent_run_002", "tmp", OSError(28, huge),
             ), redirect_stderr(io.StringIO()):
@@ -2384,14 +2384,71 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 2, out["reason"])
             status = next(c for c in observed if c and c[0] == "set-status")
             recorded = status[status.index("--reason-detail") + 1]
-            # Truncated to the cap, and truncated only — an empty or over-eager cut
-            # would satisfy "short enough" while destroying the diagnostic the
-            # operator reads out of `orchestration_meta.json#reason_detail`.
+            # Short enough for the argv, and BOTH ends survive. A head-only cut is the
+            # tempting implementation and the wrong one: `_runtime_command` builds its
+            # message as `runtime command failed (<the whole argv>): <the real error>`,
+            # so the head alone is pure context and the operator reading
+            # `orchestration_meta.json#reason_detail` learns nothing.
             self.assertEqual(len(recorded), 200)
-            self.assertTrue(out["detail"].startswith(recorded))
-            # The envelope itself is NOT truncated — it never crosses an argv boundary,
-            # and it is the operator's full diagnostic.
+            self.assertTrue(recorded.startswith("OSError: [Errno 28] HEAD-CONTEXT"))
+            self.assertTrue(recorded.endswith("ACTUAL-ROOT-CAUSE"))
+            # The envelope itself is untruncated — it never crosses an argv boundary.
             self.assertIn(huge, out["detail"])
+
+    def test_a_runtime_command_failure_records_the_error_not_just_the_argv_echo(
+        self,
+    ) -> None:
+        # The realistic shape of the detail on this path: `_runtime_command` prefixes
+        # its message with the ENTIRE argv it ran, and a cold `init` / `preflight`
+        # argv (repo paths, `--invocation-json`, `--driver-json`, a 64-char sha) is
+        # already longer than the cap on its own. A head-only truncation would record
+        # 200 characters of argv echo and drop every word about what went wrong.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_argv_echo"
+            long_argv = " ".join(
+                ["preflight", "--repo-root", str(repo_root), "--orchestration-id", oid,
+                 "--backend", "claude", "--agent-command", "claude", "--llm-config",
+                 str(repo_root / "docs" / "examples" / "llm_claude.example.yaml"),
+                 "--llm-config-sha256", "a" * 64])
+            self.assertGreater(len(long_argv), 200)
+            observed: list[list[str]] = []
+
+            def runtime_whose_preflight_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                if args[0] == "preflight":
+                    raise RuntimeError(
+                        f"runtime command failed ({long_argv}): "
+                        "ModuleNotFoundError: No module named 'yaml'")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_preflight_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            self.assertEqual(code, 2, buf.getvalue())
+            status = next(c for c in observed if c and c[0] == "set-status")
+            recorded = status[status.index("--reason-detail") + 1]
+            self.assertLessEqual(len(recorded), 200)
+            self.assertIn("No module named 'yaml'", recorded)
+            # The head still names WHICH runtime command died.
+            self.assertTrue(recorded.startswith("runtime command failed (preflight"))
+            # The envelope keeps the whole message — it never crosses an argv boundary.
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertIn("No module named 'yaml'", out["detail"])
+            self.assertIn(long_argv, out["detail"])
 
     def test_a_runtime_command_failure_after_init_is_terminalized_too(self) -> None:
         # The `except RuntimeError` handler spans `init` AND `preflight`, and returned

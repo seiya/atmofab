@@ -1366,6 +1366,29 @@ def _terminalize_interrupted_orchestration(
         pass
 
 
+_REASON_DETAIL_LIMIT = 200
+
+
+def _truncate_reason_detail(detail: str, limit: int = _REASON_DETAIL_LIMIT) -> str:
+    """Fit `detail` into a `--reason-detail` argv element without losing the diagnosis.
+
+    Truncation is required at all because `_runtime_command` passes the detail as ONE
+    subprocess argv element, where Linux caps a single element at `MAX_ARG_STRLEN`
+    (128 KiB) — this repository has been bitten twice already (issues #30 / #31).
+
+    A plain head cut is not sufficient. `_runtime_command` builds its `RuntimeError`
+    as `runtime command failed (<the entire argv>): <the actual error>`, and a cold
+    `init` or `preflight` argv on its own is longer than any sane limit, so the head
+    is all context and no diagnosis. Keep both ends instead: enough of the head to
+    name the failing command, and the tail, where the message that says WHY lives.
+    """
+    if len(detail) <= limit:
+        return detail
+    head = limit // 4
+    tail = limit - head - 3
+    return f"{detail[:head]}...{detail[-tail:]}"
+
+
 def _terminalize_owned_orchestration(
     repo_root: Path,
     env: dict[str, str],
@@ -1396,9 +1419,9 @@ def _terminalize_owned_orchestration(
       and the exception that brought us here (a full disk, a read-only workspace) is
       usually exactly what makes the runtime subprocess fail too.
 
-    `detail` is truncated because `_runtime_command` passes it as a subprocess argv
-    element, where Linux caps a single element at `MAX_ARG_STRLEN` (128 KiB) — an
-    embedded runtime stderr dump would otherwise turn this into an `E2BIG` OSError.
+    `detail` is truncated by `_truncate_reason_detail`: it crosses an argv boundary,
+    where an embedded runtime stderr dump would otherwise turn this into an `E2BIG`
+    OSError. The full text still reaches the operator on the caller's stdout envelope.
     """
     meta_now = _read_orchestration_meta(repo_root, orchestration_id)
     if not (init_committed or _is_own_driver(meta_now, driver_identity)):
@@ -1420,7 +1443,7 @@ def _terminalize_owned_orchestration(
                 "--reason-code",
                 reason_code,
                 "--reason-detail",
-                detail[:200],
+                _truncate_reason_detail(detail),
             ],
         )
     except Exception:  # noqa: BLE001 - best-effort; the envelope must still print
