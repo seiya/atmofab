@@ -3740,7 +3740,7 @@ class UsageProbeRunnerTests(unittest.TestCase):
         return json.dumps(doc)
 
     def test_the_probe_runs_the_leafs_own_executable_with_the_usage_command(self) -> None:
-        """Same base as `leaf_command` / `_ensure_codex_feature_cache`: a `--llm-command` wrapper is
+        """Same base as `leaf_command` / `_ensure_codex_feature_cache`: a `command:` wrapper is
         what the leaf will run, so a hardcoded `claude` here would probe a different binary. And it
         is the HOST that runs it — no bwrap, because there is no untrusted prompt (the argv is a
         constant), which is the entire reason the response needs no anti-forgery clauses."""
@@ -14774,7 +14774,7 @@ class CodexFeatureCacheTest(unittest.TestCase):
             self.assertIs(doc["enabled"], True)
 
     def test_codex_probe_uses_custom_llm_command(self) -> None:
-        # A custom --llm-command wrapper must be probed verbatim (same prefix the leaf
+        # A configured `command:` wrapper must be probed verbatim (same prefix the leaf
         # runs via leaf_command), not the hardcoded `codex` — else the host certifies a
         # different executable than the leaf will use.
         from unittest.mock import patch
@@ -15463,10 +15463,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                          ["claude", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
-        """The repo's long-standing rule: a model from the deprecated `--agent-model`, or from
-        Claude's runtime alias resolution, is NOT pinned onto the argv. That is what keeps
-        every pre-issue-#28 launch byte-identical, and the equivalence tests above depend on
-        it."""
+        """The repo's long-standing rule: a model the FILE did not declare — one applied as a
+        run-wide override (what the preflight subprocess re-applies), or resolved from Claude's
+        runtime alias — is NOT pinned onto the argv. The operator's own `~/.claude/settings.json`
+        keeps that choice unless a configuration entry deliberately takes it."""
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(
@@ -15583,7 +15583,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_record_launch_names_the_executable_this_leaf_is_launched_through(self) -> None:
         """`record_launch` builds the sandbox's read-only bind of the CLI install directory
         from this. It used to take `preflight.json#probe_command` — the run's `defaults` — which
-        was the same object only while a run had one `--llm-command`. With a per-entry
+        was the same object only while a run could have one command. With a per-entry
         `command:` the leaf would be launched inside a sandbox where its binary is not bound."""
         recorded: list[dict] = []
         c = wc.Conductor(

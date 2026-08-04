@@ -17440,7 +17440,7 @@ class BwrapProfileFilePinTests(unittest.TestCase):
 
     def test_backend_runtime_bind_paths_uses_type_not_command_string(self) -> None:
         """The backend home is keyed on the explicit type, not the command string —
-        a custom --llm-command wrapper (command != 'claude') must still bind ~/.claude."""
+        a configured `command:` wrapper (command != 'claude') must still bind ~/.claude."""
         from tools.orchestration_runtime import _backend_runtime_bind_paths
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -32039,11 +32039,11 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(mcp, [["mywrap", "--flag", "mcp", "list"]])
 
     def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
-        """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but
-        the deprecated `--agent-model` / `--llm-command` are not in the file — `run_workflow`
-        applies them to the loaded object. Probing without them certifies a command the run
-        will not launch: a wrapper that works but a bare CLI that is absent fails preflight,
-        and the reverse authorizes a wrapper nothing probed."""
+        """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, so
+        it starts from the file's own `defaults` — which need not be the `defaults` the caller
+        resolved. Probing without the resolved values certifies a command the run will not
+        launch: a wrapper that works but a bare CLI that is absent fails preflight, and the
+        reverse authorizes a wrapper nothing probed."""
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n  model: opus\n")
             seen: list = []
@@ -32453,9 +32453,9 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     def test_the_sandbox_profile_binds_the_executable_this_leaf_launches(self) -> None:
         """The profile's read-only bind of the CLI install directory used to come from
-        `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run had one
-        `--llm-command`; with a per-entry `command:` the leaf would be launched inside a sandbox
-        where its own binary is not bound."""
+        `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run could
+        only have ONE command; with a per-entry `command:` the leaf would be launched inside a
+        sandbox where its own binary is not bound."""
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bindir:
             repo_root = Path(tmp)
             wrapper = Path(bindir) / "claude"

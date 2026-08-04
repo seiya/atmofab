@@ -488,11 +488,17 @@ class RunWorkflowTests(unittest.TestCase):
         Likewise every real orchestration records a leaf-LLM configuration pin, and a resume of
         one that does not is refused outright (`llm_config_legacy_flags_removed`) — so this
         helper writes a real file and pins it, matching production. `pin=False` seeds the
-        unpinned pre-issue-#28 shape the refusal tests need."""
+        unpinned pre-issue-#28 shape the refusal tests need.
+
+        The pinned file is named per BACKEND rather than being the default `./llm.yaml`: the
+        resume derives its backend from the recorded configuration, so a codex fixture that
+        shared one file with `_seed_spec_tree`'s claude default would silently resume as
+        claude and its `backend="codex"` argument would reach nothing but `preflight.json`."""
         orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
         (orch_root / "launches").mkdir(parents=True, exist_ok=True)
         if pin:
-            config = repo_root / "llm.yaml"
+            rel = f"llm_{backend}.yaml"
+            config = repo_root / rel
             if not config.exists():
                 config.parent.mkdir(parents=True, exist_ok=True)
                 provider = "codex_cli" if backend == "codex" else "claude_cli"
@@ -500,7 +506,7 @@ class RunWorkflowTests(unittest.TestCase):
                 config.write_text(
                     f"defaults:\n  provider: {provider}\n{model}", encoding="utf-8")
             invocation = dict(invocation or {})
-            invocation.setdefault("llm_config_path", "llm.yaml")
+            invocation.setdefault("llm_config_path", rel)
             invocation.setdefault("llm_config_sha256", run_workflow.config_sha256(config))
         dep_ref = source_dependency_ref
         meta = {
@@ -837,8 +843,32 @@ class RunWorkflowTests(unittest.TestCase):
             idx = init_calls[0].index("--agent-model")
             self.assertEqual(init_calls[0][idx + 1], "claude-opus-4-8")
 
-    def test_resume_without_agent_model_omits_default(self) -> None:
-        """No override on --resume: --agent-model is NOT injected, so repair uses the
+    def test_a_resume_survives_a_missing_preflight_json(self) -> None:
+        """A run killed between `init` and `write_preflight` leaves no `preflight.json`. Its
+        backend comes from the RECORDED leaf-LLM configuration, so nothing about it is
+        unrecoverable — and gating the resume on the preflight's `backend` made such a run
+        permanently unresumable while telling the operator to pass a flag that no longer
+        exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            self._seed_resumable_orchestration(
+                repo_root, "orch_20260101T000000Z_aaaaaaaa",
+                spec_ref="spec/problem/test.md", until_phase="Build",
+                mode="dev", backend="claude",
+            )
+            (repo_root / "workspace" / "orchestrations"
+             / "orch_20260101T000000Z_aaaaaaaa" / "preflight.json").unlink()
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
+            )
+            self.assertEqual(code, 0, out)
+            self.assertEqual(out["llm"], "claude")     # derived from the recorded pin
+            self.assertIn("--resume-from-checkpoint",
+                          next(c for c in calls if c and c[0] == "init"))
+
+    def test_a_resume_of_a_run_that_recorded_no_agent_model_omits_it(self) -> None:
+        """`init --agent-model` is NOT injected when the record has none, so repair uses the
         more-accurate sibling_uniform derivation rather than a possibly-wrong default."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -3328,8 +3358,6 @@ class RunWorkflowTests(unittest.TestCase):
                 code = run_workflow.main([
                     "spec/problem/dummy.md",
                     "Compile",
-                    "--llm",
-                    "claude",
                     "--stdout-format",
                     "jsonl",
                 ])
@@ -3377,8 +3405,6 @@ class RunWorkflowTests(unittest.TestCase):
                 code = run_workflow.main([
                     "spec/problem/dummy.md",
                     "Compile",
-                    "--llm",
-                    "claude",
                     "--stdout-format",
                     "jsonl",
                 ])
@@ -6159,17 +6185,31 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(self._invocation()["llm"], "codex")
             self.assertEqual(self._invocation()["llm_command"], "mywrap --x")
 
-    def test_the_removed_flags_are_not_parsed_at_all(self) -> None:
-        """Not merely ignored: a namespace attribute that still existed would be read by some
-        branch sooner or later, and `--agent-model` in particular has a live namesake on the
-        runtime's own `init` / `repair-agent-runs` surface to be confused with."""
+    def test_each_removed_flag_fails_by_name_and_says_where_the_setting_went(self) -> None:
+        """`--llm` is the one that has to be REGISTERED to fail: it is an unambiguous prefix of
+        `--llm-config`, so simply deleting it let argparse abbreviate `--llm claude` into
+        `--llm-config claude`, which then died as an unreadable file the operator never named.
+        The other two would fail as "unrecognized arguments", which says nothing about where
+        the setting went — and `--agent-model` has a live namesake on the runtime's own `init`
+        surface to be confused with."""
+        for flag, value, replacement in (("--llm", "claude", "`provider:`"),
+                                         ("--agent-model", "opus", "`model:`"),
+                                         ("--llm-command", "wrapper", "`command:`")):
+            err = io.StringIO()
+            with mock.patch.object(sys, "stderr", err), self.assertRaises(SystemExit):
+                run_workflow._parse_args(["spec/problem.md", "generate", flag, value])
+            self.assertIn(f"{flag} was removed", err.getvalue(), msg=flag)
+            self.assertIn(replacement, err.getvalue(), msg=flag)
+            self.assertIn("llm.yaml", err.getvalue(), msg=flag)
+        # ...and none of them leaves a namespace attribute a later branch could read.
         ns = run_workflow._parse_args(["spec/problem.md", "generate"])
         for removed in ("llm", "agent_model", "llm_command"):
             self.assertFalse(hasattr(ns, removed), msg=removed)
-        with self.assertRaises(SystemExit):
-            run_workflow._parse_args(["spec/problem.md", "generate", "--agent-model", "opus"])
-        with self.assertRaises(SystemExit):
-            run_workflow._parse_args(["spec/problem.md", "generate", "--llm-command", "x"])
+        # The flag they are NOT allowed to be abbreviated into still parses exactly.
+        self.assertEqual(
+            run_workflow._parse_args(
+                ["spec/problem.md", "generate", "--llm-config", "f.yaml"]).llm_config,
+            "f.yaml")
 
     def test_llm_config_alone_warns_about_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6498,9 +6538,10 @@ class LlmConfigStartupTests(unittest.TestCase):
 
 
     def test_a_config_pinned_codex_run_can_be_resumed(self) -> None:
-        """The codex-model guard is a LEGACY-branch rule. Keyed on `--llm-config` alone it
-        fired on every resume of a config-pinned codex run — a resume passes no `--llm-config`,
-        it recovers the pin — demanding an `--agent-model` for a model the file already names."""
+        """A codex resume takes its slug from the RECORDED configuration and nothing else. The
+        guard that used to demand a run-wide model here keyed on `--llm-config` being passed —
+        which a resume never does, because it recovers the pin — so it fired on every resume of
+        a config-pinned codex run, for a model the file already named."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)

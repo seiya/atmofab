@@ -58,10 +58,9 @@ from tools.llm_config import (
 
 
 # Orchestration is conductor-only (the deterministic Python phase loop in
-# tools/workflow_conductor.py). The conductor has leaf launchers for claude and
-# codex; the former LLM-orchestrator driver and the cursor backend (which only ran
-# under that driver) were removed.
-SUPPORTED_LLMS = ("codex", "claude")
+# tools/workflow_conductor.py). Which providers have a leaf launcher is decided by
+# `llm_config.PROVIDER_CAPABILITIES`, not by a list here: a provider this driver cannot run
+# is rejected at config load with `llm_config_unknown_provider`.
 SUPPORTED_WORKFLOW_MODES = ("dev", "prod")
 # Applied when --mode is omitted on a non-resume run.
 DEFAULT_WORKFLOW_MODE = "dev"
@@ -1865,6 +1864,28 @@ def _llm_config_resume_rejection(
     return None
 
 
+class _RemovedFlagAction(argparse.Action):
+    """A flag that no longer exists, kept REGISTERED so it fails by name.
+
+    Two reasons it is not simply absent. `--llm` is an unambiguous prefix of `--llm-config`,
+    so dropping it let argparse abbreviate the muscle-memory `--llm claude` into
+    `--llm-config claude` — which then fails as an unreadable file the operator never named.
+    And "unrecognized arguments" says nothing about where the setting went, which for these
+    three is a specific place: the leaf-LLM configuration file."""
+
+    def __init__(self, option_strings: list[str], dest: str, replacement: str,
+                 **kwargs: Any) -> None:
+        self.replacement = replacement
+        super().__init__(option_strings, dest, nargs="?", help=argparse.SUPPRESS, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):  # type: ignore[override]
+        parser.error(
+            f"{option_string} was removed: what each LLM leaf launches is decided by the "
+            f"leaf-LLM configuration file, not run-wide on the command line. Set "
+            f"{self.replacement} in ./llm.yaml (or the file named by --llm-config); see "
+            f"docs/ORCHESTRATION.md 'Leaf LLM configuration'.")
+
+
 class _DeprecatedAliasAction(argparse.Action):
     """A flag alias that sets a fixed value and warns once toward its canonical name.
 
@@ -1945,6 +1966,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
             "provider capability matrix, and the named rejection rules."
         ),
     )
+    for removed, replacement in (
+        ("--llm", "`provider:`"),
+        ("--agent-model", "`model:`"),
+        ("--llm-command", "`command:`"),
+    ):
+        parser.add_argument(removed, action=_RemovedFlagAction, replacement=replacement,
+                            dest=f"_removed{removed.replace('-', '_')}", default=None)
     # NOTE (M-F): the `--generate-executor` flag and the `METDSL_GENERATE_EXECUTOR` env var were
     # removed when legacy generate execution was deleted — `pure` is the only executor. A cold run
     # that still passes `--generate-executor …` therefore fails at argparse ("unrecognized
@@ -2392,7 +2420,6 @@ def _run_main(
         else:
             spec_ref_in = spec_ref_arg or recovered.get("spec_ref")
             until_phase_in = until_phase_arg or recovered.get("until_phase")
-        llm_in = recovered.get("llm")
         mode_in = args.mode or recovered.get("mode")
         # The orchestration AGENT's own recorded model (not a leaf's), replayed onto the
         # resume's repair so its agent_runs row keeps the attribution the original run had.
@@ -2431,7 +2458,11 @@ def _run_main(
             for name, value, ok in (
                 ("spec_ref", spec_ref_in, bool(spec_ref_in)),
                 ("until_phase", until_phase_in, bool(until_phase_in)),
-                ("llm", llm_in, llm_in in SUPPORTED_LLMS),
+                # NOT `llm`: the backend is derived from the recorded leaf-LLM configuration
+                # (`llm_config.defaults.backend_token`), so `preflight.json#backend` is
+                # provenance rather than an input. Gating on it made a run that died between
+                # `init` and `write_preflight` permanently unresumable — and told the operator
+                # to "pass them explicitly" with a flag that no longer exists.
                 ("mode", mode_in, bool(mode_in)),
             )
             if not ok
@@ -2456,9 +2487,6 @@ def _run_main(
         orchestration_id = args.orchestration_id or _new_orchestration_id()
         spec_ref_in = args.spec_ref
         until_phase_in = args.until_phase
-        # Only the resume branch reads this back (it validates what `preflight.json` recovered);
-        # a cold run derives its backend from the configuration it is about to load.
-        llm_in = ""
         mode_in = args.mode or DEFAULT_WORKFLOW_MODE
         # A cold run has no orchestration-agent model to replay; `init` derives the claude
         # alias itself for the backend/command where asserting one is sound.

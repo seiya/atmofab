@@ -80,7 +80,7 @@ class HookCodexFeatureTests(unittest.TestCase):
         self.assertTrue(detail.startswith("codex features list failed:"))
 
     def test_command_prefix_list_is_invoked_verbatim(self) -> None:
-        # A custom --llm-command wrapper (list prefix) is run verbatim before
+        # A configured `command:` wrapper (list prefix) is run verbatim before
         # `features list`, so the probe hits the same executable the leaf will run.
         seen: dict[str, list[str]] = {}
 

@@ -8628,6 +8628,14 @@ def _should_ignore_runtime_snapshot_path(
     runtime_files = {
         f"{orch_root}/agent_graph.json",
         f"{orch_root}/agent_runs.jsonl",
+        # The bytes of the leaf-LLM configuration this run launched with, written by
+        # `run_workflow._write_llm_config_snapshot` on cold init — AFTER
+        # `_write_run_write_baseline` has already snapshotted the orchestration baseline, so
+        # without this exemption it reads as an orchestration-authored write. Harmless only by
+        # accident today (the orchestration row is appended once at init and thereafter
+        # rewritten in place by `set-status`, never re-recorded), which is exactly the
+        # accident `run_logs/` and `failure_analysis.runtime.*` are exempted for.
+        f"{orch_root}/llm_config_snapshot.yaml",
         # Adv-24: fcntl lock sidecar; orchestration runtime exclusively manages it.
         f"{orch_root}/agent_runs.jsonl.lock",
         # Recurrence-prevention plan (Issue 3): the invalid-payload audit log
@@ -20884,10 +20892,10 @@ def main(argv: list[str] | None = None) -> int:
             "fields, which keep describing --backend / defaults)."
         ),
     )
-    # The RESOLVED `defaults` of the configuration the run will actually use. The deprecated
-    # The resolved `defaults` model/command may differ from the file's, so a probe that only reloads the
-    # path would certify a different command than the run launches. Re-applying a value the
-    # file already declares is a no-op, so these are sent unconditionally.
+    # The RESOLVED `defaults` of the configuration the run will actually use. They may differ
+    # from what the FILE declares, so a probe that only reloads the path would certify a
+    # different command than the run launches. Re-applying a value the file already declares is
+    # a no-op, so these are sent unconditionally.
     preflight_parser.add_argument("--llm-config-defaults-model", default=None)
     preflight_parser.add_argument("--llm-config-defaults-command", default=None)
     # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the

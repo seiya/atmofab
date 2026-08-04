@@ -3378,8 +3378,8 @@ class Conductor:
         model = (entry if entry is not None else self.entry_for(None, None)).model.strip()
         if not model or model.lower() == "codex":
             raise ValueError(
-                "Codex workflow leaves require an explicit model slug (config `model:`, or the "
-                "for this entry or in `defaults`); the generic 'codex' alias cannot provide "
+                "Codex workflow leaves require an explicit model slug: set `model:` on this "
+                "leaf's entry or in `defaults`. The generic 'codex' alias cannot provide "
                 "authoritative provenance"
             )
         return model
