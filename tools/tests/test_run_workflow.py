@@ -31,6 +31,15 @@ def _sample_config(backend: str = "claude") -> lc.LlmConfig:
     return lc.load_llm_config(SAMPLE_DIR / f"llm_{backend}.example.yaml")
 
 
+def _seed_default_llm_config_into(repo_root: Path) -> None:
+    """Give a scratch `repo_root` the `./llm.yaml` a cold run reads.
+
+    Production has no fallback: without this, every cold `main()` against a scratch tree stops
+    at `llm_config_default_missing` before reaching whatever the test is about."""
+    repo_root.mkdir(parents=True, exist_ok=True)
+    shutil.copy(SAMPLE_DIR / "llm_claude.example.yaml", repo_root / "llm.yaml")
+
+
 def _recorded_sample_pin(repo_root: Path, backend: str = "claude") -> str:
     """The sample's path as a pin recorded by a run rooted at `repo_root` spells it.
 
@@ -543,6 +552,7 @@ class RunWorkflowTests(unittest.TestCase):
         (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
         (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+        _seed_default_llm_config_into(repo_root)
 
     def _run_main_with_fake_runtime(
         self, argv: list[str]
@@ -2681,6 +2691,7 @@ class RunWorkflowTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -2807,6 +2818,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_writes_prompt_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -2893,6 +2905,7 @@ class RunWorkflowTests(unittest.TestCase):
         otherwise mask."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             # Build a minimal valid spec so we reach the schema guard.
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
@@ -2945,6 +2958,7 @@ class RunWorkflowTests(unittest.TestCase):
         mutated. Emits structured `missing_canonical_schema` JSON on stdout."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             # Deliberately do NOT seed the schema (this test exercises absence).
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
@@ -2983,6 +2997,7 @@ class RunWorkflowTests(unittest.TestCase):
         crashed mid-phase after `workspace/tmp/<arid>/` was already created."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             schema_dir = repo_root / "spec" / "schema" / "ir"
             schema_dir.mkdir(parents=True)
             # Schema EXISTS as a file but has malformed JSON.
@@ -3042,6 +3057,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_returns_structured_error_when_init_runtime_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3086,6 +3102,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_returns_structured_error_when_preflight_runtime_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3135,6 +3152,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_returns_structured_error_when_init_result_lacks_orchestration_agent_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3180,6 +3198,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_resolves_dependency_ref_from_spec_deps_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3515,8 +3534,7 @@ class DependencyClosureTests(unittest.TestCase):
 
     def _closure_config(self, repo_root: Path, model: str | None = "opus"):
         import tools.llm_config as _lc
-        (repo_root / "configs" / "llm").mkdir(parents=True, exist_ok=True)
-        path = repo_root / "configs" / "llm" / "closure.yaml"
+        path = repo_root / "closure.yaml"
         body = "defaults:\n  provider: claude_cli\n"
         if model:
             body += f"  model: {model}\n"
@@ -3533,7 +3551,7 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
-                             "configs/llm/closure.yaml", cfg.sha256)
+                             "closure.yaml", cfg.sha256)
             # The file moves on after the member launched.
             path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
                             encoding="utf-8")
@@ -3556,7 +3574,7 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_target", "spec/problem/a",
-                             "configs/llm/closure.yaml", cfg.sha256)
+                             "closure.yaml", cfg.sha256)
             path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
                             encoding="utf-8")
             import tools.llm_config as _lc
@@ -3576,7 +3594,7 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
-                             "configs/llm/closure.yaml", cfg.sha256)
+                             "closure.yaml", cfg.sha256)
             rc, captured, stdout = self._drive_closure_raw(
                 repo_root, resume=True,
                 prior_orch_by_spec={"spec/component/c": "orch_c_prev"},
@@ -3600,7 +3618,7 @@ class DependencyClosureTests(unittest.TestCase):
             for node in captured:
                 self.assertEqual(node["invocation"]["llm_config_sha256"], cfg.sha256)
                 self.assertEqual(node["invocation"]["llm_config_path"],
-                                 "configs/llm/closure.yaml")
+                                 "closure.yaml")
                 # The removed flags' literals are not recorded any more, by anyone.
                 self.assertNotIn("llm_config_overrides", node["invocation"])
 
@@ -4881,6 +4899,7 @@ class StdoutFormatTests(unittest.TestCase):
         (repo_root / "spec" / "problem" / "deps.yaml").write_text(
             "nodes: []\n", encoding="utf-8"
         )
+        _seed_default_llm_config_into(repo_root)
 
     def _fake_runtime(self, args, *, oar: str = "orch_agent_run_fmt"):
         # Minimal fake init/preflight so main() can reach the final summary.
@@ -5913,6 +5932,7 @@ class DriverIdentityContractTests(unittest.TestCase):
             (scratch / "spec" / "problem" / "deps.yaml").write_text(
                 "nodes: []\n", encoding="utf-8")
             (scratch / "workspace").mkdir(exist_ok=True)
+            _seed_default_llm_config_into(scratch)
             # A runtime stub that parks: the driver then sits in `subprocess.run`
             # inside `_run_node`, i.e. inside the try the interrupt clause guards.
             (scratch / "tools").mkdir(exist_ok=True)
@@ -5954,13 +5974,12 @@ class DriverIdentityContractTests(unittest.TestCase):
 
 
 class LlmConfigStartupTests(unittest.TestCase):
-    """Issue #28 Phase 3: `--llm-config` is the leaf-model authority `run_workflow` threads.
+    """Issue #28 / #36: the leaf-model authority `run_workflow` loads and threads.
 
-    The deprecated trio still works and is mapped onto the shipped configs, so the test that
-    matters most is the EQUIVALENCE one: `--llm claude` and `--llm-config
-    configs/llm/claude.yaml` must reach `run_conductor` with the same configuration. Together
-    with the conductor-level argv comparison (`LeafEntryThreadingTests`) that is acceptance
-    criterion 1 end to end."""
+    `./llm.yaml` is the default and the operator's own file; `--llm-config` names another. The
+    tests that matter most are the ones a silent fallback would hide: that a missing default
+    fails rather than resolving to something nobody chose, and that a copied sample and an
+    explicitly named one are the same run."""
 
     REPO = Path(__file__).resolve().parent.parent.parent
 
@@ -5970,13 +5989,14 @@ class LlmConfigStartupTests(unittest.TestCase):
             (repo_root / d).mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
         (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
-        # The shipped configs live in the real checkout, and `shipped_config_path` resolves
-        # against it, so a scratch repo_root still finds them. Copy them in anyway so a run
-        # that records a repo-relative path can also RE-READ it from this root on resume.
-        (repo_root / "configs" / "llm").mkdir(parents=True, exist_ok=True)
-        for name in ("claude.yaml", "codex.yaml"):
-            shutil.copy(self.REPO / "configs" / "llm" / name,
-                        repo_root / "configs" / "llm" / name)
+        # What an operator's checkout looks like: the samples in the tree, and one copied to
+        # the default path. Both are needed against a scratch root — there is no fallback to
+        # the installed copy any more, and a run that records a repo-relative path must be
+        # able to RE-READ it from this root on resume.
+        (repo_root / "docs" / "examples").mkdir(parents=True, exist_ok=True)
+        for name in lc.SAMPLE_CONFIG_NAMES:
+            shutil.copy(SAMPLE_DIR / name, repo_root / "docs" / "examples" / name)
+        shutil.copy(SAMPLE_DIR / "llm_claude.example.yaml", repo_root / "llm.yaml")
 
     def _fake_runtime(self, root, env, args):  # type: ignore[no-untyped-def]
         self._runtime_calls.append(list(args))
@@ -6027,7 +6047,7 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "mycodex.yaml"
+            cfg = repo_root / "mycodex.yaml"
             cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
                            encoding="utf-8")
             captured: dict = {}
@@ -6035,7 +6055,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             run_workflow._run_with_dependency_closure = (   # type: ignore[assignment]
                 lambda **kw: (captured.update(kw) or 0))
             try:
-                self._run(repo_root, ["--llm-config", "configs/llm/mycodex.yaml",
+                self._run(repo_root, ["--llm-config", "mycodex.yaml",
                                       "--with-deps"], oid="orch_wd")
             finally:
                 run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
@@ -6048,9 +6068,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_cl", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
                 "closure_id": "orch_cl", "closure_target_spec_ref": "spec/problem/test.md",
                 "closure_until_phase": "Build",
@@ -6071,19 +6091,55 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, kw, _, _ = self._run(repo_root, ["--llm-config", "configs/llm/claude.yaml"])
+            _, kw, _, _ = self._run(repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"])
             cfg = kw["llm_config"]
             self.assertEqual(cfg.providers, frozenset({"claude_cli"}))
             self.assertNotIn("backend", kw)      # the identity kwarg is gone
             self.assertNotIn("agent_model", kw)
 
-    def test_default_run_uses_the_shipped_claude_config(self) -> None:
+    def test_a_default_run_uses_the_operators_own_llm_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, kw, _, _ = self._run(repo_root, [])
+            _, kw, _, _ = self._run(repo_root, [], oid="orch_default")
             self.assertEqual(kw["llm_config"].providers, frozenset({"claude_cli"}))
-            self.assertTrue(kw["llm_config"].path.endswith("configs/llm/claude.yaml"))
+            self.assertEqual(Path(kw["llm_config"].path), repo_root / "llm.yaml")
+            self.assertEqual(self._invocation()["llm_config_path"], "llm.yaml")
+
+    def test_a_missing_default_stops_the_run_before_anything_is_launched(self) -> None:
+        """No fallback: a run resolved from a file nobody chose is a run nobody can reproduce.
+        The refusal has to carry the fix, because the operator's next question is where to get
+        one — and it must land before init, or a half-created orchestration outlives it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            (repo_root / "llm.yaml").unlink()
+            code, kw, _, lines = self._run(repo_root, [], oid="orch_nodefault")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})                  # the conductor was never reached
+            self.assertEqual(self._runtime_calls, [])  # ...nor init, nor preflight
+            self.assertEqual(lines[-1]["reason"], "invalid_startup_input")
+            detail = lines[-1]["detail"]
+            self.assertIn("llm_config_default_missing", detail)
+            self.assertIn(str(repo_root / "llm.yaml"), detail)
+            self.assertIn("cp docs/examples/llm_claude.example.yaml llm.yaml", detail)
+
+    def test_a_copied_sample_and_the_named_sample_are_the_same_run(self) -> None:
+        """`cp docs/examples/llm_claude.example.yaml llm.yaml` must be exactly the run that
+        naming the sample gives. This is the acceptance for demoting the shipped configs to
+        samples: the copy is not a different configuration, only a different spelling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)          # already copies the sample to ./llm.yaml
+            _, default_kw, _, _ = self._run(repo_root, [], oid="orch_eq_a")
+            _, named_kw, _, _ = self._run(
+                repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"],
+                oid="orch_eq_b")
+            self.assertEqual(default_kw["llm_config"].entries, named_kw["llm_config"].entries)
+            self.assertEqual(default_kw["llm_config"].defaults, named_kw["llm_config"].defaults)
+            self.assertEqual(default_kw["llm_config"].sha256, named_kw["llm_config"].sha256)
+            self.assertEqual(default_kw["llm_config"].provenance_map(),
+                             named_kw["llm_config"].provenance_map())
 
     def test_the_file_is_the_only_thing_that_says_what_a_leaf_launches(self) -> None:
         """`--llm` / `--agent-model` / `--llm-command` are gone: what a run launches is what
@@ -6092,11 +6148,11 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "wrapped-codex.yaml"
+            cfg = repo_root / "wrapped-codex.yaml"
             cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                            "  command: mywrap --x\n", encoding="utf-8")
             code, kw, _, lines = self._run(
-                repo_root, ["--llm-config", "configs/llm/wrapped-codex.yaml"], oid="orch_only")
+                repo_root, ["--llm-config", "wrapped-codex.yaml"], oid="orch_only")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             self.assertEqual(kw["llm_config"].defaults.model, "gpt-5.6-sol")
             self.assertEqual(kw["llm_config"].defaults.command, "mywrap --x")
@@ -6119,7 +6175,7 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, _, err, _ = self._run(repo_root, ["--llm-config", "configs/llm/claude.yaml"])
+            _, _, err, _ = self._run(repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"])
             self.assertNotIn("deprecated", err)
 
     def test_a_named_config_rule_surfaces_as_invalid_startup_input(self) -> None:
@@ -6140,10 +6196,10 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "wrapped.yaml"
+            cfg = repo_root / "wrapped.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n  model: opus\n"
                            "  command: mywrap --x\n", encoding="utf-8")
-            self._run(repo_root, ["--llm-config", "configs/llm/wrapped.yaml"], oid="orch_ovp")
+            self._run(repo_root, ["--llm-config", "wrapped.yaml"], oid="orch_ovp")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
                              "mywrap --x")
@@ -6158,7 +6214,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             _, kw, _, _ = self._run(
-                repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_snap")
+                repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"], oid="orch_snap")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-sha256") + 1],
                              kw["llm_config"].sha256)
@@ -6169,10 +6225,10 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "declared.yaml"
+            cfg = repo_root / "declared.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n  model: from-file\n"
                            "  command: from-file-cmd\n", encoding="utf-8")
-            self._run(repo_root, ["--llm-config", "configs/llm/declared.yaml"], oid="orch_novp")
+            self._run(repo_root, ["--llm-config", "declared.yaml"], oid="orch_novp")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
                              "from-file-cmd")
@@ -6217,12 +6273,12 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self._run(repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_rec")
+            self._run(repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"], oid="orch_rec")
             inv = self._invocation()
-            self.assertEqual(inv["llm_config_path"], "configs/llm/claude.yaml")
+            self.assertEqual(inv["llm_config_path"], "docs/examples/llm_claude.example.yaml")
             self.assertEqual(
                 inv["llm_config_sha256"],
-                lc.config_sha256(repo_root / "configs" / "llm" / "claude.yaml"))
+                lc.config_sha256(repo_root / "docs" / "examples" / "llm_claude.example.yaml"))
             self.assertEqual(set(inv["llm_leaf_map"]),
                              {"defaults"} | {f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS})
             self.assertEqual(inv["llm_leaf_map"]["validate.judge"]["backend"], "claude")
@@ -6237,15 +6293,15 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self._run(repo_root, ["--llm-config", "configs/llm/codex.yaml"], oid="orch_ov")
+            self._run(repo_root, ["--llm-config", "docs/examples/llm_codex.example.yaml"], oid="orch_ov")
             inv = self._invocation()
             self.assertNotIn("llm_config_overrides", inv)
-            self.assertEqual(inv["llm_config_path"], "configs/llm/codex.yaml")
+            self.assertEqual(inv["llm_config_path"], "docs/examples/llm_codex.example.yaml")
 
     # --- resume refusal --------------------------------------------------------------
 
     def _rejection(self, recorded: dict, **kw) -> dict | None:
-        base = dict(repo_root=Path("/tmp/repo"), effective_path="configs/llm/claude.yaml",
+        base = dict(repo_root=Path("/tmp/repo"), effective_path="llm.yaml",
                     effective_sha256="sha256:aaa", effective_overrides={})
         base.update(kw)
         return run_workflow._llm_config_resume_rejection("orch_x", recorded, **base)
@@ -6268,15 +6324,14 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(direct, self._rejection(recorded))
         # ...and a record that DOES pin passes the predicate through to the byte gate.
         self.assertIsNone(run_workflow._llm_config_legacy_pin_rejection(
-            "orch_x", {"path": "configs/llm/claude.yaml", "sha256": "sha256:aaa"}))
+            "orch_x", {"path": "docs/examples/llm_claude.example.yaml", "sha256": "sha256:aaa"}))
 
     def test_a_changed_config_file_refuses_the_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             self.assertIsNone(self._rejection(
                 recorded, repo_root=repo_root, effective_sha256=recorded["sha256"]))
@@ -6294,10 +6349,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         from bytes neither hash describes, and the resume proceeds unpinned."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             # The file on disk still matches; the SNAPSHOT the run loaded does not.
             out = self._rejection(recorded, repo_root=repo_root,
@@ -6313,10 +6367,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             os.chmod(path, 0o000)
             try:
@@ -6333,7 +6386,7 @@ class LlmConfigStartupTests(unittest.TestCase):
     def test_a_deleted_config_file_refuses_the_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = self._rejection(
-                {"path": "configs/llm/claude.yaml", "sha256": "sha256:aaa", "overrides": {}},
+                {"path": "llm.yaml", "sha256": "sha256:aaa", "overrides": {}},
                 repo_root=Path(tmp))
             assert out is not None
             self.assertEqual(out["reason"], "llm_config_changed_since_launch")
@@ -6341,8 +6394,8 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     def test_resuming_with_a_different_config_file_is_refused(self) -> None:
         out = self._rejection(
-            {"path": "configs/llm/codex.yaml", "sha256": "sha256:aaa", "overrides": {}},
-            effective_path="configs/llm/claude.yaml")
+            {"path": "docs/examples/llm_codex.example.yaml", "sha256": "sha256:aaa", "overrides": {}},
+            effective_path="docs/examples/llm_claude.example.yaml")
         assert out is not None
         self.assertEqual(out["reason"], "llm_config_changed_since_launch")
         self.assertIn("start a fresh run", out["detail"])
@@ -6354,10 +6407,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         and start fresh."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {"model": "opus"}}
             out = self._rejection(recorded, repo_root=repo_root,
                                   effective_sha256=recorded["sha256"])
@@ -6394,9 +6446,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_res", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
                 "llm_config_overrides": {},
             })
@@ -6439,7 +6491,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             }), encoding="utf-8")
             out = run_workflow._llm_config_resume_rejection(
                 "orch_member", run_workflow._recorded_llm_config(repo_root, "orch_member"),
-                repo_root=repo_root, effective_path="configs/llm/claude.yaml",
+                repo_root=repo_root, effective_path="docs/examples/llm_claude.example.yaml",
                 effective_sha256="sha256:aaa", effective_overrides={})
             assert out is not None
             self.assertEqual(out["reason"], "llm_config_legacy_flags_removed")
@@ -6452,11 +6504,11 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "mycodex.yaml"
+            cfg = repo_root / "mycodex.yaml"
             cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
                            encoding="utf-8")
             self._seed_resumable(repo_root, "orch_cx", {
-                "llm_config_path": "configs/llm/mycodex.yaml",
+                "llm_config_path": "mycodex.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
             }, backend="codex")
@@ -6470,12 +6522,12 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "custom.yaml"
+            cfg = repo_root / "custom.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n  model: pinned-by-file\n"
                            "phases:\n  validate:\n    substeps:\n      judge:\n"
                            "        model: judge-only\n", encoding="utf-8")
             self._seed_resumable(repo_root, "orch_pin", {
-                "llm_config_path": "configs/llm/custom.yaml",
+                "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
             })
@@ -6492,9 +6544,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_ovr", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
                 "llm_config_overrides": {"model": "opus"},
             })
@@ -6510,10 +6562,10 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "custom.yaml"
+            cfg = repo_root / "custom.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
             self._seed_resumable(repo_root, "orch_gone", {
-                "llm_config_path": "configs/llm/custom.yaml",
+                "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
             })
@@ -6529,9 +6581,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_quiet", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
                 "agent_model": "opus",           # recorded by the original run
             })
@@ -6545,13 +6597,13 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_warn", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
             })
             code, kw, err, _ = self._run(
-                repo_root, ["--resume", "--llm-config", "configs/llm/codex.yaml"],
+                repo_root, ["--resume", "--llm-config", "docs/examples/llm_codex.example.yaml"],
                 oid="orch_warn")
             self.assertEqual(code, 0)
             self.assertEqual(kw["llm_config"].providers, frozenset({"claude_cli"}))
@@ -6571,11 +6623,11 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "snap.yaml"
+            cfg = repo_root / "snap.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n  model: launched\n",
                            encoding="utf-8")
             code, _, _, lines = self._run(
-                repo_root, ["--llm-config", "configs/llm/snap.yaml"], oid="orch_snapw")
+                repo_root, ["--llm-config", "snap.yaml"], oid="orch_snapw")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             snapshot = self._snapshot(repo_root, "orch_snapw")
             self.assertTrue(snapshot.exists())
@@ -6590,9 +6642,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "claude.yaml"
+            cfg = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_snapr", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
             })
             snapshot = self._snapshot(repo_root, "orch_snapr")
@@ -6618,7 +6670,7 @@ class LlmConfigStartupTests(unittest.TestCase):
         worse than naming nothing."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            recorded = {"path": "configs/llm/claude.yaml", "sha256": "sha256:aaa",
+            recorded = {"path": "llm.yaml", "sha256": "sha256:aaa",
                         "overrides": {}}
             out = self._rejection(recorded, repo_root=repo_root)
             assert out is not None
@@ -6635,10 +6687,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         """The other arm an operator can act on: the file still exists, but not as launched."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             run_workflow._write_llm_config_snapshot(repo_root, "orch_x", _sample_config())
             path.write_text("defaults:\n  provider: claude_cli\n  model: edited\n",
@@ -6649,27 +6700,30 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertIn("has changed since launch", out["detail"])
             self.assertIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
 
-    def test_llm_config_is_resolved_against_repo_root_not_the_process_cwd(self) -> None:
-        """Every other path this driver resolves is repo-root-relative. Resolving this one
-        against the CWD ran one file and recorded a spelling naming another."""
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            (repo_root / "configs" / "llm" / "claude.yaml").write_text(
-                "defaults:\n  provider: claude_cli\n  model: from-repo-root\n",
-                encoding="utf-8")
-            (Path(cwd) / "configs" / "llm").mkdir(parents=True)
-            (Path(cwd) / "configs" / "llm" / "claude.yaml").write_text(
-                "defaults:\n  provider: claude_cli\n  model: from-cwd\n", encoding="utf-8")
-            original = os.getcwd()
-            os.chdir(cwd)
-            try:
-                _, kw, _, _ = self._run(
-                    repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_cwd")
-            finally:
-                os.chdir(original)
-            self.assertEqual(kw["llm_config"].defaults.model, "from-repo-root")
-            self.assertEqual(self._invocation()["llm_config_path"], "configs/llm/claude.yaml")
+    def test_the_default_and_a_relative_flag_both_resolve_against_repo_root(self) -> None:
+        """Every other path this driver resolves is repo-root-relative. Resolving either of
+        these against the CWD would run one file and record a spelling naming another."""
+        for extra, expected_path in (
+            ([], "llm.yaml"),
+            (["--llm-config", "mine.yaml"], "mine.yaml"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
+                repo_root = Path(tmp)
+                self._seed(repo_root)
+                for root, which in ((repo_root, "repo-root"), (Path(cwd), "cwd")):
+                    for name in ("llm.yaml", "mine.yaml"):
+                        (root / name).write_text(
+                            f"defaults:\n  provider: claude_cli\n  model: from-{which}\n",
+                            encoding="utf-8")
+                original = os.getcwd()
+                os.chdir(cwd)
+                try:
+                    _, kw, _, _ = self._run(repo_root, extra, oid="orch_cwd")
+                finally:
+                    os.chdir(original)
+                self.assertEqual(kw["llm_config"].defaults.model, "from-repo-root",
+                                 msg=str(extra))
+                self.assertEqual(self._invocation()["llm_config_path"], expected_path)
 
     def test_a_config_outside_the_repo_is_recorded_absolutely(self) -> None:
         """A relative spelling for a file outside `repo_root` would be re-joined to the root on
@@ -6685,6 +6739,17 @@ class LlmConfigStartupTests(unittest.TestCase):
             recorded = self._invocation()["llm_config_path"]
             self.assertTrue(Path(recorded).is_absolute(), msg=recorded)
             self.assertEqual(Path(recorded).resolve(), cfg.resolve())
+
+    def test_the_default_configuration_is_gitignored(self) -> None:
+        """`./llm.yaml` is the operator's own file. Tracking it would force everyone who edits
+        which model runs which leaf to carry a permanent diff — and a run that leaves the tree
+        dirty trips the workflow's own cleanliness checks. ANCHORED, deliberately against this
+        file's house style: the contract is repo-root-relative, and an unanchored pattern would
+        silently ignore a committed `llm.yaml` anywhere in the tree."""
+        lines = [ln.strip() for ln in
+                 (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
+        self.assertIn(f"/{lc.DEFAULT_CONFIG_FILENAME}", lines)
+        self.assertNotIn(lc.DEFAULT_CONFIG_FILENAME, lines)
 
     def test_the_closure_and_entry_gates_are_the_same_predicate(self) -> None:
         """Twin gates: both call sites must reach `_llm_config_resume_rejection`, or a closure

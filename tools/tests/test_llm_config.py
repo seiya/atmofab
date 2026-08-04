@@ -224,13 +224,6 @@ class DefaultConfigPathTests(unittest.TestCase):
             self.assertTrue((SAMPLE_DIR / name).exists(), msg=name)
 
 
-class ShippedConfigPathTests(unittest.TestCase):
-    def test_shipped_config_path_points_into_the_repository(self) -> None:
-        for backend in ("claude", "codex"):
-            self.assertTrue(lc.shipped_config_path(backend).exists())
-            self.assertEqual(lc.shipped_config_path(backend),
-                             REPO_ROOT / "configs" / "llm" / f"{backend}.yaml")
-
 
 class ResolutionTests(_Tmp):
     def test_every_llm_leaf_gets_an_entry_from_bare_defaults(self) -> None:

@@ -854,17 +854,16 @@ class ConductHappyPathTest(unittest.TestCase):
                 llm_config=_cfg("claude"), workflow_mode="dev", env={})
         self.assertEqual(status, "pass")
         self.assertEqual(seen["model"], "opus")
-        # Derived, not spelled out: the shipped file no longer gives every leaf the same model
+        # Derived, not spelled out: the sample does not give every leaf the same model
         # (`compile.verify` is deliberately cheaper), and a literal set here would just have to
         # be edited each time that choice is revisited.
-        shipped = lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT))
         self.assertEqual(seen["leaf_models"],
-                         {e.model for e in shipped.entries.values()})
+                         {e.model for e in _sample_config("claude").entries.values()})
         self.assertNotRegex(str(seen["model"]), r"-\d+-\d+$")
 
     def test_run_conductor_requires_explicit_codex_model(self) -> None:
-        """The shipped codex configuration names a slug, so `--llm codex` is runnable as
-        shipped; a configuration that blanks it must still stop before launching anything."""
+        """The codex sample names a slug, so it is runnable as copied; a configuration that
+        blanks it must still stop before launching anything."""
         import tempfile
         from tools import llm_config as _lc
         with tempfile.TemporaryDirectory() as tmp:

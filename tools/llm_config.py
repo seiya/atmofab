@@ -890,21 +890,6 @@ def resolve_default_config_path(repo_root: str | Path) -> Path:
         where=str(path))
 
 
-def shipped_config_path(backend: str, repo_root: str | Path | None = None) -> Path:
-    """The shipped config that reproduces run-wide `--llm <backend>`.
-
-    Prefers the copy inside `repo_root` — a run whose `--repo-root` is its own checkout should
-    use that checkout's configs, and recording a root-relative path is what lets a resume find
-    the file again. Falls back to the installed copy next to this module when `repo_root` has
-    none, so a run against a scratch or partial tree still resolves."""
-    name = f"{backend.strip().lower()}.yaml"
-    if repo_root is not None:
-        candidate = Path(repo_root) / "configs" / "llm" / name
-        if candidate.exists():
-            return candidate
-    return Path(__file__).resolve().parent.parent / "configs" / "llm" / name
-
-
 def apply_defaults_overrides(
     cfg: LlmConfig, *, model: str = "", command: str = ""
 ) -> LlmConfig:

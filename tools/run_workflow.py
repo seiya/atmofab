@@ -53,7 +53,7 @@ from tools.llm_config import (
     LlmConfigError,
     config_sha256,
     load_llm_config,
-    shipped_config_path,
+    resolve_default_config_path,
 )
 
 
@@ -63,9 +63,6 @@ from tools.llm_config import (
 # under that driver) were removed.
 SUPPORTED_LLMS = ("codex", "claude")
 SUPPORTED_WORKFLOW_MODES = ("dev", "prod")
-# The backend a cold run resolves its shipped configuration from when nobody passes
-# `--llm-config`. Removed in favour of `./llm.yaml` in a later commit of this series.
-DEFAULT_LLM = "claude"
 # Applied when --mode is omitted on a non-resume run.
 DEFAULT_WORKFLOW_MODE = "dev"
 DEFAULT_LLM_COMMANDS = {
@@ -134,10 +131,10 @@ def _new_orchestration_id() -> str:
 def _repo_relative(path: str | Path, repo_root: Path) -> str:
     """`path` relative to `repo_root` when it lives inside it, else its absolute form.
 
-    Recorded in the invocation block, so a config shipped with the repository reads as
-    `configs/llm/claude.yaml` on any machine while an operator's own file outside the tree keeps
-    the only spelling that can find it again. Relative to the RUN's root, because that is the
-    root the resume gate re-joins it against."""
+    Recorded in the invocation block, so the default configuration reads as `llm.yaml` on any
+    machine while an operator's own file outside the tree keeps the only spelling that can find
+    it again. Relative to the RUN's root, because that is the root the resume gate re-joins it
+    against."""
     p = Path(path)
     try:
         return str(p.resolve().relative_to(Path(repo_root).resolve()))
@@ -1940,9 +1937,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         metavar="PATH",
         help=(
             "Leaf-LLM configuration file (YAML): which provider/model runs each phase and "
-            "substep. Defaults to configs/llm/claude.yaml. See docs/ORCHESTRATION.md "
-            "'Leaf LLM configuration' for the resolution order, the provider capability "
-            "matrix, and the named rejection rules."
+            "substep. Relative paths resolve against --repo-root. Defaults to ./llm.yaml, "
+            "which is yours to create: `cp docs/examples/llm_claude.example.yaml llm.yaml` "
+            "(codex / openai_compatible / anthropic_api samples sit beside it). See "
+            "docs/ORCHESTRATION.md 'Leaf LLM configuration' for the resolution order, the "
+            "provider capability matrix, and the named rejection rules."
         ),
     )
     # NOTE (M-F): the `--generate-executor` flag and the `METDSL_GENERATE_EXECUTOR` env var were
@@ -2456,7 +2455,9 @@ def _run_main(
         orchestration_id = args.orchestration_id or _new_orchestration_id()
         spec_ref_in = args.spec_ref
         until_phase_in = args.until_phase
-        llm_in = DEFAULT_LLM
+        # Only the resume branch reads this back (it validates what `preflight.json` recovered);
+        # a cold run derives its backend from the configuration it is about to load.
+        llm_in = ""
         mode_in = args.mode or DEFAULT_WORKFLOW_MODE
         # A cold run has no orchestration-agent model to replay; `init` derives the claude
         # alias itself for the backend/command where asserting one is sound.
@@ -2521,7 +2522,12 @@ def _run_main(
             if not llm_config_path.is_absolute():
                 llm_config_path = repo_root / llm_config_path
         else:
-            llm_config_path = shipped_config_path(DEFAULT_LLM, repo_root)
+            # `<repo_root>/llm.yaml`, existence-checked. There is deliberately no fallback:
+            # a run resolved from a file nobody chose is a run nobody can reproduce, so a
+            # missing default raises `llm_config_default_missing` — which the startup handler
+            # below prints as `invalid_startup_input`, naming the path and the `cp` that
+            # creates it, before anything is launched.
+            llm_config_path = resolve_default_config_path(repo_root)
         llm_config = load_llm_config(llm_config_path)
         llm_config.validate_runnable()
         # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
