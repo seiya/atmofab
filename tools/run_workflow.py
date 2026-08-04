@@ -3372,7 +3372,33 @@ def _run_node(
             # before any leaf launches, so the snapshot is inside every leaf's FS-diff write
             # baseline rather than an unauthorized write appearing mid-run.
             if not resume_mode:
-                _write_llm_config_snapshot(repo_root, orchestration_id, llm_config)
+                try:
+                    _write_llm_config_snapshot(repo_root, orchestration_id, llm_config)
+                except OSError as exc:
+                    # `init` has already committed, so an escaping OSError (a full disk, a
+                    # read-only workspace) would kill the driver with a traceback and leave the
+                    # orchestration `running` — no envelope for a caller parsing stdout, and a
+                    # status only a later explicit `--resume --orchestration-id` can clear.
+                    # Terminalize and report, the way a preflight failure below does.
+                    detail = f"could not write {LLM_CONFIG_SNAPSHOT_NAME}: {exc}"
+                    _runtime_command(
+                        repo_root, env,
+                        ["set-status", "--repo-root", str(repo_root),
+                         "--orchestration-id", orchestration_id, "--status", "fail",
+                         "--reason-code", "llm_config_snapshot_unwritable",
+                         "--reason-detail", detail],
+                    )
+                    print(json.dumps({
+                        "status": "fail",
+                        "reason": "llm_config_snapshot_unwritable",
+                        # Failing closed, not proceeding: the snapshot is what makes a later
+                        # `llm_config_changed_since_launch` recoverable at all, and a run that
+                        # silently dropped it would only be discovered when the operator needs
+                        # it and it is not there.
+                        "detail": detail,
+                        "orchestration_id": orchestration_id,
+                    }, ensure_ascii=False))
+                    return 2
             orch_tmp = tmp_parent / orchestration_agent_run_id
             orch_tmp.mkdir(parents=True, exist_ok=True)
             env["TMPDIR"] = str(orch_tmp)

@@ -6792,6 +6792,35 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(snapshot.read_bytes(), b"PREVIOUS-GOOD-BYTES\n")
             self.assertEqual([p.name for p in orch.iterdir() if p.name.endswith(".tmp")], [])
 
+    def test_an_unwritable_snapshot_terminalizes_instead_of_escaping(self) -> None:
+        """`init` has already committed by the time the snapshot is written, so an escaping
+        `OSError` (a full disk, a read-only workspace) kills the driver with a traceback: no
+        envelope for a caller parsing stdout, and an orchestration left `running` that only a
+        later explicit `--resume --orchestration-id` can clear. It fails the way a preflight
+        failure does instead — `set-status fail` plus a named envelope."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            real = os.replace
+
+            def boom(src, dst, *a, **k):
+                if str(dst).endswith(run_workflow.LLM_CONFIG_SNAPSHOT_NAME):
+                    raise OSError(28, "No space left on device", str(dst))
+                return real(src, dst, *a, **k)
+
+            with mock.patch("os.replace", boom):
+                code, kw, _, lines = self._run(repo_root, [], oid="orch_nospace")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})                      # the conductor was never reached
+            self.assertEqual(lines[-1]["reason"], "llm_config_snapshot_unwritable")
+            self.assertEqual(lines[-1]["orchestration_id"], "orch_nospace")
+            self.assertIn("No space left on device", lines[-1]["detail"])
+            # ...and the committed orchestration is terminalized rather than left `running`.
+            status = next(a for a in self._runtime_calls if a and a[0] == "set-status")
+            self.assertEqual(status[status.index("--status") + 1], "fail")
+            self.assertEqual(status[status.index("--reason-code") + 1],
+                             "llm_config_snapshot_unwritable")
+
     def test_a_resume_does_not_overwrite_the_launch_time_snapshot(self) -> None:
         """It is a record of what the run LAUNCHED with. Refreshing it on resume would make it
         agree with whatever the operator has since written, i.e. destroy the only copy of the
