@@ -72,7 +72,7 @@ DEFAULT_LLM_COMMANDS = {
 # Default orchestration-agent model recorded on the orchestration agent_runs row
 # for the Claude backend, as an UNPINNED alias (e.g. "opus") read from the
 # operator's settings — never a pinned version, which would go stale as versions
-# update. Operators on a different Claude model override it with --agent-model.
+# update. Operators on a different Claude model name it in the leaf-LLM configuration.
 # Codex is intentionally excluded: its fresh and resume workflows require an
 # explicit model slug, which the conductor pins in every `codex exec --model`
 # launch and records as host-side provenance.
@@ -1618,9 +1618,10 @@ def _load_resume_params(repo_root: Path, orchestration_id: str) -> dict[str, str
         "spec_ref": _clean(meta.get("spec_ref")) or prompt_params.get("spec_ref"),
         "source_dependency_ref": _clean(meta.get("source_dependency_ref")),
         "llm": _clean(preflight.get("backend")),
-        # probe_command is the agent command run_workflow used for both preflight
-        # and launch on the original run; reuse it so a custom --llm-command (e.g.
-        # a wrapper / non-PATH binary) survives resume.
+        # probe_command is the agent command run_workflow used for both preflight and launch
+        # on the original run. Recovered for provenance only: a resume derives the effective
+        # command from the RECORDED configuration's `defaults.command`, which is where a
+        # wrapper / non-PATH binary is named now.
         "llm_command": _clean(preflight.get("probe_command")),
         "until_phase": prompt_params.get("until_phase"),
         "mode": prompt_params.get("mode"),
@@ -3229,9 +3230,9 @@ def _run_node(
                 "--source-dependency-ref",
                 source_dependency_ref,
             ]
-            # Forward an EXPLICIT --agent-model to the resume repair (it overrides
-            # repair-agent-runs' sibling derivation, e.g. for a `needs_manual` row).
-            # Do NOT apply the claude default here: with no override, sibling_uniform
+            # Forward the RECORDED orchestration-agent model to the resume repair (it
+            # overrides repair-agent-runs' sibling derivation, e.g. for a `needs_manual` row).
+            # Do NOT apply the claude default here: with nothing recorded, sibling_uniform
             # derives the run's actual model, which is more accurate than a default.
             if agent_model:
                 init_args += ["--agent-model", agent_model]
@@ -3269,13 +3270,12 @@ def _run_node(
                 "--source-dependency-ref",
                 source_dependency_ref,
             ]
-            # Record the orchestration agent's own model so its agent_runs row is
-            # not a cost-attribution blind spot. Explicit --agent-model wins.
-            # Otherwise default to the operator's configured (unpinned) claude alias
-            # ONLY for the claude backend running the UNMODIFIED default command — an
-            # overridden --llm-command (e.g. a wrapper selecting a different model)
-            # could launch a different model, so we must not assert the alias there;
-            # leave it for sibling backfill on resume instead.
+            # Record the orchestration agent's own model so its agent_runs row is not a
+            # cost-attribution blind spot. Default to the operator's configured (unpinned)
+            # claude alias ONLY for the claude backend running the UNMODIFIED default command —
+            # a configured `command:` (e.g. a wrapper selecting a different model) could launch
+            # a different model, so we must not assert the alias there; leave it for sibling
+            # backfill on resume instead.
             orchestration_model = agent_model
             if (
                 not orchestration_model

@@ -7757,7 +7757,7 @@ def _safe_host_env_for_child() -> dict[str, str]:
 
 def _resolve_backend_type(backend_type: str, backend_command: str) -> str:
     """The backend family (``claude`` / ``codex``), preferring the explicit type and
-    falling back to the launch command string. A custom ``--llm-command`` wrapper means
+    falling back to the launch command string. A configured ``command:`` wrapper means
     the command is not literally ``claude``/``codex``, so the explicit type (recorded as
     the launch response ``backend``) is authoritative; the command is only a fallback."""
     bt = (backend_type or "").strip().lower()
@@ -16563,12 +16563,13 @@ def probe_all_providers(
     # while the probes certify another. `llm_config_path` remains for callers that have no
     # snapshot to hand.
     #
-    # The overrides MUST be reapplied either way. This runs in the `preflight` subprocess, and
-    # the deprecated `--agent-model` / `--llm-command` are not IN the file; `run_workflow`
-    # applies them to the loaded configuration. Probing without them certifies a command the
-    # run will not launch: an operator whose wrapper works but whose bare CLI is absent fails
+    # The resolved defaults MUST be reapplied either way. This runs in the `preflight`
+    # SUBPROCESS, which reloads the file and so starts from the file's own `defaults`; the
+    # caller sends the values it resolved. Probing without them certifies a command the run
+    # will not launch: an operator whose wrapper works but whose bare CLI is absent fails
     # preflight, and one whose bare CLI is present gets a green `providers` row authorizing a
-    # wrapper nothing probed.
+    # wrapper nothing probed. Re-applying a value the file already declares is a no-op, so
+    # nothing has to track which is which.
     if config is None:
         config = load_llm_config(llm_config_path)
     cfg = apply_defaults_overrides(
@@ -16784,8 +16785,8 @@ def init_orchestration(
     spec_ref: str | None = None,
     source_dependency_ref: str | None = None,
     status: str = "running",
-    # claude is the primary/default backend (matches run_workflow.py DEFAULT_LLM);
-    # codex remains a supported choice, selected explicitly.
+    # claude is the primary/default backend (it is what every shipped sample's `defaults`
+    # names); codex remains a supported choice, selected in the leaf-LLM configuration.
     agent_backend: str = "claude",
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,
@@ -20884,7 +20885,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     # The RESOLVED `defaults` of the configuration the run will actually use. The deprecated
-    # `--agent-model` / `--llm-command` are not in the FILE, so a probe that only reloads the
+    # The resolved `defaults` model/command may differ from the file's, so a probe that only reloads the
     # path would certify a different command than the run launches. Re-applying a value the
     # file already declares is a no-op, so these are sent unconditionally.
     preflight_parser.add_argument("--llm-config-defaults-model", default=None)

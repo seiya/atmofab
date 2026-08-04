@@ -3379,7 +3379,7 @@ class Conductor:
         if not model or model.lower() == "codex":
             raise ValueError(
                 "Codex workflow leaves require an explicit model slug (config `model:`, or the "
-                "deprecated --agent-model); the generic 'codex' alias cannot provide "
+                "for this entry or in `defaults`); the generic 'codex' alias cannot provide "
                 "authoritative provenance"
             )
         return model
@@ -3434,8 +3434,8 @@ class Conductor:
             # `--model` ONLY for a model the configuration FILE names. An operator who wrote
             # `model: haiku` for a substep means that leaf to run haiku, and recording it while
             # launching the ambient default would be provenance that describes a run that did
-            # not happen. A model arriving from the deprecated `--agent-model`, or from Claude's
-            # runtime alias resolution, is deliberately NOT pinned — that is the repo's
+            # not happen. A model arriving from Claude's runtime alias resolution is
+            # deliberately NOT pinned — that is the repo's
             # long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps every
             # pre-issue-#28 launch byte-identical.
             if entry.model_declared and entry.model.strip():
@@ -4701,7 +4701,7 @@ class Conductor:
             # The EXECUTABLE this leaf is actually launched through. `record_launch` builds the
             # bwrap profile's read-only bind of the CLI's install directory from it; it used to
             # take `preflight.json#probe_command`, which describes `defaults`. Those were the
-            # same object while a run had one `--llm-command`, and stop being once an entry can
+            # same object while a run had one run-wide command, and stop being once an entry can
             # carry its own `command:` — the leaf would then be launched inside a sandbox where
             # its own binary is not bound, and the recorded `sandbox_command` would name a
             # different executable than the one that ran.
@@ -8674,13 +8674,13 @@ clean:
         needs none of the abort-shape anti-forgery clauses the stdout scrape carries. It spends 0
         tokens — `/usage` is a local slash command that answers at `num_turns: 0`.
 
-        The argv base is `leaf_command`'s (`--llm-command` wrapper if configured, else the bare
+        The argv base is `leaf_command`'s (the entry's `command:` wrapper if configured, else the bare
         backend), so the probe interrogates the executable the LEAF actually uses rather than a
         hardcoded `claude` — the same reasoning as `_ensure_codex_feature_cache`.
 
         The `result` is trusted ONLY when the envelope proves it came from the BUILT-IN `/usage`
         slash command, not from a model turn. `--output-format json -p /usage` on the real CLI
-        answers at `num_turns == 0` (a local command, 0 tokens); an older or `--llm-command`-wrapped
+        answers at `num_turns == 0` (a local command, 0 tokens); an older or `command:`-wrapped
         binary that does not recognise `/usage` would instead run it as an ordinary PROMPT, and the
         model's reply — attacker-uncontrolled but still model-authored, and free to contain
         window-shaped text — would arrive at `num_turns >= 1` (or with the field absent). Requiring

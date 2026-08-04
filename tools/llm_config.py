@@ -309,15 +309,15 @@ class ResolvedLeafEntry:
     effort: str = ""
     capabilities: frozenset[str] = frozenset()
     # True when a level of the FILE named `model:` for this entry — as opposed to the value
-    # arriving from the deprecated `--agent-model` or from Claude's runtime alias resolution.
+    # arriving from a run-wide override or from Claude's runtime alias resolution.
     # The conductor pins `--model` on a claude launch only when this is set: an operator who
     # wrote a model means it, while the alias is deliberately left unpinned (the repo's
     # long-standing rule, and what keeps every pre-issue-#28 run byte-identical).
     model_declared: bool = False
     # The field names a level on THIS entry's provider actually wrote, as opposed to inherited.
     # `apply_defaults_overrides` needs it: value equality cannot tell an inherited `opus` from
-    # a per-substep one deliberately pinned to the same string, and a run-wide `--agent-model`
-    # must move the first and leave the second.
+    # a per-substep one deliberately pinned to the same string, and a run-wide override must
+    # move the first and leave the second.
     declared: frozenset[str] = frozenset()
 
     def supports(self, capability: str) -> bool:
@@ -919,17 +919,17 @@ def apply_defaults_overrides(
 
             DECLARATION, not value equality: a `validate.judge.model: opus` written next to a
             `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
-            `--agent-model sonnet` must not move it. `defaults` itself is always overridable —
-            that is what the flag overrides."""
+            run-wide `sonnet` must not move it. `defaults` itself is always overridable —
+            that is what a run-wide value overrides."""
             return is_defaults or field not in entry.declared
 
         changes: dict[str, Any] = {}
         if model and entry.model == inherited.model and _inherited("model"):
             changes["model"] = model
             # ...and the value is no longer one the FILE declared, so it is not pinned onto
-            # the launch. `--agent-model` is the deprecated run-wide alias, whose contract is
-            # that it leaves the model unpinned; without this the same flag behaved two ways
-            # depending on whether the file happened to declare a model of its own.
+            # the launch. A run-wide value is an ALIAS, whose contract is that it leaves the
+            # model unpinned; without this the same value behaved two ways depending on whether
+            # the file happened to declare one of its own.
             changes["model_declared"] = False
         if command and entry.command == inherited.command and _inherited("command"):
             # Reachable only for a CLI provider: the override is applied to entries sharing
