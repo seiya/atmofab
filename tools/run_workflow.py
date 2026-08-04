@@ -1366,6 +1366,67 @@ def _terminalize_interrupted_orchestration(
         pass
 
 
+def _terminalize_owned_orchestration(
+    repo_root: Path,
+    env: dict[str, str],
+    orchestration_id: str,
+    *,
+    init_committed: bool,
+    driver_identity: dict[str, Any] | None,
+    reason_code: str,
+    detail: str,
+) -> None:
+    """Best-effort `fail` terminalization of a run THIS invocation owns, for the
+    `_run_node` failure paths that return a fail envelope instead of raising.
+
+    Without it those paths leave the orchestration `running` forever: an implicit
+    `--resume` refuses a non-terminal latest and a cold re-run silently starts over,
+    discarding the checkpoint. Three guards, all of which mirror
+    `_terminalize_interrupted_orchestration` and the interrupt clause that calls it:
+
+    * **Ownership.** `init_committed` only flips when the runtime call RETURNS, but the
+      runtime writes the `running` meta well before that. So fall back to the durable
+      evidence: a meta whose `driver` block names THIS process was necessarily written
+      by this invocation's init. A reused `--orchestration-id` naming someone else's
+      run is left untouched.
+    * **A more specific terminal status wins.** The runtime may have recorded e.g.
+      `fail_closed` / `sandbox_enforcement_violation` just before the failure, and
+      terminal→terminal is rejected anyway.
+    * **Every failure is swallowed.** The caller still has a fail envelope to print,
+      and the exception that brought us here (a full disk, a read-only workspace) is
+      usually exactly what makes the runtime subprocess fail too.
+
+    `detail` is truncated because `_runtime_command` passes it as a subprocess argv
+    element, where Linux caps a single element at `MAX_ARG_STRLEN` (128 KiB) — an
+    embedded runtime stderr dump would otherwise turn this into an `E2BIG` OSError.
+    """
+    meta_now = _read_orchestration_meta(repo_root, orchestration_id)
+    if not (init_committed or _is_own_driver(meta_now, driver_identity)):
+        return
+    if str(meta_now.get("status") or "").strip().lower() in _RESUMABLE_TERMINAL_STATUSES:
+        return
+    try:
+        _runtime_command(
+            repo_root,
+            env,
+            [
+                "set-status",
+                "--repo-root",
+                str(repo_root),
+                "--orchestration-id",
+                orchestration_id,
+                "--status",
+                "fail",
+                "--reason-code",
+                reason_code,
+                "--reason-detail",
+                detail[:200],
+            ],
+        )
+    except Exception:  # noqa: BLE001 - best-effort; the envelope must still print
+        pass
+
+
 def _is_own_driver(meta: dict[str, Any], identity: dict[str, Any] | None) -> bool:
     """True when this meta's `driver` block names THIS process.
 
@@ -3442,6 +3503,17 @@ def _run_node(
             ]
             preflight_result = _runtime_command(repo_root, env, preflight_args).payload
         except RuntimeError as exc:
+            # This handler spans `init` AND `preflight`, so it is reached with the
+            # orchestration already committed whenever the preflight subprocess (or a
+            # set-status inside the snapshot handler above) fails. Returning the
+            # envelope without terminalizing would leave exactly the stuck `running`
+            # this whole path exists to prevent — the guards make it a no-op in the
+            # pre-commit case, which is the one the `init` failure tests pin.
+            _terminalize_owned_orchestration(
+                repo_root, env, orchestration_id, init_committed=init_committed,
+                driver_identity=driver_identity,
+                reason_code="runtime_command_failed", detail=str(exc),
+            )
             print(
                 json.dumps(
                     {
@@ -3697,20 +3769,11 @@ def _run_node(
         except Exception:  # noqa: BLE001 - reporting must not displace the envelope
             pass
         detail = f"{type(exc).__name__}: {exc}"
-        meta_now = _read_orchestration_meta(repo_root, orchestration_id)
-        if init_committed or _is_own_driver(meta_now, driver_identity):
-            current = str(meta_now.get("status") or "").strip().lower()
-            if current not in _RESUMABLE_TERMINAL_STATUSES:
-                try:
-                    _runtime_command(
-                        repo_root, env,
-                        ["set-status", "--repo-root", str(repo_root),
-                         "--orchestration-id", orchestration_id, "--status", "fail",
-                         "--reason-code", "driver_exception",
-                         "--reason-detail", detail[:200]],
-                    )
-                except Exception:  # noqa: BLE001 - best-effort, like the interrupt path
-                    pass
+        _terminalize_owned_orchestration(
+            repo_root, env, orchestration_id, init_committed=init_committed,
+            driver_identity=driver_identity, reason_code="driver_exception",
+            detail=detail,
+        )
         print(json.dumps({
             "status": "fail", "reason": "driver_exception", "detail": detail,
             "orchestration_id": orchestration_id}, ensure_ascii=False))

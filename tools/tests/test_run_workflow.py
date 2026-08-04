@@ -2317,6 +2317,117 @@ class RunWorkflowTests(unittest.TestCase):
             # stdout keeps its envelope contract.
             self.assertIn("Traceback", err.getvalue())
 
+    def test_backstop_still_reports_when_terminalization_itself_fails(self) -> None:
+        # The exception that reaches the backstop is typically the very condition that
+        # also breaks the runtime subprocess (a full disk, a read-only workspace), so a
+        # failing `set-status` is the LIKELY case, not an exotic one. Unswallowed it
+        # would escape `_run_node` and restore the whole bug: traceback, no envelope,
+        # orchestration left `running`. (Mirror of the interrupt path's
+        # `test_interrupt_propagates_when_terminalization_fails`.)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_boom_and_setstatus_dies"
+            observed: list[list[str]] = []
+
+            def runtime_whose_set_status_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "set-status":
+                    raise RuntimeError("runtime command failed (set-status): ENOSPC")
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_set_status_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._mkdir_boom(
+                    "orch_agent_run_002", "tmp",
+                    OSError(28, "No space left on device"),
+                ), redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            # It really did try — the swallow is what keeps the envelope reachable.
+            self.assertEqual(
+                len([c for c in observed if c and c[0] == "set-status"]), 1, observed)
+
+    def test_backstop_truncates_reason_detail_to_an_argv_safe_length(self) -> None:
+        # `_runtime_command` passes `--reason-detail` as a single subprocess argv
+        # element, and Linux caps one element at MAX_ARG_STRLEN (128 KiB) — this repo
+        # has been bitten twice (#30/#31). A `RuntimeError` from `_runtime_command`
+        # embeds the runtime subprocess's whole stderr, so a multi-KB detail is
+        # reachable. Untruncated, `set-status` would raise E2BIG, the swallow above
+        # would eat it, and the orchestration would silently stay `running`.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            huge = "x" * 200_000
+            with self._mkdir_boom(
+                "orch_agent_run_002", "tmp", OSError(28, huge),
+            ), redirect_stderr(io.StringIO()):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", "orch_huge_detail"])
+            self.assertEqual(code, 2, out["reason"])
+            status = next(c for c in observed if c and c[0] == "set-status")
+            self.assertLessEqual(
+                len(status[status.index("--reason-detail") + 1]), 200)
+            # The envelope itself is NOT truncated — it never crosses an argv boundary,
+            # and it is the operator's full diagnostic.
+            self.assertIn(huge, out["detail"])
+
+    def test_a_runtime_command_failure_after_init_is_terminalized_too(self) -> None:
+        # The `except RuntimeError` handler spans `init` AND `preflight`, and returned
+        # its envelope without terminalizing — so a preflight subprocess that died
+        # after `init` committed left the orchestration `running` forever, the same
+        # stuck state as an escaping exception. Same guards, more precise reason code.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_preflight_subprocess_died"
+            observed: list[list[str]] = []
+
+            def runtime_whose_preflight_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                if args[0] == "preflight":
+                    raise RuntimeError("runtime command failed (preflight): exit 1")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_preflight_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "runtime_command_failed")
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            self.assertEqual(set_status[0][set_status[0].index("--status") + 1], "fail")
+            self.assertEqual(
+                set_status[0][set_status[0].index("--reason-code") + 1],
+                "runtime_command_failed")
+
     def test_unwritable_workspace_tmp_reports_instead_of_escaping(self) -> None:
         # `workspace/tmp` is the driver's FIRST write into the workspace, so on a
         # read-only checkout it is the first thing to fail. It used to be created
