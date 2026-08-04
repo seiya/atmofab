@@ -887,8 +887,14 @@ def resolve_default_config_path(repo_root: str | Path) -> Path:
     path = default_config_path(repo_root)
     if path.exists():
         return path
+    # Anchored to `repo_root`, NOT relative. The run's root is `--repo-root`, which need not be
+    # the shell's working directory — and when it is not, a relative `cp` copies between two
+    # directories the run is not using, leaving the default still missing and the next run
+    # failing identically. The one message whose whole job is to be pasted has to work from
+    # wherever it is pasted.
+    root = Path(repo_root)
     samples = "\n  ".join(
-        f"cp {SAMPLE_CONFIG_DIR}/{name} {DEFAULT_CONFIG_FILENAME}"
+        f"cp {root / SAMPLE_CONFIG_DIR / name} {path}"
         for name in SAMPLE_CONFIG_NAMES)
     # No `where=`: `LlmConfigError.__str__` appends " (at <where>)", which would land on the
     # LAST line of the `cp` list above and render as part of a command the operator is being

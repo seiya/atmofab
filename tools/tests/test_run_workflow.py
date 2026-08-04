@@ -6177,7 +6177,9 @@ class LlmConfigStartupTests(unittest.TestCase):
             detail = lines[-1]["detail"]
             self.assertIn("llm_config_default_missing", detail)
             self.assertIn(str(repo_root / "llm.yaml"), detail)
-            self.assertIn("cp docs/examples/llm_claude.example.yaml llm.yaml", detail)
+            self.assertIn(
+                f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+                f"{repo_root / 'llm.yaml'}", detail)
 
     def test_a_copied_sample_and_the_named_sample_are_the_same_run(self) -> None:
         """`cp docs/examples/llm_claude.example.yaml llm.yaml` must be exactly the run that
@@ -6748,6 +6750,47 @@ class LlmConfigStartupTests(unittest.TestCase):
                 self.assertEqual(snapshot.read_bytes(), cfg.read_bytes(), msg=name)
                 self.assertEqual(lc._sha256_bytes(snapshot.read_bytes()),
                                  self._invocation()["llm_config_sha256"], msg=name)
+
+    def test_the_snapshot_replaces_the_directory_entry_rather_than_writing_through_it(
+        self,
+    ) -> None:
+        """A cold re-init writes over whatever the name already holds. `write_bytes` OPENS the
+        existing name, so a snapshot that is a symlink — stale workspace state, an archive
+        restored with links preserved — would have its TARGET overwritten with YAML while the
+        entry stayed a link, leaving the run with a snapshot it does not own and a file it
+        never meant to touch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = repo_root / "workspace" / "orchestrations" / "o"
+            orch.mkdir(parents=True)
+            victim = repo_root / "victim.txt"
+            victim.write_text("IMPORTANT", encoding="utf-8")
+            (orch / run_workflow.LLM_CONFIG_SNAPSHOT_NAME).symlink_to(victim)
+            cfg = _sample_config("claude")
+            run_workflow._write_llm_config_snapshot(repo_root, "o", cfg)
+            snapshot = orch / run_workflow.LLM_CONFIG_SNAPSHOT_NAME
+            self.assertEqual(victim.read_text(encoding="utf-8"), "IMPORTANT")
+            self.assertFalse(snapshot.is_symlink())
+            self.assertEqual(snapshot.read_bytes(), cfg.raw)
+
+    def test_an_interrupted_snapshot_write_leaves_the_previous_bytes(self) -> None:
+        """The whole contract is that these bytes hash to the recorded pin. A truncating
+        in-place write that dies mid-way leaves a short file that still LOOKS like a snapshot
+        and no longer restores — the unrecoverable state this file exists to prevent. The
+        temp-file + rename gives the old bytes or the new bytes, never a prefix, and cleans up
+        after itself so a signal during a closure run leaves no `.tmp` litter per node."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = repo_root / "workspace" / "orchestrations" / "o"
+            orch.mkdir(parents=True)
+            snapshot = orch / run_workflow.LLM_CONFIG_SNAPSHOT_NAME
+            snapshot.write_bytes(b"PREVIOUS-GOOD-BYTES\n")
+            with mock.patch("os.replace", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_workflow._write_llm_config_snapshot(
+                        repo_root, "o", _sample_config("claude"))
+            self.assertEqual(snapshot.read_bytes(), b"PREVIOUS-GOOD-BYTES\n")
+            self.assertEqual([p.name for p in orch.iterdir() if p.name.endswith(".tmp")], [])
 
     def test_a_resume_does_not_overwrite_the_launch_time_snapshot(self) -> None:
         """It is a record of what the run LAUNCHED with. Refreshing it on resume would make it

@@ -220,7 +220,13 @@ class DefaultConfigPathTests(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn(str(Path(tmp) / "llm.yaml"), message)
         for name in lc.SAMPLE_CONFIG_NAMES:
-            self.assertIn(f"cp docs/examples/{name} llm.yaml", message)
+            # ANCHORED to the run's root on BOTH sides. `--repo-root` need not be the shell's
+            # working directory, and a relative `cp` pasted from elsewhere copies between two
+            # directories the run is not using — leaving the default still missing and the
+            # next run failing with this very message again.
+            self.assertIn(
+                f"cp {Path(tmp) / 'docs' / 'examples' / name} {Path(tmp) / 'llm.yaml'}",
+                message)
             self.assertTrue((SAMPLE_DIR / name).exists(), msg=name)
         # Every `cp` line must be PASTE-SAFE. The message ends with the list, and
         # `LlmConfigError.__str__` appends " (at <where>)" whenever `where` is set — which
@@ -228,7 +234,7 @@ class DefaultConfigPathTests(unittest.TestCase):
         # first message a new operator ever sees.
         for line in message.splitlines():
             if line.strip().startswith("cp "):
-                self.assertTrue(line.strip().endswith(" llm.yaml"), msg=line)
+                self.assertTrue(line.strip().endswith("/llm.yaml"), msg=line)
         self.assertEqual(ctx.exception.where, "")
 
 

@@ -1734,12 +1734,41 @@ def _write_llm_config_snapshot(
     forever — restoring from it reproduces the PREVIOUS run's bytes, whose hash still does not
     match, so the resume refuses again with the same instruction. The invariant is "these bytes
     are what `invocation.llm_config_sha256` describes", and only an unconditional write on the
-    cold path keeps it."""
+    cold path keeps it.
+
+    Written through a same-directory temp file and `os.replace`, for two reasons that both
+    follow from that invariant. A plain `write_bytes` OPENS the existing name, so a
+    `llm_config_snapshot.yaml` that is a symlink — stale workspace state, an archive restored
+    with links preserved — would be followed and the link's target overwritten with YAML
+    instead of the directory entry being replaced. And a truncating in-place write that is
+    interrupted leaves a short file that still looks like a snapshot but no longer hashes to
+    the recorded pin, which is precisely the unrestorable state this file exists to prevent.
+    `os.replace` gives the previous bytes or the new bytes, never a prefix."""
     if not llm_config.raw:
         return
     path = _llm_config_snapshot_path(repo_root, orchestration_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(llm_config.raw)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    replaced = False
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(llm_config.raw)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(str(tmp_path), str(path))
+        replaced = True
+    finally:
+        # BaseException too (SIGINT / SystemExit): the cleanup is what keeps a signal during
+        # a closure run from littering `.llm_config_snapshot.yaml.*.tmp` under every node.
+        if not replaced:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
 
 
 def _llm_config_legacy_pin_rejection(
