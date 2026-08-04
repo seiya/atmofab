@@ -11073,6 +11073,31 @@ class WriteMakefileTest(unittest.TestCase):
                 self.assertEqual(conductor_authors, runtime_host_authored,
                                  f"conductor/runtime disagree for {label!r}")
 
+        # The reconstruction above is only load-bearing if it can actually SEE a divergence.
+        # None of the cases carries whitespace, and one cannot simply be added: for
+        # `build_system: "   "` the live pair genuinely disagrees (the conductor compares
+        # unstripped and declines; record_launch strips, concludes the host authored it, and
+        # suppresses the leaf's pin — so src/Makefile is authored by nobody). That shape is
+        # kept out of production by `_validate_toolchain_backend_supported`, not by this
+        # agreement. Pin the divergence itself, so a reconstruction that quietly stops
+        # mirroring record_launch — as it once did, omitting `.strip().lower()` — fails here.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            ir_path = repo / refs.ir_ref / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                'impl_defaults:\n  toolchain:\n    language: fortran\n'
+                '    build_system: "   "\n', encoding="utf-8")
+            c = self._conductor(repo)
+            _bs_resolved = _impl_resolved_build_system(repo, refs.ir_ref)
+            lang = _impl_resolved_language(repo, refs.ir_ref)
+            bs = (_bs_resolved or "").strip().lower() if isinstance(_bs_resolved, str) else ""
+            runtime_host_authored = (
+                (bs or "make") == "make" and (lang or "fortran") == "fortran")
+            self.assertFalse(c._conductor_authors_makefile(refs))
+            self.assertTrue(runtime_host_authored)
+
     # --- Part 2 (Model B): dependency Makefile rendering. The non-leaf branch DOES run live —
     # run_phase authors for every make+fortran node (leaf OR dependency; _conductor_authors_
     # makefile has no leaf gate). E2E-UNVERIFIED only in that no real dependency spec has run

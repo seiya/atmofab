@@ -3735,11 +3735,13 @@ def _resolve_dependency_closure(
     )
     from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
 
-    # The catalog is loaded lazily — only once a dependency edge is actually
-    # encountered. A leaf target (empty deps.yaml) needs no catalog, so a
-    # missing/corrupt registry must not turn an otherwise-launchable leaf
-    # workflow into a failure (matching the runtime readiness path, which
-    # treats no-deps specs as vacuously ready without the catalog).
+    # A missing/corrupt registry must not turn an otherwise-launchable leaf workflow into
+    # a failure (matching the runtime readiness path, which treats no-deps specs as
+    # vacuously ready without the catalog). The load is lazy, but since the infra-dep gate
+    # `_kind_for_gate` needs the target's kind, the ATTEMPT now happens for every visited
+    # spec, not only once an edge is encountered — the leaf property is preserved by that
+    # function swallowing the load error and falling back to the declared kind, not by
+    # never reaching the catalog.
     catalog_cache: dict[tuple[str, str], tuple[str, ...]] | None = None
 
     def _get_catalog() -> dict[tuple[str, str], tuple[str, ...]]:

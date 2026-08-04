@@ -14423,7 +14423,7 @@ class ChecksSourceGateTests(unittest.TestCase):
 
 
 class SpecKindNormalizationParityTests(unittest.TestCase):
-    """Every `meta.spec_kind` comparison in this module must spell itself the same way:
+    """Every `meta.spec_kind` VALUE comparison in this module must spell itself the same way:
     `.strip()`, no case folding.
 
     A gate that normalizes differently from its neighbours does not fail loudly — it SKIPS.
@@ -14433,51 +14433,130 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
     gate's language exemption while the infrastructure public-API gate — the only enforcement
     of the fortran-only language backend — skipped the node entirely.
 
-    The scan is over the module AST rather than a hand-listed set of functions: the failure
-    mode is a NEW reader that nobody remembers to add to the list, so a list cannot be the
-    check. Comparisons are found wherever they are written, in either quote style; a
-    `spec_kind` lookup that is not part of a comparison (building a message, say) is ignored.
+    The scan walks the module AST rather than a hand-listed set of functions, because the
+    failure mode is a NEW reader that nobody remembers to add to a list. Two shapes are
+    covered: a direct `Compare` against a kind literal, and an `Assign` that binds the value
+    for a later compare (the hoist that would otherwise slip past a compare-only scan).
+
+    Deliberately NOT flagged: a comparison that is not against a kind literal (`"spec_kind"
+    not in meta`, `meta.get("spec_kind") is None`, `... in KNOWN_KINDS`) reads the field
+    without deciding a kind, and a value passed through some other call is treated as
+    normalized by that call rather than second-guessed here.
     """
 
-    @staticmethod
-    def _spec_kind_comparisons():
-        """(lineno, source_segment) for every Compare whose operands read `spec_kind`."""
+    _NORMALIZING_CALLS = frozenset({"str", "strip", "lower"})
+
+    @classmethod
+    def _spec_kind_sites(cls, source: str | None = None):
+        """(lineno, source, shape) for each site that decides a kind from `meta.spec_kind`.
+
+        `source` defaults to the module under guard; the benign-shape test below feeds its
+        own snippet through this SAME function, so the two can never drift apart.
+        """
         import ast
-        source = Path(vps.__file__).read_text(encoding="utf-8")
+        if source is None:
+            source = Path(vps.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
 
         def reads_spec_kind(node) -> bool:
+            return any(isinstance(sub, ast.Constant) and sub.value == "spec_kind"
+                       for sub in ast.walk(node))
+
+        def delegates_normalization(node) -> bool:
+            # The value is handed to a call that is not one of the normalizing builtins /
+            # methods — that call owns the normalization and this scan cannot judge it.
             for sub in ast.walk(node):
-                if isinstance(sub, ast.Constant) and sub.value == "spec_kind":
+                if not isinstance(sub, ast.Call):
+                    continue
+                fn = sub.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if name == "get":
+                    continue  # the `meta.get("spec_kind")` read itself
+                if name not in cls._NORMALIZING_CALLS:
                     return True
             return False
 
-        out = []
+        sites = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Compare) and reads_spec_kind(node):
-                out.append((node.lineno, ast.get_source_segment(source, node) or ""))
-        return out
+            if isinstance(node, ast.Compare):
+                # Only a comparison against a kind LITERAL decides a kind. `in` / `is` tests
+                # and comparisons against a variable do not.
+                if not all(isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
+                    continue
+                sides = [node.left, *node.comparators]
+                readers = [s for s in sides if reads_spec_kind(s)]
+                literals = [s for s in sides
+                            if isinstance(s, ast.Constant) and isinstance(s.value, str)
+                            and s.value != "spec_kind"]
+                if not readers or not literals:
+                    continue
+                target, shape = readers[0], "compare"
+            elif isinstance(node, ast.Assign) and reads_spec_kind(node.value):
+                target, shape = node.value, "assign"
+            else:
+                continue
+            if delegates_normalization(target):
+                continue
+            sites.append((node.lineno,
+                          " ".join((ast.get_source_segment(source, target) or "").split()),
+                          shape))
+        return sites
 
-    def test_the_scan_finds_the_readers_it_is_meant_to_guard(self) -> None:
+    def test_the_scan_finds_the_sites_it_is_meant_to_guard(self) -> None:
         # Guard against the guard going vacuous: if a refactor moves every comparison out of
-        # this shape, the parity test below would pass by examining nothing.
-        found = self._spec_kind_comparisons()
-        self.assertGreaterEqual(len(found), 6, found)
+        # these shapes, the parity test below would pass by examining nothing. The floor is
+        # the count that exists today, so DELETING a reader's normalization site also trips
+        # it rather than silently shrinking the scan.
+        sites = self._spec_kind_sites()
+        self.assertGreaterEqual(len(sites), 8, sites)
+        self.assertTrue(any(shape == "assign" for _l, _s, shape in sites), sites)
 
-    def test_every_spec_kind_comparison_strips_and_does_not_case_fold(self) -> None:
-        for lineno, segment in self._spec_kind_comparisons():
-            flat = " ".join(segment.split())
+    def test_every_spec_kind_site_strips_and_does_not_case_fold(self) -> None:
+        for lineno, segment, _shape in self._spec_kind_sites():
             self.assertIn(
-                ".strip()", flat,
-                f"{vps.__file__}:{lineno}: `{flat}` compares spec_kind without normalizing; "
+                ".strip()", segment,
+                f"{vps.__file__}:{lineno}: `{segment}` reads spec_kind without normalizing; "
                 "a padded value would skip this gate while its siblings still apply, "
                 "exempting a node that nothing then checks")
             self.assertNotIn(
-                ".lower()", flat,
-                f"{vps.__file__}:{lineno}: `{flat}` case-folds spec_kind; every other reader "
-                "(and the conductor's `_conductor_authors_runner`) compares case-sensitively, "
-                "so folding here would exempt a `spec_kind: Infrastructure` node that the "
-                "rest of the pipeline treats as a physics node")
+                ".lower()", segment,
+                f"{vps.__file__}:{lineno}: `{segment}` case-folds spec_kind; every other "
+                "reader (and the conductor's `_conductor_authors_runner`) compares "
+                "case-sensitively, so folding here would exempt a `spec_kind: Infrastructure` "
+                "node that the rest of the pipeline treats as a physics node")
+
+    def test_the_scan_ignores_shapes_that_do_not_decide_a_kind(self) -> None:
+        # Correct code written in these shapes must not be flagged: a false positive accuses
+        # a sound gate of skipping, and the next round "fixes" it into something worse.
+        benign = (
+            "def f(meta, entry, KNOWN):\n"
+            "    if 'spec_kind' not in meta:\n"
+            "        return\n"
+            "    if meta.get('spec_kind') is None:\n"
+            "        return\n"
+            "    if entry['spec_kind'] in KNOWN:\n"
+            "        return\n"
+            "    if _norm_kind(meta.get('spec_kind')) != 'infrastructure':\n"
+            "        return\n"
+        )
+        self.assertEqual(self._spec_kind_sites(benign), [])
+
+    def test_the_scan_catches_both_offending_shapes(self) -> None:
+        # ...and it must still catch the two shapes it exists for, or the carve-outs above
+        # have quietly turned it off.
+        offending = (
+            "def f(meta):\n"
+            "    if meta.get('spec_kind') != 'infrastructure':\n"
+            "        return\n"
+            "    kind = str(meta.get('spec_kind') or '')\n"
+            "    if kind == 'component':\n"
+            "        return\n"
+        )
+        found = self._spec_kind_sites(offending)
+        self.assertEqual(sorted(shape for _l, _s, shape in found),
+                         ["assign", "compare"], found)
+        for _lineno, segment, _shape in found:
+            self.assertNotIn(".strip()", segment)
 
 
 class ToolchainBackendGateTests(unittest.TestCase):
@@ -14670,9 +14749,10 @@ class ToolchainBackendGateTests(unittest.TestCase):
     def test_a_present_but_non_token_value_fires_whatever_spelling_produced_it(self) -> None:
         # The check is on the parsed SHAPE — "a plain non-empty string" — never on a
         # predicted consequence, because the consequence is not the same across the branch:
-        # a falsy value is coerced to the default by the conductor and read as a literal
-        # token by record_launch's line scan, while a truthy non-string is STRINGIFIED by
-        # the conductor and so is not the token it looks like either. `null` is one spelling
+        # a falsy value is coerced to the default by the conductor while record_launch's
+        # line scan reads the literal token — except for the bare key and `""`, where the
+        # scan also yields nothing and the two agree — and a truthy non-string is
+        # STRINGIFIED by the conductor, so it is not the token it looks like either. `null` is one spelling
         # among many: YAML 1.1 resolves `no` / `off` to False, and `0` / `[]` / `""` /
         # `"   "` / `5` / `true` all land in the same branch.
         for key in ("build_system", "language"):
