@@ -14424,7 +14424,7 @@ class ChecksSourceGateTests(unittest.TestCase):
 
 class SpecKindNormalizationParityTests(unittest.TestCase):
     """Every `meta.spec_kind` VALUE comparison in this module must spell itself the same way:
-    `.strip()`, no case folding.
+    `.strip()`, and no case folding.
 
     A gate that normalizes differently from its neighbours does not fail loudly — it SKIPS.
     A padded or mis-cased value then buys an exemption from one gate while the gate that
@@ -14434,129 +14434,255 @@ class SpecKindNormalizationParityTests(unittest.TestCase):
     of the fortran-only language backend — skipped the node entirely.
 
     The scan walks the module AST rather than a hand-listed set of functions, because the
-    failure mode is a NEW reader that nobody remembers to add to a list. Two shapes are
-    covered: a direct `Compare` against a kind literal, and an `Assign` that binds the value
-    for a later compare (the hoist that would otherwise slip past a compare-only scan).
+    failure mode is a NEW reader that nobody remembers to add to a list. It judges the
+    COMPARISON, resolving a value bound to a local first: `kind = meta.get("spec_kind")`
+    followed by `if str(kind or "").strip() == "component"` normalizes correctly and must not
+    be flagged, while the same hoist without the `.strip()` must be. An assignment on its own
+    decides nothing, so it is never a finding by itself — that shortcut was the previous
+    version's false-positive source (it flagged `detail = f"...{meta.get('spec_kind')}"`).
 
-    Deliberately NOT flagged: a comparison that is not against a kind literal (`"spec_kind"
-    not in meta`, `meta.get("spec_kind") is None`, `... in KNOWN_KINDS`) reads the field
-    without deciding a kind, and a value passed through some other call is treated as
-    normalized by that call rather than second-guessed here.
+    Ignored on purpose: a comparison against a non-literal (`== SOME_CONST`, `in KNOWN_KINDS`)
+    does not decide a kind from a fixed vocabulary, and a value handed to a call that is not a
+    string method is treated as normalized by that call rather than second-guessed here.
     """
 
-    _NORMALIZING_CALLS = frozenset({"str", "strip", "lower"})
+    # String operations this scan can reason about. Anything else wrapping the value is
+    # somebody else's normalization contract.
+    _STRING_OPS = frozenset({"str", "strip", "lstrip", "rstrip",
+                             "lower", "upper", "casefold", "title"})
+    # ...of which these change case, which the parity rule forbids inline.
+    _CASE_OPS = ("lower", "upper", "casefold", "title")
+
+    @classmethod
+    def _is_spec_kind_read(cls, node) -> bool:
+        """True when `node` IS a read of `meta.spec_kind`, modulo string-op wrappers."""
+        import ast
+        seen = 0
+        while seen < 12:
+            seen += 1
+            if isinstance(node, ast.BoolOp) and node.values:
+                node = node.values[0]
+                continue
+            if isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if name == "get":
+                    return bool(node.args) and isinstance(node.args[0], ast.Constant) \
+                        and node.args[0].value == "spec_kind"
+                if name in cls._STRING_OPS:
+                    if isinstance(fn, ast.Attribute):
+                        node = fn.value
+                    elif node.args:
+                        node = node.args[0]
+                    else:
+                        return False
+                    continue
+                return False
+            if isinstance(node, ast.Subscript):
+                sl = node.slice
+                return isinstance(sl, ast.Constant) and sl.value == "spec_kind"
+            return False
+        return False
+
+    @classmethod
+    def _kind_literal(cls, node) -> bool:
+        """A fixed kind vocabulary: one string literal, or a literal collection of them."""
+        import ast
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str) and node.value != "spec_kind"
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return bool(node.elts) and all(
+                isinstance(e, ast.Constant) and isinstance(e.value, str) for e in node.elts)
+        return False
 
     @classmethod
     def _spec_kind_sites(cls, source: str | None = None):
-        """(lineno, source, shape) for each site that decides a kind from `meta.spec_kind`.
+        """(lineno, expression) for each comparison that decides a kind from meta.spec_kind.
 
-        `source` defaults to the module under guard; the benign-shape test below feeds its
-        own snippet through this SAME function, so the two can never drift apart.
+        `source` defaults to the module under guard; the self-tests below feed their own
+        snippets through this SAME function, so the guard's carve-outs cannot drift from what
+        it claims to ignore.
         """
         import ast
         if source is None:
             source = Path(vps.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
 
-        def reads_spec_kind(node) -> bool:
-            return any(isinstance(sub, ast.Constant) and sub.value == "spec_kind"
-                       for sub in ast.walk(node))
+        def seg(node) -> str:
+            return " ".join((ast.get_source_segment(source, node) or "").split())
 
-        def delegates_normalization(node) -> bool:
-            # The value is handed to a call that is not one of the normalizing builtins /
-            # methods — that call owns the normalization and this scan cannot judge it.
-            for sub in ast.walk(node):
-                if not isinstance(sub, ast.Call):
+        def own_nodes(scope):
+            """Every node of `scope` except those belonging to a nested function, so a
+            site is attributed to exactly one scope and never counted twice."""
+            out = []
+            stack = list(ast.iter_child_nodes(scope))
+            while stack:
+                node = stack.pop()
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     continue
-                fn = sub.func
-                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-                if name == "get":
-                    continue  # the `meta.get("spec_kind")` read itself
-                if name not in cls._NORMALIZING_CALLS:
-                    return True
-            return False
+                out.append(node)
+                stack.extend(ast.iter_child_nodes(node))
+            return out
 
         sites = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Compare):
-                # Only a comparison against a kind LITERAL decides a kind. `in` / `is` tests
-                # and comparisons against a variable do not.
-                if not all(isinstance(op, (ast.Eq, ast.NotEq)) for op in node.ops):
+        scopes = [tree] + [n for n in ast.walk(tree)
+                           if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        for scope in scopes:
+            scope_nodes = own_nodes(scope)
+            # Locals bound to a spec_kind read, so a hoisted value is judged together with
+            # the comparison that uses it.
+            bound: dict[str, str] = {}
+            for node in scope_nodes:
+                target = value = None
+                if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    if len(targets) == 1 and isinstance(targets[0], ast.Name):
+                        target, value = targets[0].id, node.value
+                elif isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+                    target, value = node.target.id, node.value
+                if target and cls._is_spec_kind_read(value):
+                    bound[target] = seg(value)
+
+            for node in scope_nodes:
+                if not isinstance(node, ast.Compare) or len(node.ops) != 1:
                     continue
-                sides = [node.left, *node.comparators]
-                readers = [s for s in sides if reads_spec_kind(s)]
-                literals = [s for s in sides
-                            if isinstance(s, ast.Constant) and isinstance(s.value, str)
-                            and s.value != "spec_kind"]
-                if not readers or not literals:
-                    continue
-                target, shape = readers[0], "compare"
-            elif isinstance(node, ast.Assign) and reads_spec_kind(node.value):
-                target, shape = node.value, "assign"
-            else:
-                continue
-            if delegates_normalization(target):
-                continue
-            sites.append((node.lineno,
-                          " ".join((ast.get_source_segment(source, target) or "").split()),
-                          shape))
+                # No filter on the operator: what decides a kind is comparing a spec_kind
+                # READ against a fixed kind LITERAL, and those two requirements already
+                # exclude `is None`, `"spec_kind" not in meta` and `== SOME_CONST`. An
+                # operator allowlist on top would be a branch no test could distinguish.
+                op = node.ops[0]
+                left, right = node.left, node.comparators[0]
+                # `x in ("a","b")` puts the value on the left; `==` may put it either side.
+                pairs = ([(left, right)] if isinstance(op, (ast.In, ast.NotIn))
+                         else [(left, right), (right, left)])
+                for value_side, literal_side in pairs:
+                    if not cls._kind_literal(literal_side):
+                        continue
+                    names = {n.id for n in ast.walk(value_side)
+                             if isinstance(n, ast.Name) and n.id in bound}
+                    if cls._is_spec_kind_read(value_side):
+                        sites.append((node.lineno, seg(value_side)))
+                    elif names:
+                        # Judge the binding and the comparison together — either may carry
+                        # the normalization.
+                        sites.append((node.lineno,
+                                      " ".join(bound[n] for n in sorted(names))
+                                      + " ; " + seg(value_side)))
+                    break
         return sites
 
     def test_the_scan_finds_the_sites_it_is_meant_to_guard(self) -> None:
-        # Guard against the guard going vacuous: if a refactor moves every comparison out of
-        # these shapes, the parity test below would pass by examining nothing. The floor is
-        # the count that exists today, so DELETING a reader's normalization site also trips
-        # it rather than silently shrinking the scan.
-        sites = self._spec_kind_sites()
-        self.assertGreaterEqual(len(sites), 8, sites)
-        self.assertTrue(any(shape == "assign" for _l, _s, shape in sites), sites)
+        # Vacuity guard: if a refactor moves every comparison out of the shapes above, the
+        # parity assertion would pass by examining nothing. The floor is the count of
+        # DISTINCT reader lines that exist today, so deleting one also trips it.
+        lines = {lineno for lineno, _seg in self._spec_kind_sites()}
+        self.assertGreaterEqual(len(lines), 7, sorted(lines))
+
+    @classmethod
+    def _parity_problems(cls, sites) -> list[str]:
+        """The rule itself, applied to a site list. Shared by the module check and the
+        reachability check below, so neither half of the rule can go unexercised."""
+        problems = []
+        for lineno, expression in sites:
+            if ".strip()" not in expression:
+                problems.append(
+                    f"{lineno}: `{expression}` decides a spec_kind without normalizing; a "
+                    "padded value would skip this gate while its siblings still apply, "
+                    "exempting a node that nothing then checks")
+            for case_op in cls._CASE_OPS:
+                if f".{case_op}()" in expression:
+                    problems.append(
+                        f"{lineno}: `{expression}` case-folds spec_kind; every other reader "
+                        "(and the conductor's `_conductor_authors_runner`) compares "
+                        "case-sensitively, so folding here would exempt a `spec_kind: "
+                        "Infrastructure` node the rest of the pipeline treats as a physics "
+                        "node")
+        return problems
 
     def test_every_spec_kind_site_strips_and_does_not_case_fold(self) -> None:
-        for lineno, segment, _shape in self._spec_kind_sites():
-            self.assertIn(
-                ".strip()", segment,
-                f"{vps.__file__}:{lineno}: `{segment}` reads spec_kind without normalizing; "
-                "a padded value would skip this gate while its siblings still apply, "
-                "exempting a node that nothing then checks")
-            self.assertNotIn(
-                ".lower()", segment,
-                f"{vps.__file__}:{lineno}: `{segment}` case-folds spec_kind; every other "
-                "reader (and the conductor's `_conductor_authors_runner`) compares "
-                "case-sensitively, so folding here would exempt a `spec_kind: Infrastructure` "
-                "node that the rest of the pipeline treats as a physics node")
+        problems = self._parity_problems(self._spec_kind_sites())
+        self.assertEqual(problems, [], f"{vps.__file__}: " + "; ".join(problems))
 
     def test_the_scan_ignores_shapes_that_do_not_decide_a_kind(self) -> None:
         # Correct code written in these shapes must not be flagged: a false positive accuses
-        # a sound gate of skipping, and the next round "fixes" it into something worse.
+        # a sound gate of skipping, and the next round "fixes" it into something worse. Each
+        # line exercises a different carve-out.
         benign = (
-            "def f(meta, entry, KNOWN):\n"
-            "    if 'spec_kind' not in meta:\n"
+            "KEY = 'spec_kind'\n"
+            "def f(meta, entry, KNOWN, WANTED):\n"
+            "    detail = f\"kind={meta.get('spec_kind')!r}\"\n"      # message building
+            "    payload = {'spec_kind': meta.get('spec_kind')}\n"    # dict literal
+            "    if 'spec_kind' not in meta:\n"                       # membership on the KEY
             "        return\n"
-            "    if meta.get('spec_kind') is None:\n"
+            "    if meta.get('spec_kind') is None:\n"                 # identity, not a kind
             "        return\n"
-            "    if entry['spec_kind'] in KNOWN:\n"
+            "    if entry['spec_kind'] in KNOWN:\n"                   # vocabulary not literal
             "        return\n"
-            "    if _norm_kind(meta.get('spec_kind')) != 'infrastructure':\n"
+            "    if meta.get('spec_kind') == WANTED:\n"               # comparand not literal
             "        return\n"
+            "    if _norm_kind(meta.get('spec_kind')) != 'infrastructure':\n"  # delegated
+            "        return\n"
+            "    return detail, payload, KEY\n"
         )
         self.assertEqual(self._spec_kind_sites(benign), [])
 
-    def test_the_scan_catches_both_offending_shapes(self) -> None:
-        # ...and it must still catch the two shapes it exists for, or the carve-outs above
-        # have quietly turned it off.
-        offending = (
-            "def f(meta):\n"
-            "    if meta.get('spec_kind') != 'infrastructure':\n"
-            "        return\n"
-            "    kind = str(meta.get('spec_kind') or '')\n"
-            "    if kind == 'component':\n"
-            "        return\n"
-        )
-        found = self._spec_kind_sites(offending)
-        self.assertEqual(sorted(shape for _l, _s, shape in found),
-                         ["assign", "compare"], found)
-        for _lineno, segment, _shape in found:
-            self.assertNotIn(".strip()", segment)
+    def test_a_hoist_normalized_at_the_comparison_is_seen_and_accepted(self) -> None:
+        # The binding and the comparison are judged TOGETHER: either may carry the
+        # `.strip()`. Flagging this would be a false positive; not seeing it at all would
+        # mean the hoist shape is unguarded.
+        snippet = ("def f(meta):\n"
+                   "    raw = meta.get('spec_kind')\n"
+                   "    if str(raw or '').strip() == 'component':\n"
+                   "        return\n")
+        found = self._spec_kind_sites(snippet)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn(".strip()", found[0][1])
+
+    def test_the_scan_catches_every_shape_it_exists_for(self) -> None:
+        # ...and it must still catch these, or the carve-outs above have turned it off. Each
+        # line is a real way to get the rule wrong.
+        offending = {
+            "inline compare": "def f(meta):\n"
+                              "    if meta.get('spec_kind') != 'infrastructure':\n"
+                              "        return\n",
+            "hoisted assign": "def f(meta):\n"
+                              "    kind = str(meta.get('spec_kind') or '')\n"
+                              "    if kind == 'component':\n"
+                              "        return\n",
+            "annotated hoist": "def f(meta):\n"
+                               "    kind: str = str(meta.get('spec_kind') or '')\n"
+                               "    if kind == 'component':\n"
+                               "        return\n",
+            "walrus hoist": "def f(meta):\n"
+                            "    if (kind := meta.get('spec_kind')) == 'component':\n"
+                            "        return kind\n",
+            "subscript read": "def f(meta):\n"
+                              "    if meta['spec_kind'] == 'profile':\n"
+                              "        return\n",
+            "literal vocabulary": "def f(meta):\n"
+                                  "    if meta.get('spec_kind') in ('component', 'profile'):\n"
+                                  "        return\n",
+        }
+        for label, snippet in offending.items():
+            found = self._spec_kind_sites(snippet)
+            self.assertEqual(len(found), 1, f"{label}: {found}")
+            self.assertNotIn(".strip()", found[0][1], label)
+
+    def test_the_case_folding_half_is_reachable(self) -> None:
+        # The no-case-folding assertion is the half round 7 added; without a site that folds,
+        # nothing would ever exercise it. Every spelling of an inline fold must be seen.
+        # Spelled out rather than read from `_CASE_OPS`: deriving the cases from the
+        # constant under test lets a narrowed constant narrow its own coverage.
+        for case_op in ("lower", "upper", "casefold", "title"):
+            snippet = ("def f(meta):\n"
+                       f"    if str(meta.get('spec_kind') or '').strip().{case_op}() "
+                       "== 'component':\n"
+                       "        return\n")
+            found = self._spec_kind_sites(snippet)
+            self.assertEqual(len(found), 1, (case_op, found))
+            # ...and the RULE must reject it. Asserting only that the scan sees the site
+            # would leave `_CASE_OPS` free to shrink and take this test's coverage with it.
+            self.assertTrue(self._parity_problems(found), case_op)
 
 
 class ToolchainBackendGateTests(unittest.TestCase):

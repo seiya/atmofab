@@ -3818,7 +3818,8 @@ def _resolve_dependency_closure(
         if len(kinds) == 1:
             return next(iter(kinds)), None
         if len(kinds) > 1:
-            # Reported unconditionally by the caller — see `_kind_unresolvable` there. Unlike
+            # Reported by the caller whatever the dep count says — see the `_registry_defect`
+        # branch there, and the `_UNRESOLVABLE_KIND` note above it. Unlike
             # the unreadable-registry case there is no lazy-catalog property to protect: the
             # registry WAS read, it is simply self-contradictory.
             return _UNRESOLVABLE_KIND, (

@@ -5349,6 +5349,19 @@ class NodeAllocationTest(unittest.TestCase):
                     self.assertEqual(wc.resolve_node(repo, "spec/x/n1")[0],
                                      f"{spelling}/n1@0.1.0")
 
+    def test_a_deps_yaml_that_is_not_a_mapping_is_rejected_not_crashed(self) -> None:
+        # A deps.yaml whose top level parses to a LIST is readable and well-formed YAML but
+        # not a dependency document. `_direct_infra_dep_count`'s isinstance guard turns it
+        # into a clean spec-input rejection; without it the `.get` raises inside resolve_node.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._mini_spec_repo(tmp, spec_kind="component", infra_entries=1)
+            (repo / "spec" / "x" / "n1" / "deps.yaml").write_text(
+                "- components\n- profiles\n", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                wc.resolve_node(repo, "spec/x/n1")
+            self.assertIn("is missing or its dependency schema is malformed",
+                          str(ctx.exception))
+
     def test_resolve_node_rejects_unreadable_deps_on_a_non_infra_node(self) -> None:
         # The exactly-one precondition cannot be PROVEN without a well-formed deps.yaml,
         # so absence fails closed rather than reading as "zero". An infrastructure node
@@ -11056,20 +11069,7 @@ class WriteMakefileTest(unittest.TestCase):
             for label, ir_text in cases:
                 ir_path.write_text(ir_text, encoding="utf-8")
                 conductor_authors = c._conductor_authors_makefile(refs)
-                # Reconstruct the runtime's `_resolved_makefile_host_authored` VERBATIM
-                # (orchestration_runtime.record_launch): `.strip().lower()` on the
-                # build_system half, and the language half compared unstripped. An earlier
-                # version of this reconstruction omitted that normalization, which made the
-                # test agree with itself for `build_system: "   "` while the live pair
-                # diverged into the authored-by-nobody state — i.e. it could not detect the
-                # very divergence class it exists to guard.
-                _bs_resolved = _impl_resolved_build_system(repo, refs.ir_ref)
-                lang = _impl_resolved_language(repo, refs.ir_ref)
-                bs = (_bs_resolved or "").strip().lower() if isinstance(
-                    _bs_resolved, str) else ""
-                runtime_host_authored = (
-                    (bs or "make") == "make"
-                    and (lang or "fortran") == "fortran")
+                runtime_host_authored = _runtime_makefile_host_authored(repo, refs.ir_ref)
                 self.assertEqual(conductor_authors, runtime_host_authored,
                                  f"conductor/runtime disagree for {label!r}")
 
@@ -11090,13 +11090,8 @@ class WriteMakefileTest(unittest.TestCase):
                 'impl_defaults:\n  toolchain:\n    language: fortran\n'
                 '    build_system: "   "\n', encoding="utf-8")
             c = self._conductor(repo)
-            _bs_resolved = _impl_resolved_build_system(repo, refs.ir_ref)
-            lang = _impl_resolved_language(repo, refs.ir_ref)
-            bs = (_bs_resolved or "").strip().lower() if isinstance(_bs_resolved, str) else ""
-            runtime_host_authored = (
-                (bs or "make") == "make" and (lang or "fortran") == "fortran")
             self.assertFalse(c._conductor_authors_makefile(refs))
-            self.assertTrue(runtime_host_authored)
+            self.assertTrue(_runtime_makefile_host_authored(repo, refs.ir_ref))
 
     # --- Part 2 (Model B): dependency Makefile rendering. The non-leaf branch DOES run live —
     # run_phase authors for every make+fortran node (leaf OR dependency; _conductor_authors_
@@ -11378,6 +11373,24 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_ir(repo, refs, language="c", direct_deps="[component/dep@0.1.0]")
             obj_dir = repo / "workspace" / "tmp" / "arid_x" / "build"
             self.assertEqual(self._conductor(repo)._stage_dependency_sources(refs, obj_dir), [])
+
+
+def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
+    """`record_launch`'s `_resolved_makefile_host_authored`, reconstructed VERBATIM
+    (orchestration_runtime, the `request_payload["_resolved_makefile_host_authored"]`
+    assignment): `.strip().lower()` on the build_system half, the language half compared
+    unstripped.
+
+    ONE copy, shared by the agreement cases and the divergence pin below. An earlier version
+    omitted the build_system normalization, which made the test agree with itself for
+    `build_system: "   "` exactly where the live pair diverges — and a second, independent
+    copy in the divergence pin left the loop's copy unguarded all over again."""
+    from tools.orchestration_runtime import (
+        _impl_resolved_build_system, _impl_resolved_language)
+    bs_resolved = _impl_resolved_build_system(repo, ir_ref)
+    lang = _impl_resolved_language(repo, ir_ref)
+    bs = (bs_resolved or "").strip().lower() if isinstance(bs_resolved, str) else ""
+    return (bs or "make") == "make" and (lang or "fortran") == "fortran"
 
 
 class WriteRunnerTest(unittest.TestCase):
