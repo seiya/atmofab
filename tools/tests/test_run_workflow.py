@@ -15,10 +15,41 @@ import time
 import unittest
 from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from tools import llm_config as lc
 from tools import run_workflow
 from tools.validate_pipeline_semantics import _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SAMPLE_DIR = REPO_ROOT / "docs" / "examples"
+
+
+def _sample_config(backend: str = "claude") -> lc.LlmConfig:
+    """The committed sample configuration for a CLI backend — what an operator copies to the
+    `./llm.yaml` a run loads by default."""
+    return lc.load_llm_config(SAMPLE_DIR / f"llm_{backend}.example.yaml")
+
+
+def _seed_default_llm_config_into(repo_root: Path) -> None:
+    """Give a scratch `repo_root` the `./llm.yaml` a cold run reads.
+
+    Production has no fallback: without this, every cold `main()` against a scratch tree stops
+    at `llm_config_default_missing` before reaching whatever the test is about."""
+    repo_root.mkdir(parents=True, exist_ok=True)
+    shutil.copy(SAMPLE_DIR / "llm_claude.example.yaml", repo_root / "llm.yaml")
+
+
+def _recorded_sample_pin(repo_root: Path, backend: str = "claude") -> str:
+    """The sample's path as a pin recorded by a run rooted at `repo_root` spells it.
+
+    It must be the same string `_repo_relative` derives for the loaded configuration —
+    otherwise the resume gate's path-mismatch arm refuses on a difference the test did not
+    mean to introduce. Against a scratch `repo_root` (the samples live in THIS checkout, not
+    in it) that string is the absolute path, which `repo_root / recorded` then resolves back
+    to the real file."""
+    return run_workflow._repo_relative(
+        str(SAMPLE_DIR / f"llm_{backend}.example.yaml"), repo_root)
 
 
 def _seed_shape_expr_schema_into(repo_root: Path) -> None:
@@ -357,10 +388,10 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_parse_args_defaults(self) -> None:
         ns = run_workflow._parse_args(["spec/problem.md", "generate"])
-        # --mode / --llm default to None so main() can tell "omitted" from
-        # "explicitly passed"; the historical codex/dev defaults are applied in main().
+        # --mode defaults to None so main() can tell "omitted" from "explicitly passed";
+        # the historical dev default is applied in main().
         self.assertIsNone(ns.mode)
-        self.assertIsNone(ns.llm)
+        self.assertIsNone(ns.llm_config)
         self.assertFalse(ns.resume)
         self.assertTrue(ns.run_conductor)
         self.assertFalse(ns.wait_usage_reset)  # opt-in, default OFF
@@ -443,6 +474,7 @@ class RunWorkflowTests(unittest.TestCase):
         status: str = "fail",
         invocation: dict | None = None,
         record_executor: str | None = "pure",
+        pin: bool = True,
         driver: dict | None = None,
     ) -> None:
         """Create the on-disk artifacts a resume recovers params from.
@@ -451,9 +483,31 @@ class RunWorkflowTests(unittest.TestCase):
         resume fail-close gate rejects anything else), so this helper injects `pure` by default —
         `setdefault`, so a caller that passes its own `generate_executor` (e.g. a legacy/garbage
         record under test) wins. Pass `record_executor=None` to seed a pre-field orchestration
-        (no executor key at all) for the fail-close path."""
+        (no executor key at all) for the fail-close path.
+
+        Likewise every real orchestration records a leaf-LLM configuration pin, and a resume of
+        one that does not is refused outright (`llm_config_legacy_flags_removed`) — so this
+        helper writes a real file and pins it, matching production. `pin=False` seeds the
+        unpinned pre-issue-#28 shape the refusal tests need.
+
+        The pinned file is named per BACKEND rather than being the default `./llm.yaml`: the
+        resume derives its backend from the recorded configuration, so a codex fixture that
+        shared one file with `_seed_spec_tree`'s claude default would silently resume as
+        claude and its `backend="codex"` argument would reach nothing but `preflight.json`."""
         orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
         (orch_root / "launches").mkdir(parents=True, exist_ok=True)
+        if pin:
+            rel = f"llm_{backend}.yaml"
+            config = repo_root / rel
+            if not config.exists():
+                config.parent.mkdir(parents=True, exist_ok=True)
+                provider = "codex_cli" if backend == "codex" else "claude_cli"
+                model = "  model: gpt-5.6-sol\n" if backend == "codex" else ""
+                config.write_text(
+                    f"defaults:\n  provider: {provider}\n{model}", encoding="utf-8")
+            invocation = dict(invocation or {})
+            invocation.setdefault("llm_config_path", rel)
+            invocation.setdefault("llm_config_sha256", run_workflow.config_sha256(config))
         dep_ref = source_dependency_ref
         meta = {
             "orchestration_id": orchestration_id,
@@ -504,6 +558,7 @@ class RunWorkflowTests(unittest.TestCase):
         (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
         (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+        _seed_default_llm_config_into(repo_root)
 
     def _run_main_with_fake_runtime(
         self, argv: list[str]
@@ -646,7 +701,7 @@ class RunWorkflowTests(unittest.TestCase):
                         "spec/problem/test.md", "build",
                         "--repo-root", str(repo_root),
                         "--orchestration-id", "orch_devfail",
-                        "--llm", "claude", "--mode", "dev",
+                        "--mode", "dev",
                         "--stdout-format", "jsonl",
                     ])
             finally:
@@ -695,7 +750,7 @@ class RunWorkflowTests(unittest.TestCase):
                         "spec/problem/test.md", "build",
                         "--repo-root", str(repo_root),
                         "--orchestration-id", "orch_waitflag",
-                        "--llm", "claude", "--mode", "dev",
+                        "--mode", "dev",
                         "--wait-usage-reset", "--stdout-format", "jsonl",
                     ])
             finally:
@@ -766,9 +821,34 @@ class RunWorkflowTests(unittest.TestCase):
             init_calls = [c for c in calls if c and c[0] == "init"]
             self.assertNotIn("--wait-usage-reset", init_calls[0])
 
-    def test_resume_forwards_explicit_agent_model(self) -> None:
-        """An explicit --agent-model on --resume reaches the resume init (and thus
-        repair-agent-runs), so an operator can fix a needs_manual row on resume."""
+    def test_resume_forwards_the_recorded_orchestration_agent_model(self) -> None:
+        """The orchestration AGENT's own recorded model reaches the resume init (and thus
+        repair-agent-runs), so its agent_runs row keeps the attribution the original run had.
+        There is no flag to override it any more: the record is the only source."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            self._seed_resumable_orchestration(
+                repo_root, "orch_20260101T000000Z_aaaaaaaa",
+                spec_ref="spec/problem/test.md", until_phase="Build",
+                mode="dev", backend="claude",
+                invocation={"agent_model": "claude-opus-4-8"},
+            )
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
+            )
+            self.assertEqual(code, 0, out)
+            init_calls = [c for c in calls if c and c[0] == "init"]
+            self.assertIn("--resume-from-checkpoint", init_calls[0])
+            idx = init_calls[0].index("--agent-model")
+            self.assertEqual(init_calls[0][idx + 1], "claude-opus-4-8")
+
+    def test_a_resume_survives_a_missing_preflight_json(self) -> None:
+        """A run killed between `init` and `write_preflight` leaves no `preflight.json`. Its
+        backend comes from the RECORDED leaf-LLM configuration, so nothing about it is
+        unrecoverable — and gating the resume on the preflight's `backend` made such a run
+        permanently unresumable while telling the operator to pass a flag that no longer
+        exists."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
@@ -777,18 +857,18 @@ class RunWorkflowTests(unittest.TestCase):
                 spec_ref="spec/problem/test.md", until_phase="Build",
                 mode="dev", backend="claude",
             )
+            (repo_root / "workspace" / "orchestrations"
+             / "orch_20260101T000000Z_aaaaaaaa" / "preflight.json").unlink()
             code, out, calls = self._run_main_with_fake_runtime(
-                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor",
-                 "--agent-model", "claude-opus-4-8"]
+                ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
             )
             self.assertEqual(code, 0, out)
-            init_calls = [c for c in calls if c and c[0] == "init"]
-            self.assertIn("--resume-from-checkpoint", init_calls[0])
-            idx = init_calls[0].index("--agent-model")
-            self.assertEqual(init_calls[0][idx + 1], "claude-opus-4-8")
+            self.assertEqual(out["llm"], "claude")     # derived from the recorded pin
+            self.assertIn("--resume-from-checkpoint",
+                          next(c for c in calls if c and c[0] == "init"))
 
-    def test_resume_without_agent_model_omits_default(self) -> None:
-        """No override on --resume: --agent-model is NOT injected, so repair uses the
+    def test_a_resume_of_a_run_that_recorded_no_agent_model_omits_it(self) -> None:
+        """`init --agent-model` is NOT injected when the record has none, so repair uses the
         more-accurate sibling_uniform derivation rather than a possibly-wrong default."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -814,7 +894,7 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile", "--llm", "claude",
+                ["spec/problem/test.md", "compile",
                  "--repo-root", str(repo_root), "--no-run-conductor"]
             )
             self.assertEqual(code, 0, out)
@@ -827,46 +907,42 @@ class RunWorkflowTests(unittest.TestCase):
             # never a pinned version id
             self.assertNotRegex(recorded, r"-\d+-\d+$")
 
-    def test_fresh_run_explicit_agent_model_overrides_default(self) -> None:
+    def test_a_codex_configuration_without_a_slug_stops_before_launching(self) -> None:
+        """Codex has no alias to resolve at runtime, and the run-wide flag that used to
+        supply one is gone — so the configuration file is the only place a slug can come
+        from, and a blank one must stop the run rather than reach a leaf launch."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
+            config = repo_root / "bare_codex.yaml"
+            config.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile", "--llm", "claude",
-                 "--agent-model", "claude-sonnet-4-6",
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            init_calls = [c for c in calls if c and c[0] == "init"]
-            idx = init_calls[0].index("--agent-model")
-            self.assertEqual(init_calls[0][idx + 1], "claude-sonnet-4-6")
-
-    def test_fresh_codex_run_requires_explicit_agent_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile", "--llm", "codex",
+                ["spec/problem/test.md", "compile", "--llm-config", str(config),
                  "--repo-root", str(repo_root), "--no-run-conductor"]
             )
             self.assertEqual(code, 2, out)
             self.assertEqual(out["reason"], "invalid_startup_input")
-            self.assertIn("--agent-model", out["detail"])
+            self.assertIn("llm_config_codex_cli_requires_model", out["detail"])
             self.assertEqual(calls, [])
 
-    def test_fresh_codex_run_records_explicit_agent_model(self) -> None:
+    def test_a_codex_configuration_slug_reaches_init(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
+            config = repo_root / "codex.yaml"
+            config.write_text(
+                "defaults:\n  provider: codex_cli\n  model: gpt-5.3-codex\n",
+                encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile", "--llm", "codex",
-                 "--agent-model", "gpt-5.3-codex", "--repo-root", str(repo_root),
-                 "--no-run-conductor"]
+                ["spec/problem/test.md", "compile", "--llm-config", str(config),
+                 "--repo-root", str(repo_root), "--no-run-conductor"]
             )
             self.assertEqual(code, 0, out)
             init_call = next(c for c in calls if c and c[0] == "init")
-            idx = init_call.index("--agent-model")
-            self.assertEqual(init_call[idx + 1], "gpt-5.3-codex")
+            self.assertEqual(init_call[init_call.index("--agent-backend") + 1], "codex")
+            # The orchestration AGENT's own model is not asserted for codex: only the
+            # claude backend on its unmodified command has an alias worth recording.
+            self.assertNotIn("--agent-model", init_call)
 
     def test_resume_codex_restores_recorded_agent_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -884,38 +960,32 @@ class RunWorkflowTests(unittest.TestCase):
             init_call = next(c for c in calls if c and c[0] == "init")
             idx = init_call.index("--agent-model")
             self.assertEqual(init_call[idx + 1], "gpt-5.3-codex")
+            # ...and this is genuinely a CODEX resume. Without this the test passed identically
+            # against a claude configuration: the backend comes from the recorded pin, so a
+            # fixture that pinned the shared `./llm.yaml` made `backend="codex"` reach nothing.
+            self.assertEqual(out["llm"], "codex")
+            preflight = next(c for c in calls if c and c[0] == "preflight")
+            self.assertEqual(preflight[preflight.index("--backend") + 1], "codex")
 
-    def test_overridden_claude_command_omits_opus_default(self) -> None:
-        """A custom --llm-command may launch a non-Opus model, so the Opus default
-        must NOT be asserted; without --agent-model, agent_model is left to sibling
-        backfill rather than wrongly recording Opus."""
+    def test_a_configured_claude_command_omits_the_opus_default(self) -> None:
+        """A configured `command:` may launch a non-Opus model, so the Opus default must NOT
+        be asserted; agent_model is left to sibling backfill rather than wrongly recording
+        Opus. The wrapper now comes from `defaults.command` — the flag that used to say it
+        is gone, and this is the surface that replaced it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
+            config = repo_root / "wrapped.yaml"
+            config.write_text(
+                "defaults:\n  provider: claude_cli\n"
+                "  command: claude --model claude-sonnet-4-6\n", encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile", "--llm", "claude",
-                 "--llm-command", "claude --model claude-sonnet-4-6",
+                ["spec/problem/test.md", "compile", "--llm-config", str(config),
                  "--repo-root", str(repo_root), "--no-run-conductor"]
             )
             self.assertEqual(code, 0, out)
             init_calls = [c for c in calls if c and c[0] == "init"]
             self.assertNotIn("--agent-model", init_calls[0])
-
-    def test_overridden_claude_command_with_explicit_agent_model(self) -> None:
-        """An explicit --agent-model is still honored even with a custom --llm-command."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile", "--llm", "claude",
-                 "--llm-command", "claude --model claude-sonnet-4-6",
-                 "--agent-model", "claude-sonnet-4-6",
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            init_calls = [c for c in calls if c and c[0] == "init"]
-            idx = init_calls[0].index("--agent-model")
-            self.assertEqual(init_calls[0][idx + 1], "claude-sonnet-4-6")
 
     def test_resume_picks_latest_by_started_at(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1024,15 +1094,21 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIn("spec/problem/sub/deps.yaml", prompt)
 
     def test_resume_preserves_custom_llm_command(self) -> None:
-        # A custom --llm-command from the original run (recorded as preflight
-        # probe_command) must be reused on resume, not replaced by the default binary.
+        # A custom command belongs to the PINNED CONFIGURATION now, not to a recovered
+        # preflight field: a resume reloads the file it launched with, so the wrapper it
+        # names is what preflight probes and what the leaves launch through.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
+            config = repo_root / "wrapped.yaml"
+            config.write_text(
+                "defaults:\n  provider: claude_cli\n"
+                "  command: /opt/wrappers/claude-wrapper\n", encoding="utf-8")
             self._seed_resumable_orchestration(
                 repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
                 until_phase="Build", mode="dev", backend="claude",
-                probe_command="/opt/wrappers/claude-wrapper",
+                invocation={"llm_config_path": "wrapped.yaml",
+                            "llm_config_sha256": run_workflow.config_sha256(config)},
             )
             code, out, calls = self._run_main_with_fake_runtime(
                 ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"]
@@ -1072,77 +1148,30 @@ class RunWorkflowTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("spec/problem/sub/deps.yaml", prompt)
 
-    def test_resume_same_backend_explicit_keeps_custom_llm_command(self) -> None:
-        # Restating the SAME --llm is not a change: the recovered custom command
-        # must still be reused, not replaced by the default backend binary.
+    def test_a_resume_cannot_switch_backend_at_all(self) -> None:
+        """Switching a run's backend mid-flight was what `--llm` on a resume did. There is no
+        flag left that can: the recorded pin decides, and even an explicit `--llm-config`
+        naming a different file is announced-and-ignored rather than applied."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             self._seed_resumable_orchestration(
                 repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
                 until_phase="Build", mode="dev", backend="claude",
-                probe_command="/opt/wrappers/claude-wrapper",
             )
-            code, out, _ = self._run_main_with_fake_runtime(
-                ["--resume", "--llm", "claude",
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
+            other = repo_root / "other.yaml"
+            other.write_text(
+                "defaults:\n  provider: codex_cli\n  model: gpt-5.3-codex\n",
+                encoding="utf-8")
+            err = io.StringIO()
+            with mock.patch.object(sys, "stderr", err):
+                code, out, _ = self._run_main_with_fake_runtime(
+                    ["--resume", "--llm-config", str(other),
+                     "--repo-root", str(repo_root), "--no-run-conductor"]
+                )
             self.assertEqual(code, 0, out)
             self.assertEqual(out["llm"], "claude")
-            self.assertEqual(out["llm_command"], "/opt/wrappers/claude-wrapper")
-
-    def test_resume_cli_llm_command_overrides_recovered(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude",
-                probe_command="/opt/wrappers/old",
-            )
-            code, out, _ = self._run_main_with_fake_runtime(
-                ["--resume", "--llm-command", "/opt/wrappers/new",
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            self.assertEqual(out["llm_command"], "/opt/wrappers/new")
-
-    def test_resume_backend_override_uses_new_backend_default_command(self) -> None:
-        # Switching backend on resume must not reuse the old backend's recovered
-        # command; it falls back to the new backend's default.
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude",
-                probe_command="/opt/wrappers/claude-wrapper",
-            )
-            code, out, _ = self._run_main_with_fake_runtime(
-                ["--resume", "--llm", "codex", "--agent-model", "gpt-5.3-codex",
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
-            self.assertEqual(code, 0, out)
-            self.assertEqual(out["llm"], "codex")
-            self.assertEqual(out["llm_command"], run_workflow.DEFAULT_LLM_COMMANDS["codex"])
-
-    def test_resume_backend_override_does_not_reuse_prior_backend_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed_spec_tree(repo_root)
-            self._seed_resumable_orchestration(
-                repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
-                until_phase="Build", mode="dev", backend="claude",
-                invocation={"agent_model": "claude-opus-4-8"},
-            )
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["--resume", "--llm", "codex", "--repo-root", str(repo_root),
-                 "--no-run-conductor"]
-            )
-            self.assertEqual(code, 2, out)
-            self.assertEqual(out["reason"], "invalid_startup_input")
-            self.assertIn("--agent-model", out["detail"])
-            self.assertEqual(calls, [])
+            self.assertIn("--llm-config is ignored on --resume", err.getvalue())
 
     def test_resume_cli_overrides_recovered_until_phase(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2698,6 +2727,7 @@ class RunWorkflowTests(unittest.TestCase):
         from tools.orchestration_runtime import _load_spec_catalog
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -2824,6 +2854,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_writes_prompt_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -2910,6 +2941,7 @@ class RunWorkflowTests(unittest.TestCase):
         otherwise mask."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             # Build a minimal valid spec so we reach the schema guard.
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
@@ -2962,6 +2994,7 @@ class RunWorkflowTests(unittest.TestCase):
         mutated. Emits structured `missing_canonical_schema` JSON on stdout."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             # Deliberately do NOT seed the schema (this test exercises absence).
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
@@ -3000,6 +3033,7 @@ class RunWorkflowTests(unittest.TestCase):
         crashed mid-phase after `workspace/tmp/<arid>/` was already created."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             schema_dir = repo_root / "spec" / "schema" / "ir"
             schema_dir.mkdir(parents=True)
             # Schema EXISTS as a file but has malformed JSON.
@@ -3043,22 +3077,42 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
-            code = run_workflow.main(
-                [
-                    "spec/problem/missing.md",
-                    "build",
-                    "--repo-root",
-                    str(repo_root),
-                    "--orchestration-id",
-                    "orch_missing",
-                    "--no-run-conductor",
-                ]
-            )
+            # Seeded so the run reaches the spec check: without a default configuration it
+            # would stop earlier, at `llm_config_default_missing`, and this test would pass
+            # for a reason that has nothing to do with the spec.
+            _seed_default_llm_config_into(repo_root)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main(
+                    [
+                        "spec/problem/missing.md",
+                        "build",
+                        "--repo-root",
+                        str(repo_root),
+                        "--orchestration-id",
+                        "orch_missing",
+                        "--no-run-conductor",
+                    ]
+                )
             self.assertEqual(code, 2)
+            # `code == 2` alone is satisfied by ANY startup refusal — including the one the
+            # seeding above exists to avoid — so the envelope is read. What that pins is the
+            # BEHAVIOUR (a nonexistent spec_ref is refused, and the refusal names it), not
+            # which line raised: on this cold path `_canonicalize_spec_ref` and
+            # `_discover_source_dependency_ref` both run `_resolve_existing_ref_path` on the
+            # ref under the same `field_name`, so deleting either alone leaves the envelope
+            # byte-identical. That redundancy is why a single-site mutation here proves
+            # nothing — and it is cold-path only: a resume that reuses its recovered
+            # dependency ref skips the second check entirely.
+            payload = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(payload["reason"], "invalid_startup_input")
+            self.assertIn("spec/problem/missing.md", payload["detail"])
+            self.assertNotIn("llm_config", payload["detail"])
 
     def test_main_returns_structured_error_when_init_runtime_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3103,6 +3157,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_returns_structured_error_when_preflight_runtime_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3152,6 +3207,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_returns_structured_error_when_init_result_lacks_orchestration_agent_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3197,6 +3253,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_main_resolves_dependency_ref_from_spec_deps_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            _seed_default_llm_config_into(repo_root)
             _seed_shape_expr_schema_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
@@ -3252,6 +3309,10 @@ class RunWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
+            # As above: the dependency check runs AFTER configuration resolution, so without
+            # this the assertions below are satisfied by `llm_config_default_missing` and the
+            # check they name could be deleted outright with the test still green.
+            _seed_default_llm_config_into(repo_root)
             (repo_root / "tools").mkdir(parents=True, exist_ok=True)
             (repo_root / "workspace").mkdir(parents=True, exist_ok=True)
             (repo_root / "spec" / "problem").mkdir(parents=True, exist_ok=True)
@@ -3326,8 +3387,6 @@ class RunWorkflowTests(unittest.TestCase):
                 code = run_workflow.main([
                     "spec/problem/dummy.md",
                     "Compile",
-                    "--llm",
-                    "claude",
                     "--stdout-format",
                     "jsonl",
                 ])
@@ -3375,8 +3434,6 @@ class RunWorkflowTests(unittest.TestCase):
                 code = run_workflow.main([
                     "spec/problem/dummy.md",
                     "Compile",
-                    "--llm",
-                    "claude",
                     "--stdout-format",
                     "jsonl",
                 ])
@@ -3483,6 +3540,7 @@ class DependencyClosureTests(unittest.TestCase):
     def _seed_prior_member(self, repo_root: Path, orch_id: str, spec_ref: str,
                            *, executor: str | None = "pure",
                            status: str | None = "fail",
+                           pin: bool = True,
                            driver: dict | None = None) -> None:
         """Seed a minimal member orchestration_meta.json for a warm-resumed closure node.
 
@@ -3492,13 +3550,22 @@ class DependencyClosureTests(unittest.TestCase):
         defaults to a terminal `fail` — the normal reason a closure member is warm-resumed
         — because `init_orchestration` ALWAYS writes a status, so a status-less meta is a
         shape production never produces and would silently route every liveness check
-        down its non-terminal branch."""
+        down its non-terminal branch.
+
+        The leaf-LLM pin is likewise post-issue-#28 reality: it names the SAME configuration
+        the closure is being driven with (`_drive_closure_raw`'s claude sample), so the
+        per-member gate passes. `pin=False` seeds the unpinned pre-#28 shape, which the gate
+        refuses under `llm_config_legacy_flags_removed`."""
         meta_path = (repo_root / "workspace" / "orchestrations" / orch_id
                      / "orchestration_meta.json")
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         invocation: dict = {"closure_id": "orch_target"}
         if executor is not None:
             invocation["generate_executor"] = executor
+        if pin:
+            cfg = _sample_config("claude")
+            invocation["llm_config_path"] = _recorded_sample_pin(repo_root)
+            invocation["llm_config_sha256"] = cfg.sha256
         meta: dict = {"spec_ref": spec_ref, "invocation": invocation}
         if status is not None:
             meta["status"] = status
@@ -3522,8 +3589,7 @@ class DependencyClosureTests(unittest.TestCase):
 
     def _closure_config(self, repo_root: Path, model: str | None = "opus"):
         import tools.llm_config as _lc
-        (repo_root / "configs" / "llm").mkdir(parents=True, exist_ok=True)
-        path = repo_root / "configs" / "llm" / "closure.yaml"
+        path = repo_root / "closure.yaml"
         body = "defaults:\n  provider: claude_cli\n"
         if model:
             body += f"  model: {model}\n"
@@ -3540,7 +3606,7 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
-                             "configs/llm/closure.yaml", cfg.sha256)
+                             "closure.yaml", cfg.sha256)
             # The file moves on after the member launched.
             path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
                             encoding="utf-8")
@@ -3548,7 +3614,7 @@ class DependencyClosureTests(unittest.TestCase):
             rc, captured, stdout = self._drive_closure_raw(
                 repo_root, resume=True,
                 prior_orch_by_spec={"spec/component/c": "orch_c_prev"},
-                llm_config=_lc.load_llm_config(path), llm_config_overrides={})
+                llm_config=_lc.load_llm_config(path))
             self.assertEqual(rc, 2)
             self.assertIn("llm_config_changed_since_launch", stdout)
             self.assertIn("orch_c_prev", stdout)
@@ -3563,13 +3629,13 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_target", "spec/problem/a",
-                             "configs/llm/closure.yaml", cfg.sha256)
+                             "closure.yaml", cfg.sha256)
             path.write_text("defaults:\n  provider: claude_cli\n  model: changed\n",
                             encoding="utf-8")
             import tools.llm_config as _lc
             rc, captured, stdout = self._drive_closure_raw(
                 repo_root, resume=True, prior_orch_by_spec={},
-                llm_config=_lc.load_llm_config(path), llm_config_overrides={})
+                llm_config=_lc.load_llm_config(path))
             self.assertEqual(rc, 2)
             self.assertIn("llm_config_changed_since_launch", stdout)
             self.assertIn("orch_target", stdout)
@@ -3583,30 +3649,33 @@ class DependencyClosureTests(unittest.TestCase):
             self._seed_diamond(repo_root)
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
-                             "configs/llm/closure.yaml", cfg.sha256)
+                             "closure.yaml", cfg.sha256)
             rc, captured, stdout = self._drive_closure_raw(
                 repo_root, resume=True,
                 prior_orch_by_spec={"spec/component/c": "orch_c_prev"},
-                llm_config=cfg, llm_config_overrides={})
+                llm_config=cfg)
             self.assertEqual(rc, 0, msg=stdout)
             self.assertIn("spec/component/c", [c["spec_ref"] for c in captured])
 
-    def test_the_closure_driver_records_the_overrides_it_actually_applied(self) -> None:
-        """Both `_run_with_dependency_closure` call sites dropped `llm_config_overrides`, so
-        every closure node recorded `{}` for a run that really did apply a model — and
-        resuming such a node then loaded the file WITHOUT it."""
+    def test_the_closure_driver_pins_the_same_configuration_on_every_node(self) -> None:
+        """Each closure node gets its own orchestration and its own invocation record, so the
+        pin has to be written per node — a driver that recorded it only on the target would
+        leave every dependency unresumable (`llm_config_legacy_flags_removed`)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
             self._seed_diamond(repo_root)
             _, cfg = self._closure_config(repo_root, model=None)
             rc, captured, _ = self._drive_closure_raw(
-                repo_root, resume=False, prior_orch_by_spec=None,
-                llm_config=cfg, llm_config_overrides={"model": "opus"})
+                repo_root, resume=False, prior_orch_by_spec=None, llm_config=cfg)
             self.assertEqual(rc, 0)
             self.assertTrue(captured)
             for node in captured:
-                self.assertEqual(node["invocation"]["llm_config_overrides"], {"model": "opus"})
+                self.assertEqual(node["invocation"]["llm_config_sha256"], cfg.sha256)
+                self.assertEqual(node["invocation"]["llm_config_path"],
+                                 "closure.yaml")
+                # The removed flags' literals are not recorded any more, by anyone.
+                self.assertNotIn("llm_config_overrides", node["invocation"])
 
     def test_topological_order_dependencies_before_dependents(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3981,6 +4050,7 @@ class DependencyClosureTests(unittest.TestCase):
                         until_phase="Validate",
                         llm="claude",
                         llm_command="claude",
+                        llm_config=_sample_config("claude"),
                         workflow_mode="dev",
                         agent_model=None,
                         status="running",
@@ -3998,7 +4068,7 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertTrue(all(c[1] == "Validate" for c in calls))
 
     def _drive_closure_raw(self, repo_root, *, resume, prior_orch_by_spec,
-                           llm_config=None, llm_config_overrides=None):
+                           llm_config=None):
         """Run the closure driver over the seeded diamond with _run_node captured.
         Nodes become ready once run. Returns (rc, captured kwargs list, stdout text)."""
         from tools.orchestration_runtime import _load_spec_catalog
@@ -4030,8 +4100,7 @@ class DependencyClosureTests(unittest.TestCase):
                     until_phase="Validate",
                     llm="claude",
                     llm_command="claude",
-                    llm_config=llm_config,
-                    llm_config_overrides=llm_config_overrides,
+                    llm_config=llm_config or _sample_config("claude"),
                     workflow_mode="dev",
                     agent_model=None,
                     status="running",
@@ -4121,7 +4190,9 @@ class DependencyClosureTests(unittest.TestCase):
             target_meta.parent.mkdir(parents=True, exist_ok=True)
             target_meta.write_text(json.dumps(
                 {"spec_ref": "spec/problem/a",
-                 "invocation": {"closure_id": "orch_target", "generate_executor": "pure"}}),
+                 "invocation": {"closure_id": "orch_target", "generate_executor": "pure",
+                                "llm_config_path": _recorded_sample_pin(repo_root),
+                                "llm_config_sha256": _sample_config("claude").sha256}}),
                 encoding="utf-8")
             captured = self._drive_closure_capture(
                 repo_root, resume=True, prior_orch_by_spec={})
@@ -4247,6 +4318,7 @@ class DependencyClosureTests(unittest.TestCase):
                         until_phase="Validate",
                         llm="claude",
                         llm_command="claude",
+                        llm_config=_sample_config("claude"),
                         workflow_mode="dev",
                         agent_model=None,
                         status="running",
@@ -4305,6 +4377,7 @@ class DependencyClosureTests(unittest.TestCase):
                         until_phase="Validate",
                         llm="claude",
                         llm_command="claude",
+                        llm_config=_sample_config("claude"),
                         workflow_mode="dev",
                         agent_model=None,
                         status="running",
@@ -4349,6 +4422,7 @@ class DependencyClosureTests(unittest.TestCase):
                         until_phase="Validate",
                         llm="claude",
                         llm_command="claude",
+                        llm_config=_sample_config("claude"),
                         workflow_mode="dev",
                         agent_model=None,
                         status="running",
@@ -4643,7 +4717,8 @@ class DependencyClosureTests(unittest.TestCase):
                         target_spec_ref="spec/problem/a",
                         target_source_dependency_ref="spec/problem/a/deps.yaml",
                         until_phase="Validate",
-                        llm="claude", llm_command="claude", workflow_mode="dev",
+                        llm="claude", llm_command="claude",
+                        llm_config=_sample_config("claude"), workflow_mode="dev",
                         agent_model=None, status="running", run_conductor=False,
                         resume=False, prior_orch_by_spec=None,
                         raw_argv=["spec/problem/a", "validate", "--with-deps"],
@@ -4847,6 +4922,7 @@ class StdoutTeeTests(unittest.TestCase):
                         until_phase="compile",
                         llm="claude",
                         llm_command="claude",
+                        llm_config=_sample_config("claude"),
                         workflow_mode="dev",
                         agent_model=None,
                         status="running",
@@ -4878,6 +4954,7 @@ class StdoutFormatTests(unittest.TestCase):
         (repo_root / "spec" / "problem" / "deps.yaml").write_text(
             "nodes: []\n", encoding="utf-8"
         )
+        _seed_default_llm_config_into(repo_root)
 
     def _fake_runtime(self, args, *, oar: str = "orch_agent_run_fmt"):
         # Minimal fake init/preflight so main() can reach the final summary.
@@ -5211,7 +5288,7 @@ class SubstepEventTests(unittest.TestCase):
             orchestration_agent_run_id = "orch_agent_run"
             workflow_mode = "dev"
             # `__init__` is bypassed, so the leaf-model authority is supplied directly.
-            llm_config = wc.llm_config_from_legacy("claude")
+            llm_config = _sample_config("claude")
 
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})
@@ -5287,7 +5364,7 @@ class SubstepEventTests(unittest.TestCase):
             orchestration_agent_run_id = "orch_agent_run"
             workflow_mode = "dev"
             # `__init__` is bypassed, so the leaf-model authority is supplied directly.
-            llm_config = wc.llm_config_from_legacy("claude")
+            llm_config = _sample_config("claude")
 
             def emit(self, event, **fields):
                 captured.append({"event": event, **fields})
@@ -5910,6 +5987,7 @@ class DriverIdentityContractTests(unittest.TestCase):
             (scratch / "spec" / "problem" / "deps.yaml").write_text(
                 "nodes: []\n", encoding="utf-8")
             (scratch / "workspace").mkdir(exist_ok=True)
+            _seed_default_llm_config_into(scratch)
             # A runtime stub that parks: the driver then sits in `subprocess.run`
             # inside `_run_node`, i.e. inside the try the interrupt clause guards.
             (scratch / "tools").mkdir(exist_ok=True)
@@ -5951,13 +6029,12 @@ class DriverIdentityContractTests(unittest.TestCase):
 
 
 class LlmConfigStartupTests(unittest.TestCase):
-    """Issue #28 Phase 3: `--llm-config` is the leaf-model authority `run_workflow` threads.
+    """Issue #28 / #36: the leaf-model authority `run_workflow` loads and threads.
 
-    The deprecated trio still works and is mapped onto the shipped configs, so the test that
-    matters most is the EQUIVALENCE one: `--llm claude` and `--llm-config
-    configs/llm/claude.yaml` must reach `run_conductor` with the same configuration. Together
-    with the conductor-level argv comparison (`LeafEntryThreadingTests`) that is acceptance
-    criterion 1 end to end."""
+    `./llm.yaml` is the default and the operator's own file; `--llm-config` names another. The
+    tests that matter most are the ones a silent fallback would hide: that a missing default
+    fails rather than resolving to something nobody chose, and that a copied sample and an
+    explicitly named one are the same run."""
 
     REPO = Path(__file__).resolve().parent.parent.parent
 
@@ -5967,13 +6044,14 @@ class LlmConfigStartupTests(unittest.TestCase):
             (repo_root / d).mkdir(parents=True, exist_ok=True)
         (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
         (repo_root / "spec" / "problem" / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
-        # The shipped configs live in the real checkout, and `shipped_config_path` resolves
-        # against it, so a scratch repo_root still finds them. Copy them in anyway so a run
-        # that records a repo-relative path can also RE-READ it from this root on resume.
-        (repo_root / "configs" / "llm").mkdir(parents=True, exist_ok=True)
-        for name in ("claude.yaml", "codex.yaml"):
-            shutil.copy(self.REPO / "configs" / "llm" / name,
-                        repo_root / "configs" / "llm" / name)
+        # What an operator's checkout looks like: the samples in the tree, and one copied to
+        # the default path. Both are needed against a scratch root — there is no fallback to
+        # the installed copy any more, and a run that records a repo-relative path must be
+        # able to RE-READ it from this root on resume.
+        (repo_root / "docs" / "examples").mkdir(parents=True, exist_ok=True)
+        for name in lc.SAMPLE_CONFIG_NAMES:
+            shutil.copy(SAMPLE_DIR / name, repo_root / "docs" / "examples" / name)
+        shutil.copy(SAMPLE_DIR / "llm_claude.example.yaml", repo_root / "llm.yaml")
 
     def _fake_runtime(self, root, env, args):  # type: ignore[no-untyped-def]
         self._runtime_calls.append(list(args))
@@ -6017,36 +6095,38 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     # --- threading + equivalence ---------------------------------------------------
 
-    def test_main_hands_the_closure_driver_the_overrides_it_resolved(self) -> None:
-        """`main` dropping these was the defect; a test that calls the closure driver directly
-        supplies them itself and so cannot see it."""
+    def test_main_hands_the_closure_driver_the_configuration_it_loaded(self) -> None:
+        """The closure driver pins every member against this object, so `main` handing it a
+        different one (or none) would leave each member's gate comparing against something the
+        run never used."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
+            cfg = repo_root / "mycodex.yaml"
+            cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
+                           encoding="utf-8")
             captured: dict = {}
             orig = run_workflow._run_with_dependency_closure
             run_workflow._run_with_dependency_closure = (   # type: ignore[assignment]
                 lambda **kw: (captured.update(kw) or 0))
             try:
-                self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-sol",
+                self._run(repo_root, ["--llm-config", "mycodex.yaml",
                                       "--with-deps"], oid="orch_wd")
             finally:
                 run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
-            self.assertEqual(captured["llm_config_overrides"], {"model": "gpt-5.6-sol"})
             self.assertEqual(captured["llm_config"].defaults.model, "gpt-5.6-sol")
+            self.assertEqual(captured["llm_config"].sha256, lc.config_sha256(cfg))
 
-    def test_main_hands_the_closure_RESUME_driver_the_same_overrides(self) -> None:
-        """The other call site: a closure resume. Dropping it there makes every member gate
-        compare recorded overrides against `{}` and reject with a spurious
-        `llm_config_changed_since_launch`."""
+    def test_main_hands_the_closure_RESUME_driver_the_recorded_configuration(self) -> None:
+        """The other call site: a closure resume, which loads the RECORDED pin rather than a
+        flag, and hands that to every member gate."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_cl", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
-                "llm_config_overrides": {"model": "opus"},
                 "closure_id": "orch_cl", "closure_target_spec_ref": "spec/problem/test.md",
                 "closure_until_phase": "Build",
             })
@@ -6058,115 +6138,115 @@ class LlmConfigStartupTests(unittest.TestCase):
                 self._run(repo_root, ["--resume"], oid="orch_cl", positional=False)
             finally:
                 run_workflow._run_with_dependency_closure = orig  # type: ignore[assignment]
-            self.assertEqual(captured.get("llm_config_overrides"), {"model": "opus"},
+            self.assertEqual(captured.get("llm_config", None) and
+                             captured["llm_config"].sha256, lc.config_sha256(shipped),
                              msg=f"closure driver not reached; captured={sorted(captured)}")
 
     def test_llm_config_threads_into_run_conductor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, kw, _, _ = self._run(repo_root, ["--llm-config", "configs/llm/claude.yaml"])
+            _, kw, _, _ = self._run(repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"])
             cfg = kw["llm_config"]
             self.assertEqual(cfg.providers, frozenset({"claude_cli"}))
             self.assertNotIn("backend", kw)      # the identity kwarg is gone
             self.assertNotIn("agent_model", kw)
 
-    def test_default_run_uses_the_shipped_claude_config(self) -> None:
+    def test_a_default_run_uses_the_operators_own_llm_yaml(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, kw, _, _ = self._run(repo_root, [])
+            _, kw, _, _ = self._run(repo_root, [], oid="orch_default")
             self.assertEqual(kw["llm_config"].providers, frozenset({"claude_cli"}))
-            self.assertTrue(kw["llm_config"].path.endswith("configs/llm/claude.yaml"))
+            self.assertEqual(Path(kw["llm_config"].path), repo_root / "llm.yaml")
+            self.assertEqual(self._invocation()["llm_config_path"], "llm.yaml")
 
-    def test_legacy_llm_flag_and_shipped_config_reach_the_conductor_identically(self) -> None:
-        """Acceptance 1, run_workflow half: same resolved entries, same per-leaf models."""
+    def test_a_missing_default_stops_the_run_before_anything_is_launched(self) -> None:
+        """No fallback: a run resolved from a file nobody chose is a run nobody can reproduce.
+        The refusal has to carry the fix, because the operator's next question is where to get
+        one — and it must land before init, or a half-created orchestration outlives it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, legacy, _, _ = self._run(repo_root, ["--llm", "claude"], oid="orch_a")
-            _, viacfg, _, _ = self._run(
-                repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_b")
-            self.assertEqual(legacy["llm_config"].entries, viacfg["llm_config"].entries)
-            self.assertEqual(legacy["llm_config"].defaults, viacfg["llm_config"].defaults)
-            self.assertEqual(legacy["llm_config"].provenance_map(),
-                             viacfg["llm_config"].provenance_map())
-
-    def test_an_override_that_changes_nothing_says_so(self) -> None:
-        """The shipped files declare a model for every leaf, so a run-wide `--agent-model`
-        reaches `defaults` and stops there. That rule is right — a per-leaf declaration is a
-        deliberate choice — but it makes the deprecated flag a no-op, and an operator who
-        passed it would otherwise have no way to tell."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            _, kw, err, _ = self._run(
-                repo_root, ["--llm-config", "configs/llm/claude.yaml",
-                            "--agent-model", "ignored-slug"], oid="orch_noop")
-            self.assertIn("--agent-model does not change", err)
-            self.assertIn("validate.judge", err)
-            self.assertEqual(kw["llm_config"].entry_for("validate", "judge").model, "opus")
-
-    def test_an_override_that_lands_is_not_warned_about(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "bare.yaml"
-            cfg.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            _, kw, err, _ = self._run(
-                repo_root, ["--llm-config", "configs/llm/bare.yaml",
-                            "--agent-model", "sonnet"], oid="orch_lands")
-            self.assertNotIn("does not change", err)
-            self.assertEqual(kw["llm_config"].entry_for("validate", "judge").model, "sonnet")
-
-    def test_agent_model_overrides_defaults_model_under_a_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            cfg_path = repo_root / "configs" / "llm" / "bare-codex.yaml"
-            cfg_path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
-            _, kw, _, _ = self._run(repo_root, [
-                "--llm-config", "configs/llm/bare-codex.yaml",
-                "--agent-model", "gpt-5.6-sol"])
-            cfg = kw["llm_config"]
-            self.assertEqual(cfg.defaults.model, "gpt-5.6-sol")
-            self.assertEqual({e.model for e in cfg.entries.values()}, {"gpt-5.6-sol"})
-
-    def test_llm_command_overrides_defaults_command_under_a_config(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            _, kw, _, _ = self._run(repo_root, [
-                "--llm-config", "configs/llm/claude.yaml", "--llm-command", "mywrap --x"])
-            self.assertEqual(kw["llm_config"].defaults.command, "mywrap --x")
-
-    # --- mutual exclusion + deprecation --------------------------------------------
-
-    def test_llm_and_llm_config_together_is_invalid_startup_input(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            code, kw, _, lines = self._run(
-                repo_root, ["--llm", "claude", "--llm-config", "configs/llm/claude.yaml"])
+            (repo_root / "llm.yaml").unlink()
+            code, kw, _, lines = self._run(repo_root, [], oid="orch_nodefault")
             self.assertEqual(code, 2)
-            self.assertEqual(kw, {})
+            self.assertEqual(kw, {})                  # the conductor was never reached
+            self.assertEqual(self._runtime_calls, [])  # ...nor init, nor preflight
             self.assertEqual(lines[-1]["reason"], "invalid_startup_input")
+            detail = lines[-1]["detail"]
+            self.assertIn("llm_config_default_missing", detail)
+            self.assertIn(str(repo_root / "llm.yaml"), detail)
+            self.assertIn(
+                f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+                f"{repo_root / 'llm.yaml'}", detail)
 
-    def test_each_deprecated_flag_warns_on_stderr(self) -> None:
+    def test_a_copied_sample_and_the_named_sample_are_the_same_run(self) -> None:
+        """`cp docs/examples/llm_claude.example.yaml llm.yaml` must be exactly the run that
+        naming the sample gives. This is the acceptance for demoting the shipped configs to
+        samples: the copy is not a different configuration, only a different spelling."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)          # already copies the sample to ./llm.yaml
+            _, default_kw, _, _ = self._run(repo_root, [], oid="orch_eq_a")
+            _, named_kw, _, _ = self._run(
+                repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"],
+                oid="orch_eq_b")
+            self.assertEqual(default_kw["llm_config"].entries, named_kw["llm_config"].entries)
+            self.assertEqual(default_kw["llm_config"].defaults, named_kw["llm_config"].defaults)
+            self.assertEqual(default_kw["llm_config"].sha256, named_kw["llm_config"].sha256)
+            self.assertEqual(default_kw["llm_config"].provenance_map(),
+                             named_kw["llm_config"].provenance_map())
+
+    def test_the_file_is_the_only_thing_that_says_what_a_leaf_launches(self) -> None:
+        """`--llm` / `--agent-model` / `--llm-command` are gone: what a run launches is what
+        the configuration says, with no flag able to move it afterwards. `llm` / `llm_command`
+        — which the runtime's init/preflight surface still speaks — are DERIVED from it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, _, err, _ = self._run(repo_root, [
-                "--llm", "claude", "--agent-model", "opus", "--llm-command", "claude"])
-            for flag in ("--llm", "--agent-model", "--llm-command"):
-                self.assertIn(f"warning: {flag} is deprecated", err)
-            self.assertIn("--llm-config", err)
+            cfg = repo_root / "wrapped-codex.yaml"
+            cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
+                           "  command: mywrap --x\n", encoding="utf-8")
+            code, kw, _, lines = self._run(
+                repo_root, ["--llm-config", "wrapped-codex.yaml"], oid="orch_only")
+            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+            self.assertEqual(kw["llm_config"].defaults.model, "gpt-5.6-sol")
+            self.assertEqual(kw["llm_config"].defaults.command, "mywrap --x")
+            self.assertEqual(self._invocation()["llm"], "codex")
+            self.assertEqual(self._invocation()["llm_command"], "mywrap --x")
+
+    def test_each_removed_flag_fails_by_name_and_says_where_the_setting_went(self) -> None:
+        """`--llm` is the one that has to be REGISTERED to fail: it is an unambiguous prefix of
+        `--llm-config`, so simply deleting it let argparse abbreviate `--llm claude` into
+        `--llm-config claude`, which then died as an unreadable file the operator never named.
+        The other two would fail as "unrecognized arguments", which says nothing about where
+        the setting went — and `--agent-model` has a live namesake on the runtime's own `init`
+        surface to be confused with."""
+        for flag, value, replacement in (("--llm", "claude", "`provider:`"),
+                                         ("--agent-model", "opus", "`model:`"),
+                                         ("--llm-command", "wrapper", "`command:`")):
+            err = io.StringIO()
+            with mock.patch.object(sys, "stderr", err), self.assertRaises(SystemExit):
+                run_workflow._parse_args(["spec/problem.md", "generate", flag, value])
+            self.assertIn(f"{flag} was removed", err.getvalue(), msg=flag)
+            self.assertIn(replacement, err.getvalue(), msg=flag)
+            self.assertIn("llm.yaml", err.getvalue(), msg=flag)
+        # ...and none of them leaves a namespace attribute a later branch could read.
+        ns = run_workflow._parse_args(["spec/problem.md", "generate"])
+        for removed in ("llm", "agent_model", "llm_command"):
+            self.assertFalse(hasattr(ns, removed), msg=removed)
+        # The flag they are NOT allowed to be abbreviated into still parses exactly.
+        self.assertEqual(
+            run_workflow._parse_args(
+                ["spec/problem.md", "generate", "--llm-config", "f.yaml"]).llm_config,
+            "f.yaml")
 
     def test_llm_config_alone_warns_about_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            _, _, err, _ = self._run(repo_root, ["--llm-config", "configs/llm/claude.yaml"])
+            _, _, err, _ = self._run(repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"])
             self.assertNotIn("deprecated", err)
 
     def test_a_named_config_rule_surfaces_as_invalid_startup_input(self) -> None:
@@ -6180,19 +6260,25 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(lines[-1]["reason"], "invalid_startup_input")
             self.assertIn("llm_config_unknown_provider", lines[-1]["detail"])
 
-    def test_preflight_is_told_the_overrides_so_it_probes_what_will_launch(self) -> None:
-        """The file is not the whole configuration once a deprecated flag overrides it, and
-        preflight is a subprocess that only gets the path."""
+    def test_preflight_is_told_the_resolved_defaults_so_it_probes_what_will_launch(self) -> None:
+        """Preflight is a subprocess that only gets the PATH, and it re-applies these onto the
+        file it reloads. What is asserted here is that `main` sends the `defaults` IT resolved
+        — the transport, not its effect: the values equal the file's own today, so a preflight
+        that ignored them would still probe the right command. `test_orchestration_runtime`'s
+        `test_the_probed_command_is_the_one_the_run_will_launch` covers the effect by supplying
+        an override the file does not declare."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self._run(repo_root, ["--llm", "claude", "--llm-command", "mywrap --x",
-                                  "--agent-model", "opus"], oid="orch_ovp")
+            cfg = repo_root / "wrapped.yaml"
+            cfg.write_text("defaults:\n  provider: claude_cli\n  model: opus\n"
+                           "  command: mywrap --x\n", encoding="utf-8")
+            self._run(repo_root, ["--llm-config", "wrapped.yaml"], oid="orch_ovp")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
                              "mywrap --x")
             self.assertEqual(args[args.index("--llm-config-defaults-model") + 1], "opus")
-            # ...and the top-level probe still gets the same command it always did.
+            # ...and the top-level probe gets the same command.
             self.assertEqual(args[args.index("--agent-command") + 1], "mywrap --x")
 
     def test_preflight_is_told_which_snapshot_to_probe(self) -> None:
@@ -6202,7 +6288,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             _, kw, _, _ = self._run(
-                repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_snap")
+                repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"], oid="orch_snap")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-sha256") + 1],
                              kw["llm_config"].sha256)
@@ -6213,10 +6299,10 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "declared.yaml"
+            cfg = repo_root / "declared.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n  model: from-file\n"
                            "  command: from-file-cmd\n", encoding="utf-8")
-            self._run(repo_root, ["--llm-config", "configs/llm/declared.yaml"], oid="orch_novp")
+            self._run(repo_root, ["--llm-config", "declared.yaml"], oid="orch_novp")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
                              "from-file-cmd")
@@ -6261,12 +6347,12 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self._run(repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_rec")
+            self._run(repo_root, ["--llm-config", "docs/examples/llm_claude.example.yaml"], oid="orch_rec")
             inv = self._invocation()
-            self.assertEqual(inv["llm_config_path"], "configs/llm/claude.yaml")
+            self.assertEqual(inv["llm_config_path"], "docs/examples/llm_claude.example.yaml")
             self.assertEqual(
                 inv["llm_config_sha256"],
-                lc.config_sha256(repo_root / "configs" / "llm" / "claude.yaml"))
+                lc.config_sha256(repo_root / "docs" / "examples" / "llm_claude.example.yaml"))
             self.assertEqual(set(inv["llm_leaf_map"]),
                              {"defaults"} | {f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS})
             self.assertEqual(inv["llm_leaf_map"]["validate.judge"]["backend"], "claude")
@@ -6274,34 +6360,52 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(inv["llm"], "claude")
             self.assertIn("llm_command", inv)
 
-    def test_invocation_records_the_legacy_flag_overrides_as_literals(self) -> None:
+    def test_the_invocation_no_longer_records_flag_overrides(self) -> None:
+        """The key held the removed flags' literals. Writing an empty dict would be worse than
+        omitting it: a resume reads the key back, and an always-empty one is indistinguishable
+        from a run that genuinely had none."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            self._run(repo_root, ["--llm", "codex", "--agent-model", "gpt-5.6-sol"],
-                      oid="orch_ov")
+            self._run(repo_root, ["--llm-config", "docs/examples/llm_codex.example.yaml"], oid="orch_ov")
             inv = self._invocation()
-            self.assertEqual(inv["llm_config_overrides"]["model"], "gpt-5.6-sol")
-            self.assertEqual(inv["llm_config_path"], "configs/llm/codex.yaml")
+            self.assertNotIn("llm_config_overrides", inv)
+            self.assertEqual(inv["llm_config_path"], "docs/examples/llm_codex.example.yaml")
 
     # --- resume refusal --------------------------------------------------------------
 
     def _rejection(self, recorded: dict, **kw) -> dict | None:
-        base = dict(repo_root=Path("/tmp/repo"), effective_path="configs/llm/claude.yaml",
+        base = dict(repo_root=Path("/tmp/repo"), effective_path="llm.yaml",
                     effective_sha256="sha256:aaa", effective_overrides={})
         base.update(kw)
         return run_workflow._llm_config_resume_rejection("orch_x", recorded, **base)
 
-    def test_a_record_with_no_pin_is_the_legacy_branch_and_is_never_rejected(self) -> None:
-        self.assertIsNone(self._rejection({"path": "", "sha256": "", "overrides": {}}))
+    def test_a_record_with_no_pin_is_refused_under_its_own_reason(self) -> None:
+        """Not `llm_config_changed_since_launch`: nothing changed. The run predates the pin
+        entirely, and the flags that described its models no longer exist."""
+        out = self._rejection({"path": "", "sha256": "", "overrides": {}})
+        assert out is not None
+        self.assertEqual(out["reason"], "llm_config_legacy_flags_removed")
+        self.assertIn("Start a fresh run", out["detail"])
+
+    def test_the_no_pin_predicate_is_the_same_one_the_byte_gate_delegates_to(self) -> None:
+        """Two gates, one answer. `_llm_config_resume_rejection` delegates rather than
+        re-testing, so a caller reaching it cannot accept an unpinned record by falling off
+        the end of the byte comparison."""
+        for recorded in ({}, {"path": "", "sha256": "", "overrides": {}}):
+            direct = run_workflow._llm_config_legacy_pin_rejection("orch_x", recorded)
+            assert direct is not None
+            self.assertEqual(direct, self._rejection(recorded))
+        # ...and a record that DOES pin passes the predicate through to the byte gate.
+        self.assertIsNone(run_workflow._llm_config_legacy_pin_rejection(
+            "orch_x", {"path": "docs/examples/llm_claude.example.yaml", "sha256": "sha256:aaa"}))
 
     def test_a_changed_config_file_refuses_the_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             self.assertIsNone(self._rejection(
                 recorded, repo_root=repo_root, effective_sha256=recorded["sha256"]))
@@ -6319,10 +6423,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         from bytes neither hash describes, and the resume proceeds unpinned."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             # The file on disk still matches; the SNAPSHOT the run loaded does not.
             out = self._rejection(recorded, repo_root=repo_root,
@@ -6338,10 +6441,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             os.chmod(path, 0o000)
             try:
@@ -6358,7 +6460,7 @@ class LlmConfigStartupTests(unittest.TestCase):
     def test_a_deleted_config_file_refuses_the_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = self._rejection(
-                {"path": "configs/llm/claude.yaml", "sha256": "sha256:aaa", "overrides": {}},
+                {"path": "llm.yaml", "sha256": "sha256:aaa", "overrides": {}},
                 repo_root=Path(tmp))
             assert out is not None
             self.assertEqual(out["reason"], "llm_config_changed_since_launch")
@@ -6366,37 +6468,40 @@ class LlmConfigStartupTests(unittest.TestCase):
 
     def test_resuming_with_a_different_config_file_is_refused(self) -> None:
         out = self._rejection(
-            {"path": "configs/llm/codex.yaml", "sha256": "sha256:aaa", "overrides": {}},
-            effective_path="configs/llm/claude.yaml")
+            {"path": "docs/examples/llm_codex.example.yaml", "sha256": "sha256:aaa", "overrides": {}},
+            effective_path="docs/examples/llm_claude.example.yaml")
         assert out is not None
         self.assertEqual(out["reason"], "llm_config_changed_since_launch")
         self.assertIn("start a fresh run", out["detail"])
 
-    def test_differing_legacy_overrides_refuse_the_resume(self) -> None:
+    def test_a_record_carrying_flag_overrides_can_no_longer_be_resumed(self) -> None:
+        """The overrides were the removed flags' literals, so this resume can only ever apply
+        `{}`. The comparison therefore always fails for such a record — deliberately: those
+        phases ran on a model nothing on disk names, and the fix is to write it into the file
+        and start fresh."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            (repo_root / "configs" / "llm").mkdir(parents=True)
-            path = repo_root / "configs" / "llm" / "claude.yaml"
+            path = repo_root / "llm.yaml"
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
-            recorded = {"path": "configs/llm/claude.yaml",
+            recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {"model": "opus"}}
             out = self._rejection(recorded, repo_root=repo_root,
-                                  effective_sha256=recorded["sha256"],
-                                  effective_overrides={"model": "sonnet"})
+                                  effective_sha256=recorded["sha256"])
             assert out is not None
-            self.assertIn("flag overrides differ", out["detail"])
+            self.assertIn("cannot be re-passed", out["detail"])
+            # ...and a record that carried none resumes.
+            recorded["overrides"] = {}
             self.assertIsNone(self._rejection(
-                recorded, repo_root=repo_root, effective_sha256=recorded["sha256"],
-                effective_overrides={"model": "opus"}))
+                recorded, repo_root=repo_root, effective_sha256=recorded["sha256"]))
 
     def _seed_resumable(self, repo_root: Path, oid: str, invocation: dict,
                         *, backend: str = "claude") -> None:
         """An orchestration a resume can find: the meta block both resume gates read, plus the
-        preflight/start-prompt artifacts `_load_resume_params` recovers from.
+        start-prompt artifact `_load_resume_params` recovers `until_phase` / `mode` from.
 
-        `backend` must match what the run actually used — `_load_resume_params` recovers `llm`
-        from `preflight.json`, and hardcoding `claude` on a codex-pinned orchestration silently
-        skips every codex-specific startup rule."""
+        `preflight.json` is written for fixture realism — production always has one — but
+        nothing on the resume path reads it any more, so `backend` reaches only that file.
+        What makes a test using this helper a CODEX resume is the configuration it pins."""
         d = repo_root / "workspace" / "orchestrations" / oid
         (d / "launches").mkdir(parents=True, exist_ok=True)
         (d / "orchestration_meta.json").write_text(json.dumps({
@@ -6415,9 +6520,9 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_res", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
                 "llm_config_overrides": {},
             })
@@ -6432,30 +6537,71 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(kw, {})
             self.assertEqual(lines[-1]["reason"], "llm_config_changed_since_launch")
 
-    def test_a_legacy_record_resumes_through_the_legacy_mapping(self) -> None:
-        """A run predating issue #28 pinned nothing, so it is recovered — not refused."""
+    def test_a_legacy_record_is_refused_end_to_end(self) -> None:
+        """A run predating issue #28 pinned nothing, and the flags that named its models are
+        gone. Refused BEFORE the default is resolved, so the reason names what is actually
+        wrong rather than a file the operator would then go and create for nothing."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
             self._seed_resumable(repo_root, "orch_old", {"llm": "claude", "agent_model": "opus"})
-            code, kw, _, _ = self._run(repo_root, ["--resume"], oid="orch_old")
-            self.assertEqual(code, 0, msg=str(kw))
-            self.assertEqual(kw["llm_config"].providers, frozenset({"claude_cli"}))
-            self.assertEqual(kw["llm_config"].defaults.model, "opus")
+            code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_old")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})
+            self.assertEqual(lines[-1]["reason"], "llm_config_legacy_flags_removed")
+            self.assertEqual(lines[-1]["orchestration_id"], "orch_old")
 
-
-    def test_a_config_pinned_codex_run_can_be_resumed(self) -> None:
-        """The codex-model guard is a LEGACY-branch rule. Keyed on `--llm-config` alone it
-        fired on every resume of a config-pinned codex run — a resume passes no `--llm-config`,
-        it recovers the pin — demanding an `--agent-model` for a model the file already names."""
+    def test_a_legacy_record_is_refused_before_the_default_is_even_resolved(self) -> None:
+        """This is what the ENTRY gate buys, and it is invisible while a `./llm.yaml` happens
+        to exist: without the early check, a pre-#28 resume on a machine that has not created
+        one yet stops at `llm_config_default_missing` and tells the operator to `cp` a sample
+        — for a run that can never be resumed no matter what they copy."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "mycodex.yaml"
+            (repo_root / "llm.yaml").unlink()          # the operator has not created one
+            self._seed_resumable(repo_root, "orch_old_nodefault",
+                                 {"llm": "claude", "agent_model": "opus"})
+            code, kw, _, lines = self._run(
+                repo_root, ["--resume"], oid="orch_old_nodefault")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})
+            self.assertEqual(lines[-1]["reason"], "llm_config_legacy_flags_removed")
+            self.assertNotIn("llm_config_default_missing", lines[-1]["detail"])
+
+    def test_a_closure_member_with_no_pin_is_refused_too(self) -> None:
+        """The entry gate never sees a member, so the closure gate has to carry the same
+        refusal — a pre-#28 member would otherwise be warm-resumed onto today's models."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            member = repo_root / "workspace" / "orchestrations" / "orch_member"
+            member.mkdir(parents=True)
+            (member / "orchestration_meta.json").write_text(json.dumps({
+                "spec_ref": "spec/problem/test.md", "status": "fail",
+                "invocation": {"closure_id": "orch_cl2", "generate_executor": "pure"},
+            }), encoding="utf-8")
+            out = run_workflow._llm_config_resume_rejection(
+                "orch_member", run_workflow._recorded_llm_config(repo_root, "orch_member"),
+                repo_root=repo_root, effective_path="docs/examples/llm_claude.example.yaml",
+                effective_sha256="sha256:aaa", effective_overrides={})
+            assert out is not None
+            self.assertEqual(out["reason"], "llm_config_legacy_flags_removed")
+
+
+    def test_a_config_pinned_codex_run_can_be_resumed(self) -> None:
+        """A codex resume takes its slug from the RECORDED configuration and nothing else. The
+        guard that used to demand a run-wide model here keyed on `--llm-config` being passed —
+        which a resume never does, because it recovers the pin — so it fired on every resume of
+        a config-pinned codex run, for a model the file already named."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = repo_root / "mycodex.yaml"
             cfg.write_text("defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
                            encoding="utf-8")
             self._seed_resumable(repo_root, "orch_cx", {
-                "llm_config_path": "configs/llm/mycodex.yaml",
+                "llm_config_path": "mycodex.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
             }, backend="codex")
@@ -6463,27 +6609,18 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             self.assertEqual(kw["llm_config"].defaults.model, "gpt-5.6-sol")
 
-    def test_a_cold_codex_run_without_a_config_still_demands_agent_model(self) -> None:
-        """The control: the legacy rule is still enforced on the legacy path."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._seed(repo_root)
-            code, _, _, lines = self._run(repo_root, ["--llm", "codex"])
-            self.assertEqual(code, 2)
-            self.assertIn("--agent-model", lines[-1]["detail"])
-
     def test_the_recorded_pin_is_what_a_resume_loads(self) -> None:
         """Not the shipped config for the recovered backend: replacing this branch with the
         fallback left the whole suite green, because no test pinned a NON-shipped file."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "custom.yaml"
+            cfg = repo_root / "custom.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n  model: pinned-by-file\n"
                            "phases:\n  validate:\n    substeps:\n      judge:\n"
                            "        model: judge-only\n", encoding="utf-8")
             self._seed_resumable(repo_root, "orch_pin", {
-                "llm_config_path": "configs/llm/custom.yaml",
+                "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
             })
@@ -6493,22 +6630,24 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(kw["llm_config"].entry_for("validate", "judge").model,
                              "judge-only")
 
-    def test_the_recorded_overrides_are_read_back_and_reapplied(self) -> None:
+    def test_the_recorded_overrides_are_read_back_and_refuse_the_resume(self) -> None:
         """Making `_recorded_llm_config` always return `{}` left the suite green: the
-        comparison was only ever fed dicts the tests themselves supplied."""
+        comparison was only ever fed dicts the tests themselves supplied. End to end, a record
+        carrying overrides must now reach the gate and be refused."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_ovr", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
                 "llm_config_overrides": {"model": "opus"},
             })
             code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_ovr")
-            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
-            # Recovered from the record, not from the file (which pins no model).
-            self.assertEqual(kw["llm_config"].defaults.model, "opus")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})
+            self.assertEqual(lines[-1]["reason"], "llm_config_changed_since_launch")
+            self.assertIn("cannot be re-passed", lines[-1]["detail"])
 
     def test_a_deleted_pinned_config_says_restore_it(self) -> None:
         """The pin is compared BEFORE the load, so a missing file gets the resume rejection
@@ -6516,10 +6655,10 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            cfg = repo_root / "configs" / "llm" / "custom.yaml"
+            cfg = repo_root / "custom.yaml"
             cfg.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
             self._seed_resumable(repo_root, "orch_gone", {
-                "llm_config_path": "configs/llm/custom.yaml",
+                "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
                 "llm_config_overrides": {},
             })
@@ -6529,61 +6668,287 @@ class LlmConfigStartupTests(unittest.TestCase):
             self.assertEqual(lines[-1]["reason"], "llm_config_changed_since_launch")
             self.assertIn("is gone", lines[-1]["detail"])
 
-    def test_a_flag_the_operator_did_not_pass_is_not_announced(self) -> None:
-        """`args.agent_model` is overwritten with the value RECOVERED from the record before
-        the notice runs, so reading it there named a flag nobody typed."""
+    def test_a_resume_that_passes_nothing_is_not_warned_at(self) -> None:
+        """The notice exists for a flag the operator actually typed; announcing one on every
+        resume would train them to ignore it."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_quiet", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
-                "llm_config_overrides": {},
                 "agent_model": "opus",           # recorded by the original run
             })
             code, _, err, _ = self._run(repo_root, ["--resume"], oid="orch_quiet")
             self.assertEqual(code, 0)
-            self.assertNotIn("--agent-model is ignored", err)
+            self.assertNotIn("is ignored on --resume", err)
 
-    def test_a_flag_dropped_in_favour_of_the_pin_is_announced(self) -> None:
+    def test_an_llm_config_dropped_in_favour_of_the_pin_is_announced(self) -> None:
+        """The recorded pin wins even over an explicit flag — the finished phases ran on it —
+        so the flag is dropped, and this notice is the only signal that it was."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            shipped = repo_root / "configs" / "llm" / "claude.yaml"
+            shipped = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
             self._seed_resumable(repo_root, "orch_warn", {
-                "llm_config_path": "configs/llm/claude.yaml",
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
                 "llm_config_sha256": lc.config_sha256(shipped),
-                "llm_config_overrides": {},
             })
             code, kw, err, _ = self._run(
-                repo_root, ["--resume", "--llm", "codex", "--agent-model", "x"],
+                repo_root, ["--resume", "--llm-config", "docs/examples/llm_codex.example.yaml"],
                 oid="orch_warn")
             self.assertEqual(code, 0)
             self.assertEqual(kw["llm_config"].providers, frozenset({"claude_cli"}))
-            self.assertIn("is ignored on --resume", err)
+            self.assertIn("--llm-config is ignored on --resume", err)
 
-    def test_llm_config_is_resolved_against_repo_root_not_the_process_cwd(self) -> None:
-        """Every other path this driver resolves is repo-root-relative. Resolving this one
-        against the CWD ran one file and recorded a spelling naming another."""
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
+    # --- the launch-time snapshot ----------------------------------------------------
+
+    def _snapshot(self, repo_root: Path, oid: str) -> Path:
+        return (repo_root / "workspace" / "orchestrations" / oid
+                / run_workflow.LLM_CONFIG_SNAPSHOT_NAME)
+
+    def test_a_cold_run_snapshots_the_bytes_it_recorded_the_hash_of(self) -> None:
+        """The default configuration is an operator-owned file no version control has a copy
+        of, so an edit between the launch and a resume is otherwise unrecoverable. The snapshot
+        must be the SAME bytes the pin describes — a second read would capture whatever the
+        file says now, which is exactly the state this exists to survive."""
+        with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._seed(repo_root)
-            (repo_root / "configs" / "llm" / "claude.yaml").write_text(
-                "defaults:\n  provider: claude_cli\n  model: from-repo-root\n",
-                encoding="utf-8")
-            (Path(cwd) / "configs" / "llm").mkdir(parents=True)
-            (Path(cwd) / "configs" / "llm" / "claude.yaml").write_text(
-                "defaults:\n  provider: claude_cli\n  model: from-cwd\n", encoding="utf-8")
-            original = os.getcwd()
-            os.chdir(cwd)
+            cfg = repo_root / "snap.yaml"
+            cfg.write_text("defaults:\n  provider: claude_cli\n  model: launched\n",
+                           encoding="utf-8")
+            code, _, _, lines = self._run(
+                repo_root, ["--llm-config", "snap.yaml"], oid="orch_snapw")
+            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+            snapshot = self._snapshot(repo_root, "orch_snapw")
+            self.assertTrue(snapshot.exists())
+            self.assertEqual(snapshot.read_bytes(), cfg.read_bytes())
+            self.assertEqual(lc._sha256_bytes(snapshot.read_bytes()),
+                             self._invocation()["llm_config_sha256"])
+
+    def test_a_cold_re_init_of_the_same_id_replaces_the_snapshot(self) -> None:
+        """Reusing an `--orchestration-id` cold rewrites `invocation` with the NEW
+        configuration's hash. A snapshot that skipped an existing file would then describe the
+        PREVIOUS run — and the refusal that names it would be unactionable forever: restoring
+        from it reproduces bytes whose hash still does not match, so the resume refuses again
+        with the same instruction. The invariant is that these bytes are what
+        `invocation.llm_config_sha256` describes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            snapshot = self._snapshot(repo_root, "orch_reinit")
+            for name, model in (("first.yaml", "was-launched-first"),
+                                ("second.yaml", "launched-on-the-re-run")):
+                cfg = repo_root / name
+                cfg.write_text(f"defaults:\n  provider: claude_cli\n  model: {model}\n",
+                               encoding="utf-8")
+                code, _, _, lines = self._run(
+                    repo_root, ["--llm-config", name], oid="orch_reinit")
+                self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+                self.assertEqual(snapshot.read_bytes(), cfg.read_bytes(), msg=name)
+                self.assertEqual(lc._sha256_bytes(snapshot.read_bytes()),
+                                 self._invocation()["llm_config_sha256"], msg=name)
+
+    def test_the_snapshot_replaces_the_directory_entry_rather_than_writing_through_it(
+        self,
+    ) -> None:
+        """A cold re-init writes over whatever the name already holds. `write_bytes` OPENS the
+        existing name, so a snapshot that is a symlink — stale workspace state, an archive
+        restored with links preserved — would have its TARGET overwritten with YAML while the
+        entry stayed a link, leaving the run with a snapshot it does not own and a file it
+        never meant to touch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = repo_root / "workspace" / "orchestrations" / "o"
+            orch.mkdir(parents=True)
+            victim = repo_root / "victim.txt"
+            victim.write_text("IMPORTANT", encoding="utf-8")
+            (orch / run_workflow.LLM_CONFIG_SNAPSHOT_NAME).symlink_to(victim)
+            cfg = _sample_config("claude")
+            run_workflow._write_llm_config_snapshot(repo_root, "o", cfg)
+            snapshot = orch / run_workflow.LLM_CONFIG_SNAPSHOT_NAME
+            self.assertEqual(victim.read_text(encoding="utf-8"), "IMPORTANT")
+            self.assertFalse(snapshot.is_symlink())
+            self.assertEqual(snapshot.read_bytes(), cfg.raw)
+
+    def test_an_interrupted_snapshot_write_leaves_the_previous_bytes(self) -> None:
+        """The whole contract is that these bytes hash to the recorded pin. A truncating
+        in-place write that dies mid-way leaves a short file that still LOOKS like a snapshot
+        and no longer restores — the unrecoverable state this file exists to prevent. The
+        temp-file + rename gives the old bytes or the new bytes, never a prefix, and cleans up
+        after itself so a signal during a closure run leaves no `.tmp` litter per node."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = repo_root / "workspace" / "orchestrations" / "o"
+            orch.mkdir(parents=True)
+            snapshot = orch / run_workflow.LLM_CONFIG_SNAPSHOT_NAME
+            snapshot.write_bytes(b"PREVIOUS-GOOD-BYTES\n")
+            with mock.patch("os.replace", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_workflow._write_llm_config_snapshot(
+                        repo_root, "o", _sample_config("claude"))
+            self.assertEqual(snapshot.read_bytes(), b"PREVIOUS-GOOD-BYTES\n")
+            self.assertEqual([p.name for p in orch.iterdir() if p.name.endswith(".tmp")], [])
+
+    def test_an_unwritable_snapshot_terminalizes_instead_of_escaping(self) -> None:
+        """`init` has already committed by the time the snapshot is written, so an escaping
+        `OSError` (a full disk, a read-only workspace) kills the driver with a traceback: no
+        envelope for a caller parsing stdout, and an orchestration left `running` that only a
+        later explicit `--resume --orchestration-id` can clear. It fails the way a preflight
+        failure does instead — `set-status fail` plus a named envelope."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            real = os.replace
+
+            def boom(src, dst, *a, **k):
+                if str(dst).endswith(run_workflow.LLM_CONFIG_SNAPSHOT_NAME):
+                    raise OSError(28, "No space left on device", str(dst))
+                return real(src, dst, *a, **k)
+
+            with mock.patch("os.replace", boom):
+                code, kw, _, lines = self._run(repo_root, [], oid="orch_nospace")
+            self.assertEqual(code, 2)
+            self.assertEqual(kw, {})                      # the conductor was never reached
+            self.assertEqual(lines[-1]["reason"], "llm_config_snapshot_unwritable")
+            self.assertEqual(lines[-1]["orchestration_id"], "orch_nospace")
+            self.assertIn("No space left on device", lines[-1]["detail"])
+            # ...and the committed orchestration is terminalized rather than left `running`.
+            status = next(a for a in self._runtime_calls if a and a[0] == "set-status")
+            self.assertEqual(status[status.index("--status") + 1], "fail")
+            self.assertEqual(status[status.index("--reason-code") + 1],
+                             "llm_config_snapshot_unwritable")
+
+    def test_a_resume_does_not_overwrite_the_launch_time_snapshot(self) -> None:
+        """It is a record of what the run LAUNCHED with. Refreshing it on resume would make it
+        agree with whatever the operator has since written, i.e. destroy the only copy of the
+        bytes the finished phases actually ran on."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            cfg = repo_root / "docs" / "examples" / "llm_claude.example.yaml"
+            self._seed_resumable(repo_root, "orch_snapr", {
+                "llm_config_path": "docs/examples/llm_claude.example.yaml",
+                "llm_config_sha256": lc.config_sha256(cfg),
+            })
+            snapshot = self._snapshot(repo_root, "orch_snapr")
+            snapshot.write_bytes(b"defaults:\n  provider: claude_cli\n  model: at-launch\n")
+            code, _, _, lines = self._run(repo_root, ["--resume"], oid="orch_snapr")
+            self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
+            self.assertEqual(snapshot.read_bytes(),
+                             b"defaults:\n  provider: claude_cli\n  model: at-launch\n")
+
+    def test_every_closure_node_gets_its_own_snapshot(self) -> None:
+        """Each closure node is its own orchestration with its own resume gate, so a snapshot
+        written only for the target would leave every dependency's refusal unactionable.
+
+        Driven through the REAL `_run_node` (only the runtime subprocess is faked): calling the
+        writer directly for two ids would prove nothing but that the path join uses its
+        argument, and would stay green with the call deleted from `_run_node` entirely."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            DependencyClosureTests._seed_diamond(self, repo_root)   # type: ignore[arg-type]
+            _load_spec_catalog.cache_clear()
+            self._runtime_calls = []
+            orig_ready = run_workflow._dependency_node_ready
+            orig_rt = run_workflow._runtime_command
+            real_run_node = run_workflow._run_node
+            ran: set[str] = set()
+
+            def _tracking_run_node(**kw):
+                ran.add(kw["spec_ref"])
+                return real_run_node(**kw)
+
             try:
-                _, kw, _, _ = self._run(
-                    repo_root, ["--llm-config", "configs/llm/claude.yaml"], oid="orch_cwd")
+                run_workflow._runtime_command = self._fake_runtime  # type: ignore[assignment]
+                run_workflow._dependency_node_ready = (            # type: ignore[assignment]
+                    lambda root, node, stages: node["spec_ref"] in ran)
+                run_workflow._run_node = _tracking_run_node        # type: ignore[assignment]
+                with redirect_stdout(io.StringIO()):
+                    rc = run_workflow.main([
+                        "spec/problem/a", "compile", "--with-deps",
+                        "--repo-root", str(repo_root),
+                        "--orchestration-id", "orch_snap_tgt",
+                        "--no-run-conductor", "--stdout-format", "jsonl"])
             finally:
-                os.chdir(original)
-            self.assertEqual(kw["llm_config"].defaults.model, "from-repo-root")
-            self.assertEqual(self._invocation()["llm_config_path"], "configs/llm/claude.yaml")
+                run_workflow._run_node = real_run_node             # type: ignore[assignment]
+                run_workflow._dependency_node_ready = orig_ready   # type: ignore[assignment]
+                run_workflow._runtime_command = orig_rt            # type: ignore[assignment]
+            self.assertEqual(rc, 0)
+            self.assertEqual(ran, {"spec/component/c", "spec/component/b", "spec/problem/a"})
+            written = sorted(
+                p.parent.name for p in
+                (repo_root / "workspace" / "orchestrations").glob(
+                    f"*/{run_workflow.LLM_CONFIG_SNAPSHOT_NAME}"))
+            # One per node of the diamond (c, b, a), not just the target.
+            self.assertEqual(len(written), 3, msg=written)
+            for oid in written:
+                self.assertEqual(self._snapshot(repo_root, oid).read_bytes(),
+                                 _sample_config("claude").raw)
+
+    def test_the_refusal_names_the_snapshot_only_when_there_is_one(self) -> None:
+        """Pre-snapshot records have none, and naming a file the operator will not find is
+        worse than naming nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            recorded = {"path": "llm.yaml", "sha256": "sha256:aaa",
+                        "overrides": {}}
+            out = self._rejection(recorded, repo_root=repo_root)
+            assert out is not None
+            self.assertIn("is gone", out["detail"])
+            self.assertNotIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
+            # ...and with a snapshot on disk, the refusal says where to restore it from.
+            run_workflow._write_llm_config_snapshot(repo_root, "orch_x", _sample_config())
+            out = self._rejection(recorded, repo_root=repo_root)
+            assert out is not None
+            self.assertIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
+            self.assertIn("restore the file from it", out["detail"])
+
+    def test_a_changed_file_refusal_names_the_snapshot_too(self) -> None:
+        """The other arm an operator can act on: the file still exists, but not as launched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            path = repo_root / "llm.yaml"
+            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            recorded = {"path": "llm.yaml",
+                        "sha256": lc.config_sha256(path), "overrides": {}}
+            run_workflow._write_llm_config_snapshot(repo_root, "orch_x", _sample_config())
+            path.write_text("defaults:\n  provider: claude_cli\n  model: edited\n",
+                            encoding="utf-8")
+            out = self._rejection(recorded, repo_root=repo_root,
+                                  effective_sha256=lc.config_sha256(path))
+            assert out is not None
+            self.assertIn("has changed since launch", out["detail"])
+            self.assertIn(run_workflow.LLM_CONFIG_SNAPSHOT_NAME, out["detail"])
+
+    def test_the_default_and_a_relative_flag_both_resolve_against_repo_root(self) -> None:
+        """Every other path this driver resolves is repo-root-relative. Resolving either of
+        these against the CWD would run one file and record a spelling naming another."""
+        for extra, expected_path in (
+            ([], "llm.yaml"),
+            (["--llm-config", "mine.yaml"], "mine.yaml"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cwd:
+                repo_root = Path(tmp)
+                self._seed(repo_root)
+                for root, which in ((repo_root, "repo-root"), (Path(cwd), "cwd")):
+                    for name in ("llm.yaml", "mine.yaml"):
+                        (root / name).write_text(
+                            f"defaults:\n  provider: claude_cli\n  model: from-{which}\n",
+                            encoding="utf-8")
+                original = os.getcwd()
+                os.chdir(cwd)
+                try:
+                    _, kw, _, _ = self._run(repo_root, extra, oid="orch_cwd")
+                finally:
+                    os.chdir(original)
+                self.assertEqual(kw["llm_config"].defaults.model, "from-repo-root",
+                                 msg=str(extra))
+                self.assertEqual(self._invocation()["llm_config_path"], expected_path)
 
     def test_a_config_outside_the_repo_is_recorded_absolutely(self) -> None:
         """A relative spelling for a file outside `repo_root` would be re-joined to the root on
@@ -6599,6 +6964,17 @@ class LlmConfigStartupTests(unittest.TestCase):
             recorded = self._invocation()["llm_config_path"]
             self.assertTrue(Path(recorded).is_absolute(), msg=recorded)
             self.assertEqual(Path(recorded).resolve(), cfg.resolve())
+
+    def test_the_default_configuration_is_gitignored(self) -> None:
+        """`./llm.yaml` is the operator's own file. Tracking it would force everyone who edits
+        which model runs which leaf to carry a permanent diff — and a run that leaves the tree
+        dirty trips the workflow's own cleanliness checks. ANCHORED, deliberately against this
+        file's house style: the contract is repo-root-relative, and an unanchored pattern would
+        silently ignore a committed `llm.yaml` anywhere in the tree."""
+        lines = [ln.strip() for ln in
+                 (REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()]
+        self.assertIn(f"/{lc.DEFAULT_CONFIG_FILENAME}", lines)
+        self.assertNotIn(lc.DEFAULT_CONFIG_FILENAME, lines)
 
     def test_the_closure_and_entry_gates_are_the_same_predicate(self) -> None:
         """Twin gates: both call sites must reach `_llm_config_resume_rejection`, or a closure

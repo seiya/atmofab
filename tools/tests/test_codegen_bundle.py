@@ -21,6 +21,7 @@ from unittest import mock
 
 from tools import codegen_bundle as cb
 from tools import workflow_conductor as wc
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
@@ -480,7 +481,8 @@ class DeterministicBuildGraphTest(unittest.TestCase):
             }), encoding="utf-8")
 
             conductor = wc.Conductor(repo_root=repo, orchestration_id="o",
-                                     orchestration_agent_run_id="ORCH", backend="claude", env={})
+                                     orchestration_agent_run_id="ORCH",
+                                     llm_config=_cfg("claude"), env={})
             self.assertTrue(conductor._conductor_authors_runner(refs))  # the M3c shape
             # derive_build_graph takes node_keys (deepest-first); the conductor maps the same
             # ordered node list to the spec_id object basenames the Makefile uses.

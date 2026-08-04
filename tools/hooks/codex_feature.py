@@ -22,7 +22,7 @@ DEFAULT_FEATURE_PROBE_TIMEOUT_SECONDS = 10.0
 
 
 def _command_prefix(command: str | Sequence[str]) -> list[str]:
-    """Normalize a probe command to an argv prefix. A custom `--llm-command` wrapper
+    """Normalize a probe command to an argv prefix. A configured `command:` wrapper
     (e.g. `codexwrap --x`) must be invoked verbatim — the same prefix the leaf runs —
     so the probe certifies the SAME executable the leaf will use, not a hardcoded
     `codex`."""
@@ -61,7 +61,7 @@ def codex_hooks_feature_enabled(
     except subprocess.TimeoutExpired:
         return False, f"codex features list timed out after {timeout_seconds:.1f}s"
     except OSError as exc:
-        # The command could not be executed at all (missing binary, bad --llm-command
+        # The command could not be executed at all (missing binary, bad configured `command:`
         # wrapper, permission error). Serialize as a probe failure — same shape as a
         # nonzero exit / timeout — so the caller writes a disabled `probe_error` cache and
         # fail-closes, rather than crashing with an uncaught OSError.
@@ -164,7 +164,7 @@ def probe_and_write_codex_feature_cache(
     """Host-side: probe the codex hooks feature and persist the result to the
     leaf-unwritable cache. Returns (enabled, detail). Called by the conductor before
     launching codex leaves; the in-sandbox hook only reads the result. `command` is the
-    leaf's configured invocation prefix (so a custom `--llm-command` wrapper is probed,
+    leaf's configured invocation prefix (so a configured `command:` wrapper is probed,
     not a hardcoded `codex`)."""
     enabled, detail = codex_hooks_feature_enabled(command=command, runner=runner)
     status_kind = "ok" if enabled or not _is_retryable_probe_error(detail) else "probe_error"

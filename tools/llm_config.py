@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import shlex
 from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
@@ -156,7 +157,7 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
     "anthropic_api": "anthropic_api",
 }
 
-# The reverse map, for `llm_config_from_legacy` and for reading a recorded token back.
+# The reverse map, for reading a recorded backend token back to its provider.
 BACKEND_TOKEN_PROVIDERS: Mapping[str, str] = {v: k for k, v in PROVIDER_BACKEND_TOKENS.items()}
 
 
@@ -293,8 +294,9 @@ class ResolvedLeafEntry:
     `model` empty is MEANINGFUL, not missing: for `claude_cli` it selects runtime alias
     resolution (the operator deliberately does not pin a version — see
     `orchestration_runtime.default_agent_model_for_backend`). For `codex_cli` it is an operator
-    omission, caught at run start by `validate_runnable`, not at load, so that shipping a
-    model-less `configs/llm/codex.yaml` and testing that it loads remain compatible."""
+    omission, caught at run START by `validate_runnable` rather than at load, so that a
+    configuration whose codex slug has been blanked still LOADS — and can be tested, and can be
+    reported on — instead of failing where the rule cannot be named."""
 
     provider: str
     model: str = ""
@@ -308,15 +310,15 @@ class ResolvedLeafEntry:
     effort: str = ""
     capabilities: frozenset[str] = frozenset()
     # True when a level of the FILE named `model:` for this entry — as opposed to the value
-    # arriving from the deprecated `--agent-model` or from Claude's runtime alias resolution.
+    # arriving from a run-wide override or from Claude's runtime alias resolution.
     # The conductor pins `--model` on a claude launch only when this is set: an operator who
     # wrote a model means it, while the alias is deliberately left unpinned (the repo's
     # long-standing rule, and what keeps every pre-issue-#28 run byte-identical).
     model_declared: bool = False
     # The field names a level on THIS entry's provider actually wrote, as opposed to inherited.
     # `apply_defaults_overrides` needs it: value equality cannot tell an inherited `opus` from
-    # a per-substep one deliberately pinned to the same string, and a run-wide `--agent-model`
-    # must move the first and leave the second.
+    # a per-substep one deliberately pinned to the same string, and a run-wide override must
+    # move the first and leave the second.
     declared: frozenset[str] = frozenset()
 
     def supports(self, capability: str) -> bool:
@@ -588,6 +590,12 @@ class LlmConfig:
     sha256: str
     defaults: ResolvedLeafEntry
     entries: Mapping[tuple[str, str], ResolvedLeafEntry]
+    # The exact bytes `sha256` describes and `entries` were resolved from. Carried so a caller
+    # can persist a snapshot of the launched configuration WITHOUT a second read — which would
+    # be a different file if the operator edits it in between, and would then hash to something
+    # the recorded pin does not describe. Defaults to empty for the hand-built instances in
+    # tests, which have no file behind them.
+    raw: bytes = b""
 
     def entry_for(self, phase: str | None, substep: str | None) -> ResolvedLeafEntry:
         """The entry for one launch. `(None, None)` — a launch with no phase/substep, i.e.
@@ -622,15 +630,24 @@ class LlmConfig:
     def validate_runnable(self) -> None:
         """Run-start checks that are deliberately NOT applied at load.
 
-        `configs/llm/codex.yaml` ships without a model on purpose (the operator must choose
-        one), so it must LOAD — and be testable — while still failing before a run that would
-        launch `codex exec --model ''`."""
+        A codex entry whose slug the operator has blanked must LOAD — that is a document one
+        can still read, diff and test — while still failing before a run that would launch
+        `codex exec --model ''`."""
         for label, entry in self._labelled_entries():
-            if entry.provider == "codex_cli" and not entry.model:
+            if entry.provider != "codex_cli":
+                continue
+            # The generic `codex` alias is as unusable as no model at all — the CLI resolves it
+            # to whatever it currently prefers, so the leaf's recorded provenance would not name
+            # what ran. It used to be caught by the run-wide flag guard in `run_workflow`; with
+            # that gone this is the only place left that can catch it BEFORE init and preflight
+            # have created an orchestration the operator then has to clean up.
+            if not entry.model or entry.model.strip().lower() == "codex":
+                got = f"{entry.model.strip()!r}" if entry.model.strip() else "no model"
                 raise LlmConfigError(
                     "llm_config_codex_cli_requires_model",
-                    "provider 'codex_cli' has no runtime model alias to resolve: set `model:` "
-                    "(or pass the deprecated --agent-model)", where=label)
+                    f"provider 'codex_cli' has no runtime model alias to resolve ({got}): set "
+                    f"`model:` to an explicit slug for this entry or in `defaults`",
+                    where=label)
 
     def _labelled_entries(self) -> list[tuple[str, ResolvedLeafEntry]]:
         out = [("defaults", self.defaults)]
@@ -803,10 +820,11 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
         sha256=_sha256_bytes(raw),
         defaults=defaults,
         entries=dict(resolved),
+        raw=raw,
     )
 
 
-# --- hashing / legacy bridge ---------------------------------------------------------
+# --- hashing / paths -----------------------------------------------------------------
 
 def _sha256_bytes(raw: bytes) -> str:
     """`"sha256:<hex>"` of bytes already in hand — the same string form `config_sha256`
@@ -839,42 +857,58 @@ def config_sha256(path: str | Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
-def shipped_config_path(backend: str, repo_root: str | Path | None = None) -> Path:
-    """The shipped config that reproduces run-wide `--llm <backend>`.
+# The operator-owned configuration `run_workflow.py` loads when nobody passes `--llm-config`,
+# resolved against `--repo-root`. It is deliberately NOT a tracked file: editing which model runs
+# which leaf is an operator decision, and making it a tracked file forces every operator who
+# makes one to carry a permanent local diff.
+DEFAULT_CONFIG_FILENAME = "llm.yaml"
 
-    Prefers the copy inside `repo_root` — a run whose `--repo-root` is its own checkout should
-    use that checkout's configs, and recording a root-relative path is what lets a resume find
-    the file again. Falls back to the installed copy next to this module when `repo_root` has
-    none, so a run against a scratch or partial tree still resolves."""
-    name = f"{backend.strip().lower()}.yaml"
-    if repo_root is not None:
-        candidate = Path(repo_root) / "configs" / "llm" / name
-        if candidate.exists():
-            return candidate
-    return Path(__file__).resolve().parent.parent / "configs" / "llm" / name
+# The samples to copy it from, in the order the missing-file message offers them.
+SAMPLE_CONFIG_DIR = "docs/examples"
+SAMPLE_CONFIG_NAMES: tuple[str, ...] = (
+    "llm_claude.example.yaml",
+    "llm_codex.example.yaml",
+    "llm_openai_compatible.example.yaml",
+    "llm_anthropic_api.example.yaml",
+)
 
 
-def llm_config_from_legacy(
-    backend: str,
-    agent_model: str = "",
-    llm_command: str = "",
-    *,
-    repo_root: str | Path | None = None,
-) -> LlmConfig:
-    """Build the config that the deprecated `--llm/--agent-model/--llm-command` trio denotes.
+def default_config_path(repo_root: str | Path) -> Path:
+    """`<repo_root>/llm.yaml` — the default configuration, whether or not it exists."""
+    return Path(repo_root) / DEFAULT_CONFIG_FILENAME
 
-    Loads the SHIPPED file for the backend (so the legacy path and the config path resolve
-    through exactly the same code — that equivalence is acceptance criterion 1) and then
-    applies the two run-wide overrides onto `defaults`, which propagate to every leaf because
-    the shipped configs declare nothing per phase."""
-    path = shipped_config_path(backend, repo_root)
-    if not path.exists():
-        raise LlmConfigError(
-            "llm_config_unknown_provider",
-            f"no shipped configuration for backend {backend!r} (expected {path})",
-            where=str(path))
-    cfg = load_llm_config(path)
-    return apply_defaults_overrides(cfg, model=agent_model, command=llm_command)
+
+def resolve_default_config_path(repo_root: str | Path) -> Path:
+    """`default_config_path`, existence-checked.
+
+    There is deliberately NO fallback to a shipped or installed copy. A run that silently used
+    some other file would resolve its models from a document the operator never opened, and the
+    recorded pin would then name a path the resume gate cannot reconcile with what they see. A
+    missing default is a startup failure that names the file and the command that creates it."""
+    path = default_config_path(repo_root)
+    if path.exists():
+        return path
+    # Anchored to `repo_root`, NOT relative. The run's root is `--repo-root`, which need not be
+    # the shell's working directory — and when it is not, a relative `cp` copies between two
+    # directories the run is not using, leaving the default still missing and the next run
+    # failing identically. The one message whose whole job is to be pasted has to work from
+    # wherever it is pasted — hence also `shlex.quote`: an absolute path is the operator's, and
+    # a root containing a space splits into extra arguments that `cp` either rejects or, worse,
+    # acts on.
+    root = Path(repo_root)
+    samples = "\n  ".join(
+        shlex.join(["cp", str(root / SAMPLE_CONFIG_DIR / name), str(path)])
+        for name in SAMPLE_CONFIG_NAMES)
+    # No `where=`: `LlmConfigError.__str__` appends " (at <where>)", which would land on the
+    # LAST line of the `cp` list above and render as part of a command the operator is being
+    # told to copy. The path is already named in the first sentence — this is the first message
+    # a new operator sees, and it has to be paste-safe.
+    raise LlmConfigError(
+        "llm_config_default_missing",
+        f"no leaf-LLM configuration at {path}. This file decides which model runs each LLM "
+        f"leaf; there is no default to fall back to, because a run resolved from a file nobody "
+        f"chose is a run nobody can reproduce. Copy one of the samples and edit it, or pass "
+        f"--llm-config <path> to name a different one:\n  {samples}")
 
 
 def apply_defaults_overrides(
@@ -882,12 +916,15 @@ def apply_defaults_overrides(
 ) -> LlmConfig:
     """Return `cfg` with run-wide `model` / `command` overrides applied.
 
+    The production caller is the preflight subprocess, which re-applies the values `main`
+    already resolved (`--llm-config-defaults-model` / `-command`) so that the probe describes
+    the launch surface the run will actually use rather than the file's unaltered `defaults`.
+
     The override reaches every entry that inherited the corresponding field from `defaults`;
     an entry that set its own is left alone, and an entry on a DIFFERENT provider than
-    `defaults` is never touched (the legacy flags describe one backend, and forcing e.g. a
+    `defaults` is never touched (a run-wide value describes one backend, and forcing e.g. a
     claude model alias onto an HTTP entry would be exactly the provider-scope leak that
-    `_merge_layer` exists to prevent). `sha256` still describes the file on disk; the override
-    literals are recorded separately in the invocation record."""
+    `_merge_layers` exists to prevent). `sha256` still describes the file on disk."""
     model = (model or "").strip()
     command = (command or "").strip()
     if not model and not command:
@@ -903,17 +940,17 @@ def apply_defaults_overrides(
 
             DECLARATION, not value equality: a `validate.judge.model: opus` written next to a
             `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
-            `--agent-model sonnet` must not move it. `defaults` itself is always overridable —
-            that is what the flag overrides."""
+            `sonnet` must not move it. `defaults` itself is always overridable — that is what
+            a run-wide value overrides."""
             return is_defaults or field not in entry.declared
 
         changes: dict[str, Any] = {}
         if model and entry.model == inherited.model and _inherited("model"):
             changes["model"] = model
             # ...and the value is no longer one the FILE declared, so it is not pinned onto
-            # the launch. `--agent-model` is the deprecated run-wide alias, whose contract is
-            # that it leaves the model unpinned; without this the same flag behaved two ways
-            # depending on whether the file happened to declare a model of its own.
+            # the launch. A run-wide value is an ALIAS, whose contract is that it leaves the
+            # model unpinned; without this the same value behaved two ways depending on whether
+            # the file happened to declare one of its own.
             changes["model_declared"] = False
         if command and entry.command == inherited.command and _inherited("command"):
             # Reachable only for a CLI provider: the override is applied to entries sharing
@@ -924,7 +961,7 @@ def apply_defaults_overrides(
 
     new_defaults = _override(cfg.defaults, cfg.defaults, is_defaults=True)
     entries = {k: _override(e, cfg.defaults) for k, e in cfg.entries.items()}
-    return LlmConfig(path=cfg.path, sha256=cfg.sha256,
+    return LlmConfig(path=cfg.path, sha256=cfg.sha256, raw=cfg.raw,
                      defaults=new_defaults, entries=entries)
 
 

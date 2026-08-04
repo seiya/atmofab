@@ -1,0 +1,83 @@
+# Sample leaf-LLM configuration: the two `generate` leaves on the hosted Anthropic Messages API,
+# everything else on the Claude Code CLI.
+#
+# Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
+# `--llm-config`:
+#
+#     cp docs/examples/llm_anthropic_api.example.yaml llm.yaml
+#
+# WHY ONLY THOSE TWO. `anthropic_api` is one request and one response: no session to reopen, no
+# tools to grant, and no agentic loop. `generate.generate` and `generate.verify` are the only LLM
+# leaves that can run as host-mediated PURE functions (one typed document in, one JSON document
+# out), so they are the only ones an HTTP provider is admissible on. Assigning one to
+# `compile.generate`, `compile.verify` or `validate.judge` is rejected at load with
+# `llm_config_capability_insufficient_for_substep`, and so is putting one in `defaults` (which
+# also runs the `escalate` diagnostician) — that one is `llm_config_defaults_not_agentic`.
+#
+# The pure path is additionally gated on the node's M3c shape at run time, so a pure-only
+# provider reaching a non-M3c node fails that node closed rather than silently launching an
+# agentic session on it.
+#
+# EVERY phase, substep and provider is written out, even though the resolution rules would let
+# the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a
+# reader should get that answer by reading it, not by re-deriving it from an inheritance chain.
+#
+# HOW THIS PROVIDER DIFFERS from `openai_compatible` (see `llm_openai_compatible.example.yaml`):
+#
+#   base_url    Optional, and omitted below. The Messages API has one canonical endpoint,
+#               https://api.anthropic.com, which the entry takes by default. Setting it is for
+#               a gateway or a proxy — and it must be a BARE host, because the request appends
+#               /v1/messages (the OpenAI-compatible provider is the opposite: it appends
+#               /chat/completions, so its `base_url` carries the version segment itself).
+#   effort      Does not apply, and declaring it is rejected with
+#               `llm_config_field_not_applicable`. The Messages API expresses the same idea as a
+#               thinking TOKEN BUDGET rather than as a level, so there is no `low`/`high` word
+#               to pass; a level here would name a knob the transport does not have.
+#   command     Does not apply either, and is rejected the same way: there is no child process
+#               to wrap.
+#
+#   api_key_env The NAME of the environment variable holding the key, never the key. A
+#               configuration file is read, copied and diffed; a key in it is a key leaked.
+#   model       Required, and an exact slug: an HTTP endpoint has no alias to resolve at runtime
+#               the way `claude --model opus` does.
+defaults:
+  provider: claude_cli
+  model: opus
+  effort: medium
+
+phases:
+  compile:
+    substeps:
+      # Agentic: authors spec.ir.yaml from the controlled spec, holding a workspace and tools.
+      generate:
+        provider: claude_cli
+        model: opus
+        effort: medium
+      # Agentic: semantic cross-reference (V1/V3/V5) over a deterministically-clean IR.
+      verify:
+        provider: claude_cli
+        model: sonnet
+        effort: medium
+
+  generate:
+    substeps:
+      # PURE: the CodegenBundle producer. One typed document in, one JSON document out.
+      generate:
+        provider: anthropic_api
+        api_key_env: ANTHROPIC_API_KEY
+        model: claude-opus-5
+        max_output_tokens: 32768
+      # PURE: the verdict reviewer over the bundle above.
+      verify:
+        provider: anthropic_api
+        api_key_env: ANTHROPIC_API_KEY
+        model: claude-opus-5
+        max_output_tokens: 16384
+
+  validate:
+    substeps:
+      # Agentic: the independent semantic check, and the last leaf of the run.
+      judge:
+        provider: claude_cli
+        model: opus
+        effort: medium

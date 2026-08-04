@@ -107,6 +107,7 @@ from tools.orchestration_runtime import (
     default_agent_model_for_backend,
     resolve_claude_model_from_transcript,
 )
+from tools.tests.llm_samples import sample_config_with as _cfg
 
 _FIX_IR_REF = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
 _FIX_PIPE_REF = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
@@ -17439,7 +17440,7 @@ class BwrapProfileFilePinTests(unittest.TestCase):
 
     def test_backend_runtime_bind_paths_uses_type_not_command_string(self) -> None:
         """The backend home is keyed on the explicit type, not the command string —
-        a custom --llm-command wrapper (command != 'claude') must still bind ~/.claude."""
+        a configured `command:` wrapper (command != 'claude') must still bind ~/.claude."""
         from tools.orchestration_runtime import _backend_runtime_bind_paths
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -27026,6 +27027,53 @@ class FailureAnalysisRuntimeSidecarExemptionTests(unittest.TestCase):
             )
         )
 
+    def test_should_ignore_classifies_the_leaf_llm_config_snapshot(self) -> None:
+        """`run_workflow.py` copies the launched leaf-LLM configuration to
+        `<orch>/llm_config_snapshot.yaml` right after `init` — which is AFTER
+        `_write_run_write_baseline` has already snapshotted the orchestration baseline, so
+        without the exemption it reads as an orchestration-authored write. Scoped to THIS
+        orchestration's root and to that exact name: a child cannot reach the path through the
+        write guard, and a neighbouring orchestration's copy is not this one's to excuse."""
+        from tools.orchestration_runtime import _should_ignore_runtime_snapshot_path
+
+        orch_id = "orch_001"
+        kwargs = {"orchestration_id": orch_id, "agent_run_id": "child_arid"}
+        self.assertTrue(_should_ignore_runtime_snapshot_path(
+            f"workspace/orchestrations/{orch_id}/llm_config_snapshot.yaml", **kwargs))
+        # Another orchestration's snapshot is NOT excused by this one's baseline.
+        self.assertFalse(_should_ignore_runtime_snapshot_path(
+            "workspace/orchestrations/orch_other/llm_config_snapshot.yaml", **kwargs))
+        # ...nor is a look-alike elsewhere in the tree.
+        self.assertFalse(_should_ignore_runtime_snapshot_path(
+            "llm_config_snapshot.yaml", **kwargs))
+        self.assertFalse(_should_ignore_runtime_snapshot_path(
+            f"workspace/orchestrations/{orch_id}/src/llm_config_snapshot.yaml", **kwargs))
+
+    def test_the_snapshot_write_leaves_the_orchestration_baseline_clean(self) -> None:
+        """The behavioural half, in the real ordering: `init_orchestration` writes the
+        baseline, then `run_workflow._write_llm_config_snapshot` writes the file. Without the
+        exemption the very next orchestration-role write check reports it as an unauthorized
+        write — the class of latent fault `run_logs/` and the runtime sidecar already hold
+        exemptions for."""
+        import tempfile
+        from pathlib import Path as _Path
+        from tools import llm_config as _lc, run_workflow as _rw
+        from tools.orchestration_runtime import (
+            _actual_changed_paths_since_baseline, init_orchestration)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _Path(tmp)
+            (repo / "workspace").mkdir()
+            init_orchestration(repo, "orch_snap_base", spec_ref="spec/x", status="running")
+            cfg = _lc.load_llm_config(
+                _Path(__file__).resolve().parents[2]
+                / "docs" / "examples" / "llm_claude.example.yaml")
+            _rw._write_llm_config_snapshot(repo, "orch_snap_base", cfg)
+            self.assertEqual(
+                _actual_changed_paths_since_baseline(
+                    repo, "orch_snap_base", agent_run_id=None),
+                [])
+
     def test_should_ignore_classifies_host_run_log(self) -> None:
         """Host-side run logs (run_workflow.py's stdout JSONL tee, under
         `<orch>/run_logs/`) must be exempt: the outer driver — not a child —
@@ -31051,7 +31099,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
         cap: dict = {}
         with tempfile.TemporaryDirectory() as tmp:
             c = _FakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                               orchestration_agent_run_id="ORCH", backend="claude", env={})
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
             c.calls = []
             calls = {"n": 0}
 
@@ -32038,11 +32086,15 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(mcp, [["mywrap", "--flag", "mcp", "list"]])
 
     def test_the_probed_command_is_the_one_the_run_will_launch(self) -> None:
-        """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, but
-        the deprecated `--agent-model` / `--llm-command` are not in the file — `run_workflow`
-        applies them to the loaded object. Probing without them certifies a command the run
-        will not launch: a wrapper that works but a bare CLI that is absent fails preflight,
-        and the reverse authorizes a wrapper nothing probed."""
+        """`probe_all_providers` runs in the `preflight` SUBPROCESS and reloads the file, so
+        the command it probes must come from the `defaults` the CALLER resolved rather than
+        from a second derivation here. Probing the wrong one certifies a command the run will
+        not launch: a wrapper that works but a bare CLI that is absent fails preflight, and the
+        reverse authorizes a wrapper nothing probed.
+
+        The override is a no-op in VALUE today (nothing in `run_workflow` overrides the file
+        since the run-wide flag trio was removed), so this test supplies one directly — that is
+        what keeps the transport from being certified only by a case where it cannot matter."""
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n  model: opus\n")
             seen: list = []
@@ -32452,9 +32504,9 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     def test_the_sandbox_profile_binds_the_executable_this_leaf_launches(self) -> None:
         """The profile's read-only bind of the CLI install directory used to come from
-        `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run had one
-        `--llm-command`; with a per-entry `command:` the leaf would be launched inside a sandbox
-        where its own binary is not bound."""
+        `preflight.json#probe_command` — the run's `defaults`. Those agreed while a run could
+        only have ONE command; with a per-entry `command:` the leaf would be launched inside a
+        sandbox where its own binary is not bound."""
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bindir:
             repo_root = Path(tmp)
             wrapper = Path(bindir) / "claude"

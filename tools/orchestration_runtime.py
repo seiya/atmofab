@@ -7757,7 +7757,7 @@ def _safe_host_env_for_child() -> dict[str, str]:
 
 def _resolve_backend_type(backend_type: str, backend_command: str) -> str:
     """The backend family (``claude`` / ``codex``), preferring the explicit type and
-    falling back to the launch command string. A custom ``--llm-command`` wrapper means
+    falling back to the launch command string. A configured ``command:`` wrapper means
     the command is not literally ``claude``/``codex``, so the explicit type (recorded as
     the launch response ``backend``) is authoritative; the command is only a fallback."""
     bt = (backend_type or "").strip().lower()
@@ -8628,6 +8628,14 @@ def _should_ignore_runtime_snapshot_path(
     runtime_files = {
         f"{orch_root}/agent_graph.json",
         f"{orch_root}/agent_runs.jsonl",
+        # The bytes of the leaf-LLM configuration this run launched with, written by
+        # `run_workflow._write_llm_config_snapshot` on cold init — AFTER
+        # `_write_run_write_baseline` has already snapshotted the orchestration baseline, so
+        # without this exemption it reads as an orchestration-authored write. Harmless only by
+        # accident today (the orchestration row is appended once at init and thereafter
+        # rewritten in place by `set-status`, never re-recorded), which is exactly the
+        # accident `run_logs/` and `failure_analysis.runtime.*` are exempted for.
+        f"{orch_root}/llm_config_snapshot.yaml",
         # Adv-24: fcntl lock sidecar; orchestration runtime exclusively manages it.
         f"{orch_root}/agent_runs.jsonl.lock",
         # Recurrence-prevention plan (Issue 3): the invalid-payload audit log
@@ -16563,12 +16571,13 @@ def probe_all_providers(
     # while the probes certify another. `llm_config_path` remains for callers that have no
     # snapshot to hand.
     #
-    # The overrides MUST be reapplied either way. This runs in the `preflight` subprocess, and
-    # the deprecated `--agent-model` / `--llm-command` are not IN the file; `run_workflow`
-    # applies them to the loaded configuration. Probing without them certifies a command the
-    # run will not launch: an operator whose wrapper works but whose bare CLI is absent fails
-    # preflight, and one whose bare CLI is present gets a green `providers` row authorizing a
-    # wrapper nothing probed.
+    # The overrides are the `defaults` the CALLER resolved. This runs in the `preflight`
+    # SUBPROCESS, which reloads the file and would otherwise re-derive them independently, so
+    # applying them keeps ONE authority for what gets probed rather than two derivations that
+    # can drift. Today they always equal what the file declares — nothing in `run_workflow`
+    # overrides it since the run-wide flag trio was removed — so this is a no-op in value; it
+    # is not a no-op in structure, and that is deliberate: a caller that ever resolves
+    # `defaults` differently must not silently probe a command the run will not launch.
     if config is None:
         config = load_llm_config(llm_config_path)
     cfg = apply_defaults_overrides(
@@ -16784,8 +16793,9 @@ def init_orchestration(
     spec_ref: str | None = None,
     source_dependency_ref: str | None = None,
     status: str = "running",
-    # claude is the primary/default backend (matches run_workflow.py DEFAULT_LLM);
-    # codex remains a supported choice, selected explicitly.
+    # claude is the primary/default backend: it is what `docs/examples/llm_claude.example.yaml`
+    # — the sample the first-run instructions copy — names in `defaults`. codex remains a fully
+    # supported choice, selected in the leaf-LLM configuration rather than here.
     agent_backend: str = "claude",
     agent_model: str | None = None,
     invocation: dict[str, Any] | None = None,
@@ -20883,10 +20893,11 @@ def main(argv: list[str] | None = None) -> int:
             "fields, which keep describing --backend / defaults)."
         ),
     )
-    # The RESOLVED `defaults` of the configuration the run will actually use. The deprecated
-    # `--agent-model` / `--llm-command` are not in the FILE, so a probe that only reloads the
-    # path would certify a different command than the run launches. Re-applying a value the
-    # file already declares is a no-op, so these are sent unconditionally.
+    # The `defaults` the CALLER resolved, so this subprocess probes what the run will launch
+    # instead of re-deriving them from the file it reloads. Since the run-wide flag trio was
+    # removed nothing overrides the file, so they always equal what it declares — sent
+    # unconditionally, because re-applying a declared value is a no-op and nothing then has to
+    # track which values came from where.
     preflight_parser.add_argument("--llm-config-defaults-model", default=None)
     preflight_parser.add_argument("--llm-config-defaults-command", default=None)
     # The hash of the snapshot the CALLER loaded. This runs in a subprocess and reloads the

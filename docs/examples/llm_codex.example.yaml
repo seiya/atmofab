@@ -1,7 +1,9 @@
-# Shipped leaf-LLM configuration: every LLM leaf on the Codex CLI.
+# Sample leaf-LLM configuration: every LLM leaf on the Codex CLI.
 #
-# The replacement for the deprecated run-wide `--llm codex`, onto which that flag is mapped
-# internally.
+# Copy it to `./llm.yaml` — the operator-owned file `run_workflow.py` loads when nobody passes
+# `--llm-config`:
+#
+#     cp docs/examples/llm_codex.example.yaml llm.yaml
 #
 # CHECK `model:` BEFORE THE FIRST RUN. Unlike Claude, Codex has no unpinned alias to resolve —
 # every launch must carry an explicit slug, and the generic `codex` alias is rejected precisely
@@ -17,14 +19,13 @@
 # rules would let all five leaves inherit one `defaults` block. The file is the answer to
 # "what runs where, and how hard does it think" — a reader should get that answer by reading it,
 # not by re-deriving it from an inheritance chain. Omission still works and is the right choice
-# for a file an operator writes themselves; it is the wrong choice for the shipped default.
+# once the copy is yours to edit; it is the wrong choice for the sample.
 #
 # The five entries below are the complete set of LLM leaves. Every other substep
 # (compile.static, generate.gate, validate.pre_judge / execute / post_judge, and the whole
 # build phase) is deterministic and runs in-process, so naming one here is rejected.
 #
-#   model    An explicit slug, required. The deprecated `--agent-model <slug>` overrides every
-#            entry that took its model from `defaults`, and leaves a per-substep one alone.
+#   model    An explicit slug, required.
 #   effort   `low` | `medium` | `high` | `xhigh` | `max` | `ultra`, passed as
 #            `codex --config model_reasoning_effort="<level>"` (Codex has no `--effort` flag).
 #            These are the CLI's own words, read off `supported_reasoning_levels`; they are NOT
@@ -33,20 +34,21 @@
 #
 # WHY `medium`. It is `default_reasoning_level` for every gpt-5.6 model, and the predecessor
 # gpt-5.5 defaulted to `xhigh` — the vendor lowered the default as the model got better. A
-# shipped file should not override that without evidence about the model it will run on.
+# sample should not override that without evidence about the model it will run on.
 #
-# The measured table in `claude.yaml` is NOT that evidence: it was recorded almost entirely on
-# Opus 4.8, and a re-run rate belongs to the (model, effort, task) triple. What it does establish
-# is structural and survives a model change — re-runs were 20% of every token spent and they
-# concentrate in the leaves that WRITE, so `generate.generate` (45% of tokens, seen at 7 attempts
-# against a `MAX_ATTEMPTS_PER_PHASE` of 3, where crossing the cap fails the PHASE rather than
-# costing one more attempt) is the last place to save money, not the first. Hence the single
+# The measured table in `llm_claude.example.yaml` is NOT that evidence: it was recorded almost
+# entirely on Opus 4.8, and a re-run rate belongs to the (model, effort, task) triple. What it does
+# establish is structural and survives a model change — re-runs were 20% of every token spent and
+# they concentrate in the leaves that WRITE, so `generate.generate` (45% of tokens, seen at 7
+# attempts against a `MAX_ATTEMPTS_PER_PHASE` of 3, where crossing the cap fails the PHASE rather
+# than costing one more attempt) is the last place to save money, not the first. Hence the single
 # economy is a model tier on `compile.verify`: smallest leaf, re-ran in 3 of 93 nodes, reads an
 # IR the deterministic gate already proved clean, and re-read downstream by two other leaves.
 #
 # HTTP providers (`openai_compatible`, `anthropic_api`) are admissible ONLY on the two
-# `generate` leaves, which run as host-mediated pure functions; see `claude.yaml` for a worked
-# example.
+# `generate` leaves, which run as host-mediated pure functions; see
+# `llm_openai_compatible.example.yaml` and `llm_anthropic_api.example.yaml` in this directory for
+# worked examples of each.
 defaults:
   provider: codex_cli
   model: gpt-5.6-sol
