@@ -5947,14 +5947,18 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
 
 
 class RunWorkflowConductorGuardTest(unittest.TestCase):
-    """Orchestration is conductor-only; unsupported backends are rejected up front."""
+    """Orchestration is conductor-only; unsupported providers are rejected up front."""
 
-    def test_rejects_cursor_backend(self) -> None:
-        # cursor was removed with the LLM-orchestrator driver; argparse rejects it
-        # as an invalid --llm choice (SystemExit) before any orchestration state.
-        import tools.run_workflow as rw
-        with self.assertRaises(SystemExit):
-            rw._parse_args(["spec/component/x", "validate", "--llm", "cursor"])
+    def test_rejects_an_unsupported_provider(self) -> None:
+        # `cursor` was removed with the LLM-orchestrator driver, and `--llm` with it. A
+        # provider the conductor has no launcher for is now rejected by the config loader,
+        # under a named rule, before any orchestration state exists.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm.yaml"
+            path.write_text("defaults:\n  provider: cursor_cli\n", encoding="utf-8")
+            with self.assertRaises(lc.LlmConfigError) as ctx:
+                lc.load_llm_config(path)
+        self.assertEqual(ctx.exception.rule, "llm_config_unknown_provider")
 
 
 class ResumeRecoveryTest(unittest.TestCase):

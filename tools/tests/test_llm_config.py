@@ -798,25 +798,27 @@ class RuleTests(_Tmp):
         self.assertEqual(declared - tested, set())
 
 
-class LegacyBridgeTests(unittest.TestCase):
-    def test_legacy_claude_maps_onto_the_shipped_config(self) -> None:
-        cfg = lc.llm_config_from_legacy("claude", repo_root=REPO_ROOT)
-        self.assertEqual(cfg.path, str(lc.shipped_config_path("claude", REPO_ROOT)))
-        self.assertEqual(cfg.providers, frozenset({"claude_cli"}))
-        self.assertEqual(cfg.defaults.model, "opus")
+class DefaultsOverrideTests(unittest.TestCase):
+    """`apply_defaults_overrides` applies a run-wide model / command onto a loaded config.
 
-    def test_legacy_agent_model_does_not_displace_a_per_leaf_declaration(self) -> None:
-        """The shipped files declare a model for every leaf, so the run-wide deprecated flag
-        reaches `defaults` and stops there. `run_workflow` warns rather than leaving the
-        operator to discover it — to change a declared leaf, edit the file."""
-        cfg = lc.llm_config_from_legacy("codex", "gpt-5-codex", repo_root=REPO_ROOT)
+    Its one production caller is the preflight subprocess, which re-applies the values `main`
+    already resolved so the probe describes the launch surface the run will actually use. The
+    rules below are what make that safe: an override moves `defaults` and everything that took
+    its value from `defaults`, and never a value a level below `defaults` declared for itself
+    or an entry the config moved to another provider."""
+
+    def test_an_override_does_not_displace_a_per_leaf_declaration(self) -> None:
+        """The samples declare a model for every leaf, so a run-wide value reaches `defaults`
+        and stops there. To change a declared leaf, edit the file."""
+        cfg = lc.apply_defaults_overrides(
+            lc.load_llm_config(SAMPLE_DIR / "llm_codex.example.yaml"), model="gpt-5-codex")
         self.assertEqual(cfg.defaults.model, "gpt-5-codex")
         for entry in cfg.entries.values():
             self.assertNotEqual(entry.model, "gpt-5-codex")
             self.assertTrue(entry.model_declared)
         cfg.validate_runnable()
 
-    def test_legacy_agent_model_still_reaches_a_file_that_declares_none(self) -> None:
+    def test_an_override_still_reaches_a_file_that_declares_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bare.yaml"
             path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
@@ -825,20 +827,18 @@ class LegacyBridgeTests(unittest.TestCase):
             self.assertEqual(entry.model, "gpt-5-codex")
         cfg.validate_runnable()
 
-    def test_legacy_llm_command_becomes_defaults_command_everywhere(self) -> None:
-        cfg = lc.llm_config_from_legacy("claude", "", "wrapper claude --x", repo_root=REPO_ROOT)
+    def test_a_command_override_becomes_defaults_command_everywhere(self) -> None:
+        """No sample declares a `command:`, so a run-wide one reaches every leaf."""
+        cfg = lc.apply_defaults_overrides(
+            lc.load_llm_config(SAMPLE_DIR / "llm_claude.example.yaml"),
+            command="wrapper claude --x")
         self.assertEqual(cfg.defaults.command, "wrapper claude --x")
         for entry in cfg.entries.values():
             self.assertEqual(entry.command, "wrapper claude --x")
 
-    def test_legacy_backend_without_a_shipped_config_is_rejected(self) -> None:
-        with self.assertRaises(lc.LlmConfigError) as ctx:
-            lc.llm_config_from_legacy("gemini", repo_root=REPO_ROOT)
-        self.assertEqual(ctx.exception.rule, "llm_config_unknown_provider")
-
     def test_overrides_do_not_cross_a_provider_boundary(self) -> None:
-        """A run-wide legacy override describes ONE backend; an entry the config moved to
-        another provider keeps its own model."""
+        """A run-wide override describes ONE backend; an entry the config moved to another
+        provider keeps its own model."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "mixed.yaml"
             path.write_text(
@@ -856,7 +856,7 @@ class LegacyBridgeTests(unittest.TestCase):
     def test_an_explicit_pin_that_equals_the_default_still_survives_an_override(self) -> None:
         """DECLARATION decides, not value equality. A `validate.judge.model: opus` written next
         to a `defaults.model: opus` is a deliberate pin that happens to agree, and a run-wide
-        `--agent-model` must move the default and everything that inherited it — not that."""
+        override must move the default and everything that inherited it — not that."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "same.yaml"
             path.write_text(
@@ -902,10 +902,10 @@ class LegacyBridgeTests(unittest.TestCase):
             self.assertEqual(cfg.entry_for("compile", "verify").model, "run-wide")
 
     def test_the_override_unpins_the_model_it_replaces(self) -> None:
-        """`--agent-model` is the deprecated run-wide alias, whose contract is that it leaves
-        the model UNPINNED. Keeping `model_declared` when it replaced a declared value made
-        the same flag behave two ways depending on whether the file happened to declare a
-        model of its own."""
+        """A run-wide override is an ALIAS, whose contract is that it leaves the model
+        UNPINNED. Keeping `model_declared` when it replaced a declared value made the same
+        value behave two ways depending on whether the file happened to declare one of its
+        own."""
         with tempfile.TemporaryDirectory() as tmp:
             declared = Path(tmp) / "declared.yaml"
             declared.write_text("defaults:\n  provider: claude_cli\n  model: opus\n",
@@ -937,7 +937,7 @@ class LegacyBridgeTests(unittest.TestCase):
             self.assertFalse(other.model_declared)
 
     def test_no_override_returns_the_same_config(self) -> None:
-        cfg = lc.load_llm_config(lc.shipped_config_path("claude", REPO_ROOT))
+        cfg = lc.load_llm_config(SAMPLE_DIR / "llm_claude.example.yaml")
         self.assertIs(lc.apply_defaults_overrides(cfg), cfg)
 
 

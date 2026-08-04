@@ -156,7 +156,7 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
     "anthropic_api": "anthropic_api",
 }
 
-# The reverse map, for `llm_config_from_legacy` and for reading a recorded token back.
+# The reverse map, for reading a recorded backend token back to its provider.
 BACKEND_TOKEN_PROVIDERS: Mapping[str, str] = {v: k for k, v in PROVIDER_BACKEND_TOKENS.items()}
 
 
@@ -293,8 +293,9 @@ class ResolvedLeafEntry:
     `model` empty is MEANINGFUL, not missing: for `claude_cli` it selects runtime alias
     resolution (the operator deliberately does not pin a version — see
     `orchestration_runtime.default_agent_model_for_backend`). For `codex_cli` it is an operator
-    omission, caught at run start by `validate_runnable`, not at load, so that shipping a
-    model-less `configs/llm/codex.yaml` and testing that it loads remain compatible."""
+    omission, caught at run START by `validate_runnable` rather than at load, so that a
+    configuration whose codex slug has been blanked still LOADS — and can be tested, and can be
+    reported on — instead of failing where the rule cannot be named."""
 
     provider: str
     model: str = ""
@@ -622,15 +623,15 @@ class LlmConfig:
     def validate_runnable(self) -> None:
         """Run-start checks that are deliberately NOT applied at load.
 
-        `configs/llm/codex.yaml` ships without a model on purpose (the operator must choose
-        one), so it must LOAD — and be testable — while still failing before a run that would
-        launch `codex exec --model ''`."""
+        A codex entry whose slug the operator has blanked must LOAD — that is a document one
+        can still read, diff and test — while still failing before a run that would launch
+        `codex exec --model ''`."""
         for label, entry in self._labelled_entries():
             if entry.provider == "codex_cli" and not entry.model:
                 raise LlmConfigError(
                     "llm_config_codex_cli_requires_model",
                     "provider 'codex_cli' has no runtime model alias to resolve: set `model:` "
-                    "(or pass the deprecated --agent-model)", where=label)
+                    "for this entry or in `defaults`", where=label)
 
     def _labelled_entries(self) -> list[tuple[str, ResolvedLeafEntry]]:
         out = [("defaults", self.defaults)]
@@ -806,7 +807,7 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
     )
 
 
-# --- hashing / legacy bridge ---------------------------------------------------------
+# --- hashing / paths -----------------------------------------------------------------
 
 def _sha256_bytes(raw: bytes) -> str:
     """`"sha256:<hex>"` of bytes already in hand — the same string form `config_sha256`
@@ -897,40 +898,20 @@ def shipped_config_path(backend: str, repo_root: str | Path | None = None) -> Pa
     return Path(__file__).resolve().parent.parent / "configs" / "llm" / name
 
 
-def llm_config_from_legacy(
-    backend: str,
-    agent_model: str = "",
-    llm_command: str = "",
-    *,
-    repo_root: str | Path | None = None,
-) -> LlmConfig:
-    """Build the config that the deprecated `--llm/--agent-model/--llm-command` trio denotes.
-
-    Loads the SHIPPED file for the backend (so the legacy path and the config path resolve
-    through exactly the same code — that equivalence is acceptance criterion 1) and then
-    applies the two run-wide overrides onto `defaults`, which propagate to every leaf because
-    the shipped configs declare nothing per phase."""
-    path = shipped_config_path(backend, repo_root)
-    if not path.exists():
-        raise LlmConfigError(
-            "llm_config_unknown_provider",
-            f"no shipped configuration for backend {backend!r} (expected {path})",
-            where=str(path))
-    cfg = load_llm_config(path)
-    return apply_defaults_overrides(cfg, model=agent_model, command=llm_command)
-
-
 def apply_defaults_overrides(
     cfg: LlmConfig, *, model: str = "", command: str = ""
 ) -> LlmConfig:
     """Return `cfg` with run-wide `model` / `command` overrides applied.
 
+    The production caller is the preflight subprocess, which re-applies the values `main`
+    already resolved (`--llm-config-defaults-model` / `-command`) so that the probe describes
+    the launch surface the run will actually use rather than the file's unaltered `defaults`.
+
     The override reaches every entry that inherited the corresponding field from `defaults`;
     an entry that set its own is left alone, and an entry on a DIFFERENT provider than
-    `defaults` is never touched (the legacy flags describe one backend, and forcing e.g. a
+    `defaults` is never touched (a run-wide value describes one backend, and forcing e.g. a
     claude model alias onto an HTTP entry would be exactly the provider-scope leak that
-    `_merge_layer` exists to prevent). `sha256` still describes the file on disk; the override
-    literals are recorded separately in the invocation record."""
+    `_merge_layers` exists to prevent). `sha256` still describes the file on disk."""
     model = (model or "").strip()
     command = (command or "").strip()
     if not model and not command:
