@@ -21,6 +21,7 @@ wrong:
 from __future__ import annotations
 
 import re
+import shlex
 import tempfile
 import unittest
 
@@ -225,7 +226,8 @@ class DefaultConfigPathTests(unittest.TestCase):
             # directories the run is not using — leaving the default still missing and the
             # next run failing with this very message again.
             self.assertIn(
-                f"cp {Path(tmp) / 'docs' / 'examples' / name} {Path(tmp) / 'llm.yaml'}",
+                shlex.join(["cp", str(Path(tmp) / "docs" / "examples" / name),
+                            str(Path(tmp) / "llm.yaml")]),
                 message)
             self.assertTrue((SAMPLE_DIR / name).exists(), msg=name)
         # Every `cp` line must be PASTE-SAFE. The message ends with the list, and
@@ -236,6 +238,23 @@ class DefaultConfigPathTests(unittest.TestCase):
             if line.strip().startswith("cp "):
                 self.assertTrue(line.strip().endswith("/llm.yaml"), msg=line)
         self.assertEqual(ctx.exception.where, "")
+
+    def test_the_copy_commands_survive_a_repo_root_a_shell_would_split(self) -> None:
+        """The paths are the OPERATOR's, and this is the one message whose entire job is to be
+        pasted into a shell. A root containing a space silently becomes extra arguments: `cp`
+        then either fails or, with the wrong argument count, acts on something else."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "my repo (v2)"
+            root.mkdir()
+            with self.assertRaises(lc.LlmConfigError) as ctx:
+                lc.resolve_default_config_path(root)
+        for line in str(ctx.exception).splitlines():
+            if not line.strip().startswith("cp "):
+                continue
+            argv = shlex.split(line.strip())
+            self.assertEqual(len(argv), 3, msg=line)          # cp SRC DST, not cp + fragments
+            self.assertEqual(Path(argv[2]), root / "llm.yaml", msg=line)
+            self.assertEqual(Path(argv[1]).parent, root / "docs" / "examples", msg=line)
 
 
 

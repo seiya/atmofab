@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import shlex
 from dataclasses import dataclass
 from ipaddress import ip_address
 from pathlib import Path
@@ -891,10 +892,12 @@ def resolve_default_config_path(repo_root: str | Path) -> Path:
     # the shell's working directory — and when it is not, a relative `cp` copies between two
     # directories the run is not using, leaving the default still missing and the next run
     # failing identically. The one message whose whole job is to be pasted has to work from
-    # wherever it is pasted.
+    # wherever it is pasted — hence also `shlex.quote`: an absolute path is the operator's, and
+    # a root containing a space splits into extra arguments that `cp` either rejects or, worse,
+    # acts on.
     root = Path(repo_root)
     samples = "\n  ".join(
-        f"cp {root / SAMPLE_CONFIG_DIR / name} {path}"
+        shlex.join(["cp", str(root / SAMPLE_CONFIG_DIR / name), str(path)])
         for name in SAMPLE_CONFIG_NAMES)
     # No `where=`: `LlmConfigError.__str__` appends " (at <where>)", which would land on the
     # LAST line of the `cp` list above and render as part of a command the operator is being
