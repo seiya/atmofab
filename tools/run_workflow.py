@@ -3185,7 +3185,6 @@ def _run_node(
     env["METDSL_ORCHESTRATION_ID"] = orchestration_id
 
     tmp_parent = repo_root / "workspace" / "tmp"
-    tmp_parent.mkdir(parents=True, exist_ok=True)
     # TMPDIR must match output_manifest.allowed_tmp_root for the active agent (orchestration uses
     # workspace/tmp/<orchestration_agent_run_id>). Set only after init returns that id; cleanup only
     # that directory so concurrent workflows' workspace/tmp/<other_agent_run_id>/ are untouched.
@@ -3223,6 +3222,11 @@ def _run_node(
     try:
         if run_log_file is not None:
             sys.stdout = _StdoutTee(saved_stdout, run_log_file, mode=stdout_format)
+
+        # Inside the try, not before it: this is the first write into the workspace,
+        # so on a read-only checkout or a full disk it is the first thing to fail —
+        # and it must fail inside the envelope contract rather than as a traceback.
+        tmp_parent.mkdir(parents=True, exist_ok=True)
 
         for kind, key, held, detail in (
             (

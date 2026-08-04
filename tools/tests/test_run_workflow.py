@@ -2317,6 +2317,26 @@ class RunWorkflowTests(unittest.TestCase):
             # stdout keeps its envelope contract.
             self.assertIn("Traceback", err.getvalue())
 
+    def test_unwritable_workspace_tmp_reports_instead_of_escaping(self) -> None:
+        # `workspace/tmp` is the driver's FIRST write into the workspace, so on a
+        # read-only checkout it is the first thing to fail. It used to be created
+        # before the try, outside the envelope contract, so that exact failure class
+        # still escaped as a traceback even with the backstop in place.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            with self._mkdir_boom(
+                "tmp", "workspace", OSError(30, "Read-only file system"),
+            ), redirect_stderr(io.StringIO()):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", "orch_ro_workspace"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertIn("Read-only file system", out["detail"])
+            # `init` never ran, so there is nothing committed to terminalize.
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+
     def test_unexpected_exception_before_init_commit_reports_without_terminalizing(
         self,
     ) -> None:
