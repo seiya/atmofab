@@ -2629,8 +2629,9 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             oid = "orch_tee_render"
-            # Non-ASCII, so the JSONL copy also pins that the payload is written
-            # readably rather than escaped into \uXXXX.
+            # Non-ASCII, so the raw JSONL copy also pins that the payload is written
+            # readably rather than escaped into \uXXXX (asserted on the file's bytes
+            # at the bottom — a decoded assertion could not tell the two apart).
             boom = OSError(28, "ディスクに空きがありません")
 
             def fake_runtime_command(root, env, args):  # type: ignore[no-untyped-def]
@@ -2667,6 +2668,11 @@ class RunWorkflowTests(unittest.TestCase):
             envelope = events[-1]
             self.assertEqual(envelope["reason"], "driver_exception")
             self.assertIn("ディスクに空きがありません", envelope["detail"])
+            # On the RAW bytes, not the decoded payload: `\uXXXX` escapes round-trip
+            # through `json.loads`, so a decoded assertion cannot tell an escaped log
+            # from a readable one, and the run log is read by a human.
+            self.assertIn("ディスクに空きがありません",
+                          logs[0].read_text(encoding="utf-8"))
 
     def test_a_terminal_status_is_preserved_whatever_its_spelling(self) -> None:
         # `set-status` writes the operator's `--status` through verbatim, and the
