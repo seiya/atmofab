@@ -2801,5 +2801,172 @@ class ForbidDismissViolationTokenizationTests(unittest.TestCase):
             "forbid_dismiss_violation_in_workflow")
 
 
+class ReadManifestCoreTests(unittest.TestCase):
+    """The manifest loader/containment helpers shared by every read guard."""
+
+    def _roots(self, manifest_body: str | None):
+        from pathlib import Path
+
+        from tools.hooks.common import _load_read_manifest_allowed_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            manifest_dir = (
+                repo_root / "workspace" / "orchestrations" / "orch_test" / "read_manifests"
+            )
+            manifest_dir.mkdir(parents=True)
+            if manifest_body is not None:
+                (manifest_dir / "run_a.json").write_text(manifest_body, encoding="utf-8")
+            return _load_read_manifest_allowed_roots(repo_root, "orch_test", "run_a")
+
+    def test_missing_manifest_blocks(self) -> None:
+        roots, block = self._roots(None)
+        self.assertIsNone(roots)
+        self.assertEqual(block.action, HookDecisionAction.BLOCK)
+        self.assertIn("read manifest not found", block.reason or "")
+
+    def test_invalid_json_blocks(self) -> None:
+        roots, block = self._roots("{not json")
+        self.assertIsNone(roots)
+        self.assertIn("unreadable or invalid JSON", block.reason or "")
+
+    def test_non_object_manifest_blocks(self) -> None:
+        roots, block = self._roots("[]")
+        self.assertIsNone(roots)
+        self.assertIn("must be a JSON object", block.reason or "")
+
+    def test_missing_allowed_read_roots_blocks(self) -> None:
+        roots, block = self._roots(json.dumps({"denied_read_roots": []}))
+        self.assertIsNone(roots)
+        self.assertIn("missing allowed_read_roots", block.reason or "")
+
+    def test_valid_manifest_returns_roots(self) -> None:
+        roots, block = self._roots(json.dumps({"allowed_read_roots": ["docs/", "spec"]}))
+        self.assertIsNone(block)
+        self.assertEqual(roots, ["docs/", "spec"])
+
+    def test_containment_accepts_root_equality_and_descendants(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import _read_target_in_allowed_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            roots = ["docs/", "spec/plan.md"]
+            self.assertTrue(_read_target_in_allowed_roots(repo_root, roots, "docs"))
+            self.assertTrue(_read_target_in_allowed_roots(repo_root, roots, "docs/WORKFLOW.md"))
+            self.assertTrue(_read_target_in_allowed_roots(repo_root, roots, "spec/plan.md"))
+            self.assertFalse(_read_target_in_allowed_roots(repo_root, roots, "tools/hooks/cli.py"))
+            self.assertFalse(_read_target_in_allowed_roots(repo_root, roots, "docs_other/x.md"))
+
+
+class AppendHookAccessLogTests(unittest.TestCase):
+    """Hook access-log lines are best-effort: they never raise, never mkdir."""
+
+    def _log_path(self, repo_root):
+        return (
+            repo_root
+            / "workspace"
+            / "orchestrations"
+            / "orch_test"
+            / "access_logs"
+            / "run_a.jsonl"
+        )
+
+    def test_appends_when_file_exists(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            log_path = self._log_path(repo_root)
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text("", encoding="utf-8")
+            append_hook_access_log(
+                repo_root,
+                "orch_test",
+                "run_a",
+                tool_name="Grep",
+                path="docs/WORKFLOW.md",
+                decision="allow",
+            )
+            append_hook_access_log(
+                repo_root,
+                "orch_test",
+                "run_a",
+                tool_name="Bash",
+                path="tools/hooks/cli.py",
+                decision="block",
+                policy="read_manifest_read_guard",
+            )
+            lines = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["source"], "hook")
+            self.assertEqual(lines[0]["tool"], "Grep")
+            self.assertEqual(lines[0]["decision"], "allow")
+            self.assertIsNone(lines[0]["policy"])
+            self.assertTrue(lines[0]["ts"].endswith("Z"))
+            self.assertEqual(lines[1]["decision"], "block")
+            self.assertEqual(lines[1]["policy"], "read_manifest_read_guard")
+            self.assertEqual(lines[1]["path"], "tools/hooks/cli.py")
+
+    def test_creates_file_when_directory_exists(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            log_path = self._log_path(repo_root)
+            log_path.parent.mkdir(parents=True)
+            append_hook_access_log(
+                repo_root, "orch_test", "run_a", tool_name="Read", path="a.md", decision="allow"
+            )
+            self.assertTrue(log_path.is_file())
+
+    def test_missing_directory_degrades_silently_and_never_mkdirs(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            append_hook_access_log(
+                repo_root, "orch_test", "run_a", tool_name="Read", path="a.md", decision="allow"
+            )
+            self.assertFalse(self._log_path(repo_root).parent.exists())
+
+    def test_readonly_file_degrades_silently(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        if os.geteuid() == 0:  # pragma: no cover — root ignores the mode bits
+            self.skipTest("root bypasses file permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            log_path = self._log_path(repo_root)
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text("", encoding="utf-8")
+            log_path.chmod(0o444)
+            try:
+                append_hook_access_log(
+                    repo_root,
+                    "orch_test",
+                    "run_a",
+                    tool_name="Read",
+                    path="a.md",
+                    decision="allow",
+                )
+                self.assertEqual(log_path.read_text(encoding="utf-8"), "")
+            finally:
+                log_path.chmod(0o644)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2267,6 +2267,123 @@ def _record_and_check_first_auto_read(
             pass
 
 
+def _load_read_manifest_allowed_roots(
+    repo_root: Path,
+    orchestration_id: str,
+    agent_run_id: str,
+) -> tuple[list[str] | None, HookDecision | None]:
+    """Load `allowed_read_roots` for one agent run.
+
+    Returns `(roots, None)` on success and `(None, block_decision)` for each of
+    the four fail-closed cases (manifest absent / unreadable / not an object /
+    missing the list).  Every caller that authorizes a read against the manifest
+    must propagate the block decision unchanged — a missing manifest is never an
+    allow.
+    """
+    manifest_path = (
+        repo_root
+        / "workspace"
+        / "orchestrations"
+        / orchestration_id
+        / "read_manifests"
+        / f"{agent_run_id}.json"
+    )
+    if not manifest_path.exists():
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest not found for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest is unreadable or invalid JSON for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    if not isinstance(manifest, dict):
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest must be a JSON object for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    allowed_roots_obj = manifest.get("allowed_read_roots")
+    if not isinstance(allowed_roots_obj, list):
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest missing allowed_read_roots list for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    return [str(item) for item in allowed_roots_obj], None
+
+
+def _read_target_in_allowed_roots(
+    repo_root: Path, allowed_roots: list[str], file_path: str
+) -> bool:
+    """Whether `file_path` resolves under (or equal to) one of `allowed_roots`."""
+    abs_target = _resolve_target_path(repo_root, file_path)
+    for root in allowed_roots:
+        abs_root = _resolve_manifest_root(repo_root, root.rstrip("/"))
+        if _is_path_under_root(abs_target, abs_root):
+            return True
+    return False
+
+
+def append_hook_access_log(
+    repo_root: Path,
+    orchestration_id: str,
+    agent_run_id: str,
+    *,
+    tool_name: str,
+    path: str,
+    decision: str,
+    policy: str | None = None,
+) -> None:
+    """Append one hook-layer read decision to `access_logs/<agent_run_id>.jsonl`.
+
+    Best-effort observability, never an authorization step: the whole body is
+    swallowed on OSError so a logging failure can never change a hook decision.
+    The directory is never created — inside the leaf's bwrap sandbox only the
+    per-arid file is bound writable and `access_logs/` itself is read-only, so a
+    mkdir would fail rather than help.  The record is additive over the shape
+    `log_orchestration_read` writes (gate lines carry no "source" key).
+    """
+    entry = {
+        "ts": _utc_now_iso(),
+        "path": path,
+        "source": "hook",
+        "tool": tool_name,
+        "decision": decision,
+        "policy": policy,
+    }
+    try:
+        log_path = (
+            repo_root
+            / "workspace"
+            / "orchestrations"
+            / orchestration_id
+            / "access_logs"
+            / f"{agent_run_id}.jsonl"
+        )
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def validate_read_access(
     repo_root: Path,
     orchestration_id: str,
@@ -2323,59 +2440,20 @@ def validate_read_access(
         # reads of the same allowlisted file are not classified as benign.
     if _is_self_agent_manifest_read_path(repo_root, orchestration_id, agent_run_id, file_path):
         return HookDecision(action=HookDecisionAction.ALLOW)
-    manifest_path = (
-        repo_root
-        / "workspace"
-        / "orchestrations"
-        / orchestration_id
-        / "read_manifests"
-        / f"{agent_run_id}.json"
+    allowed_roots, manifest_block = _load_read_manifest_allowed_roots(
+        repo_root, orchestration_id, agent_run_id
     )
-    if not manifest_path.exists():
-        return HookDecision(
+    if manifest_block is not None or allowed_roots is None:
+        return manifest_block or HookDecision(
             action=HookDecisionAction.BLOCK,
             reason=(
-                f"read manifest not found for agent_run_id={agent_run_id!r}. "
+                f"read manifest allowed_read_roots unavailable for agent_run_id={agent_run_id!r}. "
                 f"{MANIFEST_HINT}"
             ),
             continue_processing=False,
         )
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return HookDecision(
-            action=HookDecisionAction.BLOCK,
-            reason=(
-                f"read manifest is unreadable or invalid JSON for agent_run_id={agent_run_id!r}. "
-                f"{MANIFEST_HINT}"
-            ),
-            continue_processing=False,
-        )
-    if not isinstance(manifest, dict):
-        return HookDecision(
-            action=HookDecisionAction.BLOCK,
-            reason=(
-                f"read manifest must be a JSON object for agent_run_id={agent_run_id!r}. "
-                f"{MANIFEST_HINT}"
-            ),
-            continue_processing=False,
-        )
-    allowed_roots_obj = manifest.get("allowed_read_roots")
-    if not isinstance(allowed_roots_obj, list):
-        return HookDecision(
-            action=HookDecisionAction.BLOCK,
-            reason=(
-                f"read manifest missing allowed_read_roots list for agent_run_id={agent_run_id!r}. "
-                f"{MANIFEST_HINT}"
-            ),
-            continue_processing=False,
-        )
-    allowed_roots = [str(item) for item in allowed_roots_obj]
-    abs_target = _resolve_target_path(repo_root, file_path)
-    for root in allowed_roots:
-        abs_root = _resolve_manifest_root(repo_root, root.rstrip("/"))
-        if _is_path_under_root(abs_target, abs_root):
-            return HookDecision(action=HookDecisionAction.ALLOW)
+    if _read_target_in_allowed_roots(repo_root, allowed_roots, file_path):
+        return HookDecision(action=HookDecisionAction.ALLOW)
     return HookDecision(
         action=HookDecisionAction.BLOCK,
         reason=(
