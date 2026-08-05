@@ -10685,9 +10685,9 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
         lines.append(
             f"- `workspace/tmp/{arid}/` already exists and is writable — redirect gate "
             f"stderr there (e.g. `2>workspace/tmp/{arid}/last_gate_stderr.txt`), no need "
-            "to create it. `access_logs/` is runtime-managed audit (`orchestration_read` "
-            "writes it for you; a successful gate returns `result: ok`) — never read or "
-            "write it yourself."
+            "to create it. `access_logs/` is runtime-managed audit (the read hook appends a "
+            "line per read decision, and `orchestration_read` writes one too) — never read "
+            "or write it yourself."
         )
     return "\n".join(lines)
 

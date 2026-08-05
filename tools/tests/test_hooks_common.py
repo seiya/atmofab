@@ -2997,6 +2997,38 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("cat f.md | grep -eerror"), ["f.md"])
         self.assertEqual(self._targets("cat f.md | grep -m5 error"), ["f.md"])
 
+    def test_grep_h_is_no_filename_not_help(self) -> None:
+        """`-h` means `--help` for ripgrep but `--no-filename` for the grep
+        family; sharing one table let `grep -r -h PAT` read the whole tree."""
+        self.assertEqual(self._targets("grep -r -h PAT"), ["."])
+        self.assertEqual(self._targets("egrep -r -h PAT"), ["."])
+        self.assertEqual(self._targets("grep -h -r PAT"), ["."])
+        self.assertEqual(self._targets("grep -h PAT f.md"), ["f.md"])
+        self.assertEqual(self._targets("grep --help"), [])
+        self.assertEqual(self._targets("rg -h"), [])
+
+    def test_optional_value_flags_do_not_swallow_the_operand(self) -> None:
+        """A flag whose value is optional or absent must not be in the detached
+        table: it would consume the pattern, empty the operand list, and drop
+        the file — the inverse of what the table is for."""
+        self.assertEqual(self._targets("grep --color foo tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("grep --colour foo tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("xxd -b tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("od -w tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("od -w16 tools/x.py"), ["tools/x.py"])
+        # ripgrep's --color DOES take a required value, so it stays detached.
+        self.assertEqual(self._targets("rg --color always PAT docs"), ["docs"])
+
+    def test_apostrophe_in_one_heredoc_body_does_not_expose_the_next(self) -> None:
+        """Quote pairing must not run through an already-blanked body."""
+        self.assertEqual(
+            self._targets(
+                "cat > a.py <<'PY'\n# don't do this\nPY\n"
+                "cat > b.md <<'MD'\ncat spec/private.md\nMD"
+            ),
+            [],
+        )
+
     def test_pipe_context_survives_a_line_break(self) -> None:
         """`cat x |\\n rg PAT` is the same command as `cat x | rg PAT`."""
         self.assertEqual(self._targets("cat docs/a.md |\n  rg PAT"), ["docs/a.md"])

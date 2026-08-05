@@ -303,8 +303,10 @@ _DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
     "tail": frozenset({"-n", "-c"}),
     "cut": frozenset({"-b", "-c", "-d", "-f"}),
     "paste": frozenset({"-d"}),
-    "od": frozenset({"-A", "-j", "-N", "-S", "-t", "-w"}),
-    "xxd": frozenset({"-c", "-g", "-l", "-s", "-o", "-b"}),
+    # `od -w[BYTES]` and `xxd -b` take no separate operand — listing them here
+    # made the filename their "value".
+    "od": frozenset({"-A", "-j", "-N", "-S", "-t"}),
+    "xxd": frozenset({"-c", "-g", "-l", "-s", "-o"}),
     "strings": frozenset({"-n", "-t"}),
     "sort": frozenset({"-k", "-t", "-S", "-T", "-o"}),
     "uniq": frozenset({"-f", "-s", "-w"}),
@@ -317,24 +319,24 @@ _DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
     # the pattern's positional slot and PROMOTES the real pattern to a file
     # operand — `grep -C 2 workspace docs/a.md` would report "workspace" as a
     # read and block a legitimate search.
+    # ONLY flags whose value is REQUIRED and space-separated. An optional-value
+    # flag (`--color[=WHEN]`) or a no-value flag listed here consumes the search
+    # PATTERN, which empties the operand list and drops the file entirely —
+    # the exact inverse of what this table is for, and it regressed
+    # forbid_tools_direct_read. GNU long options here need `=`, so they are not
+    # separate tokens and must not be listed.
     "grep": frozenset({
-        "-A", "-B", "-C", "-m", "-d", "-D", "--max-count", "--after-context",
-        "--before-context", "--context", "--color", "--colour", "--binary-files",
-        "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
-        "--label", "--group-separator",
+        "-A", "-B", "-C", "-m", "-d", "-D",
+        "--max-count", "--after-context", "--before-context", "--context",
     }),
     "wc": frozenset(),
     "egrep": frozenset({
-        "-A", "-B", "-C", "-m", "-d", "-D", "--max-count", "--after-context",
-        "--before-context", "--context", "--color", "--colour", "--binary-files",
-        "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
-        "--label", "--group-separator",
+        "-A", "-B", "-C", "-m", "-d", "-D",
+        "--max-count", "--after-context", "--before-context", "--context",
     }),
     "fgrep": frozenset({
-        "-A", "-B", "-C", "-m", "-d", "-D", "--max-count", "--after-context",
-        "--before-context", "--context", "--color", "--colour", "--binary-files",
-        "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
-        "--label", "--group-separator",
+        "-A", "-B", "-C", "-m", "-d", "-D",
+        "--max-count", "--after-context", "--before-context", "--context",
     }),
     "rg": frozenset({
         "-A", "-B", "-C", "-m", "-t", "-T", "-g", "-j", "-M", "-d",
@@ -384,10 +386,15 @@ def _blank_heredoc_bodies(command: str) -> str:
     # is not a heredoc, and treating it as one blanked every following line —
     # deleting real read targets. _strip_quoted_strings is length-preserving, so
     # the offsets apply to the original unchanged.
-    scanned = _strip_quoted_strings(command)
     out = list(command)
     search_from = 0
     while True:
+        # Recomputed each pass: quote pairing must not run THROUGH a body we
+        # have already blanked. An apostrophe in one heredoc's prose ("don't")
+        # otherwise pairs with the opening quote of the next heredoc's
+        # delimiter, hiding that `<<` and leaving its body to be read as
+        # commands — a false read of whatever the document happens to mention.
+        scanned = _strip_quoted_strings("".join(out))
         match = _BASH_HEREDOC_RE.search(scanned, search_from)
         if match is None:
             return "".join(out)
@@ -453,9 +460,15 @@ _GREP_VALUE_TAKING_SHORT_LETTERS: frozenset[str] = frozenset("efmdDABC")
 # Modes that make a grep-family call read nothing, or that take no pattern
 # operand at all — synthesizing a "." read for these blocks a command the agent
 # cannot rephrase, which is a retry loop rather than a recoverable block.
-_GREP_NO_READ_FLAGS: frozenset[str] = frozenset({
-    "--version", "-V", "--help", "-h",
-})
+# Per command, because the spellings collide: `-h` is `--help` for ripgrep but
+# `--no-filename` for the grep family, so sharing one set made `grep -r -h PAT`
+# look like a help invocation and let a whole-checkout recursive read through.
+_GREP_NO_READ_FLAGS: dict[str, frozenset[str]] = {
+    "grep": frozenset({"--version", "-V", "--help"}),
+    "egrep": frozenset({"--version", "-V", "--help"}),
+    "fgrep": frozenset({"--version", "-V", "--help"}),
+    "rg": frozenset({"--version", "-V", "--help", "-h"}),
+}
 _RG_NO_PATTERN_FLAGS: frozenset[str] = frozenset({
     "--files", "--type-list", "--pcre2-version",
 })
@@ -465,7 +478,8 @@ def _searches_working_directory(
     cmd: str, args: list[str], *, stdin_from_pipe: bool
 ) -> bool:
     """Whether a grep-family call with no file operand still walks the tree."""
-    if any(token in _GREP_NO_READ_FLAGS for token in args):
+    no_read_flags = _GREP_NO_READ_FLAGS.get(cmd, frozenset())
+    if any(token in no_read_flags for token in args):
         return False
     if cmd == "rg":
         # ripgrep is recursive by default, but a pipe tail reads stdin instead.
