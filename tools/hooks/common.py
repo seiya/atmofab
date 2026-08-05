@@ -915,6 +915,11 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
             piped = True
         cursor = match.end()
     spans.append((cursor, len(scanned), piped))
+    # Directory the following fragments' relative targets resolve against:
+    # "" = repo_root, a path = that directory, None = changed to somewhere this
+    # scan cannot know. Only within THIS command string — a `cd` in an earlier
+    # Bash call is invisible here (declared residue; agents are told not to cd).
+    cwd: str | None = ""
     for start, end, stdin_from_pipe in spans:
         blob = command[start:end].strip()
         if not blob:
@@ -927,6 +932,20 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
         if not tokens:
             continue
         argv0 = tokens[0].split("/")[-1].lower()
+        if argv0 in {"cd", "pushd"}:
+            # Every later relative target is anchored HERE, not at repo_root.
+            # Without this, `cd spec && cat private.md` resolved "private.md"
+            # against the repo root, found nothing, and authorized nothing —
+            # while bash read the file. The operand is literal and known at
+            # hook time, so it is not the unprovable residue.
+            operand = tokens[1] if len(tokens) > 1 else ""
+            if not operand or "$" in operand or "`" in operand:
+                cwd = None  # unknown directory: relative targets are unprovable
+            elif Path(operand).is_absolute():
+                cwd = operand
+            else:
+                cwd = operand if cwd is None else str(Path(cwd or ".") / operand)
+            continue
         if argv0 not in _BASH_READ_CMD_NAMES:
             continue
         for target in _extract_read_targets(
@@ -937,6 +956,10 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
             # declared residue rather than being validated as a literal name.
             if "$" in target or "`" in target:
                 continue
+            if not Path(target).is_absolute() and cwd != "":
+                if cwd is None:
+                    continue  # relative to an unknown directory — unprovable
+                target = str(Path(cwd) / target)
             targets.append(target)
     return targets
 

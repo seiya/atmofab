@@ -8064,8 +8064,9 @@ def build_bwrap_profile(
     # (rendered after the read-root ro-binds, so it overrides the ro source dir while the
     # rest of the source stays read-only).
     runtime_rw_file_paths: list[str] = []
-    # The leaf's own `run-gate --gate orchestration_read` (the gated-read path the leaf is
-    # directed to for read_manifest entries that are not directly readable) appends one
+    # The leaf's own `run-gate --gate orchestration_read` (an OPTIONAL audited re-read of a
+    # path already inside allowed_read_roots — never a way around the manifest, and never
+    # the remedy for a read block: for an out-of-manifest path it fails the run) appends one
     # audit line to access_logs/<arid>.jsonl. That file lives outside write_roots under the
     # otherwise read-only orchestration root, so without a writable bind the append raises
     # OSError (EROFS) and crashes the gate — the recurring friction every leaf wasted

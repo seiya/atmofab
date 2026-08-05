@@ -3100,6 +3100,22 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         # Bounded: a pathological token must not blow up a synchronous hook.
         self.assertLessEqual(len(expand_bash_braces("{a,b}" * 12)), 256)
 
+    def test_cd_anchors_the_targets_that_follow(self) -> None:
+        """`cd spec && cat private.md` reads spec/private.md; resolving the
+        operand at repo_root found nothing and authorized nothing."""
+        self.assertEqual(self._targets("cd spec && cat private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cd spec; cat ./private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("cat a.md && cd spec && cat b.md"), ["a.md", "spec/b.md"]
+        )
+        self.assertEqual(self._targets("cd spec/sub && cat deep.md"), ["spec/sub/deep.md"])
+        # An absolute target ignores the cd.
+        self.assertEqual(self._targets("cd spec && cat /etc/passwd"), ["/etc/passwd"])
+        # A directory the scan cannot know makes relative targets unprovable
+        # rather than falsely anchored at the repo root.
+        self.assertEqual(self._targets("cd $D && cat p.md"), [])
+        self.assertEqual(self._targets("cd && cat p.md"), [])
+
     def test_unprovable_forms_yield_nothing(self) -> None:
         for command in (
             "echo path | xargs cat",

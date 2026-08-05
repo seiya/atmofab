@@ -3251,6 +3251,15 @@ class BashReadManifestGuardTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(self._log_lines(repo_root), [])
 
+    def test_cd_prefixed_read_still_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, body = self._run(repo_root, "cd spec && cat private.md")
+            self.assertEqual(code, 2)
+            self.assertIn("'spec/private.md'", json.loads(body).get("reason", ""))
+            # And the in-manifest equivalent still passes.
+            self.assertEqual(self._run(repo_root, "cd docs && cat WORKFLOW.md")[0], 0)
+
     def test_unprovable_residue_is_not_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, roots=["docs/"])
