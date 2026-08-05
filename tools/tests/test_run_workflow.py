@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -2267,6 +2267,612 @@ class RunWorkflowTests(unittest.TestCase):
             )
             calls = self._run_cold_with_conductor(repo_root, oid, KeyboardInterrupt())
             self.assertEqual([c for c in calls if c and c[0] == "set-status"], [])
+
+    @staticmethod
+    @contextmanager
+    def _mkdir_boom(name: str, parent_name: str, exc: BaseException):
+        """Raise `exc` from exactly one `Path.mkdir` target, passing every other through.
+
+        A blanket `Path.mkdir` failure would abort somewhere unrelated (the spec tree, the
+        run-log dir) and the test would pass for the wrong reason."""
+        real = Path.mkdir
+
+        def boom(self, *a, **k):  # type: ignore[no-untyped-def]
+            if self.name == name and self.parent.name == parent_name:
+                raise exc
+            return real(self, *a, **k)
+
+        with mock.patch.object(Path, "mkdir", boom):
+            yield
+
+    def test_unexpected_oserror_after_init_terminalizes_and_reports(self) -> None:
+        # The #37 window: `init` has committed (the meta says `running`), and a host-side
+        # OSError — here the `workspace/tmp/<arid>` mkdir on a full disk — happens before
+        # any handler that names it. Without the backstop it escapes to
+        # `raise SystemExit(main())`: a traceback instead of the envelope, and an
+        # orchestration stuck at `running` that only an explicit resume can clear.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            err = io.StringIO()
+            with self._mkdir_boom(
+                "orch_agent_run_002", "tmp",
+                OSError(28, "No space left on device"),
+            ), redirect_stderr(err):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", "orch_boom_nospace"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["status"], "fail")
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertEqual(out["orchestration_id"], "orch_boom_nospace")
+            self.assertIn("No space left on device", out["detail"])
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            argv = set_status[0]
+            # WHICH orchestration is terminalized is the whole point of the guards —
+            # stamping the wrong id would leave the crashed one `running` forever.
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1],
+                             "orch_boom_nospace")
+            self.assertEqual(argv[argv.index("--status") + 1], "fail")
+            self.assertEqual(argv[argv.index("--reason-code") + 1], "driver_exception")
+            # The traceback still reaches stderr: a genuine bug stays debuggable while
+            # stdout keeps its envelope contract.
+            self.assertIn("Traceback", err.getvalue())
+
+    def test_backstop_still_reports_when_terminalization_itself_fails(self) -> None:
+        # The exception that reaches the backstop is typically the very condition that
+        # also breaks the runtime subprocess (a full disk, a read-only workspace), so a
+        # failing `set-status` is the LIKELY case, not an exotic one. Unswallowed it
+        # would escape `_run_node` and restore the whole bug: traceback, no envelope,
+        # orchestration left `running`. (Mirror of the interrupt path's
+        # `test_interrupt_propagates_when_terminalization_fails`.)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_boom_and_setstatus_dies"
+            observed: list[list[str]] = []
+
+            def runtime_whose_set_status_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "set-status":
+                    raise RuntimeError("runtime command failed (set-status): ENOSPC")
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_set_status_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._mkdir_boom(
+                    "orch_agent_run_002", "tmp",
+                    OSError(28, "No space left on device"),
+                ), redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            # It really did try — the swallow is what keeps the envelope reachable.
+            self.assertEqual(
+                len([c for c in observed if c and c[0] == "set-status"]), 1, observed)
+
+    def test_backstop_truncates_reason_detail_to_an_argv_safe_length(self) -> None:
+        # `_runtime_command` passes `--reason-detail` as a single subprocess argv
+        # element, and Linux caps one element at MAX_ARG_STRLEN (128 KiB) — this repo
+        # has been bitten twice (#30/#31). A `RuntimeError` from `_runtime_command`
+        # embeds the runtime subprocess's whole stderr, so a multi-KB detail is
+        # reachable. Untruncated, `set-status` would raise E2BIG, the swallow above
+        # would eat it, and the orchestration would silently stay `running`.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            huge = "HEAD-CONTEXT " + "x" * 200_000 + " ACTUAL-ROOT-CAUSE"
+            with self._mkdir_boom(
+                "orch_agent_run_002", "tmp", OSError(28, huge),
+            ), redirect_stderr(io.StringIO()):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", "orch_huge_detail"])
+            self.assertEqual(code, 2, out["reason"])
+            status = next(c for c in observed if c and c[0] == "set-status")
+            recorded = status[status.index("--reason-detail") + 1]
+            # Short enough for the argv, and BOTH ends survive. A head-only cut is the
+            # tempting implementation and the wrong one: `_runtime_command` builds its
+            # message as `runtime command failed (<the whole argv>): <the real error>`,
+            # so the head alone is pure context and the operator reading
+            # `orchestration_meta.json#reason_detail` learns nothing.
+            self.assertEqual(len(recorded), 200)
+            self.assertTrue(recorded.startswith("OSError: [Errno 28] HEAD-CONTEXT"))
+            self.assertTrue(recorded.endswith("ACTUAL-ROOT-CAUSE"))
+            # The elision marker is the only signal that the middle is gone; without
+            # it a spliced head+tail reads as one coherent sentence and the operator
+            # draws a conclusion about a message that was never written.
+            self.assertIn("...", recorded)
+            # The envelope itself is untruncated — it never crosses an argv boundary.
+            self.assertIn(huge, out["detail"])
+
+    def test_a_runtime_command_failure_records_the_error_not_just_the_argv_echo(
+        self,
+    ) -> None:
+        # The realistic shape of the detail on this path: `_runtime_command` prefixes
+        # its message with the ENTIRE argv it ran, and a cold `init` / `preflight`
+        # argv (repo paths, `--invocation-json`, `--driver-json`, a 64-char sha) is
+        # already longer than the cap on its own. A head-only truncation would record
+        # 200 characters of argv echo and drop every word about what went wrong.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_argv_echo"
+            long_argv = " ".join(
+                ["preflight", "--repo-root", str(repo_root), "--orchestration-id", oid,
+                 "--backend", "claude", "--agent-command", "claude", "--llm-config",
+                 str(repo_root / "docs" / "examples" / "llm_claude.example.yaml"),
+                 "--llm-config-sha256", "a" * 64])
+            self.assertGreater(len(long_argv), 200)
+            observed: list[list[str]] = []
+
+            def runtime_whose_preflight_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                if args[0] == "preflight":
+                    raise RuntimeError(
+                        f"runtime command failed ({long_argv}): "
+                        "ModuleNotFoundError: No module named 'yaml'")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_preflight_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            self.assertEqual(code, 2, buf.getvalue())
+            status = next(c for c in observed if c and c[0] == "set-status")
+            recorded = status[status.index("--reason-detail") + 1]
+            self.assertLessEqual(len(recorded), 200)
+            self.assertIn("No module named 'yaml'", recorded)
+            # The head still names WHICH runtime command died.
+            self.assertTrue(recorded.startswith("runtime command failed (preflight"))
+            # The envelope keeps the whole message — it never crosses an argv boundary.
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertIn("No module named 'yaml'", out["detail"])
+            self.assertIn(long_argv, out["detail"])
+
+    def test_a_runtime_command_failure_after_init_is_terminalized_too(self) -> None:
+        # The `except RuntimeError` handler spans `init` AND `preflight`, and returned
+        # its envelope without terminalizing — so a preflight subprocess that died
+        # after `init` committed left the orchestration `running` forever, the same
+        # stuck state as an escaping exception. Same guards, more precise reason code.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_preflight_subprocess_died"
+            observed: list[list[str]] = []
+
+            def runtime_whose_preflight_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                if args[0] == "preflight":
+                    raise RuntimeError("runtime command failed (preflight): exit 1")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_preflight_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "runtime_command_failed")
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            argv = set_status[0]
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1], oid)
+            self.assertEqual(argv[argv.index("--status") + 1], "fail")
+            self.assertEqual(argv[argv.index("--reason-code") + 1],
+                             "runtime_command_failed")
+            # This is the path the truncation exists for — a `_runtime_command`
+            # RuntimeError embeds the runtime subprocess's own stderr — so the detail
+            # must actually carry it rather than be dropped on the floor.
+            self.assertIn("exit 1", argv[argv.index("--reason-detail") + 1])
+
+    def test_a_runtime_command_failure_during_init_terminalizes_our_own_meta(
+        self,
+    ) -> None:
+        # `init_committed` only flips when the runtime call RETURNS, and this handler
+        # spans `init` too: an `init` that wrote the `running` meta and then failed —
+        # here by answering without an `orchestration_agent_run_id` — reaches the
+        # handler with `init_committed` still False. The `driver` block is then the
+        # only proof the run is ours, and without it the orchestration stays `running`.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_init_committed_then_failed"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            observed: list[list[str]] = []
+
+            def runtime_that_commits_then_answers_short(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    d = repo_root / "workspace" / "orchestrations" / oid
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "orchestration_meta.json").write_text(
+                        json.dumps({"orchestration_id": oid, "status": "running",
+                                    "spec_ref": "spec/problem/test.md",
+                                    "driver": {**identity, "recorded_at": "now"}}),
+                        encoding="utf-8")
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok"}, raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_that_commits_then_answers_short  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "runtime_command_failed")
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            argv = set_status[0]
+            self.assertEqual(argv[argv.index("--orchestration-id") + 1], oid)
+            self.assertEqual(argv[argv.index("--reason-code") + 1],
+                             "runtime_command_failed")
+
+    def test_a_runtime_command_failure_leaves_another_runs_meta_alone(self) -> None:
+        # The ownership half of the case above. `init` failing means this invocation
+        # committed nothing, so a reused `--orchestration-id` that happens to name a
+        # foreign `running` orchestration must not be terminalized: the other run's
+        # driver is still the only thing entitled to decide its outcome.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_rtfail_someone_elses"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            d = repo_root / "workspace" / "orchestrations" / oid
+            d.mkdir(parents=True, exist_ok=True)
+            meta_path = d / "orchestration_meta.json"
+            meta_path.write_text(
+                json.dumps({"orchestration_id": oid, "status": "running",
+                            "spec_ref": "spec/problem/test.md",
+                            # Foreign by construction — unallocatable pid plus an
+                            # explicit `dead` verdict, so the cold guard lets the run
+                            # reach the runtime (issue #32).
+                            "driver": {**identity, "pid": _unallocatable_pid(),
+                                       "verdict": "dead"}}),
+                encoding="utf-8")
+            seeded_bytes = meta_path.read_bytes()
+            observed: list[list[str]] = []
+
+            def runtime_whose_init_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                raise RuntimeError("runtime command failed (init): exit 1")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_whose_init_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._forced_liveness(), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "runtime_command_failed")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+            self.assertEqual(meta_path.read_bytes(), seeded_bytes)
+
+    def test_backstop_still_reports_when_the_traceback_print_fails(self) -> None:
+        # The stderr report is diagnostics; the stdout envelope is the contract. A
+        # broken stderr (a closed pipe — the shape this repo has been bitten by) must
+        # not displace the envelope, or a caller parsing stdout sees nothing at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            with mock.patch("traceback.print_exc",
+                            side_effect=BrokenPipeError("closed stderr")):
+                with self._mkdir_boom(
+                    "orch_agent_run_002", "tmp",
+                    OSError(28, "No space left on device"),
+                ):
+                    code, out, observed = self._run_main_with_fake_runtime(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", "orch_stderr_gone"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            # ...and the terminalization still happened, too.
+            self.assertEqual(
+                len([c for c in observed if c and c[0] == "set-status"]), 1, observed)
+
+    def test_the_backstop_envelope_goes_through_the_tee(self) -> None:
+        # Every other backstop test forces `--stdout-format jsonl`, which hides WHICH
+        # stream the envelope is printed to. It must be the installed tee, not the
+        # saved real stdout: the tee is what renders the human form the operator
+        # actually reads (`human` is the default) and what mirrors the event into
+        # `run_logs/run_*.jsonl`, the only copy that outlives the terminal.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_tee_render"
+            # Non-ASCII, so the raw JSONL copy also pins that the payload is written
+            # readably rather than escaped into \uXXXX (asserted on the file's bytes
+            # at the bottom — a decoded assertion could not tell the two apart).
+            boom = OSError(28, "ディスクに空きがありません")
+
+            def fake_runtime_command(root, env, args):  # type: ignore[no-untyped-def]
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok",
+                                 "orchestration_agent_run_id": "orch_agent_run_002"},
+                        raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = fake_runtime_command  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._mkdir_boom("orch_agent_run_002", "tmp", boom), \
+                        redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "human"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            self.assertEqual(code, 2, buf.getvalue())
+            terminal = buf.getvalue().strip().splitlines()[-1]
+            self.assertTrue(terminal.startswith("[FAIL] reason=driver_exception"),
+                            terminal)
+            self.assertIn("ディスクに空きがありません", terminal)
+            logs = sorted(
+                (repo_root / "workspace" / "orchestrations" / oid / "run_logs")
+                .glob("run_*.jsonl"))
+            self.assertEqual(len(logs), 1, logs)
+            events = [json.loads(line)
+                      for line in logs[0].read_text(encoding="utf-8").splitlines()
+                      if line.strip()]
+            envelope = events[-1]
+            self.assertEqual(envelope["reason"], "driver_exception")
+            self.assertIn("ディスクに空きがありません", envelope["detail"])
+            # On the RAW bytes, not the decoded payload: `\uXXXX` escapes round-trip
+            # through `json.loads`, so a decoded assertion cannot tell an escaped log
+            # from a readable one, and the run log is read by a human.
+            self.assertIn("ディスクに空きがありません",
+                          logs[0].read_text(encoding="utf-8"))
+
+    def test_a_terminal_status_is_preserved_whatever_its_spelling(self) -> None:
+        # `set-status` writes the operator's `--status` through verbatim, and the
+        # RUNBOOK documents a manual `set-status` recovery an operator types by hand.
+        # So a terminal status can reach the guard as `FAIL_CLOSED` or ` fail_closed `,
+        # and a case-sensitive comparison would miss it and overwrite the specific
+        # narrative with the generic `driver_exception`.
+        for spelling in ("FAIL_CLOSED", " fail_closed "):
+            with self.subTest(spelling=spelling):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    self._seed_spec_tree(repo_root)
+                    oid = "orch_terminal_spelling"
+                    orch_dir = repo_root / "workspace" / "orchestrations" / oid
+                    orch_dir.mkdir(parents=True, exist_ok=True)
+                    (orch_dir / "orchestration_meta.json").write_text(
+                        json.dumps({"orchestration_id": oid, "status": spelling,
+                                    "spec_ref": "spec/problem/test.md"}),
+                        encoding="utf-8")
+                    with self._mkdir_boom(
+                        "orch_agent_run_002", "tmp",
+                        OSError(28, "No space left on device"),
+                    ), redirect_stderr(io.StringIO()):
+                        code, out, observed = self._run_main_with_fake_runtime(
+                            ["spec/problem/test.md", "build", "--repo-root",
+                             str(repo_root), "--orchestration-id", oid])
+                    self.assertEqual(code, 2, out)
+                    self.assertEqual(out["reason"], "driver_exception")
+                    self.assertEqual(
+                        [c for c in observed if c and c[0] == "set-status"], [])
+
+    def test_unwritable_workspace_tmp_reports_instead_of_escaping(self) -> None:
+        # `workspace/tmp` is the driver's FIRST write into the workspace, so on a
+        # read-only checkout it is the first thing to fail. It used to be created
+        # before the try, outside the envelope contract, so that exact failure class
+        # still escaped as a traceback even with the backstop in place.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            with self._mkdir_boom(
+                "tmp", "workspace", OSError(30, "Read-only file system"),
+            ), redirect_stderr(io.StringIO()):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", "orch_ro_workspace"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertIn("Read-only file system", out["detail"])
+            # `init` never ran, so there is nothing committed to terminalize.
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+
+    def test_unexpected_exception_before_init_commit_reports_without_terminalizing(
+        self,
+    ) -> None:
+        # Nothing was committed, so there is no `running` to clear — but the stdout
+        # envelope contract covers the whole function, so it still prints and exits 2.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            observed: list[list[str]] = []
+
+            def runtime_that_dies_on_init(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    raise ValueError("boom")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_that_dies_on_init  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", "orch_pre_init_boom",
+                         "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            # Type-prefixed: a bare `KeyError` would stringify to just `'key'`.
+            self.assertEqual(out["detail"], "ValueError: boom")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+
+    def test_unexpected_exception_during_init_terminalizes_a_meta_this_run_committed(
+        self,
+    ) -> None:
+        # The `init_committed` flag only flips when the runtime call RETURNS, so an
+        # exception raised after the meta is on disk falls back to the durable evidence:
+        # a `driver` block naming THIS process was written by this invocation's init.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_exc_mid_init"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            observed: list[list[str]] = []
+
+            def runtime_that_commits_then_dies(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                if args[0] == "init":
+                    d = repo_root / "workspace" / "orchestrations" / oid
+                    d.mkdir(parents=True, exist_ok=True)
+                    (d / "orchestration_meta.json").write_text(
+                        json.dumps({"orchestration_id": oid, "status": "running",
+                                    "spec_ref": "spec/problem/test.md",
+                                    "driver": {**identity, "recorded_at": "now"}}),
+                        encoding="utf-8")
+                    raise ValueError("boom")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = runtime_that_commits_then_dies  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with redirect_stderr(io.StringIO()), redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            set_status = [c for c in observed if c and c[0] == "set-status"]
+            self.assertEqual(len(set_status), 1, observed)
+            self.assertEqual(
+                set_status[0][set_status[0].index("--reason-code") + 1],
+                "driver_exception")
+
+    def test_unexpected_exception_during_init_leaves_another_runs_meta_alone(self) -> None:
+        # The mirror: a reused `--orchestration-id` naming an orchestration this
+        # invocation did NOT write must not be terminalized just because we crashed
+        # near its id.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_exc_someone_elses"
+            identity = run_workflow._current_driver_identity()
+            self.assertIsNotNone(identity)
+            d = repo_root / "workspace" / "orchestrations" / oid
+            d.mkdir(parents=True, exist_ok=True)
+            seeded = {"orchestration_id": oid, "status": "running",
+                      "spec_ref": "spec/problem/test.md",
+                      # Foreign by construction: an unallocatable pid plus an explicit
+                      # `dead` verdict, so no live same-tick sibling can make the cold
+                      # guard refuse before the runtime is reached — issue #32.
+                      "driver": {**identity, "pid": _unallocatable_pid(),
+                                 "verdict": "dead"}}
+            meta_path = d / "orchestration_meta.json"
+            meta_path.write_text(json.dumps(seeded), encoding="utf-8")
+            seeded_bytes = meta_path.read_bytes()
+            observed: list[list[str]] = []
+
+            def raising_runtime(root, env, args):  # type: ignore[no-untyped-def]
+                observed.append(args)
+                raise ValueError("boom")
+
+            original = run_workflow._runtime_command
+            run_workflow._runtime_command = raising_runtime  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with self._forced_liveness(), redirect_stderr(io.StringIO()), \
+                        redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                         "--orchestration-id", oid, "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = original  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
+            self.assertEqual(meta_path.read_bytes(), seeded_bytes)
+
+    def test_unexpected_exception_preserves_an_already_terminal_status(self) -> None:
+        # A more specific terminal status recorded before the exception wins: the
+        # generic `driver_exception` must not clobber e.g. a `fail_closed` narrative.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            oid = "orch_exc_terminal"
+            orch_dir = repo_root / "workspace" / "orchestrations" / oid
+            orch_dir.mkdir(parents=True, exist_ok=True)
+            (orch_dir / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": oid, "status": "fail_closed",
+                            "spec_ref": "spec/problem/test.md"}),
+                encoding="utf-8",
+            )
+            with self._mkdir_boom(
+                "orch_agent_run_002", "tmp",
+                OSError(28, "No space left on device"),
+            ), redirect_stderr(io.StringIO()):
+                code, out, observed = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                     "--orchestration-id", oid])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "driver_exception")
+            self.assertEqual([c for c in observed if c and c[0] == "set-status"], [])
 
     def test_resume_refuses_running_latest_without_explicit_id(self) -> None:
         # Implicit `--resume` must not auto-attach to a non-terminal (running) latest.
@@ -5263,9 +5869,53 @@ class StdoutFormatTests(unittest.TestCase):
                 "reason": "preflight_failed", "detail": "x"}) or "")
             .startswith("[FAIL]"),
         )
+        # The driver-exception backstop's envelope rides the same generic fail branch,
+        # so its reason is part of the pinned operator-visible vocabulary too.
+        self.assertEqual(
+            f({"status": "fail", "orchestration_id": "orch_1",
+               "reason": "driver_exception", "detail": "OSError: [Errno 28] boom"}),
+            "[FAIL] reason=driver_exception orch=orch_1 detail=OSError: [Errno 28] boom",
+        )
         # Unknown event shapes return None so the caller falls back to JSON.
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
         self.assertIsNone(f({"hello": "world"}))
+
+
+class ReasonDetailTruncationTests(unittest.TestCase):
+    """`--reason-detail` crosses a subprocess argv boundary, where Linux caps one
+    element at MAX_ARG_STRLEN. The cut therefore has to be bounded — and has to keep
+    the part that says WHY, which for a `_runtime_command` RuntimeError is the tail."""
+
+    def test_a_detail_at_or_under_the_limit_is_passed_through_byte_identical(self) -> None:
+        # The `<=` boundary specifically: a detail of exactly the limit needs no
+        # eliding, and eliding it anyway destroys three characters of a message that
+        # fitted, for nothing.
+        f = run_workflow._truncate_reason_detail
+        limit = run_workflow._REASON_DETAIL_LIMIT
+        for length in (0, 1, limit - 1, limit):
+            with self.subTest(length=length):
+                detail = "y" * length
+                self.assertEqual(f(detail), detail)
+
+    def test_an_oversized_detail_keeps_both_ends_within_the_limit(self) -> None:
+        f = run_workflow._truncate_reason_detail
+        limit = run_workflow._REASON_DETAIL_LIMIT
+        for length in (limit + 1, limit * 5, 200_000):
+            with self.subTest(length=length):
+                detail = "WHICH-COMMAND" + "z" * length + "WHY-IT-DIED"
+                out = f(detail)
+                self.assertEqual(len(out), limit)
+                self.assertTrue(out.startswith("WHICH-COMMAND"))
+                self.assertTrue(out.endswith("WHY-IT-DIED"))
+                self.assertIn("...", out)
+
+    def test_the_cut_is_by_codepoint_so_a_multibyte_detail_stays_readable(self) -> None:
+        # Slicing bytes would split a character and hand the runtime a mojibake
+        # argument; 200 codepoints is at most 800 bytes, far under MAX_ARG_STRLEN.
+        f = run_workflow._truncate_reason_detail
+        out = f("日" * 5_000)
+        self.assertEqual(len(out), run_workflow._REASON_DETAIL_LIMIT)
+        self.assertEqual(out.replace("...", ""), "日" * (len(out) - 3))
 
 
 class SubstepEventTests(unittest.TestCase):

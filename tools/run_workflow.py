@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import traceback
 import uuid
 
 try:
@@ -1362,6 +1363,90 @@ def _terminalize_interrupted_orchestration(
             flush=True,
         )
     except Exception:  # noqa: BLE001 - the interrupt must still propagate
+        pass
+
+
+_REASON_DETAIL_LIMIT = 200
+
+
+def _truncate_reason_detail(detail: str, limit: int = _REASON_DETAIL_LIMIT) -> str:
+    """Fit `detail` into a `--reason-detail` argv element without losing the diagnosis.
+
+    Truncation is required at all because `_runtime_command` passes the detail as ONE
+    subprocess argv element, where Linux caps a single element at `MAX_ARG_STRLEN`
+    (128 KiB) — this repository has been bitten twice already (issues #30 / #31).
+
+    A plain head cut is not sufficient. `_runtime_command` builds its `RuntimeError`
+    as `runtime command failed (<the entire argv>): <the actual error>`, and a cold
+    `init` or `preflight` argv on its own is longer than any sane limit, so the head
+    is all context and no diagnosis. Keep both ends instead: enough of the head to
+    name the failing command, and the tail, where the message that says WHY lives.
+    """
+    if len(detail) <= limit:
+        return detail
+    head = limit // 4
+    tail = limit - head - 3
+    return f"{detail[:head]}...{detail[-tail:]}"
+
+
+def _terminalize_owned_orchestration(
+    repo_root: Path,
+    env: dict[str, str],
+    orchestration_id: str,
+    *,
+    init_committed: bool,
+    driver_identity: dict[str, Any] | None,
+    reason_code: str,
+    detail: str,
+) -> None:
+    """Best-effort `fail` terminalization of a run THIS invocation owns, for the
+    `_run_node` failure paths that return a fail envelope instead of raising.
+
+    Without it those paths leave the orchestration `running` forever: an implicit
+    `--resume` refuses a non-terminal latest and a cold re-run silently starts over,
+    discarding the checkpoint. Three guards, all of which mirror
+    `_terminalize_interrupted_orchestration` and the interrupt clause that calls it:
+
+    * **Ownership.** `init_committed` only flips when the runtime call RETURNS, but the
+      runtime writes the `running` meta well before that. So fall back to the durable
+      evidence: a meta whose `driver` block names THIS process was necessarily written
+      by this invocation's init. A reused `--orchestration-id` naming someone else's
+      run is left untouched.
+    * **A more specific terminal status wins.** The runtime may have recorded e.g.
+      `fail_closed` / `sandbox_enforcement_violation` just before the failure, and
+      terminal→terminal is rejected anyway.
+    * **Every failure is swallowed.** The caller still has a fail envelope to print,
+      and the exception that brought us here (a full disk, a read-only workspace) is
+      usually exactly what makes the runtime subprocess fail too.
+
+    `detail` is truncated by `_truncate_reason_detail`: it crosses an argv boundary,
+    where an embedded runtime stderr dump would otherwise turn this into an `E2BIG`
+    OSError. The full text still reaches the operator on the caller's stdout envelope.
+    """
+    meta_now = _read_orchestration_meta(repo_root, orchestration_id)
+    if not (init_committed or _is_own_driver(meta_now, driver_identity)):
+        return
+    if str(meta_now.get("status") or "").strip().lower() in _RESUMABLE_TERMINAL_STATUSES:
+        return
+    try:
+        _runtime_command(
+            repo_root,
+            env,
+            [
+                "set-status",
+                "--repo-root",
+                str(repo_root),
+                "--orchestration-id",
+                orchestration_id,
+                "--status",
+                "fail",
+                "--reason-code",
+                reason_code,
+                "--reason-detail",
+                _truncate_reason_detail(detail),
+            ],
+        )
+    except Exception:  # noqa: BLE001 - best-effort; the envelope must still print
         pass
 
 
@@ -3184,7 +3269,6 @@ def _run_node(
     env["METDSL_ORCHESTRATION_ID"] = orchestration_id
 
     tmp_parent = repo_root / "workspace" / "tmp"
-    tmp_parent.mkdir(parents=True, exist_ok=True)
     # TMPDIR must match output_manifest.allowed_tmp_root for the active agent (orchestration uses
     # workspace/tmp/<orchestration_agent_run_id>). Set only after init returns that id; cleanup only
     # that directory so concurrent workflows' workspace/tmp/<other_agent_run_id>/ are untouched.
@@ -3222,6 +3306,11 @@ def _run_node(
     try:
         if run_log_file is not None:
             sys.stdout = _StdoutTee(saved_stdout, run_log_file, mode=stdout_format)
+
+        # Inside the try, not before it: this is the first write into the workspace,
+        # so on a read-only checkout or a full disk it is the first thing to fail —
+        # and it must fail inside the envelope contract rather than as a traceback.
+        tmp_parent.mkdir(parents=True, exist_ok=True)
 
         for kind, key, held, detail in (
             (
@@ -3437,6 +3526,18 @@ def _run_node(
             ]
             preflight_result = _runtime_command(repo_root, env, preflight_args).payload
         except RuntimeError as exc:
+            # This handler spans `init` AND `preflight`, so it is reached with the
+            # orchestration already committed whenever the preflight subprocess (or a
+            # set-status inside the snapshot handler above) fails. Returning the
+            # envelope without terminalizing would leave exactly the stuck `running`
+            # this whole path exists to prevent. In the pre-commit case (a failing
+            # `init`) the ownership guard makes it a no-op, so a reused
+            # `--orchestration-id` naming a foreign run is still left alone.
+            _terminalize_owned_orchestration(
+                repo_root, env, orchestration_id, init_committed=init_committed,
+                driver_identity=driver_identity,
+                reason_code="runtime_command_failed", detail=str(exc),
+            )
             print(
                 json.dumps(
                     {
@@ -3673,6 +3774,34 @@ def _run_node(
         ):
             _terminalize_interrupted_orchestration(repo_root, env, orchestration_id)
         raise
+    except Exception as exc:  # noqa: BLE001 - backstop: no escape may leave `running`
+        # Backstop for host-side failures no specific handler above names: an OSError
+        # from `orch_tmp.mkdir` / the prompt write on a full disk or read-only
+        # workspace, a non-OSError escaping the snapshot writer, or a programming
+        # error on this path. Without it the exception reaches
+        # `raise SystemExit(main())` — a traceback instead of the fail envelope every
+        # other failure here emits, and the orchestration stays `running` forever: an
+        # implicit --resume refuses it and a cold re-run silently starts over,
+        # discarding the checkpoint. The traceback still goes to stderr, so a genuine
+        # bug stays debuggable while stdout keeps its envelope contract. Ownership and
+        # terminal-status handling mirror the interrupt clause above: only a run this
+        # invocation committed (or provably owns via the meta's `driver` block) is
+        # terminalized, a more specific terminal status recorded before the exception
+        # wins, and a failing set-status is swallowed — the envelope must still print.
+        try:
+            traceback.print_exc(file=sys.stderr)
+        except Exception:  # noqa: BLE001 - reporting must not displace the envelope
+            pass
+        detail = f"{type(exc).__name__}: {exc}"
+        _terminalize_owned_orchestration(
+            repo_root, env, orchestration_id, init_committed=init_committed,
+            driver_identity=driver_identity, reason_code="driver_exception",
+            detail=detail,
+        )
+        print(json.dumps({
+            "status": "fail", "reason": "driver_exception", "detail": detail,
+            "orchestration_id": orchestration_id}, ensure_ascii=False))
+        return 2
     finally:
         if run_log_file is not None:
             sys.stdout = saved_stdout
