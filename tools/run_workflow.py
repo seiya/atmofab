@@ -3085,10 +3085,12 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
             else:
                 d = str(detail).rstrip()
             parts.append(f"detail={d}")
-        # The fail arm renders `reason` / `orch` / `detail` and drops the other keys,
-        # which is right for the ones the detail already restates (`driver_pid`,
-        # `spec_ref`, `resume_command`).
-        # `docs_ref` is the exception: it names the section that FIXES the failure and
+        # The fail arm renders `reason` / `orch` / `detail` and drops the other keys.
+        # That is right where the detail restates them (`driver_pid`, `spec_ref`,
+        # `resume_command`) and wrong where it does not: `dependency_node_failed`
+        # carries no detail at all, so its `failed_dependency_node` / `exit_code` are
+        # dropped — a pre-existing gap in the closure summary, not addressed here.
+        # `docs_ref` is rendered because it names the section that FIXES the failure and
         # appears nowhere in the detail text, so dropping it would make the rendered
         # line strictly less actionable than the raw JSON it replaced.
         docs_ref = payload.get("docs_ref")

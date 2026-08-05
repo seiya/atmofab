@@ -6062,42 +6062,59 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         behaviourally, so this guard carries the other 15 — which is why it checks the
         exact shape of the emission set rather than a lower bound.
 
-        Scoped to `_run_main`'s own body. That is not the same as "every byte the startup
-        path prints": `_cold_start_running_guard` and `_terminalize_dead_driver` are called
-        from here and emit their own events, and both are shared with the closure driver.
-        They go through the same single helper, which is why one helper — rather than a
-        name per phase of the run — is what makes the rule enforceable at all.
+        The no-raw-write half covers every function that emits outside a node run, not
+        just `_run_main`: the closure driver and the three gate emitters shared between
+        the two paths stand on exactly the same rule ("the elision is a property of the
+        emission point"), and a bare print added to one of THEM reintroduces the leak for
+        the `--with-deps` path — the divergence this branch's own review caught. They
+        contain no such write today, so the assertion costs nothing to hold.
 
         Walked as an AST, not grepped: the sites are written as a multi-line
         `print(\\n    json.dumps(` that plain text search misses."""
         import ast
         import inspect
-        tree = ast.parse(textwrap.dedent(inspect.getsource(run_workflow._run_main)))
-        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        prints = [
-            node.lineno for node in calls
-            if isinstance(node.func, ast.Name) and node.func.id == "print"
-        ]
-        self.assertEqual(
-            prints, [],
-            "_run_main must emit stdout only via _emit_unlogged_event (which honors "
-            f"--stdout-format); bare print() at _run_main-relative line(s) {prints}")
-        # `print` is not the only way to write a line. A `sys.stdout.write(json.dumps(...))`
-        # bypasses the helper just as completely while leaving the assertion above green.
-        # Scoped to STDOUT: `_run_main`'s one `sys.stderr.write` is the deliberate advisory
-        # about an ignored `--llm-config` on resume, which is not an envelope.
-        stdout_writes = [
-            node.lineno for node in calls
-            if isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"write", "writelines"}
-            and isinstance(node.func.value, ast.Attribute)
-            and node.func.value.attr == "stdout"
-        ]
-        self.assertEqual(
-            stdout_writes, [],
-            "_run_main must not write to sys.stdout directly; every envelope goes through "
-            f"_emit_unlogged_event — lines {stdout_writes}")
-        # ...and the helper is actually used there, so the assertions above cannot be
+
+        def calls_in(func) -> list:  # type: ignore[no-untyped-def]
+            tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+            return [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+
+        untee_d_emitters = {
+            "_run_main": run_workflow._run_main,
+            "_run_with_dependency_closure": run_workflow._run_with_dependency_closure,
+            "_cold_start_running_guard": run_workflow._cold_start_running_guard,
+            "_warm_resume_liveness_guard": run_workflow._warm_resume_liveness_guard,
+            "_terminalize_dead_driver": run_workflow._terminalize_dead_driver,
+        }
+        for name, func in untee_d_emitters.items():
+            calls = calls_in(func)
+            prints = [
+                node.lineno for node in calls
+                if isinstance(node.func, ast.Name) and node.func.id == "print"
+            ]
+            self.assertEqual(
+                prints, [],
+                f"{name} must emit stdout only via _emit_unlogged_event (which honors "
+                f"--stdout-format); bare print() at {name}-relative line(s) {prints}")
+            # `print` is not the only way to write a line. A `sys.stdout.write(json.dumps(...))`
+            # bypasses the helper just as completely while leaving the assertion above green.
+            # Scoped to STDOUT: `_run_main`'s one `sys.stderr.write` is the deliberate advisory
+            # about an ignored `--llm-config` on resume, which is not an envelope.
+            stdout_writes = [
+                node.lineno for node in calls
+                if isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"write", "writelines"}
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "stdout"
+            ]
+            self.assertEqual(
+                stdout_writes, [],
+                f"{name} must not write to sys.stdout directly; every envelope goes "
+                f"through _emit_unlogged_event — lines {stdout_writes}")
+        # The exact-count half stays scoped to `_run_main`: it is what keeps the 15
+        # sites no behaviour test reaches from quietly disappearing, and a count over
+        # the closure driver would just be churn on every future closure event.
+        calls = calls_in(run_workflow._run_main)
+        # ...the helper is actually used there, so the assertions above cannot be
         # satisfied by a `_run_main` that simply stopped emitting anything.
         helper_calls = [
             node for node in calls
