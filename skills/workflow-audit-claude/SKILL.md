@@ -434,7 +434,7 @@ From Step 3.5 / 4.5 / 5.5, summarize the **legitimate action the agent should ta
 
 | policy | block count | fix_hint present/absent | recommended action |
 |---|---|---|---|
-| read_manifest_read_guard | … | … | the path is outside `allowed_read_roots` (in-manifest paths read directly with `Read`); obtain an out-of-manifest read via `run-gate orchestration_read` |
+| read_manifest_read_guard | … | … | the path is outside `allowed_read_roots`. In-manifest paths are read directly (`Read` / `Grep` / `Glob` / a `Bash` reader); an out-of-manifest path is unreadable by every route — `run-gate orchestration_read` fails the orchestration for it — so the fix is a read re-issued under `allowed_read_roots`, or a relaunch with a corrected manifest. Check `audit_detail.via` to see which tool was blocked |
 | output_manifest_write_guard | … | … | directly specify the literal path of `allowed_tmp_root` (`workspace/tmp/<agent_run_id>/...`). Bootstrap Bash such as `export TMPDIR=...` / `jq -er ...` is forbidden (the workflow stops on a Claude Code session sandbox approval) |
 | forbid_python_inline_write | … | … | use the Edit/Write tool |
 | forbid_tools_direct_read | … | … | during workflow execution, reference only `docs/` / `spec/` |

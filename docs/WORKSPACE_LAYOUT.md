@@ -73,7 +73,9 @@ workspace/
 │       │   └── <agent_run_id>.json                (the access policy derived from the manifest)
 │       │
 │       ├── access_logs/
-│       │   └── <agent_run_id>.jsonl               (the access trace of orchestration_read etc.)
+│       │   └── <agent_run_id>.jsonl               (read decisions: hook allow/block lines with
+│       │                                           "source":"hook" + orchestration_read gate lines;
+│       │                                           best-effort, NOT an exhaustive record of reads)
 │       │
 │       ├── hooks/
 │       │   ├── native_hook_events.jsonl           (the trace of all hook decisions such as PreToolUse)
