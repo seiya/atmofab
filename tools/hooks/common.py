@@ -646,6 +646,12 @@ def _extract_simple_positional_read_targets(cmd: str, args: list[str]) -> list[s
         if token == "--":
             targets.extend(args[idx + 1 :])
             break
+        read_target, consumed = _long_option_read_target(cmd, token, args, idx)
+        if consumed:
+            if read_target:
+                targets.append(read_target)
+            idx += consumed
+            continue
         if token in detached:
             idx += 2
             continue
@@ -655,6 +661,44 @@ def _extract_simple_positional_read_targets(cmd: str, args: list[str]) -> list[s
         targets.append(token)
         idx += 1
     return targets
+
+
+# Long options whose VALUE is a file the command opens. These are not flags to
+# skip and not detached values to swallow — they are reads, and several of them
+# echo the file's content back (`wc --files0-from` and `sort --files0-from`
+# print it in their diagnostics, `diff --from-file` prints it as a diff). Both
+# spellings count: `--opt=PATH` and `--opt PATH`.
+#
+# Enumerated from each command's `--help` in one pass, deliberately: the same
+# defect kept arriving one option at a time (`--from-file`, `--exclude-from`,
+# `--files0-from`), and a table is the only form that closes the class.
+_LONG_OPTION_READ_TARGETS: dict[str, frozenset[str]] = {
+    "wc": frozenset({"--files0-from"}),
+    "sort": frozenset({"--files0-from", "--random-source"}),
+    "diff": frozenset({"--from-file", "--to-file", "--exclude-from", "--starting-file"}),
+    "grep": frozenset({"--exclude-from", "--file"}),
+    "egrep": frozenset({"--exclude-from", "--file"}),
+    "fgrep": frozenset({"--exclude-from", "--file"}),
+    "sed": frozenset({"--file"}),
+    "awk": frozenset({"--file"}),
+    "jq": frozenset({"--from-file", "--slurpfile", "--rawfile"}),
+    "comm": frozenset(),
+    "uniq": frozenset(),
+}
+
+
+def _long_option_read_target(
+    cmd: str, token: str, args: list[str], idx: int
+) -> tuple[str | None, int]:
+    """`(target, tokens_consumed)` when `token` names a file the command reads."""
+    if not token.startswith("--") or token == "--":
+        return None, 0
+    name, _, glued = token[2:].partition("=")
+    if f"--{name}" not in _LONG_OPTION_READ_TARGETS.get(cmd, frozenset()):
+        return None, 0
+    if "=" in token:
+        return (glued or None), 1
+    return (args[idx + 1] if idx + 1 < len(args) else None), 2
 
 
 def _is_long_option_abbreviation(token: str, names: tuple[str, ...]) -> bool:
@@ -689,16 +733,11 @@ def _extract_diff_read_targets(args: list[str]) -> list[str]:
         if token == "--":
             rest.extend(args[idx + 1 :])
             break
-        if token in {"--from-file", "--to-file"}:
-            if idx + 1 < len(args):
-                targets.append(args[idx + 1])
-            idx += 2
-            continue
-        if token.startswith(("--from-file=", "--to-file=")):
-            value = token.split("=", 1)[1]
-            if value:
-                targets.append(value)
-            idx += 1
+        read_target, consumed = _long_option_read_target("diff", token, args, idx)
+        if consumed:
+            if read_target:
+                targets.append(read_target)
+            idx += consumed
             continue
         if token.startswith("-") and token != "-":
             idx += 1
@@ -830,6 +869,25 @@ def _extract_read_targets(
                     explicit_script_after_positional = True
                 has_explicit_script_source = True
                 read_targets.append(token[2:])
+                idx += 1
+                continue
+            read_target, consumed = _long_option_read_target(cmd, token, args, idx)
+            if consumed:
+                if positional:
+                    explicit_script_after_positional = True
+                has_explicit_script_source = True
+                if read_target:
+                    read_targets.append(read_target)
+                idx += consumed
+                continue
+            if _is_long_option_abbreviation(token, ("file",)) and "=" in token:
+                # `--fil=PATH` is `--file=PATH`: a script file sed reads.
+                if positional:
+                    explicit_script_after_positional = True
+                has_explicit_script_source = True
+                value = token.split("=", 1)[1]
+                if value:
+                    read_targets.append(value)
                 idx += 1
                 continue
             if _is_long_option_abbreviation(token, ("expression", "file")):
@@ -1286,7 +1344,11 @@ def extract_bash_read_targets(
                 # dropped them and nothing was validated — `cd nosuchdir; cat
                 # <path>` walked straight past the guard.
                 if repo_root is not None and cwd is not None:
-                    if not _resolve_target_path(repo_root, cwd).is_dir():
+                    try:
+                        is_dir = _resolve_target_path(repo_root, cwd).is_dir()
+                    except OSError:
+                        is_dir = False
+                    if not is_dir:
                         cwd = None
         elif argv0 in _BASH_READ_CMD_NAMES:
             _record(

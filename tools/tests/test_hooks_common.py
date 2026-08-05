@@ -2991,21 +2991,39 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("grep --color foo tools/x.py"), ["tools/x.py"])
 
     def test_files_read_through_long_options(self) -> None:
-        """`diff --from-file=` reads AND PRINTS the file, and `diff` is
-        auto-approvable — the generic flag skip dropped it silently."""
-        self.assertEqual(
-            self._targets("diff --from-file=spec/private.md docs/a.md"),
-            ["spec/private.md", "docs/a.md"],
-        )
-        self.assertEqual(
-            self._targets("diff --to-file spec/private.md docs/a.md"),
-            ["spec/private.md", "docs/a.md"],
-        )
+        """A long option whose VALUE is a file is a read, not a flag to skip —
+        and several of these echo the content back (`wc --files0-from` and
+        `sort --files0-from` print it in their diagnostics, `diff --from-file`
+        prints it as a diff). Both spellings, every command in the table."""
+        cases = {
+            "diff --from-file=spec/p.md docs/a.md": ["spec/p.md", "docs/a.md"],
+            "diff --to-file spec/p.md docs/a.md": ["spec/p.md", "docs/a.md"],
+            "diff --exclude-from=spec/p.md docs docs": ["spec/p.md", "docs", "docs"],
+            "grep --exclude-from=pats.txt PAT docs/a.md": ["pats.txt", "docs/a.md"],
+            "wc --files0-from=spec/p.md": ["spec/p.md"],
+            "wc --files0-from spec/p.md": ["spec/p.md"],
+            "sort --files0-from=spec/p.md": ["spec/p.md"],
+            "sort --random-source=spec/p.md a.txt": ["spec/p.md", "a.txt"],
+            "sed -n --file spec/s.sed docs/a.md": ["spec/s.sed", "docs/a.md"],
+            "sed -n --file=spec/s.sed docs/a.md": ["spec/s.sed", "docs/a.md"],
+            "sed -n --fil=spec/s.sed docs/a.md": ["spec/s.sed", "docs/a.md"],
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), expected)
+        # Ordinary invocations are unchanged.
         self.assertEqual(self._targets("diff -u a.f90 b.f90"), ["a.f90", "b.f90"])
-        self.assertEqual(
-            self._targets("grep --exclude-from=pats.txt PAT docs/a.md"),
-            ["pats.txt", "docs/a.md"],
-        )
+        self.assertEqual(self._targets("wc -l docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("sort -o out.txt in.txt"), ["in.txt"])
+
+    def test_an_unstattable_path_does_not_kill_the_hook(self) -> None:
+        """`Path.exists()` propagates ENAMETOOLONG/EACCES, and this runs on
+        every tool call — an unrelated command would die with an opaque
+        entrypoint failure."""
+        from tools.hooks.cli import _path_exists
+
+        self.assertFalse(_path_exists(Path("a" * 300)))
+        self.assertTrue(_path_exists(Path(__file__)))
 
     def test_a_failed_cd_does_not_anchor(self) -> None:
         """bash leaves the directory unchanged when `cd` fails; anchoring to a

@@ -1070,6 +1070,20 @@ def _evaluate_grep_glob_read_policy(
 _GLOB_MAX_WILDCARD_COMPONENTS = 2
 
 
+def _path_exists(path: Path) -> bool:
+    """`Path.exists()` that cannot kill the hook.
+
+    It propagates ENAMETOOLONG and EACCES rather than swallowing them, and this
+    runs on every tool call — an unrelated legitimate command would die with an
+    opaque "hook entrypoint failure". Treating an unstattable path as absent
+    matches what the caller does with a nonexistent one.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _bounded_glob_read_targets(
     repo_root: Path, repo_root_resolved: Path, target: str
 ) -> list[tuple[str, Path]]:
@@ -1110,7 +1124,7 @@ def _bounded_glob_read_targets(
             # wildcard: `docs/*/../../spec/*/*/*` reaches outside docs/. Validate
             # at the repository root, the only prefix that still contains it.
             return [(".", repo_root_resolved)]
-        return [(prefix, prefix_abs)] if prefix_abs.exists() else []
+        return [(prefix, prefix_abs)] if _path_exists(prefix_abs) else []
     out: list[tuple[str, Path]] = []
     for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
         abs_match = Path(match)
@@ -1199,7 +1213,7 @@ def _evaluate_bash_read_manifest_policy(
         abs_target = _resolve_target_path(repo_root, target)
         if not _is_path_under_root(abs_target, repo_root_resolved):
             continue
-        if not abs_target.exists():
+        if not _path_exists(abs_target):
             continue
         surviving.append((target, abs_target))
     if not surviving:
