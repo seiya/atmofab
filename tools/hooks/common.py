@@ -807,8 +807,25 @@ def _extract_read_targets(
     return []
 
 
-def _strip_bash_fragment_syntax(tokens: list[str]) -> tuple[list[str], list[str]]:
-    """Split a fragment into (argv tokens, input-redirect read operands).
+def _bash_comment_start(span_text: str) -> int | None:
+    """Index of the `#` that starts a comment, or None.
+
+    Bash treats `#` as a comment only at the start of a WORD, so `a#b` and
+    `--color=#fff` are not comments. Callers pass the quote-stripped span, where
+    a `#` inside quotes has already been blanked.
+    """
+    for pos, char in enumerate(span_text):
+        if char != "#":
+            continue
+        if pos == 0 or span_text[pos - 1] in " \t\n":
+            return pos
+    return None
+
+
+def _strip_bash_fragment_syntax(
+    tokens: list[str],
+) -> tuple[list[str], list[str], bool]:
+    """Split a fragment into (argv tokens, input-redirect reads, stdin-redirected).
 
     Handles the shapes the separator split cannot: a leading keyword or grouping
     token (`then cat X`, `{ cat X`, `(cat X)`), and redirections — an output
@@ -834,12 +851,15 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> tuple[list[str], list[str]
         if not tokens[idx]:
             idx += 1
     redirect_reads: list[str] = []
+    stdin_redirected = False
     while idx < len(tokens):
         token = tokens[idx]
         if token.startswith("<<<"):  # here-string: the operand is literal text
+            stdin_redirected = True
             idx += 2
             continue
         if token.startswith("<<"):  # heredoc: the operand is a delimiter word
+            stdin_redirected = True
             idx += 1
             continue
         if _BASH_REDIRECT_OUT_EXACT_RE.match(token):
@@ -853,11 +873,13 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> tuple[list[str], list[str]
         # happens even when argv0 is `while`, `done`, or nothing at all
         # (`< file cat`).
         if token == "<":
+            stdin_redirected = True
             if idx + 1 < len(tokens):
                 redirect_reads.append(tokens[idx + 1])
             idx += 2
             continue
         if token.startswith("<") and len(token) > 1:
+            stdin_redirected = True
             redirect_reads.append(token[1:])
             idx += 1
             continue
@@ -872,7 +894,9 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> tuple[list[str], list[str]
         # (`(cat < f)`), for the same reason as above.
         if stripped_leading_group and redirect_reads[-1][-1:] in {")", "}"}:
             redirect_reads[-1] = redirect_reads[-1].rstrip(")}")
-    return out, redirect_reads
+            if not redirect_reads[-1]:
+                redirect_reads.pop()
+    return out, redirect_reads, stdin_redirected
 
 
 def expand_bash_braces(token: str) -> list[str]:
@@ -954,27 +978,50 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
         # the quote-stripped span so parens inside an argument do not count;
         # `$(` opens a substitution we never enter.
         span_text = scanned[start:end]
-        opens = 0
+        # An unquoted `#` starting a word begins a comment: the rest of the
+        # fragment is prose, and a path merely MENTIONED there is not a read.
+        comment_at = _bash_comment_start(span_text)
+        if comment_at is not None:
+            blob = command[start : start + comment_at].strip()
+            span_text = span_text[:comment_at]
+            if not blob:
+                continue
+        # `(` opens a subshell whose `cd` is undone when it closes — but a `$(`
+        # opens a substitution we never enter, and counting ITS closing paren
+        # popped the stack early, un-anchoring every later read.
+        opens = closes = 0
+        substitution_depth = 0
         for pos, char in enumerate(span_text):
-            if char == "(" and not (pos and span_text[pos - 1] == "$"):
-                subshell_stack.append(cwd)
-                opens += 1
-        closes = span_text.count(")")
+            if char == "(":
+                if pos and span_text[pos - 1] == "$":
+                    substitution_depth += 1
+                else:
+                    subshell_stack.append(cwd)
+                    opens += 1
+            elif char == ")":
+                if substitution_depth:
+                    substitution_depth -= 1
+                else:
+                    closes += 1
         try:
             tokens = shlex.split(blob)
         except ValueError:
             tokens = blob.split()
-        tokens, redirect_reads = _strip_bash_fragment_syntax(tokens)
+        tokens, redirect_reads, stdin_redirected = _strip_bash_fragment_syntax(tokens)
         if closes > opens:
             # A subshell that OPENED in an earlier fragment closes here, so its
             # `)` is glued to this fragment's last operand (`cat public.md)`).
             for seq in (redirect_reads, tokens):
                 if seq and seq[-1].endswith(")"):
                     seq[-1] = seq[-1].rstrip(")")
+                    if not seq[-1]:
+                        seq.pop()
                     break
 
         def _record(candidates: list[str]) -> None:
             for target in candidates:
+                if not target:
+                    continue
                 # A token still carrying `$` or a backtick names a path only the
                 # shell can compute; there is nothing to validate, so it joins
                 # the declared residue rather than being validated as a literal.
@@ -992,7 +1039,17 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
             # private.md` resolved "private.md" at the repo root, found nothing
             # and authorized nothing, while bash read the file. The operand is
             # literal and known at hook time, so it is not the residue.
-            operand = tokens[1] if len(tokens) > 1 else ""
+            # First non-option operand: `cd -P spec` / `cd -- spec` /
+            # `pushd -n spec` anchored at the FLAG, so the following read
+            # resolved nowhere and was dropped. `-` alone is `cd -`.
+            operand = ""
+            rest = tokens[1:]
+            if "--" in rest:
+                rest = rest[rest.index("--") + 1 :]
+            for token in rest:
+                if token == "-" or not token.startswith("-"):
+                    operand = token
+                    break
             if argv0 == "popd":
                 cwd, previous_cwd = (dir_stack.pop() if dir_stack else None), cwd
             elif operand == "-":
@@ -1006,7 +1063,13 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
                 previous_cwd, cwd = cwd, _joined(cwd, operand)
         elif argv0 in _BASH_READ_CMD_NAMES:
             _record(
-                _extract_read_targets(argv0, tokens, stdin_from_pipe=stdin_from_pipe)
+                _extract_read_targets(
+                    argv0,
+                    tokens,
+                    # `rg PAT < file` and `rg PAT <<< text` read stdin exactly
+                    # as a pipe tail does, so neither walks the tree.
+                    stdin_from_pipe=stdin_from_pipe or stdin_redirected,
+                )
             )
         for _ in range(closes):
             if subshell_stack:

@@ -3136,6 +3136,48 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
             ["docs/public.md", "spec/secret.md"],
         )
 
+    def test_cd_operand_is_the_first_non_option_token(self) -> None:
+        """`cd -P spec` anchored at "-P", so the read resolved nowhere and was
+        dropped as nothing to authorize."""
+        for command in (
+            "cd -P spec && cat private.md",
+            "cd -L spec && cat private.md",
+            "cd -- spec && cat private.md",
+            "pushd -n spec && cat private.md",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), ["spec/private.md"])
+
+    def test_command_substitution_paren_does_not_close_a_subshell(self) -> None:
+        """`$(` opens something the scan never enters; counting its closing
+        paren popped the directory stack while bash was still in the subshell."""
+        self.assertEqual(
+            self._targets("(cd spec && echo $(date) && cat private.md)"),
+            ["spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("(cd spec && echo $((1+2)) && cat private.md)"),
+            ["spec/private.md"],
+        )
+
+    def test_comment_text_is_not_a_read(self) -> None:
+        self.assertEqual(
+            self._targets("cat docs/a.md # see spec/private.md"), ["docs/a.md"]
+        )
+        # `#` mid-word is not a comment.
+        self.assertEqual(self._targets("cat docs/a#b.md"), ["docs/a#b.md"])
+
+    def test_no_empty_target_is_reported(self) -> None:
+        """An empty target resolves to the repo root, so it blocks with a path
+        the agent cannot act on."""
+        self.assertEqual(self._targets("(echo hi; cat docs/a.md )"), ["docs/a.md"])
+
+    def test_stdin_redirect_stops_ripgrep_walking_the_tree(self) -> None:
+        self.assertEqual(self._targets("rg PAT < docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets('rg PAT <<< "x"'), [])
+        # Without stdin, ripgrep really does search the tree.
+        self.assertEqual(self._targets("rg PAT"), ["."])
+
     def test_input_redirection_is_a_read_whatever_the_command_is(self) -> None:
         self.assertEqual(
             self._targets("while read l; do echo $l; done < spec/secret.md"),
