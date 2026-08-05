@@ -281,7 +281,7 @@ def _extract_command(payload: dict[str, Any]) -> str | None:
 
 
 def _strip_quoted_strings(cmd: str) -> str:
-    """Blank the content inside shell quotes, preserving length.
+    """Blank the content inside shell quotes AND comments, preserving length.
 
     Callers rely on this to keep a `>`, `;` or `<<` that is merely TEXT inside
     an argument from being read as shell syntax, and on the offsets staying
@@ -296,18 +296,38 @@ def _strip_quoted_strings(cmd: str) -> str:
 
     An unterminated quote is left alone rather than blanking to end-of-string,
     which is the fail-closed direction here: nothing is hidden from the scan.
+
+    A comment is blanked here rather than later because bash's lexer decides it
+    HERE: a `#` comment ends the line before quoting or `<<` mean anything. Doing
+    it afterwards let an apostrophe in a comment ("user's file") pair with a
+    later quote and blank the newline between them — merging fragments so a read
+    on the next line vanished — and let a `<<` written inside a comment blank the
+    rest of the command as a heredoc body. The `#` itself is kept: callers scan
+    the result for it to refuse auto-approval.
     """
     out = list(cmd)
     idx = 0
     n = len(cmd)
+    at_word_start = True
     while idx < n:
         ch = cmd[idx]
+        if ch == "#" and at_word_start:
+            end = cmd.find("\n", idx)
+            end = n if end == -1 else end
+            for pos in range(idx + 1, end):
+                out[pos] = " "
+            idx = end
+            at_word_start = True
+            continue
         if ch == "\\":  # an escaped character never opens a quote
             idx += 2
+            at_word_start = False
             continue
         if ch not in ("'", '"'):
+            at_word_start = ch in " \t\n;|&()"
             idx += 1
             continue
+        at_word_start = False
         end = idx + 1
         while end < n:
             # Backslash escapes apply inside "..." but not inside '...'.
@@ -402,7 +422,7 @@ _BASH_REDIRECT_OUT_GLUED_RE = re.compile(r"^\d*(?:>>|>&|&>|>).+$")
 # (`'PY-END'`, `'1EOF'`), so the charset is only constrained for the bare form.
 _BASH_HEREDOC_RE = re.compile(
     r"(?<!<)<<(?P<dash>-?)\s*"
-    r"(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+    r"(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|\\?(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
 )
 
 
@@ -442,6 +462,13 @@ def _blank_heredoc_bodies(command: str) -> str:
             else match.group("bare")
         ).strip()
         if not delimiter:
+            search_from = match.end()
+            continue
+        # `$((1 << n))` and `(( x = y << z ))` are arithmetic, not heredocs.
+        # A real heredoc operator is followed by end-of-line or another
+        # redirection — never by the `)` that closes an arithmetic context.
+        tail = scanned[match.end() :].lstrip(" \t")
+        if tail[:1] == ")":
             search_from = match.end()
             continue
         newline = command.find("\n", match.end())

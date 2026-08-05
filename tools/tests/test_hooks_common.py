@@ -3195,6 +3195,39 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         # `#` mid-word is not a comment.
         self.assertEqual(self._targets("cat docs/a#b.md"), ["docs/a#b.md"])
 
+    def test_comment_contents_are_not_shell_syntax(self) -> None:
+        """bash ends a comment at the newline BEFORE quoting or `<<` mean
+        anything. Stripping comments later let an apostrophe in one pair with a
+        later quote — blanking the newline between them, merging the fragments,
+        and losing the read on the next line — and let a `<<` inside a comment
+        blank the rest of the command as a heredoc body."""
+        self.assertEqual(
+            self._targets("echo hi # user's file\ncat spec/private.md\necho 'bye'"),
+            ["spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("cat docs/a.md # note: use << heredoc\ncat spec/private.md"),
+            ["docs/a.md", "spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("# it's fine\ncat spec/private.md\ngrep 'x' docs/a.md"),
+            ["spec/private.md", "docs/a.md"],
+        )
+
+    def test_arithmetic_shift_is_not_a_heredoc(self) -> None:
+        self.assertEqual(
+            self._targets("echo $((1 << n))\ncat spec/private.md"), ["spec/private.md"]
+        )
+        self.assertEqual(
+            self._targets("(( x = y << z ))\ncat spec/private.md"), ["spec/private.md"]
+        )
+
+    def test_backslash_quoted_heredoc_delimiter(self) -> None:
+        """`<<\\EOF` quotes the delimiter exactly like `<<'EOF'`."""
+        self.assertEqual(
+            self._targets("cat <<\\EOF\ncat spec/private.md\nEOF\ncat b.md"), ["b.md"]
+        )
+
     def test_no_empty_target_is_reported(self) -> None:
         """An empty target resolves to the repo root, so it blocks with a path
         the agent cannot act on."""
