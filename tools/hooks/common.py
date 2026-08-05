@@ -1335,6 +1335,14 @@ def _expand_sequence(spec: str) -> list[str] | None:
     return [chr(n) for n in rng]
 
 
+# Bound on brace expansion in this synchronous hook. Exported because a
+# caller must be able to tell "fully expanded" from "gave up at the bound"
+# — past it the real file is never checked, so the caller has to fall back
+# to the `_braces_to_glob` form instead of trusting the (partial) list.
+BRACE_EXPAND_MAX_RESULTS = 256
+BRACE_EXPAND_MAX_GROUPS = 8
+
+
 def _brace_expand(s: str) -> list[str]:
     """Bash brace expansion: comma groups `{x,y}`, sequences `{k..m}`, and
     nested groups `{a,{b,c}}` — cartesian product, balanced-brace aware.
@@ -1344,7 +1352,7 @@ def _brace_expand(s: str) -> list[str]:
     `_braces_to_glob` fail-closed fallback in the caller still blocks anything
     that lexically targets the secret root).
     """
-    if s.count("{") > 8:
+    if s.count("{") > BRACE_EXPAND_MAX_GROUPS:
         return [s]
     # Find the first balanced top-level {...} group.
     depth = 0
@@ -1373,7 +1381,7 @@ def _brace_expand(s: str) -> list[str]:
                         # fallback, and let `~/.met-ds{k..m..1}/x` through.)
                         for tail in _brace_expand(post):
                             out.append(pre + "{" + inner + "}" + tail)
-                            if len(out) > 256:
+                            if len(out) > BRACE_EXPAND_MAX_RESULTS:
                                 return out
                         return out
                     options = seq
@@ -1383,7 +1391,7 @@ def _brace_expand(s: str) -> list[str]:
                     for sub in _brace_expand(opt):
                         for tail in _brace_expand(post):
                             out.append(pre + sub + tail)
-                            if len(out) > 256:
+                            if len(out) > BRACE_EXPAND_MAX_RESULTS:
                                 return out
                 return out
     return [s]

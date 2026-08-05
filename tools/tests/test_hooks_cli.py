@@ -3300,6 +3300,21 @@ class BashReadManifestGuardTests(unittest.TestCase):
             (repo_root / "spec" / "p2.md").write_text("x", encoding="utf-8")
             self.assertEqual(self._run(repo_root, "cat spec/p{1..2}.md")[0], 2)
 
+    def test_brace_expansion_past_the_bound_falls_back_to_a_glob(self) -> None:
+        """The expander is bounded; past the bound the real file was never
+        checked and the read reached the auto-approve."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            (repo_root / "spec" / "d300").mkdir()
+            (repo_root / "spec" / "d300" / "s.md").write_text("x", encoding="utf-8")
+            self.assertEqual(self._run(repo_root, "cat spec/d{1..300}/s.md")[0], 2)
+            nested = "spec/" + "".join(f"{c}{{1,2}}" for c in "abcdefghi") + "/s.md"
+            (repo_root / "spec" / "a2b2c2d2e2f2g2h2i2").mkdir()
+            (repo_root / "spec" / "a2b2c2d2e2f2g2h2i2" / "s.md").write_text(
+                "x", encoding="utf-8"
+            )
+            self.assertEqual(self._run(repo_root, f"cat {nested}")[0], 2)
+
     def test_auto_approvable_reader_outside_manifest_blocks(self) -> None:
         """egrep/fgrep/wc are auto-approvable; unextracted they would execute."""
         with tempfile.TemporaryDirectory() as tmp:

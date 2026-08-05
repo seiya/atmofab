@@ -2947,21 +2947,32 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
     def test_auto_approvable_readers_are_all_extracted(self) -> None:
         """Anything in cli._SAFE_READONLY_BASH_CMDS that reads file CONTENT must
         also be extractable here — an auto-approvable command the extractor does
-        not know reads whatever it likes, bypassing the harness allowlist too."""
+        not know reads whatever it likes, bypassing the harness allowlist too.
+
+        Derived from the live set, not a hardcoded list: the failure this guards
+        against (egrep/fgrep/wc) came from ADDING a reader to the auto-approve
+        set, which a hardcoded expectation cannot see. A new entry must be
+        triaged into one of the two lists below or this fails.
+        """
         from tools.hooks.cli import _SAFE_READONLY_BASH_CMDS
         from tools.hooks.common import _BASH_READ_CMD_NAMES
 
-        content_readers = {
-            "cat", "head", "tail", "nl", "tac", "cut", "comm", "diff", "jq",
-            "grep", "egrep", "fgrep", "wc",
+        # Commands that touch no file content: pure shell builtins, path
+        # arithmetic, and directory listing (names, not contents). `tr` reads
+        # only via `<`, whose presence already disqualifies auto-approval.
+        non_content = {
+            "echo", "printf", "date", "dirname", "basename", "realpath",
+            "readlink", "pwd", "true", "false", "test", "[", "ls", "tr",
         }
-        self.assertTrue(
-            content_readers <= _BASH_READ_CMD_NAMES,
-            f"unextracted content readers: {sorted(content_readers - _BASH_READ_CMD_NAMES)}",
-        )
+        unclassified = _SAFE_READONLY_BASH_CMDS - non_content - _BASH_READ_CMD_NAMES
         self.assertEqual(
-            content_readers & _SAFE_READONLY_BASH_CMDS - _BASH_READ_CMD_NAMES, set()
+            unclassified,
+            set(),
+            "auto-approvable command(s) neither extracted nor declared "
+            f"content-free: {sorted(unclassified)}",
         )
+        # And the exemption list may not quietly cover something extractable.
+        self.assertEqual(non_content & _BASH_READ_CMD_NAMES, set())
 
     def test_egrep_fgrep_and_wc_are_extracted(self) -> None:
         self.assertEqual(self._targets("egrep SECRET spec/private.md"), ["spec/private.md"])
@@ -3083,6 +3094,23 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         """`cat x |\\n rg PAT` is the same command as `cat x | rg PAT`."""
         self.assertEqual(self._targets("cat docs/a.md |\n  rg PAT"), ["docs/a.md"])
         self.assertEqual(self._targets("cat docs/a.md |& rg PAT"), ["docs/a.md"])
+
+    def test_brace_expansion_reports_when_it_gave_up(self) -> None:
+        """Past the bound the expander returns the token unexpanded or a
+        truncated list; the caller must be able to tell, because past it the
+        real file is never checked."""
+        from tools.hooks.common import (
+            BRACE_EXPAND_MAX_GROUPS,
+            BRACE_EXPAND_MAX_RESULTS,
+            expand_bash_braces,
+        )
+
+        too_many_groups = "d" + "{1,2}" * (BRACE_EXPAND_MAX_GROUPS + 1)
+        self.assertIn("{", expand_bash_braces(too_many_groups)[0])
+        self.assertGreater(
+            len(expand_bash_braces(f"d{{1..{BRACE_EXPAND_MAX_RESULTS + 50}}}")),
+            BRACE_EXPAND_MAX_RESULTS,
+        )
 
     def test_brace_expansion(self) -> None:
         from tools.hooks.common import expand_bash_braces

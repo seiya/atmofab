@@ -28,6 +28,8 @@ from tools.hooks.common import (
     _strip_quoted_strings,
     _utc_now_iso,
     append_hook_access_log,
+    _braces_to_glob,
+    BRACE_EXPAND_MAX_RESULTS,
     check_cli_managed_path,
     evaluate_common_policy,
     expand_bash_braces,
@@ -1117,7 +1119,16 @@ def _evaluate_bash_read_manifest_policy(
     for raw_target in extract_bash_read_targets(decoded.command):
         # Brace expansion is lexical, so `cat spec/{a,b}.md` names real files;
         # leaving it unexpanded would drop it as "nonexistent" and auto-approve.
-        extracted.extend(expand_bash_braces(raw_target))
+        variants = expand_bash_braces(raw_target)
+        if len(variants) > BRACE_EXPAND_MAX_RESULTS or any("{" in v for v in variants):
+            # The expander is bounded (>8 groups, >256 products). Past the
+            # bound it returns the token unexpanded or a truncated list, and
+            # either way the real file is never checked — `cat skills/d{1..300}`
+            # reached the auto-approve. Fall back to the glob form the
+            # operator-secret guard uses, so the filesystem decides what this
+            # names rather than the bound.
+            variants = [_braces_to_glob(raw_target)]
+        extracted.extend(variants)
     for target in extracted:
         if _GLOB_META_RE.search(target):
             # "A nonexistent path leaks nothing" does NOT hold for a glob: the
