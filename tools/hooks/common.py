@@ -657,6 +657,57 @@ def _extract_simple_positional_read_targets(cmd: str, args: list[str]) -> list[s
     return targets
 
 
+def _is_long_option_abbreviation(token: str, names: tuple[str, ...]) -> bool:
+    """Whether `token` is an abbreviated spelling of one of `names`.
+
+    GNU getopt_long accepts any unambiguous prefix, so `--regex=PAT` and
+    `--reg=PAT` are `--regexp=PAT`. Only the options that supply a PATTERN or
+    SCRIPT matter here: mistaking one for an ordinary flag makes the grammar
+    consume the file operand in its place. Full spellings are handled by their
+    own branches; this covers the shortened ones.
+    """
+    if not token.startswith("--") or token == "--":
+        return False
+    name = token[2:].split("=", 1)[0]
+    if not name:
+        return False
+    return any(full.startswith(name) and full != name for full in names)
+
+
+def _extract_diff_read_targets(args: list[str]) -> list[str]:
+    """Read targets of a `diff` invocation.
+
+    `--from-file=PATH` / `--to-file=PATH` name files diff reads AND PRINTS, but
+    they look like any other long option, so the generic flag skip dropped them
+    silently — and `diff` is auto-approvable, so the read was granted.
+    """
+    targets: list[str] = []
+    rest: list[str] = []
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            rest.extend(args[idx + 1 :])
+            break
+        if token in {"--from-file", "--to-file"}:
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            idx += 2
+            continue
+        if token.startswith(("--from-file=", "--to-file=")):
+            value = token.split("=", 1)[1]
+            if value:
+                targets.append(value)
+            idx += 1
+            continue
+        if token.startswith("-") and token != "-":
+            idx += 1
+            continue
+        rest.append(token)
+        idx += 1
+    return targets + rest
+
+
 def _extract_jq_read_targets(args: list[str]) -> list[str]:
     """Read targets of a `jq` invocation.
 
@@ -724,9 +775,12 @@ def _extract_read_targets(
     if cmd == "jq":
         return _extract_jq_read_targets(args)
 
+    if cmd == "diff":
+        return _extract_diff_read_targets(args)
+
     if cmd in {
         "cat", "head", "tail", "less", "more", "bat", "pygmentize",
-        "nl", "tac", "od", "xxd", "cut", "paste", "diff", "strings",
+        "nl", "tac", "od", "xxd", "cut", "paste", "strings",
         "comm", "sort", "uniq", "wc",
     }:
         return _extract_simple_positional_read_targets(cmd, args)
@@ -778,6 +832,15 @@ def _extract_read_targets(
                 read_targets.append(token[2:])
                 idx += 1
                 continue
+            if _is_long_option_abbreviation(token, ("expression", "file")):
+                # `--expr=p` supplies the script just as `--expression=p` does;
+                # treating it as an ordinary flag consumed the FILE as the
+                # script.
+                if positional:
+                    explicit_script_after_positional = True
+                has_explicit_script_source = True
+                idx += 1
+                continue
             if token.startswith("-"):
                 idx += 1
                 continue
@@ -795,6 +858,7 @@ def _extract_read_targets(
         positional: list[str] = []
         idx = 0
         has_explicit_pattern = False
+        unrecognized_long_option = False
         read_targets: list[str] = []
         detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
         while idx < len(args):
@@ -802,6 +866,19 @@ def _extract_read_targets(
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
+            if token.startswith("--exclude-from="):
+                # A file grep READS; as a plain detached value it was consumed
+                # and never validated.
+                value = token.split("=", 1)[1]
+                if value:
+                    read_targets.append(value)
+                idx += 1
+                continue
+            if token == "--exclude-from":
+                if idx + 1 < len(args):
+                    read_targets.append(args[idx + 1])
+                idx += 2
+                continue
             if token in detached:
                 idx += 2
                 continue
@@ -840,6 +917,14 @@ def _extract_read_targets(
                 read_targets.append(token[2:])
                 idx += 1
                 continue
+            if _is_long_option_abbreviation(token, ("regexp", "file")):
+                # GNU getopt_long accepts any unambiguous abbreviation, so
+                # `--regex=PAT` / `--reg=PAT` really do supply the pattern —
+                # and treating them as ordinary flags consumed the FILE as the
+                # pattern and auto-approved the read.
+                unrecognized_long_option = True
+                idx += 1
+                continue
             if token.startswith("-"):
                 idx += 1
                 continue
@@ -852,7 +937,7 @@ def _extract_read_targets(
         takes_no_pattern = cmd == "rg" and any(
             token in _RG_NO_PATTERN_FLAGS for token in args
         )
-        if has_explicit_pattern or takes_no_pattern:
+        if has_explicit_pattern or takes_no_pattern or unrecognized_long_option:
             file_operands = positional
         else:
             file_operands = positional[1:]

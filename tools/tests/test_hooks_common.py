@@ -2976,6 +2976,37 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         # value of an earlier flag (`-A2`), not a cluster to split.
         self.assertEqual(self._targets("grep -A2 PAT docs/a.md"), ["docs/a.md"])
 
+    def test_abbreviated_long_options_still_supply_the_pattern(self) -> None:
+        """GNU getopt_long takes any unambiguous prefix, so `--regex=PAT` is
+        `--regexp=PAT`. Reading it as an ordinary flag consumed the FILE as the
+        pattern and auto-approved the read."""
+        self.assertEqual(self._targets("grep --regex=ZQ spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep --reg=ZQ spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("sed -n --expr=p spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("sed -n --expression=p spec/private.md"), ["spec/private.md"]
+        )
+        # A long option that is NOT such an abbreviation keeps its meaning.
+        self.assertEqual(self._targets("grep --directories=recurse PAT"), ["."])
+        self.assertEqual(self._targets("grep --color foo tools/x.py"), ["tools/x.py"])
+
+    def test_files_read_through_long_options(self) -> None:
+        """`diff --from-file=` reads AND PRINTS the file, and `diff` is
+        auto-approvable — the generic flag skip dropped it silently."""
+        self.assertEqual(
+            self._targets("diff --from-file=spec/private.md docs/a.md"),
+            ["spec/private.md", "docs/a.md"],
+        )
+        self.assertEqual(
+            self._targets("diff --to-file spec/private.md docs/a.md"),
+            ["spec/private.md", "docs/a.md"],
+        )
+        self.assertEqual(self._targets("diff -u a.f90 b.f90"), ["a.f90", "b.f90"])
+        self.assertEqual(
+            self._targets("grep --exclude-from=pats.txt PAT docs/a.md"),
+            ["pats.txt", "docs/a.md"],
+        )
+
     def test_a_failed_cd_does_not_anchor(self) -> None:
         """bash leaves the directory unchanged when `cd` fails; anchoring to a
         directory that is not there sent later targets to paths that cannot
