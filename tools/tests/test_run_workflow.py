@@ -5896,7 +5896,11 @@ class StdoutFormatTests(unittest.TestCase):
         at startup, where `_emit_startup_event` opts out, they would destroy the remedy the
         message exists to deliver. Pin both directions."""
         f = run_workflow._format_event_human
-        detail = "first line\nsecond line\n" + ("x" * 400)
+        # Leading whitespace on purpose: the lossless arm `rstrip()`s rather than
+        # `strip()`s, and a real remedy is indented (`llm_config_default_missing` puts
+        # its `cp` lines under two spaces). Without a fixture that HAS leading
+        # whitespace, `rstrip` -> `strip` is an undetectable mutation.
+        detail = "  first line\nsecond line\n" + ("x" * 400)
         elided = f({"status": "fail", "reason": "r", "detail": detail})
         # Default: one line, and cut at exactly 240 characters of the collapsed text.
         collapsed = detail.replace("\n", " ").strip()
@@ -5912,6 +5916,9 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(lossless, f"[FAIL] reason=r detail={detail}")
         self.assertIn("\nsecond line\n", lossless or "")
         self.assertTrue((lossless or "").endswith("x" * 400))
+        # ...only TRAILING whitespace: the indent that structures a multi-line remedy is
+        # part of the message. (`strip()` here would still satisfy every assert above.)
+        self.assertIn("detail=  first line", lossless or "")
         # `elide_detail` is keyword-only and touches the fail arm ONLY: every other event
         # renders identically under both values.
         info = {"status": "info", "event": "phase_start", "phase": "compile", "attempt": 1}
@@ -5920,6 +5927,17 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(f(ok), f(ok, elide_detail=False))
         with self.assertRaises(TypeError):
             f({"status": "fail", "reason": "r"}, False)  # type: ignore[misc]
+        # `docs_ref` survives the render. Every other extra key is dropped because the
+        # detail restates it; this one names the section that fixes the failure and is
+        # nowhere in the detail, so a rendered line without it is less useful than the
+        # raw JSON it replaced.
+        self.assertEqual(
+            f({"status": "fail", "reason": "missing_required_cli_tools",
+               "detail": "missing tools: jq", "missing": ["jq"],
+               "required": ["jq", "git"], "docs_ref": "docs/RUNBOOK.md#0-1"}),
+            "[FAIL] reason=missing_required_cli_tools detail=missing tools: jq "
+            "docs_ref=docs/RUNBOOK.md#0-1",
+        )
 
 
 class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
@@ -6040,30 +6058,58 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
     def test_run_main_emits_stdout_only_through_the_startup_helper(self) -> None:
         """Structural guard for the whole class of sites: any NEW startup envelope added to
         `_run_main` with a bare `print(json.dumps(...))` reintroduces the bug for that path,
-        and no behaviour test would cover it. Walked as an AST, not grepped: the sites are
-        written as a multi-line `print(\\n    json.dumps(` that plain text search misses."""
+        and no behaviour test would cover it. Only 2 of the 17 emissions are pinned
+        behaviourally, so this guard carries the other 15 — which is why it checks the
+        exact shape of the emission set rather than a lower bound.
+
+        Walked as an AST, not grepped: the sites are written as a multi-line
+        `print(\\n    json.dumps(` that plain text search misses."""
         import ast
         import inspect
         tree = ast.parse(textwrap.dedent(inspect.getsource(run_workflow._run_main)))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
         prints = [
-            node.lineno for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "print"
+            node.lineno for node in calls
+            if isinstance(node.func, ast.Name) and node.func.id == "print"
         ]
         self.assertEqual(
             prints, [],
             "_run_main must emit stdout only via _emit_startup_event (which honors "
             f"--stdout-format); bare print() at _run_main-relative line(s) {prints}")
-        # ...and the helper is actually used there, so the assertion above cannot be
+        # `print` is not the only way to write a line. A `sys.stdout.write(json.dumps(...))`
+        # bypasses the helper just as completely while leaving the assertion above green.
+        # Scoped to STDOUT: `_run_main`'s one `sys.stderr.write` is the deliberate advisory
+        # about an ignored `--llm-config` on resume, which is not an envelope.
+        stdout_writes = [
+            node.lineno for node in calls
+            if isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"write", "writelines"}
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "stdout"
+        ]
+        self.assertEqual(
+            stdout_writes, [],
+            "_run_main must not write to sys.stdout directly; every envelope goes through "
+            f"_emit_startup_event — lines {stdout_writes}")
+        # ...and the helper is actually used there, so the assertions above cannot be
         # satisfied by a `_run_main` that simply stopped emitting anything.
         helper_calls = [
-            node for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "_emit_startup_event"
+            node for node in calls
+            if isinstance(node.func, ast.Name) and node.func.id == "_emit_startup_event"
         ]
-        self.assertGreaterEqual(len(helper_calls), 14)
+        # EXACT, not a lower bound: a lower bound is satisfied while a site is quietly
+        # switched to `_emit_closure_event` (verified — that mutation passed `>= 14`),
+        # which under the shared renderer is merely a misattributed event today but was
+        # the elision bug itself before the two emitters were unified.
+        self.assertEqual(len(helper_calls), 17)
+        closure_calls = [
+            node.lineno for node in calls
+            if isinstance(node.func, ast.Name) and node.func.id == "_emit_closure_event"
+        ]
+        self.assertEqual(
+            closure_calls, [],
+            "a startup emission must not be attributed to the closure driver; use "
+            f"_emit_startup_event — lines {closure_calls}")
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -6075,6 +6121,38 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
                 and isinstance(fmt.value, ast.Name)
                 and fmt.value.id == "args",
                 f"startup emit must pass args.stdout_format, got {ast.dump(fmt)}")
+
+    def test_the_closure_gates_render_the_same_envelopes_the_same_way(self) -> None:
+        """Three payload BUILDERS are shared verbatim between `_run_main` and the closure
+        driver (`_concurrent_cold_start_envelope`, `_llm_config_legacy_pin_rejection`,
+        `_llm_config_resume_rejection`). Rendering them losslessly on one path and elided
+        on the other would mean the identical refusal printing its remedy or dropping it
+        according to whether `--with-deps` was passed — and the closure gates that refuse
+        before the first node runs have no `run_logs/` copy either."""
+        envelope = run_workflow._concurrent_cold_start_envelope("spec/problem/sw2d/spec.md")
+        # The premise: this detail is long enough for the cut to bite. Without that, the
+        # comparison below would hold for a renderer that still elides.
+        self.assertGreater(len(envelope["detail"]), 240)
+        remedy = "--resume --orchestration-id"
+        self.assertIn(remedy, envelope["detail"][240:],
+                      "the remedy must sit BEYOND the cut, or this test proves nothing")
+
+        def render(emit) -> str:  # type: ignore[no-untyped-def]
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                emit(envelope, "human")
+            return buf.getvalue()
+
+        startup = render(run_workflow._emit_startup_event)
+        closure = render(run_workflow._emit_closure_event)
+        self.assertEqual(startup, closure)
+        self.assertIn(remedy, closure)
+        self.assertNotIn("...", closure)
+        # ...and both still emit the raw payload under jsonl.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_workflow._emit_closure_event(envelope, "jsonl")
+        self.assertEqual(json.loads(buf.getvalue()), envelope)
 
 
 class ReasonDetailTruncationTests(unittest.TestCase):

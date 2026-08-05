@@ -3084,6 +3084,14 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
             else:
                 d = str(detail).rstrip()
             parts.append(f"detail={d}")
+        # The fail arm renders three keys and drops the rest, which is right for the
+        # ones the detail already restates (`driver_pid`, `spec_ref`, `resume_command`).
+        # `docs_ref` is the exception: it names the section that FIXES the failure and
+        # appears nowhere in the detail text, so dropping it would make the rendered
+        # line strictly less actionable than the raw JSON it replaced.
+        docs_ref = payload.get("docs_ref")
+        if docs_ref:
+            parts.append(f"docs_ref={docs_ref}")
         return "[FAIL] " + " ".join(parts)
 
     return None
@@ -3098,13 +3106,16 @@ def _emit_closure_event(payload: dict[str, Any], stdout_format: str) -> None:
     `human` mode this would leak raw JSON; route the payload through the same
     `_format_event_human` renderer the tee uses, falling back to the raw JSON
     line when the event shape is unknown so no information is dropped.
+
+    Renders losslessly, for the reason given on `_emit_startup_event` — a
+    closure gate that refuses before the first node runs has no `run_logs/`
+    copy of its envelope either, and several of these payloads are BUILT BY THE
+    SAME functions as the startup ones (`_concurrent_cold_start_envelope`,
+    `_llm_config_resume_rejection`, ...). Eliding on one path and not the other
+    would mean one failure printing its remedy and the identical failure
+    dropping it, decided by whether `--with-deps` was passed.
     """
-    line = json.dumps(payload, ensure_ascii=False)
-    if stdout_format == "human":
-        human = _format_event_human(payload)
-        if human is not None:
-            line = human
-    print(line, flush=True)
+    _emit_untee_d_event(payload, stdout_format)
 
 
 def _emit_startup_event(payload: dict[str, Any], stdout_format: str) -> None:
@@ -3113,13 +3124,32 @@ def _emit_startup_event(payload: dict[str, Any], stdout_format: str) -> None:
     These envelopes are emitted BEFORE `_run_node` installs the stdout tee and
     opens `run_logs/run_*.jsonl`, so — unlike every in-run event — they have no
     second, untouched copy anywhere: whatever this prints is all the operator
-    ever gets. Human rendering is therefore LOSSLESS (`elide_detail=False`): no
-    newline collapse, no 240-char cut. For several of these envelopes the detail
-    IS the remedy (the multi-line `cp` command of `llm_config_default_missing`),
-    and eliding it would be worse than the raw-JSON leak it replaces.
+    ever gets. Human rendering is therefore LOSSLESS: no newline collapse, no
+    240-char cut. For several of these envelopes the detail IS the remedy (the
+    multi-line `cp` command of `llm_config_default_missing`), and eliding it
+    would be worse than the raw-JSON leak it replaces.
 
-    `_run_main` emits terminal/startup events ONLY through this helper; a bare
-    `print` there is a regression (pinned by a source-shape test).
+    `_run_main` emits stdout ONLY through this helper; a bare `print` there —
+    or a call to `_emit_closure_event`, whose name would misattribute the
+    event — is a regression (pinned by a source-shape test).
+    """
+    _emit_untee_d_event(payload, stdout_format)
+
+
+def _emit_untee_d_event(payload: dict[str, Any], stdout_format: str) -> None:
+    """The shared body of the two emitters above: render an event that no
+    `_StdoutTee` will see.
+
+    ONE rule decides the elision, and it is a property of the emission point,
+    not of the payload: an event the tee never sees has no untouched copy in
+    `run_logs/run_*.jsonl`, so nothing may be dropped from what is printed.
+    In-run events keep the elision (`_StdoutTee._render_line`) precisely
+    because the log holds their full text.
+
+    The two callers stay distinct names so an emission is attributable to its
+    phase of the run — and so the `_run_main` source-shape guard can name the
+    one it expects — but they must not DRIFT: a payload rendered differently by
+    the two would resurrect the split this collapsed.
     """
     line = json.dumps(payload, ensure_ascii=False)
     if stdout_format == "human":
