@@ -280,17 +280,50 @@ def _extract_command(payload: dict[str, Any]) -> str | None:
     return None
 
 
-# Patterns for stripping quoted string content before redirect/separator detection.
-# Prevents false positives when CLI arguments like --reply-text "... > 0 ..." are scanned.
-_DOUBLE_QUOTED_RE = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-_SINGLE_QUOTED_RE = re.compile(r"'[^']*'", re.DOTALL)
-
-
 def _strip_quoted_strings(cmd: str) -> str:
-    """Replace the content inside shell quotes with spaces to prevent redirect false-positives."""
-    cmd = _DOUBLE_QUOTED_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', cmd)
-    cmd = _SINGLE_QUOTED_RE.sub(lambda m: "'" + " " * (len(m.group()) - 2) + "'", cmd)
-    return cmd
+    """Blank the content inside shell quotes, preserving length.
+
+    Callers rely on this to keep a `>`, `;` or `<<` that is merely TEXT inside
+    an argument from being read as shell syntax, and on the offsets staying
+    aligned with the original string.
+
+    One left-to-right scan, honouring whichever quote opens first — the two
+    independent regex passes this replaced paired a `"` living inside a
+    single-quoted word with the next unrelated `"`, blanking the separators and
+    commands between them. `echo 'a"b' ; cat <path> ; echo "c"` then collapsed
+    into a single fragment whose argv0 was not a reader, so the read vanished
+    from the guard and the command reached the read-only auto-approve.
+
+    An unterminated quote is left alone rather than blanking to end-of-string,
+    which is the fail-closed direction here: nothing is hidden from the scan.
+    """
+    out = list(cmd)
+    idx = 0
+    n = len(cmd)
+    while idx < n:
+        ch = cmd[idx]
+        if ch == "\\":  # an escaped character never opens a quote
+            idx += 2
+            continue
+        if ch not in ("'", '"'):
+            idx += 1
+            continue
+        end = idx + 1
+        while end < n:
+            # Backslash escapes apply inside "..." but not inside '...'.
+            if ch == '"' and cmd[end] == "\\":
+                end += 2
+                continue
+            if cmd[end] == ch:
+                break
+            end += 1
+        if end >= n:  # unterminated: leave the remainder visible
+            idx += 1
+            continue
+        for pos in range(idx + 1, end):
+            out[pos] = " "
+        idx = end + 1
+    return "".join(out)
 
 
 # Flags whose VALUE is a detached following token that must never be mistaken

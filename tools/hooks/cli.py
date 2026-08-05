@@ -990,7 +990,8 @@ def _log_read_decision(
 
 # Search tools whose read boundary is enforced by validating their `path` root.
 # Their `pattern` is NOT validated: a Glob pattern can still reach outside the
-# validated root via an absolute or `**` pattern (documented residue, issue #42).
+# validated root via an absolute or `../` pattern (documented residue, issue #42).
+# `**` only recurses within `path`, so it is not part of that residue.
 _PATH_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 
 # Shell glob metacharacters. A token carrying one is expanded by the shell, so

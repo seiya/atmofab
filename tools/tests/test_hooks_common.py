@@ -2825,6 +2825,41 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
     def test_separator_inside_quotes_is_not_a_separator(self) -> None:
         self.assertEqual(self._targets("grep 'a;b' docs/x.md"), ["docs/x.md"])
 
+    def test_a_quote_character_inside_the_other_quote_style(self) -> None:
+        """Two independent regex passes paired a `"` inside a single-quoted word
+        with the next unrelated `"`, blanking the commands between them — the
+        read then vanished from the guard entirely."""
+        self.assertEqual(
+            self._targets("""echo 'a"b' ; cat spec/private.md ; echo "c\""""),
+            ["spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("""grep -n '"' docs/x.md; cat spec/private.md"""),
+            ["docs/x.md", "spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("""echo "it's fine" ; cat spec/private.md"""),
+            ["spec/private.md"],
+        )
+
+    def test_unterminated_quote_hides_nothing(self) -> None:
+        self.assertEqual(
+            self._targets('echo "unterminated ; cat spec/private.md'), ["spec/private.md"]
+        )
+
+    def test_quote_stripping_preserves_length(self) -> None:
+        """Fragment spans are recovered from the original by offset."""
+        from tools.hooks.common import _strip_quoted_strings
+
+        for command in (
+            """echo 'a"b' ; cat x.md""",
+            'cat "my file.md"',
+            "echo \\' ; cat x.md",
+            'echo "esc \\" still inside" ; cat x.md',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(len(_strip_quoted_strings(command)), len(command))
+
     def test_quoted_filename_survives_span_recovery(self) -> None:
         self.assertEqual(self._targets('cat "my file.md"'), ["my file.md"])
         self.assertEqual(self._targets("true && cat 'my file.md'"), ["my file.md"])
