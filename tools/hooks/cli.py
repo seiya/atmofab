@@ -1077,11 +1077,17 @@ def _bounded_glob_read_targets(
 
     Every match of a glob lies under the literal prefix that precedes its first
     wildcard, so when the pattern is too broad to expand cheaply the prefix
-    directory is validated instead: containment in `allowed_read_roots` is
-    prefix-based, so authorizing the prefix authorizes exactly the set the
-    pattern can reach. A prefix outside repo_root is skipped for the same reason
-    a literal out-of-repo path is — that is bwrap's domain — and skipping it
-    before globbing is what keeps `/*/*/*/*` from walking the filesystem.
+    directory is validated instead. That is a SUPERSET test, not an exact one:
+    authorizing the prefix authorizes everything the pattern could reach, but a
+    prefix that is a strict ancestor of an allowed root blocks even when every
+    real match would have been in-manifest. Fail-closed and honest — the block
+    names the prefix, which the agent can narrow — and the alternative is an
+    unbounded walk in a hook that runs on every tool call.
+
+    A prefix outside repo_root, or one that does not exist, is skipped for the
+    same reasons a literal target is: out-of-repo is bwrap's domain, and a path
+    that is not there leaks nothing. Skipping the out-of-repo case BEFORE
+    globbing is what keeps `/*/*/*/*` from walking the filesystem.
     """
     components = target.split("/")
     literal: list[str] = []
@@ -1099,7 +1105,7 @@ def _bounded_glob_read_targets(
         1 for component in components[len(literal) :] if _GLOB_META_RE.search(component)
     )
     if wildcard_components > _GLOB_MAX_WILDCARD_COMPONENTS:
-        return [(prefix, prefix_abs)]
+        return [(prefix, prefix_abs)] if prefix_abs.exists() else []
     out: list[tuple[str, Path]] = []
     for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
         abs_match = Path(match)

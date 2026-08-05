@@ -3367,6 +3367,13 @@ class BashReadManifestGuardTests(unittest.TestCase):
             )
             self.assertEqual(self._run(repo_root, "cat docs/*/*/*/deep.md")[0], 0)
 
+    def test_broad_glob_with_a_nonexistent_prefix_is_not_blocked(self) -> None:
+        """The prefix fallback must keep the same rule as a literal target: a
+        path that is not there leaks nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            self.assertEqual(self._run(repo_root, "cat nosuchdir/*/*/*/x")[0], 0)
+
     def test_out_of_repo_glob_is_not_walked(self) -> None:
         from tools.hooks.cli import _bounded_glob_read_targets
 
