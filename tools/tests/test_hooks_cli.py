@@ -3129,7 +3129,11 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             ).write_text("   ", encoding="utf-8")
             code, body = self._run(repo_root, "Grep", {"pattern": "foo", "path": "docs"})
             self.assertEqual(code, 2)
-            self.assertIn("active child agent_run_id is empty", json.loads(body).get("reason", ""))
+            reason = json.loads(body).get("reason", "")
+            self.assertIn("active child agent_run_id is empty", reason)
+            # A blocked SEARCH must not be handed the Edit/Write remediation.
+            self.assertIn("allowed_read_roots", reason)
+            self.assertNotIn("allowed_file_tool_paths", reason)
 
     def test_missing_access_log_dir_does_not_change_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3282,6 +3286,10 @@ class BashReadManifestGuardTests(unittest.TestCase):
             code, body = self._run(repo_root, "cat spec/{private,private2}.md")
             self.assertEqual(code, 2)
             self.assertIn("'spec/private.md'", json.loads(body).get("reason", ""))
+            # A range is as lexical as a comma group, and reaches real files.
+            (repo_root / "spec" / "p1.md").write_text("x", encoding="utf-8")
+            (repo_root / "spec" / "p2.md").write_text("x", encoding="utf-8")
+            self.assertEqual(self._run(repo_root, "cat spec/p{1..2}.md")[0], 2)
 
     def test_auto_approvable_reader_outside_manifest_blocks(self) -> None:
         """egrep/fgrep/wc are auto-approvable; unextracted they would execute."""
@@ -3301,6 +3309,8 @@ class BashReadManifestGuardTests(unittest.TestCase):
             code, body = self._run(repo_root, "grep -rn SECRET")
             self.assertEqual(code, 2)
             self.assertIn("'.'", json.loads(body).get("reason", ""))
+            # `-h` is --no-filename for grep, not --help.
+            self.assertEqual(self._run(repo_root, "grep -r -h SECRET")[0], 2)
             # Non-recursive: reads stdin, not the tree.
             self.assertEqual(self._run(repo_root, "grep -n SECRET")[0], 0)
 

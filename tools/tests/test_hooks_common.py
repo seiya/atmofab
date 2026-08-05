@@ -3029,6 +3029,21 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
             [],
         )
 
+    def test_heredoc_terminator_must_be_the_exact_line(self) -> None:
+        """Bash ends a `<<EOF` body only on a line that is exactly `EOF`; `<<-`
+        strips leading tabs. Accepting any indentation ended the body early and
+        parsed the rest of the document as commands."""
+        self.assertEqual(
+            self._targets("cat > n.md <<EOF\ntext\n    EOF\ncat spec/private.md\nEOF"), []
+        )
+        self.assertEqual(
+            self._targets("cat > n.md <<-EOF\n\ttext\n\tEOF\ncat b.md"), ["b.md"]
+        )
+        self.assertEqual(
+            self._targets("cat > n.md <<EOF\ntext\nEOF\ncat spec/private.md"),
+            ["spec/private.md"],
+        )
+
     def test_pipe_context_survives_a_line_break(self) -> None:
         """`cat x |\\n rg PAT` is the same command as `cat x | rg PAT`."""
         self.assertEqual(self._targets("cat docs/a.md |\n  rg PAT"), ["docs/a.md"])
@@ -3039,10 +3054,16 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
 
         self.assertEqual(expand_bash_braces("spec/{a,b}.md"), ["spec/a.md", "spec/b.md"])
         self.assertEqual(expand_bash_braces("plain.md"), ["plain.md"])
-        # Ranges and unbalanced braces are left alone (accepted residue).
-        self.assertEqual(expand_bash_braces("{1..3}.md"), ["{1..3}.md"])
+        # Ranges expand too: an unexpanded range fails the existence check, and
+        # the read then reaches the auto-approve.
+        self.assertEqual(
+            expand_bash_braces("spec/p{1..3}.md"),
+            ["spec/p1.md", "spec/p2.md", "spec/p3.md"],
+        )
+        # An unbalanced brace is left alone.
         self.assertEqual(expand_bash_braces("spec/{a.md"), ["spec/{a.md"])
-        self.assertLessEqual(len(expand_bash_braces("{a,b}{c,d}{e,f}{g,h}", limit=8)), 8)
+        # Bounded: a pathological token must not blow up a synchronous hook.
+        self.assertLessEqual(len(expand_bash_braces("{a,b}" * 12)), 256)
 
     def test_unprovable_forms_yield_nothing(self) -> None:
         for command in (

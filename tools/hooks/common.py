@@ -368,7 +368,8 @@ _BASH_REDIRECT_OUT_GLUED_RE = re.compile(r"^\d*(?:>>|>&|&>|>).+$")
 # line and which has no body to blank. A quoted delimiter may be any word
 # (`'PY-END'`, `'1EOF'`), so the charset is only constrained for the bare form.
 _BASH_HEREDOC_RE = re.compile(
-    r"(?<!<)<<-?\s*(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+    r"(?<!<)<<(?P<dash>-?)\s*"
+    r"(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
 )
 
 
@@ -413,11 +414,17 @@ def _blank_heredoc_bodies(command: str) -> str:
         newline = command.find("\n", match.end())
         if newline == -1:
             return "".join(out)
+        # Bash ends the body on a line that is EXACTLY the delimiter; `<<-`
+        # strips leading TABS only. Accepting any indentation ended the body
+        # early on a document that merely contains an indented `EOF`, leaving
+        # the rest of the prose to be parsed as commands.
+        dash = bool(match.group("dash"))
         idx = newline + 1
         while idx <= len(command):
             line_end = command.find("\n", idx)
             stop = len(command) if line_end == -1 else line_end
-            is_delimiter = command[idx:stop].strip() == delimiter
+            line = command[idx:stop]
+            is_delimiter = (line.lstrip("\t") if dash else line) == delimiter
             for pos in range(idx, stop):
                 out[pos] = " "
             if is_delimiter or line_end == -1:
@@ -822,32 +829,19 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
     return out
 
 
-def expand_bash_braces(token: str, *, limit: int = 64) -> list[str]:
-    """Expand `a{b,c}d` the way the shell does, innermost group first.
+def expand_bash_braces(token: str) -> list[str]:
+    """Expand `a{b,c}d` and `a{1..3}` the way the shell does.
 
     Brace expansion is purely lexical — unlike `$VAR` or `$(...)`, nothing about
     it needs runtime state — so a token carrying one names real files and must
-    not be waved through as "a path that does not exist".  Ranges (`{1..3}`) and
-    unbalanced braces are left untouched; they then fail the existence check,
-    which is the same accepted-residue outcome as before.
+    not be waved through as "a path that does not exist".
+
+    This delegates to `_brace_expand`, the bounded expander the operator-secret
+    guard already uses: ranges matter as much as comma groups here (a range left
+    unexpanded fails the existence check and the read reaches the auto-approve),
+    and two expanders would drift apart on exactly the cases that matter.
     """
-    open_idx = token.rfind("{")
-    if open_idx == -1:
-        return [token]
-    close_idx = token.find("}", open_idx)
-    if close_idx == -1:
-        return [token]
-    body = token[open_idx + 1 : close_idx]
-    if "," not in body:
-        return [token]
-    prefix, suffix = token[:open_idx], token[close_idx + 1 :]
-    out: list[str] = []
-    for choice in body.split(","):
-        for expanded in expand_bash_braces(prefix + choice + suffix, limit=limit):
-            out.append(expanded)
-            if len(out) >= limit:
-                return out
-    return out
+    return _brace_expand(token)
 
 
 def extract_bash_read_targets(command: str | None) -> list[str]:

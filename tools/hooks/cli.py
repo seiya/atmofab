@@ -868,7 +868,9 @@ def _is_pure_readonly_capability(
 
 
 def _hint_for_file_tool(tool_name: str) -> str:
-    return READ_HINT if tool_name == "Read" else WRITE_HINT
+    # Grep/Glob are reads too: handing a blocked search the Edit/Write
+    # remediation sends the agent off to think about output manifests.
+    return READ_HINT if tool_name in {"Read", "Grep", "Glob"} else WRITE_HINT
 
 
 def _resolve_agent_run_id_for_file_tool(
