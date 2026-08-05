@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -5888,6 +5889,39 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
         self.assertIsNone(f({"hello": "world"}))
 
+    def test_fail_detail_elision_is_the_default_and_is_opt_outable(self) -> None:
+        """The fail arm's two lossy operations — newline collapse and the 240-char head cut —
+        were unpinned, which is what let `elide_detail` be added without any test noticing
+        either could change. In-run they are correct (the run log holds the untouched JSON);
+        at startup, where `_emit_startup_event` opts out, they would destroy the remedy the
+        message exists to deliver. Pin both directions."""
+        f = run_workflow._format_event_human
+        detail = "first line\nsecond line\n" + ("x" * 400)
+        elided = f({"status": "fail", "reason": "r", "detail": detail})
+        # Default: one line, and cut at exactly 240 characters of the collapsed text.
+        collapsed = detail.replace("\n", " ").strip()
+        self.assertEqual(elided, f"[FAIL] reason=r detail={collapsed[:240]}...")
+        self.assertNotIn("\n", elided or "")
+        # The cut is a HEAD cut of 240 chars, not "some shortening": the 241st character of
+        # the collapsed detail is absent and the 240th is present.
+        self.assertIn(collapsed[:240], elided or "")
+        self.assertNotIn(collapsed[:241], elided or "")
+        # Opt-out: newlines survive, nothing is cut, and only trailing whitespace goes.
+        lossless = f({"status": "fail", "reason": "r", "detail": detail + "\n\n"},
+                     elide_detail=False)
+        self.assertEqual(lossless, f"[FAIL] reason=r detail={detail}")
+        self.assertIn("\nsecond line\n", lossless or "")
+        self.assertTrue((lossless or "").endswith("x" * 400))
+        # `elide_detail` is keyword-only and touches the fail arm ONLY: every other event
+        # renders identically under both values.
+        info = {"status": "info", "event": "phase_start", "phase": "compile", "attempt": 1}
+        self.assertEqual(f(info), f(info, elide_detail=False))
+        ok = {"status": "ok", "orchestration_id": "o", "workflow_status": "pass"}
+        self.assertEqual(f(ok), f(ok, elide_detail=False))
+        with self.assertRaises(TypeError):
+            f({"status": "fail", "reason": "r"}, False)  # type: ignore[misc]
+
+
 class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
     """Issue #40: `_run_main`'s startup rejections are emitted before `_run_node` installs
     the stdout tee, so until now they ignored `--stdout-format` entirely and printed raw
@@ -6002,6 +6036,46 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
             f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
             f"{repo_root / 'llm.yaml'}", payload["detail"])
         self.assertIn("\n", payload["detail"])
+
+    def test_run_main_emits_stdout_only_through_the_startup_helper(self) -> None:
+        """Structural guard for the whole class of sites: any NEW startup envelope added to
+        `_run_main` with a bare `print(json.dumps(...))` reintroduces the bug for that path,
+        and no behaviour test would cover it. Walked as an AST, not grepped: the sites are
+        written as a multi-line `print(\\n    json.dumps(` that plain text search misses."""
+        import ast
+        import inspect
+        tree = ast.parse(textwrap.dedent(inspect.getsource(run_workflow._run_main)))
+        prints = [
+            node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+        ]
+        self.assertEqual(
+            prints, [],
+            "_run_main must emit stdout only via _emit_startup_event (which honors "
+            f"--stdout-format); bare print() at _run_main-relative line(s) {prints}")
+        # ...and the helper is actually used there, so the assertion above cannot be
+        # satisfied by a `_run_main` that simply stopped emitting anything.
+        helper_calls = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_emit_startup_event"
+        ]
+        self.assertGreaterEqual(len(helper_calls), 14)
+        # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
+        # site would silently pin that site to one format.
+        for call in helper_calls:
+            self.assertEqual(len(call.args), 2, ast.dump(call))
+            fmt = call.args[1]
+            self.assertTrue(
+                isinstance(fmt, ast.Attribute)
+                and fmt.attr == "stdout_format"
+                and isinstance(fmt.value, ast.Name)
+                and fmt.value.id == "args",
+                f"startup emit must pass args.stdout_format, got {ast.dump(fmt)}")
+
 
 class ReasonDetailTruncationTests(unittest.TestCase):
     """`--reason-detail` crosses a subprocess argv boundary, where Linux caps one
