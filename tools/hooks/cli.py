@@ -19,6 +19,7 @@ from tools.hooks.common import (
     HookDecision,
     HookDecisionAction,
     HookEventName,
+    _strip_quoted_strings,
     _utc_now_iso,
     append_hook_access_log,
     check_cli_managed_path,
@@ -345,19 +346,6 @@ _BASH_TEE_RE = re.compile(r"\btee\b(?:\s+-\w+)*\s+([^\n;&|<>]+)")
 _REDIRECT_SKIP = frozenset({
     "/dev/null", "/dev/stderr", "/dev/stdout", "/dev/stdin", "1", "2",
 })
-# Patterns for stripping quoted string content before redirect detection.
-# Prevents false positives when CLI arguments like --reply-text "... > 0 ..." are scanned.
-_DOUBLE_QUOTED_RE = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-_SINGLE_QUOTED_RE = re.compile(r"'[^']*'", re.DOTALL)
-
-
-def _strip_quoted_strings(cmd: str) -> str:
-    """Replace the content inside shell quotes with spaces to prevent redirect false-positives."""
-    cmd = _DOUBLE_QUOTED_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', cmd)
-    cmd = _SINGLE_QUOTED_RE.sub(lambda m: "'" + " " * (len(m.group()) - 2) + "'", cmd)
-    return cmd
-
-
 def _skip_single_quoted(s: str, i: int) -> int:
     """Advance past a single-quoted string starting after the opening quote."""
     n = len(s)

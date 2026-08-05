@@ -278,14 +278,150 @@ def _extract_command(payload: dict[str, Any]) -> str | None:
     return None
 
 
+# Patterns for stripping quoted string content before redirect/separator detection.
+# Prevents false positives when CLI arguments like --reply-text "... > 0 ..." are scanned.
+_DOUBLE_QUOTED_RE = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
+_SINGLE_QUOTED_RE = re.compile(r"'[^']*'", re.DOTALL)
+
+
+def _strip_quoted_strings(cmd: str) -> str:
+    """Replace the content inside shell quotes with spaces to prevent redirect false-positives."""
+    cmd = _DOUBLE_QUOTED_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', cmd)
+    cmd = _SINGLE_QUOTED_RE.sub(lambda m: "'" + " " * (len(m.group()) - 2) + "'", cmd)
+    return cmd
+
+
+# Flags whose VALUE is a detached following token that must never be mistaken
+# for a read target (`head -n 5 f` would otherwise extract "5").  Keyed by
+# command basename; only commands in _BASH_READ_CMD_NAMES are consulted.
+# `sort -o FILE` is a WRITE target, so it is listed here too — consuming the
+# operand keeps it out of the read-target list, which is all this table decides.
+_DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "head": frozenset({"-n", "-c"}),
+    "tail": frozenset({"-n", "-c"}),
+    "cut": frozenset({"-b", "-c", "-d", "-f"}),
+    "paste": frozenset({"-d"}),
+    "od": frozenset({"-A", "-j", "-N", "-S", "-t", "-w"}),
+    "xxd": frozenset({"-c", "-g", "-l", "-s", "-o", "-b"}),
+    "strings": frozenset({"-n", "-t"}),
+    "sort": frozenset({"-k", "-t", "-S", "-T", "-o"}),
+    "uniq": frozenset({"-f", "-s", "-w"}),
+    "comm": frozenset(),
+    "diff": frozenset(),
+    "nl": frozenset({"-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w"}),
+    "tac": frozenset({"-s"}),
+}
+
+# Bash commands whose positional operands are file reads.  Everything here is
+# routed through _extract_read_targets, which owns the per-command grammar.
+_BASH_READ_CMD_NAMES: frozenset[str] = frozenset({
+    # historical set (also used by forbid_tools_direct_read)
+    "cat", "head", "tail", "less", "more", "bat", "pygmentize", "sed", "rg", "grep", "awk",
+    # widened for the read-manifest guard
+    "nl", "tac", "od", "xxd", "cut", "paste", "diff", "strings", "comm", "sort", "uniq", "jq",
+})
+
+# Shell separators that end one command fragment.  `&&`/`||` must precede the
+# single-character forms in the alternation.
+_BASH_FRAGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|;|&|\||\n")
+
+# Leading `VAR=value` command prefix (`FOO=1 cat x`).
+_BASH_ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _extract_simple_positional_read_targets(cmd: str, args: list[str]) -> list[str]:
+    """Positional operands of a command whose args are all input files.
+
+    Flags are dropped, detached flag values are consumed, and `--` ends option
+    parsing.  Used for the plain readers (cat, nl, od, cut, sort, ...) where
+    every remaining operand names a file to read.
+    """
+    detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
+    targets: list[str] = []
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            targets.extend(args[idx + 1 :])
+            break
+        if token in detached:
+            idx += 2
+            continue
+        if token.startswith("-") and token != "-":
+            idx += 1
+            continue
+        targets.append(token)
+        idx += 1
+    return targets
+
+
+def _extract_jq_read_targets(args: list[str]) -> list[str]:
+    """Read targets of a `jq` invocation.
+
+    The first positional is the FILTER program, not a file — the orchestration
+    agent routinely runs `jq -er <filter> workspace/...`, so treating operand 0
+    as a read would flood the guard with phantom targets.  `-f/--from-file` and
+    the `--slurpfile`/`--rawfile NAME FILE` pairs do name real files.
+    """
+    targets: list[str] = []
+    positional: list[str] = []
+    idx = 0
+    filter_from_file = False
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            positional.extend(args[idx + 1 :])
+            break
+        if token in {"-f", "--from-file"}:
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            filter_from_file = True
+            idx += 2
+            continue
+        if token.startswith("--from-file="):
+            value = token.split("=", 1)[1]
+            if value:
+                targets.append(value)
+            filter_from_file = True
+            idx += 1
+            continue
+        if token in {"--slurpfile", "--rawfile"}:
+            # `--slurpfile NAME FILE`: the second operand is the file.
+            if idx + 2 < len(args):
+                targets.append(args[idx + 2])
+            idx += 3
+            continue
+        if token in {"--arg", "--argjson"}:
+            idx += 3
+            continue
+        if token in {"--indent", "--seq-separator"}:
+            idx += 2
+            continue
+        if token.startswith("-") and token != "-":
+            idx += 1
+            continue
+        positional.append(token)
+        idx += 1
+    if filter_from_file:
+        return targets + positional
+    return targets + positional[1:]
+
+
 def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
     args = cmd_tokens[1:]
     cmd = cmd_name.lower()
     if not args:
         return []
 
-    if cmd in {"cat", "head", "tail", "less", "more", "bat", "pygmentize"}:
-        return [tok for tok in args if not tok.startswith("-")]
+    if cmd == "jq":
+        return _extract_jq_read_targets(args)
+
+    if cmd in {
+        "cat", "head", "tail", "less", "more", "bat", "pygmentize",
+        "nl", "tac", "od", "xxd", "cut", "paste", "diff", "strings",
+        "comm", "sort", "uniq",
+    }:
+        return _extract_simple_positional_read_targets(cmd, args)
 
     if cmd == "sed":
         positional: list[str] = []
@@ -431,6 +567,57 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
         return read_targets + positional[1:]
 
     return []
+
+
+def extract_bash_read_targets(command: str | None) -> list[str]:
+    """Extract the file paths a Bash command reads, per fragment.
+
+    Best-effort by design (issue #42 decision 2): the goal is to widen what is
+    provable, not to fail closed on what is not.  Forms whose targets only exist
+    at runtime — `xargs cat`, `find -exec`, `$(...)`/backtick substitution,
+    `$VAR` — yield nothing here and remain accepted residue.  Callers therefore
+    treat an empty result as "nothing to authorize", never as "safe".
+    """
+    if not command:
+        return []
+    targets: list[str] = []
+    # Split the QUOTE-STRIPPED string so a separator inside a quoted argument is
+    # not treated as one, then recover each fragment's span from the original so
+    # quoted filenames survive intact (same idiom as the tee handling in
+    # _detect_bash_write_targets; _strip_quoted_strings is length-preserving).
+    scanned = _strip_quoted_strings(command)
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for match in _BASH_FRAGMENT_SEPARATOR_RE.finditer(scanned):
+        spans.append((cursor, match.start()))
+        cursor = match.end()
+    spans.append((cursor, len(scanned)))
+    for start, end in spans:
+        blob = command[start:end].strip()
+        if not blob:
+            continue
+        try:
+            tokens = shlex.split(blob)
+        except ValueError:
+            tokens = blob.split()
+        # Skip a leading `VAR=value` command prefix (`FOO=1 cat x`).
+        idx = 0
+        while idx < len(tokens) and _BASH_ASSIGNMENT_PREFIX_RE.match(tokens[idx]):
+            idx += 1
+        tokens = tokens[idx:]
+        if not tokens:
+            continue
+        argv0 = tokens[0].split("/")[-1].lower()
+        if argv0 not in _BASH_READ_CMD_NAMES:
+            continue
+        for target in _extract_read_targets(argv0, tokens):
+            # A token still carrying `$` or a backtick names a path only the
+            # shell can compute; there is nothing to validate, so it joins the
+            # declared residue rather than being validated as a literal name.
+            if "$" in target or "`" in target:
+                continue
+            targets.append(target)
+    return targets
 
 
 # --- Pipe-tail inline-Python AST allowlist ---------------------------------

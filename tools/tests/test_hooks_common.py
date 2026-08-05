@@ -2801,6 +2801,93 @@ class ForbidDismissViolationTokenizationTests(unittest.TestCase):
             "forbid_dismiss_violation_in_workflow")
 
 
+class ExtractBashReadTargetsTests(unittest.TestCase):
+    """Widened Bash read-target extraction (best-effort, residue by design)."""
+
+    def _targets(self, command: str) -> list[str]:
+        from tools.hooks.common import extract_bash_read_targets
+
+        return extract_bash_read_targets(command)
+
+    def test_simple_read(self) -> None:
+        self.assertEqual(self._targets("cat docs/WORKFLOW.md"), ["docs/WORKFLOW.md"])
+
+    def test_splits_on_every_separator_including_newline(self) -> None:
+        for sep in ("&&", "||", ";", "|", "&", "\n"):
+            with self.subTest(sep=sep):
+                self.assertEqual(
+                    self._targets(f"cat a.md {sep} nl b.md"), ["a.md", "b.md"]
+                )
+
+    def test_separator_glued_to_words_still_splits(self) -> None:
+        self.assertEqual(self._targets("cat a.md;cat b.md"), ["a.md", "b.md"])
+
+    def test_separator_inside_quotes_is_not_a_separator(self) -> None:
+        self.assertEqual(self._targets("grep 'a;b' docs/x.md"), ["docs/x.md"])
+
+    def test_quoted_filename_survives_span_recovery(self) -> None:
+        self.assertEqual(self._targets('cat "my file.md"'), ["my file.md"])
+        self.assertEqual(self._targets("true && cat 'my file.md'"), ["my file.md"])
+
+    def test_detached_flag_values_are_not_targets(self) -> None:
+        self.assertEqual(self._targets("head -n 5 a.md"), ["a.md"])
+        self.assertEqual(self._targets("tail -c 20 a.md"), ["a.md"])
+        self.assertEqual(self._targets("cut -d : -f 1 a.md"), ["a.md"])
+        self.assertEqual(self._targets("od -N 16 -t x1 a.bin"), ["a.bin"])
+        self.assertEqual(self._targets("xxd -l 32 a.bin"), ["a.bin"])
+        self.assertEqual(self._targets("uniq -f 2 a.md"), ["a.md"])
+
+    def test_attached_flag_values_are_not_targets(self) -> None:
+        self.assertEqual(self._targets("head -n5 a.md"), ["a.md"])
+        self.assertEqual(self._targets("cut -d: -f1 a.md"), ["a.md"])
+
+    def test_sort_output_operand_is_not_a_read_target(self) -> None:
+        self.assertEqual(self._targets("sort -o out.txt in.txt"), ["in.txt"])
+
+    def test_jq_filter_is_not_a_target_but_operands_are(self) -> None:
+        self.assertEqual(
+            self._targets("jq -er .status workspace/x.json"), ["workspace/x.json"]
+        )
+        self.assertEqual(self._targets("jq . a.json b.json"), ["a.json", "b.json"])
+
+    def test_jq_file_flags_are_targets(self) -> None:
+        self.assertEqual(self._targets("jq -f prog.jq a.json"), ["prog.jq", "a.json"])
+        self.assertEqual(self._targets("jq --slurpfile v vals.json . a.json"), ["vals.json", "a.json"])
+        self.assertEqual(self._targets("jq --arg k v . a.json"), ["a.json"])
+
+    def test_new_commands_are_recognized(self) -> None:
+        self.assertEqual(self._targets("nl a.md"), ["a.md"])
+        self.assertEqual(self._targets("tac a.md"), ["a.md"])
+        self.assertEqual(self._targets("strings -n 4 a.bin"), ["a.bin"])
+        self.assertEqual(self._targets("diff a.f90 b.f90"), ["a.f90", "b.f90"])
+        self.assertEqual(self._targets("comm a.txt b.txt"), ["a.txt", "b.txt"])
+        self.assertEqual(self._targets("paste -d , a.txt b.txt"), ["a.txt", "b.txt"])
+
+    def test_unprovable_forms_yield_nothing(self) -> None:
+        for command in (
+            "echo path | xargs cat",
+            "find . -name '*.md' -exec cat {} \\;",
+            "cat $(ls)",
+            "cat `ls`",
+            "cat $TARGET",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), [])
+
+    def test_assignment_prefix_is_skipped(self) -> None:
+        self.assertEqual(self._targets("LC_ALL=C cat a.md"), ["a.md"])
+        self.assertEqual(self._targets("A=1 B=2 nl a.md"), ["a.md"])
+
+    def test_non_reading_commands_yield_nothing(self) -> None:
+        self.assertEqual(self._targets("python3 tools/x.py"), [])
+        self.assertEqual(self._targets("ls docs/"), [])
+        self.assertEqual(self._targets(""), [])
+        self.assertEqual(self._targets(None), [])
+
+    def test_double_dash_ends_option_parsing(self) -> None:
+        self.assertEqual(self._targets("cat -- -weird.md"), ["-weird.md"])
+
+
 class ReadManifestCoreTests(unittest.TestCase):
     """The manifest loader/containment helpers shared by every read guard."""
 
