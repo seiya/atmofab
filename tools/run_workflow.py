@@ -1217,7 +1217,7 @@ def _terminalize_dead_driver(
         return str(exc)
     # Announced only after the write committed, so the event never claims a
     # terminalization that did not happen.
-    _emit_closure_event(
+    _emit_unlogged_event(
         {
             "status": "info",
             "event": "dead_driver_terminalized",
@@ -1286,7 +1286,7 @@ def _warm_resume_liveness_guard(
             "driver_pid": driver.get("pid"),
             "resume_command": _resume_command_for(orchestration_id),
         }
-    _emit_closure_event(
+    _emit_unlogged_event(
         {
             "status": "info",
             "event": "resume_liveness_indeterminate",
@@ -1308,7 +1308,7 @@ def _terminalize_interrupted_orchestration(
 
     Called only from inside `_run_node`, so its event goes to the installed
     `_StdoutTee` as raw JSON (see the print below) rather than through
-    `_emit_closure_event`, which pre-renders for the terminal.
+    `_emit_unlogged_event`, which pre-renders for the terminal.
 
     An already-terminal status is preserved: the conductor/runtime may have recorded a
     more specific outcome (e.g. `fail_closed` / `sandbox_enforcement_violation`) before
@@ -1343,7 +1343,7 @@ def _terminalize_interrupted_orchestration(
     except Exception:  # noqa: BLE001 - the interrupt must still propagate
         return
     try:
-        # Printed as RAW JSON, not via _emit_closure_event: this is the one new gate
+        # Printed as RAW JSON, not via _emit_unlogged_event: this is the one new gate
         # event emitted from INSIDE _run_node, where `_StdoutTee` is installed. The tee
         # mirrors the inbound bytes verbatim into run_logs/run_*.jsonl and renders the
         # human form only for the terminal, so pre-rendering here would put a plain
@@ -1630,7 +1630,7 @@ def _cold_start_running_guard(
             "resume_command": _resume_command_for(oid),
         }
     for oid, _meta, liveness in probed:
-        _emit_closure_event(
+        _emit_unlogged_event(
             {
                 "status": "info",
                 "event": "prior_incomplete_orchestration",
@@ -2256,18 +2256,16 @@ def _run_main(
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
     missing_tools = _check_required_cli_tools()
     if missing_tools:
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "missing_required_cli_tools",
-                    "detail": f"missing tools: {','.join(missing_tools)}",
-                    "missing": missing_tools,
-                    "required": list(REQUIRED_CLI_TOOLS),
-                    "docs_ref": "docs/RUNBOOK.md#0-1",
-                },
-                ensure_ascii=False,
-            )
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "missing_required_cli_tools",
+                "detail": f"missing tools: {','.join(missing_tools)}",
+                "missing": missing_tools,
+                "required": list(REQUIRED_CLI_TOOLS),
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
         )
         return 2
     repo_root = Path(args.repo_root).resolve()
@@ -2296,15 +2294,13 @@ def _run_main(
     try:
         _pycache_resolved = _validated_pycache_redirect_root(repo_root)
     except ValueError as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "invalid_pycache_redirect_root",
-                    "detail": str(exc),
-                },
-                ensure_ascii=False,
-            )
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "invalid_pycache_redirect_root",
+                "detail": str(exc),
+            },
+            args.stdout_format,
         )
         return 2
     sys.pycache_prefix = str(_pycache_resolved)
@@ -2345,15 +2341,13 @@ def _run_main(
         explicit_id = bool(args.orchestration_id)
         orchestration_id = args.orchestration_id or _find_latest_orchestration(repo_root)
         if not orchestration_id:
-            print(
-                json.dumps(
-                    {
-                        "status": "fail",
-                        "reason": "no_resumable_orchestration",
-                        "detail": "no orchestration found under workspace/orchestrations to resume",
-                    },
-                    ensure_ascii=False,
-                )
+            _emit_unlogged_event(
+                {
+                    "status": "fail",
+                    "reason": "no_resumable_orchestration",
+                    "detail": "no orchestration found under workspace/orchestrations to resume",
+                },
+                args.stdout_format,
             )
             return 2
         # A non-terminal target is ambiguous: it is either an active concurrent run
@@ -2373,19 +2367,17 @@ def _run_main(
         if not resume_claim.enter_context(
             _exclusive_claim(repo_root, "orch", orchestration_id)
         ):
-            print(
-                json.dumps(
-                    {
-                        "status": "fail",
-                        "reason": "concurrent_orchestration_running",
-                        "detail": (
-                            f"orchestration {orchestration_id} is already being driven "
-                            "by another process in this repository. Wait for it to finish."
-                        ),
-                        "orchestration_id": orchestration_id,
-                    },
-                    ensure_ascii=False,
-                )
+            _emit_unlogged_event(
+                {
+                    "status": "fail",
+                    "reason": "concurrent_orchestration_running",
+                    "detail": (
+                        f"orchestration {orchestration_id} is already being driven "
+                        "by another process in this repository. Wait for it to finish."
+                    ),
+                    "orchestration_id": orchestration_id,
+                },
+                args.stdout_format,
             )
             return 2
         resume_meta = _read_orchestration_meta(repo_root, orchestration_id)
@@ -2409,19 +2401,17 @@ def _run_main(
                     stdout_format=args.stdout_format,
                 )
                 if terminalize_error is not None:
-                    print(
-                        json.dumps(
-                            {
-                                "status": "fail",
-                                "reason": "dead_driver_terminalize_failed",
-                                "detail": (
-                                    f"orchestration {orchestration_id} has a dead driver but could "
-                                    f"not be terminalized: {terminalize_error}"
-                                ),
-                                "orchestration_id": orchestration_id,
-                            },
-                            ensure_ascii=False,
-                        )
+                    _emit_unlogged_event(
+                        {
+                            "status": "fail",
+                            "reason": "dead_driver_terminalize_failed",
+                            "detail": (
+                                f"orchestration {orchestration_id} has a dead driver but could "
+                                f"not be terminalized: {terminalize_error}"
+                            ),
+                            "orchestration_id": orchestration_id,
+                        },
+                        args.stdout_format,
                     )
                     return 2
             elif liveness == "alive":
@@ -2433,47 +2423,43 @@ def _run_main(
                     if explicit_id
                     else "latest_orchestration_not_resumable"
                 )
-                print(
-                    json.dumps(
-                        {
-                            "status": "fail",
-                            "reason": reason,
-                            "detail": (
-                                f"orchestration {orchestration_id} has non-terminal status "
-                                f"'{resume_status or 'unknown'}' and its driver "
-                                f"(pid {resume_driver.get('pid')}) is alive; resuming it would "
-                                "collide with the live run. Wait for it to finish."
-                            ),
-                            "orchestration_id": orchestration_id,
-                            "driver_pid": resume_driver.get("pid"),
-                        },
-                        ensure_ascii=False,
-                    )
+                _emit_unlogged_event(
+                    {
+                        "status": "fail",
+                        "reason": reason,
+                        "detail": (
+                            f"orchestration {orchestration_id} has non-terminal status "
+                            f"'{resume_status or 'unknown'}' and its driver "
+                            f"(pid {resume_driver.get('pid')}) is alive; resuming it would "
+                            "collide with the live run. Wait for it to finish."
+                        ),
+                        "orchestration_id": orchestration_id,
+                        "driver_pid": resume_driver.get("pid"),
+                    },
+                    args.stdout_format,
                 )
                 return 2
             elif not explicit_id:
                 # Indeterminate liveness on the implicit path keeps the pre-existing
                 # refusal: an unknown must never auto-attach to a possibly-live run.
-                print(
-                    json.dumps(
-                        {
-                            "status": "fail",
-                            "reason": "latest_orchestration_not_resumable",
-                            "detail": (
-                                f"latest orchestration {orchestration_id} has non-terminal status "
-                                f"'{resume_status or 'unknown'}'; pass --orchestration-id to resume a specific run"
-                            ),
-                            "orchestration_id": orchestration_id,
-                        },
-                        ensure_ascii=False,
-                    )
+                _emit_unlogged_event(
+                    {
+                        "status": "fail",
+                        "reason": "latest_orchestration_not_resumable",
+                        "detail": (
+                            f"latest orchestration {orchestration_id} has non-terminal status "
+                            f"'{resume_status or 'unknown'}'; pass --orchestration-id to resume a specific run"
+                        ),
+                        "orchestration_id": orchestration_id,
+                    },
+                    args.stdout_format,
                 )
                 return 2
             elif resume_meta:
                 # Explicit id + indeterminate liveness: today's deliberate bypass, but
                 # say so — the operator is resuming a run that may still be live, and
                 # the crash reconciliations will NOT fire (status stays non-terminal).
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         "status": "info",
                         "event": "resume_liveness_indeterminate",
@@ -2568,7 +2554,7 @@ def _run_main(
             orchestration_id, recovered.get("generate_executor")
         )
         if entry_executor_rejection is not None:
-            print(json.dumps(entry_executor_rejection, ensure_ascii=False))
+            _emit_unlogged_event(entry_executor_rejection, args.stdout_format)
             return 2
         missing = [
             name
@@ -2585,19 +2571,17 @@ def _run_main(
             if not ok
         ]
         if missing:
-            print(
-                json.dumps(
-                    {
-                        "status": "fail",
-                        "reason": "resume_params_unrecoverable",
-                        "detail": (
-                            f"could not recover {', '.join(missing)} for orchestration "
-                            f"{orchestration_id}; pass them explicitly"
-                        ),
-                        "orchestration_id": orchestration_id,
-                    },
-                    ensure_ascii=False,
-                )
+            _emit_unlogged_event(
+                {
+                    "status": "fail",
+                    "reason": "resume_params_unrecoverable",
+                    "detail": (
+                        f"could not recover {', '.join(missing)} for orchestration "
+                        f"{orchestration_id}; pass them explicitly"
+                    ),
+                    "orchestration_id": orchestration_id,
+                },
+                args.stdout_format,
             )
             return 2
     else:
@@ -2634,7 +2618,7 @@ def _run_main(
         legacy_rejection = _llm_config_legacy_pin_rejection(
             orchestration_id, recorded_pin) if resume_mode else None
         if legacy_rejection is not None:
-            print(json.dumps(legacy_rejection, ensure_ascii=False))
+            _emit_unlogged_event(legacy_rejection, args.stdout_format)
             return 2
         if recorded_pin.get("path"):
             # The recorded pin WINS on a resume, including over an explicitly passed
@@ -2659,7 +2643,7 @@ def _run_main(
                 effective_sha256=config_sha256(llm_config_path),
                 effective_overrides={})
             if rejection is not None:
-                print(json.dumps(rejection, ensure_ascii=False))
+                _emit_unlogged_event(rejection, args.stdout_format)
                 return 2
         elif args.llm_config:
             # Relative to `--repo-root`, like every other path this driver resolves — resolving
@@ -2695,15 +2679,13 @@ def _run_main(
     except (ValueError, LlmConfigError) as exc:
         # LlmConfigError IS a ValueError, and is named anyway: its `rule` is the operator's
         # search key and the class is what makes that intent legible here.
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "invalid_startup_input",
-                    "detail": str(exc),
-                },
-                ensure_ascii=False,
-            )
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "invalid_startup_input",
+                "detail": str(exc),
+            },
+            args.stdout_format,
         )
         return 2
 
@@ -2718,7 +2700,7 @@ def _run_main(
             effective_sha256=llm_config.sha256,
             effective_overrides={})
         if rejection is not None:
-            print(json.dumps(rejection, ensure_ascii=False))
+            _emit_unlogged_event(rejection, args.stdout_format)
             return 2
 
     # Startup assertion: validate_pipeline_semantics now fail-closes when the
@@ -2746,19 +2728,17 @@ def _run_main(
             missing_path_rel = str(required_schema.relative_to(repo_root))
         except ValueError:
             missing_path_rel = str(required_schema)
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "missing_canonical_schema",
-                    "detail": (
-                        f"canonical schema invalid or missing: {missing_path_rel}. "
-                        f"{exc}"
-                    ),
-                    "missing_path": missing_path_rel,
-                },
-                ensure_ascii=False,
-            )
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "missing_canonical_schema",
+                "detail": (
+                    f"canonical schema invalid or missing: {missing_path_rel}. "
+                    f"{exc}"
+                ),
+                "missing_path": missing_path_rel,
+            },
+            args.stdout_format,
         )
         return 2
 
@@ -2858,7 +2838,7 @@ def _run_main(
             if not cold_start_claim.enter_context(
                 _exclusive_claim(repo_root, "spec", spec_ref)
             ):
-                _emit_closure_event(
+                _emit_unlogged_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
                 return 2
             cold_conflict = _cold_start_running_guard(
@@ -2868,7 +2848,7 @@ def _run_main(
                 driver_identity=_current_driver_identity(),
             )
             if cold_conflict is not None:
-                _emit_closure_event(cold_conflict, args.stdout_format)
+                _emit_unlogged_event(cold_conflict, args.stdout_format)
                 return 2
 
         # Plain single node. A cold run records the reproduction block (no closure); a
@@ -2916,7 +2896,7 @@ def _run_main(
         )
 
 
-def _format_event_human(payload: dict[str, Any]) -> str | None:
+def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -> str | None:
     """Render a structured event payload as a compact human-readable line.
 
     The event vocabulary is small and stable: the node/dependency announcements
@@ -2931,6 +2911,15 @@ def _format_event_human(payload: dict[str, Any]) -> str | None:
     warn = 4 spaces. Pass results are tagged `ok`; non-pass results carry the
     raw verdict text (`fail`, `fail_closed`, `blocked`, ...) so the operator
     sees the actual classification rather than a uniform red flag.
+
+    `elide_detail` governs the `status: fail` arm only. The default (True) is for
+    the in-run rendering pinned by docs/RUNBOOK.md, done by `_StdoutTee`, its one
+    caller at that setting: a fail detail is collapsed onto one line and head-cut
+    at 240 chars, because the run log (`run_logs/run_*.jsonl`) the tee is writing
+    holds the untouched JSON copy. `_emit_unlogged_event` — the startup envelopes
+    of `_run_main` and the closure driver's own events, neither of which any tee
+    sees — passes False, since for those an elided detail is lost for good and the
+    detail is frequently the remedy itself.
     """
     status = payload.get("status")
     event = payload.get("event")
@@ -3089,31 +3078,93 @@ def _format_event_human(payload: dict[str, Any]) -> str | None:
         if orch:
             parts.append(f"orch={orch}")
         if detail:
-            d = str(detail).replace("\n", " ").strip()
-            if len(d) > 240:
-                d = d[:240] + "..."
+            if elide_detail:
+                d = str(detail).replace("\n", " ").strip()
+                if len(d) > 240:
+                    d = d[:240] + "..."
+            else:
+                d = str(detail).rstrip()
             parts.append(f"detail={d}")
+        # The fail arm renders `reason` / `orch` / `detail` and drops the other keys.
+        # That is right where the detail restates them (`driver_pid`, `spec_ref`,
+        # `resume_command`) and wrong where it does not: `dependency_node_failed`
+        # carries no detail at all, so its `failed_dependency_node` / `exit_code` are
+        # dropped — a pre-existing gap in the closure summary, not addressed here.
+        # `docs_ref` is rendered because it names the section that FIXES the failure and
+        # appears nowhere in the detail text, so dropping it would make the rendered
+        # line strictly less actionable than the raw JSON it replaced.
+        docs_ref = payload.get("docs_ref")
+        if docs_ref:
+            parts.append(f"docs_ref={docs_ref}")
         return "[FAIL] " + " ".join(parts)
 
     return None
 
 
-def _emit_closure_event(payload: dict[str, Any], stdout_format: str) -> None:
-    """Print a dependency-closure-level event, honoring `--stdout-format`.
+def _emit_unlogged_event(payload: dict[str, Any], stdout_format: str) -> None:
+    """Print an event that no run log will hold a copy of, honoring `--stdout-format`.
 
-    The closure driver (`_run_with_dependency_closure`) emits its own events
-    (`dependency_node_begin` and the various closure failure summaries) OUTSIDE
-    any `_run_node` call, so no `_StdoutTee` is installed to translate them. In
-    `human` mode this would leak raw JSON; route the payload through the same
+    Two kinds of event reach this: `_run_main`'s startup rejections, emitted
+    before `_run_node` opens `run_logs/run_*.jsonl`, and the closure driver's
+    own events (`dependency_node_begin`, the per-node gates and summaries),
+    emitted BETWEEN node runs. Neither is seen by a `_StdoutTee`, so in `human`
+    mode both would otherwise leak raw JSON; route the payload through the same
     `_format_event_human` renderer the tee uses, falling back to the raw JSON
     line when the event shape is unknown so no information is dropped.
+
+    Rendering is LOSSLESS (`elide_detail=False`): no newline collapse, no
+    240-char cut. The rule is a property of the emission point rather than of
+    the payload — what is printed here is the only copy, whereas an in-run
+    event is elided precisely because the log holds its full text. (An in-run
+    event whose run log could not be OPENED gets neither treatment: `_run_node`
+    then installs no tee at all and the raw JSON goes to the terminal, the
+    caveat docs/RUNBOOK.md records for the `driver_exception` backstop.) For several
+    of these envelopes the detail IS the remedy (the multi-line `cp` command of
+    `llm_config_default_missing`; the `--resume` line of
+    `concurrent_orchestration_running`), and eliding it would be worse than the
+    raw-JSON leak it replaces.
+
+    ONE function, not one per phase of the run: the payload builders are shared
+    (`_concurrent_cold_start_envelope`, `_llm_config_resume_rejection`, ...) and
+    so are the emitters that call them from both paths (`_cold_start_running_guard`,
+    `_terminalize_dead_driver`), so a per-phase name could not be assigned
+    statically anyway — and two names is how the elision came to differ between
+    the paths for the identical refusal in the first place.
     """
     line = json.dumps(payload, ensure_ascii=False)
     if stdout_format == "human":
-        human = _format_event_human(payload)
+        human = _format_event_human(payload, elide_detail=False)
         if human is not None:
             line = human
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except BrokenPipeError:
+        # A reader that is already gone when this runs: a quit pager, a crashed
+        # consumer, or a `| head -N` that has taken its N lines from an earlier event
+        # — which the closure driver, emitting one line per node, reaches routinely.
+        # (A lone startup refusal does not hit this: `head` is still blocked in
+        # `read()` and the write lands in the pipe buffer.) `flush=True` makes the
+        # failure surface HERE instead of at shutdown, so without this clause a
+        # failure path whose job is to report cleanly raises a traceback through
+        # itself. Nothing is lost by swallowing it: the destination is gone.
+        #
+        # For the 14 formerly-raw `print` sites this restores what they did. For the
+        # rest — the closure driver, the shared gates, and the 3 startup sites that
+        # already went through `_emit_closure_event` — it is a change: that emitter
+        # already flushed, so a dead reader used to abort the driver with a traceback
+        # out of `main()` between nodes, with a closure's finished work behind it.
+        #
+        # This does NOT make a run pipe-proof, and is not trying to: `_StdoutTee`
+        # writes the IN-RUN stream unguarded, so a broken pipe still ends a node run
+        # (terminalized `fail` and resumable once `init` has committed; before that
+        # there is nothing to terminalize). What this removes is a driver dying at a
+        # point where raising buys nothing — the destination is gone either way, and
+        # between nodes there is nothing left to report.
+        #
+        # What this does NOT fix: CPython still fails to flush the retained buffer at
+        # shutdown, reports `Exception ignored on flushing sys.stdout`, and forces exit
+        # 120 — with or without this clause (see docs/RUNBOOK.md on the exit code).
+        pass
 
 
 class _StdoutTee:
@@ -4180,7 +4231,7 @@ def _run_with_dependency_closure(
     prior_orch_by_spec = prior_orch_by_spec or {}
     ordered, error = _resolve_dependency_closure(repo_root, target_spec_ref)
     if error is not None:
-        _emit_closure_event(
+        _emit_unlogged_event(
             {
                 "status": "fail",
                 "reason": "dependency_closure_unresolved",
@@ -4243,7 +4294,7 @@ def _run_with_dependency_closure(
             ):
                 if rejection is None:
                     continue
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         **rejection,
                         "failed_dependency_node": node_label,
@@ -4270,7 +4321,7 @@ def _run_with_dependency_closure(
                 node_claim_ok = node_claim.enter_context(
                     _exclusive_claim(repo_root, "spec", spec_ref))
             if not node_claim_ok:
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         **_concurrent_cold_start_envelope(spec_ref),
                         "orchestration_id": dep_orch_id,
@@ -4295,7 +4346,7 @@ def _run_with_dependency_closure(
                 )
             )
             if node_conflict is not None:
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         **node_conflict,
                         "failed_dependency_node": node_label,
@@ -4309,7 +4360,7 @@ def _run_with_dependency_closure(
             try:
                 dep_source_dependency_ref = _discover_source_dependency_ref(repo_root, spec_ref)
             except ValueError as exc:
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         "status": "fail",
                         "reason": "dependency_dep_ref_unresolved",
@@ -4325,7 +4376,7 @@ def _run_with_dependency_closure(
             # The per-node `node_start` event is emitted uniformly inside _run_node;
             # here we only announce which dependency node (with its pretty label) the
             # closure is about to drive, so the stream stays human-traceable.
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     "status": "info",
                     "event": "dependency_node_begin",
@@ -4391,7 +4442,7 @@ def _run_with_dependency_closure(
             }
         )
         if rc != 0:
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "dependency_node_failed",
@@ -4414,7 +4465,7 @@ def _run_with_dependency_closure(
         # otherwise the next node would just fail-close at workflow-launch-check.
         if not _dependency_node_ready(repo_root, node, required_stages):
             dependency_runs[-1]["status"] = "not_ready_after_run"
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "dependency_not_ready_after_run",
@@ -4474,7 +4525,7 @@ def _run_with_dependency_closure(
         ):
             if rejection is None:
                 continue
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {**rejection, "dependency_runs": dependency_runs},
                 stdout_format,
             )
@@ -4489,7 +4540,7 @@ def _run_with_dependency_closure(
             target_claim_ok = target_claim.enter_context(
                 _exclusive_claim(repo_root, "spec", target_spec_ref))
         if not target_claim_ok:
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     **_concurrent_cold_start_envelope(target_spec_ref),
                     "dependency_runs": dependency_runs,
@@ -4511,7 +4562,7 @@ def _run_with_dependency_closure(
             )
         )
         if target_conflict is not None:
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     **target_conflict,
                     "spec_ref": target_spec_ref,

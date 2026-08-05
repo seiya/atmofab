@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -3567,6 +3568,10 @@ class RunWorkflowTests(unittest.TestCase):
                     "--repo-root", str(repo_root),
                     "--orchestration-id", "orch_direct_cli",
                     "--no-run-conductor",
+                    # This test parses stdout as JSON; the default (`human`) now
+                    # renders startup envelopes too, so ask for the machine form.
+                    # Unrelated to what it pins (import-crash safety).
+                    "--stdout-format", "jsonl",
                 ],
                 cwd=str(repo_root),
                 env=env,
@@ -3698,6 +3703,10 @@ class RunWorkflowTests(unittest.TestCase):
                         "--orchestration-id",
                         "orch_missing",
                         "--no-run-conductor",
+                        # The envelope is read as JSON below; the default `human`
+                        # format now renders startup envelopes as `[FAIL] ...`.
+                        "--stdout-format",
+                        "jsonl",
                     ]
                 )
             self.assertEqual(code, 2)
@@ -5879,6 +5888,344 @@ class StdoutFormatTests(unittest.TestCase):
         # Unknown event shapes return None so the caller falls back to JSON.
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
         self.assertIsNone(f({"hello": "world"}))
+
+    def test_fail_detail_elision_is_the_default_and_is_opt_outable(self) -> None:
+        """The fail arm's two lossy operations — newline collapse and the 240-char head cut —
+        were unpinned, which is what let `elide_detail` be added without any test noticing
+        either could change. In-run they are correct (the run log holds the untouched JSON);
+        outside a node run, where `_emit_unlogged_event` opts out, they would destroy the
+        remedy the message exists to deliver. Pin both directions."""
+        f = run_workflow._format_event_human
+        # Leading whitespace on purpose: the lossless arm `rstrip()`s rather than
+        # `strip()`s, and a real remedy is indented (`llm_config_default_missing` puts
+        # its `cp` lines under two spaces). Without a fixture that HAS leading
+        # whitespace, `rstrip` -> `strip` is an undetectable mutation.
+        detail = "  first line\nsecond line\n" + ("x" * 400)
+        elided = f({"status": "fail", "reason": "r", "detail": detail})
+        # Default: one line, and cut at exactly 240 characters of the collapsed text.
+        collapsed = detail.replace("\n", " ").strip()
+        self.assertEqual(elided, f"[FAIL] reason=r detail={collapsed[:240]}...")
+        self.assertNotIn("\n", elided or "")
+        # The cut is a HEAD cut of 240 chars, not "some shortening": the 241st character of
+        # the collapsed detail is absent and the 240th is present.
+        self.assertIn(collapsed[:240], elided or "")
+        self.assertNotIn(collapsed[:241], elided or "")
+        # Opt-out: newlines survive, nothing is cut, and only trailing whitespace goes.
+        lossless = f({"status": "fail", "reason": "r", "detail": detail + "\n\n"},
+                     elide_detail=False)
+        self.assertEqual(lossless, f"[FAIL] reason=r detail={detail}")
+        self.assertIn("\nsecond line\n", lossless or "")
+        self.assertTrue((lossless or "").endswith("x" * 400))
+        # ...only TRAILING whitespace: the indent that structures a multi-line remedy is
+        # part of the message. (`strip()` here would still satisfy every assert above.)
+        self.assertIn("detail=  first line", lossless or "")
+        # `elide_detail` is keyword-only and touches the fail arm ONLY: every other event
+        # renders identically under both values.
+        info = {"status": "info", "event": "phase_start", "phase": "compile", "attempt": 1}
+        self.assertEqual(f(info), f(info, elide_detail=False))
+        ok = {"status": "ok", "orchestration_id": "o", "workflow_status": "pass"}
+        self.assertEqual(f(ok), f(ok, elide_detail=False))
+        with self.assertRaises(TypeError):
+            f({"status": "fail", "reason": "r"}, False)  # type: ignore[misc]
+        # `docs_ref` survives the render. Every other extra key is dropped because the
+        # detail restates it; this one names the section that fixes the failure and is
+        # nowhere in the detail, so a rendered line without it is less useful than the
+        # raw JSON it replaced.
+        self.assertEqual(
+            f({"status": "fail", "reason": "missing_required_cli_tools",
+               "detail": "missing tools: jq", "missing": ["jq"],
+               "required": ["jq", "git"], "docs_ref": "docs/RUNBOOK.md#0-1"}),
+            "[FAIL] reason=missing_required_cli_tools detail=missing tools: jq "
+            "docs_ref=docs/RUNBOOK.md#0-1",
+        )
+
+
+class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
+    """Issue #40: `_run_main`'s startup rejections are emitted before `_run_node` installs
+    the stdout tee, so until now they ignored `--stdout-format` entirely and printed raw
+    JSON under the default (`human`) — worst for the most likely first-run failure, whose
+    multi-line `cp` remedy arrived as `\\n` escapes inside one unreadable line.
+
+    These envelopes also have no second copy: `run_logs/run_*.jsonl` is opened inside
+    `_run_node`, which has not run. Human rendering here is therefore lossless."""
+
+    def _seed(self, repo_root: Path) -> None:
+        """An operator's checkout: samples in the tree, spec + canonical schema present.
+        Deliberately WITHOUT `./llm.yaml` — that absence is the headline failure."""
+        _seed_shape_expr_schema_into(repo_root)
+        for d in ("tools", "workspace", "spec/problem"):
+            (repo_root / d).mkdir(parents=True, exist_ok=True)
+        (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
+        (repo_root / "spec" / "problem" / "deps.yaml").write_text(
+            "nodes: []\n", encoding="utf-8")
+        (repo_root / "docs" / "examples").mkdir(parents=True, exist_ok=True)
+        for name in lc.SAMPLE_CONFIG_NAMES:
+            shutil.copy(SAMPLE_DIR / name, repo_root / "docs" / "examples" / name)
+
+    def _main(self, argv: list[str]) -> tuple[int, str]:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_workflow.main(argv)
+        return code, out.getvalue()
+
+    def test_the_missing_default_config_remedy_survives_human_mode_intact(self) -> None:
+        """The issue's headline case, driven through the REAL writer
+        (`resolve_default_config_path`) rather than a fake short message — a fake would make
+        every assertion below vacuous, since nothing short can be truncated."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, out = self._main([
+                "spec/problem/test.md", "build",
+                "--repo-root", str(repo_root),
+                "--orchestration-id", "orch_human_startup",
+                "--no-run-conductor",
+                # NO --stdout-format: this is what an operator's first run looks like.
+            ])
+        self.assertEqual(code, 2)
+        self.assertTrue(
+            out.startswith("[FAIL] reason=invalid_startup_input "),
+            f"startup rejection must be rendered, not raw JSON; got:\n{out}")
+        # The bug symptom, both halves: no raw-JSON line, and no `\n` ESCAPE standing in
+        # for the line breaks of the remedy.
+        self.assertNotIn("\\n", out)
+        for line in out.splitlines():
+            self.assertFalse(
+                line.startswith("{"),
+                f"a JSON envelope leaked into human-mode stdout:\n{out}")
+        # The remedy is multi-line and every offered `cp` is present — asserted at BOTH ends
+        # of the message, so a future re-truncation (head OR tail) cannot pass this test.
+        self.assertIn("\n", out)
+        first_cp = (f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+                    f"{repo_root / 'llm.yaml'}")
+        second_cp = (f"cp {repo_root / 'docs' / 'examples' / 'llm_codex.example.yaml'} "
+                     f"{repo_root / 'llm.yaml'}")
+        last_cp = (f"cp {repo_root / 'docs' / 'examples' / lc.SAMPLE_CONFIG_NAMES[-1]} "
+                   f"{repo_root / 'llm.yaml'}")
+        self.assertIn(first_cp, out)
+        self.assertIn(second_cp, out)
+        self.assertEqual(out.rstrip("\n").splitlines()[-1].strip(), last_cp)
+        # ...and the head of the message, which the `...` cut would have kept while dropping
+        # everything above, is there too.
+        self.assertIn("llm_config_default_missing", out)
+        self.assertIn(str(repo_root / "llm.yaml"), out)
+
+    def test_a_second_startup_site_is_rendered_too(self) -> None:
+        """`no_resumable_orchestration` comes from a different emission site on a different
+        branch (the resume gate, long before the config is resolved). Pinning it keeps the
+        fix from being one path's special case."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shutil.copy(SAMPLE_DIR / "llm_claude.example.yaml", repo_root / "llm.yaml")
+            code, out = self._main([
+                "--repo-root", str(repo_root), "--resume", "--no-run-conductor",
+            ])
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            out.strip(),
+            "[FAIL] reason=no_resumable_orchestration detail=no orchestration found "
+            "under workspace/orchestrations to resume")
+
+    def test_the_same_site_still_emits_parsable_jsonl_when_asked(self) -> None:
+        """The machine contract is unchanged: `--stdout-format jsonl` still yields the same
+        payload, with the detail carrying the full multi-line message.
+
+        Not a duplicate of `LlmConfigStartupTests.test_a_missing_default_stops_the_run_...`
+        (which pins the envelope's CONTENT): what is pinned here is parity between the two
+        formats over one invocation that differs from the human test above by the flag
+        alone — the property this change could break in either direction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, out = self._main([
+                "spec/problem/test.md", "build",
+                "--repo-root", str(repo_root),
+                "--orchestration-id", "orch_jsonl_startup",
+                "--no-run-conductor",
+                "--stdout-format", "jsonl",
+            ])
+        self.assertEqual(code, 2)
+        payload = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(payload["reason"], "invalid_startup_input")
+        self.assertIn("llm_config_default_missing", payload["detail"])
+        self.assertIn(
+            f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+            f"{repo_root / 'llm.yaml'}", payload["detail"])
+        self.assertIn("\n", payload["detail"])
+
+    def test_a_dead_stdout_does_not_turn_a_refusal_into_a_traceback(self) -> None:
+        """`python3 tools/run_workflow.py ... | head -5` is a normal way to read a refusal,
+        and more likely now that a human-mode envelope spans several lines. The reader
+        exits, the write breaks, and because the helper flushes eagerly the error surfaces
+        inside the failure path instead of at interpreter shutdown — turning a clean
+        refusal into a traceback. Emitting must survive that."""
+        # Both halves, because a real `TextIOWrapper` on a pipe buffers the write and
+        # raises from the FLUSH — which is the `flush=True` this is about. A fake that
+        # only breaks `write` would stay green against a `print(line)` +
+        # unguarded `sys.stdout.flush()` refactor, i.e. against the actual bug.
+        class _DeadOnWrite(io.StringIO):
+            def write(self, s: str) -> int:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        class _DeadOnFlush(io.StringIO):
+            def flush(self) -> None:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        for dead in (_DeadOnWrite, _DeadOnFlush):
+            for fmt in ("human", "jsonl"):
+                with redirect_stdout(dead()):
+                    run_workflow._emit_unlogged_event(
+                        {"status": "fail", "reason": "invalid_startup_input",
+                         "detail": "x\ny"}, fmt)
+        # Only THIS error is swallowed: a stdout that fails for another reason is a real
+        # fault and must not be hidden behind the same clause.
+        class _BrokenStdout(io.StringIO):
+            def write(self, s: str) -> int:
+                raise OSError(28, "No space left on device")
+
+        with self.assertRaises(OSError):
+            with redirect_stdout(_BrokenStdout()):
+                run_workflow._emit_unlogged_event({"status": "fail", "reason": "r"}, "human")
+
+    def test_a_real_dead_reader_gets_no_traceback_from_the_driver(self) -> None:
+        """The in-process fakes above pin the clause; this pins the thing itself. A real
+        pipe whose read end is closed before the child writes is the only faithful
+        version of "the reader is already gone" — buffering, the flush boundary and
+        CPython's shutdown handling all participate, and none of them is modelled by a
+        StringIO subclass."""
+        read_end, write_end = os.pipe()
+        os.close(read_end)                       # the reader is gone before we start
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(Path(run_workflow.__file__).resolve()),
+                 "spec/problem/definitely_missing.md", "build",
+                 "--repo-root", str(REPO_ROOT), "--no-run-conductor"],
+                stdout=write_end, stderr=subprocess.PIPE, timeout=60)
+        finally:
+            os.close(write_end)
+        self.assertNotIn(
+            "Traceback", proc.stderr.decode("utf-8", "replace"),
+            "a dead stdout must not turn a startup refusal into a traceback; stderr:\n"
+            + proc.stderr.decode("utf-8", "replace"))
+
+    def test_run_main_writes_stdout_only_through_the_emit_helper(self) -> None:
+        """Structural guard for the whole class of sites: any NEW startup envelope added to
+        `_run_main` with a bare `print(json.dumps(...))` reintroduces the bug for that path,
+        and no behaviour test would cover it. Only 2 of the 17 emissions are pinned
+        behaviourally, so this guard carries the other 15 — which is why it checks the
+        exact shape of the emission set rather than a lower bound.
+
+        The no-raw-write half covers every function that emits outside a node run, not
+        just `_run_main`: the closure driver and the three gate emitters shared between
+        the two paths stand on exactly the same rule ("the elision is a property of the
+        emission point"), and a bare print added to one of THEM reintroduces the leak for
+        the `--with-deps` path — the divergence this branch's own review caught. They
+        contain no such write today, so the assertion costs nothing to hold.
+
+        Walked as an AST, not grepped: the sites are written as a multi-line
+        `print(\\n    json.dumps(` that plain text search misses."""
+        import ast
+        import inspect
+
+        def calls_in(func) -> list:  # type: ignore[no-untyped-def]
+            tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+            return [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+
+        untee_d_emitters = {
+            "_run_main": run_workflow._run_main,
+            "_run_with_dependency_closure": run_workflow._run_with_dependency_closure,
+            "_cold_start_running_guard": run_workflow._cold_start_running_guard,
+            "_warm_resume_liveness_guard": run_workflow._warm_resume_liveness_guard,
+            "_terminalize_dead_driver": run_workflow._terminalize_dead_driver,
+        }
+        for name, func in untee_d_emitters.items():
+            calls = calls_in(func)
+            prints = [
+                node.lineno for node in calls
+                if isinstance(node.func, ast.Name) and node.func.id == "print"
+            ]
+            self.assertEqual(
+                prints, [],
+                f"{name} must emit stdout only via _emit_unlogged_event (which honors "
+                f"--stdout-format); bare print() at {name}-relative line(s) {prints}")
+            # `print` is not the only way to write a line. A `sys.stdout.write(json.dumps(...))`
+            # bypasses the helper just as completely while leaving the assertion above green.
+            # Scoped to STDOUT: `_run_main`'s one `sys.stderr.write` is the deliberate advisory
+            # about an ignored `--llm-config` on resume, which is not an envelope.
+            stdout_writes = [
+                node.lineno for node in calls
+                if isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"write", "writelines"}
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "stdout"
+            ]
+            self.assertEqual(
+                stdout_writes, [],
+                f"{name} must not write to sys.stdout directly; every envelope goes "
+                f"through _emit_unlogged_event — lines {stdout_writes}")
+        # The exact-count half stays scoped to `_run_main`: it is what keeps the 15
+        # sites no behaviour test reaches from quietly disappearing, and a count over
+        # the closure driver would just be churn on every future closure event.
+        calls = calls_in(run_workflow._run_main)
+        # ...the helper is actually used there, so the assertions above cannot be
+        # satisfied by a `_run_main` that simply stopped emitting anything.
+        helper_calls = [
+            node for node in calls
+            if isinstance(node.func, ast.Name) and node.func.id == "_emit_unlogged_event"
+        ]
+        # EXACT, not a lower bound: a lower bound is silently satisfied while a site is
+        # rerouted to some other emitter (verified — swapping one site passed `>= 14`),
+        # and a site that stops emitting is exactly how a rejection becomes silent.
+        self.assertEqual(len(helper_calls), 17)
+        # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
+        # site would silently pin that site to one format.
+        for call in helper_calls:
+            self.assertEqual(len(call.args), 2, ast.dump(call))
+            fmt = call.args[1]
+            self.assertTrue(
+                isinstance(fmt, ast.Attribute)
+                and fmt.attr == "stdout_format"
+                and isinstance(fmt.value, ast.Name)
+                and fmt.value.id == "args",
+                f"startup emit must pass args.stdout_format, got {ast.dump(fmt)}")
+
+    def test_a_closure_gate_envelope_keeps_the_remedy_its_detail_carries(self) -> None:
+        """The closure driver emits the SAME refusals as the startup path — the payload
+        builders (`_concurrent_cold_start_envelope`, `_llm_config_legacy_pin_rejection`,
+        `_llm_config_resume_rejection`) and two of the emitters (`_cold_start_running_guard`,
+        `_terminalize_dead_driver`) are shared — and a closure gate that refuses before the
+        first node runs has no `run_logs/` copy either. Eliding there and not here would
+        mean the identical refusal printing its remedy or dropping it according to whether
+        `--with-deps` was passed."""
+        envelope = run_workflow._concurrent_cold_start_envelope("spec/problem/sw2d/spec.md")
+        # The premise: this detail is long enough for the cut to bite, and the remedy sits
+        # beyond it. Without both, the assertions below would hold for a renderer that
+        # still elides — which is how this test would go quietly vacuous.
+        self.assertGreater(len(envelope["detail"]), 240)
+        remedy = "--resume --orchestration-id"
+        self.assertIn(remedy, envelope["detail"][240:],
+                      "the remedy must sit BEYOND the cut, or this test proves nothing")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_workflow._emit_unlogged_event(envelope, "human")
+        rendered = buf.getvalue()
+        self.assertTrue(rendered.startswith("[FAIL] reason=concurrent_orchestration_running"))
+        self.assertIn(remedy, rendered)
+        self.assertNotIn("...", rendered)
+        # ...and the same call still emits the raw payload under jsonl.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_workflow._emit_unlogged_event(envelope, "jsonl")
+        self.assertEqual(json.loads(buf.getvalue()), envelope)
+        # The `--with-deps` path wraps the same envelope with closure context before
+        # emitting it (`_run_with_dependency_closure`); that must not reintroduce the cut.
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            run_workflow._emit_unlogged_event(
+                {**envelope, "dependency_runs": [], "target_spec_ref": "spec/x"}, "human")
+        self.assertIn(remedy, buf.getvalue())
 
 
 class ReasonDetailTruncationTests(unittest.TestCase):
