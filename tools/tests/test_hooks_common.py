@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tools.hooks.adapters.claude import ClaudeHookAdapter
@@ -2957,6 +2958,34 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
             self._targets("grep -fexcluded docs/x.md"), ["excluded", "docs/x.md"]
         )
         self.assertEqual(self._targets("grep -inA 2 PAT docs/a.md"), ["docs/a.md"])
+        # `-e`/`-f` are value-taking wherever they sit in the cluster; seeing
+        # them only at the start let `-ieTOP` consume the FILE as the pattern.
+        self.assertEqual(self._targets("grep -ieTOP spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -ne TOP spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("grep -Ff pats.txt data.txt"), ["pats.txt", "data.txt"]
+        )
+
+    def test_a_failed_cd_does_not_anchor(self) -> None:
+        """bash leaves the directory unchanged when `cd` fails; anchoring to a
+        directory that is not there sent later targets to paths that cannot
+        exist, so the existence filter dropped them and nothing was validated."""
+        from tools.hooks.common import extract_bash_read_targets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "docs").mkdir()
+            (repo_root / "docs" / "a.md").write_text("x", encoding="utf-8")
+            self.assertEqual(
+                extract_bash_read_targets(
+                    "cd nosuchdir; cat spec/private.md", repo_root=repo_root
+                ),
+                ["spec/private.md"],
+            )
+            self.assertEqual(
+                extract_bash_read_targets("cd docs && cat a.md", repo_root=repo_root),
+                ["docs/a.md"],
+            )
 
     def test_directories_recurse_is_a_recursive_search(self) -> None:
         for command in (

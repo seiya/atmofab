@@ -1174,7 +1174,7 @@ def _evaluate_bash_read_manifest_policy(
     repo_root_resolved = repo_root.resolve()
     surviving: list[tuple[str, Path]] = []
     extracted: list[str] = []
-    for raw_target in extract_bash_read_targets(decoded.command):
+    for raw_target in extract_bash_read_targets(decoded.command, repo_root=repo_root):
         # Brace expansion is lexical, so `cat spec/{a,b}.md` names real files;
         # leaving it unexpanded would drop it as "nonexistent" and auto-approve.
         variants = expand_bash_braces(raw_target)

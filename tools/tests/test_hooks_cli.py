@@ -3251,6 +3251,13 @@ class BashReadManifestGuardTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(self._log_lines(repo_root), [])
 
+    def test_failed_cd_does_not_disarm_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, body = self._run(repo_root, "cd nosuchdir; cat spec/private.md")
+            self.assertEqual(code, 2)
+            self.assertIn("'spec/private.md'", json.loads(body).get("reason", ""))
+
     def test_cd_prefixed_read_still_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, roots=["docs/"])

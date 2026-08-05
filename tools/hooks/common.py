@@ -560,6 +560,31 @@ _RG_NO_PATTERN_FLAGS: frozenset[str] = frozenset({
 })
 
 
+def _grep_short_cluster(cmd: str, token: str) -> tuple[str, str] | None:
+    """Split a grep-family short cluster at its first value-taking letter.
+
+    Returns `(letter, glued_value)` — `glued_value` empty when the value is the
+    next token — or None when the token is not such a cluster.
+
+    `-e`/`-f` were recognized only at the START of a token, and the generic
+    cluster rule derived its letters from the detached table, which excludes
+    them. So in `-ieTOP` neither half saw the `e`: the pattern was promoted to
+    the "first positional is the pattern" slot and the FILE was consumed as the
+    pattern instead — the read vanished and was auto-approved. `-Ff pats.txt`
+    lost the pattern file the same way.
+    """
+    # grep-family only: ripgrep's idiomatic glued values are all letters too
+    # (`-tmd` is `-t md`), and no lexical rule separates that from a cluster.
+    if cmd not in {"grep", "egrep", "fgrep"}:
+        return None
+    if not re.fullmatch(r"-[A-Za-z]+", token) or len(token) < 3:
+        return None
+    for pos, letter in enumerate(token[1:], start=1):
+        if letter in _GREP_VALUE_TAKING_SHORT_LETTERS:
+            return letter, token[pos + 1 :]
+    return None
+
+
 def _short_flag_cluster_value_letter(cmd: str, token: str) -> bool:
     """Whether `token` is a short cluster whose LAST letter takes the next token.
 
@@ -803,8 +828,20 @@ def _extract_read_targets(
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
-            if token in detached or _short_flag_cluster_value_letter(cmd, token):
+            if token in detached:
                 idx += 2
+                continue
+            cluster = _grep_short_cluster(cmd, token)
+            if cluster is not None:
+                letter, glued = cluster
+                if letter in {"e", "f"}:
+                    has_explicit_pattern = True
+                    if letter == "f":
+                        if glued:
+                            read_targets.append(glued)
+                        elif idx + 1 < len(args):
+                            read_targets.append(args[idx + 1])
+                idx += 1 if glued else 2
                 continue
             if token.startswith("--") and "=" in token:
                 key, value = token.split("=", 1)
@@ -1008,7 +1045,9 @@ def expand_bash_braces(token: str) -> list[str]:
     return _brace_expand(token)
 
 
-def extract_bash_read_targets(command: str | None) -> list[str]:
+def extract_bash_read_targets(
+    command: str | None, *, repo_root: Path | None = None
+) -> list[str]:
     """Extract the file paths a Bash command reads, per fragment.
 
     Best-effort by design (issue #42 decision 2): the goal is to widen what is
@@ -1171,6 +1210,14 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
                 if argv0 == "pushd":
                     dir_stack.append(cwd)
                 previous_cwd, cwd = cwd, _joined(cwd, operand)
+                # bash leaves the directory unchanged when `cd` FAILS. Anchoring
+                # to a directory that is not there sent every later relative
+                # target to a path that cannot exist, so the existence filter
+                # dropped them and nothing was validated — `cd nosuchdir; cat
+                # <path>` walked straight past the guard.
+                if repo_root is not None and cwd is not None:
+                    if not _resolve_target_path(repo_root, cwd).is_dir():
+                        cwd = None
         elif argv0 in _BASH_READ_CMD_NAMES:
             _record(
                 _extract_read_targets(
