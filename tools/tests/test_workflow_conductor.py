@@ -6172,22 +6172,43 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "-p"])
+        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
         self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "-p"])
+        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
         self.assertEqual(
             self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
             ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
         )
 
+    def test_claude_agentic_leaf_disallows_unvalidated_tools(self) -> None:
+        """The read boundary is hook-enforced, and the hook can only validate a tool
+        whose payload names what it touches. Tools outside that vocabulary must be
+        absent at launch rather than merely discouraged in the prompt."""
+        argv = self._c(backend="claude").leaf_command()
+        self.assertIn("--disallowedTools", argv)
+        value = argv[argv.index("--disallowedTools") + 1]
+        self.assertEqual(set(value.split(",")), {"Task", "WebFetch", "WebSearch", "NotebookEdit"})
+        self.assertEqual(value, wc.CLAUDE_LEAF_DISALLOWED_TOOLS)
+        # The flag is a leaf-launch property, not a codex one.
+        codex_argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command()
+        self.assertNotIn("--disallowedTools", codex_argv)
+
+    def test_pure_claude_leaf_has_no_disallowed_tools_flag(self) -> None:
+        """A pure leaf already passes `--tools ""` — every tool is gone, so an
+        exclusion list would be redundant argv on the one launch path whose argv
+        is pinned byte-for-byte."""
+        argv = self._c(backend="claude").leaf_command(pure=True)
+        self.assertNotIn("--disallowedTools", argv)
+        self.assertIn("--tools", argv)
+
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "-p"],
+            ["claude", "--session-id", "arid-1", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"],
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
@@ -6200,7 +6221,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(
             c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
             ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "-p"],
+             "--session-id", "new-arid", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"],
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
@@ -15391,7 +15412,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         DECLARE a model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "-p"])
+                         ["claude", "--model", "opus", "--effort", "medium", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
         k = self._configured("codex")
         judge = k.leaf_command(k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
@@ -15408,10 +15429,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "-p"])
+        self.assertEqual(judge, ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
         # ...and only that leaf.
         self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
-                         ["claude", "-p"])
+                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -15420,7 +15441,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "-p"], msg=f"{phase}.{substep}")
+                             ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -15433,7 +15454,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "-p"])
+                         ["claude", "--effort", "xhigh", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
         judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
@@ -15460,7 +15481,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "-p"])
+                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
@@ -15474,7 +15495,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command(entry), ["claude", "-p"])
+        self.assertEqual(c.leaf_command(entry), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
 
     # --- capability predicates replace the backend tests --------------------------------
 

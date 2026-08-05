@@ -1350,6 +1350,19 @@ def build_launch_request(
 # leaves actually run.
 LEAF_MAX_OUTPUT_TOKENS = 128000
 
+# Tools an agentic claude leaf is launched WITHOUT (issue #42, decision 3). The
+# read boundary in `read_manifests/<agent_run_id>.json` is enforced by the
+# PreToolUse hook, which can only validate a tool whose payload names what it
+# touches: Read/Grep/Glob (a path) and Bash (an extractable command). These four
+# read or spawn outside that vocabulary — `Task` launches a subagent whose own
+# tool calls carry a different session identity, `WebFetch`/`WebSearch` pull
+# content from outside the repo entirely, and `NotebookEdit` writes through a
+# payload shape the write guard does not parse. A boundary that depends on the
+# agent not reaching for them is a declaration, not enforcement, so they are
+# removed at launch. Pure leaves already pass `--tools ""` and need no exclusion.
+# Comma-joined single value (accepted by claude CLI 2.1.222).
+CLAUDE_LEAF_DISALLOWED_TOOLS = "Task,WebFetch,WebSearch,NotebookEdit"
+
 # How long a leaf gets to exit on SIGTERM before the group is SIGKILLed, and how long
 # the whole teardown may take. Both are bounded on purpose: this runs on the driver's
 # way out (an interrupt, or a host-write failure that must come back as a transport
@@ -3453,6 +3466,11 @@ class Conductor:
             if pure:
                 from tools.pure_leaf import pure_leaf_flags
                 flags += pure_leaf_flags()
+            else:
+                # A tool the PreToolUse hook cannot validate is a hole in the read
+                # boundary, so it must be absent rather than merely discouraged.
+                # A pure leaf already passes `--tools ""` and needs no exclusion.
+                flags += ["--disallowedTools", CLAUDE_LEAF_DISALLOWED_TOOLS]
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
