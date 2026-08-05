@@ -1217,7 +1217,7 @@ def _terminalize_dead_driver(
         return str(exc)
     # Announced only after the write committed, so the event never claims a
     # terminalization that did not happen.
-    _emit_closure_event(
+    _emit_unlogged_event(
         {
             "status": "info",
             "event": "dead_driver_terminalized",
@@ -1286,7 +1286,7 @@ def _warm_resume_liveness_guard(
             "driver_pid": driver.get("pid"),
             "resume_command": _resume_command_for(orchestration_id),
         }
-    _emit_closure_event(
+    _emit_unlogged_event(
         {
             "status": "info",
             "event": "resume_liveness_indeterminate",
@@ -1308,7 +1308,7 @@ def _terminalize_interrupted_orchestration(
 
     Called only from inside `_run_node`, so its event goes to the installed
     `_StdoutTee` as raw JSON (see the print below) rather than through
-    `_emit_closure_event`, which pre-renders for the terminal.
+    `_emit_unlogged_event`, which pre-renders for the terminal.
 
     An already-terminal status is preserved: the conductor/runtime may have recorded a
     more specific outcome (e.g. `fail_closed` / `sandbox_enforcement_violation`) before
@@ -1343,7 +1343,7 @@ def _terminalize_interrupted_orchestration(
     except Exception:  # noqa: BLE001 - the interrupt must still propagate
         return
     try:
-        # Printed as RAW JSON, not via _emit_closure_event: this is the one new gate
+        # Printed as RAW JSON, not via _emit_unlogged_event: this is the one new gate
         # event emitted from INSIDE _run_node, where `_StdoutTee` is installed. The tee
         # mirrors the inbound bytes verbatim into run_logs/run_*.jsonl and renders the
         # human form only for the terminal, so pre-rendering here would put a plain
@@ -1630,7 +1630,7 @@ def _cold_start_running_guard(
             "resume_command": _resume_command_for(oid),
         }
     for oid, _meta, liveness in probed:
-        _emit_closure_event(
+        _emit_unlogged_event(
             {
                 "status": "info",
                 "event": "prior_incomplete_orchestration",
@@ -2256,7 +2256,7 @@ def _run_main(
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
     missing_tools = _check_required_cli_tools()
     if missing_tools:
-        _emit_startup_event(
+        _emit_unlogged_event(
             {
                 "status": "fail",
                 "reason": "missing_required_cli_tools",
@@ -2294,7 +2294,7 @@ def _run_main(
     try:
         _pycache_resolved = _validated_pycache_redirect_root(repo_root)
     except ValueError as exc:
-        _emit_startup_event(
+        _emit_unlogged_event(
             {
                 "status": "fail",
                 "reason": "invalid_pycache_redirect_root",
@@ -2341,7 +2341,7 @@ def _run_main(
         explicit_id = bool(args.orchestration_id)
         orchestration_id = args.orchestration_id or _find_latest_orchestration(repo_root)
         if not orchestration_id:
-            _emit_startup_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "no_resumable_orchestration",
@@ -2367,7 +2367,7 @@ def _run_main(
         if not resume_claim.enter_context(
             _exclusive_claim(repo_root, "orch", orchestration_id)
         ):
-            _emit_startup_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "concurrent_orchestration_running",
@@ -2401,7 +2401,7 @@ def _run_main(
                     stdout_format=args.stdout_format,
                 )
                 if terminalize_error is not None:
-                    _emit_startup_event(
+                    _emit_unlogged_event(
                         {
                             "status": "fail",
                             "reason": "dead_driver_terminalize_failed",
@@ -2423,7 +2423,7 @@ def _run_main(
                     if explicit_id
                     else "latest_orchestration_not_resumable"
                 )
-                _emit_startup_event(
+                _emit_unlogged_event(
                     {
                         "status": "fail",
                         "reason": reason,
@@ -2442,7 +2442,7 @@ def _run_main(
             elif not explicit_id:
                 # Indeterminate liveness on the implicit path keeps the pre-existing
                 # refusal: an unknown must never auto-attach to a possibly-live run.
-                _emit_startup_event(
+                _emit_unlogged_event(
                     {
                         "status": "fail",
                         "reason": "latest_orchestration_not_resumable",
@@ -2459,7 +2459,7 @@ def _run_main(
                 # Explicit id + indeterminate liveness: today's deliberate bypass, but
                 # say so — the operator is resuming a run that may still be live, and
                 # the crash reconciliations will NOT fire (status stays non-terminal).
-                _emit_startup_event(
+                _emit_unlogged_event(
                     {
                         "status": "info",
                         "event": "resume_liveness_indeterminate",
@@ -2554,7 +2554,7 @@ def _run_main(
             orchestration_id, recovered.get("generate_executor")
         )
         if entry_executor_rejection is not None:
-            _emit_startup_event(entry_executor_rejection, args.stdout_format)
+            _emit_unlogged_event(entry_executor_rejection, args.stdout_format)
             return 2
         missing = [
             name
@@ -2571,7 +2571,7 @@ def _run_main(
             if not ok
         ]
         if missing:
-            _emit_startup_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "resume_params_unrecoverable",
@@ -2618,7 +2618,7 @@ def _run_main(
         legacy_rejection = _llm_config_legacy_pin_rejection(
             orchestration_id, recorded_pin) if resume_mode else None
         if legacy_rejection is not None:
-            _emit_startup_event(legacy_rejection, args.stdout_format)
+            _emit_unlogged_event(legacy_rejection, args.stdout_format)
             return 2
         if recorded_pin.get("path"):
             # The recorded pin WINS on a resume, including over an explicitly passed
@@ -2643,7 +2643,7 @@ def _run_main(
                 effective_sha256=config_sha256(llm_config_path),
                 effective_overrides={})
             if rejection is not None:
-                _emit_startup_event(rejection, args.stdout_format)
+                _emit_unlogged_event(rejection, args.stdout_format)
                 return 2
         elif args.llm_config:
             # Relative to `--repo-root`, like every other path this driver resolves — resolving
@@ -2679,7 +2679,7 @@ def _run_main(
     except (ValueError, LlmConfigError) as exc:
         # LlmConfigError IS a ValueError, and is named anyway: its `rule` is the operator's
         # search key and the class is what makes that intent legible here.
-        _emit_startup_event(
+        _emit_unlogged_event(
             {
                 "status": "fail",
                 "reason": "invalid_startup_input",
@@ -2700,7 +2700,7 @@ def _run_main(
             effective_sha256=llm_config.sha256,
             effective_overrides={})
         if rejection is not None:
-            _emit_startup_event(rejection, args.stdout_format)
+            _emit_unlogged_event(rejection, args.stdout_format)
             return 2
 
     # Startup assertion: validate_pipeline_semantics now fail-closes when the
@@ -2728,7 +2728,7 @@ def _run_main(
             missing_path_rel = str(required_schema.relative_to(repo_root))
         except ValueError:
             missing_path_rel = str(required_schema)
-        _emit_startup_event(
+        _emit_unlogged_event(
             {
                 "status": "fail",
                 "reason": "missing_canonical_schema",
@@ -2838,7 +2838,7 @@ def _run_main(
             if not cold_start_claim.enter_context(
                 _exclusive_claim(repo_root, "spec", spec_ref)
             ):
-                _emit_startup_event(
+                _emit_unlogged_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
                 return 2
             cold_conflict = _cold_start_running_guard(
@@ -2848,7 +2848,7 @@ def _run_main(
                 driver_identity=_current_driver_identity(),
             )
             if cold_conflict is not None:
-                _emit_startup_event(cold_conflict, args.stdout_format)
+                _emit_unlogged_event(cold_conflict, args.stdout_format)
                 return 2
 
         # Plain single node. A cold run records the reproduction block (no closure); a
@@ -2912,13 +2912,14 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
     raw verdict text (`fail`, `fail_closed`, `blocked`, ...) so the operator
     sees the actual classification rather than a uniform red flag.
 
-    `elide_detail` governs the `status: fail` arm only. The default (True) keeps
-    the in-run rendering pinned by docs/RUNBOOK.md: a fail detail is collapsed
-    onto one line and head-cut at 240 chars, because the run log
-    (`run_logs/run_*.jsonl`) holds the untouched JSON copy. Callers that emit
-    BEFORE that run log exists — the startup envelopes of `_run_main`, via
-    `_emit_startup_event` — pass False, since for them an elided detail is lost
-    for good and the detail is frequently the remedy itself.
+    `elide_detail` governs the `status: fail` arm only. The default (True) is for
+    the in-run rendering pinned by docs/RUNBOOK.md, done by `_StdoutTee`, its one
+    caller at that setting: a fail detail is collapsed onto one line and head-cut
+    at 240 chars, because the run log (`run_logs/run_*.jsonl`) the tee is writing
+    holds the untouched JSON copy. `_emit_unlogged_event` — the startup envelopes
+    of `_run_main` and the closure driver's own events, neither of which any tee
+    sees — passes False, since for those an elided detail is lost for good and the
+    detail is frequently the remedy itself.
     """
     status = payload.get("status")
     event = payload.get("event")
@@ -3084,8 +3085,9 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
             else:
                 d = str(detail).rstrip()
             parts.append(f"detail={d}")
-        # The fail arm renders three keys and drops the rest, which is right for the
-        # ones the detail already restates (`driver_pid`, `spec_ref`, `resume_command`).
+        # The fail arm renders `reason` / `orch` / `detail` and drops the other keys,
+        # which is right for the ones the detail already restates (`driver_pid`,
+        # `spec_ref`, `resume_command`).
         # `docs_ref` is the exception: it names the section that FIXES the failure and
         # appears nowhere in the detail text, so dropping it would make the rendered
         # line strictly less actionable than the raw JSON it replaced.
@@ -3097,59 +3099,35 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
     return None
 
 
-def _emit_closure_event(payload: dict[str, Any], stdout_format: str) -> None:
-    """Print a dependency-closure-level event, honoring `--stdout-format`.
+def _emit_unlogged_event(payload: dict[str, Any], stdout_format: str) -> None:
+    """Print an event that no run log will hold a copy of, honoring `--stdout-format`.
 
-    The closure driver (`_run_with_dependency_closure`) emits its own events
-    (`dependency_node_begin` and the various closure failure summaries) OUTSIDE
-    any `_run_node` call, so no `_StdoutTee` is installed to translate them. In
-    `human` mode this would leak raw JSON; route the payload through the same
+    Two kinds of event reach this: `_run_main`'s startup rejections, emitted
+    before `_run_node` opens `run_logs/run_*.jsonl`, and the closure driver's
+    own events (`dependency_node_begin`, the per-node gates and summaries),
+    emitted BETWEEN node runs. Neither is seen by a `_StdoutTee`, so in `human`
+    mode both would otherwise leak raw JSON; route the payload through the same
     `_format_event_human` renderer the tee uses, falling back to the raw JSON
     line when the event shape is unknown so no information is dropped.
 
-    Renders losslessly, for the reason given on `_emit_startup_event` — a
-    closure gate that refuses before the first node runs has no `run_logs/`
-    copy of its envelope either, and several of these payloads are BUILT BY THE
-    SAME functions as the startup ones (`_concurrent_cold_start_envelope`,
-    `_llm_config_resume_rejection`, ...). Eliding on one path and not the other
-    would mean one failure printing its remedy and the identical failure
-    dropping it, decided by whether `--with-deps` was passed.
-    """
-    _emit_untee_d_event(payload, stdout_format)
+    Rendering is LOSSLESS (`elide_detail=False`): no newline collapse, no
+    240-char cut. The rule is a property of the emission point rather than of
+    the payload — what is printed here is the only copy, whereas an in-run
+    event is elided precisely because the log holds its full text. (An in-run
+    event whose run log could not be OPENED gets neither treatment: `_run_node`
+    then installs no tee at all and the raw JSON goes to the terminal, the
+    caveat docs/RUNBOOK.md records for the `driver_exception` backstop.) For several
+    of these envelopes the detail IS the remedy (the multi-line `cp` command of
+    `llm_config_default_missing`; the `--resume` line of
+    `concurrent_orchestration_running`), and eliding it would be worse than the
+    raw-JSON leak it replaces.
 
-
-def _emit_startup_event(payload: dict[str, Any], stdout_format: str) -> None:
-    """Print a `_run_main`-level startup event, honoring `--stdout-format`.
-
-    These envelopes are emitted BEFORE `_run_node` installs the stdout tee and
-    opens `run_logs/run_*.jsonl`, so — unlike every in-run event — they have no
-    second, untouched copy anywhere: whatever this prints is all the operator
-    ever gets. Human rendering is therefore LOSSLESS: no newline collapse, no
-    240-char cut. For several of these envelopes the detail IS the remedy (the
-    multi-line `cp` command of `llm_config_default_missing`), and eliding it
-    would be worse than the raw-JSON leak it replaces.
-
-    `_run_main` emits stdout ONLY through this helper; a bare `print` there —
-    or a call to `_emit_closure_event`, whose name would misattribute the
-    event — is a regression (pinned by a source-shape test).
-    """
-    _emit_untee_d_event(payload, stdout_format)
-
-
-def _emit_untee_d_event(payload: dict[str, Any], stdout_format: str) -> None:
-    """The shared body of the two emitters above: render an event that no
-    `_StdoutTee` will see.
-
-    ONE rule decides the elision, and it is a property of the emission point,
-    not of the payload: an event the tee never sees has no untouched copy in
-    `run_logs/run_*.jsonl`, so nothing may be dropped from what is printed.
-    In-run events keep the elision (`_StdoutTee._render_line`) precisely
-    because the log holds their full text.
-
-    The two callers stay distinct names so an emission is attributable to its
-    phase of the run — and so the `_run_main` source-shape guard can name the
-    one it expects — but they must not DRIFT: a payload rendered differently by
-    the two would resurrect the split this collapsed.
+    ONE function, not one per phase of the run: the payload builders are shared
+    (`_concurrent_cold_start_envelope`, `_llm_config_resume_rejection`, ...) and
+    so are the emitters that call them from both paths (`_cold_start_running_guard`,
+    `_terminalize_dead_driver`), so a per-phase name could not be assigned
+    statically anyway — and two names is how the elision came to differ between
+    the paths for the identical refusal in the first place.
     """
     line = json.dumps(payload, ensure_ascii=False)
     if stdout_format == "human":
@@ -4223,7 +4201,7 @@ def _run_with_dependency_closure(
     prior_orch_by_spec = prior_orch_by_spec or {}
     ordered, error = _resolve_dependency_closure(repo_root, target_spec_ref)
     if error is not None:
-        _emit_closure_event(
+        _emit_unlogged_event(
             {
                 "status": "fail",
                 "reason": "dependency_closure_unresolved",
@@ -4286,7 +4264,7 @@ def _run_with_dependency_closure(
             ):
                 if rejection is None:
                     continue
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         **rejection,
                         "failed_dependency_node": node_label,
@@ -4313,7 +4291,7 @@ def _run_with_dependency_closure(
                 node_claim_ok = node_claim.enter_context(
                     _exclusive_claim(repo_root, "spec", spec_ref))
             if not node_claim_ok:
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         **_concurrent_cold_start_envelope(spec_ref),
                         "orchestration_id": dep_orch_id,
@@ -4338,7 +4316,7 @@ def _run_with_dependency_closure(
                 )
             )
             if node_conflict is not None:
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         **node_conflict,
                         "failed_dependency_node": node_label,
@@ -4352,7 +4330,7 @@ def _run_with_dependency_closure(
             try:
                 dep_source_dependency_ref = _discover_source_dependency_ref(repo_root, spec_ref)
             except ValueError as exc:
-                _emit_closure_event(
+                _emit_unlogged_event(
                     {
                         "status": "fail",
                         "reason": "dependency_dep_ref_unresolved",
@@ -4368,7 +4346,7 @@ def _run_with_dependency_closure(
             # The per-node `node_start` event is emitted uniformly inside _run_node;
             # here we only announce which dependency node (with its pretty label) the
             # closure is about to drive, so the stream stays human-traceable.
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     "status": "info",
                     "event": "dependency_node_begin",
@@ -4434,7 +4412,7 @@ def _run_with_dependency_closure(
             }
         )
         if rc != 0:
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "dependency_node_failed",
@@ -4457,7 +4435,7 @@ def _run_with_dependency_closure(
         # otherwise the next node would just fail-close at workflow-launch-check.
         if not _dependency_node_ready(repo_root, node, required_stages):
             dependency_runs[-1]["status"] = "not_ready_after_run"
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     "status": "fail",
                     "reason": "dependency_not_ready_after_run",
@@ -4517,7 +4495,7 @@ def _run_with_dependency_closure(
         ):
             if rejection is None:
                 continue
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {**rejection, "dependency_runs": dependency_runs},
                 stdout_format,
             )
@@ -4532,7 +4510,7 @@ def _run_with_dependency_closure(
             target_claim_ok = target_claim.enter_context(
                 _exclusive_claim(repo_root, "spec", target_spec_ref))
         if not target_claim_ok:
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     **_concurrent_cold_start_envelope(target_spec_ref),
                     "dependency_runs": dependency_runs,
@@ -4554,7 +4532,7 @@ def _run_with_dependency_closure(
             )
         )
         if target_conflict is not None:
-            _emit_closure_event(
+            _emit_unlogged_event(
                 {
                     **target_conflict,
                     "spec_ref": target_spec_ref,
