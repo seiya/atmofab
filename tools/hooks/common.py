@@ -577,44 +577,18 @@ def _grep_short_cluster(cmd: str, token: str) -> tuple[str, str] | None:
     # (`-tmd` is `-t md`), and no lexical rule separates that from a cluster.
     if cmd not in {"grep", "egrep", "fgrep"}:
         return None
-    if not re.fullmatch(r"-[A-Za-z]+", token) or len(token) < 3:
+    if not token.startswith("-") or token.startswith("--") or len(token) < 3:
         return None
     for pos, letter in enumerate(token[1:], start=1):
         if letter in _GREP_VALUE_TAKING_SHORT_LETTERS:
+            # Only the FLAG letters must be alphabetic; the glued value can be
+            # anything. Requiring the whole token to be letters meant any real
+            # pattern — `-ie2024`, `-ieTOP_X`, `-Ffspec/pats.txt` — fell through
+            # to the generic flag skip, and the file was eaten as the pattern.
             return letter, token[pos + 1 :]
+        if not letter.isalpha():
+            return None
     return None
-
-
-def _short_flag_cluster_value_letter(cmd: str, token: str) -> bool:
-    """Whether `token` is a short cluster whose LAST letter takes the next token.
-
-    GNU option clusters let a value-taking letter come last (`-rnA 2` is
-    `-r -n -A 2`). Matching the detached table by exact token missed that, so
-    the value took the pattern's positional slot and promoted the real pattern
-    to a file operand — inventing a read, and suppressing the recursive-tree
-    target that should have been named.
-    """
-    # grep-family only. ripgrep's idiomatic glued values are all-letters too
-    # (`-tmd` is `-t md`), and no lexical rule separates that from a cluster
-    # ending in a value-taking letter — guessing would invent a phantom target
-    # on a common command. GNU grep's glued values are numeric (`-A2`, `-m5`),
-    # so the two forms do not collide there.
-    if cmd not in {"grep", "egrep", "fgrep"}:
-        return False
-    if not re.fullmatch(r"-[A-Za-z]+", token) or len(token) < 3:
-        return False
-    value_letters = {
-        flag[1]
-        for flag in _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
-        if len(flag) == 2 and flag.startswith("-")
-    }
-    # The cluster ends at the FIRST value-taking letter: everything after it is
-    # that flag's glued value. `-eFAILED` is `-e FAILED`, a pattern — not a
-    # cluster ending in `-D` — and consuming the next token there swallowed the
-    # file operand entirely. Same rule `_searches_working_directory` applies.
-    if any(letter in _GREP_VALUE_TAKING_SHORT_LETTERS for letter in token[1:-1]):
-        return False
-    return token[-1] in value_letters
 
 
 def _grep_directories_recurse(args: list[str]) -> bool:
@@ -1177,8 +1151,19 @@ def extract_bash_read_targets(
                 if "$" in target or "`" in target:
                     continue
                 anchored = target
-                if not Path(target).is_absolute() and cwd:
-                    anchored = str(Path(cwd) / target)
+                if not Path(target).is_absolute():
+                    if cwd:
+                        anchored = str(Path(cwd) / target)
+                    elif cwd is None:
+                        # Unknown anchor: the target is validated un-anchored,
+                        # but a leading `..` would then resolve OUTSIDE the repo
+                        # and be dropped as bwrap's domain — turning a real
+                        # in-repo read into an allow. Clamp to the repo instead.
+                        anchored = os.path.normpath(target)
+                        while anchored.startswith(".." + os.sep):
+                            anchored = anchored[3:]
+                        if anchored == "..":
+                            anchored = "."
                 targets.append(anchored)
 
         _record(redirect_reads)

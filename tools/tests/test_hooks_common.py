@@ -2965,6 +2965,16 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(
             self._targets("grep -Ff pats.txt data.txt"), ["pats.txt", "data.txt"]
         )
+        # Only the FLAG letters are alphabetic; the glued value is arbitrary.
+        self.assertEqual(self._targets("grep -ie2024 spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -ieTOP_X spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("grep -Ffspec/pats.txt spec/private.md"),
+            ["spec/pats.txt", "spec/private.md"],
+        )
+        # A cluster whose non-letter comes BEFORE any value flag is a glued
+        # value of an earlier flag (`-A2`), not a cluster to split.
+        self.assertEqual(self._targets("grep -A2 PAT docs/a.md"), ["docs/a.md"])
 
     def test_a_failed_cd_does_not_anchor(self) -> None:
         """bash leaves the directory unchanged when `cd` fails; anchoring to a
@@ -2985,6 +2995,21 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
             self.assertEqual(
                 extract_bash_read_targets("cd docs && cat a.md", repo_root=repo_root),
                 ["docs/a.md"],
+            )
+            # An unknown anchor must not let a `..` target resolve outside the
+            # repo, where it would be dropped as bwrap's domain — that turns a
+            # real in-repo read into an allow.
+            self.assertEqual(
+                extract_bash_read_targets(
+                    "cd nosuchdir; cd docs; cat ../spec/private.md", repo_root=repo_root
+                ),
+                ["spec/private.md"],
+            )
+            self.assertEqual(
+                extract_bash_read_targets(
+                    "cd $D && cat ../../../spec/private.md", repo_root=repo_root
+                ),
+                ["spec/private.md"],
             )
 
     def test_directories_recurse_is_a_recursive_search(self) -> None:
