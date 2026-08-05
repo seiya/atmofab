@@ -324,7 +324,8 @@ def _strip_quoted_strings(cmd: str) -> str:
             at_word_start = False
             continue
         if ch not in ("'", '"'):
-            at_word_start = ch in " \t\n;|&()"
+            # NB: `)` does NOT start a word — `$(echo A)#x` is not a comment.
+            at_word_start = ch in " \t\n;|&("
             idx += 1
             continue
         at_word_start = False
@@ -378,18 +379,28 @@ _DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
     # the exact inverse of what this table is for, and it regressed
     # forbid_tools_direct_read. GNU long options here need `=`, so they are not
     # separate tokens and must not be listed.
+    # Long forms are listed only when the value is REQUIRED — GNU getopt then
+    # accepts the space-separated spelling too. An OPTIONAL-value long option
+    # (`--color[=WHEN]`, `--group-separator[=SEP]`) only ever takes `=`, so
+    # listing it would eat the search pattern instead.
     "grep": frozenset({
         "-A", "-B", "-C", "-m", "-d", "-D",
         "--max-count", "--after-context", "--before-context", "--context",
+        "--directories", "--devices", "--binary-files", "--label",
+        "--include", "--exclude", "--exclude-dir", "--exclude-from",
     }),
     "wc": frozenset(),
     "egrep": frozenset({
         "-A", "-B", "-C", "-m", "-d", "-D",
         "--max-count", "--after-context", "--before-context", "--context",
+        "--directories", "--devices", "--binary-files", "--label",
+        "--include", "--exclude", "--exclude-dir", "--exclude-from",
     }),
     "fgrep": frozenset({
         "-A", "-B", "-C", "-m", "-d", "-D",
         "--max-count", "--after-context", "--before-context", "--context",
+        "--directories", "--devices", "--binary-files", "--label",
+        "--include", "--exclude", "--exclude-dir", "--exclude-from",
     }),
     "rg": frozenset({
         "-A", "-B", "-C", "-m", "-t", "-T", "-g", "-j", "-M", "-d",
@@ -549,6 +560,45 @@ _RG_NO_PATTERN_FLAGS: frozenset[str] = frozenset({
 })
 
 
+def _short_flag_cluster_value_letter(cmd: str, token: str) -> bool:
+    """Whether `token` is a short cluster whose LAST letter takes the next token.
+
+    GNU option clusters let a value-taking letter come last (`-rnA 2` is
+    `-r -n -A 2`). Matching the detached table by exact token missed that, so
+    the value took the pattern's positional slot and promoted the real pattern
+    to a file operand — inventing a read, and suppressing the recursive-tree
+    target that should have been named.
+    """
+    # grep-family only. ripgrep's idiomatic glued values are all-letters too
+    # (`-tmd` is `-t md`), and no lexical rule separates that from a cluster
+    # ending in a value-taking letter — guessing would invent a phantom target
+    # on a common command. GNU grep's glued values are numeric (`-A2`, `-m5`),
+    # so the two forms do not collide there.
+    if cmd not in {"grep", "egrep", "fgrep"}:
+        return False
+    if not re.fullmatch(r"-[A-Za-z]+", token) or len(token) < 3:
+        return False
+    value_letters = {
+        flag[1]
+        for flag in _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
+        if len(flag) == 2 and flag.startswith("-")
+    }
+    return token[-1] in value_letters
+
+
+def _grep_directories_recurse(args: list[str]) -> bool:
+    """`grep -d recurse` / `--directories=recurse` is a spelling of `-r`."""
+    for idx, token in enumerate(args):
+        if token in {"-d", "--directories"} and idx + 1 < len(args):
+            if args[idx + 1] == "recurse":
+                return True
+        if token.startswith("--directories=") and token.split("=", 1)[1] == "recurse":
+            return True
+        if token.startswith("-d") and len(token) > 2 and token[2:] == "recurse":
+            return True
+    return False
+
+
 def _searches_working_directory(
     cmd: str, args: list[str], *, stdin_from_pipe: bool
 ) -> bool:
@@ -559,6 +609,8 @@ def _searches_working_directory(
     if cmd == "rg":
         # ripgrep is recursive by default, but a pipe tail reads stdin instead.
         return not stdin_from_pipe
+    if _grep_directories_recurse(args):
+        return True
     for token in args:
         if token in _GREP_RECURSIVE_LONG_FLAGS:
             return True
@@ -745,7 +797,7 @@ def _extract_read_targets(
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
-            if token in detached:
+            if token in detached or _short_flag_cluster_value_letter(cmd, token):
                 idx += 2
                 continue
             if token.startswith("--") and "=" in token:
@@ -891,7 +943,8 @@ def _strip_bash_fragment_syntax(
         token = tokens[idx]
         if token.startswith("<<<"):  # here-string: the operand is literal text
             stdin_redirected = True
-            idx += 2
+            # `<<<hi` carries its own operand; `<<< hi` takes the next token.
+            idx += 1 if len(token) > 3 else 2
             continue
         if token.startswith("<<"):  # heredoc: the operand is a delimiter word
             stdin_redirected = True

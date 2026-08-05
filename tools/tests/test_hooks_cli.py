@@ -3367,6 +3367,21 @@ class BashReadManifestGuardTests(unittest.TestCase):
             )
             self.assertEqual(self._run(repo_root, "cat docs/*/*/*/deep.md")[0], 0)
 
+    def test_broad_glob_escaping_its_prefix_is_validated_at_the_root(self) -> None:
+        """"Every match lies under the literal prefix" fails once a `..` follows
+        a wildcard, so the prefix shortcut would authorize a read outside it."""
+        from tools.hooks.cli import _bounded_glob_read_targets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            resolved = repo_root.resolve()
+            self.assertEqual(
+                _bounded_glob_read_targets(
+                    repo_root, resolved, "docs/*/../../spec/*/*/*"
+                ),
+                [(".", resolved)],
+            )
+
     def test_broad_glob_with_a_nonexistent_prefix_is_not_blocked(self) -> None:
         """The prefix fallback must keep the same rule as a literal target: a
         path that is not there leaks nothing."""

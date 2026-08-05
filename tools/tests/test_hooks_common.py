@@ -2937,6 +2937,43 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("rg --glob '*.md' workspace docs"), ["docs"])
         self.assertEqual(self._targets("awk -v n=1 '{print}' docs/a.md"), ["docs/a.md"])
 
+    def test_clustered_short_flag_ending_in_a_value_letter(self) -> None:
+        """`-rnA 2` is `-r -n -A 2`. Matching the detached table by exact token
+        left the `2` to take the pattern's slot, which promoted the pattern to a
+        file operand — inventing a read and suppressing the tree target."""
+        self.assertEqual(self._targets("grep -rnA 2 PAT"), ["."])
+        self.assertEqual(self._targets("grep -rA 2 PAT"), ["."])
+        self.assertEqual(self._targets("grep -rm 1 PAT"), ["."])
+        self.assertEqual(self._targets("grep -nA 2 spec docs/a.md"), ["docs/a.md"])
+        # ripgrep's glued values are letters too (`-tmd` is `-t md`), so the
+        # cluster rule must not fire there and invent a phantom target.
+        self.assertEqual(self._targets("rg -tmd PAT docs"), ["docs"])
+
+    def test_directories_recurse_is_a_recursive_search(self) -> None:
+        for command in (
+            "grep -d recurse PAT",
+            "grep --directories=recurse PAT",
+            "grep --directories recurse PAT",
+            "grep -drecurse PAT",
+            "egrep -d recurse PAT",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), ["."])
+        # `-d skip` is not recursive.
+        self.assertEqual(self._targets("grep -d skip PAT"), [])
+
+    def test_close_paren_does_not_start_a_word(self) -> None:
+        """`$(echo A)#x` is not a comment; treating it as one blanked the rest
+        of the command, including a following read."""
+        self.assertEqual(
+            self._targets("echo $(echo A)#x && cat spec/private.md"),
+            ["spec/private.md"],
+        )
+
+    def test_glued_here_string_does_not_eat_the_next_operand(self) -> None:
+        self.assertEqual(self._targets("cat <<<hi spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat <<< hi spec/private.md"), ["spec/private.md"])
+
     def test_line_continuation_keeps_the_continued_operand(self) -> None:
         self.assertEqual(self._targets("cat a.md \\\n b.md"), ["a.md", "b.md"])
 

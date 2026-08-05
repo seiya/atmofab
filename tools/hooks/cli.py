@@ -1105,6 +1105,11 @@ def _bounded_glob_read_targets(
         1 for component in components[len(literal) :] if _GLOB_META_RE.search(component)
     )
     if wildcard_components > _GLOB_MAX_WILDCARD_COMPONENTS:
+        if ".." in components[len(literal) :]:
+            # "every match lies under the prefix" fails once a `..` follows a
+            # wildcard: `docs/*/../../spec/*/*/*` reaches outside docs/. Validate
+            # at the repository root, the only prefix that still contains it.
+            return [(".", repo_root_resolved)]
         return [(prefix, prefix_abs)] if prefix_abs.exists() else []
     out: list[tuple[str, Path]] = []
     for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
