@@ -30,6 +30,7 @@ from tools.hooks.common import (
     append_hook_access_log,
     check_cli_managed_path,
     evaluate_common_policy,
+    expand_bash_braces,
     extract_bash_read_targets,
     normalize_hook_event_name,
     READ_HINT,
@@ -172,6 +173,17 @@ def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> di
     file_path = tool_input.get("file_path")
     if isinstance(file_path, str) and file_path.strip():
         summary["file_path"] = file_path.strip()
+
+    # Grep/Glob name their target with `path`, not `file_path`. Without these the
+    # record carries no payload_summary at all, and the audit's repeated-block
+    # detector — which keys on the summary — can never fire for a search that an
+    # agent retries in a loop.
+    search_path = tool_input.get("path")
+    if isinstance(search_path, str) and search_path.strip():
+        summary["path"] = search_path.strip()
+    pattern = tool_input.get("pattern")
+    if isinstance(pattern, str) and pattern.strip():
+        summary["pattern"] = _trim_audit_text(pattern.strip(), limit=200)
 
     command = _payload_value(payload, "command")
     if not isinstance(command, str) or not command.strip():
@@ -1097,7 +1109,12 @@ def _evaluate_bash_read_manifest_policy(
     """
     repo_root_resolved = repo_root.resolve()
     surviving: list[tuple[str, Path]] = []
-    for target in extract_bash_read_targets(decoded.command):
+    extracted: list[str] = []
+    for raw_target in extract_bash_read_targets(decoded.command):
+        # Brace expansion is lexical, so `cat spec/{a,b}.md` names real files;
+        # leaving it unexpanded would drop it as "nonexistent" and auto-approve.
+        extracted.extend(expand_bash_braces(raw_target))
+    for target in extracted:
         if _GLOB_META_RE.search(target):
             # "A nonexistent path leaks nothing" does NOT hold for a glob: the
             # shell expands it to real files. Dropping it would hand

@@ -2909,6 +2909,70 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         """`$(...)` is residue, but the literal operand beside it is not."""
         self.assertEqual(self._targets("cat $(ls) a.md"), ["a.md"])
 
+    def test_auto_approvable_readers_are_all_extracted(self) -> None:
+        """Anything in cli._SAFE_READONLY_BASH_CMDS that reads file CONTENT must
+        also be extractable here — an auto-approvable command the extractor does
+        not know reads whatever it likes, bypassing the harness allowlist too."""
+        from tools.hooks.cli import _SAFE_READONLY_BASH_CMDS
+        from tools.hooks.common import _BASH_READ_CMD_NAMES
+
+        content_readers = {
+            "cat", "head", "tail", "nl", "tac", "cut", "comm", "diff", "jq",
+            "grep", "egrep", "fgrep", "wc",
+        }
+        self.assertTrue(
+            content_readers <= _BASH_READ_CMD_NAMES,
+            f"unextracted content readers: {sorted(content_readers - _BASH_READ_CMD_NAMES)}",
+        )
+        self.assertEqual(
+            content_readers & _SAFE_READONLY_BASH_CMDS - _BASH_READ_CMD_NAMES, set()
+        )
+
+    def test_egrep_fgrep_and_wc_are_extracted(self) -> None:
+        self.assertEqual(self._targets("egrep SECRET spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("fgrep -rn SECRET spec"), ["spec"])
+        self.assertEqual(self._targets("wc -c spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("wc -l < spec/private.md"), ["spec/private.md"])
+
+    def test_recursive_search_without_an_operand_names_the_tree(self) -> None:
+        """`grep -rn PAT` reads the whole checkout — the same read a pathless
+        Grep tool call makes, which blocks."""
+        self.assertEqual(self._targets("grep -rn SECRET"), ["."])
+        self.assertEqual(self._targets("grep -R --include=*.md SECRET"), ["."])
+        self.assertEqual(self._targets("rg SECRET"), ["."])
+        # A recursive grep ignores stdin and still walks the cwd, even piped.
+        self.assertEqual(self._targets("cat a.md | grep -rn SECRET"), ["a.md", "."])
+        # Non-recursive grep with no operand reads stdin, not the tree.
+        self.assertEqual(self._targets("grep -n SECRET"), [])
+        self.assertEqual(self._targets("cat a.md | grep SECRET"), ["a.md"])
+        # ripgrep IS recursive by default but a pipe tail reads stdin.
+        self.assertEqual(self._targets("cat a.md | rg SECRET"), ["a.md"])
+        # An explicit operand always wins.
+        self.assertEqual(self._targets("grep -rn SECRET docs"), ["docs"])
+
+    def test_heredoc_body_is_data_not_commands(self) -> None:
+        """A document being written performs no reads, however its lines read."""
+        self.assertEqual(
+            self._targets("cat > docs/note.md <<EOF\ndiff spec/a.md spec/b.md\nEOF"), []
+        )
+        self.assertEqual(
+            self._targets("cat > x.py <<'PY'\ncat /etc/passwd\nPY"), []
+        )
+        # Commands after the terminator are still scanned.
+        self.assertEqual(
+            self._targets("cat a.md <<EOF\nnoise\nEOF\ncat b.md"), ["a.md", "b.md"]
+        )
+
+    def test_brace_expansion(self) -> None:
+        from tools.hooks.common import expand_bash_braces
+
+        self.assertEqual(expand_bash_braces("spec/{a,b}.md"), ["spec/a.md", "spec/b.md"])
+        self.assertEqual(expand_bash_braces("plain.md"), ["plain.md"])
+        # Ranges and unbalanced braces are left alone (accepted residue).
+        self.assertEqual(expand_bash_braces("{1..3}.md"), ["{1..3}.md"])
+        self.assertEqual(expand_bash_braces("spec/{a.md"), ["spec/{a.md"])
+        self.assertLessEqual(len(expand_bash_braces("{a,b}{c,d}{e,f}{g,h}", limit=8)), 8)
+
     def test_unprovable_forms_yield_nothing(self) -> None:
         for command in (
             "echo path | xargs cat",

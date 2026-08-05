@@ -3275,6 +3275,43 @@ class BashReadManifestGuardTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual([e["decision"] for e in self._log_lines(repo_root)], ["allow"])
 
+    def test_brace_expansion_target_is_expanded_not_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            (repo_root / "spec" / "private2.md").write_text("x", encoding="utf-8")
+            code, body = self._run(repo_root, "cat spec/{private,private2}.md")
+            self.assertEqual(code, 2)
+            self.assertIn("'spec/private.md'", json.loads(body).get("reason", ""))
+
+    def test_auto_approvable_reader_outside_manifest_blocks(self) -> None:
+        """egrep/fgrep/wc are auto-approvable; unextracted they would execute."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            for command in (
+                "egrep SECRET spec/private.md",
+                "fgrep -rn SECRET spec",
+                "wc -c spec/private.md",
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual(self._run(repo_root, command)[0], 2)
+
+    def test_recursive_grep_without_operand_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, body = self._run(repo_root, "grep -rn SECRET")
+            self.assertEqual(code, 2)
+            self.assertIn("'.'", json.loads(body).get("reason", ""))
+            # Non-recursive: reads stdin, not the tree.
+            self.assertEqual(self._run(repo_root, "grep -n SECRET")[0], 0)
+
+    def test_heredoc_body_does_not_produce_a_false_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, body = self._run(
+                repo_root, "cat > docs/note.md <<EOF\ndiff spec/private.md spec/private.md\nEOF"
+            )
+            self.assertNotIn("unauthorized read", body)
+
     def test_glob_matching_nothing_is_not_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, roots=["docs/"])

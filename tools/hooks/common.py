@@ -323,6 +323,19 @@ _DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
         "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
         "--label", "--group-separator",
     }),
+    "wc": frozenset(),
+    "egrep": frozenset({
+        "-A", "-B", "-C", "-m", "-d", "-D", "--max-count", "--after-context",
+        "--before-context", "--context", "--color", "--colour", "--binary-files",
+        "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
+        "--label", "--group-separator",
+    }),
+    "fgrep": frozenset({
+        "-A", "-B", "-C", "-m", "-d", "-D", "--max-count", "--after-context",
+        "--before-context", "--context", "--color", "--colour", "--binary-files",
+        "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
+        "--label", "--group-separator",
+    }),
     "rg": frozenset({
         "-A", "-B", "-C", "-m", "-t", "-T", "-g", "-j", "-M", "-d",
         "--max-count", "--after-context", "--before-context", "--context",
@@ -348,6 +361,42 @@ _BASH_LEADING_SYNTAX_TOKENS: frozenset[str] = frozenset({
 _BASH_REDIRECT_OUT_EXACT_RE = re.compile(r"^\d*(?:>>|>&|&>|>)$")
 _BASH_REDIRECT_OUT_GLUED_RE = re.compile(r"^\d*(?:>>|>&|&>|>).+$")
 
+# `<<[-]DELIM` / `<<[-]'DELIM'` — the body that follows is DATA, not commands.
+_BASH_HEREDOC_RE = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
+
+
+def _blank_heredoc_bodies(command: str) -> str:
+    """Replace heredoc bodies with spaces, preserving length.
+
+    A heredoc body is a document the agent is WRITING, not a command it is
+    running: `cat > note.md <<EOF` followed by a line reading
+    `diff a.md b.md` performs no read of a.md.  Leaves are explicitly told to
+    write scratch files this way, so scanning the body reports reads that do
+    not happen.  Length is preserved so fragment spans stay aligned with the
+    original string.
+    """
+    out = list(command)
+    search_from = 0
+    while True:
+        match = _BASH_HEREDOC_RE.search(command, search_from)
+        if match is None:
+            return "".join(out)
+        delimiter = match.group("word")
+        newline = command.find("\n", match.end())
+        if newline == -1:
+            return "".join(out)
+        idx = newline + 1
+        while idx <= len(command):
+            line_end = command.find("\n", idx)
+            stop = len(command) if line_end == -1 else line_end
+            is_delimiter = command[idx:stop].strip() == delimiter
+            for pos in range(idx, stop):
+                out[pos] = " "
+            if is_delimiter or line_end == -1:
+                break
+            idx = line_end + 1
+        search_from = idx if idx > match.end() else match.end()
+
 # Bash commands whose positional operands are file reads.  Everything here is
 # routed through _extract_read_targets, which owns the per-command grammar.
 _BASH_READ_CMD_NAMES: frozenset[str] = frozenset({
@@ -355,6 +404,17 @@ _BASH_READ_CMD_NAMES: frozenset[str] = frozenset({
     "cat", "head", "tail", "less", "more", "bat", "pygmentize", "sed", "rg", "grep", "awk",
     # widened for the read-manifest guard
     "nl", "tac", "od", "xxd", "cut", "paste", "diff", "strings", "comm", "sort", "uniq", "jq",
+    # egrep/fgrep are in _SAFE_READONLY_BASH_CMDS (cli.py) — auto-approvable, so
+    # leaving them out of THIS set let `egrep PAT <any file>` execute unvalidated.
+    # `wc` likewise reads whole file contents.
+    "egrep", "fgrep", "wc",
+})
+
+# grep-family recursive flags: with one of these and no file operand, the
+# search walks the working directory — including from a pipe tail, where stdin
+# is ignored (verified: `echo x | grep -r hi` searches the cwd).
+_GREP_RECURSIVE_LONG_FLAGS: frozenset[str] = frozenset({
+    "--recursive", "-r", "-R", "--dereference-recursive",
 })
 
 # Shell separators that end one command fragment.  `&&`/`||` must precede the
@@ -363,6 +423,23 @@ _BASH_FRAGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|;|&|\||\n")
 
 # Leading `VAR=value` command prefix (`FOO=1 cat x`).
 _BASH_ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _searches_working_directory(
+    cmd: str, args: list[str], *, stdin_from_pipe: bool
+) -> bool:
+    """Whether a grep-family call with no file operand still walks the tree."""
+    if cmd == "rg":
+        # ripgrep is recursive by default, but a pipe tail reads stdin instead.
+        return not stdin_from_pipe
+    for token in args:
+        if token in _GREP_RECURSIVE_LONG_FLAGS:
+            return True
+        # Short-flag clusters: `-rn`, `-Rl`. `--foo` is never a cluster.
+        if token.startswith("-") and not token.startswith("--"):
+            if "r" in token[1:] or "R" in token[1:]:
+                return True
+    return False
 
 
 def _extract_simple_positional_read_targets(cmd: str, args: list[str]) -> list[str]:
@@ -443,10 +520,16 @@ def _extract_jq_read_targets(args: list[str]) -> list[str]:
     return targets + positional[1:]
 
 
-def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
+def _extract_read_targets(
+    cmd_name: str, cmd_tokens: list[str], *, stdin_from_pipe: bool = False
+) -> list[str]:
     args = cmd_tokens[1:]
     cmd = cmd_name.lower()
     if not args:
+        # `rg PAT` with no operand walks the working directory, but only when
+        # it is not consuming a pipe (verified: `echo x | rg hi` reads stdin).
+        if cmd == "rg" and not stdin_from_pipe:
+            return ["."]
         return []
 
     if cmd == "jq":
@@ -455,7 +538,7 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
     if cmd in {
         "cat", "head", "tail", "less", "more", "bat", "pygmentize",
         "nl", "tac", "od", "xxd", "cut", "paste", "diff", "strings",
-        "comm", "sort", "uniq",
+        "comm", "sort", "uniq", "wc",
     }:
         return _extract_simple_positional_read_targets(cmd, args)
 
@@ -519,7 +602,7 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
             return read_targets
         return read_targets + positional[1:]
 
-    if cmd in {"rg", "grep"}:
+    if cmd in {"rg", "grep", "egrep", "fgrep"}:
         positional: list[str] = []
         idx = 0
         has_explicit_pattern = False
@@ -561,11 +644,15 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
                 continue
             positional.append(token)
             idx += 1
-        if not positional:
-            return read_targets
-        if has_explicit_pattern:
-            return read_targets + positional
-        return read_targets + positional[1:]
+        file_operands = positional if has_explicit_pattern else positional[1:]
+        if not file_operands and _searches_working_directory(
+            cmd, args, stdin_from_pipe=stdin_from_pipe
+        ):
+            # No file operand, yet the search still walks the tree: `grep -rn PAT`
+            # reads the whole checkout. This is the same read a pathless Grep
+            # tool call makes, and that one blocks — so name the same target.
+            file_operands = ["."]
+        return read_targets + file_operands
 
     if cmd == "awk":
         positional: list[str] = []
@@ -665,6 +752,34 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
     return out
 
 
+def expand_bash_braces(token: str, *, limit: int = 64) -> list[str]:
+    """Expand `a{b,c}d` the way the shell does, innermost group first.
+
+    Brace expansion is purely lexical — unlike `$VAR` or `$(...)`, nothing about
+    it needs runtime state — so a token carrying one names real files and must
+    not be waved through as "a path that does not exist".  Ranges (`{1..3}`) and
+    unbalanced braces are left untouched; they then fail the existence check,
+    which is the same accepted-residue outcome as before.
+    """
+    open_idx = token.rfind("{")
+    if open_idx == -1:
+        return [token]
+    close_idx = token.find("}", open_idx)
+    if close_idx == -1:
+        return [token]
+    body = token[open_idx + 1 : close_idx]
+    if "," not in body:
+        return [token]
+    prefix, suffix = token[:open_idx], token[close_idx + 1 :]
+    out: list[str] = []
+    for choice in body.split(","):
+        for expanded in expand_bash_braces(prefix + choice + suffix, limit=limit):
+            out.append(expanded)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def extract_bash_read_targets(command: str | None) -> list[str]:
     """Extract the file paths a Bash command reads, per fragment.
 
@@ -681,18 +796,23 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
     # newline below is a real separator, so join the halves first (both strings
     # stay the same length, keeping the span recovery aligned).
     command = command.replace("\\\n", "  ")
+    # A heredoc body is data being written, not commands being run.
+    command = _blank_heredoc_bodies(command)
     # Split the QUOTE-STRIPPED string so a separator inside a quoted argument is
     # not treated as one, then recover each fragment's span from the original so
     # quoted filenames survive intact (same idiom as the tee handling in
     # _detect_bash_write_targets; _strip_quoted_strings is length-preserving).
     scanned = _strip_quoted_strings(command)
-    spans: list[tuple[int, int]] = []
+    spans: list[tuple[int, int, bool]] = []
     cursor = 0
+    piped = False
     for match in _BASH_FRAGMENT_SEPARATOR_RE.finditer(scanned):
-        spans.append((cursor, match.start()))
+        spans.append((cursor, match.start(), piped))
+        # Only a real pipe feeds the NEXT fragment's stdin; `;`/`&&` do not.
+        piped = match.group() == "|"
         cursor = match.end()
-    spans.append((cursor, len(scanned)))
-    for start, end in spans:
+    spans.append((cursor, len(scanned), piped))
+    for start, end, stdin_from_pipe in spans:
         blob = command[start:end].strip()
         if not blob:
             continue
@@ -706,7 +826,9 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
         argv0 = tokens[0].split("/")[-1].lower()
         if argv0 not in _BASH_READ_CMD_NAMES:
             continue
-        for target in _extract_read_targets(argv0, tokens):
+        for target in _extract_read_targets(
+            argv0, tokens, stdin_from_pipe=stdin_from_pipe
+        ):
             # A token still carrying `$` or a backtick names a path only the
             # shell can compute; there is nothing to validate, so it joins the
             # declared residue rather than being validated as a literal name.

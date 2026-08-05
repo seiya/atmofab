@@ -10665,11 +10665,15 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
         "needs `<capability_token>`, fill it from your capabilities file.",
     ]
     if oid and arid:
-        # Shared gated-read template: only needed for a read_manifest path that a direct
-        # Read reports as blocked. Most reads are directly readable and need no gate.
+        # Shared gated-read template. NOT a remedy for a read block: for a path
+        # outside allowed_read_roots this gate writes a rule_source_violation and
+        # fails the orchestration, so pointing a blocked agent here would turn a
+        # recoverable block into a dead run (docs/AGENT_CONTRACT.md, READ_HINT).
         lines.append(
-            "- Gated read of a read_manifest path that a direct Read reports as blocked: "
-            "python3 tools/orchestration_runtime.py run-gate --repo-root . "
+            "- Audited re-read of a path that IS inside your allowed_read_roots (every such "
+            "path is also readable directly, so this is optional); for a path OUTSIDE them "
+            "this gate fails the orchestration — re-issue the read under allowed_read_roots "
+            "instead: python3 tools/orchestration_runtime.py run-gate --repo-root . "
             f"--orchestration-id {oid} --gate orchestration_read --agent-run-id {arid} "
             "--capability-token <capability_token> --args-json '{\"read_path\":\"<PATH>\"}'"
         )
@@ -20779,8 +20783,8 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "write-step-result": ("status", "executor_agent_run_id", "failed_substeps"),
     # run_gate's stdout result contains only violations/gate_result_ref/result
     # (gate/status live in the persisted gate doc + stderr summary). `result`
-    # carries the orchestration_read content (the only path child agents may use
-    # for those reads), so it must survive the terse projection.
+    # carries the orchestration_read content (the audited re-read of an
+    # in-manifest path), so it must survive the terse projection.
     "run-gate": ("violations", "gate_result_ref", "result"),
 }
 
