@@ -216,7 +216,7 @@ with open(path) as f:
         policy = (obj.get("audit_detail") or {}).get("policy", "unknown")
         fix_hint = (obj.get("audit_detail") or {}).get("fix_hint")
         cmd = (obj.get("payload_summary") or {}).get("command", "") or obj.get("payload_summary", "")
-        if fix_hint and fix_hint.get("next_command"):
+        if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
             hint_present[policy] += 1
         else:
             hint_absent[policy] += 1

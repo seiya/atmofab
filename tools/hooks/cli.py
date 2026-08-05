@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import glob
 import json
 import os
 import re
@@ -977,6 +978,10 @@ def _log_read_decision(
 # validated root via an absolute or `**` pattern (documented residue, issue #42).
 _PATH_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
 
+# Shell glob metacharacters. A token carrying one is expanded by the shell, so
+# it must be resolved against the filesystem rather than tested for existence.
+_GLOB_META_RE = re.compile(r"[*?\[]")
+
 
 def _evaluate_grep_glob_read_policy(
     *,
@@ -1040,6 +1045,34 @@ def _evaluate_grep_glob_read_policy(
     return decision
 
 
+def _is_active_child_return_token_path(
+    repo_root: Path, orchestration_id: str, agent_run_id: str, target: str
+) -> bool:
+    """Whether `target` is the return token of the currently active child.
+
+    `record-child-return` needs the token, and the documented procedure
+    (docs/RUNBOOK.md §substep-timeout-recovery) is a bare
+    `cat launches/<child_arid>.parent_return_token`, because the Claude Code
+    Bash tool rejects the `$(cat ...)` substitution form as un-analyzable and
+    the `Read` tool is already blocked here. During the active-child window the
+    hook resolves to the CHILD's agent_run_id — whose manifest never lists
+    `launches/` — so without this the only working form of a documented
+    recovery step would block. Reading this path via Bash was permitted before
+    the Bash read guard existed; this keeps that exact behavior rather than
+    widening it (the `Read` tool stays blocked).
+    """
+    orch = orchestration_id.strip()
+    rid = agent_run_id.strip()
+    if not orch or not rid:
+        return False
+    abs_target = _resolve_target_path(repo_root, target)
+    try:
+        rel = abs_target.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return False
+    return rel == f"workspace/orchestrations/{orch}/launches/{rid}.parent_return_token"
+
+
 def _evaluate_bash_read_manifest_policy(
     *,
     decoded: Any,
@@ -1065,6 +1098,21 @@ def _evaluate_bash_read_manifest_policy(
     repo_root_resolved = repo_root.resolve()
     surviving: list[tuple[str, Path]] = []
     for target in extract_bash_read_targets(decoded.command):
+        if _GLOB_META_RE.search(target):
+            # "A nonexistent path leaks nothing" does NOT hold for a glob: the
+            # shell expands it to real files. Dropping it would hand
+            # `cat secret/*.txt` to the read-only auto-approve. Validate every
+            # file it currently matches instead, naming the match (not the
+            # pattern) so the block reason points at a real path.
+            for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
+                abs_match = Path(match)
+                if not _is_path_under_root(abs_match, repo_root_resolved):
+                    continue
+                surviving.append((
+                    abs_match.relative_to(repo_root_resolved).as_posix(),
+                    abs_match,
+                ))
+            continue
         abs_target = _resolve_target_path(repo_root, target)
         if not _is_path_under_root(abs_target, repo_root_resolved):
             continue
@@ -1099,9 +1147,15 @@ def _evaluate_bash_read_manifest_policy(
     if manifest_block is not None or allowed_roots is None:
         return manifest_block, resolved_run_id
     for target, _abs_target in surviving:
-        if _is_self_agent_manifest_read_path(
-            repo_root, orchestration_id, resolved_run_id, target
-        ) or _read_target_in_allowed_roots(repo_root, allowed_roots, target):
+        if (
+            _is_self_agent_manifest_read_path(
+                repo_root, orchestration_id, resolved_run_id, target
+            )
+            or _is_active_child_return_token_path(
+                repo_root, orchestration_id, resolved_run_id, target
+            )
+            or _read_target_in_allowed_roots(repo_root, allowed_roots, target)
+        ):
             append_hook_access_log(
                 repo_root,
                 orchestration_id,
@@ -1129,6 +1183,13 @@ def _evaluate_bash_read_manifest_policy(
                 "read_target": target,
                 "agent_run_id": resolved_run_id,
                 "allowed_read_roots": allowed_roots,
+                "fix_hint": {
+                    "note": (
+                        "re-issue the command against a path under allowed_read_roots; "
+                        "there is no command that reaches a path outside them"
+                    ),
+                    "docs_ref": "docs/RUNBOOK.md#hook-recovery",
+                },
             },
         )
         append_hook_access_log(

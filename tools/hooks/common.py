@@ -312,7 +312,41 @@ _DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
     "diff": frozenset(),
     "nl": frozenset({"-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w"}),
     "tac": frozenset({"-s"}),
+    # grep/rg/awk have their own grammars below (first positional = pattern /
+    # program), but they share this table: an unconsumed detached value takes
+    # the pattern's positional slot and PROMOTES the real pattern to a file
+    # operand — `grep -C 2 workspace docs/a.md` would report "workspace" as a
+    # read and block a legitimate search.
+    "grep": frozenset({
+        "-A", "-B", "-C", "-m", "-d", "-D", "--max-count", "--after-context",
+        "--before-context", "--context", "--color", "--colour", "--binary-files",
+        "--devices", "--directories", "--include", "--exclude", "--exclude-dir",
+        "--label", "--group-separator",
+    }),
+    "rg": frozenset({
+        "-A", "-B", "-C", "-m", "-t", "-T", "-g", "-j", "-M", "-d",
+        "--max-count", "--after-context", "--before-context", "--context",
+        "--type", "--type-not", "--glob", "--iglob", "--threads", "--max-columns",
+        "--max-depth", "--color", "--colors", "--sort", "--sortr", "--engine",
+        "--context-separator", "--field-match-separator",
+    }),
+    "awk": frozenset({"-v", "--assign", "-F", "--field-separator"}),
 }
+
+# Leading tokens that are shell syntax rather than a command name.  Without
+# this, `if true; then cat X; fi` splits into a fragment whose argv0 is `then`,
+# which is not a reader — and the read of X vanishes from the guard entirely.
+# That is a plain literal target, NOT the declared unprovable residue.
+_BASH_LEADING_SYNTAX_TOKENS: frozenset[str] = frozenset({
+    "if", "then", "elif", "else", "fi", "while", "until", "do", "done",
+    "case", "esac", "select", "function", "time", "!", "{", "}", "(", ")",
+})
+
+# Output redirections (`> f`, `2>> f`, `&> f`, `>& f`) — their operand is a
+# WRITE target and must never be reported as a read.  `<` is deliberately not
+# here: its operand really is read.
+_BASH_REDIRECT_OUT_EXACT_RE = re.compile(r"^\d*(?:>>|>&|&>|>)$")
+_BASH_REDIRECT_OUT_GLUED_RE = re.compile(r"^\d*(?:>>|>&|&>|>).+$")
 
 # Bash commands whose positional operands are file reads.  Everything here is
 # routed through _extract_read_targets, which owns the per-command grammar.
@@ -490,11 +524,15 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
         idx = 0
         has_explicit_pattern = False
         read_targets: list[str] = []
+        detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
         while idx < len(args):
             token = args[idx]
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
+            if token in detached:
+                idx += 2
+                continue
             if token.startswith("--") and "=" in token:
                 key, value = token.split("=", 1)
                 if key in {"--file", "--regexp"}:
@@ -534,11 +572,15 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
         idx = 0
         read_targets: list[str] = []
         has_program_file = False
+        detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
         while idx < len(args):
             token = args[idx]
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
+            if token in detached:
+                idx += 2
+                continue
             if token.startswith("--file="):
                 value = token.split("=", 1)[1]
                 if value:
@@ -571,6 +613,58 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
     return []
 
 
+def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
+    """Drop the shell syntax around a fragment so argv0 is the real command.
+
+    Handles the two shapes the separator split cannot: a leading keyword or
+    grouping token (`then cat X`, `{ cat X`, `(cat X)`), and output
+    redirections, whose operand is a write target rather than a read.
+    """
+    out: list[str] = []
+    idx = 0
+    # Leading `VAR=value` prefixes and shell syntax, in any order.
+    while idx < len(tokens):
+        token = tokens[idx]
+        if _BASH_ASSIGNMENT_PREFIX_RE.match(token) or token in _BASH_LEADING_SYNTAX_TOKENS:
+            idx += 1
+            continue
+        break
+    # A grouping character glued to the command name (`(cat`); when we strip
+    # one, the fragment's closing `)`/`}` is glued to its last token.
+    stripped_leading_group = False
+    if idx < len(tokens) and tokens[idx][:1] in {"(", "{"}:
+        tokens = list(tokens)
+        tokens[idx] = tokens[idx].lstrip("({")
+        stripped_leading_group = True
+        if not tokens[idx]:
+            idx += 1
+    while idx < len(tokens):
+        token = tokens[idx]
+        if token.startswith("<<"):  # heredoc: the operand is a delimiter word
+            idx += 1
+            continue
+        if _BASH_REDIRECT_OUT_EXACT_RE.match(token):
+            idx += 2  # `> path` — the operand is written, not read
+            continue
+        if _BASH_REDIRECT_OUT_GLUED_RE.match(token):
+            idx += 1  # `>path` / `2>/dev/null`
+            continue
+        if token == "<":
+            idx += 1  # keep the operand: `< path` really is a read
+            continue
+        if token.startswith("<") and len(token) > 1:
+            out.append(token[1:])
+            idx += 1
+            continue
+        out.append(token)
+        idx += 1
+    if stripped_leading_group and out and out[-1][-1:] in {")", "}"}:
+        out[-1] = out[-1].rstrip(")}")
+        if not out[-1]:
+            out.pop()
+    return out
+
+
 def extract_bash_read_targets(command: str | None) -> list[str]:
     """Extract the file paths a Bash command reads, per fragment.
 
@@ -583,6 +677,10 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
     if not command:
         return []
     targets: list[str] = []
+    # A backslash-newline is a line continuation, not a fragment boundary; the
+    # newline below is a real separator, so join the halves first (both strings
+    # stay the same length, keeping the span recovery aligned).
+    command = command.replace("\\\n", "  ")
     # Split the QUOTE-STRIPPED string so a separator inside a quoted argument is
     # not treated as one, then recover each fragment's span from the original so
     # quoted filenames survive intact (same idiom as the tee handling in
@@ -602,11 +700,7 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
             tokens = shlex.split(blob)
         except ValueError:
             tokens = blob.split()
-        # Skip a leading `VAR=value` command prefix (`FOO=1 cat x`).
-        idx = 0
-        while idx < len(tokens) and _BASH_ASSIGNMENT_PREFIX_RE.match(tokens[idx]):
-            idx += 1
-        tokens = tokens[idx:]
+        tokens = _strip_bash_fragment_syntax(tokens)
         if not tokens:
             continue
         argv0 = tokens[0].split("/")[-1].lower()
@@ -2656,11 +2750,14 @@ def validate_read_access(
             "agent_run_id": agent_run_id,
             "allowed_read_roots": allowed_roots,
             "fix_hint": {
-                # Deliberately NOT a run-gate command: log_orchestration_read
-                # terminally fails the orchestration for an out-of-manifest path
-                # (rule_source_violation + status=fail), so steering a blocked
-                # agent there turns a recoverable block into a dead run.
-                "remediation": (
+                # `note`, not `next_command`: format_block_reason_with_hint only
+                # renders the four fields it names, so a new key would never
+                # reach the agent. And deliberately not a run-gate command —
+                # log_orchestration_read terminally fails the orchestration for
+                # an out-of-manifest path (rule_source_violation + status=fail),
+                # so steering a blocked agent there turns a recoverable block
+                # into a dead run.
+                "note": (
                     "re-issue the read against a path under allowed_read_roots, or relaunch "
                     "with a manifest that declares this path; it is unreadable by every tool "
                     "until then"

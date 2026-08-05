@@ -3254,6 +3254,93 @@ class BashReadManifestGuardTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(self._log_lines(repo_root), [])
 
+    def test_glob_target_is_expanded_not_dropped(self) -> None:
+        """`cat spec/*.md` names real files: dropping the pattern as "nonexistent"
+        would hand it to the read-only auto-approve untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, body = self._run(repo_root, "cat spec/*.md")
+            self.assertEqual(code, 2)
+            reason = json.loads(body).get("reason", "")
+            # The block names the matched file, not the pattern.
+            self.assertIn("'spec/private.md'", reason)
+            self.assertEqual(
+                [entry["path"] for entry in self._log_lines(repo_root)], ["spec/private.md"]
+            )
+
+    def test_in_manifest_glob_still_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, _ = self._run(repo_root, "cat docs/*.md")
+            self.assertEqual(code, 0)
+            self.assertEqual([e["decision"] for e in self._log_lines(repo_root)], ["allow"])
+
+    def test_glob_matching_nothing_is_not_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, _ = self._run(repo_root, "cat spec/*.nomatch")
+            self.assertEqual(code, 0)
+            self.assertEqual(self._log_lines(repo_root), [])
+
+    def test_shell_keyword_fragment_does_not_bypass_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            for command in (
+                "if true; then cat spec/private.md; fi",
+                "for f in x; do cat spec/private.md; done",
+                "{ cat spec/private.md; }",
+                "(cat spec/private.md)",
+            ):
+                with self.subTest(command=command):
+                    code, _ = self._run(repo_root, command)
+                    self.assertEqual(code, 2)
+
+    def test_redirect_target_is_not_treated_as_a_read(self) -> None:
+        """The output file is a write; blocking on it would break every
+        regenerate turn whose output already exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            (repo_root / "spec" / "out.txt").write_text("old", encoding="utf-8")
+            code, body = self._run(repo_root, "cat docs/WORKFLOW.md > spec/out.txt")
+            # It still meets the write guard (this fixture has no output
+            # manifest) — but it must never be rejected as an unauthorized READ
+            # of its own output file.
+            self.assertNotIn("unauthorized read", body)
+            self.assertEqual(
+                [entry["path"] for entry in self._log_lines(repo_root)], ["docs/WORKFLOW.md"]
+            )
+
+    def test_active_child_return_token_stays_readable_via_bash(self) -> None:
+        """The documented record-child-return two-step is a bare `cat` of this
+        path; the `$(cat ...)` form is rejected by the Bash tool."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            launches = (
+                repo_root / "workspace" / "orchestrations" / self.ORCH / "launches"
+            )
+            launches.mkdir(parents=True, exist_ok=True)
+            token_rel = (
+                f"workspace/orchestrations/{self.ORCH}/launches/{self.RUN_ID}.parent_return_token"
+            )
+            (repo_root / token_rel).write_text("tok", encoding="utf-8")
+            code, _ = self._run(repo_root, f"cat {token_rel}")
+            self.assertEqual(code, 0)
+            # Another child's token is NOT exempt.
+            other = (
+                f"workspace/orchestrations/{self.ORCH}/launches/other_run.parent_return_token"
+            )
+            (repo_root / other).write_text("tok", encoding="utf-8")
+            self.assertEqual(self._run(repo_root, f"cat {other}")[0], 2)
+
+    def test_block_carries_a_renderable_fix_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            code, body = self._run(repo_root, "true && cat spec/private.md")
+            self.assertEqual(code, 2)
+            # format_block_reason_with_hint renders only known fields; a hint the
+            # agent never sees is not a hint.
+            self.assertIn("Note:", json.loads(body).get("reason", ""))
+
     def test_missing_manifest_with_existing_target_blocks_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, roots=None)

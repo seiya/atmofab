@@ -2863,6 +2863,52 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("comm a.txt b.txt"), ["a.txt", "b.txt"])
         self.assertEqual(self._targets("paste -d , a.txt b.txt"), ["a.txt", "b.txt"])
 
+    def test_leading_shell_syntax_does_not_hide_the_read(self) -> None:
+        """`then` / `do` / `{` / `(` are not command names — if they take argv0's
+        place the read vanishes from the guard, which is a fail-open, not the
+        declared unprovable residue."""
+        self.assertEqual(self._targets("if true; then cat secret.txt; fi"), ["secret.txt"])
+        self.assertEqual(self._targets("for f in x; do cat secret.txt; done"), ["secret.txt"])
+        self.assertEqual(self._targets("while read l; do nl secret.txt; done"), ["secret.txt"])
+        self.assertEqual(self._targets("{ cat secret.txt; }"), ["secret.txt"])
+        self.assertEqual(self._targets("(cat secret.txt)"), ["secret.txt"])
+        self.assertEqual(self._targets("! cat secret.txt"), ["secret.txt"])
+        self.assertEqual(self._targets("time cat secret.txt"), ["secret.txt"])
+
+    def test_output_redirection_operand_is_not_a_read(self) -> None:
+        """`cat in > out` reads `in` and WRITES `out`; reporting `out` would block
+        a legitimate command as soon as the output file already exists."""
+        self.assertEqual(self._targets("cat docs/a.md > out.f90"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md >> out.f90"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md >out.f90"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md 2>/dev/null"), ["docs/a.md"])
+        self.assertEqual(self._targets("jq -r .x docs/a.md > out.json"), ["docs/a.md"])
+        self.assertEqual(self._targets("sed -n 1,5p docs/a.md > out.txt"), ["docs/a.md"])
+
+    def test_input_redirection_operand_is_a_read(self) -> None:
+        self.assertEqual(self._targets("cat < docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat <docs/a.md"), ["docs/a.md"])
+
+    def test_heredoc_delimiter_is_not_a_read(self) -> None:
+        self.assertEqual(self._targets("cat <<EOF"), [])
+
+    def test_search_tool_detached_flag_values_are_not_targets(self) -> None:
+        """An unconsumed detached value takes the pattern's positional slot and
+        promotes the real pattern to a file operand."""
+        self.assertEqual(self._targets("grep -C 2 workspace docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("grep -m 5 tools docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("grep -A 3 -B 3 spec docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("rg -t md workspace docs"), ["docs"])
+        self.assertEqual(self._targets("rg --glob '*.md' workspace docs"), ["docs"])
+        self.assertEqual(self._targets("awk -v n=1 '{print}' docs/a.md"), ["docs/a.md"])
+
+    def test_line_continuation_keeps_the_continued_operand(self) -> None:
+        self.assertEqual(self._targets("cat a.md \\\n b.md"), ["a.md", "b.md"])
+
+    def test_command_substitution_operand_does_not_swallow_siblings(self) -> None:
+        """`$(...)` is residue, but the literal operand beside it is not."""
+        self.assertEqual(self._targets("cat $(ls) a.md"), ["a.md"])
+
     def test_unprovable_forms_yield_nothing(self) -> None:
         for command in (
             "echo path | xargs cat",

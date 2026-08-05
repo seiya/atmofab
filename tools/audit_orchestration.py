@@ -254,7 +254,10 @@ def collect_fix_hint_stats(
             if isinstance(b.get("payload_summary"), dict)
             else str(b.get("payload_summary", ""))
         )
-        if fix_hint and fix_hint.get("next_command"):
+        # A hint is present when it carries ANY actionable field. Read blocks
+        # deliberately carry `note` rather than `next_command`, because for an
+        # out-of-manifest path there is no command that works.
+        if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
             hint_present[policy] += 1
         else:
             hint_absent[policy] += 1
