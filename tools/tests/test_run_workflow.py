@@ -6055,6 +6055,61 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
             f"{repo_root / 'llm.yaml'}", payload["detail"])
         self.assertIn("\n", payload["detail"])
 
+    def test_a_dead_stdout_does_not_turn_a_refusal_into_a_traceback(self) -> None:
+        """`python3 tools/run_workflow.py ... | head -5` is a normal way to read a refusal,
+        and more likely now that a human-mode envelope spans several lines. The reader
+        exits, the write breaks, and because the helper flushes eagerly the error surfaces
+        inside the failure path instead of at interpreter shutdown — turning a clean
+        refusal into a traceback. Emitting must survive that."""
+        # Both halves, because a real `TextIOWrapper` on a pipe buffers the write and
+        # raises from the FLUSH — which is the `flush=True` this is about. A fake that
+        # only breaks `write` would stay green against a `print(line)` +
+        # unguarded `sys.stdout.flush()` refactor, i.e. against the actual bug.
+        class _DeadOnWrite(io.StringIO):
+            def write(self, s: str) -> int:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        class _DeadOnFlush(io.StringIO):
+            def flush(self) -> None:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        for dead in (_DeadOnWrite, _DeadOnFlush):
+            for fmt in ("human", "jsonl"):
+                with redirect_stdout(dead()):
+                    run_workflow._emit_unlogged_event(
+                        {"status": "fail", "reason": "invalid_startup_input",
+                         "detail": "x\ny"}, fmt)
+        # Only THIS error is swallowed: a stdout that fails for another reason is a real
+        # fault and must not be hidden behind the same clause.
+        class _BrokenStdout(io.StringIO):
+            def write(self, s: str) -> int:
+                raise OSError(28, "No space left on device")
+
+        with self.assertRaises(OSError):
+            with redirect_stdout(_BrokenStdout()):
+                run_workflow._emit_unlogged_event({"status": "fail", "reason": "r"}, "human")
+
+    def test_a_real_dead_reader_gets_no_traceback_from_the_driver(self) -> None:
+        """The in-process fakes above pin the clause; this pins the thing itself. A real
+        pipe whose read end is closed before the child writes is the only faithful
+        version of "the reader is already gone" — buffering, the flush boundary and
+        CPython's shutdown handling all participate, and none of them is modelled by a
+        StringIO subclass."""
+        read_end, write_end = os.pipe()
+        os.close(read_end)                       # the reader is gone before we start
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(Path(run_workflow.__file__).resolve()),
+                 "spec/problem/definitely_missing.md", "build",
+                 "--repo-root", str(REPO_ROOT), "--no-run-conductor"],
+                stdout=write_end, stderr=subprocess.PIPE, timeout=60)
+        finally:
+            os.close(write_end)
+        self.assertNotIn(
+            "Traceback", proc.stderr.decode("utf-8", "replace"),
+            "a dead stdout must not turn a startup refusal into a traceback; stderr:\n"
+            + proc.stderr.decode("utf-8", "replace"))
+
     def test_run_main_writes_stdout_only_through_the_emit_helper(self) -> None:
         """Structural guard for the whole class of sites: any NEW startup envelope added to
         `_run_main` with a bare `print(json.dumps(...))` reintroduces the bug for that path,

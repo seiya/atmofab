@@ -3136,7 +3136,35 @@ def _emit_unlogged_event(payload: dict[str, Any], stdout_format: str) -> None:
         human = _format_event_human(payload, elide_detail=False)
         if human is not None:
             line = human
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except BrokenPipeError:
+        # A reader that is already gone when this runs: a quit pager, a crashed
+        # consumer, or a `| head -N` that has taken its N lines from an earlier event
+        # — which the closure driver, emitting one line per node, reaches routinely.
+        # (A lone startup refusal does not hit this: `head` is still blocked in
+        # `read()` and the write lands in the pipe buffer.) `flush=True` makes the
+        # failure surface HERE instead of at shutdown, so without this clause a
+        # failure path whose job is to report cleanly raises a traceback through
+        # itself. Nothing is lost by swallowing it: the destination is gone.
+        #
+        # For the 14 formerly-raw `print` sites this restores what they did. For the
+        # rest — the closure driver, the shared gates, and the 3 startup sites that
+        # already went through `_emit_closure_event` — it is a change: that emitter
+        # already flushed, so a dead reader used to abort the driver with a traceback
+        # out of `main()` between nodes, with a closure's finished work behind it.
+        #
+        # This does NOT make a run pipe-proof, and is not trying to: `_StdoutTee`
+        # writes the IN-RUN stream unguarded, so a broken pipe still ends a node run
+        # (terminalized `fail` and resumable once `init` has committed; before that
+        # there is nothing to terminalize). What this removes is a driver dying at a
+        # point where raising buys nothing — the destination is gone either way, and
+        # between nodes there is nothing left to report.
+        #
+        # What this does NOT fix: CPython still fails to flush the retained buffer at
+        # shutdown, reports `Exception ignored on flushing sys.stdout`, and forces exit
+        # 120 — with or without this clause (see docs/RUNBOOK.md on the exit code).
+        pass
 
 
 class _StdoutTee:
