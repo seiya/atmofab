@@ -215,7 +215,12 @@ with open(path) as f:
             continue
         policy = (obj.get("audit_detail") or {}).get("policy", "unknown")
         fix_hint = (obj.get("audit_detail") or {}).get("fix_hint")
-        cmd = (obj.get("payload_summary") or {}).get("command", "") or obj.get("payload_summary", "")
+        summary = obj.get("payload_summary") or {}
+        # Bash blocks carry `command`; Grep/Glob carry `path` (+ `pattern`).
+        # Keying on `command` alone hides a search an agent retries in a loop,
+        # and the raw dict fallback used to crash the slice below.
+        cmd = summary.get("command") or "::".join(
+            str(summary[k]) for k in ("path", "pattern", "file_path") if summary.get(k))
         if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
             hint_present[policy] += 1
         else:

@@ -239,6 +239,28 @@ def detect_suspicious_benign_volume(
     return flagged
 
 
+def _repeat_key_of(block: dict[str, Any]) -> str:
+    """What identifies "the agent tried the same thing again".
+
+    Bash blocks are identified by their command. A Grep/Glob block carries no
+    command — its target is `path` (+ `pattern`) — so keying on `command` alone
+    made a search retried in a loop invisible, which is exactly the signal this
+    aggregation exists to surface.
+    """
+    summary = block.get("payload_summary")
+    if not isinstance(summary, dict):
+        return str(summary or "")
+    command = summary.get("command")
+    if isinstance(command, str) and command.strip():
+        return command.strip()
+    parts = [
+        str(summary[key]).strip()
+        for key in ("path", "pattern", "file_path")
+        if isinstance(summary.get(key), str) and str(summary[key]).strip()
+    ]
+    return "::".join(parts)
+
+
 def collect_fix_hint_stats(
     blocks: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -249,11 +271,7 @@ def collect_fix_hint_stats(
     for b in blocks:
         policy = _policy_of(b)
         fix_hint = (b.get("audit_detail") or {}).get("fix_hint")
-        cmd = (
-            (b.get("payload_summary") or {}).get("command", "")
-            if isinstance(b.get("payload_summary"), dict)
-            else str(b.get("payload_summary", ""))
-        )
+        cmd = _repeat_key_of(b)
         # A hint is present when it carries ANY actionable field. Read blocks
         # deliberately carry `note` rather than `next_command`, because for an
         # out-of-manifest path there is no command that works.

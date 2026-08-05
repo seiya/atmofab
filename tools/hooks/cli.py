@@ -175,9 +175,10 @@ def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> di
         summary["file_path"] = file_path.strip()
 
     # Grep/Glob name their target with `path`, not `file_path`. Without these the
-    # record carries no payload_summary at all, and the audit's repeated-block
-    # detector — which keys on the summary — can never fire for a search that an
-    # agent retries in a loop.
+    # record carries no payload_summary at all, so a search an agent retries in a
+    # loop is indistinguishable from a one-off. `audit_orchestration._repeat_key_of`
+    # keys on these fields when `command` is absent — both halves are needed for
+    # repeated-block detection to see a Grep/Glob loop.
     search_path = tool_input.get("path")
     if isinstance(search_path, str) and search_path.strip():
         summary["path"] = search_path.strip()

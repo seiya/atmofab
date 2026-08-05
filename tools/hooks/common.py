@@ -362,7 +362,12 @@ _BASH_REDIRECT_OUT_EXACT_RE = re.compile(r"^\d*(?:>>|>&|&>|>)$")
 _BASH_REDIRECT_OUT_GLUED_RE = re.compile(r"^\d*(?:>>|>&|&>|>).+$")
 
 # `<<[-]DELIM` / `<<[-]'DELIM'` — the body that follows is DATA, not commands.
-_BASH_HEREDOC_RE = re.compile(r"<<-?\s*(?P<q>['\"]?)(?P<word>[A-Za-z_][A-Za-z0-9_]*)(?P=q)")
+# `(?<!<)` excludes a `<<<` here-string, whose operand is a word on the SAME
+# line and which has no body to blank. A quoted delimiter may be any word
+# (`'PY-END'`, `'1EOF'`), so the charset is only constrained for the bare form.
+_BASH_HEREDOC_RE = re.compile(
+    r"(?<!<)<<-?\s*(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+)
 
 
 def _blank_heredoc_bodies(command: str) -> str:
@@ -375,13 +380,29 @@ def _blank_heredoc_bodies(command: str) -> str:
     not happen.  Length is preserved so fragment spans stay aligned with the
     original string.
     """
+    # Locate the operator in the QUOTE-STRIPPED string: `grep -n "cout << endl"`
+    # is not a heredoc, and treating it as one blanked every following line —
+    # deleting real read targets. _strip_quoted_strings is length-preserving, so
+    # the offsets apply to the original unchanged.
+    scanned = _strip_quoted_strings(command)
     out = list(command)
     search_from = 0
     while True:
-        match = _BASH_HEREDOC_RE.search(command, search_from)
+        match = _BASH_HEREDOC_RE.search(scanned, search_from)
         if match is None:
             return "".join(out)
-        delimiter = match.group("word")
+        # A quoted delimiter's own text was blanked in `scanned`; read it back
+        # from the original at the same offsets.
+        delimiter = (
+            command[match.start("sq") : match.end("sq")]
+            if match.group("sq") is not None
+            else command[match.start("dq") : match.end("dq")]
+            if match.group("dq") is not None
+            else match.group("bare")
+        ).strip()
+        if not delimiter:
+            search_from = match.end()
+            continue
         newline = command.find("\n", match.end())
         if newline == -1:
             return "".join(out)
@@ -425,20 +446,42 @@ _BASH_FRAGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|;|&|\||\n")
 _BASH_ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
+# Short options whose VALUE is glued to the rest of the cluster (`-eerror`,
+# `-m5`), so any letter after them belongs to that value, not to the cluster.
+_GREP_VALUE_TAKING_SHORT_LETTERS: frozenset[str] = frozenset("efmdDABC")
+
+# Modes that make a grep-family call read nothing, or that take no pattern
+# operand at all — synthesizing a "." read for these blocks a command the agent
+# cannot rephrase, which is a retry loop rather than a recoverable block.
+_GREP_NO_READ_FLAGS: frozenset[str] = frozenset({
+    "--version", "-V", "--help", "-h",
+})
+_RG_NO_PATTERN_FLAGS: frozenset[str] = frozenset({
+    "--files", "--type-list", "--pcre2-version",
+})
+
+
 def _searches_working_directory(
     cmd: str, args: list[str], *, stdin_from_pipe: bool
 ) -> bool:
     """Whether a grep-family call with no file operand still walks the tree."""
+    if any(token in _GREP_NO_READ_FLAGS for token in args):
+        return False
     if cmd == "rg":
         # ripgrep is recursive by default, but a pipe tail reads stdin instead.
         return not stdin_from_pipe
     for token in args:
         if token in _GREP_RECURSIVE_LONG_FLAGS:
             return True
-        # Short-flag clusters: `-rn`, `-Rl`. `--foo` is never a cluster.
+        # Short-flag clusters: `-rn`, `-Rl`. `--foo` is never a cluster, and a
+        # value-taking letter ends the cluster (`-eerror` is `-e error`, not a
+        # cluster containing `-r`).
         if token.startswith("-") and not token.startswith("--"):
-            if "r" in token[1:] or "R" in token[1:]:
-                return True
+            for letter in token[1:]:
+                if letter in {"r", "R"}:
+                    return True
+                if letter in _GREP_VALUE_TAKING_SHORT_LETTERS:
+                    break
     return False
 
 
@@ -644,7 +687,17 @@ def _extract_read_targets(
                 continue
             positional.append(token)
             idx += 1
-        file_operands = positional if has_explicit_pattern else positional[1:]
+        # `rg --files docs` (and friends) take NO pattern operand, so the first
+        # positional is already a path. Consuming it as a pattern emptied the
+        # operand list and substituted "." — blocking on the repo root for a
+        # command that named a directory the manifest allows.
+        takes_no_pattern = cmd == "rg" and any(
+            token in _RG_NO_PATTERN_FLAGS for token in args
+        )
+        if has_explicit_pattern or takes_no_pattern:
+            file_operands = positional
+        else:
+            file_operands = positional[1:]
         if not file_operands and _searches_working_directory(
             cmd, args, stdin_from_pipe=stdin_from_pipe
         ):
@@ -727,6 +780,9 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
             idx += 1
     while idx < len(tokens):
         token = tokens[idx]
+        if token.startswith("<<<"):  # here-string: the operand is literal text
+            idx += 2
+            continue
         if token.startswith("<<"):  # heredoc: the operand is a delimiter word
             idx += 1
             continue
@@ -809,7 +865,13 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
     for match in _BASH_FRAGMENT_SEPARATOR_RE.finditer(scanned):
         spans.append((cursor, match.start(), piped))
         # Only a real pipe feeds the NEXT fragment's stdin; `;`/`&&` do not.
-        piped = match.group() == "|"
+        # A separator that closed an EMPTY span carries the previous one's
+        # meaning forward: in `cat x |\n  rg PAT` the newline must not erase
+        # the pipe, or the rg is read as a fresh recursive tree search.
+        if command[cursor : match.start()].strip():
+            piped = match.group() == "|"
+        elif match.group() == "|":
+            piped = True
         cursor = match.end()
     spans.append((cursor, len(scanned), piped))
     for start, end, stdin_from_pipe in spans:

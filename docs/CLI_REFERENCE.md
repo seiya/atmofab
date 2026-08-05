@@ -69,7 +69,7 @@ For details `python3 tools/orchestration_runtime.py <sub> --help`, for the overv
 | `preflight` | judge the launchability of the execution platform |
 | `preflight-status` | read back an existing preflight.json |
 | `record-timeout` | the canonical recovery for an API stream idle timeout |
-| `orchestration-read` | the gate-mediated read of a path outside the manifest |
+| `orchestration-read` | the gate-mediated, audited re-read of a path **inside** the manifest (an out-of-manifest path is not granted: it records a `rule_source_violation` and fails the orchestration) |
 | `read-checkpoint` | obtain orchestration_checkpoint.json |
 | `verify-checkpoint-integrity` | reconcile the checkpoint with the artifact hash |
 | `check-step-completed` | with resume_enabled, confirm the completion of the relevant step |
@@ -144,7 +144,7 @@ Adv-20: record the evidence (`child_returns/<arid>.txt`) that the orchestration 
 | `--repo-root` | yes | |
 | `--orchestration-id` | yes | |
 | `--agent-run-id` | yes | the child agent's UUID |
-| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. Pass it with `$(cat <path>)`. **Do not read that file in advance with the `Read` tool etc.** (a Read during the active_child window is evaluated against the child arid's `read_manifest` and blocked by `read_manifest_read_guard`) |
+| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. Pass it as a **literal** value obtained by the two-step of `docs/RUNBOOK.md` §substep-timeout-recovery (a bare `cat` of that path, then the printed token embedded literally); the `$(cat <path>)` form is rejected by the Bash tool's static analysis. **Do not read that file in advance with the `Read` tool etc.** (a Read during the active_child window is evaluated against the child arid's `read_manifest` and blocked by `read_manifest_read_guard`) |
 | `--reply-excerpt` | no | an optional short text (truncated to 200 chars). For audit |
 
 ---

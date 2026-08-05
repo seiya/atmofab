@@ -2963,6 +2963,45 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
             self._targets("cat a.md <<EOF\nnoise\nEOF\ncat b.md"), ["a.md", "b.md"]
         )
 
+    def test_shift_operator_in_a_quoted_argument_is_not_a_heredoc(self) -> None:
+        """Blanking from a false heredoc deleted every following read target."""
+        self.assertEqual(
+            self._targets('grep -n "cout << endl" docs/a.cpp\ncat spec/private.md'),
+            ["docs/a.cpp", "spec/private.md"],
+        )
+
+    def test_here_string_is_not_a_heredoc(self) -> None:
+        self.assertEqual(self._targets('cat a.md <<< "x"'), ["a.md"])
+        self.assertEqual(
+            self._targets('sort <<< "x"\ncat spec/private.md'), ["spec/private.md"]
+        )
+
+    def test_quoted_heredoc_delimiters_of_any_shape(self) -> None:
+        for delimiter in ("PY-END", "1EOF", "end.of.file"):
+            with self.subTest(delimiter=delimiter):
+                self.assertEqual(
+                    self._targets(
+                        f"cat > x.md <<'{delimiter}'\ncat spec/private.md\n{delimiter}\ncat b.md"
+                    ),
+                    ["b.md"],
+                )
+
+    def test_search_modes_that_read_nothing_or_name_a_path(self) -> None:
+        """A synthesized "." for these blocks a command the agent cannot rephrase."""
+        self.assertEqual(self._targets("rg --files docs"), ["docs"])
+        self.assertEqual(self._targets("rg --version"), [])
+        self.assertEqual(self._targets("rg -h"), [])
+        self.assertEqual(self._targets("grep --version"), [])
+        # A value-taking short option ends the cluster: `-eerror` is `-e error`,
+        # not a cluster containing `-r`.
+        self.assertEqual(self._targets("cat f.md | grep -eerror"), ["f.md"])
+        self.assertEqual(self._targets("cat f.md | grep -m5 error"), ["f.md"])
+
+    def test_pipe_context_survives_a_line_break(self) -> None:
+        """`cat x |\\n rg PAT` is the same command as `cat x | rg PAT`."""
+        self.assertEqual(self._targets("cat docs/a.md |\n  rg PAT"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md |& rg PAT"), ["docs/a.md"])
+
     def test_brace_expansion(self) -> None:
         from tools.hooks.common import expand_bash_braces
 
