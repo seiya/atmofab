@@ -3567,6 +3567,10 @@ class RunWorkflowTests(unittest.TestCase):
                     "--repo-root", str(repo_root),
                     "--orchestration-id", "orch_direct_cli",
                     "--no-run-conductor",
+                    # This test parses stdout as JSON; the default (`human`) now
+                    # renders startup envelopes too, so ask for the machine form.
+                    # Unrelated to what it pins (import-crash safety).
+                    "--stdout-format", "jsonl",
                 ],
                 cwd=str(repo_root),
                 env=env,
@@ -3698,6 +3702,10 @@ class RunWorkflowTests(unittest.TestCase):
                         "--orchestration-id",
                         "orch_missing",
                         "--no-run-conductor",
+                        # The envelope is read as JSON below; the default `human`
+                        # format now renders startup envelopes as `[FAIL] ...`.
+                        "--stdout-format",
+                        "jsonl",
                     ]
                 )
             self.assertEqual(code, 2)
@@ -5880,6 +5888,120 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertIsNone(f({"status": "info", "event": "unknown_marker"}))
         self.assertIsNone(f({"hello": "world"}))
 
+class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
+    """Issue #40: `_run_main`'s startup rejections are emitted before `_run_node` installs
+    the stdout tee, so until now they ignored `--stdout-format` entirely and printed raw
+    JSON under the default (`human`) — worst for the most likely first-run failure, whose
+    multi-line `cp` remedy arrived as `\\n` escapes inside one unreadable line.
+
+    These envelopes also have no second copy: `run_logs/run_*.jsonl` is opened inside
+    `_run_node`, which has not run. Human rendering here is therefore lossless."""
+
+    def _seed(self, repo_root: Path) -> None:
+        """An operator's checkout: samples in the tree, spec + canonical schema present.
+        Deliberately WITHOUT `./llm.yaml` — that absence is the headline failure."""
+        _seed_shape_expr_schema_into(repo_root)
+        for d in ("tools", "workspace", "spec/problem"):
+            (repo_root / d).mkdir(parents=True, exist_ok=True)
+        (repo_root / "spec" / "problem" / "test.md").write_text("spec\n", encoding="utf-8")
+        (repo_root / "spec" / "problem" / "deps.yaml").write_text(
+            "nodes: []\n", encoding="utf-8")
+        (repo_root / "docs" / "examples").mkdir(parents=True, exist_ok=True)
+        for name in lc.SAMPLE_CONFIG_NAMES:
+            shutil.copy(SAMPLE_DIR / name, repo_root / "docs" / "examples" / name)
+
+    def _main(self, argv: list[str]) -> tuple[int, str]:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_workflow.main(argv)
+        return code, out.getvalue()
+
+    def test_the_missing_default_config_remedy_survives_human_mode_intact(self) -> None:
+        """The issue's headline case, driven through the REAL writer
+        (`resolve_default_config_path`) rather than a fake short message — a fake would make
+        every assertion below vacuous, since nothing short can be truncated."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, out = self._main([
+                "spec/problem/test.md", "build",
+                "--repo-root", str(repo_root),
+                "--orchestration-id", "orch_human_startup",
+                "--no-run-conductor",
+                # NO --stdout-format: this is what an operator's first run looks like.
+            ])
+        self.assertEqual(code, 2)
+        self.assertTrue(
+            out.startswith("[FAIL] reason=invalid_startup_input "),
+            f"startup rejection must be rendered, not raw JSON; got:\n{out}")
+        # The bug symptom, both halves: no raw-JSON line, and no `\n` ESCAPE standing in
+        # for the line breaks of the remedy.
+        self.assertNotIn("\\n", out)
+        for line in out.splitlines():
+            self.assertFalse(
+                line.startswith("{"),
+                f"a JSON envelope leaked into human-mode stdout:\n{out}")
+        # The remedy is multi-line and every offered `cp` is present — asserted at BOTH ends
+        # of the message, so a future re-truncation (head OR tail) cannot pass this test.
+        self.assertIn("\n", out)
+        first_cp = (f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+                    f"{repo_root / 'llm.yaml'}")
+        second_cp = (f"cp {repo_root / 'docs' / 'examples' / 'llm_codex.example.yaml'} "
+                     f"{repo_root / 'llm.yaml'}")
+        last_cp = (f"cp {repo_root / 'docs' / 'examples' / lc.SAMPLE_CONFIG_NAMES[-1]} "
+                   f"{repo_root / 'llm.yaml'}")
+        self.assertIn(first_cp, out)
+        self.assertIn(second_cp, out)
+        self.assertEqual(out.rstrip("\n").splitlines()[-1].strip(), last_cp)
+        # ...and the head of the message, which the `...` cut would have kept while dropping
+        # everything above, is there too.
+        self.assertIn("llm_config_default_missing", out)
+        self.assertIn(str(repo_root / "llm.yaml"), out)
+
+    def test_a_second_startup_site_is_rendered_too(self) -> None:
+        """`no_resumable_orchestration` comes from a different emission site on a different
+        branch (the resume gate, long before the config is resolved). Pinning it keeps the
+        fix from being one path's special case."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            shutil.copy(SAMPLE_DIR / "llm_claude.example.yaml", repo_root / "llm.yaml")
+            code, out = self._main([
+                "--repo-root", str(repo_root), "--resume", "--no-run-conductor",
+            ])
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            out.strip(),
+            "[FAIL] reason=no_resumable_orchestration detail=no orchestration found "
+            "under workspace/orchestrations to resume")
+
+    def test_the_same_site_still_emits_parsable_jsonl_when_asked(self) -> None:
+        """The machine contract is unchanged: `--stdout-format jsonl` still yields the same
+        payload, with the detail carrying the full multi-line message.
+
+        Not a duplicate of `LlmConfigStartupTests.test_a_missing_default_stops_the_run_...`
+        (which pins the envelope's CONTENT): what is pinned here is parity between the two
+        formats over one invocation that differs from the human test above by the flag
+        alone — the property this change could break in either direction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            code, out = self._main([
+                "spec/problem/test.md", "build",
+                "--repo-root", str(repo_root),
+                "--orchestration-id", "orch_jsonl_startup",
+                "--no-run-conductor",
+                "--stdout-format", "jsonl",
+            ])
+        self.assertEqual(code, 2)
+        payload = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual(payload["status"], "fail")
+        self.assertEqual(payload["reason"], "invalid_startup_input")
+        self.assertIn("llm_config_default_missing", payload["detail"])
+        self.assertIn(
+            f"cp {repo_root / 'docs' / 'examples' / 'llm_claude.example.yaml'} "
+            f"{repo_root / 'llm.yaml'}", payload["detail"])
+        self.assertIn("\n", payload["detail"])
 
 class ReasonDetailTruncationTests(unittest.TestCase):
     """`--reason-detail` crosses a subprocess argv boundary, where Linux caps one

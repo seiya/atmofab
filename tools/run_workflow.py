@@ -2256,18 +2256,16 @@ def _run_main(
     raw_argv = list(argv) if argv is not None else list(sys.argv[1:])
     missing_tools = _check_required_cli_tools()
     if missing_tools:
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "missing_required_cli_tools",
-                    "detail": f"missing tools: {','.join(missing_tools)}",
-                    "missing": missing_tools,
-                    "required": list(REQUIRED_CLI_TOOLS),
-                    "docs_ref": "docs/RUNBOOK.md#0-1",
-                },
-                ensure_ascii=False,
-            )
+        _emit_startup_event(
+            {
+                "status": "fail",
+                "reason": "missing_required_cli_tools",
+                "detail": f"missing tools: {','.join(missing_tools)}",
+                "missing": missing_tools,
+                "required": list(REQUIRED_CLI_TOOLS),
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
         )
         return 2
     repo_root = Path(args.repo_root).resolve()
@@ -2296,15 +2294,13 @@ def _run_main(
     try:
         _pycache_resolved = _validated_pycache_redirect_root(repo_root)
     except ValueError as exc:
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "invalid_pycache_redirect_root",
-                    "detail": str(exc),
-                },
-                ensure_ascii=False,
-            )
+        _emit_startup_event(
+            {
+                "status": "fail",
+                "reason": "invalid_pycache_redirect_root",
+                "detail": str(exc),
+            },
+            args.stdout_format,
         )
         return 2
     sys.pycache_prefix = str(_pycache_resolved)
@@ -2345,15 +2341,13 @@ def _run_main(
         explicit_id = bool(args.orchestration_id)
         orchestration_id = args.orchestration_id or _find_latest_orchestration(repo_root)
         if not orchestration_id:
-            print(
-                json.dumps(
-                    {
-                        "status": "fail",
-                        "reason": "no_resumable_orchestration",
-                        "detail": "no orchestration found under workspace/orchestrations to resume",
-                    },
-                    ensure_ascii=False,
-                )
+            _emit_startup_event(
+                {
+                    "status": "fail",
+                    "reason": "no_resumable_orchestration",
+                    "detail": "no orchestration found under workspace/orchestrations to resume",
+                },
+                args.stdout_format,
             )
             return 2
         # A non-terminal target is ambiguous: it is either an active concurrent run
@@ -2373,19 +2367,17 @@ def _run_main(
         if not resume_claim.enter_context(
             _exclusive_claim(repo_root, "orch", orchestration_id)
         ):
-            print(
-                json.dumps(
-                    {
-                        "status": "fail",
-                        "reason": "concurrent_orchestration_running",
-                        "detail": (
-                            f"orchestration {orchestration_id} is already being driven "
-                            "by another process in this repository. Wait for it to finish."
-                        ),
-                        "orchestration_id": orchestration_id,
-                    },
-                    ensure_ascii=False,
-                )
+            _emit_startup_event(
+                {
+                    "status": "fail",
+                    "reason": "concurrent_orchestration_running",
+                    "detail": (
+                        f"orchestration {orchestration_id} is already being driven "
+                        "by another process in this repository. Wait for it to finish."
+                    ),
+                    "orchestration_id": orchestration_id,
+                },
+                args.stdout_format,
             )
             return 2
         resume_meta = _read_orchestration_meta(repo_root, orchestration_id)
@@ -2409,19 +2401,17 @@ def _run_main(
                     stdout_format=args.stdout_format,
                 )
                 if terminalize_error is not None:
-                    print(
-                        json.dumps(
-                            {
-                                "status": "fail",
-                                "reason": "dead_driver_terminalize_failed",
-                                "detail": (
-                                    f"orchestration {orchestration_id} has a dead driver but could "
-                                    f"not be terminalized: {terminalize_error}"
-                                ),
-                                "orchestration_id": orchestration_id,
-                            },
-                            ensure_ascii=False,
-                        )
+                    _emit_startup_event(
+                        {
+                            "status": "fail",
+                            "reason": "dead_driver_terminalize_failed",
+                            "detail": (
+                                f"orchestration {orchestration_id} has a dead driver but could "
+                                f"not be terminalized: {terminalize_error}"
+                            ),
+                            "orchestration_id": orchestration_id,
+                        },
+                        args.stdout_format,
                     )
                     return 2
             elif liveness == "alive":
@@ -2433,47 +2423,43 @@ def _run_main(
                     if explicit_id
                     else "latest_orchestration_not_resumable"
                 )
-                print(
-                    json.dumps(
-                        {
-                            "status": "fail",
-                            "reason": reason,
-                            "detail": (
-                                f"orchestration {orchestration_id} has non-terminal status "
-                                f"'{resume_status or 'unknown'}' and its driver "
-                                f"(pid {resume_driver.get('pid')}) is alive; resuming it would "
-                                "collide with the live run. Wait for it to finish."
-                            ),
-                            "orchestration_id": orchestration_id,
-                            "driver_pid": resume_driver.get("pid"),
-                        },
-                        ensure_ascii=False,
-                    )
+                _emit_startup_event(
+                    {
+                        "status": "fail",
+                        "reason": reason,
+                        "detail": (
+                            f"orchestration {orchestration_id} has non-terminal status "
+                            f"'{resume_status or 'unknown'}' and its driver "
+                            f"(pid {resume_driver.get('pid')}) is alive; resuming it would "
+                            "collide with the live run. Wait for it to finish."
+                        ),
+                        "orchestration_id": orchestration_id,
+                        "driver_pid": resume_driver.get("pid"),
+                    },
+                    args.stdout_format,
                 )
                 return 2
             elif not explicit_id:
                 # Indeterminate liveness on the implicit path keeps the pre-existing
                 # refusal: an unknown must never auto-attach to a possibly-live run.
-                print(
-                    json.dumps(
-                        {
-                            "status": "fail",
-                            "reason": "latest_orchestration_not_resumable",
-                            "detail": (
-                                f"latest orchestration {orchestration_id} has non-terminal status "
-                                f"'{resume_status or 'unknown'}'; pass --orchestration-id to resume a specific run"
-                            ),
-                            "orchestration_id": orchestration_id,
-                        },
-                        ensure_ascii=False,
-                    )
+                _emit_startup_event(
+                    {
+                        "status": "fail",
+                        "reason": "latest_orchestration_not_resumable",
+                        "detail": (
+                            f"latest orchestration {orchestration_id} has non-terminal status "
+                            f"'{resume_status or 'unknown'}'; pass --orchestration-id to resume a specific run"
+                        ),
+                        "orchestration_id": orchestration_id,
+                    },
+                    args.stdout_format,
                 )
                 return 2
             elif resume_meta:
                 # Explicit id + indeterminate liveness: today's deliberate bypass, but
                 # say so — the operator is resuming a run that may still be live, and
                 # the crash reconciliations will NOT fire (status stays non-terminal).
-                _emit_closure_event(
+                _emit_startup_event(
                     {
                         "status": "info",
                         "event": "resume_liveness_indeterminate",
@@ -2568,7 +2554,7 @@ def _run_main(
             orchestration_id, recovered.get("generate_executor")
         )
         if entry_executor_rejection is not None:
-            print(json.dumps(entry_executor_rejection, ensure_ascii=False))
+            _emit_startup_event(entry_executor_rejection, args.stdout_format)
             return 2
         missing = [
             name
@@ -2585,19 +2571,17 @@ def _run_main(
             if not ok
         ]
         if missing:
-            print(
-                json.dumps(
-                    {
-                        "status": "fail",
-                        "reason": "resume_params_unrecoverable",
-                        "detail": (
-                            f"could not recover {', '.join(missing)} for orchestration "
-                            f"{orchestration_id}; pass them explicitly"
-                        ),
-                        "orchestration_id": orchestration_id,
-                    },
-                    ensure_ascii=False,
-                )
+            _emit_startup_event(
+                {
+                    "status": "fail",
+                    "reason": "resume_params_unrecoverable",
+                    "detail": (
+                        f"could not recover {', '.join(missing)} for orchestration "
+                        f"{orchestration_id}; pass them explicitly"
+                    ),
+                    "orchestration_id": orchestration_id,
+                },
+                args.stdout_format,
             )
             return 2
     else:
@@ -2634,7 +2618,7 @@ def _run_main(
         legacy_rejection = _llm_config_legacy_pin_rejection(
             orchestration_id, recorded_pin) if resume_mode else None
         if legacy_rejection is not None:
-            print(json.dumps(legacy_rejection, ensure_ascii=False))
+            _emit_startup_event(legacy_rejection, args.stdout_format)
             return 2
         if recorded_pin.get("path"):
             # The recorded pin WINS on a resume, including over an explicitly passed
@@ -2659,7 +2643,7 @@ def _run_main(
                 effective_sha256=config_sha256(llm_config_path),
                 effective_overrides={})
             if rejection is not None:
-                print(json.dumps(rejection, ensure_ascii=False))
+                _emit_startup_event(rejection, args.stdout_format)
                 return 2
         elif args.llm_config:
             # Relative to `--repo-root`, like every other path this driver resolves — resolving
@@ -2695,15 +2679,13 @@ def _run_main(
     except (ValueError, LlmConfigError) as exc:
         # LlmConfigError IS a ValueError, and is named anyway: its `rule` is the operator's
         # search key and the class is what makes that intent legible here.
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "invalid_startup_input",
-                    "detail": str(exc),
-                },
-                ensure_ascii=False,
-            )
+        _emit_startup_event(
+            {
+                "status": "fail",
+                "reason": "invalid_startup_input",
+                "detail": str(exc),
+            },
+            args.stdout_format,
         )
         return 2
 
@@ -2718,7 +2700,7 @@ def _run_main(
             effective_sha256=llm_config.sha256,
             effective_overrides={})
         if rejection is not None:
-            print(json.dumps(rejection, ensure_ascii=False))
+            _emit_startup_event(rejection, args.stdout_format)
             return 2
 
     # Startup assertion: validate_pipeline_semantics now fail-closes when the
@@ -2746,19 +2728,17 @@ def _run_main(
             missing_path_rel = str(required_schema.relative_to(repo_root))
         except ValueError:
             missing_path_rel = str(required_schema)
-        print(
-            json.dumps(
-                {
-                    "status": "fail",
-                    "reason": "missing_canonical_schema",
-                    "detail": (
-                        f"canonical schema invalid or missing: {missing_path_rel}. "
-                        f"{exc}"
-                    ),
-                    "missing_path": missing_path_rel,
-                },
-                ensure_ascii=False,
-            )
+        _emit_startup_event(
+            {
+                "status": "fail",
+                "reason": "missing_canonical_schema",
+                "detail": (
+                    f"canonical schema invalid or missing: {missing_path_rel}. "
+                    f"{exc}"
+                ),
+                "missing_path": missing_path_rel,
+            },
+            args.stdout_format,
         )
         return 2
 
@@ -2858,7 +2838,7 @@ def _run_main(
             if not cold_start_claim.enter_context(
                 _exclusive_claim(repo_root, "spec", spec_ref)
             ):
-                _emit_closure_event(
+                _emit_startup_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
                 return 2
             cold_conflict = _cold_start_running_guard(
@@ -2868,7 +2848,7 @@ def _run_main(
                 driver_identity=_current_driver_identity(),
             )
             if cold_conflict is not None:
-                _emit_closure_event(cold_conflict, args.stdout_format)
+                _emit_startup_event(cold_conflict, args.stdout_format)
                 return 2
 
         # Plain single node. A cold run records the reproduction block (no closure); a
@@ -2916,7 +2896,7 @@ def _run_main(
         )
 
 
-def _format_event_human(payload: dict[str, Any]) -> str | None:
+def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -> str | None:
     """Render a structured event payload as a compact human-readable line.
 
     The event vocabulary is small and stable: the node/dependency announcements
@@ -2931,6 +2911,14 @@ def _format_event_human(payload: dict[str, Any]) -> str | None:
     warn = 4 spaces. Pass results are tagged `ok`; non-pass results carry the
     raw verdict text (`fail`, `fail_closed`, `blocked`, ...) so the operator
     sees the actual classification rather than a uniform red flag.
+
+    `elide_detail` governs the `status: fail` arm only. The default (True) keeps
+    the in-run rendering pinned by docs/RUNBOOK.md: a fail detail is collapsed
+    onto one line and head-cut at 240 chars, because the run log
+    (`run_logs/run_*.jsonl`) holds the untouched JSON copy. Callers that emit
+    BEFORE that run log exists — the startup envelopes of `_run_main`, via
+    `_emit_startup_event` — pass False, since for them an elided detail is lost
+    for good and the detail is frequently the remedy itself.
     """
     status = payload.get("status")
     event = payload.get("event")
@@ -3089,9 +3077,12 @@ def _format_event_human(payload: dict[str, Any]) -> str | None:
         if orch:
             parts.append(f"orch={orch}")
         if detail:
-            d = str(detail).replace("\n", " ").strip()
-            if len(d) > 240:
-                d = d[:240] + "..."
+            if elide_detail:
+                d = str(detail).replace("\n", " ").strip()
+                if len(d) > 240:
+                    d = d[:240] + "..."
+            else:
+                d = str(detail).rstrip()
             parts.append(f"detail={d}")
         return "[FAIL] " + " ".join(parts)
 
@@ -3111,6 +3102,28 @@ def _emit_closure_event(payload: dict[str, Any], stdout_format: str) -> None:
     line = json.dumps(payload, ensure_ascii=False)
     if stdout_format == "human":
         human = _format_event_human(payload)
+        if human is not None:
+            line = human
+    print(line, flush=True)
+
+
+def _emit_startup_event(payload: dict[str, Any], stdout_format: str) -> None:
+    """Print a `_run_main`-level startup event, honoring `--stdout-format`.
+
+    These envelopes are emitted BEFORE `_run_node` installs the stdout tee and
+    opens `run_logs/run_*.jsonl`, so — unlike every in-run event — they have no
+    second, untouched copy anywhere: whatever this prints is all the operator
+    ever gets. Human rendering is therefore LOSSLESS (`elide_detail=False`): no
+    newline collapse, no 240-char cut. For several of these envelopes the detail
+    IS the remedy (the multi-line `cp` command of `llm_config_default_missing`),
+    and eliding it would be worse than the raw-JSON leak it replaces.
+
+    `_run_main` emits terminal/startup events ONLY through this helper; a bare
+    `print` there is a regression (pinned by a source-shape test).
+    """
+    line = json.dumps(payload, ensure_ascii=False)
+    if stdout_format == "human":
+        human = _format_event_human(payload, elide_detail=False)
         if human is not None:
             line = human
     print(line, flush=True)
