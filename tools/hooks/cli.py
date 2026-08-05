@@ -19,11 +19,17 @@ from tools.hooks.common import (
     HookDecision,
     HookDecisionAction,
     HookEventName,
+    _is_path_under_root,
+    _is_self_agent_manifest_read_path,
+    _load_read_manifest_allowed_roots,
+    _read_target_in_allowed_roots,
+    _resolve_target_path,
     _strip_quoted_strings,
     _utc_now_iso,
     append_hook_access_log,
     check_cli_managed_path,
     evaluate_common_policy,
+    extract_bash_read_targets,
     normalize_hook_event_name,
     READ_HINT,
     WRITE_HINT,
@@ -1034,6 +1040,110 @@ def _evaluate_grep_glob_read_policy(
     return decision
 
 
+def _evaluate_bash_read_manifest_policy(
+    *,
+    decoded: Any,
+    repo_root: Path,
+    orchestration_id: str,
+    backend: str,
+    resolved_run_id: str | None,
+) -> tuple[HookDecision | None, str | None]:
+    """Authorize the read targets of a Bash command against the read manifest.
+
+    Returns `(decision, resolved_run_id)`; a non-None decision must be returned
+    to the caller as-is.  Only targets that EXIST on disk and resolve inside
+    repo_root are validated: a nonexistent path leaks nothing (this also absorbs
+    over-extraction), and paths outside the repo are bwrap's domain — blocking
+    them here would break benign commands while adding no confinement.  Every
+    real repo file is inside the sandbox's ro-bind, so the incident class this
+    guard exists for is fully covered.
+
+    With no surviving target the command is left on its previous path entirely,
+    including the read-only auto-approve; the extractor's blind spots
+    (`xargs cat`, substitution) are accepted residue, not proof of safety.
+    """
+    repo_root_resolved = repo_root.resolve()
+    surviving: list[tuple[str, Path]] = []
+    for target in extract_bash_read_targets(decoded.command):
+        abs_target = _resolve_target_path(repo_root, target)
+        if not _is_path_under_root(abs_target, repo_root_resolved):
+            continue
+        if not abs_target.exists():
+            continue
+        surviving.append((target, abs_target))
+    if not surviving:
+        return None, resolved_run_id
+    if resolved_run_id is None:
+        resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+            backend=backend,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            session_id=decoded.session_id,
+            agent_session_id=decoded.agent_session_id,
+            tool_name="Read",
+        )
+        if resolution_error is not None:
+            return resolution_error, None
+    if resolved_run_id is None:
+        return (
+            HookDecision(
+                action=HookDecisionAction.BLOCK,
+                reason=f"session-to-run mapping not found. {READ_HINT}",
+                continue_processing=False,
+            ),
+            None,
+        )
+    allowed_roots, manifest_block = _load_read_manifest_allowed_roots(
+        repo_root, orchestration_id, resolved_run_id
+    )
+    if manifest_block is not None or allowed_roots is None:
+        return manifest_block, resolved_run_id
+    for target, _abs_target in surviving:
+        if _is_self_agent_manifest_read_path(
+            repo_root, orchestration_id, resolved_run_id, target
+        ) or _read_target_in_allowed_roots(repo_root, allowed_roots, target):
+            append_hook_access_log(
+                repo_root,
+                orchestration_id,
+                resolved_run_id,
+                tool_name="Bash",
+                path=target,
+                decision="allow",
+            )
+            continue
+        decision = HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"unauthorized read: Bash command reads {target!r}, which is not in "
+                f"read_manifest allowed_read_roots (agent_run_id={resolved_run_id!r}). "
+                "Re-issue the command against a path under allowed_read_roots; a path "
+                "outside them is unreadable by every tool, so there is no alternative "
+                "command that reaches it. "
+                f"{READ_HINT}"
+            ),
+            continue_processing=False,
+            audit_detail={
+                "policy": "read_manifest_read_guard",
+                "via": "bash",
+                "command": decoded.command,
+                "read_target": target,
+                "agent_run_id": resolved_run_id,
+                "allowed_read_roots": allowed_roots,
+            },
+        )
+        append_hook_access_log(
+            repo_root,
+            orchestration_id,
+            resolved_run_id,
+            tool_name="Bash",
+            path=target,
+            decision="block",
+            policy="read_manifest_read_guard",
+        )
+        return decision, resolved_run_id
+    return None, resolved_run_id
+
+
 def _evaluate_pre_command_file_access_policy(
     *,
     decoded: Any,
@@ -1168,8 +1278,7 @@ def _evaluate_pre_command_file_access_policy(
         resolved_run_id: str | None = None
         # Resolve before the read-only fast path only for Codex. A Codex pure
         # leaf can run `cat` in its read-only sandbox; unlike the Read tool,
-        # that command would otherwise bypass the empty read manifest. Keep
-        # Claude's historical read-only auto-approval behavior unchanged.
+        # that command would otherwise bypass the empty read manifest.
         if backend.strip().lower() == "codex":
             resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
                 backend=backend,
@@ -1194,6 +1303,18 @@ def _evaluate_pre_command_file_access_policy(
                     reason="pure-function leaves may not invoke Bash or Shell; use only the host-inlined context",
                     continue_processing=False,
                 )
+        # Read-manifest guard for Bash reads. This runs BEFORE the read-only
+        # auto-approve below: a command the manifest rejects must never be
+        # auto-approved, which is exactly the historical behavior this changes.
+        read_decision, resolved_run_id = _evaluate_bash_read_manifest_policy(
+            decoded=decoded,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            backend=backend,
+            resolved_run_id=resolved_run_id,
+        )
+        if read_decision is not None:
+            return read_decision
         write_targets = _detect_bash_write_targets(decoded.command)
         if not write_targets:
             # Purely read-only command: if it is a provably-safe composition,

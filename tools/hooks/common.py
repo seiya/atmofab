@@ -41,10 +41,12 @@ def _lookup_payload_field(payload: dict[str, Any], key: str) -> Any:
 
 
 READ_HINT = (
-    "Hint: workspace/orchestrations/<orchestration_id>/output_manifests/<agent_run_id>.json "
-    "and read_manifests/<agent_run_id>.json may be read directly. For other paths use "
-    "'run-gate --gate orchestration_read' within read_manifests/<agent_run_id>.json "
-    "allowed_read_roots. "
+    "Hint: every path inside read_manifests/<agent_run_id>.json allowed_read_roots is "
+    "readable directly (Read / Grep / Glob / Bash), as are your own "
+    "workspace/orchestrations/<orchestration_id>/output_manifests/<agent_run_id>.json and "
+    "read_manifests/<agent_run_id>.json. A path outside allowed_read_roots is rejected by "
+    "every route — 'run-gate --gate orchestration_read' terminally fails the orchestration "
+    "for it — so re-issue the read against a path under allowed_read_roots instead. "
     "Interpret requirements only from docs/, spec/, and skill_must_read_refs artifacts; "
     "do not derive rules from tools/, validator scripts, or tests. "
     "See docs/RUNBOOK.md#hook-recovery for the full recovery cheatsheet."
@@ -2654,10 +2656,14 @@ def validate_read_access(
             "agent_run_id": agent_run_id,
             "allowed_read_roots": allowed_roots,
             "fix_hint": {
-                "next_command": (
-                    f"python3 tools/orchestration_runtime.py run-gate "
-                    f"--gate orchestration_read --agent-run-id {agent_run_id} "
-                    f"--capability-token <token> --args-json '{{\"read_path\":\"{file_path}\"}}'"
+                # Deliberately NOT a run-gate command: log_orchestration_read
+                # terminally fails the orchestration for an out-of-manifest path
+                # (rule_source_violation + status=fail), so steering a blocked
+                # agent there turns a recoverable block into a dead run.
+                "remediation": (
+                    "re-issue the read against a path under allowed_read_roots, or relaunch "
+                    "with a manifest that declares this path; it is unreadable by every tool "
+                    "until then"
                 ),
                 "docs_ref": "docs/RUNBOOK.md#hook-recovery",
             },
