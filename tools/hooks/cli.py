@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import re
@@ -19,6 +20,7 @@ from tools.hooks.common import (
     HookDecisionAction,
     HookEventName,
     _utc_now_iso,
+    append_hook_access_log,
     check_cli_managed_path,
     evaluate_common_policy,
     normalize_hook_event_name,
@@ -955,6 +957,95 @@ def _validate_write_targets(
     return HookDecision(action=HookDecisionAction.ALLOW)
 
 
+def _log_read_decision(
+    *,
+    repo_root: Path,
+    orchestration_id: str,
+    agent_run_id: str,
+    tool_name: str,
+    path: str,
+    decision: HookDecision,
+) -> None:
+    """Record one hook-layer read decision in the agent's access log."""
+    append_hook_access_log(
+        repo_root,
+        orchestration_id,
+        agent_run_id,
+        tool_name=tool_name,
+        path=path,
+        decision="block" if decision.action == HookDecisionAction.BLOCK else "allow",
+        policy=(decision.audit_detail or {}).get("policy"),
+    )
+
+
+# Search tools whose read boundary is enforced by validating their `path` root.
+# Their `pattern` is NOT validated: a Glob pattern can still reach outside the
+# validated root via an absolute or `**` pattern (documented residue, issue #42).
+_PATH_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+
+
+def _evaluate_grep_glob_read_policy(
+    *,
+    decoded: Any,
+    repo_root: Path,
+    orchestration_id: str,
+    backend: str,
+    tool_name: str,
+) -> HookDecision:
+    """Authorize a Grep/Glob search root against the agent's read manifest.
+
+    A search is a read: `Grep` returns matching lines and `Glob` returns paths,
+    both from wherever `path` points. Unlike step 2's Write/Edit/Read branch we
+    must NOT fail open when the path is absent — a pathless Grep searches the
+    repo root, which is the widest read the tool offers, so it is validated as
+    "." and blocks unless the manifest actually grants the repo root.
+    """
+    raw_path = _tool_input(decoded.payload).get("path")
+    search_path = raw_path.strip() if isinstance(raw_path, str) and raw_path.strip() else ""
+    path_missing = not search_path
+    if path_missing:
+        search_path = "."
+    resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+        backend=backend,
+        repo_root=repo_root,
+        orchestration_id=orchestration_id,
+        session_id=decoded.session_id,
+        agent_session_id=decoded.agent_session_id,
+        tool_name=tool_name,
+    )
+    if resolution_error is not None:
+        return resolution_error
+    if resolved_run_id is None:
+        return HookDecision(action=HookDecisionAction.ALLOW)
+    agent_role = _get_agent_role_from_capability(repo_root, orchestration_id, resolved_run_id)
+    decision = validate_read_access(
+        repo_root,
+        orchestration_id,
+        resolved_run_id,
+        search_path,
+        agent_role=agent_role,
+        session_id=decoded.session_id,
+    )
+    if decision.action == HookDecisionAction.BLOCK and path_missing:
+        decision = dataclasses.replace(
+            decision,
+            reason=(
+                f"{decision.reason or ''} "
+                f"{tool_name} was called without a 'path', which searches the repository "
+                "root. Pass path= a directory listed in read_manifest allowed_read_roots."
+            ).strip(),
+        )
+    _log_read_decision(
+        repo_root=repo_root,
+        orchestration_id=orchestration_id,
+        agent_run_id=resolved_run_id,
+        tool_name=tool_name,
+        path=search_path,
+        decision=decision,
+    )
+    return decision
+
+
 def _evaluate_pre_command_file_access_policy(
     *,
     decoded: Any,
@@ -1026,7 +1117,7 @@ def _evaluate_pre_command_file_access_policy(
             return HookDecision(action=HookDecisionAction.ALLOW)
         if tool_name == "Read":
             agent_role = _get_agent_role_from_capability(repo_root, orchestration_id, resolved_run_id)
-            return validate_read_access(
+            read_decision = validate_read_access(
                 repo_root,
                 orchestration_id,
                 resolved_run_id,
@@ -1034,6 +1125,15 @@ def _evaluate_pre_command_file_access_policy(
                 agent_role=agent_role,
                 session_id=decoded.session_id,
             )
+            _log_read_decision(
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                agent_run_id=resolved_run_id,
+                tool_name=tool_name,
+                path=decoded.file_path,
+                decision=read_decision,
+            )
+            return read_decision
         # Write / Edit: on a manifest match, return permissionDecision=allow to bypass
         # the harness's permission prompt. A manifest mismatch propagates as BLOCK.
         write_decision = _validate_write_targets(
@@ -1057,6 +1157,18 @@ def _evaluate_pre_command_file_access_policy(
                 },
             )
         return write_decision
+
+    # step 2b: Grep / Glob search-root guard
+    if tool_name in _PATH_SEARCH_TOOLS:
+        if workflow_mode != "1":
+            return HookDecision(action=HookDecisionAction.ALLOW)
+        return _evaluate_grep_glob_read_policy(
+            decoded=decoded,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            backend=backend,
+            tool_name=tool_name,
+        )
 
     # step 3: Bash/Shell read/write guard
     if tool_name in {"Bash", "bash", "Shell", "shell"}:

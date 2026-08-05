@@ -69,6 +69,24 @@
             "command": "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli --backend claude --event PreToolUse --repo-root \"$ROOT\"'"
           }
         ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli --backend claude --event PreToolUse --repo-root \"$ROOT\"'"
+          }
+        ]
+      },
+      {
+        "matcher": "Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli --backend claude --event PreToolUse --repo-root \"$ROOT\"'"
+          }
+        ]
       }
     ],
     "PostToolUse": [

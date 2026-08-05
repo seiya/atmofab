@@ -2979,5 +2979,219 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             self.assertEqual(body_text, "", f"apply_patch ALLOW must not emit auto-approve payload; got: {body_text!r}")
 
 
+class GrepGlobReadGuardTests(unittest.TestCase):
+    """Grep/Glob search roots are authorized against the read manifest."""
+
+    ORCH = "orch_grep_guard_001"
+    RUN_ID = "child_run_grep_001"
+
+    def _make_repo(self, tmp: str, *, manifest: dict | None, access_logs: bool = True) -> Path:
+        repo_root = Path(tmp)
+        orch_root = repo_root / "workspace" / "orchestrations" / self.ORCH
+        (orch_root / "read_manifests").mkdir(parents=True, exist_ok=True)
+        (orch_root / "active_child_agent_run_id.txt").write_text(self.RUN_ID, encoding="utf-8")
+        if manifest is not None:
+            (orch_root / "read_manifests" / f"{self.RUN_ID}.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+        if access_logs:
+            (orch_root / "access_logs").mkdir(parents=True, exist_ok=True)
+        (repo_root / "docs").mkdir(parents=True, exist_ok=True)
+        return repo_root
+
+    def _run(self, repo_root: Path, tool_name: str, tool_input: dict, *, workflow_mode: str = "1"):
+        payload = {
+            "orchestration_id": self.ORCH,
+            "repo_root": str(repo_root),
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+        }
+        out = io.StringIO()
+        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": workflow_mode}, clear=False):
+            with redirect_stdout(out):
+                code = cli.main(
+                    [
+                        "--backend",
+                        "claude",
+                        "--event",
+                        "PreToolUse",
+                        "--input-json",
+                        json.dumps(payload),
+                    ]
+                )
+        return code, out.getvalue().strip()
+
+    def _log_lines(self, repo_root: Path) -> list[dict]:
+        log_path = (
+            repo_root
+            / "workspace"
+            / "orchestrations"
+            / self.ORCH
+            / "access_logs"
+            / f"{self.RUN_ID}.jsonl"
+        )
+        if not log_path.is_file():
+            return []
+        return [
+            json.loads(line)
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    def test_settings_json_registers_grep_and_glob_with_bash_first(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        settings_doc = json.loads(
+            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        entries = settings_doc["hooks"]["PreToolUse"]
+        matchers = [entry["matcher"] for entry in entries]
+        # Other tests index PreToolUse[0] for the Bash hook command.
+        self.assertEqual(matchers[0], "Bash")
+        self.assertEqual(matchers, ["Bash", "Write", "Edit", "Read", "Grep", "Glob"])
+        bash_command = entries[0]["hooks"][0]["command"]
+        for entry in entries:
+            self.assertEqual(entry["hooks"][0]["command"], bash_command)
+
+    def test_path_under_allowed_root_allows_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs/"]})
+            code, body = self._run(repo_root, "Grep", {"pattern": "foo", "path": "docs/sub"})
+            self.assertEqual(code, 0)
+            lines = self._log_lines(repo_root)
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(lines[0]["decision"], "allow")
+            self.assertEqual(lines[0]["tool"], "Grep")
+            self.assertEqual(lines[0]["source"], "hook")
+            self.assertEqual(lines[0]["path"], "docs/sub")
+
+    def test_path_equal_to_allowed_root_allows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs/"]})
+            code, _ = self._run(repo_root, "Glob", {"pattern": "*.md", "path": "docs"})
+            self.assertEqual(code, 0)
+
+    def test_path_outside_allowed_roots_blocks_and_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs/"]})
+            code, body = self._run(repo_root, "Grep", {"pattern": "foo", "path": "tools"})
+            self.assertEqual(code, 2)
+            doc = json.loads(body)
+            self.assertEqual(doc.get("decision"), "block")
+            self.assertIn("unauthorized read", doc.get("reason", ""))
+            lines = self._log_lines(repo_root)
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(lines[0]["decision"], "block")
+            self.assertEqual(lines[0]["policy"], "read_manifest_read_guard")
+
+    def test_missing_path_blocks_with_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs/"]})
+            for tool_name in ("Grep", "Glob"):
+                code, body = self._run(repo_root, tool_name, {"pattern": "foo"})
+                self.assertEqual(code, 2, msg=tool_name)
+                reason = json.loads(body).get("reason", "")
+                self.assertIn("unauthorized read", reason)
+                self.assertIn("without a 'path'", reason)
+                self.assertIn("allowed_read_roots", reason)
+
+    def test_repo_root_manifest_root_allows_pathless_search(self) -> None:
+        """A manifest that really grants the repo root is not second-guessed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["."]})
+            code, _ = self._run(repo_root, "Grep", {"pattern": "foo"})
+            self.assertEqual(code, 0)
+
+    def test_non_workflow_mode_allows_without_logging(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs/"]})
+            code, _ = self._run(
+                repo_root, "Grep", {"pattern": "foo", "path": "tools"}, workflow_mode="0"
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(self._log_lines(repo_root), [])
+
+    def test_missing_manifest_blocks_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=None)
+            code, body = self._run(repo_root, "Glob", {"pattern": "*.md", "path": "docs"})
+            self.assertEqual(code, 2)
+            self.assertIn("read manifest not found", json.loads(body).get("reason", ""))
+
+    def test_unresolvable_agent_run_id_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs/"]})
+            (
+                repo_root
+                / "workspace"
+                / "orchestrations"
+                / self.ORCH
+                / "active_child_agent_run_id.txt"
+            ).write_text("   ", encoding="utf-8")
+            code, body = self._run(repo_root, "Grep", {"pattern": "foo", "path": "docs"})
+            self.assertEqual(code, 2)
+            self.assertIn("active child agent_run_id is empty", json.loads(body).get("reason", ""))
+
+    def test_missing_access_log_dir_does_not_change_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(
+                tmp, manifest={"allowed_read_roots": ["docs/"]}, access_logs=False
+            )
+            code, _ = self._run(repo_root, "Grep", {"pattern": "foo", "path": "docs"})
+            self.assertEqual(code, 0)
+            self.assertEqual(self._log_lines(repo_root), [])
+
+
+class ReadDecisionAccessLogTests(unittest.TestCase):
+    """Read-tool decisions are recorded in access_logs like Grep/Glob."""
+
+    ORCH = "orch_read_log_001"
+    RUN_ID = "child_run_read_log_001"
+
+    def _run_read(self, repo_root: Path, file_path: str):
+        payload = {
+            "orchestration_id": self.ORCH,
+            "repo_root": str(repo_root),
+            "tool_name": "Read",
+            "tool_input": {"file_path": file_path},
+        }
+        out = io.StringIO()
+        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with redirect_stdout(out):
+                code = cli.main(
+                    [
+                        "--backend",
+                        "claude",
+                        "--event",
+                        "PreToolUse",
+                        "--input-json",
+                        json.dumps(payload),
+                    ]
+                )
+        return code, out.getvalue().strip()
+
+    def test_allow_and_block_are_both_logged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch_root = repo_root / "workspace" / "orchestrations" / self.ORCH
+            (orch_root / "read_manifests").mkdir(parents=True, exist_ok=True)
+            (orch_root / "access_logs").mkdir(parents=True, exist_ok=True)
+            (orch_root / "active_child_agent_run_id.txt").write_text(self.RUN_ID, encoding="utf-8")
+            (orch_root / "read_manifests" / f"{self.RUN_ID}.json").write_text(
+                json.dumps({"allowed_read_roots": ["docs/"]}), encoding="utf-8"
+            )
+            self.assertEqual(self._run_read(repo_root, "docs/WORKFLOW.md")[0], 0)
+            self.assertEqual(self._run_read(repo_root, "tools/hooks/cli.py")[0], 2)
+            lines = [
+                json.loads(line)
+                for line in (orch_root / "access_logs" / f"{self.RUN_ID}.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.strip()
+            ]
+            self.assertEqual([entry["decision"] for entry in lines], ["allow", "block"])
+            self.assertEqual({entry["tool"] for entry in lines}, {"Read"})
+            self.assertEqual(lines[1]["policy"], "read_manifest_read_guard")
+
+
 if __name__ == "__main__":
     unittest.main()
