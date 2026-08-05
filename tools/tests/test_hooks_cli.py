@@ -3346,6 +3346,37 @@ class BashReadManifestGuardTests(unittest.TestCase):
             )
             self.assertNotIn("unauthorized read", body)
 
+    def test_broad_glob_is_validated_at_its_literal_prefix(self) -> None:
+        """`glob.glob` is unbounded — `/*/*/*/*/*/*` did not finish in 60s, and
+        this hook runs on every tool call. Every match lies under the pattern's
+        literal prefix, so validating the prefix authorizes exactly the set the
+        pattern can reach."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            (repo_root / "spec" / "a" / "b" / "c").mkdir(parents=True)
+            (repo_root / "spec" / "a" / "b" / "c" / "deep.md").write_text(
+                "x", encoding="utf-8"
+            )
+            code, body = self._run(repo_root, "cat spec/*/*/*/deep.md")
+            self.assertEqual(code, 2)
+            self.assertIn("'spec'", json.loads(body).get("reason", ""))
+            # An in-manifest prefix still passes.
+            (repo_root / "docs" / "x" / "y" / "z").mkdir(parents=True)
+            (repo_root / "docs" / "x" / "y" / "z" / "deep.md").write_text(
+                "x", encoding="utf-8"
+            )
+            self.assertEqual(self._run(repo_root, "cat docs/*/*/*/deep.md")[0], 0)
+
+    def test_out_of_repo_glob_is_not_walked(self) -> None:
+        from tools.hooks.cli import _bounded_glob_read_targets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self.assertEqual(
+                _bounded_glob_read_targets(repo_root, repo_root.resolve(), "/*/*/*/*/*/*"),
+                [],
+            )
+
     def test_glob_matching_nothing_is_not_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, roots=["docs/"])

@@ -489,6 +489,14 @@ _GREP_RECURSIVE_LONG_FLAGS: frozenset[str] = frozenset({
 # single-character forms in the alternation.
 _BASH_FRAGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|;|&|\||\n")
 
+# fd-duplication redirects (`2>&1`, `>&2`). Their `&` is NOT a separator: it
+# split `cat 2>&1 file` into a reader with no operand plus an operand with no
+# reader, so the read vanished. The RHS digits must be the whole token — bash
+# treats `n>&word` as a dup only when `word` is all digits.
+_BASH_FD_DUP_RE = re.compile(r"\d*>&\d+(?![\w./-])")
+# A backslash-escaped separator is a literal character, not a separator.
+_BASH_ESCAPED_SEPARATOR_RE = re.compile(r"\\[&|;]")
+
 # Leading `VAR=value` command prefix (`FOO=1 cat x`).
 _BASH_ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -918,10 +926,22 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
     """Extract the file paths a Bash command reads, per fragment.
 
     Best-effort by design (issue #42 decision 2): the goal is to widen what is
-    provable, not to fail closed on what is not.  Forms whose targets only exist
-    at runtime — `xargs cat`, `find -exec`, `$(...)`/backtick substitution,
-    `$VAR` — yield nothing here and remain accepted residue.  Callers therefore
-    treat an empty result as "nothing to authorize", never as "safe".
+    provable, not to fail closed on what is not.
+
+    What it can see is bounded by `_BASH_READ_CMD_NAMES` and their grammars, so
+    the residue is two classes, not one:
+      * a command OUTSIDE that set handed a literal path. Notably
+        `python3 workspace/tmp/<arid>/x.py`, which docs/AGENT_CONTRACT.md tells
+        leaves to use and `.claude/settings.json` allowlists, and whose heredoc
+        body this module deliberately blanks — so the paths that script reads
+        are invisible here by construction. Confining that class is the bwrap
+        read-confinement work, not this function.
+      * targets that exist only at runtime — `xargs cat`, `find -exec`,
+        `$(...)`/backtick substitution, `$VAR`, and a `cd` from an EARLIER Bash
+        call (a `cd` in THIS command is followed).
+
+    Callers must therefore treat an empty result as "nothing to authorize",
+    never as "safe".
     """
     if not command:
         return []
@@ -937,6 +957,10 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
     # quoted filenames survive intact (same idiom as the tee handling in
     # _detect_bash_write_targets; _strip_quoted_strings is length-preserving).
     scanned = _strip_quoted_strings(command)
+    # Blank the `&`s that are not separators before splitting (length-preserving,
+    # so fragment spans stay aligned with the original).
+    scanned = _BASH_FD_DUP_RE.sub(lambda m: " " * len(m.group()), scanned)
+    scanned = _BASH_ESCAPED_SEPARATOR_RE.sub(lambda m: " " * len(m.group()), scanned)
     spans: list[tuple[int, int, bool]] = []
     cursor = 0
     piped = False

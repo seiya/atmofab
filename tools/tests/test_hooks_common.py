@@ -3214,6 +3214,16 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("< spec/secret.md cat"), ["spec/secret.md"])
         self.assertEqual(self._targets("wc -l < spec/secret.md"), ["spec/secret.md"])
 
+    def test_fd_duplication_is_not_a_command_separator(self) -> None:
+        """`2>&1` split the fragment into a reader with no operand plus an
+        operand with no reader, so the read vanished — and the auto-approve,
+        which strips fd-dups first, disagreed and let it through."""
+        self.assertEqual(self._targets("cat 2>&1 spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat spec/private.md 2>&1"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -n a\\&b spec/private.md"), ["spec/private.md"])
+        # A real background `&` still separates.
+        self.assertEqual(self._targets("cat a.md & cat b.md"), ["a.md", "b.md"])
+
     def test_unprovable_forms_yield_nothing(self) -> None:
         for command in (
             "echo path | xargs cat",

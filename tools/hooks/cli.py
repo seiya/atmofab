@@ -1063,6 +1063,53 @@ def _evaluate_grep_glob_read_policy(
     return decision
 
 
+# Wildcard path components a read target may carry before the walk is judged
+# too expensive to run inside a synchronous PreToolUse hook. `glob.glob` is
+# unbounded: `/*/*/*/*/*/*` did not finish in 60 s on this checkout, which would
+# hang every tool call behind it.
+_GLOB_MAX_WILDCARD_COMPONENTS = 2
+
+
+def _bounded_glob_read_targets(
+    repo_root: Path, repo_root_resolved: Path, target: str
+) -> list[tuple[str, Path]]:
+    """Resolve a wildcard read target to the paths it names, without a wide walk.
+
+    Every match of a glob lies under the literal prefix that precedes its first
+    wildcard, so when the pattern is too broad to expand cheaply the prefix
+    directory is validated instead: containment in `allowed_read_roots` is
+    prefix-based, so authorizing the prefix authorizes exactly the set the
+    pattern can reach. A prefix outside repo_root is skipped for the same reason
+    a literal out-of-repo path is — that is bwrap's domain — and skipping it
+    before globbing is what keeps `/*/*/*/*` from walking the filesystem.
+    """
+    components = target.split("/")
+    literal: list[str] = []
+    for component in components:
+        if _GLOB_META_RE.search(component):
+            break
+        literal.append(component)
+    # An absolute pattern's first component is empty; joining it back would drop
+    # the leading "/" and make an out-of-repo pattern look repo-relative.
+    prefix = "/".join(literal) or ("/" if target.startswith("/") else ".")
+    prefix_abs = _resolve_target_path(repo_root, prefix)
+    if not _is_path_under_root(prefix_abs, repo_root_resolved):
+        return []
+    wildcard_components = sum(
+        1 for component in components[len(literal) :] if _GLOB_META_RE.search(component)
+    )
+    if wildcard_components > _GLOB_MAX_WILDCARD_COMPONENTS:
+        return [(prefix, prefix_abs)]
+    out: list[tuple[str, Path]] = []
+    for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
+        abs_match = Path(match)
+        if not _is_path_under_root(abs_match, repo_root_resolved):
+            continue
+        # Name the match, not the pattern, so the block points at a real path.
+        out.append((abs_match.relative_to(repo_root_resolved).as_posix(), abs_match))
+    return out
+
+
 def _is_active_child_return_token_path(
     repo_root: Path, orchestration_id: str, agent_run_id: str, target: str
 ) -> bool:
@@ -1133,17 +1180,10 @@ def _evaluate_bash_read_manifest_policy(
         if _GLOB_META_RE.search(target):
             # "A nonexistent path leaks nothing" does NOT hold for a glob: the
             # shell expands it to real files. Dropping it would hand
-            # `cat secret/*.txt` to the read-only auto-approve. Validate every
-            # file it currently matches instead, naming the match (not the
-            # pattern) so the block reason points at a real path.
-            for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
-                abs_match = Path(match)
-                if not _is_path_under_root(abs_match, repo_root_resolved):
-                    continue
-                surviving.append((
-                    abs_match.relative_to(repo_root_resolved).as_posix(),
-                    abs_match,
-                ))
+            # `cat secret/*.txt` to the read-only auto-approve.
+            surviving.extend(
+                _bounded_glob_read_targets(repo_root, repo_root_resolved, target)
+            )
             continue
         abs_target = _resolve_target_path(repo_root, target)
         if not _is_path_under_root(abs_target, repo_root_resolved):
