@@ -583,6 +583,12 @@ def _short_flag_cluster_value_letter(cmd: str, token: str) -> bool:
         for flag in _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
         if len(flag) == 2 and flag.startswith("-")
     }
+    # The cluster ends at the FIRST value-taking letter: everything after it is
+    # that flag's glued value. `-eFAILED` is `-e FAILED`, a pattern — not a
+    # cluster ending in `-D` — and consuming the next token there swallowed the
+    # file operand entirely. Same rule `_searches_working_directory` applies.
+    if any(letter in _GREP_VALUE_TAKING_SHORT_LETTERS for letter in token[1:-1]):
+        return False
     return token[-1] in value_letters
 
 

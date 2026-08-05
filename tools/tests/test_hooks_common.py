@@ -2948,6 +2948,15 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         # ripgrep's glued values are letters too (`-tmd` is `-t md`), so the
         # cluster rule must not fire there and invent a phantom target.
         self.assertEqual(self._targets("rg -tmd PAT docs"), ["docs"])
+        # The cluster ends at the FIRST value-taking letter: `-eFAILED` is a
+        # glued pattern, and treating it as a cluster ending in `-D` consumed
+        # the file operand.
+        self.assertEqual(self._targets("grep -eFAILED spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -erFAILED spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("grep -fexcluded docs/x.md"), ["excluded", "docs/x.md"]
+        )
+        self.assertEqual(self._targets("grep -inA 2 PAT docs/a.md"), ["docs/a.md"])
 
     def test_directories_recurse_is_a_recursive_search(self) -> None:
         for command in (
