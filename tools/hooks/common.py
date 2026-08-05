@@ -807,12 +807,13 @@ def _extract_read_targets(
     return []
 
 
-def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
-    """Drop the shell syntax around a fragment so argv0 is the real command.
+def _strip_bash_fragment_syntax(tokens: list[str]) -> tuple[list[str], list[str]]:
+    """Split a fragment into (argv tokens, input-redirect read operands).
 
-    Handles the two shapes the separator split cannot: a leading keyword or
-    grouping token (`then cat X`, `{ cat X`, `(cat X)`), and output
-    redirections, whose operand is a write target rather than a read.
+    Handles the shapes the separator split cannot: a leading keyword or grouping
+    token (`then cat X`, `{ cat X`, `(cat X)`), and redirections — an output
+    redirection's operand is a write target rather than a read, while an input
+    redirection's operand is a read no matter what the command is.
     """
     out: list[str] = []
     idx = 0
@@ -832,6 +833,7 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
         stripped_leading_group = True
         if not tokens[idx]:
             idx += 1
+    redirect_reads: list[str] = []
     while idx < len(tokens):
         token = tokens[idx]
         if token.startswith("<<<"):  # here-string: the operand is literal text
@@ -846,11 +848,17 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
         if _BASH_REDIRECT_OUT_GLUED_RE.match(token):
             idx += 1  # `>path` / `2>/dev/null`
             continue
+        # `< path` is a read whatever the command is. Reported separately
+        # because the caller only consults the argv0 grammar, and this read
+        # happens even when argv0 is `while`, `done`, or nothing at all
+        # (`< file cat`).
         if token == "<":
-            idx += 1  # keep the operand: `< path` really is a read
+            if idx + 1 < len(tokens):
+                redirect_reads.append(tokens[idx + 1])
+            idx += 2
             continue
         if token.startswith("<") and len(token) > 1:
-            out.append(token[1:])
+            redirect_reads.append(token[1:])
             idx += 1
             continue
         out.append(token)
@@ -859,7 +867,12 @@ def _strip_bash_fragment_syntax(tokens: list[str]) -> list[str]:
         out[-1] = out[-1].rstrip(")}")
         if not out[-1]:
             out.pop()
-    return out
+    if redirect_reads:
+        # Strip a trailing group character from the last redirect operand too
+        # (`(cat < f)`), for the same reason as above.
+        if stripped_leading_group and redirect_reads[-1][-1:] in {")", "}"}:
+            redirect_reads[-1] = redirect_reads[-1].rstrip(")}")
+    return out, redirect_reads
 
 
 def expand_bash_braces(token: str) -> list[str]:
@@ -915,52 +928,89 @@ def extract_bash_read_targets(command: str | None) -> list[str]:
             piped = True
         cursor = match.end()
     spans.append((cursor, len(scanned), piped))
-    # Directory the following fragments' relative targets resolve against:
-    # "" = repo_root, a path = that directory, None = changed to somewhere this
-    # scan cannot know. Only within THIS command string — a `cd` in an earlier
-    # Bash call is invisible here (declared residue; agents are told not to cd).
+    # Directory the following fragments' relative targets resolve against.
+    # "" is repo_root; None means the scan lost track, in which case targets are
+    # validated UN-anchored — the direction that still checks something, rather
+    # than dropping the read. Only within THIS command string: a `cd` in an
+    # earlier Bash call is invisible here (declared residue; agents are told
+    # never to `cd`).
     cwd: str | None = ""
+    previous_cwd: str | None = ""   # for `cd -`
+    dir_stack: list[str | None] = []  # for pushd/popd
+    subshell_stack: list[str | None] = []  # cwd to restore when a `(` closes
+
+    def _joined(base: str | None, operand: str) -> str | None:
+        if Path(operand).is_absolute():
+            return operand
+        if base is None:
+            return None  # unknown stays unknown; a relative cd cannot recover it
+        return str(Path(base) / operand) if base else operand
+
     for start, end, stdin_from_pipe in spans:
         blob = command[start:end].strip()
         if not blob:
             continue
+        # A `cd` inside `( ... )` is undone when the subshell closes. Count on
+        # the quote-stripped span so parens inside an argument do not count;
+        # `$(` opens a substitution we never enter.
+        span_text = scanned[start:end]
+        opens = 0
+        for pos, char in enumerate(span_text):
+            if char == "(" and not (pos and span_text[pos - 1] == "$"):
+                subshell_stack.append(cwd)
+                opens += 1
+        closes = span_text.count(")")
         try:
             tokens = shlex.split(blob)
         except ValueError:
             tokens = blob.split()
-        tokens = _strip_bash_fragment_syntax(tokens)
-        if not tokens:
-            continue
-        argv0 = tokens[0].split("/")[-1].lower()
-        if argv0 in {"cd", "pushd"}:
-            # Every later relative target is anchored HERE, not at repo_root.
-            # Without this, `cd spec && cat private.md` resolved "private.md"
-            # against the repo root, found nothing, and authorized nothing —
-            # while bash read the file. The operand is literal and known at
-            # hook time, so it is not the unprovable residue.
+        tokens, redirect_reads = _strip_bash_fragment_syntax(tokens)
+        if closes > opens:
+            # A subshell that OPENED in an earlier fragment closes here, so its
+            # `)` is glued to this fragment's last operand (`cat public.md)`).
+            for seq in (redirect_reads, tokens):
+                if seq and seq[-1].endswith(")"):
+                    seq[-1] = seq[-1].rstrip(")")
+                    break
+
+        def _record(candidates: list[str]) -> None:
+            for target in candidates:
+                # A token still carrying `$` or a backtick names a path only the
+                # shell can compute; there is nothing to validate, so it joins
+                # the declared residue rather than being validated as a literal.
+                if "$" in target or "`" in target:
+                    continue
+                anchored = target
+                if not Path(target).is_absolute() and cwd:
+                    anchored = str(Path(cwd) / target)
+                targets.append(anchored)
+
+        _record(redirect_reads)
+        argv0 = tokens[0].split("/")[-1].lower() if tokens else ""
+        if argv0 in {"cd", "pushd", "popd"}:
+            # Anchor the targets that follow: without this, `cd spec && cat
+            # private.md` resolved "private.md" at the repo root, found nothing
+            # and authorized nothing, while bash read the file. The operand is
+            # literal and known at hook time, so it is not the residue.
             operand = tokens[1] if len(tokens) > 1 else ""
-            if not operand or "$" in operand or "`" in operand:
-                cwd = None  # unknown directory: relative targets are unprovable
-            elif Path(operand).is_absolute():
-                cwd = operand
+            if argv0 == "popd":
+                cwd, previous_cwd = (dir_stack.pop() if dir_stack else None), cwd
+            elif operand == "-":
+                cwd, previous_cwd = previous_cwd, cwd
+            elif not operand or "$" in operand or "`" in operand:
+                # `cd $D`, or a bare `cd` to the home directory.
+                previous_cwd, cwd = cwd, None
             else:
-                cwd = operand if cwd is None else str(Path(cwd or ".") / operand)
-            continue
-        if argv0 not in _BASH_READ_CMD_NAMES:
-            continue
-        for target in _extract_read_targets(
-            argv0, tokens, stdin_from_pipe=stdin_from_pipe
-        ):
-            # A token still carrying `$` or a backtick names a path only the
-            # shell can compute; there is nothing to validate, so it joins the
-            # declared residue rather than being validated as a literal name.
-            if "$" in target or "`" in target:
-                continue
-            if not Path(target).is_absolute() and cwd != "":
-                if cwd is None:
-                    continue  # relative to an unknown directory — unprovable
-                target = str(Path(cwd) / target)
-            targets.append(target)
+                if argv0 == "pushd":
+                    dir_stack.append(cwd)
+                previous_cwd, cwd = cwd, _joined(cwd, operand)
+        elif argv0 in _BASH_READ_CMD_NAMES:
+            _record(
+                _extract_read_targets(argv0, tokens, stdin_from_pipe=stdin_from_pipe)
+            )
+        for _ in range(closes):
+            if subshell_stack:
+                cwd = subshell_stack.pop()
     return targets
 
 

@@ -3111,10 +3111,38 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("cd spec/sub && cat deep.md"), ["spec/sub/deep.md"])
         # An absolute target ignores the cd.
         self.assertEqual(self._targets("cd spec && cat /etc/passwd"), ["/etc/passwd"])
-        # A directory the scan cannot know makes relative targets unprovable
-        # rather than falsely anchored at the repo root.
-        self.assertEqual(self._targets("cd $D && cat p.md"), [])
-        self.assertEqual(self._targets("cd && cat p.md"), [])
+        # A directory the scan cannot follow leaves the target UN-anchored —
+        # still checked against the manifest rather than dropped — and a
+        # following relative `cd` must not silently re-anchor at the repo root.
+        self.assertEqual(self._targets("cd $D && cat p.md"), ["p.md"])
+        self.assertEqual(self._targets("cd && cat p.md"), ["p.md"])
+        self.assertEqual(self._targets("cd $D && cd spec && cat p.md"), ["p.md"])
+
+    def test_cd_is_unwound_where_bash_unwinds_it(self) -> None:
+        """A stale anchor is as wrong as no anchor: it points the check at a
+        path that does not exist, and the read is dropped as nothing to
+        authorize."""
+        self.assertEqual(self._targets("cd docs && cd - && cat secret.md"), ["secret.md"])
+        self.assertEqual(
+            self._targets("pushd docs && popd && cat secret.md"), ["secret.md"]
+        )
+        self.assertEqual(
+            self._targets("pushd docs && cat a.md && popd && cat b.md"),
+            ["docs/a.md", "b.md"],
+        )
+        # A `cd` confined to a subshell does not survive it.
+        self.assertEqual(
+            self._targets("(cd docs && cat public.md); cat spec/secret.md"),
+            ["docs/public.md", "spec/secret.md"],
+        )
+
+    def test_input_redirection_is_a_read_whatever_the_command_is(self) -> None:
+        self.assertEqual(
+            self._targets("while read l; do echo $l; done < spec/secret.md"),
+            ["spec/secret.md"],
+        )
+        self.assertEqual(self._targets("< spec/secret.md cat"), ["spec/secret.md"])
+        self.assertEqual(self._targets("wc -l < spec/secret.md"), ["spec/secret.md"])
 
     def test_unprovable_forms_yield_nothing(self) -> None:
         for command in (
