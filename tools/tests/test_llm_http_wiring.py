@@ -53,6 +53,28 @@ class _FakeResponse(io.BytesIO):
         return False
 
 
+def _sse_completion(text: str, *, finish_reason: str = "stop",
+                    terminated: bool = True) -> str:
+    """One OpenAI-dialect event stream delivering `text`, split over two content deltas.
+
+    Two deltas rather than one on purpose: a wiring test that only ever saw a single-frame
+    stream would not notice a reader that dropped everything after the first."""
+    head, tail = text[: len(text) // 2], text[len(text) // 2:]
+    frames = [
+        {"model": "local-coder-resolved",
+         "choices": [{"delta": {"content": head}, "finish_reason": None}]},
+        {"model": "local-coder-resolved",
+         "choices": [{"delta": {"content": tail}, "finish_reason": None}]},
+    ]
+    if terminated:
+        frames.append({"model": "local-coder-resolved",
+                       "choices": [{"delta": {}, "finish_reason": finish_reason}]})
+        frames.append({"model": "local-coder-resolved", "choices": [],
+                       "usage": {"prompt_tokens": 5, "completion_tokens": 6}})
+    out = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)
+    return out + ("data: [DONE]\n\n" if terminated else "")
+
+
 class _HttpConductor(_PureFakeConductor):
     """The CLI fake, with its `spawn_leaf` override REMOVED so the real one runs.
 
@@ -91,8 +113,14 @@ class HttpPureLeafWiringTests(unittest.TestCase):
     def _serve(self, replies: list[dict | str]) -> list[dict]:
         """Install a fake `urlopen` answering `replies` in order; return the captured requests.
 
-        A reply may be a mapping (sent as an OpenAI-shaped completion of its `text`, honouring
-        an optional `finish_reason`), or a string (the completion text)."""
+        A reply may be a mapping (sent as a completion of its `text`, honouring an optional
+        `finish_reason`), or a string (the completion text). Answers as an EVENT STREAM by
+        default, because that is what the product default asks for; `{"nonstream": True}` gets
+        the buffered JSON body, `{"raw": ...}` an arbitrary one, `{"raise": ...}` an exception.
+        `nonstream` only makes sense against an entry carrying `stream: false` — a buffered body
+        answering a streaming request is a severed stream, not a buffered exchange.
+        A streaming reply may also carry `{"unterminated": True}` — frames with no `[DONE]` and
+        no `finish_reason`, i.e. a connection severed mid-answer."""
         captured: list[dict] = []
         pending = list(replies)
 
@@ -107,13 +135,17 @@ class HttpPureLeafWiringTests(unittest.TestCase):
                 raise OSError(reply["raise"])
             if isinstance(reply, dict) and "raw" in reply:
                 return _FakeResponse(reply["raw"].encode("utf-8"))
-            body = {
-                "model": "local-coder-resolved",
-                "choices": [{"message": {"content": reply.get("text", "")},
-                             "finish_reason": reply.get("finish_reason", "stop")}],
-                "usage": {"prompt_tokens": 5, "completion_tokens": 6},
-            }
-            return _FakeResponse(json.dumps(body).encode("utf-8"))
+            if reply.get("nonstream"):
+                body = {
+                    "model": "local-coder-resolved",
+                    "choices": [{"message": {"content": reply.get("text", "")},
+                                 "finish_reason": reply.get("finish_reason", "stop")}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 6},
+                }
+                return _FakeResponse(json.dumps(body).encode("utf-8"))
+            return _FakeResponse(_sse_completion(
+                reply.get("text", ""), finish_reason=reply.get("finish_reason", "stop"),
+                terminated=not reply.get("unterminated")).encode("utf-8"))
 
         # `_default_opener`, not `urlopen`: the transport builds a no-redirect opener rather
         # than calling `urlopen` directly (a redirect would forward the API key), so patching
@@ -148,13 +180,73 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         self.assertEqual(row["agent_model"], "local-coder-resolved")
 
     def test_the_raw_response_body_is_persisted(self) -> None:
+        """What arrives is now an EVENT STREAM, and it is kept as it arrived — framing, the
+        `[DONE]` terminator and all. That is also why the file is named `.txt`: a stream is
+        never a JSON document, so a `.json` name would make every one of these a workspace
+        violation (see the sibling test below)."""
         self._serve([json.dumps(_valid_bundle())])
         c = self._conductor()
         c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
         launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
         bodies = sorted(launches.glob("*.http_response.txt"))
         self.assertTrue(bodies)
-        self.assertIn("choices", json.loads(bodies[0].read_text(encoding="utf-8")))
+        persisted = bodies[0].read_text(encoding="utf-8")
+        self.assertIn("data: ", persisted)
+        self.assertIn("[DONE]", persisted)
+        self.assertIn("bundle_schema_version", persisted)
+
+    def test_a_streaming_leaf_produces_the_same_artifacts_as_a_buffered_one(self) -> None:
+        """The whole point of the change: the transport differs, the run does not. The bundle a
+        streamed answer produces must be byte-identical to the one the buffered path produced,
+        or streaming would be a behaviour change dressed as a transport fix."""
+        bundle = json.dumps(_valid_bundle())
+        written: list[bytes] = []
+        for reply in ({"text": bundle, "nonstream": True}, {"text": bundle}):
+            self.setUp()                        # a fresh repo, config and key for each transport
+            if reply.get("nonstream"):
+                # The SERVER's dialect has to match what the ENTRY asked for; a buffered body
+                # answering a streaming request is a severed stream, which is a different test.
+                self.config = self._opted_out_config()
+            self._serve([reply])
+            c = self._conductor()
+            outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+            self.assertEqual(outcome.status, "pass", msg=str(reply))
+            written.append(
+                (self.repo / self.refs.source_dir() / "codegen_bundle.json").read_bytes())
+        self.assertEqual(written[0], written[1])
+
+    def test_a_stream_severed_before_its_terminator_is_a_transport_failure(self) -> None:
+        """The correctness risk streaming introduces. A connection cut at 90% leaves a
+        plausible-looking partial document; passed through, the validators reject it as
+        unparseable and the loops spend repair turns blaming the model for a network fault.
+        It has to arrive as `pure_transport` — the category that is RETRIED, not repaired."""
+        self._serve([{"text": json.dumps(_valid_bundle()), "unterminated": True}])
+        c = self._conductor()
+        c._sleep_backoff = lambda _s: None                 # type: ignore[assignment]
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "fail")
+        errors = [e for e in self._events if e["event"] == "http_leaf_transport_error"]
+        self.assertTrue(errors)
+        self.assertIn("stream interrupted", errors[0]["error"])
+
+    def _opted_out_config(self) -> lc.LlmConfig:
+        """`_MIXED_CONFIG` with `stream: false` on the HTTP generate leaf."""
+        cfg_path = self.repo / "opted-out.yaml"
+        cfg_path.write_text(_MIXED_CONFIG.rstrip("\n") + "\n        stream: false\n",
+                            encoding="utf-8")
+        return lc.load_llm_config(cfg_path)
+
+    def test_an_entry_with_stream_false_sends_the_buffered_request(self) -> None:
+        """The config key reaching the wire, end to end: the operator's escape hatch for an
+        endpoint that cannot speak SSE has to actually change what is posted."""
+        self.config = self._opted_out_config()
+        self.assertIs(self.config.entry_for("generate", "generate").stream, False)
+        sent = self._serve([{"text": json.dumps(_valid_bundle()), "nonstream": True}])
+        c = self._conductor()
+        outcome = c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(outcome.status, "pass")
+        self.assertNotIn("stream", sent[0])
+        self.assertNotIn("stream_options", sent[0])
 
     def test_a_non_json_body_is_persisted_without_becoming_a_workspace_violation(self) -> None:
         """The body this file most needs to keep is the one that is NOT JSON — an HTML error

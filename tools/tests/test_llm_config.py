@@ -620,6 +620,104 @@ class RuleTests(_Tmp):
         self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
         self.assertEqual(cfg.entry_for("validate", "judge").effort, "max")
 
+    def test_stream_defaults_to_true_on_an_http_entry(self) -> None:
+        """The default is the whole fix. A non-streaming completion writes nothing until the
+        answer exists, and an intermediary that bounds the interval between upstream reads cuts
+        it long before then — measured, three attempts dead after 613.6 s / 612.3 s / 611.8 s
+        with `HTTP 504` while the entry's own 2400 s `timeout_s` never fired. An operator who says
+        nothing gets SSE."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n"
+            "phases:\n  generate:\n    substeps:\n      generate:\n"
+            "        provider: openai_compatible\n"
+            "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"))
+        self.assertIs(cfg.entry_for("generate", "generate").stream, True)
+
+    def test_an_explicit_stream_false_reaches_the_entry(self) -> None:
+        """The escape hatch for an endpoint that cannot speak SSE at all."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n"
+            "phases:\n  generate:\n    substeps:\n      generate:\n"
+            "        provider: openai_compatible\n"
+            "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"
+            "        stream: false\n"))
+        self.assertIs(cfg.entry_for("generate", "generate").stream, False)
+
+    def test_a_non_boolean_stream_is_rejected(self) -> None:
+        """`stream: "false"` is the one that matters: YAML reads it as a STRING, every non-bool
+        here is truthy, and a truthiness test would leave streaming ON while the document says
+        otherwise — reproducing the 504 the opt-out exists to escape, silently."""
+        for value in ('"false"', "0", "[]", "no-thanks"):
+            self.assert_rule("llm_config_invalid_field",
+                             "defaults:\n  provider: claude_cli\n"
+                             "phases:\n  generate:\n    substeps:\n      generate:\n"
+                             "        provider: openai_compatible\n"
+                             "        base_url: https://x/v1\n        api_key_env: K\n"
+                             f"        model: m\n        stream: {value}\n")
+
+    def test_stream_on_a_cli_entry_is_rejected_as_not_applicable(self) -> None:
+        """`stream: false` on a CLI entry, which is the FALSY value — the regression test for a
+        `if not fields.get(field)` guard that swallowed exactly the spelling an operator writes.
+        A CLI leaf is a process; how its transport frames the answer is not configurable here."""
+        self.assert_rule("llm_config_field_not_applicable",
+                         "defaults:\n  provider: claude_cli\n  stream: false\n")
+        self.assert_rule("llm_config_field_not_applicable",
+                         "defaults:\n  provider: codex_cli\n  model: m\n  stream: true\n")
+
+    def test_an_explicitly_empty_inapplicable_field_is_rejected(self) -> None:
+        """The other half of the presence-not-truthiness guard, pinned deliberately rather than
+        left an accident, and pinned for EVERY spelling it changed rather than one of them — the
+        collateral of a guard flip is exactly what goes unnoticed. These four previously loaded
+        and were silently dropped; `effort: ""` on an `anthropic_api` entry is the one an
+        operator is at all likely to have written, as "leave it at the provider default"."""
+        http = ("defaults:\n  provider: claude_cli\n"
+                "phases:\n  generate:\n    substeps:\n      generate:\n"
+                "        provider: {provider}\n{extra}"
+                "        api_key_env: K\n        model: m\n")
+        for body in (
+            'defaults:\n  provider: claude_cli\n  base_url: ""\n',
+            'defaults:\n  provider: claude_cli\n  api_key_env: ""\n',
+            http.format(provider="openai_compatible",
+                        extra='        base_url: https://x/v1\n        command: ""\n'),
+            http.format(provider="anthropic_api", extra='        effort: ""\n'),
+        ):
+            with self.subTest(body=body):
+                self.assert_rule("llm_config_field_not_applicable", body)
+
+    def test_an_empty_timeout_is_rejected_by_its_own_rule_not_this_one(self) -> None:
+        """The near neighbour that is NOT part of the guard flip: an empty `timeout_s` never
+        loaded, on any provider, because `_layer_fields` rejects it first and as a different
+        rule. Pinned so the comment enumerating the flip's collateral cannot quietly grow it."""
+        self.assert_rule("llm_config_invalid_field",
+                         "defaults:\n  provider: claude_cli\n  timeout_s:\n")
+
+    def test_stream_survives_a_switch_between_two_http_providers(self) -> None:
+        """Deliberately NOT provider-scoped: it describes the endpoint's transport behaviour, not
+        a provider's vocabulary, and two leaves on the same gateway must both keep the opt-out."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n"
+            "phases:\n  generate:\n"
+            "    provider: openai_compatible\n"
+            "    base_url: https://x/v1\n    api_key_env: K\n    model: m\n"
+            "    stream: false\n"
+            "    substeps:\n      verify:\n        provider: anthropic_api\n"
+            "        api_key_env: ANTHROPIC_API_KEY\n        model: claude-opus-5\n"))
+        self.assertIs(cfg.entry_for("generate", "generate").stream, False)
+        self.assertIs(cfg.entry_for("generate", "verify").stream, False)
+
+    def test_stream_inherited_onto_a_cli_substep_is_dropped_not_rejected(self) -> None:
+        """Nothing in the document points at that leaf, so there is nothing to correct — the
+        same rule `timeout_s` already follows when it inherits onto a CLI leaf."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n"
+            "phases:\n  generate:\n"
+            "    provider: openai_compatible\n"
+            "    base_url: https://x/v1\n    api_key_env: K\n    model: m\n"
+            "    stream: false\n"
+            "    substeps:\n      verify:\n        provider: claude_cli\n        model: opus\n"))
+        self.assertIs(cfg.entry_for("generate", "generate").stream, False)
+        self.assertIs(cfg.entry_for("generate", "verify").stream, True)
+
     def test_invalid_field_non_finite_timeout(self) -> None:
         """YAML reads `.nan` / `.inf` as floats and both slip past a `<= 0` test, so a config
         advertising a positive wall-clock bound would carry a deadline that never fires."""

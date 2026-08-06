@@ -26,6 +26,7 @@ import time
 import unittest
 from contextlib import redirect_stdout
 from datetime import datetime
+from unittest.mock import patch
 from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -4936,6 +4937,238 @@ class LeafTransientRetryTest(unittest.TestCase):
             live = (agents / "child-2" / "dialogs" / "leaf.stdout.log").read_text()
             self.assertEqual(dead, self._FLAKE)
             self.assertEqual(live, "done")
+
+
+class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
+    """The SECOND budget on the transient retries, in wall-clock rather than in launches.
+
+    Written against a measured incident: an HTTP `generate.generate` leaf took `HTTP 504 Gateway
+    Time-out` three times, on requests that ran 613.6 s / 612.3 s / 611.8 s, because the
+    gateway's own read timeout was what fired each time. Every attempt was doomed identically, and the count budget
+    alone spent 33 minutes proving it. A failure that is a deterministic function of how long the
+    request runs cannot be bounded by counting launches.
+
+    Inherits the fixtures of the count-budget tests deliberately: the two budgets must be
+    exercised through the same loop, and every inherited test re-runs here as the control showing
+    a cheap flake is untouched (its fake leaves die instantly, so `elapsed ≈ 0`)."""
+
+    def _clocked(self, procs: list, *, seconds_per_attempt: "float | list[float]", **kw):
+        """A conductor whose leaf launches consume clock — a constant, or one value per attempt.
+
+        BOTH clocks are advanced. The budget measures a DURATION and so reads `time.monotonic`;
+        `time.time` moves with it only so the fixture models one coherent passage of time rather
+        than two clocks disagreeing. Note `wc.time` IS the stdlib module, so this patches it
+        process-wide for the duration of the test — restored on cleanup."""
+        c = self._conductor(procs, **kw)
+        # A PLAUSIBLE epoch, not a round number: the usage-limit reset parser sanity-checks the
+        # machine-form epoch against the current time, so a clock in 1970 makes a well-formed
+        # reset unresolvable and the wait declines with `no_reset_time`.
+        clock = [1_752_200_000.0]
+        inner = c.spawn_leaf
+        schedule = (list(seconds_per_attempt) if isinstance(seconds_per_attempt, list)
+                    else [seconds_per_attempt])
+        launches = [0]
+
+        def _spawn(*a, **kw):
+            clock[0] += schedule[min(launches[0], len(schedule) - 1)]
+            launches[0] += 1
+            return inner(*a, **kw)
+
+        c.spawn_leaf = _spawn                              # type: ignore[assignment]
+        for name in ("time", "monotonic"):
+            patcher = patch.object(wc.time, name, lambda: clock[0])
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return c
+
+    def test_a_transient_failure_that_burned_the_wall_clock_is_not_retried(self) -> None:
+        """The incident, reproduced: one attempt instead of three, ten minutes instead of 33.
+        `0 + 613.6 > 600` already on the FIRST attempt, so the retry the count budget would have
+        granted is refused. The fixture uses the incident's OWN first-attempt duration: a test
+        that claims to reproduce an incident should not round its number."""
+        c = self._clocked([self._flake()], seconds_per_attempt=613.6)
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(len(c.spawns), 1)
+        self.assertEqual(oc.attempts, 1)
+
+    def test_a_cheap_transient_failure_keeps_every_retry_the_count_budget_allows(self) -> None:
+        """The control. A 429 that dies in two seconds is exactly what the count budget is for,
+        and the wall-clock budget must not touch it — otherwise this change trades one class of
+        needless fail_closed for another."""
+        c = self._clocked([self._flake(), self._flake(), wc.ProcResult(0, "done", "")],
+                          seconds_per_attempt=2.0)
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(len(c.spawns), 3)
+
+    def test_the_wall_clock_budget_accumulates_across_attempts(self) -> None:
+        """Neither attempt crosses the budget alone; together they do. Charging only the last
+        attempt would let a substep spend without limit in instalments."""
+        c = self._clocked([self._flake(), self._flake(), wc.ProcResult(0, "done", "")],
+                          seconds_per_attempt=350.0)
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(len(c.spawns), 2)     # granted once (350 <= 600), refused at 700
+
+    def test_a_declined_retry_says_so_greppably(self) -> None:
+        """"We could have re-launched and chose not to" has to leave a record, or the operator
+        reading the run log sees a single-attempt failure and no reason for it."""
+        events: list = []
+        c = self._clocked([self._flake()], seconds_per_attempt=613.6)
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with redirect_stdout(io.StringIO()):
+            c.run_substep(self._refs(), "compile", "verify")
+        declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
+        self.assertEqual(len(declined), 1)
+        self.assertEqual(declined[0]["reason"], "wall_clock_budget")
+        self.assertEqual(declined[0]["tag"], "llm_transport_flake")
+        self.assertEqual(declined[0]["budget_seconds"],
+                         wc.TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS)
+        self.assertAlmostEqual(declined[0]["elapsed_seconds"], 613.6)
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 0)
+
+    def test_a_declined_retry_tombstones_exactly_as_an_exhausted_count_does(self) -> None:
+        """The refusal returns False and nothing else: the terminal routing is the count
+        budget's, so a declined attempt must be indistinguishable downstream from a spent one."""
+        c = self._clocked([self._flake()], seconds_per_attempt=613.6)
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "fail")
+        self.assertIsNotNone(oc.infra_error)
+        self.assertEqual(oc.infra_error[0], "llm_transport_flake")
+
+    def test_the_pure_loops_refuse_on_the_same_budget(self) -> None:
+        """The pure substeps reach the budget through `_pure_transient_retry` rather than the
+        agentic loop's inline predicate, and two implementations of one rule is exactly where a
+        rule drifts. Driven directly, because that is where the arithmetic lives."""
+        c = self._conductor([])
+        infra = ("llm_transport_flake", "HTTP 504 from provider: <html>")
+        kw = dict(refs=self._refs(), phase="generate", substep="generate",
+                  infra_error=infra, child_arid="child-1")
+        with redirect_stdout(io.StringIO()):
+            # Under budget: granted, as the count budget alone would.
+            self.assertTrue(c._pure_transient_retry(
+                retries_done=0, elapsed_s=2.0, spent_s=0.0, **kw))
+            # A single attempt that already outran the budget: refused.
+            self.assertFalse(c._pure_transient_retry(
+                retries_done=0, elapsed_s=650.0, spent_s=0.0, **kw))
+            # And the accumulation: neither attempt crosses it alone.
+            self.assertFalse(c._pure_transient_retry(
+                retries_done=1, elapsed_s=350.0, spent_s=350.0, **kw))
+
+    def test_the_agentic_loop_does_not_charge_a_usage_limit_wait_to_this_budget(self) -> None:
+        """The drift the two implementations had. In the pure loops the usage-limit `continue`
+        sits above the accumulator, so a wait was already free there; in the agentic loop the
+        accumulator ran first and charged it. `--wait-usage-reset` parks for as long as the quota
+        window says — twenty minutes here — and billing that to the transient budget refused the
+        two-second flake that followed, on time no transient attempt ever spent."""
+        now = 1_752_200_000.0
+        c = self._clocked(
+            [wc.ProcResult(1, "", f"Claude AI usage limit reached|{int(now) + 1500}"),
+             self._flake(),
+             wc.ProcResult(0, "done", "")],
+            seconds_per_attempt=[1200.0, 2.0, 5.0], wait_usage_reset=True)
+        events: list = []
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(len(c.spawns), 3)     # the limited attempt, the flake, the survivor
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
+        self.assertEqual(
+            [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+    def test_a_usage_limited_attempt_is_not_charged_to_the_transient_budget(self) -> None:
+        """`--wait-usage-reset` can wait a limit out for HOURS. Charging that to the transient
+        budget would refuse the next cheap flake on time no transient attempt ever spent, and
+        both this method's docstring and `docs/ORCHESTRATION.md` promise the two budgets cannot
+        compound. Driven at the helper because it is where the arithmetic lives; the loops are
+        pinned by their own placement of the accumulator."""
+        c = self._conductor([])
+        events: list = []
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with redirect_stdout(io.StringIO()):
+            # A usage limit is not a retryable transient tag, so it is refused WITHOUT the
+            # budget being consulted — no `declined` event names it, and nothing is charged.
+            self.assertFalse(c._pure_transient_retry(
+                refs=self._refs(), phase="generate", substep="generate",
+                infra_error=("llm_usage_limit", "usage limit reached|1800000000"),
+                child_arid="child-1", retries_done=0, elapsed_s=7200.0, spent_s=0.0))
+            # ...and the flake that follows still gets its retry, on a budget of zero spent.
+            self.assertTrue(c._pure_transient_retry(
+                refs=self._refs(), phase="generate", substep="generate",
+                infra_error=("llm_transport_flake", "connection reset"),
+                child_arid="child-2", retries_done=0, elapsed_s=2.0, spent_s=0.0))
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+    def test_the_agentic_loop_refuses_on_count_without_naming_the_wall_clock(self) -> None:
+        """The agentic half of the ordering. Three attempts at 250 s each: the COUNT budget is
+        what refuses the third, and the clock must stay silent about it. Consulting the budget
+        before the count check leaves every other test green while telling the operator to blame
+        a clock budget that decided nothing — and the pure loop's version of this pin drives the
+        helper, so it says nothing about this loop's inline predicate."""
+        events: list = []
+        c = self._clocked([self._flake()], seconds_per_attempt=250.0)
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(len(c.spawns), 3)         # the count budget spent in full
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 2)
+        self.assertEqual(
+            [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+    def test_a_count_exhausted_attempt_is_refused_without_naming_the_wall_clock(self) -> None:
+        """The other half of the ordering. Moving the wall-clock check above only the COUNT check
+        left every transient test green while `leaf_transient_retry_declined` was emitted for an
+        attempt whose count budget was already spent — telling the operator to blame the clock
+        for a refusal the launch count had already decided."""
+        events: list = []
+        c = self._conductor([])
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(c._pure_transient_retry(
+                refs=self._refs(), phase="generate", substep="generate",
+                infra_error=("llm_transport_flake", "connection reset"), child_arid="child-1",
+                retries_done=wc.MAX_LEAF_TRANSIENT_RETRIES, elapsed_s=650.0, spent_s=650.0))
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+    def test_the_budget_measures_a_duration_and_not_a_wall_clock(self) -> None:
+        """A suspended host or an NTP step moves `time.time()` forward without the model having
+        run for a second of it. Charged as elapsed, an hour-long lid-close during a three-second
+        leaf refuses the retry that would have recovered the run. This repository has been bitten
+        by reading a wall clock as elapsed time before, so the accumulator reads `time.monotonic`
+        while `launched_at` stays wall-clock for the mtime comparisons that need it."""
+        c = self._conductor([self._flake(), wc.ProcResult(0, "done", "")])
+        jumped = [1_000_000.0]
+
+        def _spawn_then_jump(*a, **kw):
+            jumped[0] += 3600.0                        # the lid was closed mid-attempt
+            return type(c).spawn_leaf(c, *a, **kw)
+
+        c.spawn_leaf = _spawn_then_jump                # type: ignore[assignment]
+        with patch.object(wc.time, "time", lambda: jumped[0]), redirect_stdout(io.StringIO()):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "pass")            # the retry happened
+        self.assertEqual(len(c.spawns), 2)
+
+    def test_the_budget_is_not_charged_to_a_tag_that_was_never_retryable(self) -> None:
+        """Ordering: the wall-clock check runs AFTER the tag and count checks, so it can only
+        ever remove a retry those would have granted. A `leaf_transient_retry_declined` naming a
+        4xx would tell the operator to wait out a deterministic misconfiguration."""
+        events: list = []
+        c = self._conductor([])
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(c._pure_transient_retry(
+                refs=self._refs(), phase="generate", substep="generate",
+                infra_error=("llm_client_error", "API Error: 400 invalid_request_error"),
+                child_arid="child-1", retries_done=0, elapsed_s=650.0, spent_s=0.0))
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
 
 
 class TransportSubstepResumeTest(unittest.TestCase):

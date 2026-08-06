@@ -683,5 +683,89 @@ class PureStepResultValidationTests(unittest.TestCase):
                     repo, oid, node_key=_NODE, step="generate", agent_run_id="orch", payload=payload)
 
 
+class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
+    """The reviewer loop's copy of the transient wall-clock budget.
+
+    The rule has two pure implementations, and this repository's own history says a rule with two
+    implementations drifts at the untested one: the producer loop's copy was pinned first and the
+    reviewer's was not, so the budget could be removed here outright — or the accumulator hoisted
+    back above the transport branch, which is the exact defect the producer side was fixed for —
+    with the whole suite still green."""
+
+    class _C(_PureFakeConductor):
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+            index = getattr(self, "_spawn", 0)
+            self.clock[0] += self.seconds[min(index, len(self.seconds) - 1)]
+            self._spawn = index + 1
+            return self.procs[min(index, len(self.procs) - 1)]
+
+        def _sleep_backoff(self, seconds):  # type: ignore[override]
+            self.slept.append(seconds)
+
+    def _run(self, procs: list, seconds: "list[float]"):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        repo = Path(self._tmp.name)
+        refs = _verify_node(repo)
+        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+        c = self._C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                    llm_config=_cfg("claude"), env={})
+        c.procs, c.slept, c.seconds = procs, [], seconds
+        c.clock = [1_752_200_000.0]
+        events: list = []
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        # Only `monotonic` is driven by the fixture: the budget measures a DURATION, and a
+        # fixture that moved both clocks together could not tell the two readings apart — which
+        # is how the producer-side pin missed that the pure loops were reading a wall clock.
+        with mock.patch.object(wc.time, "monotonic", lambda: c.clock[0]):
+            oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        return c, oc, events
+
+    _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+
+    def test_a_transient_attempt_that_burned_the_clock_is_refused(self) -> None:
+        """The incident's own shape on the reviewer leaf: one 613 s death, no second launch."""
+        c, oc, events = self._run(
+            [self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")], [613.0])
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, 1)
+        declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
+        self.assertEqual(len(declined), 1)
+        self.assertEqual(declined[0]["reason"], "wall_clock_budget")
+
+    def test_the_budget_accumulates_across_transient_attempts(self) -> None:
+        """The reviewer loop's copy of the ARITHMETIC, as distinct from the placement. Two 350 s
+        deaths: neither crosses the budget alone, together they do."""
+        c, oc, events = self._run(
+            [self._FLAKE, self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")],
+            [350.0, 350.0, 5.0])
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, 2)
+        declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
+        self.assertEqual(len(declined), 1)
+        self.assertAlmostEqual(declined[0]["spent_seconds"], 350.0)
+
+    def test_a_cheap_transient_failure_is_still_retried(self) -> None:
+        """The control: the budget must not touch the flake the count budget exists for."""
+        c, oc, events = self._run(
+            [self._FLAKE, wc.ProcResult(0, _envelope(_verdict("pass")), "")], [2.0, 3.0])
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(c._spawn, 2)
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
+
+    def test_a_slow_verdict_repair_turn_does_not_spend_the_transient_budget(self) -> None:
+        """A reviewer whose verdict fails schema validation after 700 s is repaired, not
+        retried — and the two-second network flake that follows must still get its retry."""
+        c, oc, events = self._run(
+            [wc.ProcResult(0, _envelope('{"verdict_schema_version": "9.9.9"}'), ""),
+             self._FLAKE,
+             wc.ProcResult(0, _envelope(_verdict("pass")), "")],
+            [700.0, 2.0, 5.0])
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
+        self.assertEqual(
+            [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

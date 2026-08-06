@@ -2445,6 +2445,28 @@ _LEAF_RETRY_BACKOFF_SECONDS: dict[str, tuple[float, ...]] = {
     "llm_overloaded": (15.0, 60.0),
     "llm_rate_limit": (30.0, 90.0),
 }
+# A SECOND budget on the transient retries, in wall-clock rather than in launches. A retry is
+# granted only while `spent + elapsed <= this`, where `spent` is the summed duration of this
+# substep's already-dead transient attempts and `elapsed` is how long the attempt that just died
+# ran — used as the estimate of what the next one would cost, because the failure this bounds is
+# a deterministic function of how long the request runs.
+#
+# Measured, and the reason this exists: a `generate.generate` leaf on an nginx-fronted endpoint
+# took `HTTP 504 Gateway Time-out` three times, and the three requests ran 613.6 s / 612.3 s /
+# 611.8 s (`launches/<arid>.request.json` to `.http_response.txt` in
+# `orch_20260806T060306Z_ec3720ca`; those mtimes BRACKET the request, so these are close bounds
+# rather than exact durations). Under two seconds apart: what expired was the gateway's own read
+# timeout, not anything about the attempt, so the third was as doomed as the first and the
+# count budget alone spent 33 minutes proving it. Under this rule the first attempt already
+# crosses the budget on its own (0 + 613.6 > 600) and is refused, costing ten minutes instead.
+#
+# It leaves the cheap flake untouched — a 429 that dies in two seconds still gets both retries on
+# the schedule above — and it generalises past 504 without classifying provider-controlled text:
+# any transient tag whose attempts burn the clock is bounded the same way. The same reasoning
+# `_RETRYABLE_LEAF_INFRA_TAGS` gives for excluding `leaf_timeout` (a re-launch stakes another
+# full cap of wall-clock on a leaf that already proved it can consume one), applied by
+# measurement instead of by tag.
+TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS = 600.0
 
 # Tags that may be promoted OUT OF STDOUT over a match already found in stderr. Deliberately just
 # these two: stdout is a `claude -p` leaf's own prose, so letting it outrank stderr in general
@@ -5716,6 +5738,9 @@ clean:
         attempt = 0
         usage_waits = 0
         transient_retries = 0
+        # Wall-clock spent on transient attempts that already died, against
+        # `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`.
+        transient_spent = 0.0
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
@@ -5783,6 +5808,10 @@ clean:
                 resume_session_id = None
                 continue
             launched_at = time.time()
+            # A SECOND reading, monotonic, purely for measuring how long this attempt
+            # ran: `launched_at` must stay wall-clock because `determine_substep_status`
+            # compares it against file mtimes, and a wall clock is not a duration.
+            launched_monotonic = time.monotonic()
             proc = self.spawn_leaf(
                 rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
                 session_id=child_arid,
@@ -5999,11 +6028,26 @@ clean:
             # connection) is re-launched in place rather than fail-closing a run that has
             # already paid for every earlier phase. `attempt` and the repair carriers are
             # UNCHANGED — a retry is not a repair turn — exactly as the usage wait above.
-            if category == "pure_transport" and self._pure_transient_retry(
-                    refs=refs, phase=phase, substep=substep, infra_error=infra_error,
-                    child_arid=child_arid, retries_done=transient_retries):
-                transient_retries += 1
-                continue
+            if category == "pure_transport":
+                # Charged HERE, inside the transport branch, and nowhere else: the budget bounds
+                # what TRANSIENT deaths cost, so a content-repair turn — which reaches this point
+                # having produced a document, and which for this workload legitimately runs ten
+                # minutes — must not spend it. Accumulating above this branch made one slow
+                # repair turn refuse the very next cheap flake, which is the opposite of the
+                # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
+                # otherwise be billed to the budget as time the model spent working, and this
+                # repository has already been bitten once by reading a wall clock as elapsed
+                # time. `launched_at` stays wall-clock because it is compared against file mtimes.
+                elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
+                spent_before = transient_spent
+                # Accumulated whether the retry is granted or refused: a refused attempt ran too.
+                transient_spent += elapsed_s
+                if self._pure_transient_retry(
+                        refs=refs, phase=phase, substep=substep, infra_error=infra_error,
+                        child_arid=child_arid, retries_done=transient_retries,
+                        elapsed_s=elapsed_s, spent_s=spent_before):
+                    transient_retries += 1
+                    continue
             # A content violation within budget: warm-resume the SAME producer session for a
             # bounded repair. A transport failure ("pure_transport") is NOT bundle-repairable —
             # it has no fixable document — so it is excluded here and routed fail_closed by
@@ -6164,6 +6208,9 @@ clean:
         attempt = 0
         usage_waits = 0
         transient_retries = 0
+        # Wall-clock spent on transient attempts that already died, against
+        # `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`.
+        transient_spent = 0.0
         while True:
             child_arid = self.new_agent_run_id()
             warm = (resume_session_id is not None
@@ -6214,6 +6261,10 @@ clean:
                 resume_session_id = None
                 continue
             launched_at = time.time()
+            # A SECOND reading, monotonic, purely for measuring how long this attempt
+            # ran: `launched_at` must stay wall-clock because `determine_substep_status`
+            # compares it against file mtimes, and a wall clock is not a duration.
+            launched_monotonic = time.monotonic()
             proc = self.spawn_leaf(
                 rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
                 session_id=child_arid,
@@ -6421,11 +6472,26 @@ clean:
             # connection) is re-launched in place rather than fail-closing a run that has
             # already paid for every earlier phase. `attempt` and the repair carriers are
             # UNCHANGED — a retry is not a repair turn — exactly as the usage wait above.
-            if category == "pure_transport" and self._pure_transient_retry(
-                    refs=refs, phase=phase, substep=substep, infra_error=infra_error,
-                    child_arid=child_arid, retries_done=transient_retries):
-                transient_retries += 1
-                continue
+            if category == "pure_transport":
+                # Charged HERE, inside the transport branch, and nowhere else: the budget bounds
+                # what TRANSIENT deaths cost, so a content-repair turn — which reaches this point
+                # having produced a document, and which for this workload legitimately runs ten
+                # minutes — must not spend it. Accumulating above this branch made one slow
+                # repair turn refuse the very next cheap flake, which is the opposite of the
+                # rule. MONOTONIC, not `time.time()`: a suspended host or an NTP step would
+                # otherwise be billed to the budget as time the model spent working, and this
+                # repository has already been bitten once by reading a wall clock as elapsed
+                # time. `launched_at` stays wall-clock because it is compared against file mtimes.
+                elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
+                spent_before = transient_spent
+                # Accumulated whether the retry is granted or refused: a refused attempt ran too.
+                transient_spent += elapsed_s
+                if self._pure_transient_retry(
+                        refs=refs, phase=phase, substep=substep, infra_error=infra_error,
+                        child_arid=child_arid, retries_done=transient_retries,
+                        elapsed_s=elapsed_s, spent_s=spent_before):
+                    transient_retries += 1
+                    continue
             # A schema violation within budget: warm-resume the SAME reviewer session for a bounded
             # repair. A transport failure ("pure_transport") has no fixable verdict, so it is
             # excluded and routed fail_closed by run_phase's transport branch (leaf_returncode != 0).
@@ -8445,6 +8511,9 @@ clean:
         attempt = 0
         usage_waits = 0
         transient_retries = 0
+        # Wall-clock spent on transient attempts that already died, against
+        # `TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`.
+        transient_spent = 0.0
         while True:
             child_arid = self.new_agent_run_id()
             request = build_launch_request(
@@ -8494,6 +8563,10 @@ clean:
             # Re-taken per attempt: a half-written artifact left by the leaf that died is older
             # than the retry's window, so it cannot fake the retry's pass.
             launched_at = time.time()
+            # A SECOND reading, monotonic, purely for measuring how long this attempt
+            # ran: `launched_at` must stay wall-clock because `determine_substep_status`
+            # compares it against file mtimes, and a wall clock is not a duration.
+            launched_monotonic = time.monotonic()
             if deterministic:
                 # Non-LLM step: run the body in-process and play the child-return ourselves
                 # (no `claude -p` leaf). record_launch above + record-child-return here +
@@ -8578,12 +8651,35 @@ clean:
                                      output_refs, result_summary, entry=entry,
                                      agent_model_override=proc.model,
                                      usage=proc.usage, resume_mode=proc.resume_mode))
-            retryable = (
+            transient_death = (
                 not deterministic
                 and proc.returncode != 0
                 and infra_error is not None
-                and infra_error[0] in _RETRYABLE_LEAF_INFRA_TAGS
-                and attempt < MAX_LEAF_TRANSIENT_RETRIES)
+                and infra_error[0] in _RETRYABLE_LEAF_INFRA_TAGS)
+            if transient_death:
+                # Charged for a TRANSIENT death only. Not literally the same predicate as the
+                # pure loops, which charge on `category == "pure_transport"` — that category is
+                # set for ANY nonzero leaf exit, so it also covers a 4xx and an unclassified
+                # crash. The difference is unreachable rather than tolerated: a `pure_transport`
+                # death that is not a retryable tag terminates the loop on the same pass
+                # (`can_repair` excludes the category), so the over-charge is never read back.
+                # In particular a
+                # `llm_usage_limit` attempt is not charged: `--wait-usage-reset` can wait one out
+                # for hours, and billing that to the transient budget would refuse the next cheap
+                # flake on time no transient attempt ever spent. Monotonic for the same reason as
+                # in the pure loops: a wall clock is not a duration.
+                elapsed_s = max(0.0, time.monotonic() - launched_monotonic)
+                spent_before = transient_spent
+                transient_spent += elapsed_s          # granted or refused, the attempt ran
+            retryable = transient_death and attempt < MAX_LEAF_TRANSIENT_RETRIES
+            # The wall-clock budget, evaluated LAST for the same reason as in the pure loop: it
+            # may only remove a retry the checks above would have granted, so it can never name a
+            # tag that was never retryable nor a budget that was already spent on count.
+            if retryable and self._transient_wall_clock_exhausted(
+                    refs=refs, phase=phase, substep=substep, tag=infra_error[0],
+                    child_arid=child_arid, evidence=infra_error[1], attempt=attempt + 1,
+                    elapsed_s=elapsed_s, spent_s=spent_before):
+                retryable = False
             if not retryable:
                 # --wait-usage-reset (opt-in): a usage limit is normally terminal (fail_closed for
                 # a manual post-reset --resume). When the operator opted in AND the leaf's terminal
@@ -8637,9 +8733,33 @@ clean:
             self._sleep_backoff(delay)
             attempt += 1
 
+    def _transient_wall_clock_exhausted(
+        self, *, refs: NodeRefs, phase: str, substep: str | None, tag: str,
+        child_arid: str, evidence: str, attempt: int, elapsed_s: float, spent_s: float,
+    ) -> bool:
+        """True when granting another transient retry would cross the wall-clock budget.
+
+        Emits `leaf_transient_retry_declined` when it refuses, because "we could have re-launched
+        and chose not to" has to be greppable — the same reason `leaf_usage_limit_wait_declined`
+        exists. The caller then falls into the ordinary exhausted-budget path, so the
+        tombstoning and the fail_closed routing stay in one place."""
+        spend = spent_s + elapsed_s
+        if spend <= TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS:
+            return False
+        self.emit("leaf_transient_retry_declined", node_key=refs.node_key, step=phase,
+                  substep=substep, tag=tag, reason="wall_clock_budget", attempt=attempt,
+                  elapsed_seconds=round(elapsed_s, 3), spent_seconds=round(spent_s, 3),
+                  budget_seconds=TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS,
+                  dead_agent_run_id=child_arid, evidence=evidence)
+        return True
+
     def _pure_transient_retry(
         self, *, refs: NodeRefs, phase: str, substep: str | None,
         infra_error: "tuple[str, str] | None", child_arid: str, retries_done: int,
+        # REQUIRED, not defaulted. `0.0 / 0.0` is the one pair that always grants a retry, so a
+        # default here would let a future call site disable the wall-clock budget by forgetting
+        # a keyword — silently, and in the fail-OPEN direction.
+        elapsed_s: float, spent_s: float,
     ) -> bool:
         """Tombstone and wait out a transient transport failure on a PURE substep, or False.
 
@@ -8659,6 +8779,14 @@ clean:
         if retries_done >= MAX_LEAF_TRANSIENT_RETRIES:
             return False
         tag = infra_error[0]
+        # AFTER the tag and count checks: the wall-clock budget only ever removes a retry the
+        # other two would have granted, so it must not be able to name a tag that was never
+        # retryable in the first place.
+        if self._transient_wall_clock_exhausted(
+                refs=refs, phase=phase, substep=substep, tag=tag, child_arid=child_arid,
+                evidence=infra_error[1], attempt=retries_done + 1,
+                elapsed_s=elapsed_s, spent_s=spent_s):
+            return False
         max_attempts = MAX_LEAF_TRANSIENT_RETRIES + 1
         self._add_superseded_run_ids(
             [child_arid],
@@ -9872,10 +10000,15 @@ clean:
             # The evidence is clipped so the whole reason survives set_status's reason_detail[:200].
             infra = transport.infra_error
             suffix = f" (tag: {infra[0]}; {infra[1][:110]})" if infra else ""
-            # A retried-and-still-dead leaf reached here only after exhausting its transient
-            # budget, i.e. the outage outlasted every backoff. Say so: `attempts=3` tells the
-            # operator NOT to `--resume` immediately (the provider is still down), where a bare
-            # transport error would invite an instant retry that dies the same way.
+            # The LAUNCH COUNT, and only that. It is worth printing — a bare transport error
+            # invites an instant `--resume` that dies the same way — but it does NOT say which
+            # budget ended the substep, and must not be read as if it did: it counts bundle
+            # repair turns and usage-limit waits alongside the transient retries, so a
+            # wall-clock decline can print `attempts=3` and a count exhaustion `attempts=4`.
+            # `leaf_transient_retry_declined` is what distinguishes them, and `docs/RUNBOOK.md`
+            # routes the operator on that event rather than on this number, because the two
+            # cases want opposite remedies (wait for the provider, vs. fix the intermediary's
+            # read timeout — waiting never fixes a request that is simply too slow).
             if transport.attempts > 1:
                 suffix += f" [attempts={transport.attempts}]"
             orphan_arids = [oc.agent_run_id for oc in outcomes]

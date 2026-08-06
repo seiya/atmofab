@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
 
 from tools.pure_leaf import PURE_SYSTEM_PROMPT
 
@@ -170,9 +171,10 @@ def _set_socket_timeout(response: Any, seconds: float) -> None:
             return
 
 
-def _read_bounded(response: Any, deadline: float,
-                  max_bytes: int = _MAX_RESPONSE_BYTES) -> "tuple[bytes | None, str | None]":
-    """Read the body under a WALL-CLOCK deadline and a size ceiling.
+def _iter_bounded(response: Any, deadline: float,
+                  max_bytes: int = _MAX_RESPONSE_BYTES
+                  ) -> "Iterator[tuple[bytes, str | None]]":
+    """Yield the body one receive at a time under a WALL-CLOCK deadline and a size ceiling.
 
     `urlopen(timeout=)` is a per-socket-OPERATION timeout: it resets on every recv, so an
     endpoint dribbling one byte below the interval never trips it. The CLI leaf has a process
@@ -184,14 +186,19 @@ def _read_bounded(response: Any, deadline: float,
     `timeout_s=2` still blocked past 40s). `read1` returns what one recv produced, which makes
     each iteration socket-timeout-bounded and the check between them effective. The worst case
     is therefore the deadline plus one socket timeout, not unbounded. `read` is the fallback
-    only for a test double that does not implement `read1`."""
+    only for a test double that does not implement `read1`.
+
+    `error` is non-None on exactly the LAST item yielded, and its chunk is then empty; a clean
+    EOF simply ends the iteration. A caller collecting bytes stops at the error, and a caller
+    that has already handed earlier chunks to a parser still learns the body never finished —
+    which is what lets the streaming reader tell a complete answer from a severed one."""
     read_once = getattr(response, "read1", None) or response.read
-    chunks: list[bytes] = []
     total = 0
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return None, "response_deadline_exceeded"
+            yield b"", "response_deadline_exceeded"
+            return
         # Shrink the SOCKET timeout to what is left. `urlopen(timeout=)` applies to each
         # receive independently, so a server that sends a byte just before the deadline and
         # then stalls would otherwise buy itself another full timeout — up to twice the
@@ -206,14 +213,157 @@ def _read_bounded(response: Any, deadline: float,
             # than a bare `timed out`: the two are the same event here, and only one of them
             # names the setting the operator can change.
             if time.monotonic() >= deadline:
-                return None, "response_deadline_exceeded"
+                yield b"", "response_deadline_exceeded"
+                return
             raise
         if not chunk:
-            return b"".join(chunks), None
+            return
         total += len(chunk)
         if total > max_bytes:
-            return None, f"response_too_large: over {max_bytes} bytes"
+            yield b"", f"response_too_large: over {max_bytes} bytes"
+            return
+        yield chunk, None
+
+
+def _read_bounded(response: Any, deadline: float,
+                  max_bytes: int = _MAX_RESPONSE_BYTES) -> "tuple[bytes | None, str | None]":
+    """The whole body, or `(None, error)`. A thin fold over `_iter_bounded`, so the deadline and
+    ceiling discipline has exactly one implementation for both the JSON and the SSE path."""
+    chunks: list[bytes] = []
+    for chunk, error in _iter_bounded(response, deadline, max_bytes):
+        if error is not None:
+            return None, error
         chunks.append(chunk)
+    return b"".join(chunks), None
+
+
+# A server-sent-events frame ends at a BLANK line, and both `\n` and `\r\n` are line
+# terminators. Both spellings, because an intermediary that rewrites line endings would
+# otherwise merge every frame in the stream into one unparseable blob. Split on BYTES rather
+# than on decoded text: the separator is pure ASCII, so a frame boundary can never fall inside
+# a multi-byte character, which is what makes per-frame decoding safe when a receive splits one.
+_SSE_FRAME_SEPARATOR = re.compile(rb"\r?\n\r?\n")
+_SSE_LINE_SEPARATOR = re.compile(rb"\r?\n")
+# What an event stream's FIRST line looks like: one of the four defined fields, or a comment
+# (the keepalive an idle intermediary is fed). Anchored at the start of the body, matched
+# whether or not that line is terminated yet.
+_SSE_OPENING_LINE = re.compile(rb"^(?:data|event|id|retry)\s*:|^:")
+# The wire format says a leading BOM "must be ignored". Stripped once, at the buffer, so both
+# the framer and the opening-line test below see the same bytes: leaving it in made the first
+# field name `\xef\xbb\xbfdata`, which matches nothing, so the FIRST FRAME of a conforming
+# stream was silently dropped.
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _looks_like_an_event_stream(received: bytes) -> bool:
+    """Whether what arrived was an event stream at all, decided on how it OPENS.
+
+    The question this answers is "did the endpoint honour `stream: true`". Three weaker tests
+    were tried and each was wrong in a way that was reproduced:
+
+      * "does the body contain `data:`" called a keepalive-only stream (`: ping` frames, which
+        is what a gateway sends during a long time-to-first-token) a wrong content type and
+        failed it closed non-retryably, while letting an ordinary JSON answer whose text merely
+        quoted `data:` through;
+      * "did any complete FRAME arrive" inverted both of those: a real stream severed before its
+        first blank line failed closed, and any body with a blank line in it — an HTML error
+        page — was reported as a retryable severance;
+      * requiring the field at byte 0 rejected a CONFORMING stream that flush-primes with a
+        newline, or carries a BOM. Blank lines are legal separators and a leading BOM is
+        specified to be ignored, so the framer parsed those bodies correctly and only this test
+        refused them — discarding a complete, fully billed answer under a message that told the
+        operator to set `stream: false` on an endpoint that speaks SSE properly.
+
+    So: skip a BOM and any leading blank lines, then look at the first line with content. An
+    event stream opens with a field or a comment; an HTML page opens with `<` and a JSON body
+    with `{`.
+
+    RESIDUAL, stated rather than papered over: a body severed inside the first four or five
+    bytes (`dat`, `even`) has not yet produced a token to recognise and is reported as "not an
+    event stream" — a non-retryable answer to what was really a severance. The window is those
+    bytes only, one byte later the colon arrives and it classifies correctly, and prefix-matching
+    partial field names would add a fresh way to be wrong for a case worth this little."""
+    body = received[len(_UTF8_BOM):] if received.startswith(_UTF8_BOM) else received
+    return _SSE_OPENING_LINE.search(body.lstrip(b"\r\n")) is not None
+
+
+class _SseBuffer:
+    """Incremental frame splitter: bytes in, complete `(event, data)` frames out.
+
+    Searches only the NEWLY ARRIVED region of the buffer, rewound by three bytes so a separator
+    split across two receives is still found. Re-scanning the whole buffer on every receive is
+    quadratic, and a stream that never completes a frame turns that into a hang rather than the
+    intended size refusal — measured, a body with no frame boundary at all spent over 30 s in
+    `memcpy` before reaching the 32 MiB ceiling that was supposed to stop it in milliseconds.
+
+    Whatever is still pending at end of stream is DISCARDED by the caller, never emitted: it is
+    a truncated frame, and reading half a JSON object as a whole one is the exact failure this
+    module refuses to produce."""
+
+    # `len(b"\r\n\r\n") - 1` — the most of a separator that can sit in the previous receive.
+    _OVERLAP = 3
+
+    def __init__(self) -> None:
+        self._pending = bytearray()
+        self._scanned = 0
+        self._bom_settled = False
+
+    def feed(self, chunk: bytes) -> "list[tuple[str, str]]":
+        """The frames completed by `chunk`. A frame carrying no `data:` line at all (one made
+        only of keepalive comments) is dropped here rather than handed on as an empty answer."""
+        self._pending += chunk
+        if not self._bom_settled:
+            # A leading BOM is specified to be ignored, and left in place it becomes part of the
+            # first field NAME (`\xef\xbb\xbfdata`), silently dropping the first frame of a
+            # conforming stream. Decided on the buffer rather than on the first chunk, because a
+            # three-byte marker can arrive split across receives; while the buffer is still a
+            # strict prefix of the marker the decision waits, which costs nothing — no frame
+            # separator fits in those bytes.
+            if len(self._pending) < len(_UTF8_BOM) and _UTF8_BOM.startswith(self._pending):
+                return []
+            self._bom_settled = True
+            if self._pending.startswith(_UTF8_BOM):
+                del self._pending[:len(_UTF8_BOM)]
+        frames: list[tuple[str, str]] = []
+        start = max(0, self._scanned - self._OVERLAP)
+        while True:
+            match = _SSE_FRAME_SEPARATOR.search(self._pending, start)
+            if match is None:
+                break
+            event, data = _parse_sse_frame(bytes(self._pending[:match.start()]))
+            if data:
+                frames.append((event, data))
+            del self._pending[:match.end()]
+            start = 0
+        self._scanned = len(self._pending)
+        return frames
+
+
+def _parse_sse_frame(frame: bytes) -> "tuple[str, str]":
+    """`(event name, data)` for one frame, per the EventSource wire format.
+
+    Every clause is against a real endpoint rather than a spec reading:
+      * a line opening with `:` is a COMMENT — the keepalive that holds an idle intermediary
+        open — so it counts as bytes that arrived and contributes nothing to the answer;
+      * repeated `data:` lines in one frame join with a newline (the Messages API does not use
+        this, some gateways do, and dropping the later ones truncates the document silently);
+      * exactly one space after the colon is stripped, and only one;
+      * `id:` / `retry:` / any unknown field is ignored rather than rejected, because a stream
+        this module cannot fully model is still one it must read the answer out of."""
+    event = ""
+    data: list[str] = []
+    for line in _SSE_LINE_SEPARATOR.split(frame):
+        text = line.decode("utf-8", "replace")
+        if not text or text.startswith(":"):
+            continue
+        field, _, value = text.partition(":")
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "event":
+            event = value
+        elif field == "data":
+            data.append(value)
+    return event, "\n".join(data)
 
 
 # What replaces a credential wherever one is found in provider-supplied text.
@@ -251,6 +401,51 @@ def redact_secret(text: str, entry: Any,
     return _redact(text, secret)
 
 
+def _build_post(url: str, payload: Mapping[str, Any], headers: Mapping[str, str],
+                *, env: "Mapping[str, str] | None",
+                opener: "Callable[..., Any] | None") -> "tuple[Any, Callable[..., Any]]":
+    """`(request, open_url)` for one JSON POST. Shared by the buffered and streaming paths so
+    the redirect refusal and the environment's proxy settings cannot apply to only one."""
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json", **dict(headers)})
+    return request, (opener if opener is not None else _default_opener(env))
+
+
+def _http_error_report(exc: urllib.error.HTTPError, deadline: float,
+                       secret: str) -> "tuple[str, str]":
+    """`(detail, message)` for an HTTP error status, identically on both post paths.
+
+    A 504 arrives BEFORE the first byte of any answer, streaming or not, so this is the one
+    report both paths share — and the one the incident this module was hardened against
+    produced three times."""
+    detail = ""
+    try:
+        # Through the SAME bounded reader as a success body. `exc.read()` is an unbounded
+        # blocking read: a gateway that trickles, or that sends an enormous error page, held
+        # the run past `timeout_s` and grew memory without limit — measured, `timeout_s=2`
+        # was still blocked at 25 s on a 503 whose body dribbled.
+        body, body_error = _read_bounded(exc, deadline, _MAX_ERROR_BODY_BYTES)
+        # Redact BEFORE the length limit: slicing first can cut through the middle of the
+        # key, and the exact-string replace then matches nothing while a prefix of the
+        # secret survives into `raw_response` and the emitted event.
+        detail = ("" if body is None
+                  else _redact(body.decode("utf-8", "replace"), secret)[:_ERROR_DETAIL_CHARS])
+        if body_error is not None:
+            detail = (detail + f" [error body {body_error}]").strip()
+    except Exception:                           # noqa: BLE001 - diagnostics only
+        detail = ""
+    # `HTTP <code>`, spaced: the conductor classifies a leaf's terminal line with patterns
+    # anchored on `\bhttp\b`, and `http_status_429` is one word to a regex — a terse
+    # rate-limit body would then match nothing, and a transient outage would fail the run
+    # closed instead of being retried.
+    # `exc.reason` is provider-controlled as much as the body is, and it is what the
+    # message falls back to when the body was empty or unreadable.
+    return detail, (f"HTTP {exc.code} from provider: "
+                    f"{detail or _redact(str(exc.reason), secret)}")
+
+
 def _post_json(
     url: str,
     payload: Mapping[str, Any],
@@ -266,11 +461,7 @@ def _post_json(
     An HTTP error status is a TRANSPORT error here, unlike in preflight's reachability probe:
     preflight asks "is anything there", this asks "did the model answer". A 429 or a 503 means
     it did not, and the caller's retry/fail-closed handling is what should see that."""
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url, data=body, method="POST",
-        headers={"Content-Type": "application/json", **dict(headers)})
-    open_url = opener if opener is not None else _default_opener(env)
+    request, open_url = _build_post(url, payload, headers, env=env, opener=opener)
     deadline = time.monotonic() + timeout_s
     try:
         with open_url(request, timeout=timeout_s) as response:
@@ -278,30 +469,8 @@ def _post_json(
         if read_error is not None:
             return None, "", read_error
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            # Through the SAME bounded reader as a success body. `exc.read()` is an unbounded
-            # blocking read: a gateway that trickles, or that sends an enormous error page, held
-            # the run past `timeout_s` and grew memory without limit — measured, `timeout_s=2`
-            # was still blocked at 25 s on a 503 whose body dribbled.
-            body, body_error = _read_bounded(exc, deadline, _MAX_ERROR_BODY_BYTES)
-            # Redact BEFORE the length limit: slicing first can cut through the middle of the
-            # key, and the exact-string replace then matches nothing while a prefix of the
-            # secret survives into `raw_response` and the emitted event.
-            detail = ("" if body is None
-                      else _redact(body.decode("utf-8", "replace"), secret)[:_ERROR_DETAIL_CHARS])
-            if body_error is not None:
-                detail = (detail + f" [error body {body_error}]").strip()
-        except Exception:                       # noqa: BLE001 - diagnostics only
-            detail = ""
-        # `HTTP <code>`, spaced: the conductor classifies a leaf's terminal line with patterns
-        # anchored on `\bhttp\b`, and `http_status_429` is one word to a regex — a terse
-        # rate-limit body would then match nothing, and a transient outage would fail the run
-        # closed instead of being retried.
-        # `exc.reason` is provider-controlled as much as the body is, and it is what the
-        # message falls back to when the body was empty or unreadable.
-        return None, detail, (f"HTTP {exc.code} from provider: "
-                              f"{detail or _redact(str(exc.reason), secret)}")
+        detail, message = _http_error_report(exc, deadline, secret)
+        return None, detail, message
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
         # The exception's own text can carry the URL, which an operator may have embedded a
         # credential in; redact for the same reason as the body.
@@ -322,6 +491,83 @@ def _post_json(
     return doc, redacted, None
 
 
+def _post_stream(
+    url: str,
+    payload: Mapping[str, Any],
+    headers: Mapping[str, str],
+    *,
+    timeout_s: float,
+    secret: str = "",
+    env: "Mapping[str, str] | None" = None,
+    opener: "Callable[..., Any] | None" = None,
+) -> "tuple[list[tuple[str, str]] | None, str, str | None]":
+    """`(frames, raw_body, transport_error)` for one server-sent-events POST.
+
+    `frames` is the ordered `(event name, data)` list; the name is `""` for the OpenAI dialect,
+    which sends bare `data:` lines. They are MATERIALIZED rather than handed to the reader as
+    they arrive: the whole stream is already bounded by `_MAX_RESPONSE_BYTES`, and a list keeps
+    each shape's reader a pure function over data — testable exactly the way the buffered
+    readers are, with no socket in sight.
+
+    `frames` is `None` ONLY when no stream could be read at all (an HTTP error status, which
+    arrives before any of it). Every other failure returns the frames that DID arrive alongside
+    the error, because the answer may already be complete: the provider's terminator can be on
+    the wire before a severed teardown or an over-long keepalive trailer kills the read, and
+    discarding a finished answer costs the whole billed generation.
+
+    `raw_body` is returned even on failure, unlike `_post_json`'s empty string. A stream that
+    died at 90% is the only evidence of WHERE it died, and `launches/<agent_run_id>
+    .http_response.txt` exists to keep it."""
+    request, open_url = _build_post(url, payload, headers, env=env, opener=opener)
+    deadline = time.monotonic() + timeout_s
+    frames: list[tuple[str, str]] = []
+    received: list[bytes] = []
+    buffer = _SseBuffer()
+    try:
+        with open_url(request, timeout=timeout_s) as response:
+            for chunk, read_error in _iter_bounded(response, deadline):
+                if read_error is not None:
+                    return frames, _redact(_decode(received), secret), read_error
+                received.append(chunk)
+                frames.extend(buffer.feed(chunk))
+    except urllib.error.HTTPError as exc:
+        # A gateway timeout arrives before the first frame, so this is byte-for-byte the report
+        # the buffered path gives — the conductor classifies both with the same patterns.
+        detail, message = _http_error_report(exc, deadline, secret)
+        return None, detail, message
+    except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
+        # PREFIXED, unlike the buffered path's bare `TypeName: text`. This is the ordinary way a
+        # severed stream surfaces: on `Transfer-Encoding: chunked` — the dominant encoding for
+        # streaming — a connection cut mid-body raises `IncompleteRead` rather than reaching a
+        # clean EOF, and `IncompleteRead(0 bytes read)` matches no classifier pattern at all.
+        # Unclassified means non-retryable, so without the prefix the exact mid-stream severance
+        # this transport exists to survive would fail the run closed while the close-delimited
+        # form of the SAME event was retried.
+        return frames, _redact(_decode(received), secret), _redact(
+            f"{_STREAM_INTERRUPTED}: {type(exc).__name__}: {exc}", secret)
+    raw = _decode(received)
+    if received and not _looks_like_an_event_stream(b"".join(received)):
+        # The endpoint ignored `stream: true` and answered with an ordinary body. Deliberately
+        # NOT worded as an interruption: that reading is retryable, and this is a deterministic
+        # misconfiguration that reproduces on every launch. Unclassified, so it fails closed on
+        # the first attempt with the body itself as the evidence — which is the whole lesson of
+        # the incident this transport was rewritten for.
+        #
+        # The test is how the body OPENS — see `_looks_like_an_event_stream`, which records the
+        # two weaker tests that were tried and exactly what each of them got wrong.
+        return None, _redact(raw, secret), (
+            f"response_not_an_event_stream: {len(received)} reads opened with no event-stream "
+            f"line; set `stream: false` on this entry if the endpoint cannot speak "
+            f"server-sent events")
+    return frames, _redact(raw, secret), None
+
+
+def _decode(chunks: "Sequence[bytes]") -> str:
+    """The received bytes as text. `replace`, never `strict`: a stream cut mid-character must
+    still yield the evidence of where it was cut, not raise on the way to reporting it."""
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
 def _api_key(entry: Any,
              env: "Mapping[str, str] | None" = None) -> "tuple[str, str | None]":
     name = (entry.api_key_env or "").strip()
@@ -340,12 +586,13 @@ def _api_key(entry: Any,
 
 def _openai_request(
     entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int,
-    env: "Mapping[str, str] | None" = None,
+    env: "Mapping[str, str] | None" = None, *, stream: bool,
 ) -> "tuple[str, dict[str, Any], dict[str, str], str | None]":
     key, error = _api_key(entry, env)
     if error is not None:
         return "", {}, {}, error
     url = entry.base_url.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {key}"}
     payload: dict[str, Any] = {
         "model": entry.model,
         "messages": [{"role": "system", "content": PURE_SYSTEM_PROMPT}, *messages],
@@ -359,12 +606,26 @@ def _openai_request(
     # servers that do not implement it, so an absent level must not put it on the wire.
     if getattr(entry, "effort", ""):
         payload["reasoning_effort"] = entry.effort
-    return url, payload, {"Authorization": f"Bearer {key}"}, None
+    if stream:
+        payload["stream"] = True
+        # An OpenAI-shaped stream carries NO usage unless this is asked for, and `usage` is what
+        # reaches `ProcResult.usage` and the `agent_runs` row the operator's cost comparison is
+        # read out of. The residual risk is a server that validates unknown body keys and answers
+        # 400 — which is cheap and self-naming (milliseconds, no tokens, and the provider's own
+        # message names `stream_options` in the persisted body), tagged `llm_client_error` so it
+        # fails closed on the FIRST attempt instead of being retried, and recovered from with one
+        # `stream: false` in the config. Losing token accounting silently is the worse trade.
+        payload["stream_options"] = {"include_usage": True}
+        headers["Accept"] = "text/event-stream"
+    # No `"stream": false` when opted out: the escape hatch must send byte-for-byte the request
+    # that worked before streaming existed, or the hatch is itself a new thing to be rejected by
+    # the endpoint it exists for.
+    return url, payload, headers, None
 
 
 def _anthropic_request(
     entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int,
-    env: "Mapping[str, str] | None" = None,
+    env: "Mapping[str, str] | None" = None, *, stream: bool,
 ) -> "tuple[str, dict[str, Any], dict[str, str], str | None]":
     key, error = _api_key(entry, env)
     if error is not None:
@@ -380,7 +641,13 @@ def _anthropic_request(
         # Required by this API, unlike OpenAI's, where it is optional.
         "max_tokens": max_output_tokens,
     }
-    return url, payload, {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION}, None
+    headers = {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION}
+    if stream:
+        # No `stream_options` counterpart: this API puts usage in the stream natively, split
+        # across `message_start` (input) and `message_delta` (output).
+        payload["stream"] = True
+        headers["Accept"] = "text/event-stream"
+    return url, payload, headers, None
 
 
 def _read_openai_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, bool, str | None]":
@@ -429,9 +696,185 @@ def _read_anthropic_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, b
             doc.get("stop_reason") == "max_tokens", None)
 
 
-_SHAPES: Mapping[str, tuple[Callable[..., Any], Callable[..., Any]]] = {
-    "openai_compatible": (_openai_request, _read_openai_response),
-    "anthropic_api": (_anthropic_request, _read_anthropic_response),
+# What an incomplete stream is reported as. The WORDING is load-bearing, not decoration: the
+# conductor classifies a leaf's terminal text with `_LEAF_INFRA_ERROR_PATTERNS`, and a string
+# that matches none of them is an unclassified nonzero exit — non-retryable, so a genuinely
+# transient network fault would fail the run closed instead of being re-launched. `stream
+# interrupted` matches the transport-flake alternative `\bstream (?:disconnected|interrupted|
+# aborted)\b`. `stream error: ...` would NOT: that alternative requires the phrase to end the
+# line, so any detail after it matches nothing.
+_STREAM_INTERRUPTED = "stream interrupted"
+
+
+def _read_openai_stream(
+        frames: "Sequence[tuple[str, str]]") -> "tuple[str, str, dict, bool, str | None]":
+    """Fold an OpenAI-dialect event stream into the same 5-tuple the buffered reader returns.
+
+    Mirrors `_read_openai_response` decision for decision — only `choices[0].delta.content` is
+    the answer, exactly as only `choices[0].message.content` is there. A `reasoning_content`
+    delta is thinking, not the document, and is dropped for the same reason the buffered reader
+    never looks for one."""
+    text: list[str] = []
+    model = ""
+    usage: dict[str, Any] = {}
+    finish_reason: "str | None" = None
+    saw_done = False
+    saw_choice = False
+    error_detail = ""
+    for _event, data in frames:
+        if data == "[DONE]":
+            saw_done = True
+            continue
+        try:
+            doc = json.loads(data)
+        except json.JSONDecodeError:
+            # A frame this dialect does not model (a gateway's own annotation). Skipping it is
+            # safe; a stream made ONLY of them ends with neither terminator and is reported
+            # below, so nothing is silently accepted.
+            continue
+        if not isinstance(doc, dict):
+            continue
+        detail = doc.get("error")
+        # TRUTHY, not `is not None`. A proxy that stamps `"error": null` — or `""`, `{}`,
+        # `false`, `0` — on every ordinary content chunk is a real shape, and treating any of
+        # those as an error both dropped the chunk's content and reported nonsense
+        # (`provider error event False`). With `""` the run got the worst outcome available: a
+        # SUCCESSFUL turn carrying an empty document. A falsy error is not an error.
+        if detail:
+            # The mirror of the Messages API's `error` EVENT, which this dialect expresses as an
+            # ordinary chunk carrying an `error` key. Without this the frame has no `choices`, is
+            # skipped as unmodelled, and a `[DONE]` (or a `finish_reason` on an earlier chunk)
+            # then reports an upstream failure as a COMPLETE answer — handing the validators a
+            # truncated document to blame the model for, which is the outcome this module
+            # refuses everywhere else.
+            error_detail = (f"{detail.get('type', 'error')}: {detail.get('message', '')}"
+                            if isinstance(detail, dict) else str(detail))
+            continue
+        if isinstance(doc.get("model"), str):
+            model = doc["model"]
+        chunk_usage = doc.get("usage")
+        if isinstance(chunk_usage, dict):
+            normalized = {
+                "input_tokens": chunk_usage.get("prompt_tokens"),
+                "output_tokens": chunk_usage.get("completion_tokens"),
+            }
+            usage = {k: v for k, v in normalized.items() if isinstance(v, int)} or usage
+        choices = doc.get("choices")
+        # `choices` is legitimately EMPTY on the final chunk that `stream_options.include_usage`
+        # asks for, so this must never index blindly.
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            continue
+        saw_choice = True
+        choice = choices[0]
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+            text.append(delta["content"])
+        if isinstance(choice.get("finish_reason"), str):
+            finish_reason = choice["finish_reason"]
+    # The UNION of the two completion markers, because servers disagree about which they send:
+    # llama.cpp has shipped without `[DONE]`, and some gateways swallow the finish_reason on the
+    # last chunk. A connection severed mid-answer produces NEITHER, which is the case that has to
+    # fail — otherwise a network fault arrives at the validators as a truncated document and is
+    # blamed on the model, spending repair turns on it.
+    # An error frame WINS over a terminator that follows it, exactly as the Messages API reader
+    # lets its `error` event beat a `message_stop`.
+    if error_detail:
+        return "", "", {}, False, (
+            f"{_STREAM_INTERRUPTED}: provider error event {error_detail}".strip())
+    if not (saw_done or finish_reason is not None):
+        return "", "", {}, False, (
+            f"{_STREAM_INTERRUPTED}: ended after {len(frames)} frames with no [DONE] and no "
+            f"finish_reason")
+    if not saw_choice:
+        # The buffered reader's `response_missing_choices`, and the mirror has to be exact: a
+        # well-terminated stream of nothing but the `include_usage` chunk (`choices: []`) and
+        # `[DONE]` would otherwise be a SUCCESS with empty text, spending a bundle-repair turn on
+        # an answer the provider never gave. An empty `content` inside a real choice stays legal,
+        # exactly as it is in the buffered path.
+        return "", "", {}, False, "response_missing_choices"
+    return "".join(text), model, usage, finish_reason == "length", None
+
+
+def _read_anthropic_stream(
+        frames: "Sequence[tuple[str, str]]") -> "tuple[str, str, dict, bool, str | None]":
+    """Fold a Messages-API event stream into the same 5-tuple the buffered reader returns.
+
+    Takes only `text_delta`, mirroring the buffered reader's `type == "text"` block filter:
+    `thinking_delta`, `signature_delta` and `input_json_delta` are not the answer document."""
+    text: list[str] = []
+    model = ""
+    usage: dict[str, Any] = {}
+    truncated = False
+    complete = False
+    error_detail = ""
+    for event, data in frames:
+        try:
+            doc = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        if event == "message_start":
+            message = doc.get("message")
+            if isinstance(message, dict):
+                if isinstance(message.get("model"), str):
+                    model = message["model"]
+                started = message.get("usage")
+                if isinstance(started, dict) and isinstance(started.get("input_tokens"), int):
+                    usage["input_tokens"] = started["input_tokens"]
+        elif event == "content_block_delta":
+            delta = doc.get("delta")
+            if (isinstance(delta, dict) and delta.get("type") == "text_delta"
+                    and isinstance(delta.get("text"), str)):
+                text.append(delta["text"])
+        elif event == "message_delta":
+            delta = doc.get("delta")
+            if isinstance(delta, dict) and delta.get("stop_reason") == "max_tokens":
+                truncated = True
+            reported = doc.get("usage")
+            if isinstance(reported, dict) and isinstance(reported.get("output_tokens"), int):
+                # Cumulative, so the last one wins.
+                usage["output_tokens"] = reported["output_tokens"]
+        elif event == "message_stop":
+            complete = True
+        elif event == "error":
+            detail = doc.get("error")
+            if isinstance(detail, dict):
+                error_detail = f"{detail.get('type', 'error')}: {detail.get('message', '')}"
+            else:
+                error_detail = str(detail)
+    # An `error` event WINS over a `message_stop`, because this API really does answer 200 and
+    # then fail mid-stream (`overloaded_error` is the common one), and the detail is what lets
+    # the conductor rank it above a bare transport flake.
+    if error_detail:
+        return "", "", {}, False, (
+            f"{_STREAM_INTERRUPTED}: provider error event {error_detail}".strip())
+    if not complete:
+        return "", "", {}, False, (
+            f"{_STREAM_INTERRUPTED}: ended after {len(frames)} frames with no message_stop")
+    if not text:
+        return "", "", {}, False, "response_has_no_text_block"
+    return "".join(text), model, usage, truncated, None
+
+
+class _Shape(NamedTuple):
+    """One provider's wire dialect: how to ask, and how to read either kind of answer.
+
+    Named rather than a bare tuple because three callables is where positional unpacking stops
+    being readable. `build_request` takes a `stream` keyword instead of there being a fourth,
+    streaming-only builder: the two requests differ by two keys, and a separate builder would
+    duplicate the URL, the headers and the `_api_key` failure path to express that."""
+
+    build_request: Callable[..., Any]
+    read_response: Callable[..., Any]
+    read_stream: Callable[..., Any]
+
+
+_SHAPES: Mapping[str, _Shape] = {
+    "openai_compatible": _Shape(
+        _openai_request, _read_openai_response, _read_openai_stream),
+    "anthropic_api": _Shape(
+        _anthropic_request, _read_anthropic_response, _read_anthropic_stream),
 }
 
 
@@ -458,24 +901,53 @@ def run_pure_http_leaf(
         return HttpLeafResponse(
             "", "", None, False,
             f"unsupported_http_provider: {entry.provider!r}", "")
-    build_request, read_response = shape
     limit = int(max_output_tokens or entry.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
     timeout = float(timeout_s or entry.timeout_s or DEFAULT_HTTP_TIMEOUT_SECONDS)
 
-    url, payload, headers, error = build_request(entry, messages, limit, env)
+    # `getattr`, not `entry.stream`: `entry` is typed `Any` and callers hand this hand-built
+    # objects, the same defensive read `effort` already gets. Defaulting to True keeps the
+    # DEFAULT with the fix — an object that has never heard of the field still streams.
+    stream = bool(getattr(entry, "stream", True))
+    url, payload, headers, error = shape.build_request(
+        entry, messages, limit, env, stream=stream)
     if error is not None:
         return HttpLeafResponse("", "", None, False, error, "")
     # `secret` is the key just resolved for this request: everything this call returns —
     # the raw body (persisted under `launches/`) and the transport error (emitted as an event)
     # — is provider-supplied text that may echo it back.
     secret, _ = _api_key(entry, env)
-    doc, raw, error = _post_json(url, payload, headers, timeout_s=timeout,
-                                 secret=secret, env=env, opener=opener)
-    if error is not None or doc is None:
-        return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
-    text, model, usage, truncated, read_error = read_response(doc)
+    if stream:
+        frames, raw, error = _post_stream(url, payload, headers, timeout_s=timeout,
+                                          secret=secret, env=env, opener=opener)
+        if frames is None:
+            return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
+        text, model, usage, truncated, read_error = shape.read_stream(frames)
+        if read_error is None:
+            # The provider's own terminator is on the wire, so the ANSWER is complete and
+            # whatever went wrong went wrong after it: a teardown severed before the final
+            # zero-length chunk, or a keepalive trailer that outlived the deadline. Both were
+            # reproduced. Reporting those as a transport failure would throw away a finished
+            # generation — for this workload, ten billed minutes of it — and re-launch for an
+            # answer already in hand.
+            error = None
+        if error is not None:
+            # Died mid-answer. Report the TRANSPORT message rather than the reader's "no
+            # terminator" summary of it: the former names what actually happened to the socket.
+            return HttpLeafResponse("", "", None, False, error, raw)
+    else:
+        doc, raw, error = _post_json(url, payload, headers, timeout_s=timeout,
+                                     secret=secret, env=env, opener=opener)
+        if error is not None or doc is None:
+            return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
+        text, model, usage, truncated, read_error = shape.read_response(doc)
     if read_error is not None:
-        return HttpLeafResponse("", "", None, False, read_error, raw)
+        # REDACTED, like every other provider-supplied string this module returns. A reader's
+        # error used to be a constant, so this was safe by construction; it stopped being one
+        # when the stream readers began quoting the provider's own `error` frame, and
+        # "Incorrect API key provided: sk-..." is exactly the message class a provider puts
+        # there. The caller emits this string as an event and stores it in the leaf's stderr,
+        # both persisted — which is the whole reason the key discipline lives on this side.
+        return HttpLeafResponse("", "", None, False, _redact(read_error, secret), raw)
     # `model or entry.model`: the response's own value is the provenance ground truth (a
     # gateway may resolve an alias), and the configured one is the honest fallback.
     #

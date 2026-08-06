@@ -37,8 +37,27 @@
 #                    vocabulary, which is NOT the Codex CLI's (that one has `ultra` and no
 #                    `minimal`). Sent in the request body; delete the line to send nothing.
 #   max_output_tokens  Size it against the model's CONTEXT WINDOW, not its documented maximum:
-#                    the request is non-streaming, so the whole completion is bought before any
-#                    of it is read. The default (32768) is sized for a CodegenBundle.
+#                    the whole completion has to fit alongside the prompt, and streaming the
+#                    answer does not change that. The default (32768) is sized for a
+#                    CodegenBundle.
+#   stream           `true` (the default) | `false`. On by default, and the default is the point:
+#                    a non-streaming completion means the endpoint writes nothing until the whole
+#                    answer exists, so anything in front of it that bounds the interval between
+#                    upstream reads cuts the connection long before the model is done. Measured
+#                    against one nginx-fronted endpoint, three `generate.generate` requests ran
+#                    613.6 s / 612.3 s / 611.8 s and each died with `HTTP 504 Gateway Time-out`
+#                    while `timeout_s: 2400` never fired. Under two seconds apart over three
+#                    attempts is the signature: that timer belongs to the gateway, not to us. A
+#                    frame every few hundred milliseconds resets it.
+#                    Set `false` only for an endpoint that cannot speak server-sent events; it
+#                    restores byte-identical pre-streaming requests. RESIDUAL RISK on this
+#                    provider: a streaming request also carries
+#                    `stream_options: {include_usage: true}`, without which an OpenAI-dialect
+#                    stream reports no token usage at all and the per-leaf cost comparison below
+#                    has nothing to read. A server strict about unknown body keys answers 400 —
+#                    tagged `llm_client_error`, so it fails closed on the FIRST attempt, names
+#                    `stream_options` in the persisted response body, and costs no tokens. That
+#                    is the signal to set `stream: false` here.
 #
 # `command` does not apply here and declaring it is rejected: there is no child process to wrap.
 defaults:

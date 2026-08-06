@@ -5762,6 +5762,26 @@ class StdoutFormatTests(unittest.TestCase):
             "    [warn   ] transient leaf failure (llm_transport_flake) in compile.verify "
             "[attempt 1/3]: retrying in 2.0s",
         )
+        # Its sibling: the retry that was POSSIBLE and was refused on the wall-clock budget.
+        # This one is read at the moment a phase fails closed, and it is the only record that
+        # distinguishes a decline from a count exhaustion — the fail_closed reason cannot, since
+        # its `[attempts=<n>]` counts repair turns and usage waits too. The two want opposite
+        # remedies (`docs/RUNBOOK.md` routes on this event), so a silent drift to raw JSON here
+        # costs the operator the wrong one.
+        declined_line = f({"status": "info", "event": "leaf_transient_retry_declined",
+                           "node_key": "n", "step": "generate", "substep": "generate",
+                           "tag": "llm_transport_flake", "reason": "wall_clock_budget",
+                           "attempt": 1, "elapsed_seconds": 613.6, "spent_seconds": 0.0,
+                           "budget_seconds": 600.0, "dead_agent_run_id": "ar_dead",
+                           "evidence": "HTTP 504 from provider: <html>",
+                           "orchestration_id": "o"})
+        self.assertEqual(
+            declined_line,
+            "    [warn   ] transient retry DECLINED (llm_transport_flake) in "
+            "generate.generate: the attempt ran 613.6s and 0.0s was already spent, over the "
+            "600.0s wall-clock budget — a failure this slow reproduces, so the run fails "
+            "closed rather than re-launching it",
+        )
         # A leaf killed at the hard per-leaf cap. This is the event that ends a 2-hour silent
         # block, and it is read at the moment a phase fails closed — it must not be the one
         # leaf-lifecycle event rendered as a raw JSON blob among the formatted lines.

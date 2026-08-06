@@ -36,6 +36,15 @@
 #   command     Does not apply either, and is rejected the same way: there is no child process
 #               to wrap.
 #
+#   stream      Applies here exactly as it does there, and is on by default for the same reason:
+#               a non-streaming completion writes nothing until the whole answer exists, so an
+#               intermediary bounding the interval between upstream reads cuts it long before
+#               the model is done (measured elsewhere as three `HTTP 504`s on requests of
+#               613.6 s / 612.3 s / 611.8 s, while the entry's own 2400 s bound never fired). No `stream_options` counterpart is
+#               needed: this API reports usage in the stream natively, input tokens in
+#               `message_start` and output tokens in `message_delta`. Set `false` only for a
+#               gateway that cannot speak server-sent events.
+#
 #   api_key_env The NAME of the environment variable holding the key, never the key. A
 #               configuration file is read, copied and diffed; a key in it is a key leaked.
 #   model       Required, and an exact slug: an HTTP endpoint has no alias to resolve at runtime
