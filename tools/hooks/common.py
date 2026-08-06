@@ -560,6 +560,33 @@ _RG_NO_PATTERN_FLAGS: frozenset[str] = frozenset({
 })
 
 
+# sed's value-taking short options. `-i[SUFFIX]` takes only a GLUED suffix, so
+# it ends a cluster without consuming the next token; the rest take a value
+# either glued or detached.
+_SED_VALUE_TAKING_SHORT_LETTERS: frozenset[str] = frozenset("efl")
+_SED_GLUED_ONLY_SHORT_LETTERS: frozenset[str] = frozenset("i")
+
+
+def _sed_short_cluster(token: str) -> tuple[str, str] | None:
+    """Split a sed short cluster at its first value-taking letter.
+
+    GNU sed clusters like any getopt program, so `-nf FILE` is `-n -f FILE` and
+    opens FILE. Recognizing `-f` only as a whole token or a `-f`-prefixed one
+    left `-nf` / `-nfFILE` to the generic flag skip, and the script file — a
+    real read of an out-of-manifest path — disappeared.
+    """
+    if not token.startswith("-") or token.startswith("--") or len(token) < 3:
+        return None
+    for pos, letter in enumerate(token[1:], start=1):
+        if letter in _SED_VALUE_TAKING_SHORT_LETTERS:
+            return letter, token[pos + 1 :]
+        if letter in _SED_GLUED_ONLY_SHORT_LETTERS:
+            return None  # `-i.bak`: the remainder belongs to -i, not to a flag
+        if not letter.isalpha():
+            return None
+    return None
+
+
 def _grep_short_cluster(cmd: str, token: str) -> tuple[str, str] | None:
     """Split a grep-family short cluster at its first value-taking letter.
 
@@ -680,6 +707,8 @@ _LONG_OPTION_READ_TARGETS: dict[str, frozenset[str]] = {
     "egrep": frozenset({"--exclude-from", "--file"}),
     "fgrep": frozenset({"--exclude-from", "--file"}),
     "sed": frozenset({"--file"}),
+    # ripgrep opens --ignore-file and echoes any line that is not a valid glob.
+    "rg": frozenset({"--file", "--ignore-file"}),
     "awk": frozenset({"--file"}),
     "jq": frozenset({"--from-file", "--slurpfile", "--rawfile"}),
     "comm": frozenset(),
@@ -858,6 +887,20 @@ def _extract_read_targets(
                     read_targets.append(args[idx + 1])
                 idx += 2
                 continue
+            sed_cluster = _sed_short_cluster(token)
+            if sed_cluster is not None:
+                letter, glued = sed_cluster
+                if letter in {"e", "f"}:
+                    if positional:
+                        explicit_script_after_positional = True
+                    has_explicit_script_source = True
+                    if letter == "f":
+                        if glued:
+                            read_targets.append(glued)
+                        elif idx + 1 < len(args):
+                            read_targets.append(args[idx + 1])
+                idx += 1 if glued else 2
+                continue
             if token.startswith("-e") and token != "-e":
                 if positional:
                     explicit_script_after_positional = True
@@ -924,18 +967,14 @@ def _extract_read_targets(
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
-            if token.startswith("--exclude-from="):
-                # A file grep READS; as a plain detached value it was consumed
-                # and never validated.
-                value = token.split("=", 1)[1]
-                if value:
-                    read_targets.append(value)
-                idx += 1
-                continue
-            if token == "--exclude-from":
-                if idx + 1 < len(args):
-                    read_targets.append(args[idx + 1])
-                idx += 2
+            long_read, long_consumed = _long_option_read_target(cmd, token, args, idx)
+            if long_consumed and token.split("=", 1)[0] != "--file":
+                # A file this reader OPENS (`--exclude-from`, rg's
+                # `--ignore-file`). `--file` is excluded here because it also
+                # supplies the PATTERN, which the branch below must record.
+                if long_read:
+                    read_targets.append(long_read)
+                idx += long_consumed
                 continue
             if token in detached:
                 idx += 2

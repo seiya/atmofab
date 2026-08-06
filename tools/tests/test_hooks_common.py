@@ -3016,6 +3016,26 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         self.assertEqual(self._targets("wc -l docs/a.md"), ["docs/a.md"])
         self.assertEqual(self._targets("sort -o out.txt in.txt"), ["in.txt"])
 
+    def test_ripgrep_ignore_file_is_a_read(self) -> None:
+        """rg opens --ignore-file and echoes back every line that is not a
+        valid glob; unconsumed, its value also stole the pattern slot."""
+        self.assertEqual(
+            self._targets("rg --ignore-file spec/p.md PAT docs/"), ["spec/p.md", "docs/"]
+        )
+        self.assertEqual(
+            self._targets("rg --ignore-file=spec/p.md PAT docs/"), ["spec/p.md", "docs/"]
+        )
+        self.assertEqual(self._targets("rg PAT docs"), ["docs"])
+
+    def test_sed_short_cluster_keeps_the_script_file(self) -> None:
+        """`-nf FILE` is `-n -f FILE` and sed opens FILE."""
+        self.assertEqual(self._targets("sed -nf spec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
+        self.assertEqual(self._targets("sed -nfspec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
+        self.assertEqual(self._targets("sed -Ef spec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
+        # `-i[SUFFIX]` takes only a glued suffix, so it must not consume a token.
+        self.assertEqual(self._targets("sed -i.bak s/a/b/ docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("sed -n 1,5p docs/a.md"), ["docs/a.md"])
+
     def test_an_unstattable_path_does_not_kill_the_hook(self) -> None:
         """`Path.exists()` propagates ENAMETOOLONG/EACCES, and this runs on
         every tool call — an unrelated command would die with an opaque
