@@ -64,7 +64,7 @@ control_condition: ""
 
 # iteration_contract: an empty object states "this algorithm does not iterate". A loop-shaped
 # contract here — a loop counter (loop_variable / counter / index_variable) together with
-# stop_condition — under any non-iterative execution_mode is a `Compile fail`.
+# stop_condition — is a `Compile fail` under execution_mode sequence or conditional.
 iteration_contract: {}
 
 # target_variables: the final variables that this component writes out (flux F_h/F_u/F_v)

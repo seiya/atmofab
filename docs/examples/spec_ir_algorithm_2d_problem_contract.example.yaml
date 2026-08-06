@@ -82,10 +82,11 @@ ordering:
 # the loop the iteration_contract below formalizes.
 control_condition: "advance the state by one step per iteration while n <= n_step"
 
-# iteration_contract: the loop itself. Under `execution_mode: iterative` this must be non-empty;
-# conversely a contract carrying a loop counter (loop_variable / counter / index_variable) TOGETHER
-# WITH stop_condition forbids every non-iterative mode — that pair is a `Compile fail` under
-# sequence / conditional / columnwise. body_steps names the steps[].step_id the loop repeats.
+# iteration_contract: the loop itself, and the TOP-LEVEL loop only. Under `execution_mode:
+# iterative` this must be non-empty; conversely a contract carrying a loop counter (loop_variable /
+# counter / index_variable) TOGETHER WITH stop_condition is a `Compile fail` under execution_mode
+# sequence or conditional, which deny a repeated body. body_steps names the steps[].step_id the
+# loop repeats.
 iteration_contract:
   loop_variable: n
   start: 1

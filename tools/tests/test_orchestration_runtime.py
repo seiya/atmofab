@@ -28402,7 +28402,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # couplings were gate-enforced but undocumented, and the new converse coupling is a
         # Compile-failing rule. This is the doc the compile leaf force-reads, so the rule and
         # its remedy have to be readable here.
-        "docs/workflow/phases/phase_01_compile.md": 53800,
+        # Bumped 53800->55100 (review round 1): the Decision Criteria gain the columnwise
+        # precedence note and the TOP-LEVEL scope rule (an inner `iterative_solve` step's
+        # convergence criteria belong in that step, not in `algorithm.iteration_contract`),
+        # and V2 gains the SEMANTIC half the verify leaf owns. Each is a rule an author can
+        # only follow if it is readable in the doc the compile leaves force-read.
+        "docs/workflow/phases/phase_01_compile.md": 55100,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28488,7 +28493,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # sequence, static case dispatch is conditional) plus the Compile.static converse gate
         # and the pointer to phase_01. This leaf AUTHORS the field; the enum alone let it pick
         # `sequence` for a time-marching node and burn a non-retryable Compile.verify.
-        "skills/workflow-compile-generate/SKILL.md": 27650,
+        # Bumped 27650->27850 (review round 1): the selection sentence gains the columnwise
+        # case and the top-level scope of `iteration_contract`, and names the two modes the
+        # converse gate actually binds (`sequence` / `conditional`) rather than "non-iterative",
+        # which was wrong once `columnwise` was exempted.
+        "skills/workflow-compile-generate/SKILL.md": 27850,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
