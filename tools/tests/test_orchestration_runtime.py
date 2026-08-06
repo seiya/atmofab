@@ -28551,11 +28551,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (that mode is exempt from the gate), and an inner solve authored into the top-level
         # iteration_contract. Naming the gate's blind spots is the only way this leaf can
         # know where it is the last line.
-        # Bumped 16650->16750 (review round 3): the third blind-spot shape gains its wording
-        # qualifier. Without it this leaf was told it owns an inner-solve contract the gate
-        # already catches in its one recognized spelling, which is how a leaf learns to stop
-        # looking for the spellings it does not.
-        "skills/workflow-compile-verify/SKILL.md": 16750,
+        # Round 3 raised this to 16750 for the third blind-spot shape's wording qualifier;
+        # measurement afterwards showed that text fits under 16650, so the bump was
+        # reverted. Round 3 caught the same unearned bump on the generate SKILL in the very
+        # commit that made this one — measure the file, then set the ceiling.
+        "skills/workflow-compile-verify/SKILL.md": 16650,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.

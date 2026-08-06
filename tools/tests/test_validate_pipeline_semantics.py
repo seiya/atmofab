@@ -16961,6 +16961,14 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               "the top level branches or dispatches, and the branch is stated in a non-empty"
               " `control_condition`",
               "a fixed composition of steps that runs once",
+              # Each bullet's DISCRIMINATOR, not just its definition. Anchoring the definition
+              # alone left `kind: case_loop` / `kind: fixed_stage_composition` as bare
+              # parentheticals with no rule attached to them.
+              "Branches inside the body do not change the mode, and neither do the step kinds"
+              " it contains:",
+              "A dispatch over a STATIC case list (the harness `case_loop` shape) is"
+              " `conditional`, not `iterative`:",
+              "the stage count is fixed by the scheme, not decided by a stop condition.",
               # Where the loop is authored once the mode is chosen.
               "Author the loop in `iteration_contract` (loop counter + `stop_condition`) and"
               " describe it in `control_condition`.",
@@ -17012,9 +17020,17 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               # The enumeration that paragraph exists to introduce, and the REASON those
               # shapes pass. The two `kind:` needles below live in the Decision Criteria
               # bullets, not here, so they left this list deletable.
+              # The pass list from its opener through its reason: anchoring only the middle
+              # left two of the four passing shapes deletable.
+              "`{}`, a negative declaration (`{applies: false, rationale: ...}`,"
+              " `{kind: none, reason: ...}`)",
               "and the `case_loop` dispatch shape all pass under `sequence` / `conditional` —"
               " because none of them names both a loop counter and a `stop_condition`, not"
               " because the shape is exempt",
+              # The counter-example and its remedy — the half that shows the rule has teeth.
+              "(`{kind: fixed_stage_composition, loop_variable: stage,"
+              " stop_condition: \"stage == 2\"}`)",
+              "state the fixed stage count without a stop condition.",
               "`kind: fixed_stage_composition`",
               "`kind: case_loop`",
               "A fixed stage composition that DOES name both",
@@ -17022,6 +17038,9 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               # a round-3 finding: the same keys under `iterative` are not flagged at all.
               "and only under a non-repeating mode",
               "The same keys under `iterative` or `columnwise` are not flagged at all",
+              # Where everything outside the gate's reach goes. Round 3 wrote this sentence and
+              # anchored the rest of the paragraph around it.
+              "Everything the gate does not reach is a `Compile.verify` V2 finding.",
               # An absent mode fires the coupling too — the only doc statement of it.
               "an ABSENT or misspelled `execution_mode` fires this rule too",
               # The one direction that deliberately has NO converse rule.
@@ -17032,6 +17051,12 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               # leaf is told here that it owns it. Unique to that bullet.
               "Both directions are deterministically gated at `Compile.static`",
               "The **semantic** half stays a V2 `major` this leaf owns",
+              # ... and WHAT that half is. The label alone told the verify leaf it owns
+              # something without saying what to look for.
+              "a declared `execution_mode` that contradicts the control structure"
+              " `controlled_spec.md` describes — a time-marching node declaring `sequence` with"
+              " an empty `iteration_contract`, which is structurally clean and passes every"
+              " gate — is a `fail` remanded to `Compile.generate`",
               # The IR skeleton is what a leaf copies. Each of the three comments states a rule
               # the leaf is gated on and each was individually deletable.
               "# select per the \"algorithm.execution_mode\" section below; time marching over"
@@ -17059,6 +17084,9 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             # 15700->16200 for precisely that text.
             ("skills/workflow-compile-verify/SKILL.md",
              ("Check `execution_mode` against the selection rule of",
+              # The sentence that ASSIGNS the three shapes to this leaf. Without it the three
+              # needles below survive as an unattributed list.
+              "Three shapes the gate cannot see and this leaf must:",
               "the structural contradiction (a loop counter together with `stop_condition` in"
               " `iteration_contract` under `execution_mode` `sequence` or `conditional`) is"
               " already gated at `Compile.static`",
@@ -17077,7 +17105,13 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         ):
             text = (repo_root / rel).read_text(encoding="utf-8")
             for needle in needles:
-                self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
+                # EXACTLY once, not merely present. A needle that occurs twice survives
+                # deleting either occurrence, which is how the counter-key pin sat dead for a
+                # round; zero occurrences is the ordinary stale-text failure. Enforcing
+                # uniqueness here means the next needle nobody re-checks cannot be born dead.
+                self.assertEqual(
+                    text.count(needle), 1,
+                    f"{rel} must state {needle!r} exactly once; found {text.count(needle)}")
 
 
 class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
@@ -17131,7 +17165,11 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
         # `stop_condition` exists leaves the example free to teach the bound it forbids.
         self.assertEqual(loop["start"], 1)
         self.assertEqual(loop["stop_condition"], "n > n_step")
-        self.assertIn("step_count_rule", loop)
+        self.assertEqual(
+            loop["step_count_rule"],
+            "n_step is the step count determined by case.inputs.time",
+            "step_count_rule must say where n_step comes from; an empty one teaches nothing",
+        )
         self.assertEqual(
             contract["control_condition"],
             "advance the state by one step per iteration, for n = 1 .. n_step",
@@ -17169,12 +17207,23 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
               "is a `Compile fail` under execution_mode\n# sequence or conditional",
               # control_condition and stop_condition must describe the SAME loop. The two
               # disagreed by one step when this file was first written.
+              "# control_condition: describes the top-level control structure in prose.",
               "the two must describe the SAME loop, with the",
+              # The reason the two must agree, and the off-by-one the file's own pinned
+              # stop_condition value exists to avoid. Deleting this left the value pinned and
+              # its justification gone.
+              "Generate lowers this pair into the model's time loop, so a prose bound that",
+              "disagrees with stop_condition is an off-by-one nobody can resolve from the IR.",
               "stop_condition is the condition under which the loop STOPS, tested before the"
               " body",
-              # The header sentence that makes the pair instructive: this file is the
+              "\"n == n_step\" here would instead run n_step-1 steps; state the bound so the two"
+              " agree.",
+              # The header sentences that make the pair instructive: this file is the
               # `iterative` form, the companion the run-once `sequence` form.
               "shows the `iterative` form:",
+              "a problem node marches the state in time, so it carries a populated"
+              " iteration_contract. The",
+              "companion shows the run-once `sequence` form of a component node.",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
             ("docs/examples/spec_ir_algorithm_section.example.yaml",
              ("# execution_mode: `sequence` because these two steps are a fixed composition"
@@ -17184,13 +17233,22 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
               # 2d file: the loop belongs to the caller.
               "A component whose caller marches it in time still",
               "# declares `sequence`: the loop belongs to the calling problem node",
+              # The cross-reference that shows the reader the other half of the pair.
+              "(docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is"
+              " `iterative`.",
               "# iteration_contract: an empty object states \"this algorithm does not iterate\".",
               "is a `Compile fail` under execution_mode sequence or conditional",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
         ):
             text = (self._REPO_ROOT / rel).read_text(encoding="utf-8")
             for needle in needles:
-                self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
+                # EXACTLY once, not merely present. A needle that occurs twice survives
+                # deleting either occurrence, which is how the counter-key pin sat dead for a
+                # round; zero occurrences is the ordinary stale-text failure. Enforcing
+                # uniqueness here means the next needle nobody re-checks cannot be born dead.
+                self.assertEqual(
+                    text.count(needle), 1,
+                    f"{rel} must state {needle!r} exactly once; found {text.count(needle)}")
 
 
 class LocalOperationLoweringGateTests(unittest.TestCase):
