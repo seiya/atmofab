@@ -3441,6 +3441,27 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         # Without stdin, ripgrep really does search the tree.
         self.assertEqual(self._targets("rg PAT"), ["."])
 
+    def test_file_descriptor_prefixed_input_redirect(self) -> None:
+        """`0<f` is `<f`. Recognizing only a leading `<` left the literal path
+        in the token `0<f`, which failed the existence check and was dropped —
+        while bash redirected stdin and `cat -` emitted the file."""
+        self.assertEqual(
+            self._targets("cat docs/a.md - 0<spec/private.md"),
+            ["spec/private.md", "docs/a.md", "-"],
+        )
+        self.assertEqual(self._targets("cat 0<spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat 0< spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat 3<spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("while read l; do echo $l; done 0<spec/private.md"),
+            ["spec/private.md"],
+        )
+        # An fd duplication names no file, and a numbered heredoc is still a
+        # heredoc.
+        self.assertEqual(self._targets("cat 0<&3"), [])
+        self.assertEqual(self._targets("cat 0<<EOF\ncat spec/private.md\nEOF"), [])
+        self.assertEqual(self._targets("cat 0<<<hi docs/a.md"), ["docs/a.md"])
+
     def test_input_redirection_is_a_read_whatever_the_command_is(self) -> None:
         self.assertEqual(
             self._targets("while read l; do echo $l; done < spec/secret.md"),

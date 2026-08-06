@@ -1168,12 +1168,17 @@ def _strip_bash_fragment_syntax(
     stdin_redirected = False
     while idx < len(tokens):
         token = tokens[idx]
-        if token.startswith("<<<"):  # here-string: the operand is literal text
+        # A redirection may carry a file-descriptor number: `0<f` is `<f`, and
+        # `0<<EOF` is a heredoc. Strip the digits before classifying, or a
+        # literal path arrives as the ordinary operand `0<f`, fails the
+        # existence check, and the read is never validated.
+        bare = token.lstrip("0123456789") if token[:1].isdigit() else token
+        if bare.startswith("<<<"):  # here-string: the operand is literal text
             stdin_redirected = True
             # `<<<hi` carries its own operand; `<<< hi` takes the next token.
-            idx += 1 if len(token) > 3 else 2
+            idx += 1 if len(bare) > 3 else 2
             continue
-        if token.startswith("<<"):  # heredoc: the operand is a delimiter word
+        if bare.startswith("<<"):  # heredoc: the operand is a delimiter word
             stdin_redirected = True
             idx += 1
             continue
@@ -1187,15 +1192,19 @@ def _strip_bash_fragment_syntax(
         # because the caller only consults the argv0 grammar, and this read
         # happens even when argv0 is `while`, `done`, or nothing at all
         # (`< file cat`).
-        if token == "<":
+        if bare.startswith("<&"):  # `0<&3`: an fd duplication, not a file
+            stdin_redirected = True
+            idx += 1
+            continue
+        if bare == "<":
             stdin_redirected = True
             if idx + 1 < len(tokens):
                 redirect_reads.append(tokens[idx + 1])
             idx += 2
             continue
-        if token.startswith("<") and len(token) > 1:
+        if bare.startswith("<") and len(bare) > 1:
             stdin_redirected = True
-            redirect_reads.append(token[1:])
+            redirect_reads.append(bare[1:])
             idx += 1
             continue
         out.append(token)
