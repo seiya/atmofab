@@ -535,6 +535,13 @@ _BASH_FD_DUP_RE = re.compile(r"\d*>&\d+(?![\w./-])")
 # A backslash-escaped separator is a literal character, not a separator.
 _BASH_ESCAPED_SEPARATOR_RE = re.compile(r"\\[&|;]")
 
+# ANSI-C (`$'…'`) and locale (`$"…"`) quoting at a word start. Both are purely
+# LEXICAL — bash reads the literal inside — but shlex turns them into a bare
+# `$word`, indistinguishable from a `$VAR` expansion, so the residue filter
+# dropped them and `cat $'secret/s.md'` reached the auto-approve. Stripping
+# the `$` before tokenizing keeps the distinction.
+_ANSI_C_QUOTE_PREFIX_RE = re.compile(r"(?<![\w$])\$(?=['\"])")
+
 # Leading `VAR=value` command prefix (`FOO=1 cat x`).
 _BASH_ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -600,14 +607,17 @@ def _grep_short_cluster(cmd: str, token: str) -> tuple[str, str] | None:
     pattern instead — the read vanished and was auto-approved. `-Ff pats.txt`
     lost the pattern file the same way.
     """
-    # grep-family only: ripgrep's idiomatic glued values are all letters too
-    # (`-tmd` is `-t md`), and no lexical rule separates that from a cluster.
-    if cmd not in {"grep", "egrep", "fgrep"}:
+    if cmd not in {"grep", "egrep", "fgrep", "rg"}:
         return None
     if not token.startswith("-") or token.startswith("--") or len(token) < 3:
         return None
+    # ripgrep's value-taking short options differ from GNU grep's, and its
+    # idiomatic glued form (`-tmd` is `-t md`) means the remainder belongs to
+    # the flag — but a cluster ENDING in one (`-nf FILE`) still takes the next
+    # token, which is how the pattern-file read was lost.
+    value_letters = set("efgjmtT") if cmd == "rg" else _GREP_VALUE_TAKING_SHORT_LETTERS
     for pos, letter in enumerate(token[1:], start=1):
-        if letter in _GREP_VALUE_TAKING_SHORT_LETTERS:
+        if letter in value_letters:
             # Only the FLAG letters must be alphabetic; the glued value can be
             # anything. Requiring the whole token to be letters meant any real
             # pattern — `-ie2024`, `-ieTOP_X`, `-Ffspec/pats.txt` — fell through
@@ -768,6 +778,15 @@ def _extract_diff_read_targets(args: list[str]) -> list[str]:
                 targets.append(read_target)
             idx += consumed
             continue
+        if token == "-X":  # --exclude-from's short form
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            idx += 2
+            continue
+        if token.startswith("-X") and len(token) > 2:
+            targets.append(token[2:])  # glued: `-Xfile`
+            idx += 1
+            continue
         if token.startswith("-") and token != "-":
             idx += 1
             continue
@@ -793,6 +812,15 @@ def _extract_jq_read_targets(args: list[str]) -> list[str]:
         if token == "--":
             positional.extend(args[idx + 1 :])
             break
+        if re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", token) and token != "-f":
+            # jq clusters (`-rf prog.jq`), and `-f`'s value is always the next
+            # token — jq rejects the glued `-fprog.jq` itself. Unrecognized, the
+            # program file landed in the filter slot and was discarded.
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            filter_from_file = True
+            idx += 2
+            continue
         if token in {"-f", "--from-file"}:
             if idx + 1 < len(args):
                 targets.append(args[idx + 1])
@@ -1309,7 +1337,7 @@ def extract_bash_read_targets(
                 else:
                     closes += 1
         try:
-            tokens = shlex.split(blob)
+            tokens = shlex.split(_ANSI_C_QUOTE_PREFIX_RE.sub("", blob))
         except ValueError:
             tokens = blob.split()
         tokens, redirect_reads, stdin_redirected = _strip_bash_fragment_syntax(tokens)

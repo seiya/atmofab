@@ -8396,7 +8396,12 @@ def log_orchestration_read(
     agent_run_id: str,
     read_path: str,
 ) -> dict[str, Any]:
-    """Read audit: on a `denied_read_roots` (`tools/`) match, record `rule_source_violation` and fail the orchestration.
+    """Read audit for a path INSIDE the manifest; terminal for anything else.
+
+    A `denied_read_roots` (`tools/`) match and a path outside `allowed_read_roots`
+    are treated alike: both record a `rule_source_violation`, set the
+    orchestration to `fail`, and raise. So this is never the remedy for a read
+    the hook blocked — it is an audited re-read of a path already permitted.
 
     Return the body only for a permitted read.
     """

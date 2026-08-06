@@ -3027,6 +3027,39 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
         )
         self.assertEqual(self._targets("rg PAT docs"), ["docs"])
 
+    def test_clustered_file_options_across_the_readers(self) -> None:
+        """Every reader that clusters short options hides its file-valued one
+        the same way; jq and rg echo that file's lines back on a parse error."""
+        self.assertEqual(
+            self._targets("jq -rf spec/prog.jq docs/a.json"), ["spec/prog.jq", "docs/a.json"]
+        )
+        self.assertEqual(self._targets("jq -nrf spec/prog.jq"), ["spec/prog.jq"])
+        self.assertEqual(self._targets("jq -f prog.jq a.json"), ["prog.jq", "a.json"])
+        self.assertEqual(
+            self._targets("rg -nf spec/pats.txt docs/"), ["spec/pats.txt", "docs/"]
+        )
+        # ripgrep's glued values must still not be split as clusters.
+        self.assertEqual(self._targets("rg -tmd PAT docs"), ["docs"])
+
+    def test_diff_exclude_from_short_form(self) -> None:
+        self.assertEqual(
+            self._targets("diff -Xspec/ex.txt docs docs"), ["spec/ex.txt", "docs", "docs"]
+        )
+        self.assertEqual(
+            self._targets("diff -X spec/ex.txt docs docs"), ["spec/ex.txt", "docs", "docs"]
+        )
+
+    def test_ansi_c_quoting_is_lexical_not_an_expansion(self) -> None:
+        """`$'…'` and `$"…"` are quoting forms — bash reads the literal inside.
+        shlex reduces them to a bare `$word`, so the residue filter dropped them
+        and the read reached the auto-approve."""
+        self.assertEqual(self._targets("cat $'spec/private.md'"), ["spec/private.md"])
+        self.assertEqual(self._targets('cat $"spec/private.md"'), ["spec/private.md"])
+        # Real expansions stay residue.
+        for command in ("cat $VAR", "cat ${D}/x.md", "cat $D/x.md", "cat `ls`"):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), [])
+
     def test_sed_short_cluster_keeps_the_script_file(self) -> None:
         """`-nf FILE` is `-n -f FILE` and sed opens FILE."""
         self.assertEqual(self._targets("sed -nf spec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
