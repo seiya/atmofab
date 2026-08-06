@@ -28414,7 +28414,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # PAIR and not the contract shape, and that the gate reaches only one spelling of the
         # inner-solve mistake. Each correction replaces a sentence that was false about the
         # code or left the both-case undecided.
-        "docs/workflow/phases/phase_01_compile.md": 56200,
+        # Bumped 56200->56600 (review round 3): the Scope paragraph and the converse coupling
+        # each stated the gate's reach wrongly — the inner-solve rule omitted that the gate
+        # looks only under a non-repeating mode, and the coupling was stated for
+        # `sequence`/`conditional` while the code fires for any mode outside
+        # `iterative`/`columnwise`, an absent one included. An author cannot predict a
+        # finding the doc does not describe.
+        "docs/workflow/phases/phase_01_compile.md": 56600,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28504,10 +28510,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # case and the top-level scope of `iteration_contract`, and names the two modes the
         # converse gate actually binds (`sequence` / `conditional`) rather than "non-iterative",
         # which was wrong once `columnwise` was exempted.
-        # Bumped 27850->27950 (review round 2): the columnwise clause now carries the
-        # both-case (a `column_process` step INSIDE a time loop stays `iterative`), which is
-        # the half an author gets wrong; the bare clause said only what columnwise is.
-        "skills/workflow-compile-generate/SKILL.md": 27950,
+        # Round 2 raised this to 27950 for the columnwise both-case; measurement afterwards
+        # showed that text already fit under 27850, so the bump was reverted. A ceiling is a
+        # MAXIMUM: room nobody needed is room the next unreviewed sentence spends.
+        "skills/workflow-compile-generate/SKILL.md": 27850,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -28545,7 +28551,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (that mode is exempt from the gate), and an inner solve authored into the top-level
         # iteration_contract. Naming the gate's blind spots is the only way this leaf can
         # know where it is the last line.
-        "skills/workflow-compile-verify/SKILL.md": 16650,
+        # Bumped 16650->16750 (review round 3): the third blind-spot shape gains its wording
+        # qualifier. Without it this leaf was told it owns an inner-solve contract the gate
+        # already catches in its one recognized spelling, which is how a leaf learns to stop
+        # looking for the spellings it does not.
+        "skills/workflow-compile-verify/SKILL.md": 16750,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.

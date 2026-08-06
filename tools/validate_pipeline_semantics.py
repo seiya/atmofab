@@ -7330,7 +7330,10 @@ def _validate_algorithm_contract_file(
                 step_ids.add(step_id.strip())
 
             step_kind = item.get("step_kind")
-            if step_kind not in ALGORITHM_STEP_KINDS:
+            # Hashability first, for the same reason as `execution_mode` above: a leaf-authored
+            # `step_kind: [time_integrate]` would raise out of this set-membership test, and a
+            # traceback reaches the leaf as an unrepairable finding.
+            if not isinstance(step_kind, str) or step_kind not in ALGORITHM_STEP_KINDS:
                 violations.append(
                     f"{contract_path}:steps[{idx}].step_kind must be one of {sorted(ALGORITHM_STEP_KINDS)}"
                 )
@@ -7408,11 +7411,12 @@ def _validate_algorithm_contract_file(
             violations.append(
                 f"{contract_path}:execution_mode is {execution_mode!r} but iteration_contract"
                 f" carries a loop counter ({', '.join(counter_keys)}) and stop_condition —"
-                " that contract describes a repeated body, which sequence and conditional deny."
-                " Keep the loop fields and set the execution_mode the selection rule gives for"
-                " that repetition (iterative for a top-level loop; columnwise when it is an"
-                " independent per-column sweep), or drop the loop-counter/stop_condition keys if"
-                " the algorithm truly runs once"
+                " that contract describes a repeated body, and only execution_mode iterative or"
+                " columnwise may carry one. Keep the loop fields and set the execution_mode the"
+                " selection rule gives for that repetition (iterative for a top-level loop;"
+                " columnwise for an independent per-column sweep, which also requires a"
+                " column_process step), or drop the loop-counter/stop_condition keys if the"
+                " algorithm truly runs once"
                 " (selection rule: phase_01_compile.md §algorithm.execution_mode)"
             )
 

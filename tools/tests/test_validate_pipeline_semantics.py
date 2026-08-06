@@ -16652,8 +16652,14 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         self.assertIn("set the execution_mode the selection rule gives for that repetition",
                       message)
         self.assertIn("iterative for a top-level loop", message)
-        # Naming only `iterative` steered a mislabelled column node onto the wrong mode.
-        self.assertIn("columnwise when it is an independent per-column sweep", message)
+        # Naming only `iterative` steered a mislabelled column node onto the wrong mode; naming
+        # `columnwise` without its own coupling costs that author a second repair round.
+        self.assertIn("columnwise for an independent per-column sweep, which also requires a"
+                      " column_process step", message)
+        # The justification must hold for EVERY input that reaches this branch, including an
+        # absent mode. "which sequence and conditional deny" named two modes the IR had not
+        # declared when `execution_mode` was missing.
+        self.assertIn("only execution_mode iterative or columnwise may carry one", message)
         self.assertIn("drop the loop-counter/stop_condition keys if the algorithm truly runs once",
                       message)
         self.assertIn("selection rule: phase_01_compile.md §algorithm.execution_mode", message)
@@ -16808,6 +16814,13 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             ("counter null only", {"loop_variable": None, "stop_condition": "n == n_step"}),
             ("stop_condition null only", {"loop_variable": "n", "stop_condition": None}),
             ("blank strings", {"loop_variable": "  ", "stop_condition": ""}),
+            # Each half alone, so the whitespace branch is load-bearing. With both blank the
+            # `""` kills the conjunction on its own and `bool("  ")` — which is True — is never
+            # reached, leaving the strip unobserved.
+            ("blank counter, live stop_condition",
+             {"loop_variable": "  ", "stop_condition": "n > n_step"}),
+            ("live counter, blank stop_condition",
+             {"loop_variable": "n", "stop_condition": "   "}),
             # Every spelling that lands falsy, as the toolchain gate reads a present-but-empty
             # key: YAML-1.1 `no`/`off` load as False, and `0` / `[]` / `{}` name no counter.
             ("yaml no/off", {"loop_variable": False, "stop_condition": False}),
@@ -16828,6 +16841,18 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
                 violations = self._violations(execution_mode=mode)
                 self.assertTrue(
                     any("execution_mode must be one of" in v for v in violations), violations)
+
+    def test_a_non_scalar_step_kind_is_reported_not_raised(self) -> None:
+        """`step_kind`'s enum check is the same unguarded set-membership `execution_mode`'s was,
+        21 lines up in the same function and under the same module note. Fixing one and leaving
+        the other means the invariant holds for whichever field the leaf happened to malform."""
+        for kind in ([("time_integrate")], {"kind": "time_integrate"}, 7, None):
+            with self.subTest(step_kind=kind):
+                steps = copy.deepcopy(self._BASE_CONTRACT["steps"])
+                steps[0]["step_kind"] = kind
+                violations = self._violations(steps=steps)
+                self.assertTrue(
+                    any("steps[0].step_kind must be one of" in v for v in violations), violations)
 
     def test_the_conjunction_is_pinned_from_both_sides(self) -> None:
         """Widening either half back to a disjunction re-enters the false-positive zone: a bare
@@ -16923,9 +16948,22 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             ("docs/workflow/phases/phase_01_compile.md",
              ("#### Decision Criteria",
               "#### Mode ↔ contract couplings",
-              # First match wins. Deleting the ordering instruction alone left the criteria
-              # readable but unordered, which is the ambiguity DOC_STYLE forbids.
+              # First match wins, over the top-level structure. Deleting the ordering
+              # instruction alone left the criteria readable but unordered, which is the
+              # ambiguity DOC_STYLE forbids; deleting the principle left four cases with
+              # nothing saying what they classify.
+              "Select by the algorithm's **top-level** control structure.",
               "Evaluate in this order and take the first match:",
+              # Each of the four modes needs its own definition anchored: a criteria list
+              # whose entries can be deleted one at a time is a list of labels.
+              "the top level repeats a body that CARRIES STATE FORWARD, advancing a loop"
+              " counter (time index, iteration index) until a stop condition holds",
+              "the top level branches or dispatches, and the branch is stated in a non-empty"
+              " `control_condition`",
+              "a fixed composition of steps that runs once",
+              # Where the loop is authored once the mode is chosen.
+              "Author the loop in `iteration_contract` (loop counter + `stop_condition`) and"
+              " describe it in `control_condition`.",
               # The rule the live defect broke: the enum alone never said which value a time
               # loop takes, and `sequence` reads as the neutral default.
               "**Any time marching over `n_step` is `iterative`**",
@@ -16935,14 +16973,19 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               # ... and the other half: what columnwise then IS, independence rather than
               # repetition. A column step alone selects nothing.
               "the top-level structure IS an independent per-column sweep",
+              # The definition itself, not the label. This clause IS what round 2 replaced the
+              # false "the column_process step tells them apart" discriminator with; without it
+              # the bullet names a mode and defines nothing.
+              "each column is processed without carrying state to the next, so the sweep order"
+              " does not change the result",
               "a `column_process` step is legal under any mode",
               # One needle per coupling bullet, each unique to its own line.
               "- `execution_mode=conditional` ⇒ `control_condition` is non-empty.",
               "- `execution_mode=columnwise` ⇒ `steps[]` holds at least one `column_process`"
               " step.",
               "- `execution_mode=iterative` ⇒ `iteration_contract` is not an empty object.",
-              "- `execution_mode` of `sequence` or `conditional` ⇒ `iteration_contract` carries"
-              " no loop counter",
+              "- `execution_mode` other than `iterative` / `columnwise` ⇒ `iteration_contract`"
+              " carries no loop counter",
               # These are hard failures, and where they route. Deleting the intro left four
               # bullets that read as advice.
               "Each of the four rules below is enforced by the `--stage compile` gate and is a"
@@ -16962,16 +17005,29 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               " lowered in that step's own fields",
               # The gate's reach is narrower than the rule. Claiming otherwise is what the
               # round-2 review caught.
-              "The deterministic gate recognizes only one spelling of this mistake",
+              "The deterministic gate recognizes one spelling of this mistake",
               # The pass list is about the KEY PAIR, not the shape — a stage composition
               # spelled with both keys does fail.
               "The rule is the KEY PAIR, not the shape of the contract.",
+              # The enumeration that paragraph exists to introduce, and the REASON those
+              # shapes pass. The two `kind:` needles below live in the Decision Criteria
+              # bullets, not here, so they left this list deletable.
+              "and the `case_loop` dispatch shape all pass under `sequence` / `conditional` —"
+              " because none of them names both a loop counter and a `stop_condition`, not"
+              " because the shape is exempt",
               "`kind: fixed_stage_composition`",
               "`kind: case_loop`",
               "A fixed stage composition that DOES name both",
+              # The gate's mode restriction. Stating the spelling without the mode was itself
+              # a round-3 finding: the same keys under `iterative` are not flagged at all.
+              "and only under a non-repeating mode",
+              "The same keys under `iterative` or `columnwise` are not flagged at all",
+              # An absent mode fires the coupling too — the only doc statement of it.
+              "an ABSENT or misspelled `execution_mode` fires this rule too",
               # The one direction that deliberately has NO converse rule.
               "Not a rule, stated to close the direction: a non-empty `control_condition` under"
               " `execution_mode=sequence` is **legal**",
+              "That field also carries guard narration, and no converse rule is placed on it.",
               # V2: the deterministic gate does not cover the semantic half, and the verify
               # leaf is told here that it owns it. Unique to that bullet.
               "Both directions are deterministically gated at `Compile.static`",
@@ -17011,7 +17067,13 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               "a time-marching node declaring `sequence` with an EMPTY `iteration_contract`",
               "a node declaring `columnwise` whose top level is a time loop",
               "an inner `iterative_solve` step's convergence criteria authored into"
-              " `algorithm.iteration_contract`")),
+              " `algorithm.iteration_contract`",
+              # The wording qualifier. Without it this leaf is told it owns a shape the gate
+              # already catches, and stops looking for the ones it does not.
+              "in any wording other than a loop counter plus `stop_condition` under `sequence`"
+              " / `conditional`, that one spelling being the only one the gate catches",
+              # Where the three shapes route. A finding without its route is half a rule.
+              "Each is a `fail` remanded to `Compile.generate`.")),
         ):
             text = (repo_root / rel).read_text(encoding="utf-8")
             for needle in needles:
@@ -17062,10 +17124,21 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
              / "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml"
              ).read_text(encoding="utf-8"))
         self.assertEqual(contract["execution_mode"], "iterative")
-        self.assertEqual(contract["iteration_contract"]["loop_variable"], "n")
-        self.assertIn("stop_condition", contract["iteration_contract"])
+        loop = contract["iteration_contract"]
+        self.assertEqual(loop["loop_variable"], "n")
+        # The VALUES, not just the keys. The file's own comment says `n == n_step` here would
+        # run n_step-1 steps and disagree with `control_condition`; asserting only that some
+        # `stop_condition` exists leaves the example free to teach the bound it forbids.
+        self.assertEqual(loop["start"], 1)
+        self.assertEqual(loop["stop_condition"], "n > n_step")
+        self.assertIn("step_count_rule", loop)
         self.assertEqual(
-            sorted(contract["iteration_contract"]["body_steps"]),
+            contract["control_condition"],
+            "advance the state by one step per iteration, for n = 1 .. n_step",
+            "control_condition and stop_condition must describe the same loop bounds",
+        )
+        self.assertEqual(
+            sorted(loop["body_steps"]),
             sorted(step["step_id"] for step in contract["steps"]),
             "body_steps must name this file's real step ids",
         )
