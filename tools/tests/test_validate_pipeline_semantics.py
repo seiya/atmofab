@@ -16573,6 +16573,44 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
                 self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
 
 
+class ExecutionModeContractCouplingGateTests(unittest.TestCase):
+    """`algorithm.execution_mode` ↔ `iteration_contract` / `control_condition` / `steps[]`
+    couplings in `_validate_algorithm_contract_file` (compile stage), plus the doc anchors for
+    the selection rule the couplings enforce."""
+
+    def test_execution_mode_selection_rule_is_stated_in_both_authoring_docs(self) -> None:
+        """The enum was stated in three places and the SELECTION RULE in none, which is how a
+        time-marching problem node came to be authored `sequence` with a loop-shaped
+        `iteration_contract`. Both files are size-ceilinged and a ceiling is a MAXIMUM, so
+        deleting these sentences stays green without an anchor."""
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        for rel, needles in (
+            ("docs/workflow/phases/phase_01_compile.md",
+             ("#### Decision Criteria",
+              "#### Mode ↔ contract couplings",
+              # The rule the live defect broke: the enum alone never said which value a time
+              # loop takes, and `sequence` reads as the neutral default.
+              "**Any time marching over `n_step` is `iterative`**",
+              # The counter-key list IS the gate's closed set; a doc naming a different set
+              # would send the leaf looking for a key the validator does not read.
+              "(`loop_variable` / `counter` / `index_variable`) together with `stop_condition`",
+              # The two legitimate non-iterative shapes the survey found, both of which a
+              # naive reading of the converse rule would forbid.
+              "`kind: fixed_stage_composition`",
+              "`kind: case_loop`",
+              # The one direction that deliberately has NO converse rule.
+              "A non-empty `control_condition` under `execution_mode=sequence` is **legal**")),
+            ("skills/workflow-compile-generate/SKILL.md",
+             ("**Select by the top-level control structure**",
+              "time marching over `n_step`",
+              "(`loop_variable` / `counter` / `index_variable`) together with `stop_condition`",
+              "`docs/workflow/phases/phase_01_compile.md` §`algorithm.execution_mode`")),
+        ):
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            for needle in needles:
+                self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
+
+
 class LocalOperationLoweringGateTests(unittest.TestCase):
     """`_validate_local_operation_lowering` (compile stage): a LOCAL op (one an
     `algorithm.steps[].operation_ref` names but no `dependency.direct_deps[].operations[]`
