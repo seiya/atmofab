@@ -16823,6 +16823,68 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
                 self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
 
 
+class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
+    """The two `docs/examples/spec_ir_algorithm_*.yaml` files are the reference forms both compile
+    SKILLs point the authoring leaf at, and nothing ran them through the gate they claim to
+    illustrate. The 2d file showed a time-marching loop as `sequence` / `""` / `{}` — the exact
+    shape that killed a billed run, and a regression that recurred three times in archived
+    advdiff1d IRs before that. An example a leaf copies has to pass the gate the copy is graded by."""
+
+    _REPO_ROOT = Path(vps.__file__).resolve().parent.parent
+
+    def _validate(self, rel: str, *, multidim_node_key: str | None) -> list[str]:
+        violations: list[str] = []
+        vps._validate_algorithm_contract_file(
+            self._REPO_ROOT,
+            self._REPO_ROOT / rel,
+            violations,
+            multidim_node_key=multidim_node_key,
+            direct_spec_vars=None,
+        )
+        return violations
+
+    def test_component_example_passes_the_compile_gate(self) -> None:
+        self.assertEqual(
+            self._validate("docs/examples/spec_ir_algorithm_section.example.yaml",
+                           multidim_node_key=None),
+            [],
+        )
+
+    def test_2d_problem_example_passes_the_compile_gate(self) -> None:
+        """Validated as a multidimensional problem node, so the state_contract half of the gate —
+        the whole reason this example exists — is exercised too."""
+        self.assertEqual(
+            self._validate("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
+                           multidim_node_key="problem/example_shallow_water2d@0.1.0"),
+            [],
+        )
+
+    def test_2d_problem_example_declares_the_iterative_mode(self) -> None:
+        """Gate-passing alone does not pin this: reverting to `sequence` + `iteration_contract: {}`
+        is silent to every check, and that revert IS the defect this example taught."""
+        contract = yaml.safe_load(
+            (self._REPO_ROOT
+             / "docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml"
+             ).read_text(encoding="utf-8"))
+        self.assertEqual(contract["execution_mode"], "iterative")
+        self.assertEqual(contract["iteration_contract"]["loop_variable"], "n")
+        self.assertIn("stop_condition", contract["iteration_contract"])
+        self.assertEqual(
+            sorted(contract["iteration_contract"]["body_steps"]),
+            sorted(step["step_id"] for step in contract["steps"]),
+            "body_steps must name this file's real step ids",
+        )
+
+    def test_component_example_stays_the_run_once_counterpart(self) -> None:
+        """The pair is only instructive if the two files differ in mode: one `iterative` problem
+        node, one run-once `sequence` component."""
+        contract = yaml.safe_load(
+            (self._REPO_ROOT / "docs/examples/spec_ir_algorithm_section.example.yaml"
+             ).read_text(encoding="utf-8"))
+        self.assertEqual(contract["execution_mode"], "sequence")
+        self.assertEqual(contract["iteration_contract"], {})
+
+
 class LocalOperationLoweringGateTests(unittest.TestCase):
     """`_validate_local_operation_lowering` (compile stage): a LOCAL op (one an
     `algorithm.steps[].operation_ref` names but no `dependency.direct_deps[].operations[]`
