@@ -28414,12 +28414,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # PAIR and not the contract shape, and that the gate reaches only one spelling of the
         # inner-solve mistake. Each correction replaces a sentence that was false about the
         # code or left the both-case undecided.
-        # Bumped 56200->56600 (review round 3): the Scope paragraph and the converse coupling
-        # each stated the gate's reach wrongly — the inner-solve rule omitted that the gate
-        # looks only under a non-repeating mode, and the coupling was stated for
+        # Bumped 56200->56650 (review rounds 3-5): the Scope paragraph and the converse
+        # coupling each stated the gate's reach wrongly — the inner-solve rule omitted that
+        # the gate looks only under a non-repeating mode, and the coupling was stated for
         # `sequence`/`conditional` while the code fires for any mode outside
         # `iterative`/`columnwise`, an absent one included. An author cannot predict a
-        # finding the doc does not describe.
+        # finding the doc does not describe. Set from the measured 56463 plus this table's
+        # conventional ~150 B of slack, the same rule as the two SKILL entries below.
         "docs/workflow/phases/phase_01_compile.md": 56650,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
