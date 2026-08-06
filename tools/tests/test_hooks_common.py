@@ -7,6 +7,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tools.hooks.adapters.claude import ClaudeHookAdapter
@@ -2799,6 +2800,890 @@ class ForbidDismissViolationTokenizationTests(unittest.TestCase):
         self.assertNotEqual(
             self._policy("python3 tools/orchestration_runtime.py record-agent-run --foo bar"),
             "forbid_dismiss_violation_in_workflow")
+
+
+class ExtractBashReadTargetsTests(unittest.TestCase):
+    """Widened Bash read-target extraction (best-effort, residue by design)."""
+
+    def _targets(self, command: str) -> list[str]:
+        from tools.hooks.common import extract_bash_read_targets
+
+        return extract_bash_read_targets(command)
+
+    def test_simple_read(self) -> None:
+        self.assertEqual(self._targets("cat docs/WORKFLOW.md"), ["docs/WORKFLOW.md"])
+
+    def test_splits_on_every_separator_including_newline(self) -> None:
+        for sep in ("&&", "||", ";", "|", "&", "\n"):
+            with self.subTest(sep=sep):
+                self.assertEqual(
+                    self._targets(f"cat a.md {sep} nl b.md"), ["a.md", "b.md"]
+                )
+
+    def test_separator_glued_to_words_still_splits(self) -> None:
+        self.assertEqual(self._targets("cat a.md;cat b.md"), ["a.md", "b.md"])
+
+    def test_separator_inside_quotes_is_not_a_separator(self) -> None:
+        self.assertEqual(self._targets("grep 'a;b' docs/x.md"), ["docs/x.md"])
+
+    def test_a_quote_character_inside_the_other_quote_style(self) -> None:
+        """Two independent regex passes paired a `"` inside a single-quoted word
+        with the next unrelated `"`, blanking the commands between them — the
+        read then vanished from the guard entirely."""
+        self.assertEqual(
+            self._targets("""echo 'a"b' ; cat spec/private.md ; echo "c\""""),
+            ["spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("""grep -n '"' docs/x.md; cat spec/private.md"""),
+            ["docs/x.md", "spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("""echo "it's fine" ; cat spec/private.md"""),
+            ["spec/private.md"],
+        )
+
+    def test_unterminated_quote_hides_nothing(self) -> None:
+        self.assertEqual(
+            self._targets('echo "unterminated ; cat spec/private.md'), ["spec/private.md"]
+        )
+
+    def test_quote_stripping_preserves_length(self) -> None:
+        """Fragment spans are recovered from the original by offset."""
+        from tools.hooks.common import _strip_quoted_strings
+
+        for command in (
+            """echo 'a"b' ; cat x.md""",
+            'cat "my file.md"',
+            "echo \\' ; cat x.md",
+            'echo "esc \\" still inside" ; cat x.md',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(len(_strip_quoted_strings(command)), len(command))
+
+    def test_quoted_filename_survives_span_recovery(self) -> None:
+        self.assertEqual(self._targets('cat "my file.md"'), ["my file.md"])
+        self.assertEqual(self._targets("true && cat 'my file.md'"), ["my file.md"])
+
+    def test_detached_flag_values_are_not_targets(self) -> None:
+        self.assertEqual(self._targets("head -n 5 a.md"), ["a.md"])
+        self.assertEqual(self._targets("tail -c 20 a.md"), ["a.md"])
+        self.assertEqual(self._targets("cut -d : -f 1 a.md"), ["a.md"])
+        self.assertEqual(self._targets("od -N 16 -t x1 a.bin"), ["a.bin"])
+        self.assertEqual(self._targets("xxd -l 32 a.bin"), ["a.bin"])
+        self.assertEqual(self._targets("uniq -f 2 a.md"), ["a.md"])
+
+    def test_attached_flag_values_are_not_targets(self) -> None:
+        self.assertEqual(self._targets("head -n5 a.md"), ["a.md"])
+        self.assertEqual(self._targets("cut -d: -f1 a.md"), ["a.md"])
+
+    def test_sort_output_operand_is_not_a_read_target(self) -> None:
+        self.assertEqual(self._targets("sort -o out.txt in.txt"), ["in.txt"])
+
+    def test_jq_filter_is_not_a_target_but_operands_are(self) -> None:
+        self.assertEqual(
+            self._targets("jq -er .status workspace/x.json"), ["workspace/x.json"]
+        )
+        self.assertEqual(self._targets("jq . a.json b.json"), ["a.json", "b.json"])
+
+    def test_jq_file_flags_are_targets(self) -> None:
+        self.assertEqual(self._targets("jq -f prog.jq a.json"), ["prog.jq", "a.json"])
+        self.assertEqual(self._targets("jq --slurpfile v vals.json . a.json"), ["vals.json", "a.json"])
+        self.assertEqual(self._targets("jq --arg k v . a.json"), ["a.json"])
+
+    def test_new_commands_are_recognized(self) -> None:
+        self.assertEqual(self._targets("nl a.md"), ["a.md"])
+        self.assertEqual(self._targets("tac a.md"), ["a.md"])
+        self.assertEqual(self._targets("strings -n 4 a.bin"), ["a.bin"])
+        self.assertEqual(self._targets("diff a.f90 b.f90"), ["a.f90", "b.f90"])
+        self.assertEqual(self._targets("comm a.txt b.txt"), ["a.txt", "b.txt"])
+        self.assertEqual(self._targets("paste -d , a.txt b.txt"), ["a.txt", "b.txt"])
+
+    def test_leading_shell_syntax_does_not_hide_the_read(self) -> None:
+        """`then` / `do` / `{` / `(` are not command names — if they take argv0's
+        place the read vanishes from the guard, which is a fail-open, not the
+        declared unprovable residue."""
+        self.assertEqual(self._targets("if true; then cat secret.txt; fi"), ["secret.txt"])
+        self.assertEqual(self._targets("for f in x; do cat secret.txt; done"), ["secret.txt"])
+        self.assertEqual(self._targets("while read l; do nl secret.txt; done"), ["secret.txt"])
+        self.assertEqual(self._targets("{ cat secret.txt; }"), ["secret.txt"])
+        self.assertEqual(self._targets("(cat secret.txt)"), ["secret.txt"])
+        self.assertEqual(self._targets("! cat secret.txt"), ["secret.txt"])
+        self.assertEqual(self._targets("time cat secret.txt"), ["secret.txt"])
+
+    def test_output_redirection_operand_is_not_a_read(self) -> None:
+        """`cat in > out` reads `in` and WRITES `out`; reporting `out` would block
+        a legitimate command as soon as the output file already exists."""
+        self.assertEqual(self._targets("cat docs/a.md > out.f90"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md >> out.f90"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md >out.f90"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md 2>/dev/null"), ["docs/a.md"])
+        self.assertEqual(self._targets("jq -r .x docs/a.md > out.json"), ["docs/a.md"])
+        self.assertEqual(self._targets("sed -n 1,5p docs/a.md > out.txt"), ["docs/a.md"])
+
+    def test_input_redirection_operand_is_a_read(self) -> None:
+        self.assertEqual(self._targets("cat < docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat <docs/a.md"), ["docs/a.md"])
+
+    def test_heredoc_delimiter_is_not_a_read(self) -> None:
+        self.assertEqual(self._targets("cat <<EOF"), [])
+
+    def test_search_tool_detached_flag_values_are_not_targets(self) -> None:
+        """An unconsumed detached value takes the pattern's positional slot and
+        promotes the real pattern to a file operand."""
+        self.assertEqual(self._targets("grep -C 2 workspace docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("grep -m 5 tools docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("grep -A 3 -B 3 spec docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("rg -t md workspace docs"), ["docs"])
+        self.assertEqual(self._targets("rg --glob '*.md' workspace docs"), ["docs"])
+        self.assertEqual(self._targets("awk -v n=1 '{print}' docs/a.md"), ["docs/a.md"])
+
+    def test_clustered_short_flag_ending_in_a_value_letter(self) -> None:
+        """`-rnA 2` is `-r -n -A 2`. Matching the detached table by exact token
+        left the `2` to take the pattern's slot, which promoted the pattern to a
+        file operand — inventing a read and suppressing the tree target."""
+        self.assertEqual(self._targets("grep -rnA 2 PAT"), ["."])
+        self.assertEqual(self._targets("grep -rA 2 PAT"), ["."])
+        self.assertEqual(self._targets("grep -rm 1 PAT"), ["."])
+        self.assertEqual(self._targets("grep -nA 2 spec docs/a.md"), ["docs/a.md"])
+        # ripgrep's glued values are letters too (`-tmd` is `-t md`), so the
+        # cluster rule must not fire there and invent a phantom target.
+        self.assertEqual(self._targets("rg -tmd PAT docs"), ["docs"])
+        # The cluster ends at the FIRST value-taking letter: `-eFAILED` is a
+        # glued pattern, and treating it as a cluster ending in `-D` consumed
+        # the file operand.
+        self.assertEqual(self._targets("grep -eFAILED spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -erFAILED spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("grep -fexcluded docs/x.md"), ["excluded", "docs/x.md"]
+        )
+        self.assertEqual(self._targets("grep -inA 2 PAT docs/a.md"), ["docs/a.md"])
+        # `-e`/`-f` are value-taking wherever they sit in the cluster; seeing
+        # them only at the start let `-ieTOP` consume the FILE as the pattern.
+        self.assertEqual(self._targets("grep -ieTOP spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -ne TOP spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("grep -Ff pats.txt data.txt"), ["pats.txt", "data.txt"]
+        )
+        # Only the FLAG letters are alphabetic; the glued value is arbitrary.
+        self.assertEqual(self._targets("grep -ie2024 spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -ieTOP_X spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("grep -Ffspec/pats.txt spec/private.md"),
+            ["spec/pats.txt", "spec/private.md"],
+        )
+        # A cluster whose non-letter comes BEFORE any value flag is a glued
+        # value of an earlier flag (`-A2`), not a cluster to split.
+        self.assertEqual(self._targets("grep -A2 PAT docs/a.md"), ["docs/a.md"])
+
+    def test_abbreviated_long_options_still_supply_the_pattern(self) -> None:
+        """GNU getopt_long takes any unambiguous prefix, so `--regex=PAT` is
+        `--regexp=PAT`. Reading it as an ordinary flag consumed the FILE as the
+        pattern and auto-approved the read."""
+        self.assertEqual(self._targets("grep --regex=ZQ spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep --reg=ZQ spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("sed -n --expr=p spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("sed -n --expression=p spec/private.md"), ["spec/private.md"]
+        )
+        # A long option that is NOT such an abbreviation keeps its meaning.
+        self.assertEqual(self._targets("grep --directories=recurse PAT"), ["."])
+        self.assertEqual(self._targets("grep --color foo tools/x.py"), ["tools/x.py"])
+
+    def test_files_read_through_long_options(self) -> None:
+        """A long option whose VALUE is a file is a read, not a flag to skip —
+        and several of these echo the content back (`wc --files0-from` and
+        `sort --files0-from` print it in their diagnostics, `diff --from-file`
+        prints it as a diff). Both spellings, every command in the table."""
+        cases = {
+            "diff --from-file=spec/p.md docs/a.md": ["spec/p.md", "docs/a.md"],
+            "diff --to-file spec/p.md docs/a.md": ["spec/p.md", "docs/a.md"],
+            "diff --exclude-from=spec/p.md docs docs": ["spec/p.md", "docs", "docs"],
+            "grep --exclude-from=pats.txt PAT docs/a.md": ["pats.txt", "docs/a.md"],
+            "wc --files0-from=spec/p.md": ["spec/p.md"],
+            "wc --files0-from spec/p.md": ["spec/p.md"],
+            "sort --files0-from=spec/p.md": ["spec/p.md"],
+            "sort --random-source=spec/p.md a.txt": ["spec/p.md", "a.txt"],
+            "sed -n --file spec/s.sed docs/a.md": ["spec/s.sed", "docs/a.md"],
+            "sed -n --file=spec/s.sed docs/a.md": ["spec/s.sed", "docs/a.md"],
+            "sed -n --fil=spec/s.sed docs/a.md": ["spec/s.sed", "docs/a.md"],
+        }
+        for command, expected in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), expected)
+        # Ordinary invocations are unchanged.
+        self.assertEqual(self._targets("diff -u a.f90 b.f90"), ["a.f90", "b.f90"])
+        self.assertEqual(self._targets("wc -l docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("sort -o out.txt in.txt"), ["in.txt"])
+
+    def test_ripgrep_ignore_file_is_a_read(self) -> None:
+        """rg opens --ignore-file and echoes back every line that is not a
+        valid glob; unconsumed, its value also stole the pattern slot."""
+        self.assertEqual(
+            self._targets("rg --ignore-file spec/p.md PAT docs/"), ["spec/p.md", "docs/"]
+        )
+        self.assertEqual(
+            self._targets("rg --ignore-file=spec/p.md PAT docs/"), ["spec/p.md", "docs/"]
+        )
+        self.assertEqual(self._targets("rg PAT docs"), ["docs"])
+
+    def test_clustered_file_options_across_the_readers(self) -> None:
+        """Every reader that clusters short options hides its file-valued one
+        the same way; jq and rg echo that file's lines back on a parse error."""
+        self.assertEqual(
+            self._targets("jq -rf spec/prog.jq docs/a.json"), ["spec/prog.jq", "docs/a.json"]
+        )
+        self.assertEqual(self._targets("jq -nrf spec/prog.jq"), ["spec/prog.jq"])
+        self.assertEqual(self._targets("jq -f prog.jq a.json"), ["prog.jq", "a.json"])
+        self.assertEqual(
+            self._targets("rg -nf spec/pats.txt docs/"), ["spec/pats.txt", "docs/"]
+        )
+        # ripgrep's glued values must still not be split as clusters.
+        self.assertEqual(self._targets("rg -tmd PAT docs"), ["docs"])
+
+    def test_diff_exclude_from_short_form(self) -> None:
+        self.assertEqual(
+            self._targets("diff -Xspec/ex.txt docs docs"), ["spec/ex.txt", "docs", "docs"]
+        )
+        self.assertEqual(
+            self._targets("diff -X spec/ex.txt docs docs"), ["spec/ex.txt", "docs", "docs"]
+        )
+
+    def test_ansi_c_quoting_is_lexical_not_an_expansion(self) -> None:
+        """`$'…'` and `$"…"` are quoting forms — bash reads the literal inside.
+        shlex reduces them to a bare `$word`, so the residue filter dropped them
+        and the read reached the auto-approve."""
+        self.assertEqual(self._targets("cat $'spec/private.md'"), ["spec/private.md"])
+        self.assertEqual(self._targets('cat $"spec/private.md"'), ["spec/private.md"])
+        # Real expansions stay residue.
+        for command in ("cat $VAR", "cat ${D}/x.md", "cat $D/x.md", "cat `ls`"):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), [])
+
+    def test_sed_short_cluster_keeps_the_script_file(self) -> None:
+        """`-nf FILE` is `-n -f FILE` and sed opens FILE."""
+        self.assertEqual(self._targets("sed -nf spec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
+        self.assertEqual(self._targets("sed -nfspec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
+        self.assertEqual(self._targets("sed -Ef spec/s.sed docs/a.md"), ["spec/s.sed", "docs/a.md"])
+        # `-i[SUFFIX]` takes only a glued suffix, so it must not consume a token.
+        self.assertEqual(self._targets("sed -i.bak s/a/b/ docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets("sed -n 1,5p docs/a.md"), ["docs/a.md"])
+
+    def test_an_unstattable_path_does_not_kill_the_hook(self) -> None:
+        """`Path.exists()` propagates ENAMETOOLONG/EACCES, and this runs on
+        every tool call — an unrelated command would die with an opaque
+        entrypoint failure."""
+        from tools.hooks.cli import _path_exists
+
+        self.assertFalse(_path_exists(Path("a" * 300)))
+        self.assertTrue(_path_exists(Path(__file__)))
+
+    def test_a_failed_cd_does_not_anchor(self) -> None:
+        """bash leaves the directory unchanged when `cd` fails; anchoring to a
+        directory that is not there sent later targets to paths that cannot
+        exist, so the existence filter dropped them and nothing was validated."""
+        from tools.hooks.common import extract_bash_read_targets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "docs").mkdir()
+            (repo_root / "docs" / "a.md").write_text("x", encoding="utf-8")
+            self.assertEqual(
+                extract_bash_read_targets(
+                    "cd nosuchdir; cat spec/private.md", repo_root=repo_root
+                ),
+                ["spec/private.md"],
+            )
+            self.assertEqual(
+                extract_bash_read_targets("cd docs && cat a.md", repo_root=repo_root),
+                ["docs/a.md"],
+            )
+            # An unknown anchor must not let a `..` target resolve outside the
+            # repo, where it would be dropped as bwrap's domain — that turns a
+            # real in-repo read into an allow.
+            self.assertEqual(
+                extract_bash_read_targets(
+                    "cd nosuchdir; cd docs; cat ../spec/private.md", repo_root=repo_root
+                ),
+                ["spec/private.md"],
+            )
+            self.assertEqual(
+                extract_bash_read_targets(
+                    "cd $D && cat ../../../spec/private.md", repo_root=repo_root
+                ),
+                ["spec/private.md"],
+            )
+
+    def test_directories_recurse_is_a_recursive_search(self) -> None:
+        for command in (
+            "grep -d recurse PAT",
+            "grep --directories=recurse PAT",
+            "grep --directories recurse PAT",
+            "grep -drecurse PAT",
+            "egrep -d recurse PAT",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), ["."])
+        # `-d skip` is not recursive.
+        self.assertEqual(self._targets("grep -d skip PAT"), [])
+
+    def test_close_paren_does_not_start_a_word(self) -> None:
+        """`$(echo A)#x` is not a comment; treating it as one blanked the rest
+        of the command, including a following read."""
+        self.assertEqual(
+            self._targets("echo $(echo A)#x && cat spec/private.md"),
+            ["spec/private.md"],
+        )
+
+    def test_glued_here_string_does_not_eat_the_next_operand(self) -> None:
+        self.assertEqual(self._targets("cat <<<hi spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat <<< hi spec/private.md"), ["spec/private.md"])
+
+    def test_line_continuation_keeps_the_continued_operand(self) -> None:
+        self.assertEqual(self._targets("cat a.md \\\n b.md"), ["a.md", "b.md"])
+
+    def test_command_substitution_operand_does_not_swallow_siblings(self) -> None:
+        """`$(...)` is residue, but the literal operand beside it is not."""
+        self.assertEqual(self._targets("cat $(ls) a.md"), ["a.md"])
+
+    def test_auto_approvable_readers_are_all_extracted(self) -> None:
+        """Anything in cli._SAFE_READONLY_BASH_CMDS that reads file CONTENT must
+        also be extractable here — an auto-approvable command the extractor does
+        not know reads whatever it likes, bypassing the harness allowlist too.
+
+        Derived from the live set, not a hardcoded list: the failure this guards
+        against (egrep/fgrep/wc) came from ADDING a reader to the auto-approve
+        set, which a hardcoded expectation cannot see. A new entry must be
+        triaged into one of the two lists below or this fails.
+        """
+        from tools.hooks.cli import _SAFE_READONLY_BASH_CMDS
+        from tools.hooks.common import _BASH_READ_CMD_NAMES
+
+        # Commands that touch no file content: pure shell builtins, path
+        # arithmetic, and directory listing (names, not contents). `tr` reads
+        # only via `<`, whose presence already disqualifies auto-approval.
+        non_content = {
+            "echo", "printf", "date", "dirname", "basename", "realpath",
+            "readlink", "pwd", "true", "false", "test", "[", "ls", "tr",
+        }
+        unclassified = _SAFE_READONLY_BASH_CMDS - non_content - _BASH_READ_CMD_NAMES
+        self.assertEqual(
+            unclassified,
+            set(),
+            "auto-approvable command(s) neither extracted nor declared "
+            f"content-free: {sorted(unclassified)}",
+        )
+        # And the exemption list may not quietly cover something extractable.
+        self.assertEqual(non_content & _BASH_READ_CMD_NAMES, set())
+
+    def test_egrep_fgrep_and_wc_are_extracted(self) -> None:
+        self.assertEqual(self._targets("egrep SECRET spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("fgrep -rn SECRET spec"), ["spec"])
+        self.assertEqual(self._targets("wc -c spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("wc -l < spec/private.md"), ["spec/private.md"])
+
+    def test_recursive_search_without_an_operand_names_the_tree(self) -> None:
+        """`grep -rn PAT` reads the whole checkout — the same read a pathless
+        Grep tool call makes, which blocks."""
+        self.assertEqual(self._targets("grep -rn SECRET"), ["."])
+        self.assertEqual(self._targets("grep -R --include=*.md SECRET"), ["."])
+        self.assertEqual(self._targets("rg SECRET"), ["."])
+        # A recursive grep ignores stdin and still walks the cwd, even piped.
+        self.assertEqual(self._targets("cat a.md | grep -rn SECRET"), ["a.md", "."])
+        # Non-recursive grep with no operand reads stdin, not the tree.
+        self.assertEqual(self._targets("grep -n SECRET"), [])
+        self.assertEqual(self._targets("cat a.md | grep SECRET"), ["a.md"])
+        # ripgrep IS recursive by default but a pipe tail reads stdin.
+        self.assertEqual(self._targets("cat a.md | rg SECRET"), ["a.md"])
+        # An explicit operand always wins.
+        self.assertEqual(self._targets("grep -rn SECRET docs"), ["docs"])
+
+    def test_heredoc_body_is_data_not_commands(self) -> None:
+        """A document being written performs no reads, however its lines read."""
+        self.assertEqual(
+            self._targets("cat > docs/note.md <<EOF\ndiff spec/a.md spec/b.md\nEOF"), []
+        )
+        self.assertEqual(
+            self._targets("cat > x.py <<'PY'\ncat /etc/passwd\nPY"), []
+        )
+        # Commands after the terminator are still scanned.
+        self.assertEqual(
+            self._targets("cat a.md <<EOF\nnoise\nEOF\ncat b.md"), ["a.md", "b.md"]
+        )
+
+    def test_shift_operator_in_a_quoted_argument_is_not_a_heredoc(self) -> None:
+        """Blanking from a false heredoc deleted every following read target."""
+        self.assertEqual(
+            self._targets('grep -n "cout << endl" docs/a.cpp\ncat spec/private.md'),
+            ["docs/a.cpp", "spec/private.md"],
+        )
+
+    def test_here_string_is_not_a_heredoc(self) -> None:
+        self.assertEqual(self._targets('cat a.md <<< "x"'), ["a.md"])
+        self.assertEqual(
+            self._targets('sort <<< "x"\ncat spec/private.md'), ["spec/private.md"]
+        )
+
+    def test_quoted_heredoc_delimiters_of_any_shape(self) -> None:
+        for delimiter in ("PY-END", "1EOF", "end.of.file"):
+            with self.subTest(delimiter=delimiter):
+                self.assertEqual(
+                    self._targets(
+                        f"cat > x.md <<'{delimiter}'\ncat spec/private.md\n{delimiter}\ncat b.md"
+                    ),
+                    ["b.md"],
+                )
+
+    def test_search_modes_that_read_nothing_or_name_a_path(self) -> None:
+        """A synthesized "." for these blocks a command the agent cannot rephrase."""
+        self.assertEqual(self._targets("rg --files docs"), ["docs"])
+        self.assertEqual(self._targets("rg --version"), [])
+        self.assertEqual(self._targets("rg -h"), [])
+        self.assertEqual(self._targets("grep --version"), [])
+        # A value-taking short option ends the cluster: `-eerror` is `-e error`,
+        # not a cluster containing `-r`.
+        self.assertEqual(self._targets("cat f.md | grep -eerror"), ["f.md"])
+        self.assertEqual(self._targets("cat f.md | grep -m5 error"), ["f.md"])
+
+    def test_grep_h_is_no_filename_not_help(self) -> None:
+        """`-h` means `--help` for ripgrep but `--no-filename` for the grep
+        family; sharing one table let `grep -r -h PAT` read the whole tree."""
+        self.assertEqual(self._targets("grep -r -h PAT"), ["."])
+        self.assertEqual(self._targets("egrep -r -h PAT"), ["."])
+        self.assertEqual(self._targets("grep -h -r PAT"), ["."])
+        self.assertEqual(self._targets("grep -h PAT f.md"), ["f.md"])
+        self.assertEqual(self._targets("grep --help"), [])
+        self.assertEqual(self._targets("rg -h"), [])
+
+    def test_optional_value_flags_do_not_swallow_the_operand(self) -> None:
+        """A flag whose value is optional or absent must not be in the detached
+        table: it would consume the pattern, empty the operand list, and drop
+        the file — the inverse of what the table is for."""
+        self.assertEqual(self._targets("grep --color foo tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("grep --colour foo tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("xxd -b tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("od -w tools/x.py"), ["tools/x.py"])
+        self.assertEqual(self._targets("od -w16 tools/x.py"), ["tools/x.py"])
+        # ripgrep's --color DOES take a required value, so it stays detached.
+        self.assertEqual(self._targets("rg --color always PAT docs"), ["docs"])
+
+    def test_apostrophe_in_one_heredoc_body_does_not_expose_the_next(self) -> None:
+        """Quote pairing must not run through an already-blanked body."""
+        self.assertEqual(
+            self._targets(
+                "cat > a.py <<'PY'\n# don't do this\nPY\n"
+                "cat > b.md <<'MD'\ncat spec/private.md\nMD"
+            ),
+            [],
+        )
+
+    def test_heredoc_terminator_must_be_the_exact_line(self) -> None:
+        """Bash ends a `<<EOF` body only on a line that is exactly `EOF`; `<<-`
+        strips leading tabs. Accepting any indentation ended the body early and
+        parsed the rest of the document as commands."""
+        self.assertEqual(
+            self._targets("cat > n.md <<EOF\ntext\n    EOF\ncat spec/private.md\nEOF"), []
+        )
+        self.assertEqual(
+            self._targets("cat > n.md <<-EOF\n\ttext\n\tEOF\ncat b.md"), ["b.md"]
+        )
+        self.assertEqual(
+            self._targets("cat > n.md <<EOF\ntext\nEOF\ncat spec/private.md"),
+            ["spec/private.md"],
+        )
+
+    def test_pipe_context_survives_a_line_break(self) -> None:
+        """`cat x |\\n rg PAT` is the same command as `cat x | rg PAT`."""
+        self.assertEqual(self._targets("cat docs/a.md |\n  rg PAT"), ["docs/a.md"])
+        self.assertEqual(self._targets("cat docs/a.md |& rg PAT"), ["docs/a.md"])
+
+    def test_brace_expansion_reports_when_it_gave_up(self) -> None:
+        """Past the bound the expander returns the token unexpanded or a
+        truncated list; the caller must be able to tell, because past it the
+        real file is never checked."""
+        from tools.hooks.common import (
+            BRACE_EXPAND_MAX_GROUPS,
+            BRACE_EXPAND_MAX_RESULTS,
+            expand_bash_braces,
+        )
+
+        too_many_groups = "d" + "{1,2}" * (BRACE_EXPAND_MAX_GROUPS + 1)
+        self.assertIn("{", expand_bash_braces(too_many_groups)[0])
+        self.assertGreater(
+            len(expand_bash_braces(f"d{{1..{BRACE_EXPAND_MAX_RESULTS + 50}}}")),
+            BRACE_EXPAND_MAX_RESULTS,
+        )
+
+    def test_brace_expansion(self) -> None:
+        from tools.hooks.common import expand_bash_braces
+
+        self.assertEqual(expand_bash_braces("spec/{a,b}.md"), ["spec/a.md", "spec/b.md"])
+        self.assertEqual(expand_bash_braces("plain.md"), ["plain.md"])
+        # Ranges expand too: an unexpanded range fails the existence check, and
+        # the read then reaches the auto-approve.
+        self.assertEqual(
+            expand_bash_braces("spec/p{1..3}.md"),
+            ["spec/p1.md", "spec/p2.md", "spec/p3.md"],
+        )
+        # An unbalanced brace is left alone.
+        self.assertEqual(expand_bash_braces("spec/{a.md"), ["spec/{a.md"])
+        # Bounded: a pathological token must not blow up a synchronous hook.
+        self.assertLessEqual(len(expand_bash_braces("{a,b}" * 12)), 256)
+
+    def test_cd_anchors_the_targets_that_follow(self) -> None:
+        """`cd spec && cat private.md` reads spec/private.md; resolving the
+        operand at repo_root found nothing and authorized nothing."""
+        self.assertEqual(self._targets("cd spec && cat private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cd spec; cat ./private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("cat a.md && cd spec && cat b.md"), ["a.md", "spec/b.md"]
+        )
+        self.assertEqual(self._targets("cd spec/sub && cat deep.md"), ["spec/sub/deep.md"])
+        # An absolute target ignores the cd.
+        self.assertEqual(self._targets("cd spec && cat /etc/passwd"), ["/etc/passwd"])
+        # A directory the scan cannot follow leaves the target UN-anchored —
+        # still checked against the manifest rather than dropped — and a
+        # following relative `cd` must not silently re-anchor at the repo root.
+        self.assertEqual(self._targets("cd $D && cat p.md"), ["p.md"])
+        self.assertEqual(self._targets("cd && cat p.md"), ["p.md"])
+        self.assertEqual(self._targets("cd $D && cd spec && cat p.md"), ["p.md"])
+
+    def test_cd_is_unwound_where_bash_unwinds_it(self) -> None:
+        """A stale anchor is as wrong as no anchor: it points the check at a
+        path that does not exist, and the read is dropped as nothing to
+        authorize."""
+        self.assertEqual(self._targets("cd docs && cd - && cat secret.md"), ["secret.md"])
+        self.assertEqual(
+            self._targets("pushd docs && popd && cat secret.md"), ["secret.md"]
+        )
+        self.assertEqual(
+            self._targets("pushd docs && cat a.md && popd && cat b.md"),
+            ["docs/a.md", "b.md"],
+        )
+        # A `cd` confined to a subshell does not survive it.
+        self.assertEqual(
+            self._targets("(cd docs && cat public.md); cat spec/secret.md"),
+            ["docs/public.md", "spec/secret.md"],
+        )
+
+    def test_cd_operand_is_the_first_non_option_token(self) -> None:
+        """`cd -P spec` anchored at "-P", so the read resolved nowhere and was
+        dropped as nothing to authorize."""
+        for command in (
+            "cd -P spec && cat private.md",
+            "cd -L spec && cat private.md",
+            "cd -- spec && cat private.md",
+            "pushd -n spec && cat private.md",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), ["spec/private.md"])
+
+    def test_command_substitution_paren_does_not_close_a_subshell(self) -> None:
+        """`$(` opens something the scan never enters; counting its closing
+        paren popped the directory stack while bash was still in the subshell."""
+        self.assertEqual(
+            self._targets("(cd spec && echo $(date) && cat private.md)"),
+            ["spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("(cd spec && echo $((1+2)) && cat private.md)"),
+            ["spec/private.md"],
+        )
+
+    def test_comment_text_is_not_a_read(self) -> None:
+        self.assertEqual(
+            self._targets("cat docs/a.md # see spec/private.md"), ["docs/a.md"]
+        )
+        # `#` mid-word is not a comment.
+        self.assertEqual(self._targets("cat docs/a#b.md"), ["docs/a#b.md"])
+
+    def test_comment_contents_are_not_shell_syntax(self) -> None:
+        """bash ends a comment at the newline BEFORE quoting or `<<` mean
+        anything. Stripping comments later let an apostrophe in one pair with a
+        later quote — blanking the newline between them, merging the fragments,
+        and losing the read on the next line — and let a `<<` inside a comment
+        blank the rest of the command as a heredoc body."""
+        self.assertEqual(
+            self._targets("echo hi # user's file\ncat spec/private.md\necho 'bye'"),
+            ["spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("cat docs/a.md # note: use << heredoc\ncat spec/private.md"),
+            ["docs/a.md", "spec/private.md"],
+        )
+        self.assertEqual(
+            self._targets("# it's fine\ncat spec/private.md\ngrep 'x' docs/a.md"),
+            ["spec/private.md", "docs/a.md"],
+        )
+
+    def test_arithmetic_shift_is_not_a_heredoc(self) -> None:
+        self.assertEqual(
+            self._targets("echo $((1 << n))\ncat spec/private.md"), ["spec/private.md"]
+        )
+        self.assertEqual(
+            self._targets("(( x = y << z ))\ncat spec/private.md"), ["spec/private.md"]
+        )
+
+    def test_several_heredocs_on_one_line(self) -> None:
+        """`cat <<A <<B` declares two bodies, in order. Advancing the search
+        past A's terminator skipped `<<B` — it sits EARLIER in the string — so
+        B's body was parsed as commands and its text blocked as a read."""
+        self.assertEqual(
+            self._targets("cat <<A <<B\nx\nA\ncat spec/private.md\nB"), []
+        )
+        self.assertEqual(
+            self._targets(
+                "cat <<A <<B\ncat spec/p1.md\nA\ncat spec/p2.md\nB\ncat after.md"
+            ),
+            ["after.md"],
+        )
+
+    def test_backslash_quoted_heredoc_delimiter(self) -> None:
+        """`<<\\EOF` quotes the delimiter exactly like `<<'EOF'`."""
+        self.assertEqual(
+            self._targets("cat <<\\EOF\ncat spec/private.md\nEOF\ncat b.md"), ["b.md"]
+        )
+
+    def test_no_empty_target_is_reported(self) -> None:
+        """An empty target resolves to the repo root, so it blocks with a path
+        the agent cannot act on."""
+        self.assertEqual(self._targets("(echo hi; cat docs/a.md )"), ["docs/a.md"])
+
+    def test_stdin_redirect_stops_ripgrep_walking_the_tree(self) -> None:
+        self.assertEqual(self._targets("rg PAT < docs/a.md"), ["docs/a.md"])
+        self.assertEqual(self._targets('rg PAT <<< "x"'), [])
+        # Without stdin, ripgrep really does search the tree.
+        self.assertEqual(self._targets("rg PAT"), ["."])
+
+    def test_file_descriptor_prefixed_input_redirect(self) -> None:
+        """`0<f` is `<f`. Recognizing only a leading `<` left the literal path
+        in the token `0<f`, which failed the existence check and was dropped —
+        while bash redirected stdin and `cat -` emitted the file."""
+        self.assertEqual(
+            self._targets("cat docs/a.md - 0<spec/private.md"),
+            ["spec/private.md", "docs/a.md", "-"],
+        )
+        self.assertEqual(self._targets("cat 0<spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat 0< spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat 3<spec/private.md"), ["spec/private.md"])
+        self.assertEqual(
+            self._targets("while read l; do echo $l; done 0<spec/private.md"),
+            ["spec/private.md"],
+        )
+        # An fd duplication names no file, and a numbered heredoc is still a
+        # heredoc.
+        self.assertEqual(self._targets("cat 0<&3"), [])
+        self.assertEqual(self._targets("cat 0<<EOF\ncat spec/private.md\nEOF"), [])
+        self.assertEqual(self._targets("cat 0<<<hi docs/a.md"), ["docs/a.md"])
+
+    def test_input_redirection_is_a_read_whatever_the_command_is(self) -> None:
+        self.assertEqual(
+            self._targets("while read l; do echo $l; done < spec/secret.md"),
+            ["spec/secret.md"],
+        )
+        self.assertEqual(self._targets("< spec/secret.md cat"), ["spec/secret.md"])
+        self.assertEqual(self._targets("wc -l < spec/secret.md"), ["spec/secret.md"])
+
+    def test_fd_duplication_is_not_a_command_separator(self) -> None:
+        """`2>&1` split the fragment into a reader with no operand plus an
+        operand with no reader, so the read vanished — and the auto-approve,
+        which strips fd-dups first, disagreed and let it through."""
+        self.assertEqual(self._targets("cat 2>&1 spec/private.md"), ["spec/private.md"])
+        self.assertEqual(self._targets("cat spec/private.md 2>&1"), ["spec/private.md"])
+        self.assertEqual(self._targets("grep -n a\\&b spec/private.md"), ["spec/private.md"])
+        # A real background `&` still separates.
+        self.assertEqual(self._targets("cat a.md & cat b.md"), ["a.md", "b.md"])
+
+    def test_unprovable_forms_yield_nothing(self) -> None:
+        for command in (
+            "echo path | xargs cat",
+            "find . -name '*.md' -exec cat {} \\;",
+            "cat $(ls)",
+            "cat `ls`",
+            "cat $TARGET",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self._targets(command), [])
+
+    def test_assignment_prefix_is_skipped(self) -> None:
+        self.assertEqual(self._targets("LC_ALL=C cat a.md"), ["a.md"])
+        self.assertEqual(self._targets("A=1 B=2 nl a.md"), ["a.md"])
+
+    def test_non_reading_commands_yield_nothing(self) -> None:
+        self.assertEqual(self._targets("python3 tools/x.py"), [])
+        self.assertEqual(self._targets("ls docs/"), [])
+        self.assertEqual(self._targets(""), [])
+        self.assertEqual(self._targets(None), [])
+
+    def test_double_dash_ends_option_parsing(self) -> None:
+        self.assertEqual(self._targets("cat -- -weird.md"), ["-weird.md"])
+
+
+class ReadManifestCoreTests(unittest.TestCase):
+    """The manifest loader/containment helpers shared by every read guard."""
+
+    def _roots(self, manifest_body: str | None):
+        from pathlib import Path
+
+        from tools.hooks.common import _load_read_manifest_allowed_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            manifest_dir = (
+                repo_root / "workspace" / "orchestrations" / "orch_test" / "read_manifests"
+            )
+            manifest_dir.mkdir(parents=True)
+            if manifest_body is not None:
+                (manifest_dir / "run_a.json").write_text(manifest_body, encoding="utf-8")
+            return _load_read_manifest_allowed_roots(repo_root, "orch_test", "run_a")
+
+    def test_missing_manifest_blocks(self) -> None:
+        roots, block = self._roots(None)
+        self.assertIsNone(roots)
+        self.assertEqual(block.action, HookDecisionAction.BLOCK)
+        self.assertIn("read manifest not found", block.reason or "")
+
+    def test_invalid_json_blocks(self) -> None:
+        roots, block = self._roots("{not json")
+        self.assertIsNone(roots)
+        self.assertIn("unreadable or invalid JSON", block.reason or "")
+
+    def test_non_object_manifest_blocks(self) -> None:
+        roots, block = self._roots("[]")
+        self.assertIsNone(roots)
+        self.assertIn("must be a JSON object", block.reason or "")
+
+    def test_missing_allowed_read_roots_blocks(self) -> None:
+        roots, block = self._roots(json.dumps({"denied_read_roots": []}))
+        self.assertIsNone(roots)
+        self.assertIn("missing allowed_read_roots", block.reason or "")
+
+    def test_valid_manifest_returns_roots(self) -> None:
+        roots, block = self._roots(json.dumps({"allowed_read_roots": ["docs/", "spec"]}))
+        self.assertIsNone(block)
+        self.assertEqual(roots, ["docs/", "spec"])
+
+    def test_containment_accepts_root_equality_and_descendants(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import _read_target_in_allowed_roots
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            roots = ["docs/", "spec/plan.md"]
+            self.assertTrue(_read_target_in_allowed_roots(repo_root, roots, "docs"))
+            self.assertTrue(_read_target_in_allowed_roots(repo_root, roots, "docs/WORKFLOW.md"))
+            self.assertTrue(_read_target_in_allowed_roots(repo_root, roots, "spec/plan.md"))
+            self.assertFalse(_read_target_in_allowed_roots(repo_root, roots, "tools/hooks/cli.py"))
+            self.assertFalse(_read_target_in_allowed_roots(repo_root, roots, "docs_other/x.md"))
+
+
+class AppendHookAccessLogTests(unittest.TestCase):
+    """Hook access-log lines are best-effort: they never raise, never mkdir."""
+
+    def _log_path(self, repo_root):
+        return (
+            repo_root
+            / "workspace"
+            / "orchestrations"
+            / "orch_test"
+            / "access_logs"
+            / "run_a.jsonl"
+        )
+
+    def test_appends_when_file_exists(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            log_path = self._log_path(repo_root)
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text("", encoding="utf-8")
+            append_hook_access_log(
+                repo_root,
+                "orch_test",
+                "run_a",
+                tool_name="Grep",
+                path="docs/WORKFLOW.md",
+                decision="allow",
+            )
+            append_hook_access_log(
+                repo_root,
+                "orch_test",
+                "run_a",
+                tool_name="Bash",
+                path="tools/hooks/cli.py",
+                decision="block",
+                policy="read_manifest_read_guard",
+            )
+            lines = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(lines), 2)
+            self.assertEqual(lines[0]["source"], "hook")
+            self.assertEqual(lines[0]["tool"], "Grep")
+            self.assertEqual(lines[0]["decision"], "allow")
+            self.assertIsNone(lines[0]["policy"])
+            self.assertTrue(lines[0]["ts"].endswith("Z"))
+            self.assertEqual(lines[1]["decision"], "block")
+            self.assertEqual(lines[1]["policy"], "read_manifest_read_guard")
+            self.assertEqual(lines[1]["path"], "tools/hooks/cli.py")
+
+    def test_creates_file_when_directory_exists(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            log_path = self._log_path(repo_root)
+            log_path.parent.mkdir(parents=True)
+            append_hook_access_log(
+                repo_root, "orch_test", "run_a", tool_name="Read", path="a.md", decision="allow"
+            )
+            self.assertTrue(log_path.is_file())
+
+    def test_missing_directory_degrades_silently_and_never_mkdirs(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            append_hook_access_log(
+                repo_root, "orch_test", "run_a", tool_name="Read", path="a.md", decision="allow"
+            )
+            self.assertFalse(self._log_path(repo_root).parent.exists())
+
+    def test_readonly_file_degrades_silently(self) -> None:
+        from pathlib import Path
+
+        from tools.hooks.common import append_hook_access_log
+
+        if os.geteuid() == 0:  # pragma: no cover — root ignores the mode bits
+            self.skipTest("root bypasses file permissions")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            log_path = self._log_path(repo_root)
+            log_path.parent.mkdir(parents=True)
+            log_path.write_text("", encoding="utf-8")
+            log_path.chmod(0o444)
+            try:
+                append_hook_access_log(
+                    repo_root,
+                    "orch_test",
+                    "run_a",
+                    tool_name="Read",
+                    path="a.md",
+                    decision="allow",
+                )
+                self.assertEqual(log_path.read_text(encoding="utf-8"), "")
+            finally:
+                log_path.chmod(0o644)
 
 
 if __name__ == "__main__":

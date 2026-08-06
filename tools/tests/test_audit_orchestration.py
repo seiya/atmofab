@@ -460,6 +460,61 @@ class CollectFixHintStatsTests(unittest.TestCase):
         stats = collect_fix_hint_stats(blocks)
         self.assertEqual(stats["hint_absent"].get("forbid_python_inline_write"), 1)
 
+    def test_note_only_hint_counts_as_present(self) -> None:
+        """A read block outside allowed_read_roots has no command that works, so
+        it carries `note` instead of `next_command` — counting it as "no hint"
+        reported a docs gap that does not exist."""
+        blocks = [_make_block("read_manifest_read_guard", fix_hint={"note": "re-issue"})]
+        stats = collect_fix_hint_stats(blocks)
+        self.assertEqual(stats["hint_present"].get("read_manifest_read_guard"), 1)
+        self.assertNotIn("read_manifest_read_guard", stats["hint_absent"])
+
+    def test_repeated_search_detected_without_a_command(self) -> None:
+        """Grep/Glob blocks carry `path`/`pattern`, not `command`; a search
+        retried in a loop is exactly what this aggregation exists to surface."""
+        block = {
+            "action": "block",
+            "tool_name": "Grep",
+            "payload_summary": {"session_id": "sess_1", "path": "tools", "pattern": "def foo"},
+            "audit_detail": {
+                "policy": "read_manifest_read_guard",
+                "agent_run_id": "run_1",
+                "fix_hint": {"note": "re-issue"},
+            },
+            "ts": "2026-05-09T00:00:00Z",
+        }
+        stats = collect_fix_hint_stats([dict(block), dict(block), dict(block)])
+        self.assertEqual(
+            stats["repeated"]["read_manifest_read_guard"],
+            ["run_1::Grep::tools::def foo"] * 2,
+        )
+
+    def test_repeat_key_is_scoped_to_the_agent(self) -> None:
+        """Two agents blocked once each on the same target is not a retry —
+        reporting it accuses an agent of ignoring a hint it never saw."""
+
+        def block(agent_run_id: str, **summary) -> dict:
+            return {
+                "action": "block",
+                "tool_name": "Grep",
+                "payload_summary": dict(session_id=f"s-{agent_run_id}", **summary),
+                "audit_detail": {
+                    "policy": "read_manifest_read_guard",
+                    "agent_run_id": agent_run_id,
+                    "fix_hint": {"note": "re-issue"},
+                },
+            }
+
+        two_agents = [block("run_a", path="tools", pattern="x"),
+                      block("run_b", path="tools", pattern="x")]
+        self.assertEqual(collect_fix_hint_stats(two_agents)["repeated"], {})
+
+        one_agent_twice = [block("run_a", path="tools", pattern="x")] * 2
+        self.assertEqual(
+            collect_fix_hint_stats([dict(b) for b in one_agent_twice])["repeated"],
+            {"read_manifest_read_guard": ["run_a::Grep::tools::x"]},
+        )
+
     def test_repeated_command_detected(self) -> None:
         blocks = [
             _make_block("forbid_tools_direct_read", command="cat tools/foo.py"),

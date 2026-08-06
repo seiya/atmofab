@@ -239,6 +239,45 @@ def detect_suspicious_benign_volume(
     return flagged
 
 
+def _repeat_key_of(block: dict[str, Any]) -> str:
+    """What identifies "THIS agent tried the same thing again".
+
+    Bash blocks are identified by their command. A Grep/Glob block carries no
+    command — its target is `path` (+ `pattern`) — so keying on `command` alone
+    made a search retried in a loop invisible, which is exactly the signal this
+    aggregation exists to surface.
+
+    The key is scoped to the agent and the tool. Two agents blocked once each on
+    the same path is not a retry, and reporting it as one accuses an agent of
+    ignoring a hint it never saw. `agent_run_id` is the identity where the
+    record carries it; the session id is the fallback.
+    """
+    summary = block.get("payload_summary")
+    if not isinstance(summary, dict):
+        return str(summary or "")
+    detail = block.get("audit_detail")
+    identity = ""
+    if isinstance(detail, dict) and isinstance(detail.get("agent_run_id"), str):
+        identity = detail["agent_run_id"].strip()
+    if not identity and isinstance(summary.get("session_id"), str):
+        identity = summary["session_id"].strip()
+    tool = block.get("tool_name")
+    scope = [part for part in (identity, tool if isinstance(tool, str) else "") if part]
+
+    command = summary.get("command")
+    if isinstance(command, str) and command.strip():
+        target = command.strip()
+    else:
+        target = "::".join(
+            str(summary[key]).strip()
+            for key in ("path", "pattern", "file_path")
+            if isinstance(summary.get(key), str) and str(summary[key]).strip()
+        )
+    if not target:
+        return ""
+    return "::".join([*scope, target])
+
+
 def collect_fix_hint_stats(
     blocks: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -249,12 +288,11 @@ def collect_fix_hint_stats(
     for b in blocks:
         policy = _policy_of(b)
         fix_hint = (b.get("audit_detail") or {}).get("fix_hint")
-        cmd = (
-            (b.get("payload_summary") or {}).get("command", "")
-            if isinstance(b.get("payload_summary"), dict)
-            else str(b.get("payload_summary", ""))
-        )
-        if fix_hint and fix_hint.get("next_command"):
+        cmd = _repeat_key_of(b)
+        # A hint is present when it carries ANY actionable field. Read blocks
+        # deliberately carry `note` rather than `next_command`, because for an
+        # out-of-manifest path there is no command that works.
+        if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
             hint_present[policy] += 1
         else:
             hint_absent[policy] += 1

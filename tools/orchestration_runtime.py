@@ -8064,8 +8064,9 @@ def build_bwrap_profile(
     # (rendered after the read-root ro-binds, so it overrides the ro source dir while the
     # rest of the source stays read-only).
     runtime_rw_file_paths: list[str] = []
-    # The leaf's own `run-gate --gate orchestration_read` (the gated-read path the leaf is
-    # directed to for read_manifest entries that are not directly readable) appends one
+    # The leaf's own `run-gate --gate orchestration_read` (an OPTIONAL audited re-read of a
+    # path already inside allowed_read_roots — never a way around the manifest, and never
+    # the remedy for a read block: for an out-of-manifest path it fails the run) appends one
     # audit line to access_logs/<arid>.jsonl. That file lives outside write_roots under the
     # otherwise read-only orchestration root, so without a writable bind the append raises
     # OSError (EROFS) and crashes the gate — the recurring friction every leaf wasted
@@ -8395,7 +8396,12 @@ def log_orchestration_read(
     agent_run_id: str,
     read_path: str,
 ) -> dict[str, Any]:
-    """Read audit: on a `denied_read_roots` (`tools/`) match, record `rule_source_violation` and fail the orchestration.
+    """Read audit for a path INSIDE the manifest; terminal for anything else.
+
+    A `denied_read_roots` (`tools/`) match and a path outside `allowed_read_roots`
+    are treated alike: both record a `rule_source_violation`, set the
+    orchestration to `fail`, and raise. So this is never the remedy for a read
+    the hook blocked — it is an audited re-read of a path already permitted.
 
     Return the body only for a permitted read.
     """
@@ -10665,11 +10671,15 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
         "needs `<capability_token>`, fill it from your capabilities file.",
     ]
     if oid and arid:
-        # Shared gated-read template: only needed for a read_manifest path that a direct
-        # Read reports as blocked. Most reads are directly readable and need no gate.
+        # Shared gated-read template. NOT a remedy for a read block: for a path
+        # outside allowed_read_roots this gate writes a rule_source_violation and
+        # fails the orchestration, so pointing a blocked agent here would turn a
+        # recoverable block into a dead run (docs/AGENT_CONTRACT.md, READ_HINT).
         lines.append(
-            "- Gated read of a read_manifest path that a direct Read reports as blocked: "
-            "python3 tools/orchestration_runtime.py run-gate --repo-root . "
+            "- Audited re-read of a path that IS inside your allowed_read_roots (every such "
+            "path is also readable directly, so this is optional); for a path OUTSIDE them "
+            "this gate fails the orchestration — re-issue the read under allowed_read_roots "
+            "instead: python3 tools/orchestration_runtime.py run-gate --repo-root . "
             f"--orchestration-id {oid} --gate orchestration_read --agent-run-id {arid} "
             "--capability-token <capability_token> --args-json '{\"read_path\":\"<PATH>\"}'"
         )
@@ -10681,9 +10691,9 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
         lines.append(
             f"- `workspace/tmp/{arid}/` already exists and is writable — redirect gate "
             f"stderr there (e.g. `2>workspace/tmp/{arid}/last_gate_stderr.txt`), no need "
-            "to create it. `access_logs/` is runtime-managed audit (`orchestration_read` "
-            "writes it for you; a successful gate returns `result: ok`) — never read or "
-            "write it yourself."
+            "to create it. `access_logs/` is runtime-managed audit (the read hook appends a "
+            "line per read decision, and `orchestration_read` writes one too) — never read "
+            "or write it yourself."
         )
     return "\n".join(lines)
 
@@ -20779,8 +20789,8 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     "write-step-result": ("status", "executor_agent_run_id", "failed_substeps"),
     # run_gate's stdout result contains only violations/gate_result_ref/result
     # (gate/status live in the persisted gate doc + stderr summary). `result`
-    # carries the orchestration_read content (the only path child agents may use
-    # for those reads), so it must survive the terse projection.
+    # carries the orchestration_read content (the audited re-read of an
+    # in-manifest path), so it must survive the terse projection.
     "run-gate": ("violations", "gate_result_ref", "result"),
 }
 

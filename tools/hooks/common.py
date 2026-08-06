@@ -41,10 +41,12 @@ def _lookup_payload_field(payload: dict[str, Any], key: str) -> Any:
 
 
 READ_HINT = (
-    "Hint: workspace/orchestrations/<orchestration_id>/output_manifests/<agent_run_id>.json "
-    "and read_manifests/<agent_run_id>.json may be read directly. For other paths use "
-    "'run-gate --gate orchestration_read' within read_manifests/<agent_run_id>.json "
-    "allowed_read_roots. "
+    "Hint: every path inside read_manifests/<agent_run_id>.json allowed_read_roots is "
+    "readable directly (Read / Grep / Glob / Bash), as are your own "
+    "workspace/orchestrations/<orchestration_id>/output_manifests/<agent_run_id>.json and "
+    "read_manifests/<agent_run_id>.json. A path outside allowed_read_roots is rejected by "
+    "every route — 'run-gate --gate orchestration_read' terminally fails the orchestration "
+    "for it — so re-issue the read against a path under allowed_read_roots instead. "
     "Interpret requirements only from docs/, spec/, and skill_must_read_refs artifacts; "
     "do not derive rules from tools/, validator scripts, or tests. "
     "See docs/RUNBOOK.md#hook-recovery for the full recovery cheatsheet."
@@ -278,14 +280,621 @@ def _extract_command(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
+def _strip_quoted_strings(cmd: str) -> str:
+    """Blank the content inside shell quotes AND comments, preserving length.
+
+    Callers rely on this to keep a `>`, `;` or `<<` that is merely TEXT inside
+    an argument from being read as shell syntax, and on the offsets staying
+    aligned with the original string.
+
+    One left-to-right scan, honouring whichever quote opens first — the two
+    independent regex passes this replaced paired a `"` living inside a
+    single-quoted word with the next unrelated `"`, blanking the separators and
+    commands between them. `echo 'a"b' ; cat <path> ; echo "c"` then collapsed
+    into a single fragment whose argv0 was not a reader, so the read vanished
+    from the guard and the command reached the read-only auto-approve.
+
+    An unterminated quote is left alone rather than blanking to end-of-string,
+    which is the fail-closed direction here: nothing is hidden from the scan.
+
+    A comment is blanked here rather than later because bash's lexer decides it
+    HERE: a `#` comment ends the line before quoting or `<<` mean anything. Doing
+    it afterwards let an apostrophe in a comment ("user's file") pair with a
+    later quote and blank the newline between them — merging fragments so a read
+    on the next line vanished — and let a `<<` written inside a comment blank the
+    rest of the command as a heredoc body. The `#` itself is kept: callers scan
+    the result for it to refuse auto-approval.
+    """
+    out = list(cmd)
+    idx = 0
+    n = len(cmd)
+    at_word_start = True
+    while idx < n:
+        ch = cmd[idx]
+        if ch == "#" and at_word_start:
+            end = cmd.find("\n", idx)
+            end = n if end == -1 else end
+            for pos in range(idx + 1, end):
+                out[pos] = " "
+            idx = end
+            at_word_start = True
+            continue
+        if ch == "\\":  # an escaped character never opens a quote
+            idx += 2
+            at_word_start = False
+            continue
+        if ch not in ("'", '"'):
+            # NB: `)` does NOT start a word — `$(echo A)#x` is not a comment.
+            at_word_start = ch in " \t\n;|&("
+            idx += 1
+            continue
+        at_word_start = False
+        end = idx + 1
+        while end < n:
+            # Backslash escapes apply inside "..." but not inside '...'.
+            if ch == '"' and cmd[end] == "\\":
+                end += 2
+                continue
+            if cmd[end] == ch:
+                break
+            end += 1
+        if end >= n:  # unterminated: leave the remainder visible
+            idx += 1
+            continue
+        for pos in range(idx + 1, end):
+            out[pos] = " "
+        idx = end + 1
+    return "".join(out)
+
+
+# Flags whose VALUE is a detached following token that must never be mistaken
+# for a read target (`head -n 5 f` would otherwise extract "5").  Keyed by
+# command basename; only commands in _BASH_READ_CMD_NAMES are consulted.
+# `sort -o FILE` is a WRITE target, so it is listed here too — consuming the
+# operand keeps it out of the read-target list, which is all this table decides.
+_DETACHED_VALUE_FLAGS: dict[str, frozenset[str]] = {
+    "head": frozenset({"-n", "-c"}),
+    "tail": frozenset({"-n", "-c"}),
+    "cut": frozenset({"-b", "-c", "-d", "-f"}),
+    "paste": frozenset({"-d"}),
+    # `od -w[BYTES]` and `xxd -b` take no separate operand — listing them here
+    # made the filename their "value".
+    "od": frozenset({"-A", "-j", "-N", "-S", "-t"}),
+    "xxd": frozenset({"-c", "-g", "-l", "-s", "-o"}),
+    "strings": frozenset({"-n", "-t"}),
+    "sort": frozenset({"-k", "-t", "-S", "-T", "-o"}),
+    "uniq": frozenset({"-f", "-s", "-w"}),
+    "comm": frozenset(),
+    "diff": frozenset(),
+    "nl": frozenset({"-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w"}),
+    "tac": frozenset({"-s"}),
+    # grep/rg/awk have their own grammars below (first positional = pattern /
+    # program), but they share this table: an unconsumed detached value takes
+    # the pattern's positional slot and PROMOTES the real pattern to a file
+    # operand — `grep -C 2 workspace docs/a.md` would report "workspace" as a
+    # read and block a legitimate search.
+    # ONLY flags whose value is REQUIRED and space-separated. An optional-value
+    # flag (`--color[=WHEN]`) or a no-value flag listed here consumes the search
+    # PATTERN, which empties the operand list and drops the file entirely —
+    # the exact inverse of what this table is for, and it regressed
+    # forbid_tools_direct_read. GNU long options here need `=`, so they are not
+    # separate tokens and must not be listed.
+    # Long forms are listed only when the value is REQUIRED — GNU getopt then
+    # accepts the space-separated spelling too. An OPTIONAL-value long option
+    # (`--color[=WHEN]`, `--group-separator[=SEP]`) only ever takes `=`, so
+    # listing it would eat the search pattern instead.
+    "grep": frozenset({
+        "-A", "-B", "-C", "-m", "-d", "-D",
+        "--max-count", "--after-context", "--before-context", "--context",
+        "--directories", "--devices", "--binary-files", "--label",
+        "--include", "--exclude", "--exclude-dir", "--exclude-from",
+    }),
+    "wc": frozenset(),
+    "egrep": frozenset({
+        "-A", "-B", "-C", "-m", "-d", "-D",
+        "--max-count", "--after-context", "--before-context", "--context",
+        "--directories", "--devices", "--binary-files", "--label",
+        "--include", "--exclude", "--exclude-dir", "--exclude-from",
+    }),
+    "fgrep": frozenset({
+        "-A", "-B", "-C", "-m", "-d", "-D",
+        "--max-count", "--after-context", "--before-context", "--context",
+        "--directories", "--devices", "--binary-files", "--label",
+        "--include", "--exclude", "--exclude-dir", "--exclude-from",
+    }),
+    "rg": frozenset({
+        "-A", "-B", "-C", "-m", "-t", "-T", "-g", "-j", "-M", "-d",
+        "--max-count", "--after-context", "--before-context", "--context",
+        "--type", "--type-not", "--glob", "--iglob", "--threads", "--max-columns",
+        "--max-depth", "--color", "--colors", "--sort", "--sortr", "--engine",
+        "--context-separator", "--field-match-separator",
+    }),
+    "awk": frozenset({"-v", "--assign", "-F", "--field-separator"}),
+}
+
+# Leading tokens that are shell syntax rather than a command name.  Without
+# this, `if true; then cat X; fi` splits into a fragment whose argv0 is `then`,
+# which is not a reader — and the read of X vanishes from the guard entirely.
+# That is a plain literal target, NOT the declared unprovable residue.
+_BASH_LEADING_SYNTAX_TOKENS: frozenset[str] = frozenset({
+    "if", "then", "elif", "else", "fi", "while", "until", "do", "done",
+    "case", "esac", "select", "function", "time", "!", "{", "}", "(", ")",
+})
+
+# Output redirections (`> f`, `2>> f`, `&> f`, `>& f`) — their operand is a
+# WRITE target and must never be reported as a read.  `<` is deliberately not
+# here: its operand really is read.
+_BASH_REDIRECT_OUT_EXACT_RE = re.compile(r"^\d*(?:>>|>&|&>|>)$")
+_BASH_REDIRECT_OUT_GLUED_RE = re.compile(r"^\d*(?:>>|>&|&>|>).+$")
+
+# `<<[-]DELIM` / `<<[-]'DELIM'` — the body that follows is DATA, not commands.
+# `(?<!<)` excludes a `<<<` here-string, whose operand is a word on the SAME
+# line and which has no body to blank. A quoted delimiter may be any word
+# (`'PY-END'`, `'1EOF'`), so the charset is only constrained for the bare form.
+_BASH_HEREDOC_RE = re.compile(
+    r"(?<!<)<<(?P<dash>-?)\s*"
+    r"(?:'(?P<sq>[^']*)'|\"(?P<dq>[^\"]*)\"|\\?(?P<bare>[A-Za-z_][A-Za-z0-9_]*))"
+)
+
+
+def _blank_heredoc_bodies(command: str) -> str:
+    """Replace heredoc bodies with spaces, preserving length.
+
+    A heredoc body is a document the agent is WRITING, not a command it is
+    running: `cat > note.md <<EOF` followed by a line reading
+    `diff a.md b.md` performs no read of a.md.  Leaves are explicitly told to
+    write scratch files this way, so scanning the body reports reads that do
+    not happen.  Length is preserved so fragment spans stay aligned with the
+    original string.
+    """
+    # Locate the operator in the QUOTE-STRIPPED string: `grep -n "cout << endl"`
+    # is not a heredoc, and treating it as one blanked every following line —
+    # deleting real read targets. _strip_quoted_strings is length-preserving, so
+    # the offsets apply to the original unchanged.
+    out = list(command)
+    search_from = 0
+    # Where the NEXT body starts. A line may declare several heredocs
+    # (`cat <<A <<B`); their bodies follow in order, so B's body begins where
+    # A's ended — not after B's own line. Advancing past a body to find the
+    # next operator would skip `<<B` entirely, because it sits EARLIER in the
+    # string than A's terminator, and B's body would then be parsed as
+    # commands.
+    body_cursor = 0
+    while True:
+        # Recomputed each pass: quote pairing must not run THROUGH a body we
+        # have already blanked. An apostrophe in one heredoc's prose ("don't")
+        # otherwise pairs with the opening quote of the next heredoc's
+        # delimiter, hiding that `<<` and leaving its body to be read as
+        # commands — a false read of whatever the document happens to mention.
+        scanned = _strip_quoted_strings("".join(out))
+        match = _BASH_HEREDOC_RE.search(scanned, search_from)
+        if match is None:
+            return "".join(out)
+        # A quoted delimiter's own text was blanked in `scanned`; read it back
+        # from the original at the same offsets.
+        delimiter = (
+            command[match.start("sq") : match.end("sq")]
+            if match.group("sq") is not None
+            else command[match.start("dq") : match.end("dq")]
+            if match.group("dq") is not None
+            else match.group("bare")
+        ).strip()
+        if not delimiter:
+            search_from = match.end()
+            continue
+        # `$((1 << n))` and `(( x = y << z ))` are arithmetic, not heredocs.
+        # A real heredoc operator is followed by end-of-line or another
+        # redirection — never by the `)` that closes an arithmetic context.
+        tail = scanned[match.end() :].lstrip(" \t")
+        if tail[:1] == ")":
+            search_from = match.end()
+            continue
+        newline = command.find("\n", match.end())
+        if newline == -1:
+            return "".join(out)
+        # First operator on this line: its body starts on the next line.
+        # A later operator on the SAME line continues after the previous body.
+        if body_cursor <= newline:
+            body_cursor = newline + 1
+        # Bash ends the body on a line that is EXACTLY the delimiter; `<<-`
+        # strips leading TABS only. Accepting any indentation ended the body
+        # early on a document that merely contains an indented `EOF`, leaving
+        # the rest of the prose to be parsed as commands.
+        dash = bool(match.group("dash"))
+        idx = body_cursor
+        while idx <= len(command):
+            line_end = command.find("\n", idx)
+            stop = len(command) if line_end == -1 else line_end
+            line = command[idx:stop]
+            is_delimiter = (line.lstrip("\t") if dash else line) == delimiter
+            for pos in range(idx, stop):
+                out[pos] = " "
+            if is_delimiter or line_end == -1:
+                break
+            idx = line_end + 1
+        # The next body starts after this terminator line; the next OPERATOR
+        # may still be on the original command line, so resume the search just
+        # past this one rather than past the body.
+        body_cursor = (len(command) if line_end == -1 else line_end) + 1
+        search_from = match.end()
+
+# Bash commands whose positional operands are file reads.  Everything here is
+# routed through _extract_read_targets, which owns the per-command grammar.
+_BASH_READ_CMD_NAMES: frozenset[str] = frozenset({
+    # historical set (also used by forbid_tools_direct_read)
+    "cat", "head", "tail", "less", "more", "bat", "pygmentize", "sed", "rg", "grep", "awk",
+    # widened for the read-manifest guard
+    "nl", "tac", "od", "xxd", "cut", "paste", "diff", "strings", "comm", "sort", "uniq", "jq",
+    # egrep/fgrep are in _SAFE_READONLY_BASH_CMDS (cli.py) — auto-approvable, so
+    # leaving them out of THIS set let `egrep PAT <any file>` execute unvalidated.
+    # `wc` likewise reads whole file contents.
+    "egrep", "fgrep", "wc",
+})
+
+# grep-family recursive flags: with one of these and no file operand, the
+# search walks the working directory — including from a pipe tail, where stdin
+# is ignored (verified: `echo x | grep -r hi` searches the cwd).
+_GREP_RECURSIVE_LONG_FLAGS: frozenset[str] = frozenset({
+    "--recursive", "-r", "-R", "--dereference-recursive",
+})
+
+# Shell separators that end one command fragment.  `&&`/`||` must precede the
+# single-character forms in the alternation.
+_BASH_FRAGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|;|&|\||\n")
+
+# fd-duplication redirects (`2>&1`, `>&2`). Their `&` is NOT a separator: it
+# split `cat 2>&1 file` into a reader with no operand plus an operand with no
+# reader, so the read vanished. The RHS digits must be the whole token — bash
+# treats `n>&word` as a dup only when `word` is all digits.
+_BASH_FD_DUP_RE = re.compile(r"\d*>&\d+(?![\w./-])")
+# A backslash-escaped separator is a literal character, not a separator.
+_BASH_ESCAPED_SEPARATOR_RE = re.compile(r"\\[&|;]")
+
+# ANSI-C (`$'…'`) and locale (`$"…"`) quoting at a word start. Both are purely
+# LEXICAL — bash reads the literal inside — but shlex turns them into a bare
+# `$word`, indistinguishable from a `$VAR` expansion, so the residue filter
+# dropped them and `cat $'secret/s.md'` reached the auto-approve. Stripping
+# the `$` before tokenizing keeps the distinction.
+_ANSI_C_QUOTE_PREFIX_RE = re.compile(r"(?<![\w$])\$(?=['\"])")
+
+# Leading `VAR=value` command prefix (`FOO=1 cat x`).
+_BASH_ASSIGNMENT_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+# Short options whose VALUE is glued to the rest of the cluster (`-eerror`,
+# `-m5`), so any letter after them belongs to that value, not to the cluster.
+_GREP_VALUE_TAKING_SHORT_LETTERS: frozenset[str] = frozenset("efmdDABC")
+
+# Modes that make a grep-family call read nothing, or that take no pattern
+# operand at all — synthesizing a "." read for these blocks a command the agent
+# cannot rephrase, which is a retry loop rather than a recoverable block.
+# Per command, because the spellings collide: `-h` is `--help` for ripgrep but
+# `--no-filename` for the grep family, so sharing one set made `grep -r -h PAT`
+# look like a help invocation and let a whole-checkout recursive read through.
+_GREP_NO_READ_FLAGS: dict[str, frozenset[str]] = {
+    "grep": frozenset({"--version", "-V", "--help"}),
+    "egrep": frozenset({"--version", "-V", "--help"}),
+    "fgrep": frozenset({"--version", "-V", "--help"}),
+    "rg": frozenset({"--version", "-V", "--help", "-h"}),
+}
+_RG_NO_PATTERN_FLAGS: frozenset[str] = frozenset({
+    "--files", "--type-list", "--pcre2-version",
+})
+
+
+# sed's value-taking short options. `-i[SUFFIX]` takes only a GLUED suffix, so
+# it ends a cluster without consuming the next token; the rest take a value
+# either glued or detached.
+_SED_VALUE_TAKING_SHORT_LETTERS: frozenset[str] = frozenset("efl")
+_SED_GLUED_ONLY_SHORT_LETTERS: frozenset[str] = frozenset("i")
+
+
+def _sed_short_cluster(token: str) -> tuple[str, str] | None:
+    """Split a sed short cluster at its first value-taking letter.
+
+    GNU sed clusters like any getopt program, so `-nf FILE` is `-n -f FILE` and
+    opens FILE. Recognizing `-f` only as a whole token or a `-f`-prefixed one
+    left `-nf` / `-nfFILE` to the generic flag skip, and the script file — a
+    real read of an out-of-manifest path — disappeared.
+    """
+    if not token.startswith("-") or token.startswith("--") or len(token) < 3:
+        return None
+    for pos, letter in enumerate(token[1:], start=1):
+        if letter in _SED_VALUE_TAKING_SHORT_LETTERS:
+            return letter, token[pos + 1 :]
+        if letter in _SED_GLUED_ONLY_SHORT_LETTERS:
+            return None  # `-i.bak`: the remainder belongs to -i, not to a flag
+        if not letter.isalpha():
+            return None
+    return None
+
+
+def _grep_short_cluster(cmd: str, token: str) -> tuple[str, str] | None:
+    """Split a grep-family short cluster at its first value-taking letter.
+
+    Returns `(letter, glued_value)` — `glued_value` empty when the value is the
+    next token — or None when the token is not such a cluster.
+
+    `-e`/`-f` were recognized only at the START of a token, and the generic
+    cluster rule derived its letters from the detached table, which excludes
+    them. So in `-ieTOP` neither half saw the `e`: the pattern was promoted to
+    the "first positional is the pattern" slot and the FILE was consumed as the
+    pattern instead — the read vanished and was auto-approved. `-Ff pats.txt`
+    lost the pattern file the same way.
+    """
+    if cmd not in {"grep", "egrep", "fgrep", "rg"}:
+        return None
+    if not token.startswith("-") or token.startswith("--") or len(token) < 3:
+        return None
+    # ripgrep's value-taking short options differ from GNU grep's, and its
+    # idiomatic glued form (`-tmd` is `-t md`) means the remainder belongs to
+    # the flag — but a cluster ENDING in one (`-nf FILE`) still takes the next
+    # token, which is how the pattern-file read was lost.
+    value_letters = set("efgjmtT") if cmd == "rg" else _GREP_VALUE_TAKING_SHORT_LETTERS
+    for pos, letter in enumerate(token[1:], start=1):
+        if letter in value_letters:
+            # Only the FLAG letters must be alphabetic; the glued value can be
+            # anything. Requiring the whole token to be letters meant any real
+            # pattern — `-ie2024`, `-ieTOP_X`, `-Ffspec/pats.txt` — fell through
+            # to the generic flag skip, and the file was eaten as the pattern.
+            return letter, token[pos + 1 :]
+        if not letter.isalpha():
+            return None
+    return None
+
+
+def _grep_directories_recurse(args: list[str]) -> bool:
+    """`grep -d recurse` / `--directories=recurse` is a spelling of `-r`."""
+    for idx, token in enumerate(args):
+        if token in {"-d", "--directories"} and idx + 1 < len(args):
+            if args[idx + 1] == "recurse":
+                return True
+        if token.startswith("--directories=") and token.split("=", 1)[1] == "recurse":
+            return True
+        if token.startswith("-d") and len(token) > 2 and token[2:] == "recurse":
+            return True
+    return False
+
+
+def _searches_working_directory(
+    cmd: str, args: list[str], *, stdin_from_pipe: bool
+) -> bool:
+    """Whether a grep-family call with no file operand still walks the tree."""
+    no_read_flags = _GREP_NO_READ_FLAGS.get(cmd, frozenset())
+    if any(token in no_read_flags for token in args):
+        return False
+    if cmd == "rg":
+        # ripgrep is recursive by default, but a pipe tail reads stdin instead.
+        return not stdin_from_pipe
+    if _grep_directories_recurse(args):
+        return True
+    for token in args:
+        if token in _GREP_RECURSIVE_LONG_FLAGS:
+            return True
+        # Short-flag clusters: `-rn`, `-Rl`. `--foo` is never a cluster, and a
+        # value-taking letter ends the cluster (`-eerror` is `-e error`, not a
+        # cluster containing `-r`).
+        if token.startswith("-") and not token.startswith("--"):
+            for letter in token[1:]:
+                if letter in {"r", "R"}:
+                    return True
+                if letter in _GREP_VALUE_TAKING_SHORT_LETTERS:
+                    break
+    return False
+
+
+def _extract_simple_positional_read_targets(cmd: str, args: list[str]) -> list[str]:
+    """Positional operands of a command whose args are all input files.
+
+    Flags are dropped, detached flag values are consumed, and `--` ends option
+    parsing.  Used for the plain readers (cat, nl, od, cut, sort, ...) where
+    every remaining operand names a file to read.
+    """
+    detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
+    targets: list[str] = []
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            targets.extend(args[idx + 1 :])
+            break
+        read_target, consumed = _long_option_read_target(cmd, token, args, idx)
+        if consumed:
+            if read_target:
+                targets.append(read_target)
+            idx += consumed
+            continue
+        if token in detached:
+            idx += 2
+            continue
+        if token.startswith("-") and token != "-":
+            idx += 1
+            continue
+        targets.append(token)
+        idx += 1
+    return targets
+
+
+# Long options whose VALUE is a file the command opens. These are not flags to
+# skip and not detached values to swallow — they are reads, and several of them
+# echo the file's content back (`wc --files0-from` and `sort --files0-from`
+# print it in their diagnostics, `diff --from-file` prints it as a diff). Both
+# spellings count: `--opt=PATH` and `--opt PATH`.
+#
+# Enumerated from each command's `--help` in one pass, deliberately: the same
+# defect kept arriving one option at a time (`--from-file`, `--exclude-from`,
+# `--files0-from`), and a table is the only form that closes the class.
+_LONG_OPTION_READ_TARGETS: dict[str, frozenset[str]] = {
+    "wc": frozenset({"--files0-from"}),
+    "sort": frozenset({"--files0-from", "--random-source"}),
+    "diff": frozenset({"--from-file", "--to-file", "--exclude-from", "--starting-file"}),
+    "grep": frozenset({"--exclude-from", "--file"}),
+    "egrep": frozenset({"--exclude-from", "--file"}),
+    "fgrep": frozenset({"--exclude-from", "--file"}),
+    "sed": frozenset({"--file"}),
+    # ripgrep opens --ignore-file and echoes any line that is not a valid glob.
+    "rg": frozenset({"--file", "--ignore-file"}),
+    "awk": frozenset({"--file"}),
+    "jq": frozenset({"--from-file", "--slurpfile", "--rawfile"}),
+    "comm": frozenset(),
+    "uniq": frozenset(),
+}
+
+
+def _long_option_read_target(
+    cmd: str, token: str, args: list[str], idx: int
+) -> tuple[str | None, int]:
+    """`(target, tokens_consumed)` when `token` names a file the command reads."""
+    if not token.startswith("--") or token == "--":
+        return None, 0
+    name, _, glued = token[2:].partition("=")
+    if f"--{name}" not in _LONG_OPTION_READ_TARGETS.get(cmd, frozenset()):
+        return None, 0
+    if "=" in token:
+        return (glued or None), 1
+    return (args[idx + 1] if idx + 1 < len(args) else None), 2
+
+
+def _is_long_option_abbreviation(token: str, names: tuple[str, ...]) -> bool:
+    """Whether `token` is an abbreviated spelling of one of `names`.
+
+    GNU getopt_long accepts any unambiguous prefix, so `--regex=PAT` and
+    `--reg=PAT` are `--regexp=PAT`. Only the options that supply a PATTERN or
+    SCRIPT matter here: mistaking one for an ordinary flag makes the grammar
+    consume the file operand in its place. Full spellings are handled by their
+    own branches; this covers the shortened ones.
+    """
+    if not token.startswith("--") or token == "--":
+        return False
+    name = token[2:].split("=", 1)[0]
+    if not name:
+        return False
+    return any(full.startswith(name) and full != name for full in names)
+
+
+def _extract_diff_read_targets(args: list[str]) -> list[str]:
+    """Read targets of a `diff` invocation.
+
+    `--from-file=PATH` / `--to-file=PATH` name files diff reads AND PRINTS, but
+    they look like any other long option, so the generic flag skip dropped them
+    silently — and `diff` is auto-approvable, so the read was granted.
+    """
+    targets: list[str] = []
+    rest: list[str] = []
+    idx = 0
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            rest.extend(args[idx + 1 :])
+            break
+        read_target, consumed = _long_option_read_target("diff", token, args, idx)
+        if consumed:
+            if read_target:
+                targets.append(read_target)
+            idx += consumed
+            continue
+        if token == "-X":  # --exclude-from's short form
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            idx += 2
+            continue
+        if token.startswith("-X") and len(token) > 2:
+            targets.append(token[2:])  # glued: `-Xfile`
+            idx += 1
+            continue
+        if token.startswith("-") and token != "-":
+            idx += 1
+            continue
+        rest.append(token)
+        idx += 1
+    return targets + rest
+
+
+def _extract_jq_read_targets(args: list[str]) -> list[str]:
+    """Read targets of a `jq` invocation.
+
+    The first positional is the FILTER program, not a file — the orchestration
+    agent routinely runs `jq -er <filter> workspace/...`, so treating operand 0
+    as a read would flood the guard with phantom targets.  `-f/--from-file` and
+    the `--slurpfile`/`--rawfile NAME FILE` pairs do name real files.
+    """
+    targets: list[str] = []
+    positional: list[str] = []
+    idx = 0
+    filter_from_file = False
+    while idx < len(args):
+        token = args[idx]
+        if token == "--":
+            positional.extend(args[idx + 1 :])
+            break
+        if re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", token) and token != "-f":
+            # jq clusters (`-rf prog.jq`), and `-f`'s value is always the next
+            # token — jq rejects the glued `-fprog.jq` itself. Unrecognized, the
+            # program file landed in the filter slot and was discarded.
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            filter_from_file = True
+            idx += 2
+            continue
+        if token in {"-f", "--from-file"}:
+            if idx + 1 < len(args):
+                targets.append(args[idx + 1])
+            filter_from_file = True
+            idx += 2
+            continue
+        if token.startswith("--from-file="):
+            value = token.split("=", 1)[1]
+            if value:
+                targets.append(value)
+            filter_from_file = True
+            idx += 1
+            continue
+        if token in {"--slurpfile", "--rawfile"}:
+            # `--slurpfile NAME FILE`: the second operand is the file.
+            if idx + 2 < len(args):
+                targets.append(args[idx + 2])
+            idx += 3
+            continue
+        if token in {"--arg", "--argjson"}:
+            idx += 3
+            continue
+        if token in {"--indent", "--seq-separator"}:
+            idx += 2
+            continue
+        if token.startswith("-") and token != "-":
+            idx += 1
+            continue
+        positional.append(token)
+        idx += 1
+    if filter_from_file:
+        return targets + positional
+    return targets + positional[1:]
+
+
+def _extract_read_targets(
+    cmd_name: str, cmd_tokens: list[str], *, stdin_from_pipe: bool = False
+) -> list[str]:
     args = cmd_tokens[1:]
     cmd = cmd_name.lower()
     if not args:
+        # `rg PAT` with no operand walks the working directory, but only when
+        # it is not consuming a pipe (verified: `echo x | rg hi` reads stdin).
+        if cmd == "rg" and not stdin_from_pipe:
+            return ["."]
         return []
 
-    if cmd in {"cat", "head", "tail", "less", "more", "bat", "pygmentize"}:
-        return [tok for tok in args if not tok.startswith("-")]
+    if cmd == "jq":
+        return _extract_jq_read_targets(args)
+
+    if cmd == "diff":
+        return _extract_diff_read_targets(args)
+
+    if cmd in {
+        "cat", "head", "tail", "less", "more", "bat", "pygmentize",
+        "nl", "tac", "od", "xxd", "cut", "paste", "strings",
+        "comm", "sort", "uniq", "wc",
+    }:
+        return _extract_simple_positional_read_targets(cmd, args)
 
     if cmd == "sed":
         positional: list[str] = []
@@ -321,6 +930,20 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
                     read_targets.append(args[idx + 1])
                 idx += 2
                 continue
+            sed_cluster = _sed_short_cluster(token)
+            if sed_cluster is not None:
+                letter, glued = sed_cluster
+                if letter in {"e", "f"}:
+                    if positional:
+                        explicit_script_after_positional = True
+                    has_explicit_script_source = True
+                    if letter == "f":
+                        if glued:
+                            read_targets.append(glued)
+                        elif idx + 1 < len(args):
+                            read_targets.append(args[idx + 1])
+                idx += 1 if glued else 2
+                continue
             if token.startswith("-e") and token != "-e":
                 if positional:
                     explicit_script_after_positional = True
@@ -332,6 +955,34 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
                     explicit_script_after_positional = True
                 has_explicit_script_source = True
                 read_targets.append(token[2:])
+                idx += 1
+                continue
+            read_target, consumed = _long_option_read_target(cmd, token, args, idx)
+            if consumed:
+                if positional:
+                    explicit_script_after_positional = True
+                has_explicit_script_source = True
+                if read_target:
+                    read_targets.append(read_target)
+                idx += consumed
+                continue
+            if _is_long_option_abbreviation(token, ("file",)) and "=" in token:
+                # `--fil=PATH` is `--file=PATH`: a script file sed reads.
+                if positional:
+                    explicit_script_after_positional = True
+                has_explicit_script_source = True
+                value = token.split("=", 1)[1]
+                if value:
+                    read_targets.append(value)
+                idx += 1
+                continue
+            if _is_long_option_abbreviation(token, ("expression", "file")):
+                # `--expr=p` supplies the script just as `--expression=p` does;
+                # treating it as an ordinary flag consumed the FILE as the
+                # script.
+                if positional:
+                    explicit_script_after_positional = True
+                has_explicit_script_source = True
                 idx += 1
                 continue
             if token.startswith("-"):
@@ -347,16 +998,42 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
             return read_targets
         return read_targets + positional[1:]
 
-    if cmd in {"rg", "grep"}:
+    if cmd in {"rg", "grep", "egrep", "fgrep"}:
         positional: list[str] = []
         idx = 0
         has_explicit_pattern = False
+        unrecognized_long_option = False
         read_targets: list[str] = []
+        detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
         while idx < len(args):
             token = args[idx]
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
+            long_read, long_consumed = _long_option_read_target(cmd, token, args, idx)
+            if long_consumed and token.split("=", 1)[0] != "--file":
+                # A file this reader OPENS (`--exclude-from`, rg's
+                # `--ignore-file`). `--file` is excluded here because it also
+                # supplies the PATTERN, which the branch below must record.
+                if long_read:
+                    read_targets.append(long_read)
+                idx += long_consumed
+                continue
+            if token in detached:
+                idx += 2
+                continue
+            cluster = _grep_short_cluster(cmd, token)
+            if cluster is not None:
+                letter, glued = cluster
+                if letter in {"e", "f"}:
+                    has_explicit_pattern = True
+                    if letter == "f":
+                        if glued:
+                            read_targets.append(glued)
+                        elif idx + 1 < len(args):
+                            read_targets.append(args[idx + 1])
+                idx += 1 if glued else 2
+                continue
             if token.startswith("--") and "=" in token:
                 key, value = token.split("=", 1)
                 if key in {"--file", "--regexp"}:
@@ -380,27 +1057,53 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
                 read_targets.append(token[2:])
                 idx += 1
                 continue
+            if _is_long_option_abbreviation(token, ("regexp", "file")):
+                # GNU getopt_long accepts any unambiguous abbreviation, so
+                # `--regex=PAT` / `--reg=PAT` really do supply the pattern —
+                # and treating them as ordinary flags consumed the FILE as the
+                # pattern and auto-approved the read.
+                unrecognized_long_option = True
+                idx += 1
+                continue
             if token.startswith("-"):
                 idx += 1
                 continue
             positional.append(token)
             idx += 1
-        if not positional:
-            return read_targets
-        if has_explicit_pattern:
-            return read_targets + positional
-        return read_targets + positional[1:]
+        # `rg --files docs` (and friends) take NO pattern operand, so the first
+        # positional is already a path. Consuming it as a pattern emptied the
+        # operand list and substituted "." — blocking on the repo root for a
+        # command that named a directory the manifest allows.
+        takes_no_pattern = cmd == "rg" and any(
+            token in _RG_NO_PATTERN_FLAGS for token in args
+        )
+        if has_explicit_pattern or takes_no_pattern or unrecognized_long_option:
+            file_operands = positional
+        else:
+            file_operands = positional[1:]
+        if not file_operands and _searches_working_directory(
+            cmd, args, stdin_from_pipe=stdin_from_pipe
+        ):
+            # No file operand, yet the search still walks the tree: `grep -rn PAT`
+            # reads the whole checkout. This is the same read a pathless Grep
+            # tool call makes, and that one blocks — so name the same target.
+            file_operands = ["."]
+        return read_targets + file_operands
 
     if cmd == "awk":
         positional: list[str] = []
         idx = 0
         read_targets: list[str] = []
         has_program_file = False
+        detached = _DETACHED_VALUE_FLAGS.get(cmd, frozenset())
         while idx < len(args):
             token = args[idx]
             if token == "--":
                 positional.extend(args[idx + 1 :])
                 break
+            if token in detached:
+                idx += 2
+                continue
             if token.startswith("--file="):
                 value = token.split("=", 1)[1]
                 if value:
@@ -431,6 +1134,327 @@ def _extract_read_targets(cmd_name: str, cmd_tokens: list[str]) -> list[str]:
         return read_targets + positional[1:]
 
     return []
+
+
+def _bash_comment_start(span_text: str) -> int | None:
+    """Index of the `#` that starts a comment, or None.
+
+    Bash treats `#` as a comment only at the start of a WORD, so `a#b` and
+    `--color=#fff` are not comments. Callers pass the quote-stripped span, where
+    a `#` inside quotes has already been blanked.
+    """
+    for pos, char in enumerate(span_text):
+        if char != "#":
+            continue
+        if pos == 0 or span_text[pos - 1] in " \t\n":
+            return pos
+    return None
+
+
+def _strip_bash_fragment_syntax(
+    tokens: list[str],
+) -> tuple[list[str], list[str], bool]:
+    """Split a fragment into (argv tokens, input-redirect reads, stdin-redirected).
+
+    Handles the shapes the separator split cannot: a leading keyword or grouping
+    token (`then cat X`, `{ cat X`, `(cat X)`), and redirections — an output
+    redirection's operand is a write target rather than a read, while an input
+    redirection's operand is a read no matter what the command is.
+    """
+    out: list[str] = []
+    idx = 0
+    # Leading `VAR=value` prefixes and shell syntax, in any order.
+    while idx < len(tokens):
+        token = tokens[idx]
+        if _BASH_ASSIGNMENT_PREFIX_RE.match(token) or token in _BASH_LEADING_SYNTAX_TOKENS:
+            idx += 1
+            continue
+        break
+    # A grouping character glued to the command name (`(cat`); when we strip
+    # one, the fragment's closing `)`/`}` is glued to its last token.
+    stripped_leading_group = False
+    if idx < len(tokens) and tokens[idx][:1] in {"(", "{"}:
+        tokens = list(tokens)
+        tokens[idx] = tokens[idx].lstrip("({")
+        stripped_leading_group = True
+        if not tokens[idx]:
+            idx += 1
+    redirect_reads: list[str] = []
+    stdin_redirected = False
+    while idx < len(tokens):
+        token = tokens[idx]
+        # A redirection may carry a file-descriptor number: `0<f` is `<f`, and
+        # `0<<EOF` is a heredoc. Strip the digits before classifying, or a
+        # literal path arrives as the ordinary operand `0<f`, fails the
+        # existence check, and the read is never validated.
+        bare = token.lstrip("0123456789") if token[:1].isdigit() else token
+        if bare.startswith("<<<"):  # here-string: the operand is literal text
+            stdin_redirected = True
+            # `<<<hi` carries its own operand; `<<< hi` takes the next token.
+            idx += 1 if len(bare) > 3 else 2
+            continue
+        if bare.startswith("<<"):  # heredoc: the operand is a delimiter word
+            stdin_redirected = True
+            idx += 1
+            continue
+        if _BASH_REDIRECT_OUT_EXACT_RE.match(token):
+            idx += 2  # `> path` — the operand is written, not read
+            continue
+        if _BASH_REDIRECT_OUT_GLUED_RE.match(token):
+            idx += 1  # `>path` / `2>/dev/null`
+            continue
+        # `< path` is a read whatever the command is. Reported separately
+        # because the caller only consults the argv0 grammar, and this read
+        # happens even when argv0 is `while`, `done`, or nothing at all
+        # (`< file cat`).
+        if bare.startswith("<&"):  # `0<&3`: an fd duplication, not a file
+            stdin_redirected = True
+            idx += 1
+            continue
+        if bare == "<":
+            stdin_redirected = True
+            if idx + 1 < len(tokens):
+                redirect_reads.append(tokens[idx + 1])
+            idx += 2
+            continue
+        if bare.startswith("<") and len(bare) > 1:
+            stdin_redirected = True
+            redirect_reads.append(bare[1:])
+            idx += 1
+            continue
+        out.append(token)
+        idx += 1
+    if stripped_leading_group and out and out[-1][-1:] in {")", "}"}:
+        out[-1] = out[-1].rstrip(")}")
+        if not out[-1]:
+            out.pop()
+    if redirect_reads:
+        # Strip a trailing group character from the last redirect operand too
+        # (`(cat < f)`), for the same reason as above.
+        if stripped_leading_group and redirect_reads[-1][-1:] in {")", "}"}:
+            redirect_reads[-1] = redirect_reads[-1].rstrip(")}")
+            if not redirect_reads[-1]:
+                redirect_reads.pop()
+    return out, redirect_reads, stdin_redirected
+
+
+def expand_bash_braces(token: str) -> list[str]:
+    """Expand `a{b,c}d` and `a{1..3}` the way the shell does.
+
+    Brace expansion is purely lexical — unlike `$VAR` or `$(...)`, nothing about
+    it needs runtime state — so a token carrying one names real files and must
+    not be waved through as "a path that does not exist".
+
+    This delegates to `_brace_expand`, the bounded expander the operator-secret
+    guard already uses: ranges matter as much as comma groups here (a range left
+    unexpanded fails the existence check and the read reaches the auto-approve),
+    and two expanders would drift apart on exactly the cases that matter.
+    """
+    return _brace_expand(token)
+
+
+def extract_bash_read_targets(
+    command: str | None, *, repo_root: Path | None = None
+) -> list[str]:
+    """Extract the file paths a Bash command reads, per fragment.
+
+    Best-effort by design (issue #42 decision 2): the goal is to widen what is
+    provable, not to fail closed on what is not.
+
+    What it can see is bounded by `_BASH_READ_CMD_NAMES` and their grammars, so
+    the residue is two classes, not one:
+      * a command OUTSIDE that set handed a literal path. Notably
+        `python3 workspace/tmp/<arid>/x.py`, which docs/AGENT_CONTRACT.md tells
+        leaves to use and `.claude/settings.json` allowlists, and whose heredoc
+        body this module deliberately blanks — so the paths that script reads
+        are invisible here by construction. Confining that class is the bwrap
+        read-confinement work, not this function.
+      * targets that exist only at runtime — `xargs cat`, `find -exec`,
+        `$(...)`/backtick substitution, `$VAR`, and a `cd` from an EARLIER Bash
+        call (a `cd` in THIS command is followed).
+
+    Callers must therefore treat an empty result as "nothing to authorize",
+    never as "safe".
+    """
+    if not command:
+        return []
+    targets: list[str] = []
+    # A backslash-newline is a line continuation, not a fragment boundary; the
+    # newline below is a real separator, so join the halves first (both strings
+    # stay the same length, keeping the span recovery aligned).
+    command = command.replace("\\\n", "  ")
+    # A heredoc body is data being written, not commands being run.
+    command = _blank_heredoc_bodies(command)
+    # Split the QUOTE-STRIPPED string so a separator inside a quoted argument is
+    # not treated as one, then recover each fragment's span from the original so
+    # quoted filenames survive intact (same idiom as the tee handling in
+    # _detect_bash_write_targets; _strip_quoted_strings is length-preserving).
+    scanned = _strip_quoted_strings(command)
+    # Blank the `&`s that are not separators before splitting (length-preserving,
+    # so fragment spans stay aligned with the original).
+    scanned = _BASH_FD_DUP_RE.sub(lambda m: " " * len(m.group()), scanned)
+    scanned = _BASH_ESCAPED_SEPARATOR_RE.sub(lambda m: " " * len(m.group()), scanned)
+    spans: list[tuple[int, int, bool]] = []
+    cursor = 0
+    piped = False
+    for match in _BASH_FRAGMENT_SEPARATOR_RE.finditer(scanned):
+        spans.append((cursor, match.start(), piped))
+        # Only a real pipe feeds the NEXT fragment's stdin; `;`/`&&` do not.
+        # A separator that closed an EMPTY span carries the previous one's
+        # meaning forward: in `cat x |\n  rg PAT` the newline must not erase
+        # the pipe, or the rg is read as a fresh recursive tree search.
+        if command[cursor : match.start()].strip():
+            piped = match.group() == "|"
+        elif match.group() == "|":
+            piped = True
+        cursor = match.end()
+    spans.append((cursor, len(scanned), piped))
+    # Directory the following fragments' relative targets resolve against.
+    # "" is repo_root; None means the scan lost track, in which case targets are
+    # validated UN-anchored — the direction that still checks something, rather
+    # than dropping the read. Only within THIS command string: a `cd` in an
+    # earlier Bash call is invisible here (declared residue; agents are told
+    # never to `cd`).
+    cwd: str | None = ""
+    previous_cwd: str | None = ""   # for `cd -`
+    dir_stack: list[str | None] = []  # for pushd/popd
+    subshell_stack: list[str | None] = []  # cwd to restore when a `(` closes
+
+    def _joined(base: str | None, operand: str) -> str | None:
+        if Path(operand).is_absolute():
+            return operand
+        if base is None:
+            return None  # unknown stays unknown; a relative cd cannot recover it
+        return str(Path(base) / operand) if base else operand
+
+    for start, end, stdin_from_pipe in spans:
+        blob = command[start:end].strip()
+        if not blob:
+            continue
+        # A `cd` inside `( ... )` is undone when the subshell closes. Count on
+        # the quote-stripped span so parens inside an argument do not count;
+        # `$(` opens a substitution we never enter.
+        span_text = scanned[start:end]
+        # An unquoted `#` starting a word begins a comment: the rest of the
+        # fragment is prose, and a path merely MENTIONED there is not a read.
+        comment_at = _bash_comment_start(span_text)
+        if comment_at is not None:
+            blob = command[start : start + comment_at].strip()
+            span_text = span_text[:comment_at]
+            if not blob:
+                continue
+        # `(` opens a subshell whose `cd` is undone when it closes — but a `$(`
+        # opens a substitution we never enter, and counting ITS closing paren
+        # popped the stack early, un-anchoring every later read.
+        opens = closes = 0
+        substitution_depth = 0
+        for pos, char in enumerate(span_text):
+            if char == "(":
+                if pos and span_text[pos - 1] == "$":
+                    substitution_depth += 1
+                else:
+                    subshell_stack.append(cwd)
+                    opens += 1
+            elif char == ")":
+                if substitution_depth:
+                    substitution_depth -= 1
+                else:
+                    closes += 1
+        try:
+            tokens = shlex.split(_ANSI_C_QUOTE_PREFIX_RE.sub("", blob))
+        except ValueError:
+            tokens = blob.split()
+        tokens, redirect_reads, stdin_redirected = _strip_bash_fragment_syntax(tokens)
+        if closes > opens:
+            # A subshell that OPENED in an earlier fragment closes here, so its
+            # `)` is glued to this fragment's last operand (`cat public.md)`).
+            for seq in (redirect_reads, tokens):
+                if seq and seq[-1].endswith(")"):
+                    seq[-1] = seq[-1].rstrip(")")
+                    if not seq[-1]:
+                        seq.pop()
+                    break
+
+        def _record(candidates: list[str]) -> None:
+            for target in candidates:
+                if not target:
+                    continue
+                # A token still carrying `$` or a backtick names a path only the
+                # shell can compute; there is nothing to validate, so it joins
+                # the declared residue rather than being validated as a literal.
+                if "$" in target or "`" in target:
+                    continue
+                anchored = target
+                if not Path(target).is_absolute():
+                    if cwd:
+                        anchored = str(Path(cwd) / target)
+                    elif cwd is None:
+                        # Unknown anchor: the target is validated un-anchored,
+                        # but a leading `..` would then resolve OUTSIDE the repo
+                        # and be dropped as bwrap's domain — turning a real
+                        # in-repo read into an allow. Clamp to the repo instead.
+                        anchored = os.path.normpath(target)
+                        while anchored.startswith(".." + os.sep):
+                            anchored = anchored[3:]
+                        if anchored == "..":
+                            anchored = "."
+                targets.append(anchored)
+
+        _record(redirect_reads)
+        argv0 = tokens[0].split("/")[-1].lower() if tokens else ""
+        if argv0 in {"cd", "pushd", "popd"}:
+            # Anchor the targets that follow: without this, `cd spec && cat
+            # private.md` resolved "private.md" at the repo root, found nothing
+            # and authorized nothing, while bash read the file. The operand is
+            # literal and known at hook time, so it is not the residue.
+            # First non-option operand: `cd -P spec` / `cd -- spec` /
+            # `pushd -n spec` anchored at the FLAG, so the following read
+            # resolved nowhere and was dropped. `-` alone is `cd -`.
+            operand = ""
+            rest = tokens[1:]
+            if "--" in rest:
+                rest = rest[rest.index("--") + 1 :]
+            for token in rest:
+                if token == "-" or not token.startswith("-"):
+                    operand = token
+                    break
+            if argv0 == "popd":
+                cwd, previous_cwd = (dir_stack.pop() if dir_stack else None), cwd
+            elif operand == "-":
+                cwd, previous_cwd = previous_cwd, cwd
+            elif not operand or "$" in operand or "`" in operand:
+                # `cd $D`, or a bare `cd` to the home directory.
+                previous_cwd, cwd = cwd, None
+            else:
+                if argv0 == "pushd":
+                    dir_stack.append(cwd)
+                previous_cwd, cwd = cwd, _joined(cwd, operand)
+                # bash leaves the directory unchanged when `cd` FAILS. Anchoring
+                # to a directory that is not there sent every later relative
+                # target to a path that cannot exist, so the existence filter
+                # dropped them and nothing was validated — `cd nosuchdir; cat
+                # <path>` walked straight past the guard.
+                if repo_root is not None and cwd is not None:
+                    try:
+                        is_dir = _resolve_target_path(repo_root, cwd).is_dir()
+                    except OSError:
+                        is_dir = False
+                    if not is_dir:
+                        cwd = None
+        elif argv0 in _BASH_READ_CMD_NAMES:
+            _record(
+                _extract_read_targets(
+                    argv0,
+                    tokens,
+                    # `rg PAT < file` and `rg PAT <<< text` read stdin exactly
+                    # as a pipe tail does, so neither walks the tree.
+                    stdin_from_pipe=stdin_from_pipe or stdin_redirected,
+                )
+            )
+        for _ in range(closes):
+            if subshell_stack:
+                cwd = subshell_stack.pop()
+    return targets
 
 
 # --- Pipe-tail inline-Python AST allowlist ---------------------------------
@@ -691,6 +1715,14 @@ def _expand_sequence(spec: str) -> list[str] | None:
     return [chr(n) for n in rng]
 
 
+# Bound on brace expansion in this synchronous hook. Exported because a
+# caller must be able to tell "fully expanded" from "gave up at the bound"
+# — past it the real file is never checked, so the caller has to fall back
+# to the `_braces_to_glob` form instead of trusting the (partial) list.
+BRACE_EXPAND_MAX_RESULTS = 256
+BRACE_EXPAND_MAX_GROUPS = 8
+
+
 def _brace_expand(s: str) -> list[str]:
     """Bash brace expansion: comma groups `{x,y}`, sequences `{k..m}`, and
     nested groups `{a,{b,c}}` — cartesian product, balanced-brace aware.
@@ -700,7 +1732,7 @@ def _brace_expand(s: str) -> list[str]:
     `_braces_to_glob` fail-closed fallback in the caller still blocks anything
     that lexically targets the secret root).
     """
-    if s.count("{") > 8:
+    if s.count("{") > BRACE_EXPAND_MAX_GROUPS:
         return [s]
     # Find the first balanced top-level {...} group.
     depth = 0
@@ -729,7 +1761,7 @@ def _brace_expand(s: str) -> list[str]:
                         # fallback, and let `~/.met-ds{k..m..1}/x` through.)
                         for tail in _brace_expand(post):
                             out.append(pre + "{" + inner + "}" + tail)
-                            if len(out) > 256:
+                            if len(out) > BRACE_EXPAND_MAX_RESULTS:
                                 return out
                         return out
                     options = seq
@@ -739,7 +1771,7 @@ def _brace_expand(s: str) -> list[str]:
                     for sub in _brace_expand(opt):
                         for tail in _brace_expand(post):
                             out.append(pre + sub + tail)
-                            if len(out) > 256:
+                            if len(out) > BRACE_EXPAND_MAX_RESULTS:
                                 return out
                 return out
     return [s]
@@ -2267,6 +3299,123 @@ def _record_and_check_first_auto_read(
             pass
 
 
+def _load_read_manifest_allowed_roots(
+    repo_root: Path,
+    orchestration_id: str,
+    agent_run_id: str,
+) -> tuple[list[str] | None, HookDecision | None]:
+    """Load `allowed_read_roots` for one agent run.
+
+    Returns `(roots, None)` on success and `(None, block_decision)` for each of
+    the four fail-closed cases (manifest absent / unreadable / not an object /
+    missing the list).  Every caller that authorizes a read against the manifest
+    must propagate the block decision unchanged — a missing manifest is never an
+    allow.
+    """
+    manifest_path = (
+        repo_root
+        / "workspace"
+        / "orchestrations"
+        / orchestration_id
+        / "read_manifests"
+        / f"{agent_run_id}.json"
+    )
+    if not manifest_path.exists():
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest not found for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest is unreadable or invalid JSON for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    if not isinstance(manifest, dict):
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest must be a JSON object for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    allowed_roots_obj = manifest.get("allowed_read_roots")
+    if not isinstance(allowed_roots_obj, list):
+        return None, HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"read manifest missing allowed_read_roots list for agent_run_id={agent_run_id!r}. "
+                f"{MANIFEST_HINT}"
+            ),
+            continue_processing=False,
+        )
+    return [str(item) for item in allowed_roots_obj], None
+
+
+def _read_target_in_allowed_roots(
+    repo_root: Path, allowed_roots: list[str], file_path: str
+) -> bool:
+    """Whether `file_path` resolves under (or equal to) one of `allowed_roots`."""
+    abs_target = _resolve_target_path(repo_root, file_path)
+    for root in allowed_roots:
+        abs_root = _resolve_manifest_root(repo_root, root.rstrip("/"))
+        if _is_path_under_root(abs_target, abs_root):
+            return True
+    return False
+
+
+def append_hook_access_log(
+    repo_root: Path,
+    orchestration_id: str,
+    agent_run_id: str,
+    *,
+    tool_name: str,
+    path: str,
+    decision: str,
+    policy: str | None = None,
+) -> None:
+    """Append one hook-layer read decision to `access_logs/<agent_run_id>.jsonl`.
+
+    Best-effort observability, never an authorization step: the whole body is
+    swallowed on OSError so a logging failure can never change a hook decision.
+    The directory is never created — inside the leaf's bwrap sandbox only the
+    per-arid file is bound writable and `access_logs/` itself is read-only, so a
+    mkdir would fail rather than help.  The record is additive over the shape
+    `log_orchestration_read` writes (gate lines carry no "source" key).
+    """
+    entry = {
+        "ts": _utc_now_iso(),
+        "path": path,
+        "source": "hook",
+        "tool": tool_name,
+        "decision": decision,
+        "policy": policy,
+    }
+    try:
+        log_path = (
+            repo_root
+            / "workspace"
+            / "orchestrations"
+            / orchestration_id
+            / "access_logs"
+            / f"{agent_run_id}.jsonl"
+        )
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def validate_read_access(
     repo_root: Path,
     orchestration_id: str,
@@ -2323,59 +3472,20 @@ def validate_read_access(
         # reads of the same allowlisted file are not classified as benign.
     if _is_self_agent_manifest_read_path(repo_root, orchestration_id, agent_run_id, file_path):
         return HookDecision(action=HookDecisionAction.ALLOW)
-    manifest_path = (
-        repo_root
-        / "workspace"
-        / "orchestrations"
-        / orchestration_id
-        / "read_manifests"
-        / f"{agent_run_id}.json"
+    allowed_roots, manifest_block = _load_read_manifest_allowed_roots(
+        repo_root, orchestration_id, agent_run_id
     )
-    if not manifest_path.exists():
-        return HookDecision(
+    if manifest_block is not None or allowed_roots is None:
+        return manifest_block or HookDecision(
             action=HookDecisionAction.BLOCK,
             reason=(
-                f"read manifest not found for agent_run_id={agent_run_id!r}. "
+                f"read manifest allowed_read_roots unavailable for agent_run_id={agent_run_id!r}. "
                 f"{MANIFEST_HINT}"
             ),
             continue_processing=False,
         )
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return HookDecision(
-            action=HookDecisionAction.BLOCK,
-            reason=(
-                f"read manifest is unreadable or invalid JSON for agent_run_id={agent_run_id!r}. "
-                f"{MANIFEST_HINT}"
-            ),
-            continue_processing=False,
-        )
-    if not isinstance(manifest, dict):
-        return HookDecision(
-            action=HookDecisionAction.BLOCK,
-            reason=(
-                f"read manifest must be a JSON object for agent_run_id={agent_run_id!r}. "
-                f"{MANIFEST_HINT}"
-            ),
-            continue_processing=False,
-        )
-    allowed_roots_obj = manifest.get("allowed_read_roots")
-    if not isinstance(allowed_roots_obj, list):
-        return HookDecision(
-            action=HookDecisionAction.BLOCK,
-            reason=(
-                f"read manifest missing allowed_read_roots list for agent_run_id={agent_run_id!r}. "
-                f"{MANIFEST_HINT}"
-            ),
-            continue_processing=False,
-        )
-    allowed_roots = [str(item) for item in allowed_roots_obj]
-    abs_target = _resolve_target_path(repo_root, file_path)
-    for root in allowed_roots:
-        abs_root = _resolve_manifest_root(repo_root, root.rstrip("/"))
-        if _is_path_under_root(abs_target, abs_root):
-            return HookDecision(action=HookDecisionAction.ALLOW)
+    if _read_target_in_allowed_roots(repo_root, allowed_roots, file_path):
+        return HookDecision(action=HookDecisionAction.ALLOW)
     return HookDecision(
         action=HookDecisionAction.BLOCK,
         reason=(
@@ -2389,10 +3499,17 @@ def validate_read_access(
             "agent_run_id": agent_run_id,
             "allowed_read_roots": allowed_roots,
             "fix_hint": {
-                "next_command": (
-                    f"python3 tools/orchestration_runtime.py run-gate "
-                    f"--gate orchestration_read --agent-run-id {agent_run_id} "
-                    f"--capability-token <token> --args-json '{{\"read_path\":\"{file_path}\"}}'"
+                # `note`, not `next_command`: format_block_reason_with_hint only
+                # renders the four fields it names, so a new key would never
+                # reach the agent. And deliberately not a run-gate command —
+                # log_orchestration_read terminally fails the orchestration for
+                # an out-of-manifest path (rule_source_violation + status=fail),
+                # so steering a blocked agent there turns a recoverable block
+                # into a dead run.
+                "note": (
+                    "re-issue the read against a path under allowed_read_roots, or relaunch "
+                    "with a manifest that declares this path; it is unreadable by every tool "
+                    "until then"
                 ),
                 "docs_ref": "docs/RUNBOOK.md#hook-recovery",
             },

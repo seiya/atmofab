@@ -17,7 +17,7 @@ Choose the path for obtaining CLI argument information based on the target subco
 - Frequent subcommands of `tools/orchestration_runtime.py` (the 12 Tier-A listed above): this document is canonical (complex payload schema, per-phase required-argument switching — `--help` alone is insufficient).
 - Rare subcommands of `tools/orchestration_runtime.py` (`init` / `preflight` / `preflight-status` / `record-timeout` / `read-checkpoint` / `verify-checkpoint-integrity` / `check-step-completed` / `orchestration-read` / `repair-agent-runs` / `repair-step-result-executor` / `reopen-phase` / `add-superseded-runs` / `dismiss-violation`), and `tools/run_workflow.py` / `tools/validate_pipeline_semantics.py` / `tools/audit_orchestration.py`: `<tool> [<sub>] --help` is canonical. [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md) retains only an overview of the rare subcommands.
 - `tools/new_agent_run_id.py` takes no arguments. A step / substep (leaf) agent does not consult this policy: its `run-gate` invocations use the literal embedded in its launch prompt (rendered from `tools/prompt_templates/`).
-- During workflow execution, reading the `.py` implementations under `tools/` directly via the `Read` tool / `grep` / `sed` / `cat` etc. is forbidden (`forbid_tools_direct_read`, `read_manifest_read_guard`); the argparse output via `--help` is not blocked. During repository improvement / maintenance / testing / refactoring, `tools/*.py` is ordinary source code and may be inspected directly.
+- During workflow execution, reading the `.py` implementations under `tools/` directly is forbidden (`forbid_tools_direct_read`, `read_manifest_read_guard`) — via the `Read` tool, the `Grep` / `Glob` tools, or `grep` / `sed` / `cat` in `Bash`; the argparse output via `--help` is not blocked. During repository improvement / maintenance / testing / refactoring, `tools/*.py` is ordinary source code and may be inspected directly.
 
 Related canonical sources:
 - rare subcommand overview: [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md)
@@ -36,7 +36,7 @@ Related canonical sources:
 - For JSON arguments (`--*-json`), be careful with shell quoting. A single argv element is also capped at MAX_ARG_STRLEN (128 KiB on Linux), and a large payload makes `execve` fail with `E2BIG` before the process starts. So for a large or unbounded payload use the file/stdin variant: `--request-json-file` (record-launch), `--agent-run-json-file` and `--reply-from-stdin` (finalize-child), `--reply-from-stdin` (record-reply).
 - **Terse stdout by default.** The high-frequency bookkeeping subcommands (`record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `write-step-result` / `run-gate`) print **only the result fields the orchestration agent consumes downstream** to stdout, not the full payload. This keeps the orchestration's resident context small (its cache-read cost scales with context size × turn count). The full payload is always persisted to the canonical artifact files regardless (`launches/<arid>.*`, `agent_runs.jsonl`, `steps/.../step_result.json`, `gates/<arid>/<gate>.json`, etc.); pass `--verbose` to also emit the full JSON to stdout for debugging/audit. Soft-failure signals (`violations` / `error[s]` / `warning[s]`) are retained in terse output when present, and hard failures still exit non-zero via stderr.
   - `record-launch` terse fields: `capability_token`, `capability_ref`, `read_access_manifest_ref`, `allowed_output_manifest_ref`, `sandbox_profile_ref`, `launch_prompt_ref`, and **`launch_prompt_text`** (the exact rendered prompt the orchestration passes verbatim to the leaf subprocess — it cannot read the template or the written prompt file). The remaining `launch_*_ref` / `child_launch_*_ref` paths are deterministic from `<orchestration_id>`+`<arid>` and are dropped from terse stdout.
-  - `run-gate` terse keeps `result` (the `orchestration_read` content — child agents' only allowed path for those reads) in addition to `violations` / `gate_result_ref`.
+  - `run-gate` terse keeps `result` (the `orchestration_read` content) in addition to `violations` / `gate_result_ref`.
 
 ---
 
@@ -69,7 +69,7 @@ For details `python3 tools/orchestration_runtime.py <sub> --help`, for the overv
 | `preflight` | judge the launchability of the execution platform |
 | `preflight-status` | read back an existing preflight.json |
 | `record-timeout` | the canonical recovery for an API stream idle timeout |
-| `orchestration-read` | the gate-mediated read of a path outside the manifest |
+| `orchestration-read` | the gate-mediated, audited re-read of a path **inside** the manifest (an out-of-manifest path is not granted: it records a `rule_source_violation` and fails the orchestration) |
 | `read-checkpoint` | obtain orchestration_checkpoint.json |
 | `verify-checkpoint-integrity` | reconcile the checkpoint with the artifact hash |
 | `check-step-completed` | with resume_enabled, confirm the completion of the relevant step |
@@ -144,7 +144,7 @@ Adv-20: record the evidence (`child_returns/<arid>.txt`) that the orchestration 
 | `--repo-root` | yes | |
 | `--orchestration-id` | yes | |
 | `--agent-run-id` | yes | the child agent's UUID |
-| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. Pass it with `$(cat <path>)`. **Do not read that file in advance with the `Read` tool etc.** (a Read during the active_child window is evaluated against the child arid's `read_manifest` and blocked by `read_manifest_read_guard`) |
+| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. Pass it as a **literal** value obtained by the two-step of `docs/RUNBOOK.md` §substep-timeout-recovery (a bare `cat` of that path, then the printed token embedded literally); the `$(cat <path>)` form is rejected by the Bash tool's static analysis. **Do not read that file in advance with the `Read` tool etc.** (a Read during the active_child window is evaluated against the child arid's `read_manifest` and blocked by `read_manifest_read_guard`) |
 | `--reply-excerpt` | no | an optional short text (truncated to 200 chars). For audit |
 
 ---

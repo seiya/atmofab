@@ -190,7 +190,7 @@ Classify the extracted results by the following perspectives.
 
 ### Step 4.5 — Aggregate the utilization status of `audit_detail.fix_hint`
 
-Classify whether the blocks in `native_hook_events.jsonl` include `fix_hint.next_command` or were empty.
+Classify whether the blocks in `native_hook_events.jsonl` carry an actionable `fix_hint` (`next_command`, or `note` where no command can work — a read block outside `allowed_read_roots` has no command that reaches the path) or were empty.
 Focus on identifying cases where "the hint was provided but the agent ignored it and repeated the same operation".
 
 ```bash
@@ -215,8 +215,18 @@ with open(path) as f:
             continue
         policy = (obj.get("audit_detail") or {}).get("policy", "unknown")
         fix_hint = (obj.get("audit_detail") or {}).get("fix_hint")
-        cmd = (obj.get("payload_summary") or {}).get("command", "") or obj.get("payload_summary", "")
-        if fix_hint and fix_hint.get("next_command"):
+        summary = obj.get("payload_summary") or {}
+        detail = obj.get("audit_detail") or {}
+        # Bash blocks carry `command`; Grep/Glob carry `path` (+ `pattern`).
+        # Keying on `command` alone hides a search an agent retries in a loop,
+        # and the raw dict fallback used to crash the slice below. Scope the key
+        # to the agent and tool: two agents blocked once each on the same path
+        # is not a retry.
+        who = detail.get("agent_run_id") or summary.get("session_id") or ""
+        target = summary.get("command") or "::".join(
+            str(summary[k]) for k in ("path", "pattern", "file_path") if summary.get(k))
+        cmd = "::".join(x for x in (who, obj.get("tool_name") or "", target) if x) if target else ""
+        if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
             hint_present[policy] += 1
         else:
             hint_absent[policy] += 1
@@ -434,7 +444,7 @@ From Step 3.5 / 4.5 / 5.5, summarize the **legitimate action the agent should ta
 
 | policy | block count | fix_hint present/absent | recommended action |
 |---|---|---|---|
-| read_manifest_read_guard | … | … | the path is outside `allowed_read_roots` (in-manifest paths read directly with `Read`); obtain an out-of-manifest read via `run-gate orchestration_read` |
+| read_manifest_read_guard | … | … | the path is outside `allowed_read_roots`. In-manifest paths are read directly (`Read` / `Grep` / `Glob` / a `Bash` reader); an out-of-manifest path is unreadable by every route — `run-gate orchestration_read` fails the orchestration for it — so the fix is a read re-issued under `allowed_read_roots`, or a relaunch with a corrected manifest. `audit_detail.via == "bash"` marks a Bash block; for the other routes read the record's top-level `tool_name` (`Read` / `Grep` / `Glob`) |
 | output_manifest_write_guard | … | … | directly specify the literal path of `allowed_tmp_root` (`workspace/tmp/<agent_run_id>/...`). Bootstrap Bash such as `export TMPDIR=...` / `jq -er ...` is forbidden (the workflow stops on a Claude Code session sandbox approval) |
 | forbid_python_inline_write | … | … | use the Edit/Write tool |
 | forbid_tools_direct_read | … | … | during workflow execution, reference only `docs/` / `spec/` |

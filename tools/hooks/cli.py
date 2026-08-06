@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import glob
 import json
 import os
 import re
@@ -18,9 +20,20 @@ from tools.hooks.common import (
     HookDecision,
     HookDecisionAction,
     HookEventName,
+    _is_path_under_root,
+    _is_self_agent_manifest_read_path,
+    _load_read_manifest_allowed_roots,
+    _read_target_in_allowed_roots,
+    _resolve_target_path,
+    _strip_quoted_strings,
     _utc_now_iso,
+    append_hook_access_log,
+    _braces_to_glob,
+    BRACE_EXPAND_MAX_RESULTS,
     check_cli_managed_path,
     evaluate_common_policy,
+    expand_bash_braces,
+    extract_bash_read_targets,
     normalize_hook_event_name,
     READ_HINT,
     WRITE_HINT,
@@ -162,6 +175,18 @@ def _audit_payload_summary(payload: dict[str, Any], tool_name: str | None) -> di
     file_path = tool_input.get("file_path")
     if isinstance(file_path, str) and file_path.strip():
         summary["file_path"] = file_path.strip()
+
+    # Grep/Glob name their target with `path`, not `file_path`. Without these the
+    # record carries no payload_summary at all, so a search an agent retries in a
+    # loop is indistinguishable from a one-off. `audit_orchestration._repeat_key_of`
+    # keys on these fields when `command` is absent — both halves are needed for
+    # repeated-block detection to see a Grep/Glob loop.
+    search_path = tool_input.get("path")
+    if isinstance(search_path, str) and search_path.strip():
+        summary["path"] = search_path.strip()
+    pattern = tool_input.get("pattern")
+    if isinstance(pattern, str) and pattern.strip():
+        summary["pattern"] = _trim_audit_text(pattern.strip(), limit=200)
 
     command = _payload_value(payload, "command")
     if not isinstance(command, str) or not command.strip():
@@ -343,19 +368,6 @@ _BASH_TEE_RE = re.compile(r"\btee\b(?:\s+-\w+)*\s+([^\n;&|<>]+)")
 _REDIRECT_SKIP = frozenset({
     "/dev/null", "/dev/stderr", "/dev/stdout", "/dev/stdin", "1", "2",
 })
-# Patterns for stripping quoted string content before redirect detection.
-# Prevents false positives when CLI arguments like --reply-text "... > 0 ..." are scanned.
-_DOUBLE_QUOTED_RE = re.compile(r'"(?:[^"\\]|\\.)*"', re.DOTALL)
-_SINGLE_QUOTED_RE = re.compile(r"'[^']*'", re.DOTALL)
-
-
-def _strip_quoted_strings(cmd: str) -> str:
-    """Replace the content inside shell quotes with spaces to prevent redirect false-positives."""
-    cmd = _DOUBLE_QUOTED_RE.sub(lambda m: '"' + " " * (len(m.group()) - 2) + '"', cmd)
-    cmd = _SINGLE_QUOTED_RE.sub(lambda m: "'" + " " * (len(m.group()) - 2) + "'", cmd)
-    return cmd
-
-
 def _skip_single_quoted(s: str, i: int) -> int:
     """Advance past a single-quoted string starting after the opening quote."""
     n = len(s)
@@ -858,7 +870,9 @@ def _is_pure_readonly_capability(
 
 
 def _hint_for_file_tool(tool_name: str) -> str:
-    return READ_HINT if tool_name == "Read" else WRITE_HINT
+    # Grep/Glob are reads too: handing a blocked search the Edit/Write
+    # remediation sends the agent off to think about output manifests.
+    return READ_HINT if tool_name in {"Read", "Grep", "Glob"} else WRITE_HINT
 
 
 def _resolve_agent_run_id_for_file_tool(
@@ -955,6 +969,339 @@ def _validate_write_targets(
     return HookDecision(action=HookDecisionAction.ALLOW)
 
 
+def _log_read_decision(
+    *,
+    repo_root: Path,
+    orchestration_id: str,
+    agent_run_id: str,
+    tool_name: str,
+    path: str,
+    decision: HookDecision,
+) -> None:
+    """Record one hook-layer read decision in the agent's access log."""
+    append_hook_access_log(
+        repo_root,
+        orchestration_id,
+        agent_run_id,
+        tool_name=tool_name,
+        path=path,
+        decision="block" if decision.action == HookDecisionAction.BLOCK else "allow",
+        policy=(decision.audit_detail or {}).get("policy"),
+    )
+
+
+# Search tools whose read boundary is enforced by validating their `path` root.
+# Their `pattern` is NOT validated: a Glob pattern can still reach outside the
+# validated root via an absolute or `../` pattern (documented residue, issue #42).
+# `**` only recurses within `path`, so it is not part of that residue.
+_PATH_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+
+# Shell glob metacharacters. A token carrying one is expanded by the shell, so
+# it must be resolved against the filesystem rather than tested for existence.
+_GLOB_META_RE = re.compile(r"[*?\[]")
+
+
+def _evaluate_grep_glob_read_policy(
+    *,
+    decoded: Any,
+    repo_root: Path,
+    orchestration_id: str,
+    backend: str,
+    tool_name: str,
+) -> HookDecision:
+    """Authorize a Grep/Glob search root against the agent's read manifest.
+
+    A search is a read: `Grep` returns matching lines and `Glob` returns paths,
+    both from wherever `path` points. Unlike step 2's Write/Edit/Read branch we
+    must NOT fail open when the path is absent — a pathless Grep searches the
+    repo root, which is the widest read the tool offers, so it is validated as
+    "." and blocks unless the manifest actually grants the repo root.
+    """
+    raw_path = _tool_input(decoded.payload).get("path")
+    search_path = raw_path.strip() if isinstance(raw_path, str) and raw_path.strip() else ""
+    path_missing = not search_path
+    if path_missing:
+        search_path = "."
+    resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+        backend=backend,
+        repo_root=repo_root,
+        orchestration_id=orchestration_id,
+        session_id=decoded.session_id,
+        agent_session_id=decoded.agent_session_id,
+        tool_name=tool_name,
+    )
+    if resolution_error is not None:
+        return resolution_error
+    if resolved_run_id is None:
+        return HookDecision(action=HookDecisionAction.ALLOW)
+    agent_role = _get_agent_role_from_capability(repo_root, orchestration_id, resolved_run_id)
+    decision = validate_read_access(
+        repo_root,
+        orchestration_id,
+        resolved_run_id,
+        search_path,
+        agent_role=agent_role,
+        session_id=decoded.session_id,
+    )
+    if decision.action == HookDecisionAction.BLOCK and path_missing:
+        decision = dataclasses.replace(
+            decision,
+            reason=(
+                f"{decision.reason or ''} "
+                f"{tool_name} was called without a 'path', which searches the repository "
+                "root. Pass path= a directory listed in read_manifest allowed_read_roots."
+            ).strip(),
+        )
+    _log_read_decision(
+        repo_root=repo_root,
+        orchestration_id=orchestration_id,
+        agent_run_id=resolved_run_id,
+        tool_name=tool_name,
+        path=search_path,
+        decision=decision,
+    )
+    return decision
+
+
+# Wildcard path components a read target may carry before the walk is judged
+# too expensive to run inside a synchronous PreToolUse hook. `glob.glob` is
+# unbounded: `/*/*/*/*/*/*` did not finish in 60 s on this checkout, which would
+# hang every tool call behind it.
+_GLOB_MAX_WILDCARD_COMPONENTS = 2
+
+
+def _path_exists(path: Path) -> bool:
+    """`Path.exists()` that cannot kill the hook.
+
+    It propagates ENAMETOOLONG and EACCES rather than swallowing them, and this
+    runs on every tool call — an unrelated legitimate command would die with an
+    opaque "hook entrypoint failure". Treating an unstattable path as absent
+    matches what the caller does with a nonexistent one.
+    """
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _bounded_glob_read_targets(
+    repo_root: Path, repo_root_resolved: Path, target: str
+) -> list[tuple[str, Path]]:
+    """Resolve a wildcard read target to the paths it names, without a wide walk.
+
+    Every match of a glob lies under the literal prefix that precedes its first
+    wildcard, so when the pattern is too broad to expand cheaply the prefix
+    directory is validated instead. That is a SUPERSET test, not an exact one:
+    authorizing the prefix authorizes everything the pattern could reach, but a
+    prefix that is a strict ancestor of an allowed root blocks even when every
+    real match would have been in-manifest. Fail-closed and honest — the block
+    names the prefix, which the agent can narrow — and the alternative is an
+    unbounded walk in a hook that runs on every tool call.
+
+    A prefix outside repo_root, or one that does not exist, is skipped for the
+    same reasons a literal target is: out-of-repo is bwrap's domain, and a path
+    that is not there leaks nothing. Skipping the out-of-repo case BEFORE
+    globbing is what keeps `/*/*/*/*` from walking the filesystem.
+    """
+    components = target.split("/")
+    literal: list[str] = []
+    for component in components:
+        if _GLOB_META_RE.search(component):
+            break
+        literal.append(component)
+    # An absolute pattern's first component is empty; joining it back would drop
+    # the leading "/" and make an out-of-repo pattern look repo-relative.
+    prefix = "/".join(literal) or ("/" if target.startswith("/") else ".")
+    prefix_abs = _resolve_target_path(repo_root, prefix)
+    if not _is_path_under_root(prefix_abs, repo_root_resolved):
+        return []
+    wildcard_components = sum(
+        1 for component in components[len(literal) :] if _GLOB_META_RE.search(component)
+    )
+    if wildcard_components > _GLOB_MAX_WILDCARD_COMPONENTS:
+        if ".." in components[len(literal) :]:
+            # "every match lies under the prefix" fails once a `..` follows a
+            # wildcard: `docs/*/../../spec/*/*/*` reaches outside docs/. Validate
+            # at the repository root, the only prefix that still contains it.
+            return [(".", repo_root_resolved)]
+        return [(prefix, prefix_abs)] if _path_exists(prefix_abs) else []
+    out: list[tuple[str, Path]] = []
+    for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
+        abs_match = Path(match)
+        if not _is_path_under_root(abs_match, repo_root_resolved):
+            continue
+        # Name the match, not the pattern, so the block points at a real path.
+        out.append((abs_match.relative_to(repo_root_resolved).as_posix(), abs_match))
+    return out
+
+
+def _is_active_child_return_token_path(
+    repo_root: Path, orchestration_id: str, agent_run_id: str, target: str
+) -> bool:
+    """Whether `target` is the return token of the currently active child.
+
+    `record-child-return` needs the token, and the documented procedure
+    (docs/RUNBOOK.md §substep-timeout-recovery) is a bare
+    `cat launches/<child_arid>.parent_return_token`, because the Claude Code
+    Bash tool rejects the `$(cat ...)` substitution form as un-analyzable and
+    the `Read` tool is already blocked here. During the active-child window the
+    hook resolves to the CHILD's agent_run_id — whose manifest never lists
+    `launches/` — so without this the only working form of a documented
+    recovery step would block. Reading this path via Bash was permitted before
+    the Bash read guard existed; this keeps that exact behavior rather than
+    widening it (the `Read` tool stays blocked).
+    """
+    orch = orchestration_id.strip()
+    rid = agent_run_id.strip()
+    if not orch or not rid:
+        return False
+    abs_target = _resolve_target_path(repo_root, target)
+    try:
+        rel = abs_target.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return False
+    return rel == f"workspace/orchestrations/{orch}/launches/{rid}.parent_return_token"
+
+
+def _evaluate_bash_read_manifest_policy(
+    *,
+    decoded: Any,
+    repo_root: Path,
+    orchestration_id: str,
+    backend: str,
+    resolved_run_id: str | None,
+) -> tuple[HookDecision | None, str | None]:
+    """Authorize the read targets of a Bash command against the read manifest.
+
+    Returns `(decision, resolved_run_id)`; a non-None decision must be returned
+    to the caller as-is.  Only targets that EXIST on disk and resolve inside
+    repo_root are validated: a nonexistent path leaks nothing (this also absorbs
+    over-extraction), and paths outside the repo are bwrap's domain — blocking
+    them here would break benign commands while adding no confinement.  Every
+    real repo file is inside the sandbox's ro-bind, so the incident class this
+    guard exists for is fully covered.
+
+    With no surviving target the command is left on its previous path entirely,
+    including the read-only auto-approve; the extractor's blind spots
+    (`xargs cat`, substitution) are accepted residue, not proof of safety.
+    """
+    repo_root_resolved = repo_root.resolve()
+    surviving: list[tuple[str, Path]] = []
+    extracted: list[str] = []
+    for raw_target in extract_bash_read_targets(decoded.command, repo_root=repo_root):
+        # Brace expansion is lexical, so `cat spec/{a,b}.md` names real files;
+        # leaving it unexpanded would drop it as "nonexistent" and auto-approve.
+        variants = expand_bash_braces(raw_target)
+        if len(variants) > BRACE_EXPAND_MAX_RESULTS or any("{" in v for v in variants):
+            # The expander is bounded (>8 groups, >256 products). Past the
+            # bound it returns the token unexpanded or a truncated list, and
+            # either way the real file is never checked — `cat skills/d{1..300}`
+            # reached the auto-approve. Fall back to the glob form the
+            # operator-secret guard uses, so the filesystem decides what this
+            # names rather than the bound.
+            variants = [_braces_to_glob(raw_target)]
+        extracted.extend(variants)
+    for target in extracted:
+        if _GLOB_META_RE.search(target):
+            # "A nonexistent path leaks nothing" does NOT hold for a glob: the
+            # shell expands it to real files. Dropping it would hand
+            # `cat secret/*.txt` to the read-only auto-approve.
+            surviving.extend(
+                _bounded_glob_read_targets(repo_root, repo_root_resolved, target)
+            )
+            continue
+        abs_target = _resolve_target_path(repo_root, target)
+        if not _is_path_under_root(abs_target, repo_root_resolved):
+            continue
+        if not _path_exists(abs_target):
+            continue
+        surviving.append((target, abs_target))
+    if not surviving:
+        return None, resolved_run_id
+    if resolved_run_id is None:
+        resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
+            backend=backend,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            session_id=decoded.session_id,
+            agent_session_id=decoded.agent_session_id,
+            tool_name="Read",
+        )
+        if resolution_error is not None:
+            return resolution_error, None
+    if resolved_run_id is None:
+        return (
+            HookDecision(
+                action=HookDecisionAction.BLOCK,
+                reason=f"session-to-run mapping not found. {READ_HINT}",
+                continue_processing=False,
+            ),
+            None,
+        )
+    allowed_roots, manifest_block = _load_read_manifest_allowed_roots(
+        repo_root, orchestration_id, resolved_run_id
+    )
+    if manifest_block is not None or allowed_roots is None:
+        return manifest_block, resolved_run_id
+    for target, _abs_target in surviving:
+        if (
+            _is_self_agent_manifest_read_path(
+                repo_root, orchestration_id, resolved_run_id, target
+            )
+            or _is_active_child_return_token_path(
+                repo_root, orchestration_id, resolved_run_id, target
+            )
+            or _read_target_in_allowed_roots(repo_root, allowed_roots, target)
+        ):
+            append_hook_access_log(
+                repo_root,
+                orchestration_id,
+                resolved_run_id,
+                tool_name="Bash",
+                path=target,
+                decision="allow",
+            )
+            continue
+        decision = HookDecision(
+            action=HookDecisionAction.BLOCK,
+            reason=(
+                f"unauthorized read: Bash command reads {target!r}, which is not in "
+                f"read_manifest allowed_read_roots (agent_run_id={resolved_run_id!r}). "
+                "Re-issue the command against a path under allowed_read_roots; a path "
+                "outside them is unreadable by every tool, so there is no alternative "
+                "command that reaches it. "
+                f"{READ_HINT}"
+            ),
+            continue_processing=False,
+            audit_detail={
+                "policy": "read_manifest_read_guard",
+                "via": "bash",
+                "command": decoded.command,
+                "read_target": target,
+                "agent_run_id": resolved_run_id,
+                "allowed_read_roots": allowed_roots,
+                "fix_hint": {
+                    "note": (
+                        "re-issue the command against a path under allowed_read_roots; "
+                        "there is no command that reaches a path outside them"
+                    ),
+                    "docs_ref": "docs/RUNBOOK.md#hook-recovery",
+                },
+            },
+        )
+        append_hook_access_log(
+            repo_root,
+            orchestration_id,
+            resolved_run_id,
+            tool_name="Bash",
+            path=target,
+            decision="block",
+            policy="read_manifest_read_guard",
+        )
+        return decision, resolved_run_id
+    return None, resolved_run_id
+
+
 def _evaluate_pre_command_file_access_policy(
     *,
     decoded: Any,
@@ -1026,7 +1373,7 @@ def _evaluate_pre_command_file_access_policy(
             return HookDecision(action=HookDecisionAction.ALLOW)
         if tool_name == "Read":
             agent_role = _get_agent_role_from_capability(repo_root, orchestration_id, resolved_run_id)
-            return validate_read_access(
+            read_decision = validate_read_access(
                 repo_root,
                 orchestration_id,
                 resolved_run_id,
@@ -1034,6 +1381,15 @@ def _evaluate_pre_command_file_access_policy(
                 agent_role=agent_role,
                 session_id=decoded.session_id,
             )
+            _log_read_decision(
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                agent_run_id=resolved_run_id,
+                tool_name=tool_name,
+                path=decoded.file_path,
+                decision=read_decision,
+            )
+            return read_decision
         # Write / Edit: on a manifest match, return permissionDecision=allow to bypass
         # the harness's permission prompt. A manifest mismatch propagates as BLOCK.
         write_decision = _validate_write_targets(
@@ -1058,6 +1414,18 @@ def _evaluate_pre_command_file_access_policy(
             )
         return write_decision
 
+    # step 2b: Grep / Glob search-root guard
+    if tool_name in _PATH_SEARCH_TOOLS:
+        if workflow_mode != "1":
+            return HookDecision(action=HookDecisionAction.ALLOW)
+        return _evaluate_grep_glob_read_policy(
+            decoded=decoded,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            backend=backend,
+            tool_name=tool_name,
+        )
+
     # step 3: Bash/Shell read/write guard
     if tool_name in {"Bash", "bash", "Shell", "shell"}:
         common_decision = evaluate_common_policy(decoded)
@@ -1068,8 +1436,7 @@ def _evaluate_pre_command_file_access_policy(
         resolved_run_id: str | None = None
         # Resolve before the read-only fast path only for Codex. A Codex pure
         # leaf can run `cat` in its read-only sandbox; unlike the Read tool,
-        # that command would otherwise bypass the empty read manifest. Keep
-        # Claude's historical read-only auto-approval behavior unchanged.
+        # that command would otherwise bypass the empty read manifest.
         if backend.strip().lower() == "codex":
             resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
                 backend=backend,
@@ -1094,6 +1461,18 @@ def _evaluate_pre_command_file_access_policy(
                     reason="pure-function leaves may not invoke Bash or Shell; use only the host-inlined context",
                     continue_processing=False,
                 )
+        # Read-manifest guard for Bash reads. This runs BEFORE the read-only
+        # auto-approve below: a command the manifest rejects must never be
+        # auto-approved, which is exactly the historical behavior this changes.
+        read_decision, resolved_run_id = _evaluate_bash_read_manifest_policy(
+            decoded=decoded,
+            repo_root=repo_root,
+            orchestration_id=orchestration_id,
+            backend=backend,
+            resolved_run_id=resolved_run_id,
+        )
+        if read_decision is not None:
+            return read_decision
         write_targets = _detect_bash_write_targets(decoded.command)
         if not write_targets:
             # Purely read-only command: if it is a provably-safe composition,
