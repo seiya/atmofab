@@ -1360,7 +1360,10 @@ LEAF_MAX_OUTPUT_TOKENS = 128000
 # payload shape the write guard does not parse. A boundary that depends on the
 # agent not reaching for them is a declaration, not enforcement, so they are
 # removed at launch. Pure leaves already pass `--tools ""` and need no exclusion.
-# Comma-joined single value (accepted by claude CLI 2.1.222).
+# Comma-joined single value: the CLI documents `--disallowedTools <tools...>`
+# as "Comma or space-separated" (checked against the installed CLI). The flag is
+# variadic, so it is emitted immediately before `-p` — the prompt travels on
+# stdin, and restoring a positional prompt would let the list swallow it.
 CLAUDE_LEAF_DISALLOWED_TOOLS = "Task,WebFetch,WebSearch,NotebookEdit"
 
 # How long a leaf gets to exit on SIGTERM before the group is SIGKILLed, and how long
