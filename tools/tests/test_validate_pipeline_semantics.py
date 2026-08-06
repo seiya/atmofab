@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -16573,6 +16574,19 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
                 self.assertIn(needle, text, f"{rel} no longer states {needle!r}")
 
 
+def _doc_prose(rel: str, text: str) -> str:
+    """A document's prose with its LAYOUT removed, for needle matching.
+
+    A needle spanning a line wrap (`"a loop advancing\n# a counter to a stop condition"`) pins the
+    re-flow as well as the rule, so re-wrapping a comment that says exactly the same thing fails
+    the suite. Collapsing whitespace — and, in YAML, dropping the `#` comment markers a wrapped
+    comment repeats on each line — leaves the needles pinning the sentence and nothing else.
+    Markdown keeps its `#`, which are headings rather than comment syntax."""
+    if rel.endswith((".yaml", ".yml")):
+        text = re.sub(r"(?m)^[ \t]*#[ \t]?", "", text)
+    return re.sub(r"\s+", " ", text)
+
+
 class ExecutionModeContractCouplingGateTests(unittest.TestCase):
     """`algorithm.execution_mode` ↔ `iteration_contract` / `control_condition` / `steps[]`
     couplings in `_validate_algorithm_contract_file` (compile stage), plus the doc anchors for
@@ -16699,11 +16713,11 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             ("docs/workflow/phases/phase_01_compile.md", rendered, 2),
             ("skills/workflow-compile-generate/SKILL.md", rendered, 1),
             ("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-             "loop_variable /\n# counter / index_variable", 1),
+             "loop_variable / counter / index_variable", 1),
             ("docs/examples/spec_ir_algorithm_section.example.yaml",
              "loop_variable / counter / index_variable", 1),
         ):
-            text = (repo_root / rel).read_text(encoding="utf-8")
+            text = _doc_prose(rel, (repo_root / rel).read_text(encoding="utf-8"))
             self.assertEqual(
                 text.count(needle), count,
                 f"{rel} must render the counter-key set {count}x; found {text.count(needle)}")
@@ -17103,7 +17117,7 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               # Where the three shapes route. A finding without its route is half a rule.
               "Each is a `fail` remanded to `Compile.generate`.")),
         ):
-            text = (repo_root / rel).read_text(encoding="utf-8")
+            text = _doc_prose(rel, (repo_root / rel).read_text(encoding="utf-8"))
             for needle in needles:
                 # EXACTLY once, not merely present. A needle that occurs twice survives
                 # deleting either occurrence, which is how the counter-key pin sat dead for a
@@ -17198,16 +17212,16 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
         advdiff1d IRs copied it."""
         for rel, needles in (
             ("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
-             ("# execution_mode: the three steps below are the BODY of a time-marching loop",
+             ("execution_mode: the three steps below are the BODY of a time-marching loop",
               # The rule, not just the label. Deleting this line left the heading comment
               # standing over a value it no longer explained.
-              "a loop advancing\n# a counter to a stop condition is `iterative` — not"
+              "a loop advancing a counter to a stop condition is `iterative` — not"
               " `sequence`",
-              "# iteration_contract: the loop itself, and the TOP-LEVEL loop only.",
-              "is a `Compile fail` under execution_mode\n# sequence or conditional",
+              "iteration_contract: the loop itself, and the TOP-LEVEL loop only.",
+              "is a `Compile fail` under execution_mode sequence or conditional",
               # control_condition and stop_condition must describe the SAME loop. The two
               # disagreed by one step when this file was first written.
-              "# control_condition: describes the top-level control structure in prose.",
+              "control_condition: describes the top-level control structure in prose.",
               "the two must describe the SAME loop, with the",
               # The reason the two must agree, and the off-by-one the file's own pinned
               # stop_condition value exists to avoid. Deleting this left the value pinned and
@@ -17216,6 +17230,12 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
               "disagrees with stop_condition is an off-by-one nobody can resolve from the IR.",
               "stop_condition is the condition under which the loop STOPS, tested before the"
               " body",
+              # The only statement of what `body_steps` holds anywhere in the leaf-readable
+              # doc set — phase_01 and both SKILLs never name the field. The test above pins
+              # the INSTANCE (body_steps == the file's step ids); without this the value stands
+              # as an example with nothing saying what it means, which is the failure this
+              # whole test exists to prevent.
+              "body_steps names the steps[].step_id the loop repeats.",
               "\"n == n_step\" here would instead run n_step-1 steps; state the bound so the two"
               " agree.",
               # The header sentences that make the pair instructive: this file is the
@@ -17226,21 +17246,21 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
               "companion shows the run-once `sequence` form of a component node.",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
             ("docs/examples/spec_ir_algorithm_section.example.yaml",
-             ("# execution_mode: `sequence` because these two steps are a fixed composition"
+             ("execution_mode: `sequence` because these two steps are a fixed composition"
               " that runs ONCE per",
-              "# call — no loop counter, no stop condition.",
+              "call — no loop counter, no stop condition.",
               # The sentence that stops a component author from copying `iterative` off the
               # 2d file: the loop belongs to the caller.
               "A component whose caller marches it in time still",
-              "# declares `sequence`: the loop belongs to the calling problem node",
+              "declares `sequence`: the loop belongs to the calling problem node",
               # The cross-reference that shows the reader the other half of the pair.
               "(docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is"
               " `iterative`.",
-              "# iteration_contract: an empty object states \"this algorithm does not iterate\".",
+              "iteration_contract: an empty object states \"this algorithm does not iterate\".",
               "is a `Compile fail` under execution_mode sequence or conditional",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
         ):
-            text = (self._REPO_ROOT / rel).read_text(encoding="utf-8")
+            text = _doc_prose(rel, (self._REPO_ROOT / rel).read_text(encoding="utf-8"))
             for needle in needles:
                 # EXACTLY once, not merely present. A needle that occurs twice survives
                 # deleting either occurrence, which is how the counter-key pin sat dead for a

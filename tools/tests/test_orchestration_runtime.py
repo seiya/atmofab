@@ -28420,7 +28420,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `sequence`/`conditional` while the code fires for any mode outside
         # `iterative`/`columnwise`, an absent one included. An author cannot predict a
         # finding the doc does not describe.
-        "docs/workflow/phases/phase_01_compile.md": 56600,
+        "docs/workflow/phases/phase_01_compile.md": 56650,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28510,10 +28510,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # case and the top-level scope of `iteration_contract`, and names the two modes the
         # converse gate actually binds (`sequence` / `conditional`) rather than "non-iterative",
         # which was wrong once `columnwise` was exempted.
-        # Round 2 raised this to 27950 for the columnwise both-case; measurement afterwards
-        # showed that text already fit under 27850, so the bump was reverted. A ceiling is a
-        # MAXIMUM: room nobody needed is room the next unreviewed sentence spends.
-        "skills/workflow-compile-generate/SKILL.md": 27850,
+        # Bumped 26800->27950 across the issue-#43 rounds. Set from the MEASURED size plus the
+        # ~150 B of slack this table conventionally leaves, NOT from "the previous value would
+        # still pass": a ceiling 65 B above the file is a tripwire that fails the next
+        # one-sentence correction, which is how a doc rule ends up edited around instead of
+        # edited. Reverted to 27850 mid-review on the wrong criterion, then restored. (27785.)
+        "skills/workflow-compile-generate/SKILL.md": 27950,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -28551,11 +28553,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # (that mode is exempt from the gate), and an inner solve authored into the top-level
         # iteration_contract. Naming the gate's blind spots is the only way this leaf can
         # know where it is the last line.
-        # Round 3 raised this to 16750 for the third blind-spot shape's wording qualifier;
-        # measurement afterwards showed that text fits under 16650, so the bump was
-        # reverted. Round 3 caught the same unearned bump on the generate SKILL in the very
-        # commit that made this one — measure the file, then set the ceiling.
-        "skills/workflow-compile-verify/SKILL.md": 16650,
+        # Bumped 15700->16750 across the issue-#43 rounds: this leaf is now told the three
+        # shapes the Compile.static gate cannot see and therefore owns. Same slack rule as
+        # above — 16616 measured, and 16650 would leave 34 B, which is not a ceiling.
+        "skills/workflow-compile-verify/SKILL.md": 16750,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.
