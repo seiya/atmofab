@@ -16578,6 +16578,218 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
     couplings in `_validate_algorithm_contract_file` (compile stage), plus the doc anchors for
     the selection rule the couplings enforce."""
 
+    # The step ids/kinds of the real IR that broke: a 3-step time-marching body.
+    _BASE_CONTRACT = {
+        "algorithm_id": "alg_shallow_water2d",
+        "execution_mode": "sequence",
+        "steps": [
+            {"step_id": "step_01_boundary_apply", "step_kind": "boundary_apply",
+             "operation_ref": "boundary__apply", "inputs": ["h"], "outputs": ["h"]},
+            {"step_id": "step_02_flux_compute", "step_kind": "flux_compute",
+             "operation_ref": "flux__compute", "inputs": ["h"], "outputs": ["F_h"]},
+            {"step_id": "step_03_time_integrate", "step_kind": "time_integrate",
+             "operation_ref": "time_update__advance", "inputs": ["h", "F_h"], "outputs": ["h"]},
+        ],
+        "ordering": ["step_01_boundary_apply", "step_02_flux_compute", "step_03_time_integrate"],
+        "control_condition": "",
+        "iteration_contract": {},
+        "update_semantics": {"target_variables": ["h"], "update_order": "sequential"},
+        "temporaries": [{"name": "F_h", "shape_expr": "[nx, ny]"}],
+        "derived_field_rules": [{"name": "nx", "rule": "grid.nx"},
+                                {"name": "ny", "rule": "grid.ny"}],
+        "invariants": ["total mass is conserved"],
+        "splitting_policy": {"kind": "none"},
+    }
+
+    # The `iteration_contract` of the IR that died at Compile.verify in the billed
+    # shallow-water2d run: fully populated, loop-shaped, under `execution_mode: sequence`.
+    _LOOP_CONTRACT = {
+        "loop_variable": "n",
+        "start": 1,
+        "stop_condition": "n == n_step",
+        "step_count_rule": "n_step from case.inputs.time",
+        "body_steps": ["step_01_boundary_apply", "step_02_flux_compute", "step_03_time_integrate"],
+    }
+
+    _NEEDLE = "that contract describes a repeated body"
+
+    def _violations(self, **overrides) -> list[str]:
+        contract = copy.deepcopy(self._BASE_CONTRACT)
+        contract.update(overrides)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            contract_path = repo_root / "spec.ir.yaml"
+            contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+            violations: list[str] = []
+            vps._validate_algorithm_contract_file(
+                repo_root,
+                contract_path,
+                violations,
+                multidim_node_key=None,
+                direct_spec_vars=None,
+            )
+        return violations
+
+    def _converse(self, violations: list[str]) -> list[str]:
+        return [v for v in violations if self._NEEDLE in v]
+
+    def test_loop_shaped_contract_under_sequence_is_flagged(self) -> None:
+        """The live defect: `execution_mode: sequence` on a time-marching problem node whose
+        `iteration_contract` carries `loop_variable: n` + `stop_condition: n == n_step`. It cost
+        620s of generate + 173s of LLM verify and died non-retryably; it is now a
+        `compile_static_violation` with a warm resume to Compile.generate."""
+        violations = self._violations(iteration_contract=dict(self._LOOP_CONTRACT))
+        self.assertEqual(violations, self._converse(violations),
+                         f"the loop contract is the ONLY defect in this IR: {violations}")
+        self.assertEqual(len(violations), 1, violations)
+        message = violations[0]
+        self.assertIn("execution_mode is 'sequence'", message)
+        self.assertIn("loop_variable", message)
+        self.assertIn("Set execution_mode: iterative", message)
+        # Self-sufficient: the conductor hands the leaf the gate's last 50 lines as its repair
+        # findings, so the remedy has to be inside the one line, not in surrounding output.
+        self.assertEqual(message.count("\n"), 0)
+
+    def test_loop_shaped_contract_under_conditional_is_flagged(self) -> None:
+        """A branch inside a time loop does not make the top-level structure conditional. The
+        non-empty `control_condition` keeps this IR clean of the conditional coupling, so the
+        converse rule is the only thing that can catch it."""
+        violations = self._violations(
+            execution_mode="conditional",
+            control_condition="branch on wet/dry cells",
+            iteration_contract=dict(self._LOOP_CONTRACT),
+        )
+        self.assertEqual(len(self._converse(violations)), 1, violations)
+        self.assertIn("execution_mode is 'conditional'", violations[0])
+
+    def test_every_loop_counter_alias_is_flagged(self) -> None:
+        """The counter key is a closed set, not a single spelling — `counter` and
+        `index_variable` are both live in the surveyed IRs."""
+        for key in sorted(vps.ITERATION_LOOP_COUNTER_KEYS):
+            with self.subTest(counter_key=key):
+                violations = self._violations(
+                    iteration_contract={key: "n", "stop_condition": "n == n_step"},
+                )
+                self.assertEqual(len(self._converse(violations)), 1, violations)
+                self.assertIn(key, violations[0])
+
+    def test_multiple_counter_aliases_are_all_named(self) -> None:
+        """An IR spelling the counter twice gets both names in the remedy, sorted, so the
+        author can see every key the gate read."""
+        violations = self._violations(
+            iteration_contract={"counter": "k", "loop_variable": "n",
+                                "stop_condition": "n == n_step"},
+        )
+        self.assertEqual(len(self._converse(violations)), 1, violations)
+        self.assertIn("(counter, loop_variable)", violations[0])
+
+    def test_legitimate_non_iterative_iteration_contracts_pass(self) -> None:
+        """The survey's false-positive zone. A naive "non-empty under non-iterative" rule would
+        reject every one of these, including the shared `_create_minimal_execution_tree` fixture
+        default (`{"kind": "none"}`) at 115 call sites."""
+        for label, overrides in (
+            ("empty", {"iteration_contract": {}}),
+            ("negative declaration",
+             {"iteration_contract": {"applies": False, "rationale": "single-shot component"}}),
+            ("kind none (the shared fixture default)",
+             {"iteration_contract": {"kind": "none", "reason": "no iteration"}}),
+            ("fixed stage composition (SSPRK2)",
+             {"iteration_contract": {"kind": "fixed_stage_composition", "stages": 2}}),
+            ("harness case dispatch",
+             {"execution_mode": "conditional",
+              "control_condition": "dispatch on the requested case_id",
+              "iteration_contract": {"kind": "case_loop",
+                                     "iterate_over": "case.test_case_set",
+                                     "termination": "case list exhausted"}}),
+            ("iterative with the loop contract",
+             {"execution_mode": "iterative",
+              "control_condition": "advance n until n == n_step",
+              "iteration_contract": dict(self._LOOP_CONTRACT)}),
+        ):
+            with self.subTest(shape=label):
+                self.assertEqual(self._violations(**overrides), [])
+
+    def test_the_conjunction_is_pinned_from_both_sides(self) -> None:
+        """Widening either half back to a disjunction re-enters the false-positive zone: a bare
+        counter key is how a stage index is declared, and a bare `stop_condition` is how a
+        convergence tolerance is."""
+        for label, contract in (
+            ("counter without stop_condition", {"loop_variable": "stage", "stages": 2}),
+            ("stop_condition without counter",
+             {"stop_condition": "residual < tol", "kind": "none"}),
+        ):
+            with self.subTest(shape=label):
+                self.assertEqual(self._violations(iteration_contract=contract), [])
+
+    def test_iterative_requires_a_non_empty_iteration_contract(self) -> None:
+        """The forward rule the converse completes. Previously unpinned."""
+        violations = self._violations(
+            execution_mode="iterative",
+            control_condition="advance n until n == n_step",
+        )
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn(
+            "iteration_contract must be non-empty when execution_mode=iterative", violations[0])
+
+    def test_conditional_requires_a_non_empty_control_condition(self) -> None:
+        """The second gate-enforced coupling that was documented nowhere until issue #43.
+        Emptiness is checked per type, so each of the three container forms is pinned."""
+        for empty in ("", "   ", [], {}):
+            with self.subTest(control_condition=empty):
+                violations = self._violations(execution_mode="conditional",
+                                              control_condition=empty)
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn(
+                    "control_condition must be non-empty when execution_mode=conditional",
+                    violations[0],
+                )
+        # ... and a non-empty one of each form satisfies it.
+        for filled in ("wet/dry branch", ["wet/dry branch"], {"branch": "wet/dry"}):
+            with self.subTest(control_condition=filled):
+                self.assertEqual(
+                    self._violations(execution_mode="conditional", control_condition=filled), [])
+
+    def test_columnwise_requires_a_column_process_step(self) -> None:
+        """The third undocumented coupling. The base contract's steps are all non-column, so
+        declaring `columnwise` over them fails; adding one `column_process` step clears it."""
+        violations = self._violations(execution_mode="columnwise")
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn(
+            "execution_mode=columnwise requires at least one column_process step", violations[0])
+
+        steps = copy.deepcopy(self._BASE_CONTRACT["steps"])
+        steps.append({"step_id": "step_04_column", "step_kind": "column_process",
+                      "operation_ref": "column__process", "inputs": ["h"], "outputs": ["h"]})
+        self.assertEqual(
+            self._violations(
+                execution_mode="columnwise",
+                steps=steps,
+                ordering=[step["step_id"] for step in steps],
+            ),
+            [],
+        )
+
+    def test_a_missing_execution_mode_reports_both_the_enum_and_the_coupling(self) -> None:
+        """An IR that omits the mode entirely gets both findings, and the two remedies agree —
+        the enum names the four values, the coupling names which one this contract is."""
+        contract = copy.deepcopy(self._BASE_CONTRACT)
+        del contract["execution_mode"]
+        contract["iteration_contract"] = dict(self._LOOP_CONTRACT)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            contract_path = repo_root / "spec.ir.yaml"
+            contract_path.write_text(yaml.safe_dump(contract), encoding="utf-8")
+            violations: list[str] = []
+            vps._validate_algorithm_contract_file(
+                repo_root, contract_path, violations,
+                multidim_node_key=None, direct_spec_vars=None,
+            )
+        self.assertEqual(len(violations), 2, violations)
+        self.assertTrue(any("execution_mode must be one of" in v for v in violations), violations)
+        self.assertEqual(len(self._converse(violations)), 1, violations)
+
     def test_execution_mode_selection_rule_is_stated_in_both_authoring_docs(self) -> None:
         """The enum was stated in three places and the SELECTION RULE in none, which is how a
         time-marching problem node came to be authored `sequence` with a loop-shaped

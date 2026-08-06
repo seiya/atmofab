@@ -78,6 +78,15 @@ RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
 }
 ALGORITHM_EXECUTION_MODES = {"sequence", "conditional", "iterative", "columnwise"}
+# The converse of the `iterative => non-empty iteration_contract` coupling, as a CLOSED set of
+# keys rather than "non-empty under a non-iterative mode". A survey of 29 current + 155 archived
+# IRs found ~19 legitimate non-loop `iteration_contract`s under non-iterative modes — negative
+# declarations (`{applies: false, rationale}`, `{kind: none, reason}`), fixed stage compositions
+# (SSPRK2's 2 stages, correctly `sequence`), and the harness `case_loop` dispatch (correctly
+# `conditional`) — so the broad form false-positives. Every observed true positive instead
+# carried a loop-counter key AND `stop_condition`; that conjunction is what this gate checks.
+ITERATION_LOOP_COUNTER_KEYS = {"loop_variable", "counter", "index_variable"}
+ITERATION_STOP_CONDITION_KEY = "stop_condition"
 ALGORITHM_STEP_KINDS = {
     "boundary_apply",
     "reconstruct",
@@ -7359,6 +7368,17 @@ def _validate_algorithm_contract_file(
         violations.append(f"{contract_path}:iteration_contract must be object")
     elif execution_mode == "iterative" and not iteration_contract:
         violations.append(f"{contract_path}:iteration_contract must be non-empty when execution_mode=iterative")
+    elif execution_mode != "iterative":
+        counter_keys = sorted(ITERATION_LOOP_COUNTER_KEYS & set(iteration_contract))
+        if counter_keys and ITERATION_STOP_CONDITION_KEY in iteration_contract:
+            violations.append(
+                f"{contract_path}:execution_mode is {execution_mode!r} but iteration_contract"
+                f" carries a loop counter ({', '.join(counter_keys)}) and stop_condition —"
+                " that contract describes a repeated body, which is execution_mode=iterative."
+                " Set execution_mode: iterative (keep the loop fields), or drop the"
+                " loop-counter/stop_condition keys if the algorithm truly runs once"
+                " (selection rule: phase_01_compile.md §algorithm.execution_mode)"
+            )
 
     update_semantics = contract.get("update_semantics")
     if not isinstance(update_semantics, dict):
