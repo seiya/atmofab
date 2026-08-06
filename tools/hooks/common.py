@@ -453,6 +453,13 @@ def _blank_heredoc_bodies(command: str) -> str:
     # the offsets apply to the original unchanged.
     out = list(command)
     search_from = 0
+    # Where the NEXT body starts. A line may declare several heredocs
+    # (`cat <<A <<B`); their bodies follow in order, so B's body begins where
+    # A's ended — not after B's own line. Advancing past a body to find the
+    # next operator would skip `<<B` entirely, because it sits EARLIER in the
+    # string than A's terminator, and B's body would then be parsed as
+    # commands.
+    body_cursor = 0
     while True:
         # Recomputed each pass: quote pairing must not run THROUGH a body we
         # have already blanked. An apostrophe in one heredoc's prose ("don't")
@@ -485,12 +492,16 @@ def _blank_heredoc_bodies(command: str) -> str:
         newline = command.find("\n", match.end())
         if newline == -1:
             return "".join(out)
+        # First operator on this line: its body starts on the next line.
+        # A later operator on the SAME line continues after the previous body.
+        if body_cursor <= newline:
+            body_cursor = newline + 1
         # Bash ends the body on a line that is EXACTLY the delimiter; `<<-`
         # strips leading TABS only. Accepting any indentation ended the body
         # early on a document that merely contains an indented `EOF`, leaving
         # the rest of the prose to be parsed as commands.
         dash = bool(match.group("dash"))
-        idx = newline + 1
+        idx = body_cursor
         while idx <= len(command):
             line_end = command.find("\n", idx)
             stop = len(command) if line_end == -1 else line_end
@@ -501,7 +512,11 @@ def _blank_heredoc_bodies(command: str) -> str:
             if is_delimiter or line_end == -1:
                 break
             idx = line_end + 1
-        search_from = idx if idx > match.end() else match.end()
+        # The next body starts after this terminator line; the next OPERATOR
+        # may still be on the original command line, so resume the search just
+        # past this one rather than past the body.
+        body_cursor = (len(command) if line_end == -1 else line_end) + 1
+        search_from = match.end()
 
 # Bash commands whose positional operands are file reads.  Everything here is
 # routed through _extract_read_targets, which owns the per-command grammar.

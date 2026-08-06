@@ -216,11 +216,16 @@ with open(path) as f:
         policy = (obj.get("audit_detail") or {}).get("policy", "unknown")
         fix_hint = (obj.get("audit_detail") or {}).get("fix_hint")
         summary = obj.get("payload_summary") or {}
+        detail = obj.get("audit_detail") or {}
         # Bash blocks carry `command`; Grep/Glob carry `path` (+ `pattern`).
         # Keying on `command` alone hides a search an agent retries in a loop,
-        # and the raw dict fallback used to crash the slice below.
-        cmd = summary.get("command") or "::".join(
+        # and the raw dict fallback used to crash the slice below. Scope the key
+        # to the agent and tool: two agents blocked once each on the same path
+        # is not a retry.
+        who = detail.get("agent_run_id") or summary.get("session_id") or ""
+        target = summary.get("command") or "::".join(
             str(summary[k]) for k in ("path", "pattern", "file_path") if summary.get(k))
+        cmd = "::".join(x for x in (who, obj.get("tool_name") or "", target) if x) if target else ""
         if fix_hint and (fix_hint.get("next_command") or fix_hint.get("note")):
             hint_present[policy] += 1
         else:

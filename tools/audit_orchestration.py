@@ -240,25 +240,42 @@ def detect_suspicious_benign_volume(
 
 
 def _repeat_key_of(block: dict[str, Any]) -> str:
-    """What identifies "the agent tried the same thing again".
+    """What identifies "THIS agent tried the same thing again".
 
     Bash blocks are identified by their command. A Grep/Glob block carries no
     command — its target is `path` (+ `pattern`) — so keying on `command` alone
     made a search retried in a loop invisible, which is exactly the signal this
     aggregation exists to surface.
+
+    The key is scoped to the agent and the tool. Two agents blocked once each on
+    the same path is not a retry, and reporting it as one accuses an agent of
+    ignoring a hint it never saw. `agent_run_id` is the identity where the
+    record carries it; the session id is the fallback.
     """
     summary = block.get("payload_summary")
     if not isinstance(summary, dict):
         return str(summary or "")
+    detail = block.get("audit_detail")
+    identity = ""
+    if isinstance(detail, dict) and isinstance(detail.get("agent_run_id"), str):
+        identity = detail["agent_run_id"].strip()
+    if not identity and isinstance(summary.get("session_id"), str):
+        identity = summary["session_id"].strip()
+    tool = block.get("tool_name")
+    scope = [part for part in (identity, tool if isinstance(tool, str) else "") if part]
+
     command = summary.get("command")
     if isinstance(command, str) and command.strip():
-        return command.strip()
-    parts = [
-        str(summary[key]).strip()
-        for key in ("path", "pattern", "file_path")
-        if isinstance(summary.get(key), str) and str(summary[key]).strip()
-    ]
-    return "::".join(parts)
+        target = command.strip()
+    else:
+        target = "::".join(
+            str(summary[key]).strip()
+            for key in ("path", "pattern", "file_path")
+            if isinstance(summary.get(key), str) and str(summary[key]).strip()
+        )
+    if not target:
+        return ""
+    return "::".join([*scope, target])
 
 
 def collect_fix_hint_stats(

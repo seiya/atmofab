@@ -3424,6 +3424,20 @@ class ExtractBashReadTargetsTests(unittest.TestCase):
             self._targets("(( x = y << z ))\ncat spec/private.md"), ["spec/private.md"]
         )
 
+    def test_several_heredocs_on_one_line(self) -> None:
+        """`cat <<A <<B` declares two bodies, in order. Advancing the search
+        past A's terminator skipped `<<B` — it sits EARLIER in the string — so
+        B's body was parsed as commands and its text blocked as a read."""
+        self.assertEqual(
+            self._targets("cat <<A <<B\nx\nA\ncat spec/private.md\nB"), []
+        )
+        self.assertEqual(
+            self._targets(
+                "cat <<A <<B\ncat spec/p1.md\nA\ncat spec/p2.md\nB\ncat after.md"
+            ),
+            ["after.md"],
+        )
+
     def test_backslash_quoted_heredoc_delimiter(self) -> None:
         """`<<\\EOF` quotes the delimiter exactly like `<<'EOF'`."""
         self.assertEqual(
