@@ -229,7 +229,7 @@ class LlmConfigError(ValueError):
 # Entry-level keys accepted anywhere an entry may appear.
 _ENTRY_FIELDS: frozenset[str] = frozenset({
     "provider", "model", "command", "base_url", "api_key_env",
-    "timeout_s", "max_output_tokens", "effort", "capabilities",
+    "timeout_s", "max_output_tokens", "effort", "capabilities", "stream",
 })
 
 # Reasoning effort, per provider, because the VOCABULARY differs — this is not one enum with
@@ -254,16 +254,19 @@ _EFFORT_LEVELS: Mapping[str, frozenset[str]] = {
 # Fields a provider does not read. Declaring one is an operator error, not a no-op: an ignored
 # `max_output_tokens` on a codex entry looks like a budget that was applied.
 # Rejected when a level whose own provider is this one declares the field; DROPPED when the
-# field merely inherited from a level on another provider. `timeout_s` / `max_output_tokens`
-# are transport-neutral budgets that inherit across a provider switch by design, so
+# field merely inherited from a level on another provider. `timeout_s` / `max_output_tokens` /
+# `stream` are transport-neutral and inherit across a provider switch by design, so
 # "claude everywhere with a raised ceiling, except one leaf on codex" must load — with the
 # ceiling simply not reaching the codex leaf, which has nowhere to apply it.
 _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
     # `timeout_s` bounds an HTTP request; a CLI leaf's wall-clock cap is the conductor's own
     # (`METDSL_LEAF_TIMEOUT_SECONDS`). `max_output_tokens` reaches only the claude transport
     # (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`) and the HTTP request bodies.
-    "claude_cli": frozenset({"base_url", "api_key_env", "timeout_s"}),
-    "codex_cli": frozenset({"base_url", "api_key_env", "timeout_s", "max_output_tokens"}),
+    # `stream` names the shape of ONE HTTP request; a CLI leaf is a process, and how its
+    # transport frames the provider's answer is the CLI's business, not the operator's.
+    "claude_cli": frozenset({"base_url", "api_key_env", "timeout_s", "stream"}),
+    "codex_cli": frozenset({
+        "base_url", "api_key_env", "timeout_s", "max_output_tokens", "stream"}),
     "openai_compatible": frozenset({"command"}),
     "anthropic_api": frozenset({"command", "effort"}),
 }
@@ -271,7 +274,9 @@ _FIELDS_NOT_APPLICABLE: Mapping[str, frozenset[str]] = {
 # Fields scoped to the provider that declared them. When a deeper level switches provider,
 # these are DROPPED rather than inherited: a `model` or `command` chosen for `claude_cli` is
 # meaningless — and usually actively wrong — under `openai_compatible`. `timeout_s` /
-# `max_output_tokens` are transport-neutral budgets and do inherit across a switch.
+# `max_output_tokens` / `stream` are transport-neutral and do inherit across a switch: the first
+# two are budgets and the third describes the endpoint's transport behaviour, and two leaves
+# pointed at the same gateway must keep the same answer about it.
 _PROVIDER_SCOPED_FIELDS: frozenset[str] = frozenset({
     # `effort` is provider-scoped for the same reason `model` is: the level names are the
     # provider's own (`max` is a claude level, `minimal` a codex one), so carrying one across a
@@ -305,6 +310,21 @@ class ResolvedLeafEntry:
     api_key_env: str = ""
     timeout_s: float | None = None
     max_output_tokens: int | None = None
+    # Ask the HTTP provider to stream its answer as server-sent events. DEFAULT ON, and the
+    # default is the load-bearing part: a non-streaming completion means the endpoint writes
+    # nothing until the whole answer exists, and any intermediary bounding the interval between
+    # upstream reads cuts the connection long before the model is done. Measured: three
+    # `generate.generate` attempts against an nginx-fronted endpoint died after 613.6 s /
+    # 612.3 s / 611.8 s with `HTTP 504 Gateway Time-out` — under two seconds apart, because
+    # what expired was the GATEWAY's read timeout — while the entry's own 2400 s `timeout_s`
+    # never fired. Streaming puts a frame on the wire every few hundred milliseconds, which
+    # resets that timer.
+    # `false` is the escape hatch for an endpoint that cannot speak SSE at all; it restores
+    # byte-identical pre-streaming request bodies. Streaming moves that silence to the FRONT of
+    # the request rather than abolishing it — though only as far as the PREFILL, since a
+    # reasoning model streams its thinking as `reasoning_content` deltas (measured) and those
+    # are bytes on the wire like any other.
+    stream: bool = True
     # Reasoning effort, in the provider's own vocabulary (see `_EFFORT_LEVELS`). Empty means
     # "say nothing", which leaves the provider's own default in force.
     effort: str = ""
@@ -406,6 +426,17 @@ def _layer_fields(raw: Mapping[str, Any], where: str) -> dict[str, Any]:
                     "llm_config_invalid_field",
                     f"expected a positive integer, got {value!r}", where=loc)
             out[key] = int(value)
+        elif key == "stream":
+            # `isinstance(value, bool)` and not truthiness: the ONE spelling that matters here is
+            # the opt-out, and every non-bool an operator might reach for is truthy. YAML reads
+            # `stream: "false"` as the STRING `false`, which would leave streaming on and
+            # reproduce the very 504 the opt-out exists to escape — silently, because the
+            # configuration says what the operator meant.
+            if not isinstance(value, bool):
+                raise LlmConfigError(
+                    "llm_config_invalid_field",
+                    f"expected true or false, got {value!r}", where=loc)
+            out[key] = value
         elif key == "capabilities":
             if not isinstance(value, list) or not all(isinstance(c, str) for c in value):
                 raise LlmConfigError(
@@ -429,9 +460,9 @@ def _merge_layers(
 
     Two kinds of field, resolved differently:
 
-    * **Transport-neutral** budgets (`timeout_s`, `max_output_tokens`) inherit plainly: the
-      deepest level that names one wins.
-    * **Provider-scoped** fields (`model`, `command`, `base_url`, `api_key_env`,
+    * **Transport-neutral** fields (`timeout_s`, `max_output_tokens`, `stream`) inherit
+      plainly: the deepest level that names one wins.
+    * **Provider-scoped** fields (`model`, `command`, `base_url`, `api_key_env`, `effort`,
       `capabilities`) are contributed only by levels whose EFFECTIVE provider is the one this
       entry ends up on. A `model` chosen for `claude_cli` names nothing under
       `openai_compatible`, so a level that switches provider contributes none of the outer
@@ -494,7 +525,25 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
             where=f"{where}.provider")
 
     for field in sorted(_FIELDS_NOT_APPLICABLE.get(provider, frozenset())):
-        if not fields.get(field):
+        # PRESENCE, not truthiness. `stream: false` on a claude entry is exactly the spelling an
+        # operator reaches for, and a falsy test swallows it — turning the error this loop exists
+        # to raise back into the silent no-op the comment above `_FIELDS_NOT_APPLICABLE` says it
+        # must not be. `_merge_layers` only puts keys some level actually wrote into `fields`, so
+        # presence here means the document said it. The falsy test was a shortcut that happened
+        # to hold while every field an operator actually wrote here was a non-empty string.
+        #
+        # WHAT ELSE THIS NEWLY REJECTS, enumerated rather than left to be discovered: exactly
+        # four spellings, each an explicitly-EMPTY inapplicable field —
+        #   `base_url: ""` and `api_key_env: ""` on a CLI entry,
+        #   `command: ""` on an HTTP entry, and
+        #   `effort: ""` on an `anthropic_api` entry, the only one an operator is at all likely
+        #   to have written, as a way of saying "leave it at the provider default".
+        # All four previously loaded and were silently dropped; all four now name the field.
+        # That is the same rule read consistently: the field does not apply here, and writing it
+        # is the error whether the value is empty or not. An empty `timeout_s` is NOT in this
+        # set — `_layer_fields` rejects it earlier and on every provider, as `invalid_field`.
+        # The four `docs/examples/*.yaml` samples are unaffected.
+        if field not in fields:
             continue
         if field in declared_here:
             raise LlmConfigError(
@@ -570,6 +619,7 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
         api_key_env=str(fields.get("api_key_env") or ""),
         timeout_s=fields.get("timeout_s"),
         max_output_tokens=fields.get("max_output_tokens"),
+        stream=bool(fields.get("stream", True)),
         effort=effort,
         capabilities=capabilities,
     )

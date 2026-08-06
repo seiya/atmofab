@@ -2985,6 +2985,25 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         return (f"    [warn   ] transient leaf failure ({tag}) in {phase}.{substep} "
                 f"[attempt {attempt}/{total}]: retrying in {backoff}s")
 
+    if status == "info" and event == "leaf_transient_retry_declined":
+        # Rendered like its sibling above, and for a sharper reason: this is the ONLY record
+        # that a re-launch was possible and was declined. The fail_closed reason cannot carry
+        # that — its `[attempts=<n>]` is the launch count, which includes repair turns and
+        # usage waits, so a decline is indistinguishable there from a count exhaustion. The two
+        # want opposite remedies, and the standing guidance for a transient tag reaching
+        # fail_closed ("the fault outlived every retry, wait for the provider to recover") is
+        # the wrong one here.
+        phase = payload.get("step", "?")
+        substep = payload.get("substep") or "step"
+        tag = payload.get("tag", "?")
+        elapsed = payload.get("elapsed_seconds", "?")
+        spent = payload.get("spent_seconds", "?")
+        budget = payload.get("budget_seconds", "?")
+        return (f"    [warn   ] transient retry DECLINED ({tag}) in {phase}.{substep}: the "
+                f"attempt ran {elapsed}s and {spent}s was already spent, over the {budget}s "
+                f"wall-clock budget — a failure this slow reproduces, so the run fails closed "
+                f"rather than re-launching it")
+
     if status == "info" and event == "leaf_timeout":
         # The one event that reports "your leaf was killed after N hours". Rendered like its
         # siblings rather than falling through to the raw-JSON line: it is the most consequential

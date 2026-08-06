@@ -1299,6 +1299,117 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertEqual(meta["attempts"], 2)     # two launches
 
 
+class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
+    """WHICH attempts the transient wall-clock budget is charged for, driven through the real
+    pure producer loop — because the whole rule is where the accumulator sits in that loop.
+
+    The budget exists to stop three doomed re-launches of a request that dies at a fixed
+    wall-clock. It must therefore be spent by TRANSIENT deaths and by nothing else: a content
+    repair turn produced a document and is not what the budget is about, and a usage-limit wait
+    can park for hours. Accumulating above those branches made one slow repair turn refuse the
+    very next cheap flake — the opposite of `_pure_transient_retry`'s own promise that the three
+    budgets cannot compound."""
+
+    class _C(PureUsageLimitWaitTest._C):
+        seconds_per_attempt: "list[float]" = []
+
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+            index = getattr(self, "_spawn", 0)
+            self.clock[0] += self.seconds_per_attempt[
+                min(index, len(self.seconds_per_attempt) - 1)]
+            return super().spawn_leaf(prompt_text, child_env, entry, **kwargs)
+
+    def _run(self, repo: Path, procs: list, seconds: "list[float]", **kw):
+        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+        c = self._C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                    llm_config=_cfg("claude"), env={}, **kw)
+        c.procs, c.slept, c.seconds_per_attempt = procs, [], seconds
+        c.clock = [1_752_200_000.0]
+        events: list = []
+        c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
+        refs = _write_node(repo)
+        # The two clocks are driven APART on purpose: `time.time` is frozen at the base while
+        # `time.monotonic` advances with each launch. The budget measures a DURATION, so it must
+        # read the moving one — a fixture that advanced both together could not tell them apart,
+        # and that is how the wall-clock reading survived undetected in these loops.
+        base = c.clock[0]
+        with mock.patch.object(wc.time, "time", lambda: base), \
+                mock.patch.object(wc.time, "monotonic", lambda: c.clock[0]):
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        return c, oc, events
+
+    _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+
+    def test_a_slow_content_repair_turn_does_not_spend_the_transient_budget(self) -> None:
+        """The reported defect. `generate.generate` legitimately runs ten minutes on this
+        workload, so a bundle that fails validation after 700 s is the ORDINARY case, not a
+        pathological one. The two-second network flake that follows must still be retried."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c, oc, events = self._run(
+                repo,
+                # a slow, repairable content failure, then a cheap flake, then success
+                [wc.ProcResult(0, _envelope('{"bundle_schema_version": "9.9.9"}'), ""),
+                 self._FLAKE,
+                 wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                seconds=[700.0, 2.0, 5.0])
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(c._spawn, 3)
+            self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
+            self.assertEqual(
+                [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+    def test_a_usage_limit_wait_does_not_spend_the_transient_budget(self) -> None:
+        """`--wait-usage-reset` parks for as long as the quota window says. Billing that to the
+        transient budget would refuse the next flake on time no transient attempt ever spent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            now = 1_752_200_000.0
+            c, oc, events = self._run(
+                repo,
+                [wc.ProcResult(1, "", f"Claude AI usage limit reached|{int(now) + 300}"),
+                 self._FLAKE,
+                 wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                seconds=[1200.0, 2.0, 5.0], wait_usage_reset=True)
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
+            self.assertEqual(
+                [e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
+
+    def test_the_budget_accumulates_across_transient_attempts(self) -> None:
+        """WHAT the accumulator accumulates, as distinct from where it sits — the loop's copy of
+        the arithmetic, which the placement tests above do not touch. Two 350 s transient deaths:
+        neither crosses the 600 s budget alone, together they do, so the first retry is granted
+        and the second refused. Both wrong wirings are silent without this: never accumulating
+        lets a substep spend 1050 s where the rule says 700, and double-counting the attempt that
+        just died refuses a 350 s flake that is well inside budget."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c, oc, events = self._run(
+                repo, [self._FLAKE, self._FLAKE, wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                seconds=[350.0, 350.0, 5.0])
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(c._spawn, 2)          # granted once, then refused at 700 > 600
+            self.assertEqual([e["event"] for e in events].count("leaf_transient_retry"), 1)
+            declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
+            self.assertEqual(len(declined), 1)
+            self.assertAlmostEqual(declined[0]["spent_seconds"], 350.0)
+            self.assertAlmostEqual(declined[0]["elapsed_seconds"], 350.0)
+
+    def test_a_transient_attempt_that_burned_the_clock_still_refuses(self) -> None:
+        """The control: the budget must still do its job for the deaths it IS about."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c, oc, events = self._run(
+                repo, [self._FLAKE, wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                seconds=[613.0])
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(c._spawn, 1)
+            declined = [e for e in events if e["event"] == "leaf_transient_retry_declined"]
+            self.assertEqual(len(declined), 1)
+            self.assertEqual(declined[0]["reason"], "wall_clock_budget")
+
+
 # ======================================================================================
 # M-D2: producer cold-fallback / capture-time surrogate safety (verify-side mirror)
 # ======================================================================================
