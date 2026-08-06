@@ -28395,7 +28395,33 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `0`, `[]`, `""`), not just the word "null". A leaf told only "no nulls" would keep
         # writing `language: no`. The mechanism prose was moved to the gate docstring, which
         # no leaf force-reads; what is left here is the rule and its remedy.
-        "docs/workflow/phases/phase_01_compile.md": 50700,
+        # Bumped 50700->53800: issue #43 — §`algorithm.execution_mode` gains the Decision
+        # Criteria that select the mode, and the mode ↔ contract couplings list. The enum was
+        # stated everywhere and the SELECTION RULE nowhere, so a time-marching problem node was
+        # authored `sequence` with a fully loop-shaped `iteration_contract`; two of the three
+        # couplings were gate-enforced but undocumented, and the new converse coupling is a
+        # Compile-failing rule. This is the doc the compile leaf force-reads, so the rule and
+        # its remedy have to be readable here.
+        # Bumped 53800->55100 (review round 1): the Decision Criteria gain the columnwise
+        # precedence note and the TOP-LEVEL scope rule (an inner `iterative_solve` step's
+        # convergence criteria belong in that step, not in `algorithm.iteration_contract`),
+        # and V2 gains the SEMANTIC half the verify leaf owns. Each is a rule an author can
+        # only follow if it is readable in the doc the compile leaves force-read.
+        # Bumped 55100->56200 (review round 2): the Decision Criteria state the both-case
+        # explicitly (a `column_process` step inside a time loop leaves the node `iterative`)
+        # and define `columnwise` by column INDEPENDENCE rather than by repetition, which
+        # rule 1 had already claimed; the couplings block states that the rule is the KEY
+        # PAIR and not the contract shape, and that the gate reaches only one spelling of the
+        # inner-solve mistake. Each correction replaces a sentence that was false about the
+        # code or left the both-case undecided.
+        # Bumped 56200->56650 (review rounds 3-5): the Scope paragraph and the converse
+        # coupling each stated the gate's reach wrongly — the inner-solve rule omitted that
+        # the gate looks only under a non-repeating mode, and the coupling was stated for
+        # `sequence`/`conditional` while the code fires for any mode outside
+        # `iterative`/`columnwise`, an absent one included. An author cannot predict a
+        # finding the doc does not describe. Set from the measured 56463 plus this table's
+        # conventional ~150 B of slack, the same rule as the two SKILL entries below.
+        "docs/workflow/phases/phase_01_compile.md": 56650,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28476,7 +28502,21 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # make/cmake/meson/ninja — i.e. to author an IR its own phase now rejects, which a warm
         # re-author would reproduce verbatim. The forbidden spellings are named explicitly for
         # the same reason the knob-alias table is: an unnamed alias is one the leaf re-derives.
-        "skills/workflow-compile-generate/SKILL.md": 26800,
+        # Bumped 26800->27650: issue #43 — the `execution_mode` bullet gains the one-sentence
+        # selection rule (time marching over n_step is iterative, fixed stage composition is
+        # sequence, static case dispatch is conditional) plus the Compile.static converse gate
+        # and the pointer to phase_01. This leaf AUTHORS the field; the enum alone let it pick
+        # `sequence` for a time-marching node and burn a non-retryable Compile.verify.
+        # Bumped 27650->27850 (review round 1): the selection sentence gains the columnwise
+        # case and the top-level scope of `iteration_contract`, and names the two modes the
+        # converse gate actually binds (`sequence` / `conditional`) rather than "non-iterative",
+        # which was wrong once `columnwise` was exempted.
+        # Bumped 26800->27950 across the issue-#43 rounds. Set from the MEASURED size plus the
+        # ~150 B of slack this table conventionally leaves, NOT from "the previous value would
+        # still pass": a ceiling 65 B above the file is a tripwire that fails the next
+        # one-sentence correction, which is how a doc rule ends up edited around instead of
+        # edited. Reverted to 27850 mid-review on the wrong criterion, then restored. (27785.)
+        "skills/workflow-compile-generate/SKILL.md": 27950,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -28504,7 +28544,20 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # file, not the generate SKILL, so without it the two halves of the same rule
         # disagreed and verify would remand a gate-clean 2d node — a warm retry, which is the
         # cost issue #12 exists to remove.
-        "skills/workflow-compile-verify/SKILL.md": 15700,
+        # Bumped 15700->16200: issue #43 — the algorithm checklist item now names the
+        # `execution_mode` selection rule and scopes this leaf to its SEMANTIC half (declared
+        # mode vs. the control structure controlled_spec describes); the structural
+        # contradiction is gated at Compile.static.
+        # Bumped 16200->16650 (review round 2): the leaf is now told the THREE shapes the
+        # Compile.static gate cannot see and it therefore owns — an empty iteration_contract
+        # under a time-marching `sequence`, a `columnwise` node whose top level is a time loop
+        # (that mode is exempt from the gate), and an inner solve authored into the top-level
+        # iteration_contract. Naming the gate's blind spots is the only way this leaf can
+        # know where it is the last line.
+        # Bumped 15700->16750 across the issue-#43 rounds: this leaf is now told the three
+        # shapes the Compile.static gate cannot see and therefore owns. Same slack rule as
+        # above — 16616 measured, and 16650 would leave 34 B, which is not a ceiling.
+        "skills/workflow-compile-verify/SKILL.md": 16750,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.

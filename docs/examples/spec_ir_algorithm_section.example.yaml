@@ -33,6 +33,12 @@
 #   docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml.
 
 algorithm_id: example_flux_compute
+
+# execution_mode: `sequence` because these two steps are a fixed composition that runs ONCE per
+# call — no loop counter, no stop condition. A component whose caller marches it in time still
+# declares `sequence`: the loop belongs to the calling problem node, whose reference form
+# (docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml) is `iterative`.
+# Selection rule: docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`.
 execution_mode: sequence
 
 steps:
@@ -56,6 +62,9 @@ ordering:
 
 control_condition: ""
 
+# iteration_contract: an empty object states "this algorithm does not iterate". A loop-shaped
+# contract here — a loop counter (loop_variable / counter / index_variable) together with
+# stop_condition — is a `Compile fail` under execution_mode sequence or conditional.
 iteration_contract: {}
 
 # target_variables: the final variables that this component writes out (flux F_h/F_u/F_v)

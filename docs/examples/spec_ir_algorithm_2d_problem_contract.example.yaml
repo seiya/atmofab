@@ -12,7 +12,9 @@
 # `docs/examples/spec_ir_algorithm_section.example.yaml` is the companion sample for a component
 # node. It is the canonical reference for the rules common to every node kind (the string-list form
 # of steps[].inputs/outputs, the token binding convention, the shape_expr notation). This file adds
-# ONLY the extra contract a multi-dimensional problem node carries.
+# ONLY the extra contract a multi-dimensional problem node carries, and shows the `iterative` form:
+# a problem node marches the state in time, so it carries a populated iteration_contract. The
+# companion shows the run-once `sequence` form of a component node.
 #
 # The 4 extra contract keys are direct children of `algorithm:`:
 #   state_variables (each entry with `name` + `shape_expr`) / required_update_paths /
@@ -45,7 +47,11 @@
 # names them.
 
 algorithm_id: example_shallow_water_problem
-execution_mode: sequence
+
+# execution_mode: the three steps below are the BODY of a time-marching loop, and a loop advancing
+# a counter to a stop condition is `iterative` — not `sequence`, however few steps the body has.
+# Selection rule: docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`.
+execution_mode: iterative
 
 steps:
   - step_id: step_01_boundary_apply
@@ -72,9 +78,29 @@ ordering:
   - step_02_flux_compute
   - step_03_time_integrate
 
-control_condition: ""
+# control_condition: describes the top-level control structure in prose. Under `iterative` that is
+# the loop the iteration_contract below formalizes — the two must describe the SAME loop, with the
+# same bounds. Generate lowers this pair into the model's time loop, so a prose bound that
+# disagrees with stop_condition is an off-by-one nobody can resolve from the IR.
+control_condition: "advance the state by one step per iteration, for n = 1 .. n_step"
 
-iteration_contract: {}
+# iteration_contract: the loop itself, and the TOP-LEVEL loop only. Under `execution_mode:
+# iterative` this must be non-empty; conversely a contract carrying a loop counter (loop_variable /
+# counter / index_variable) TOGETHER WITH stop_condition is a `Compile fail` under execution_mode
+# sequence or conditional, which deny a repeated body. body_steps names the steps[].step_id the
+# loop repeats.
+iteration_contract:
+  loop_variable: n
+  start: 1
+  # stop_condition is the condition under which the loop STOPS, tested before the body. With
+  # start: 1 that runs the body for n = 1 .. n_step, matching control_condition above. Writing
+  # "n == n_step" here would instead run n_step-1 steps; state the bound so the two agree.
+  stop_condition: "n > n_step"
+  step_count_rule: "n_step is the step count determined by case.inputs.time"
+  body_steps:
+    - step_01_boundary_apply
+    - step_02_flux_compute
+    - step_03_time_integrate
 
 update_semantics:
   target_variables: ["h", "hu", "hv"]

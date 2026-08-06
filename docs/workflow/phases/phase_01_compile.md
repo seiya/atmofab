@@ -47,7 +47,7 @@ case:
 
 algorithm:
   algorithm_id: "<id>"
-  execution_mode: "<sequence|conditional|iterative|columnwise>"
+  execution_mode: "<sequence|conditional|iterative|columnwise>"   # select per the "algorithm.execution_mode" section below; time marching over n_step is iterative
   steps:
     - step_id: "<step_id>"
       step_kind: "<boundary_apply|reconstruct|flux_compute|source_term|time_integrate|column_process|pointwise_process|iterative_solve|filter|reduction|diagnostic>"
@@ -55,8 +55,8 @@ algorithm:
       inputs: ["<var1>", "<var2>"]
       outputs: ["<var3>"]
   ordering: [...]              # a sequence of step_id, or an array of before/after dependency objects
-  control_condition: ...       # one of a string, a string array, or an object
-  iteration_contract: {...}    # object. when execution_mode=iterative, an empty object is forbidden
+  control_condition: ...       # one of a string, a string array, or an object. required non-empty when execution_mode=conditional
+  iteration_contract: {...}    # object, the TOP-LEVEL loop only. non-empty when execution_mode=iterative; conversely a loop counter + stop_condition here forbids execution_mode sequence and conditional
   update_semantics: {...}
   temporaries: [...]           # a string array, or an array of name + shape_expr objects
   derived_field_rules: [...]
@@ -226,6 +226,26 @@ A list of non-empty strings (e.g. `["U_L", "U_R"]`); the object form (`[{name: .
 ### `algorithm.execution_mode`
 Only `sequence` / `conditional` / `iterative` / `columnwise` are allowed.
 
+#### Decision Criteria
+Select by the algorithm's **top-level** control structure. Evaluate in this order and take the first match:
+1. **`iterative`** — the top level repeats a body that CARRIES STATE FORWARD, advancing a loop counter (time index, iteration index) until a stop condition holds. **Any time marching over `n_step` is `iterative`**, never `sequence`, however few steps the body has. Branches inside the body do not change the mode, and neither do the step kinds it contains: **a `column_process` step inside a time loop leaves the node `iterative`**, because the time loop is the top level. Author the loop in `iteration_contract` (loop counter + `stop_condition`) and describe it in `control_condition`.
+2. **`columnwise`** — the top-level structure IS an independent per-column sweep: each column is processed without carrying state to the next, so the sweep order does not change the result. `steps[]` holds at least one `column_process` step. Repetition alone does not select this mode — rule 1 already claimed every repetition that carries state, and a `column_process` step is legal under any mode.
+3. **`conditional`** — the top level branches or dispatches, and the branch is stated in a non-empty `control_condition`. A dispatch over a STATIC case list (the harness `case_loop` shape) is `conditional`, not `iterative`: its `iteration_contract` describes the dispatch (`kind: case_loop`, `iterate_over`, `termination`) and carries neither a loop-counter key nor `stop_condition`.
+4. **`sequence`** — a fixed composition of steps that runs once. A fixed stage composition (SSPRK2's 2 stages, `kind: fixed_stage_composition`) is `sequence`, not `iterative`: the stage count is fixed by the scheme, not decided by a stop condition.
+
+**Scope: `algorithm.iteration_contract` describes the TOP-LEVEL loop only.** A step that converges internally (`step_kind: iterative_solve`) does not make the algorithm `iterative`, and its convergence criteria (tolerance, iteration cap, divergence policy) are lowered in that step's own fields / `invariants` under the V2 IR-self-sufficiency rule — NOT in `algorithm.iteration_contract`, which states what the WHOLE algorithm does. The deterministic gate recognizes one spelling of this mistake and only under a non-repeating mode — a loop counter together with `stop_condition` under `sequence` / `conditional`, per the couplings below. The same keys under `iterative` or `columnwise` are not flagged at all (there the top-level loop legitimately carries them), and an inner solve's criteria authored here in any other wording (`tolerance` + `max_iterations`, say) are not flagged under any mode. Everything the gate does not reach is a `Compile.verify` V2 finding.
+
+#### Mode ↔ contract couplings
+Each of the four rules below is enforced by the `--stage compile` gate and is a `Compile fail` routed to `Compile.generate`:
+- `execution_mode=conditional` ⇒ `control_condition` is non-empty.
+- `execution_mode=columnwise` ⇒ `steps[]` holds at least one `column_process` step.
+- `execution_mode=iterative` ⇒ `iteration_contract` is not an empty object.
+- `execution_mode` other than `iterative` / `columnwise` ⇒ `iteration_contract` carries no loop counter (`loop_variable` / `counter` / `index_variable`) together with `stop_condition`. That pair describes a repeated body, which `sequence` and `conditional` deny — and an ABSENT or misspelled `execution_mode` fires this rule too, alongside the enum violation, because the contract is loop-shaped whatever the missing mode was going to say. The remedy is to keep the loop fields and take the mode the Decision Criteria give for that repetition — `iterative`, or `columnwise` for an independent per-column sweep — or, when the algorithm truly runs once, to drop the loop-counter/`stop_condition` keys. `iterative` and `columnwise` both denote a repeated body, so a loop-shaped contract is expected under them and this rule does not apply. A key present with a falsy value (`null`, `""`, `0`, `[]`) declares nothing and does not count toward the pair.
+
+The rule is the KEY PAIR, not the shape of the contract. `{}`, a negative declaration (`{applies: false, rationale: ...}`, `{kind: none, reason: ...}`), a fixed stage composition, and the `case_loop` dispatch shape all pass under `sequence` / `conditional` — because none of them names both a loop counter and a `stop_condition`, not because the shape is exempt. A fixed stage composition that DOES name both (`{kind: fixed_stage_composition, loop_variable: stage, stop_condition: "stage == 2"}`) is a `Compile fail`: state the fixed stage count without a stop condition.
+
+Not a rule, stated to close the direction: a non-empty `control_condition` under `execution_mode=sequence` is **legal**. That field also carries guard narration, and no converse rule is placed on it.
+
 ### `algorithm.steps[].step_kind`
 Only `boundary_apply` / `reconstruct` / `flux_compute` / `source_term` / `time_integrate` / `column_process` / `pointwise_process` / `iterative_solve` / `filter` / `reduction` / `diagnostic` are allowed.
 
@@ -259,7 +279,7 @@ The required invariant set for the self-check (finalized as a **minimal set**):
 - The union of each `step.outputs` set of `algorithm.steps[]` covers the state variables targeted for update by `algorithm.update_semantics` (whose own vocabulary is `target_variables` / `update_order` / …).
 - **IR self-sufficiency (the IR is `Generate`'s sole algorithm carrier).** Every `algorithm.steps[].operation_ref` NOT resolved by a `dependency.direct_deps` call — a LOCAL operation the node implements — must be lowered WITH the math a `spec/`-blind leaf needs (defining/update expression + pinning constraints, incl. any form `controlled_spec.md` forbids), in existing fields (`derived_field_rules`, step/operation descriptions, `invariants`); no new schema field. A local op with NO lowering signal (a bare `operation_ref`: no non-structural step field, no `derived_field_rules` entry keyed by a step input/output, no op-name mention in `derived_field_rules`/`invariants`) is a deterministic `Compile.static` presence-floor fail (`_validate_local_operation_lowering` → `Compile.generate`). Above that floor, a thinly-lowered op (name + I/O shape + invariants only, defining math absent) stays a `Compile.verify` **major** — a free-form-math completeness judgment, semantic at V2, not deterministically gated (only the zero-signal floor is). This is the **removal trigger** for the interim `controlled_spec.md` carve-out on the `pure` leaf (phase_02 §Generate-executor).
 - `algorithm.ordering` is a valid ordering relation over `algorithm.steps[].step_id` (no cycles, no references to undefined step_id).
-- `algorithm.iteration_contract` is not an empty object when `algorithm.execution_mode=iterative`.
+- `algorithm.iteration_contract` is not an empty object when `algorithm.execution_mode=iterative`, and conversely carries no loop counter (`loop_variable` / `counter` / `index_variable`) together with `stop_condition` when `algorithm.execution_mode` is `sequence` or `conditional`. Both directions are deterministically gated at `Compile.static` (§`algorithm.execution_mode` **Decision Criteria** is the selection rule they enforce), so only the STRUCTURAL contradiction is caught there. The **semantic** half stays a V2 `major` this leaf owns: a declared `execution_mode` that contradicts the control structure `controlled_spec.md` describes — a time-marching node declaring `sequence` with an empty `iteration_contract`, which is structurally clean and passes every gate — is a `fail` remanded to `Compile.generate`.
 - **Multi-dimensional `problem` contract.** For a `problem` `node` whose `spec_id` contains `2d` / `3d`, `algorithm` additionally holds the 4 contract keys `state_variables[]` (each with `name` + `shape_expr`), `required_update_paths`, `diagnostics_from_state=true`, and `fallback_policy=fail_closed`, as **direct children of `algorithm`**. `required_update_paths` is a **list of non-empty strings**, each one a `state_variables[].name` (`["h", "hu", "hv"]`); the object form (`[{target: ..., path: [...]}]`) is a `fail`, because `ordering` / `steps[].step_id` already carry the update order.
 - **Placement of the multi-dimensional contract (resolution order).** `--stage compile` resolves the contract from the FIRST of these that exists, and validates only that one: (1) `algorithm.state_contract` — **any** mapping wins, even an empty one; (2) `algorithm.update_semantics` — wins if it holds **any** of the 4 contract keys; (3) the direct children of `algorithm`. Author (3) and nothing else: an `algorithm.state_contract` key, or one contract key strayed into `algorithm.update_semantics` (whose own vocabulary is `target_variables` / `update_order` / …), **shadows** the direct children so that they are never read and fail as if absent. Every finding is named `state_contract.<field>` after the RESOLVED contract, not after where the field was authored. Reference form: `docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml`.
 

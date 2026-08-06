@@ -78,6 +78,40 @@ RAW_EVIDENCE_ARTIFACTS = {
     "state_snapshots",
 }
 ALGORITHM_EXECUTION_MODES = {"sequence", "conditional", "iterative", "columnwise"}
+# The converse of the `iterative => non-empty iteration_contract` coupling, as a CLOSED set of
+# keys rather than "non-empty under a non-repeating mode". A survey of the 184 spec.ir.yaml in the
+# tree (29 current + 155 archived) found 19 non-empty `iteration_contract`s under a non-iterative
+# mode, of which 15 are legitimate non-loop shapes — negative declarations
+# (`{applies: false, rationale}`, `{kind: none, reason}`), fixed stage compositions (SSPRK2's 2
+# stages, correctly `sequence`), and the harness `case_loop` dispatch (correctly `conditional`) —
+# so the broad form false-positives on 15 of its 19 hits. The 4 true positives all instead carried
+# a loop-counter key AND `stop_condition`; that conjunction is what this gate checks.
+ITERATION_LOOP_COUNTER_KEYS = {"loop_variable", "counter", "index_variable"}
+ITERATION_STOP_CONDITION_KEY = "stop_condition"
+# The modes that ALLOW a repeated body, so a loop-shaped contract does not contradict them.
+# `columnwise` is here deliberately: a per-column sweep is itself a repetition, so a column node
+# may author that sweep as a loop. Flagging it would steer every such node onto `iterative` (the
+# only remedy this message can offer), which puts it out of reach of the
+# `columnwise => >=1 column_process step` coupling. Stated as the ALLOWED set rather than the
+# denied one so that an IR with a missing or misspelled `execution_mode` still gets this finding
+# alongside the enum violation.
+ITERATION_CONTRACT_REPEATING_MODES = ("iterative", "columnwise")
+
+
+def _iteration_contract_key_is_declared(value: object) -> bool:
+    """Whether an `iteration_contract` key states a value or is an empty plug-hole.
+
+    `{applies: false, loop_variable: null, stop_condition: null}` is a NEGATIVE declaration in the
+    same family as `{applies: false, rationale: ...}`, not a loop: the keys are present but declare
+    nothing. Reading presence alone would fail that IR while its rationale-worded twin passes.
+
+    Every spelling that lands falsy is an empty plug-hole, matching how the toolchain gate reads a
+    present-but-empty key (`null`, the bare key, YAML-1.1 `no`/`off`, `0`, `[]`, `""`) — a loop
+    counter named `0` or `[]` states no counter. A string is measured stripped, so an
+    all-whitespace value is empty too."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
 ALGORITHM_STEP_KINDS = {
     "boundary_apply",
     "reconstruct",
@@ -7271,7 +7305,11 @@ def _validate_algorithm_contract_file(
         violations.append(f"{contract_path}:algorithm_id must be non-empty string")
 
     execution_mode = contract.get("execution_mode")
-    if execution_mode not in ALGORITHM_EXECUTION_MODES:
+    # Hashability first: a set-membership test on a leaf-authored `execution_mode: [iterative]`
+    # raises TypeError, and the module note above forbids any IR shape reaching a raise — the
+    # conductor hands the leaf this gate's output as repair findings, where a traceback is
+    # unrepairable. Every non-string shape is simply not one of the four values.
+    if not isinstance(execution_mode, str) or execution_mode not in ALGORITHM_EXECUTION_MODES:
         violations.append(
             f"{contract_path}:execution_mode must be one of {sorted(ALGORITHM_EXECUTION_MODES)}"
         )
@@ -7292,7 +7330,10 @@ def _validate_algorithm_contract_file(
                 step_ids.add(step_id.strip())
 
             step_kind = item.get("step_kind")
-            if step_kind not in ALGORITHM_STEP_KINDS:
+            # Hashability first, for the same reason as `execution_mode` above: a leaf-authored
+            # `step_kind: [time_integrate]` would raise out of this set-membership test, and a
+            # traceback reaches the leaf as an unrepairable finding.
+            if not isinstance(step_kind, str) or step_kind not in ALGORITHM_STEP_KINDS:
                 violations.append(
                     f"{contract_path}:steps[{idx}].step_kind must be one of {sorted(ALGORITHM_STEP_KINDS)}"
                 )
@@ -7359,6 +7400,25 @@ def _validate_algorithm_contract_file(
         violations.append(f"{contract_path}:iteration_contract must be object")
     elif execution_mode == "iterative" and not iteration_contract:
         violations.append(f"{contract_path}:iteration_contract must be non-empty when execution_mode=iterative")
+    elif execution_mode not in ITERATION_CONTRACT_REPEATING_MODES:
+        counter_keys = sorted(
+            key for key in ITERATION_LOOP_COUNTER_KEYS & set(iteration_contract)
+            if _iteration_contract_key_is_declared(iteration_contract[key])
+        )
+        if counter_keys and _iteration_contract_key_is_declared(
+            iteration_contract.get(ITERATION_STOP_CONDITION_KEY)
+        ):
+            violations.append(
+                f"{contract_path}:execution_mode is {execution_mode!r} but iteration_contract"
+                f" carries a loop counter ({', '.join(counter_keys)}) and stop_condition —"
+                " that contract describes a repeated body, and only execution_mode iterative or"
+                " columnwise may carry one. Keep the loop fields and set the execution_mode the"
+                " selection rule gives for that repetition (iterative for a top-level loop;"
+                " columnwise for an independent per-column sweep, which also requires a"
+                " column_process step), or drop the loop-counter/stop_condition keys if the"
+                " algorithm truly runs once"
+                " (selection rule: phase_01_compile.md §algorithm.execution_mode)"
+            )
 
     update_semantics = contract.get("update_semantics")
     if not isinstance(update_semantics, dict):
