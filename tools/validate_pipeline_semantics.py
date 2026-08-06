@@ -103,13 +103,15 @@ def _iteration_contract_key_is_declared(value: object) -> bool:
 
     `{applies: false, loop_variable: null, stop_condition: null}` is a NEGATIVE declaration in the
     same family as `{applies: false, rationale: ...}`, not a loop: the keys are present but declare
-    nothing. Reading presence alone would fail that IR while its rationale-worded twin passes. The
-    house reading of a null plug-hole as an absent value is V7's (`impl_defaults` knobs)."""
-    if value is None:
-        return False
-    if isinstance(value, str) and not value.strip():
-        return False
-    return True
+    nothing. Reading presence alone would fail that IR while its rationale-worded twin passes.
+
+    Every spelling that lands falsy is an empty plug-hole, matching how the toolchain gate reads a
+    present-but-empty key (`null`, the bare key, YAML-1.1 `no`/`off`, `0`, `[]`, `""`) — a loop
+    counter named `0` or `[]` states no counter. A string is measured stripped, so an
+    all-whitespace value is empty too."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
 ALGORITHM_STEP_KINDS = {
     "boundary_apply",
     "reconstruct",
@@ -7303,7 +7305,11 @@ def _validate_algorithm_contract_file(
         violations.append(f"{contract_path}:algorithm_id must be non-empty string")
 
     execution_mode = contract.get("execution_mode")
-    if execution_mode not in ALGORITHM_EXECUTION_MODES:
+    # Hashability first: a set-membership test on a leaf-authored `execution_mode: [iterative]`
+    # raises TypeError, and the module note above forbids any IR shape reaching a raise — the
+    # conductor hands the leaf this gate's output as repair findings, where a traceback is
+    # unrepairable. Every non-string shape is simply not one of the four values.
+    if not isinstance(execution_mode, str) or execution_mode not in ALGORITHM_EXECUTION_MODES:
         violations.append(
             f"{contract_path}:execution_mode must be one of {sorted(ALGORITHM_EXECUTION_MODES)}"
         )
@@ -7402,9 +7408,11 @@ def _validate_algorithm_contract_file(
             violations.append(
                 f"{contract_path}:execution_mode is {execution_mode!r} but iteration_contract"
                 f" carries a loop counter ({', '.join(counter_keys)}) and stop_condition —"
-                " that contract describes a repeated body, which is execution_mode=iterative."
-                " Set execution_mode: iterative (keep the loop fields), or drop the"
-                " loop-counter/stop_condition keys if the algorithm truly runs once"
+                " that contract describes a repeated body, which sequence and conditional deny."
+                " Keep the loop fields and set the execution_mode the selection rule gives for"
+                " that repetition (iterative for a top-level loop; columnwise when it is an"
+                " independent per-column sweep), or drop the loop-counter/stop_condition keys if"
+                " the algorithm truly runs once"
                 " (selection rule: phase_01_compile.md §algorithm.execution_mode)"
             )
 

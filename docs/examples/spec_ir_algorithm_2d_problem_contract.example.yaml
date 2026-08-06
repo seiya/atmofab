@@ -79,8 +79,10 @@ ordering:
   - step_03_time_integrate
 
 # control_condition: describes the top-level control structure in prose. Under `iterative` that is
-# the loop the iteration_contract below formalizes.
-control_condition: "advance the state by one step per iteration while n <= n_step"
+# the loop the iteration_contract below formalizes — the two must describe the SAME loop, with the
+# same bounds. Generate lowers this pair into the model's time loop, so a prose bound that
+# disagrees with stop_condition is an off-by-one nobody can resolve from the IR.
+control_condition: "advance the state by one step per iteration, for n = 1 .. n_step"
 
 # iteration_contract: the loop itself, and the TOP-LEVEL loop only. Under `execution_mode:
 # iterative` this must be non-empty; conversely a contract carrying a loop counter (loop_variable /
@@ -90,7 +92,10 @@ control_condition: "advance the state by one step per iteration while n <= n_ste
 iteration_contract:
   loop_variable: n
   start: 1
-  stop_condition: "n == n_step"
+  # stop_condition is the condition under which the loop STOPS, tested before the body. With
+  # start: 1 that runs the body for n = 1 .. n_step, matching control_condition above. Writing
+  # "n == n_step" here would instead run n_step-1 steps; state the bound so the two agree.
+  stop_condition: "n > n_step"
   step_count_rule: "n_step is the step count determined by case.inputs.time"
   body_steps:
     - step_01_boundary_apply

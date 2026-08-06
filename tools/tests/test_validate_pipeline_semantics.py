@@ -16646,9 +16646,17 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         message = violations[0]
         self.assertIn("execution_mode is 'sequence'", message)
         self.assertIn("loop_variable", message)
-        self.assertIn("Set execution_mode: iterative", message)
         # Self-sufficient: the conductor hands the leaf the gate's last 50 lines as its repair
-        # findings, so the remedy has to be inside the one line, not in surrounding output.
+        # findings, so BOTH remedy branches and the pointer to the rule have to be inside the one
+        # line — the leaf has no other route to them. Each was individually deletable.
+        self.assertIn("set the execution_mode the selection rule gives for that repetition",
+                      message)
+        self.assertIn("iterative for a top-level loop", message)
+        # Naming only `iterative` steered a mislabelled column node onto the wrong mode.
+        self.assertIn("columnwise when it is an independent per-column sweep", message)
+        self.assertIn("drop the loop-counter/stop_condition keys if the algorithm truly runs once",
+                      message)
+        self.assertIn("selection rule: phase_01_compile.md §algorithm.execution_mode", message)
         self.assertEqual(message.count("\n"), 0)
 
     def test_loop_shaped_contract_under_conditional_is_flagged(self) -> None:
@@ -16677,9 +16685,22 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         self.assertEqual(vps.ITERATION_LOOP_COUNTER_KEYS, set(self._COUNTER_KEYS))
         rendered = " / ".join(f"`{key}`" for key in ("loop_variable", "counter", "index_variable"))
         repo_root = Path(vps.__file__).resolve().parent.parent
-        for rel in ("docs/workflow/phases/phase_01_compile.md",
-                    "skills/workflow-compile-generate/SKILL.md"):
-            self.assertIn(rendered, (repo_root / rel).read_text(encoding="utf-8"), rel)
+        # COUNTS, not presence. phase_01 renders the list twice (the couplings bullet and the V2
+        # invariant), so `assertIn` passed while either one was narrowed to `loop_variable` alone
+        # — a pin that only catches deleting both is not a pin. The examples render it in comment
+        # form, without backticks.
+        for rel, needle, count in (
+            ("docs/workflow/phases/phase_01_compile.md", rendered, 2),
+            ("skills/workflow-compile-generate/SKILL.md", rendered, 1),
+            ("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
+             "loop_variable /\n# counter / index_variable", 1),
+            ("docs/examples/spec_ir_algorithm_section.example.yaml",
+             "loop_variable / counter / index_variable", 1),
+        ):
+            text = (repo_root / rel).read_text(encoding="utf-8")
+            self.assertEqual(
+                text.count(needle), count,
+                f"{rel} must render the counter-key set {count}x; found {text.count(needle)}")
 
     def test_every_loop_counter_alias_is_flagged(self) -> None:
         """The counter key is a closed set, not a single spelling — `counter` and
@@ -16703,8 +16724,8 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
         """An IR spelling the counter more than once gets every name in the remedy, sorted, so
         the author can see each key the gate read. The ordering half of this pin is
         probabilistic: `sorted(...)` replaced by `list(...)` produces the sorted order on some
-        PYTHONHASHSEED values (measured: caught on 7 of 10 seeds with two keys), so a green run
-        is not by itself proof the sort survived."""
+        PYTHONHASHSEED values (measured with the three keys below: caught on 21 of 30 seeds), so
+        a green run is not by itself proof the sort survived."""
         violations = self._violations(
             iteration_contract={key: "n" for key in self._COUNTER_KEYS}
             | {"stop_condition": "n == n_step"},
@@ -16787,9 +16808,26 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             ("counter null only", {"loop_variable": None, "stop_condition": "n == n_step"}),
             ("stop_condition null only", {"loop_variable": "n", "stop_condition": None}),
             ("blank strings", {"loop_variable": "  ", "stop_condition": ""}),
+            # Every spelling that lands falsy, as the toolchain gate reads a present-but-empty
+            # key: YAML-1.1 `no`/`off` load as False, and `0` / `[]` / `{}` name no counter.
+            ("yaml no/off", {"loop_variable": False, "stop_condition": False}),
+            ("zero", {"loop_variable": 0, "stop_condition": 0}),
+            ("empty containers", {"loop_variable": [], "stop_condition": {}}),
         ):
             with self.subTest(shape=label):
                 self.assertEqual(self._violations(iteration_contract=contract), [])
+
+    def test_a_non_scalar_execution_mode_is_reported_not_raised(self) -> None:
+        """`execution_mode: [iterative]` made the enum's set-membership test raise
+        `TypeError: unhashable type`. The conductor turns this gate's non-zero exit into a
+        `compile_static_violation` and hands the leaf its last 50 lines as repair findings, where
+        a traceback is an unrepairable finding — the module note above this function forbids any
+        IR shape reaching a raise. Pre-existing on main, adjacent enough to fix here."""
+        for mode in ([("iterative")], {"mode": "iterative"}, 7, None):
+            with self.subTest(execution_mode=mode):
+                violations = self._violations(execution_mode=mode)
+                self.assertTrue(
+                    any("execution_mode must be one of" in v for v in violations), violations)
 
     def test_the_conjunction_is_pinned_from_both_sides(self) -> None:
         """Widening either half back to a disjunction re-enters the false-positive zone: a bare
@@ -16885,12 +16923,19 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             ("docs/workflow/phases/phase_01_compile.md",
              ("#### Decision Criteria",
               "#### Mode ↔ contract couplings",
+              # First match wins. Deleting the ordering instruction alone left the criteria
+              # readable but unordered, which is the ambiguity DOC_STYLE forbids.
+              "Evaluate in this order and take the first match:",
               # The rule the live defect broke: the enum alone never said which value a time
               # loop takes, and `sequence` reads as the neutral default.
               "**Any time marching over `n_step` is `iterative`**",
-              # Precedence: `columnwise` is decided first, because a column sweep also repeats
-              # a body and would otherwise always resolve to `iterative`.
-              "Decided before `iterative` because a column sweep is also a repeated body",
+              # The both-case. A time loop containing a column step is `iterative`; without
+              # this the two criteria each claim it.
+              "**a `column_process` step inside a time loop leaves the node `iterative`**",
+              # ... and the other half: what columnwise then IS, independence rather than
+              # repetition. A column step alone selects nothing.
+              "the top-level structure IS an independent per-column sweep",
+              "a `column_process` step is legal under any mode",
               # One needle per coupling bullet, each unique to its own line.
               "- `execution_mode=conditional` ⇒ `control_condition` is non-empty.",
               "- `execution_mode=columnwise` ⇒ `steps[]` holds at least one `column_process`"
@@ -16898,25 +16943,57 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
               "- `execution_mode=iterative` ⇒ `iteration_contract` is not an empty object.",
               "- `execution_mode` of `sequence` or `conditional` ⇒ `iteration_contract` carries"
               " no loop counter",
-              # The remedy. A rule stated without its remedy costs the leaf a retry.
-              "The remedy is to set `execution_mode: iterative` keeping the loop fields",
+              # These are hard failures, and where they route. Deleting the intro left four
+              # bullets that read as advice.
+              "Each of the four rules below is enforced by the `--stage compile` gate and is a"
+              " `Compile fail` routed to `Compile.generate`:",
+              # Both halves of the remedy. A rule stated without its remedy costs a retry, and
+              # the run-once branch is the one an author of a genuinely non-looping node needs.
+              "The remedy is to keep the loop fields and take the mode the Decision Criteria"
+              " give for that repetition",
+              "when the algorithm truly runs once, to drop the loop-counter/`stop_condition`"
+              " keys",
               # The two modes the converse rule deliberately does NOT bind.
               "`iterative` and `columnwise` both denote a repeated body",
+              "A key present with a falsy value (`null`, `\"\"`, `0`, `[]`) declares nothing",
               # `iteration_contract` is the top-level loop; an inner solve belongs in its step.
               "**Scope: `algorithm.iteration_contract` describes the TOP-LEVEL loop only.**",
-              # The legitimate non-loop shapes the survey found, each of which a naive reading
-              # of the converse rule would forbid.
+              "its convergence criteria (tolerance, iteration cap, divergence policy) are"
+              " lowered in that step's own fields",
+              # The gate's reach is narrower than the rule. Claiming otherwise is what the
+              # round-2 review caught.
+              "The deterministic gate recognizes only one spelling of this mistake",
+              # The pass list is about the KEY PAIR, not the shape — a stage composition
+              # spelled with both keys does fail.
+              "The rule is the KEY PAIR, not the shape of the contract.",
               "`kind: fixed_stage_composition`",
               "`kind: case_loop`",
-              "including one whose loop keys are present but `null`",
+              "A fixed stage composition that DOES name both",
               # The one direction that deliberately has NO converse rule.
-              "A non-empty `control_condition` under `execution_mode=sequence` is **legal**",
+              "Not a rule, stated to close the direction: a non-empty `control_condition` under"
+              " `execution_mode=sequence` is **legal**",
               # V2: the deterministic gate does not cover the semantic half, and the verify
               # leaf is told here that it owns it. Unique to that bullet.
-              "The **semantic** half stays a V2 `major` this leaf owns")),
+              "Both directions are deterministically gated at `Compile.static`",
+              "The **semantic** half stays a V2 `major` this leaf owns",
+              # The IR skeleton is what a leaf copies. Each of the three comments states a rule
+              # the leaf is gated on and each was individually deletable.
+              "# select per the \"algorithm.execution_mode\" section below; time marching over"
+              " n_step is iterative",
+              "# one of a string, a string array, or an object. required non-empty when"
+              " execution_mode=conditional",
+              "# object, the TOP-LEVEL loop only. non-empty when execution_mode=iterative;"
+              " conversely a loop counter + stop_condition here forbids execution_mode sequence"
+              " and conditional")),
             ("skills/workflow-compile-generate/SKILL.md",
              ("**Select by the top-level control structure**",
+              # One needle per selection case: three of the four were deletable while the
+              # ceiling bump was credited to them.
               "time marching over `n_step`",
+              "a fixed stage composition (SSPRK2's 2 stages) is `sequence`",
+              "a dispatch over a static case list is `conditional`",
+              "an independent per-column sweep is `columnwise`, but a `column_process` step"
+              " INSIDE a time loop leaves the node `iterative`",
               "`iteration_contract` states the TOP-LEVEL loop only",
               "together with `stop_condition` under `sequence` or `conditional` is a"
               " `Compile fail`",
@@ -16926,10 +17003,15 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             # 15700->16200 for precisely that text.
             ("skills/workflow-compile-verify/SKILL.md",
              ("Check `execution_mode` against the selection rule of",
-              "the structural contradiction (a loop-shaped `iteration_contract` under a"
-              " non-iterative mode) is already gated at `Compile.static`",
-              "a time-marching problem node declaring `sequence` is a `fail` even when the"
-              " `iteration_contract` is empty")),
+              "the structural contradiction (a loop counter together with `stop_condition` in"
+              " `iteration_contract` under `execution_mode` `sequence` or `conditional`) is"
+              " already gated at `Compile.static`",
+              # The three shapes the gate cannot see. This leaf is the only thing standing
+              # behind each of them, so each is named.
+              "a time-marching node declaring `sequence` with an EMPTY `iteration_contract`",
+              "a node declaring `columnwise` whose top level is a time loop",
+              "an inner `iterative_solve` step's convergence criteria authored into"
+              " `algorithm.iteration_contract`")),
         ):
             text = (repo_root / rel).read_text(encoding="utf-8")
             for needle in needles:
@@ -17006,14 +17088,31 @@ class DocsExampleAlgorithmYamlGateTests(unittest.TestCase):
         for rel, needles in (
             ("docs/examples/spec_ir_algorithm_2d_problem_contract.example.yaml",
              ("# execution_mode: the three steps below are the BODY of a time-marching loop",
+              # The rule, not just the label. Deleting this line left the heading comment
+              # standing over a value it no longer explained.
+              "a loop advancing\n# a counter to a stop condition is `iterative` — not"
+              " `sequence`",
               "# iteration_contract: the loop itself, and the TOP-LEVEL loop only.",
               "is a `Compile fail` under execution_mode\n# sequence or conditional",
+              # control_condition and stop_condition must describe the SAME loop. The two
+              # disagreed by one step when this file was first written.
+              "the two must describe the SAME loop, with the",
+              "stop_condition is the condition under which the loop STOPS, tested before the"
+              " body",
+              # The header sentence that makes the pair instructive: this file is the
+              # `iterative` form, the companion the run-once `sequence` form.
+              "shows the `iterative` form:",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
             ("docs/examples/spec_ir_algorithm_section.example.yaml",
              ("# execution_mode: `sequence` because these two steps are a fixed composition"
               " that runs ONCE per",
               "# call — no loop counter, no stop condition.",
+              # The sentence that stops a component author from copying `iterative` off the
+              # 2d file: the loop belongs to the caller.
+              "A component whose caller marches it in time still",
+              "# declares `sequence`: the loop belongs to the calling problem node",
               "# iteration_contract: an empty object states \"this algorithm does not iterate\".",
+              "is a `Compile fail` under execution_mode sequence or conditional",
               "docs/workflow/phases/phase_01_compile.md §`algorithm.execution_mode`")),
         ):
             text = (self._REPO_ROOT / rel).read_text(encoding="utf-8")
