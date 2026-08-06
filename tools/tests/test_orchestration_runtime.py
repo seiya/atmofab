@@ -28395,7 +28395,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `0`, `[]`, `""`), not just the word "null". A leaf told only "no nulls" would keep
         # writing `language: no`. The mechanism prose was moved to the gate docstring, which
         # no leaf force-reads; what is left here is the rule and its remedy.
-        "docs/workflow/phases/phase_01_compile.md": 50700,
+        # Bumped 50700->53800: issue #43 — §`algorithm.execution_mode` gains the Decision
+        # Criteria that select the mode, and the mode ↔ contract couplings list. The enum was
+        # stated everywhere and the SELECTION RULE nowhere, so a time-marching problem node was
+        # authored `sequence` with a fully loop-shaped `iteration_contract`; two of the three
+        # couplings were gate-enforced but undocumented, and the new converse coupling is a
+        # Compile-failing rule. This is the doc the compile leaf force-reads, so the rule and
+        # its remedy have to be readable here.
+        "docs/workflow/phases/phase_01_compile.md": 53800,
         # Per-substep SKILLs — each force-read by its own LLM leaf.
         # Bumped 10800->11500: Compile.generate now authors the io_contract section (G2 /
         # docs/design/deterministic_followups.md) — it was moved here from Compile.verify so the
@@ -28476,7 +28483,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # make/cmake/meson/ninja — i.e. to author an IR its own phase now rejects, which a warm
         # re-author would reproduce verbatim. The forbidden spellings are named explicitly for
         # the same reason the knob-alias table is: an unnamed alias is one the leaf re-derives.
-        "skills/workflow-compile-generate/SKILL.md": 26800,
+        # Bumped 26800->27650: issue #43 — the `execution_mode` bullet gains the one-sentence
+        # selection rule (time marching over n_step is iterative, fixed stage composition is
+        # sequence, static case dispatch is conditional) plus the Compile.static converse gate
+        # and the pointer to phase_01. This leaf AUTHORS the field; the enum alone let it pick
+        # `sequence` for a time-marching node and burn a non-retryable Compile.verify.
+        "skills/workflow-compile-generate/SKILL.md": 27650,
         # Bumped 11800->12100: G7 — compile.verify checks V4c only (operations ⊆ published); the
         # closure/topo consistency is conductor-authored + gate-checked, no longer LLM-verified (G7).
         # Bumped 12100->13100: R2 (G8) — compile.verify owns the SEMANTIC test_predicates fidelity
@@ -28504,7 +28516,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # file, not the generate SKILL, so without it the two halves of the same rule
         # disagreed and verify would remand a gate-clean 2d node — a warm retry, which is the
         # cost issue #12 exists to remove.
-        "skills/workflow-compile-verify/SKILL.md": 15700,
+        # Bumped 15700->16200: issue #43 — the algorithm checklist item now names the
+        # `execution_mode` selection rule and scopes this leaf to its SEMANTIC half (declared
+        # mode vs. the control structure controlled_spec describes); the structural
+        # contradiction is gated at Compile.static.
+        "skills/workflow-compile-verify/SKILL.md": 16200,
         # Bumped 22000->22400: inlined the leaf-actionable C003 directive placement
         # + the f2008 63-char identifier limit (previously only in phase_02, which
         # generate.generate no longer force-reads) to avoid a lint/build round-trip.
