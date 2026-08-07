@@ -18,8 +18,10 @@ directly addressable as the **ephemeral** ``~/.claude/projects/<slug>/<arid>.jso
 (which ``~/.claude`` cleanup can delete). Its last activity, the dead-air before
 the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
-that transcript when it is still on disk, and also aggregates leaf token usage
-from it. Older runs may additionally carry a persisted
+that transcript when it is still on disk. It can also aggregate leaf token usage
+from it, but only for the audit's opt-in legacy path: since issue #47 each leaf's
+usage is recorded in-repo from the leaf's own output (see ``tools/leaf_usage.py``),
+and no workflow path reads ``~/.claude``. Older runs may additionally carry a persisted
 ``launch_incident.runtime.<uuid>.json`` snapshot, which the audit renderer
 surfaces; the conductor writes no new ones.
 
@@ -41,6 +43,15 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# The canonical leaf-usage shape lives in its own module: it is the contract the conductor,
+# the HTTP transport and the audit all record against, where THIS module is post-mortem
+# forensics over the machine-local `~/.claude` transcripts. The sum keys below derive from
+# its token-class vocabulary so the two cannot drift.
+try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
+    from leaf_usage import LEAF_TOKEN_CLASS_KEYS
+except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
+    from tools.leaf_usage import LEAF_TOKEN_CLASS_KEYS
 
 # Terminal agent_runs statuses: a row carrying one of these (or any finished_at)
 # proves the child completed and the window is NOT dangling.
@@ -466,23 +477,12 @@ def summarize_jsonl_usage(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-# The four token classes a Claude CLI `usage` object reports. Both sum-key tuples
-# below derive from this one, so a new token class (or a rename) cannot land in one
-# aggregation and silently miss the other — the transcript sum would then disagree
-# with the pure-leaf sum with nothing to catch it.
-_CLI_TOKEN_USAGE_KEYS: tuple[str, ...] = (
-    "input_tokens",
-    "output_tokens",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-)
-
 # Transcript-usage sum keys: the token classes plus the two values
 # `summarize_jsonl_usage` derives itself. `total_tokens` is load-bearing here (it is
 # summed across transcripts by `aggregate_child_usage` / `aggregate_parent_usage`)
 # and must not be dropped when re-deriving this tuple.
 _USAGE_SUM_KEYS: tuple[str, ...] = (
-    *_CLI_TOKEN_USAGE_KEYS,
+    *LEAF_TOKEN_CLASS_KEYS,
     "total_tokens",
     "assistant_turns",
 )
@@ -549,17 +549,24 @@ def aggregate_child_usage(
 ) -> dict[str, Any]:
     """Attribute per-child token usage from the ephemeral ``~/.claude`` transcripts.
 
-    Child subagents are NOT recorded as sidechains in the host transcript and
-    ``agent_runs.jsonl`` carries no usage fields, so child token cost (empirically
-    the majority of a workflow node's cost) is otherwise invisible. This locates
-    each child's ``~/.claude/projects/<slug>/<host>/subagents/agent-*.jsonl``
-    transcript by arid-in-body (the child launch prompt embeds its own arid) and
-    sums usage.
+    For a run recorded BEFORE issue #47, ``agent_runs.jsonl`` carries no usage fields and
+    child subagents are not sidechains in the host transcript, so child token cost
+    (empirically the majority of a workflow node's cost) is invisible without this. It
+    locates each child's ``~/.claude/projects/<slug>/<host>/subagents/agent-*.jsonl``
+    transcript by arid-in-body (the child launch prompt embeds its own arid) and sums usage.
+    A run recorded since carries its own ``usage`` on every row, and does not come here.
 
     Scans every host session's ``subagents`` dir, which is robust to multi-session
     nodes — e.g. a ``--resume`` that ran some children under a different host
     session than the others. Best-effort: returns ``available=False`` with a
     reason when ``~/.claude`` is absent/cleaned; never raises.
+
+    LEGACY, and reached only behind ``audit_orchestration``'s opt-in
+    ``--token-cost-from-transcripts``. Since issue #47 every leaf's usage is written into
+    ``agent_runs.jsonl`` from the leaf's OWN output, in-repo and durable; this path exists
+    for rows recorded before that. It is not on any workflow path, because the workflow does
+    not read ``~/.claude`` — and the glob matches the ``subagents/`` layout, which a
+    conductor-spawned leaf does not produce.
     """
     targets = [a for a in agent_run_ids if isinstance(a, str) and a]
     projects_dir = _claude_projects_dir(repo_root)
@@ -703,7 +710,7 @@ def aggregate_parent_usage(
 # pure-leaf cost (transcripts are ephemeral; these files are in-repo). Exactly the
 # CLI token classes — `total_tokens` is derived here, and `assistant_turns` is
 # meaningless for a single-turn pure envelope, so neither belongs.
-_PURE_ATTEMPT_USAGE_KEYS: tuple[str, ...] = _CLI_TOKEN_USAGE_KEYS
+_PURE_ATTEMPT_USAGE_KEYS: tuple[str, ...] = LEAF_TOKEN_CLASS_KEYS
 
 
 # The structural discriminator of a pure-leaf meta envelope. `per_attempt` is the

@@ -45,8 +45,8 @@ The bundled script handles all seven structurally; do not hand-sum these:
 2. **`cache_read_input_tokens` is re-read every turn.** It grows as the session
    accumulates; summing it counts the same prompt many times. → report its range, never
    its sum.
-3. **`agent_runs.jsonl` has no usage and shares ids with `phase_state_log` step
-   records.** Joining them naively mislabels leaves. → take timing from the
+3. **`agent_runs.jsonl` shares ids with `phase_state_log` step records.** Joining them
+   naively mislabels leaves. → take timing from the
    `child_launched` → `record_agent_run_terminal` pairs in `phase_state_log.jsonl`,
    keyed by `agent_run_id`; take the role/substep label from `session_run_index.json` /
    `agent_runs.jsonl`.
@@ -104,11 +104,16 @@ The bundled script handles all seven structurally; do not hand-sum these:
 | per-leaf elapsed | `workspace/orchestrations/<orch_id>/phase_state_log.jsonl` (`child_launched`→`record_agent_run_terminal`) |
 | role / substep / status label | `workspace/orchestrations/<orch_id>/session_run_index.json`, `agent_runs.jsonl` |
 | run status / spec | `workspace/orchestrations/<orch_id>/orchestration_meta.json` |
-| per-leaf full transcript (turns, usage, tools) | `~/.claude/projects/<cwd-slug>/<agent_run_id>.jsonl` (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
+| per-leaf token usage | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` (`usage`), mirrored in `agents/<agent_run_id>/dialogs/agent.result.json` |
+| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `~/.claude/projects/<cwd-slug>/<agent_run_id>.jsonl` (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
 
-Note: `agent.result.json` under `agents/<id>/dialogs/` reports `usage: unavailable`
-("no locatable child transcript") — the conductor does not capture usage, so the
-per-leaf session transcript above is the only token source.
+Note: since issue #47 the conductor records each leaf's usage in-repo, from the leaf's own
+output — a normalized dict (`total_tokens`, `usage_source`, and where the provider reports
+them `reasoning_tokens` / `cached_tokens`) or an explicit `not_measured` / `unavailable`
+marker. Prefer that row: it is durable, where the transcript is machine-local and ephemeral.
+The transcript is still the only source for per-TURN detail, and the only source at all for a
+run recorded before issue #47 (those rows read `usage: unavailable`, "no locatable child
+transcript").
 
 ## Procedure
 
@@ -169,8 +174,9 @@ thinking.
   The lever is `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (128,000 on Opus 4.8), not less thinking.
 - **A leaf can die of infrastructure.** `API Error: Connection closed mid-response.` (and
   friends) is written to the leaf's piped stdout, persisted at
-  `workspace/orchestrations/<id>/agents/<arid>/dialogs/leaf.stdout.log`, and flagged in
-  the transcript with `isApiErrorMessage`. The conductor reports it as
+  `workspace/orchestrations/<id>/agents/<arid>/dialogs/leaf.stdout.log` — on a `claude` run
+  as the `result` (or `errors`) field inside that file's `--output-format json` envelope —
+  and flagged in the transcript with `isApiErrorMessage`. The conductor reports it as
   `reason_code=leaf_transport_error`. Do not read such a leaf's timing as model behavior,
   and do not read its `elapsed` at all (trap 6).
 - **A leaf can be KILLED at the per-leaf cap.** Such a leaf reports the same

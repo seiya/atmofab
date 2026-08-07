@@ -192,23 +192,76 @@ class ResultEnvelope(NamedTuple):
     parse_error: "str | None"
 
 
+# The `modelUsage` row keys that identify the PRIMARY model, against the top-level `usage`
+# block's own names. The envelope reports `usage` for one model and `modelUsage` for every
+# model the leaf ran, so the row that equals `usage` names the one that answered.
+_PRIMARY_MODEL_MATCH: tuple[tuple[str, str], ...] = (
+    ("inputTokens", "input_tokens"),
+    ("outputTokens", "output_tokens"),
+    ("cacheReadInputTokens", "cache_read_input_tokens"),
+    ("cacheCreationInputTokens", "cache_creation_input_tokens"),
+)
+
+
+def _is_count(value: Any) -> bool:
+    """A token count: an `int` that is not a `bool` (`True` is an `int` in Python)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _resolve_model(envelope: dict) -> Any:
     """The resolved model string from an envelope, or `_MISSING`.
 
-    Tolerant of envelope-format drift (the CLI's JSON shape is not a pinned contract): a
-    top-level `model` string wins; otherwise a single-key `modelUsage` map names the one
-    model the leaf ran under. Anything ambiguous returns `_MISSING` rather than guessing —
-    the value is recorded for provenance, never gates a decision, so a missing model is a
+    Tolerant of envelope-format drift (the CLI's JSON shape is not a pinned contract), in
+    three steps:
+
+    1. a top-level `model` string wins;
+    2. a single-key `modelUsage` map names the one model the leaf ran under;
+    3. a multi-key `modelUsage` — the ordinary case, because a leaf routinely runs a helper
+       model alongside the one that answers — is resolved by finding the row whose token
+       counts equal the top-level `usage` block, which reports the PRIMARY model alone.
+
+    Step 3 is not a heuristic reaching for a value: across the 136 result envelopes recorded
+    in this repository none carries a top-level `model` and 78 carry two `modelUsage` rows,
+    and in every one of those 78 exactly one row matches. Without it those leaves record no
+    exact model at all and fall back to the launch request's unpinned alias. A row that
+    matches ambiguously (or not at all) still returns `_MISSING` rather than guessing — the
+    value is recorded for provenance, never gates a decision, so a missing model is a
     provenance gap, not a fail-open."""
     model = envelope.get("model", _MISSING)
     if isinstance(model, str) and model.strip():
         return model
     model_usage = envelope.get("modelUsage")
-    if isinstance(model_usage, dict) and len(model_usage) == 1:
+    if not isinstance(model_usage, dict) or not model_usage:
+        return _MISSING
+    if len(model_usage) == 1:
         (name,) = model_usage.keys()
         if isinstance(name, str) and name.strip():
             return name
-    return _MISSING
+        return _MISSING
+    usage = envelope.get("usage")
+    if not isinstance(usage, dict):
+        return _MISSING
+
+    def _matches(row: Any) -> bool:
+        if not isinstance(row, dict):
+            return False
+        compared = 0
+        for reported, canonical in _PRIMARY_MODEL_MATCH:
+            counted = usage.get(canonical)
+            if not _is_count(counted):
+                continue
+            # `_is_count` on BOTH sides: `True == 1` in Python, so a row reporting a flag
+            # where a count belongs would otherwise match a row that reported 1.
+            if not _is_count(row.get(reported)) or row.get(reported) != counted:
+                return False
+            compared += 1
+        # At least one real count has to have agreed. Without this an EMPTY row matches an
+        # empty `usage` on `None == None` four times over and is named the primary model.
+        return compared > 0
+
+    matches = [name for name, row in model_usage.items()
+               if isinstance(name, str) and name.strip() and _matches(row)]
+    return matches[0] if len(matches) == 1 else _MISSING
 
 
 def parse_result_envelope(stdout: Any) -> ResultEnvelope:

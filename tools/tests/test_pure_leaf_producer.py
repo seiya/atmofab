@@ -853,6 +853,66 @@ class PureProducerSubstepTests(unittest.TestCase):
             # The real generator + the real validator — no stub in this path.
             _validate_agent_summary_text(payload, _extract_agent_summary_text(payload))
 
+    def test_a_pure_claude_leafs_envelope_usage_reaches_its_agent_run_row(self) -> None:
+        """Issue #47: the pure loops are where the expensive claude leaves run, and their
+        `usage` had never been asserted anywhere — the envelope's numbers could be dropped with
+        the whole suite green. What the row must carry is the DERIVED `total_tokens` (no
+        provider sends one, and `audit_orchestration` accepts a durable row only when it is an
+        int) summed across every model in `modelUsage`, plus the envelope's own billed cost."""
+        envelope = json.dumps({
+            "result": json.dumps(_valid_bundle()), "is_error": False, "session_id": "s",
+            "total_cost_usd": 0.065739,
+            "usage": {"input_tokens": 2, "output_tokens": 4},
+            "modelUsage": {
+                "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4,
+                                      "cacheReadInputTokens": 14278,
+                                      "cacheCreationInputTokens": 5849},
+                "claude-haiku-4-5-20251001": {"inputTokens": 6, "outputTokens": 480,
+                                              "cacheReadInputTokens": 13000,
+                                              "cacheCreationInputTokens": 0}}})
+        c, refs, oc = self._run([envelope])
+        self.assertEqual(oc.status, "pass")
+        row = [cap["--agent-run-json"] for sub, cap in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+        self.assertEqual(row["usage"], {
+            "input_tokens": 8, "output_tokens": 484,
+            "cache_read_input_tokens": 27278, "cache_creation_input_tokens": 5849,
+            "total_tokens": 33619, "usage_source": "cli_result_envelope",
+            "cost_usd": 0.065739})
+        # The same numbers reach the A/B metrics file, which sums `per_attempt[].usage`.
+        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["per_attempt"][0]["usage"], row["usage"])
+
+    def test_a_pure_envelope_with_a_partial_modelusage_drops_the_cost(self) -> None:
+        """The pure twin of the agentic cost-suppression pin: `total_cost_usd` is the sum
+        across every model, so a token count that covers only some of them must not be paired
+        with it — that is a silently wrong bill, on the leaves that cost the most."""
+        envelope = json.dumps({
+            "result": json.dumps(_valid_bundle()), "is_error": False, "session_id": "s",
+            "total_cost_usd": 0.41, "usage": {"input_tokens": 2, "output_tokens": 4},
+            "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4},
+                           "claude-haiku-4-5-20251001": {"inputTokens": None}}})
+        c, _refs, oc = self._run([envelope])
+        self.assertEqual(oc.status, "pass")
+        row = [cap["--agent-run-json"] for sub, cap in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+        self.assertEqual(row["usage"]["total_tokens"], 6)
+        self.assertNotIn("cost_usd", row["usage"])
+
+    def test_a_pure_envelope_with_no_usage_is_unavailable_not_unmeasured(self) -> None:
+        """The only detector for CLI envelope-shape drift: a well-formed envelope that stopped
+        carrying usage. `unavailable` says a channel existed and failed — which is a defect to
+        investigate — where `not_measured` would say there was never anything to measure and
+        silently reinstate issue #47."""
+        envelope = json.dumps({"result": json.dumps(_valid_bundle()), "is_error": False,
+                               "session_id": "s"})
+        c, _refs, oc = self._run([envelope])
+        self.assertEqual(oc.status, "pass")
+        row = [cap["--agent-run-json"] for sub, cap in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+        self.assertEqual(row["usage"]["status"], "unavailable")
+        self.assertIn("carried no usable usage", row["usage"]["reason"])
+
     def test_finalize_before_write_ordering(self) -> None:
         # The finalize-child call MUST precede the host artifact writes (empty write_roots make
         # an in-window write unauthorized). Pin the ORDERING directly: capture, at the instant
@@ -1067,6 +1127,50 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         c.procs = procs
         c.slept = []
         return c
+
+    def test_a_pure_leaf_that_wrote_no_envelope_names_the_exit_it_died_at(self) -> None:
+        """The other `unavailable` half (issue #47). A leaf killed at the per-leaf cap writes
+        nothing to stdout: its tokens were spent and are unrecorded. Separable from a live leaf
+        whose envelope merely carried no usage — that one says so — by naming the parse failure
+        and the exit code, which is what tells an operator which defect to chase."""
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        c = self._conductor(repo, [wc.ProcResult(-9, "", "boom", timed_out=True)])
+        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "fail")
+        row = [cap["--agent-run-json"] for sub, cap in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+        self.assertEqual(row["usage"]["status"], "unavailable")
+        self.assertIn("no result envelope on leaf stdout", row["usage"]["reason"])
+        self.assertIn("leaf_exit=-9", row["usage"]["reason"])
+
+    def test_a_non_claude_pure_leaf_never_unwraps_an_envelope(self) -> None:
+        """WIRING pin for the PURE sites' `allow_envelope`. Only a `claude_cli` pure leaf's
+        stdout is CLI-authored; a codex or HTTP pure leaf writes the MODEL's answer there, so
+        its `is_error` / `api_error_status` keys are forgeable. Unwrapping them would let a
+        leaf that crashed for an unrelated reason park the run for hours. The same bytes DO
+        arm under a claude entry — asserted here — so only the provider separates them."""
+        now = 1_752_200_000.0
+        abort = json.dumps({
+            "type": "result", "is_error": True, "api_error_status": 429, "num_turns": 1,
+            "terminal_reason": "api_error",
+            "result": f"Claude AI usage limit reached|{int(now) + 300}"})
+        self.assertIsNotNone(wc._sole_content_usage_limit_line(abort, allow_envelope=True))
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        c = self._conductor(repo, [wc.ProcResult(1, abort, "")], wait_usage_reset=True)
+        c.llm_config = _cfg("codex", agent_model="gpt-5.6-sol")
+        events: list = []
+        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+        with mock.patch.object(wc.time, "time", return_value=now):
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c.slept, [])                                  # no wait
+        self.assertEqual([e for e, _ in events if e == "leaf_usage_limit_wait"], [])
+        self.assertEqual([f["reason"] for e, f in events
+                          if e == "leaf_usage_limit_wait_declined"], ["no_reset_time"])
 
     def test_a_timed_out_producer_is_a_leaf_timeout_and_never_waits_out_a_quota(self) -> None:
         """`generate.generate` is the substep of the 99-minute field hang, so this loop's own

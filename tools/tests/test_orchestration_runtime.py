@@ -105,7 +105,6 @@ from tools.orchestration_runtime import (
     DEFAULT_CLAUDE_MODEL_ALIAS,
     resolve_claude_model_alias,
     default_agent_model_for_backend,
-    resolve_claude_model_from_transcript,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
 
@@ -20177,11 +20176,15 @@ class RecordTimeoutTests(unittest.TestCase):
                 _parent_return_token_path(repo_root, "orch_to_001", arid).exists()
             )
 
-    def test_finalize_child_persists_best_effort_child_usage(self) -> None:
-        # The finalize path embeds a best-effort `usage` field into the
-        # agent_runs.jsonl entry so child token cost is durable in-repo. With no
-        # ~/.claude transcript present (test env), it degrades to a status marker
-        # rather than breaking finalization.
+    def test_finalize_child_records_the_callers_usage_and_never_backfills(self) -> None:
+        # `usage` is the CALLER's to supply — the conductor reads it from the leaf's own output
+        # and always passes one (a normalized dict, or an explicit marker). finalize_child
+        # persists it verbatim into agent_runs.jsonl, where it is durable in-repo.
+        #
+        # It also must NOT reconstruct a missing one. The old backfill read the ~/.claude
+        # transcript, which the workflow does not read and which is machine-local and ephemeral
+        # besides — so it could only ever write "unavailable" (issue #47). A payload with no
+        # usage now records no usage, rather than a marker describing a lookup that never ran.
         from tools.orchestration_runtime import finalize_child, _parent_return_token_path
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -20207,13 +20210,57 @@ class RecordTimeoutTests(unittest.TestCase):
                     "started_at": "2026-05-09T08:00:00Z",
                     "finished_at": "2026-05-09T08:05:00Z",
                     "result_summary": "t",
+                    "usage": {"input_tokens": 5, "output_tokens": 7, "total_tokens": 12,
+                              "usage_source": "cli_result_envelope"},
                 },
             )
             runs_path = repo_root / "workspace/orchestrations/orch_to_001/agent_runs.jsonl"
             entries = [json.loads(l) for l in runs_path.read_text().splitlines() if l.strip()]
             entry = next(e for e in entries if e.get("agent_run_id") == arid)
-            self.assertIn("usage", entry)
-            self.assertEqual(entry["usage"].get("status"), "unavailable")
+            self.assertEqual(entry["usage"], {"input_tokens": 5, "output_tokens": 7,
+                                              "total_tokens": 12,
+                                              "usage_source": "cli_result_envelope"})
+            # The same row is what `agents/<arid>/dialogs/agent.result.json` carries.
+            result_json = json.loads(
+                (repo_root / "workspace/orchestrations/orch_to_001/agents" / arid
+                 / "dialogs" / "agent.result.json").read_text(encoding="utf-8"))
+            self.assertEqual(result_json["usage"], entry["usage"])
+
+    def test_finalize_child_does_not_invent_usage_when_the_caller_supplied_none(self) -> None:
+        """The retired backfill's replacement is NOTHING, deliberately: an absent usage is
+        absent, not a marker describing a ~/.claude lookup that policy never lets run."""
+        from tools.orchestration_runtime import finalize_child, _parent_return_token_path
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = self._setup_substep_launch(repo_root)
+            token = _parent_return_token_path(
+                repo_root, "orch_to_001", arid
+            ).read_text(encoding="utf-8").strip()
+            finalize_child(
+                repo_root=repo_root,
+                orchestration_id="orch_to_001",
+                agent_run_id=arid,
+                return_token=token,
+                reply_text="status: fail\noutput_refs:\n- (none)\nrationale: t",
+                agent_run_payload={
+                    "agent_run_id": arid,
+                    "agent_role": "substep",
+                    "agent_backend": "claude",
+                    "status": "fail",
+                    "agent_session_id": arid,
+                    "context_id": "ctx_finalize_no_usage",
+                    "context_isolated": True,
+                    "node_key": "problem/shallow_water2d@0.3.0",
+                    "started_at": "2026-05-09T08:00:00Z",
+                    "finished_at": "2026-05-09T08:05:00Z",
+                    "result_summary": "t",
+                },
+            )
+            runs_path = repo_root / "workspace/orchestrations/orch_to_001/agent_runs.jsonl"
+            entries = [json.loads(line)
+                       for line in runs_path.read_text().splitlines() if line.strip()]
+            entry = next(e for e in entries if e.get("agent_run_id") == arid)
+            self.assertNotIn("usage", entry)
 
     def test_finalize_child_rejects_agent_run_id_mismatch(self) -> None:
         from tools.orchestration_runtime import finalize_child
@@ -30726,42 +30773,6 @@ class ModelResolutionTests(unittest.TestCase):
             self.assertEqual(default_agent_model_for_backend("claude", home), "opus")
             self.assertEqual(default_agent_model_for_backend("codex", home), "codex")
             self.assertEqual(default_agent_model_for_backend("other", home), "")
-
-    def _write_transcript(self, home: Path, session_id: str, lines: list[dict]) -> None:
-        proj = home / ".claude" / "projects" / "-some-slug"
-        proj.mkdir(parents=True, exist_ok=True)
-        with (proj / f"{session_id}.jsonl").open("w", encoding="utf-8") as fh:
-            for obj in lines:
-                fh.write(json.dumps(obj) + "\n")
-
-    def test_transcript_resolves_exact_version(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            sid = "arid-123"
-            self._write_transcript(home, sid, [
-                {"type": "user", "message": {"role": "user"}},
-                {"type": "assistant", "message": {"model": "claude-opus-4-8"}},
-                {"type": "assistant", "message": {"model": "claude-opus-4-8"}},
-            ])
-            self.assertEqual(
-                resolve_claude_model_from_transcript(sid, home), "claude-opus-4-8")
-
-    def test_transcript_skips_synthetic_and_returns_last_real(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            sid = "arid-syn"
-            self._write_transcript(home, sid, [
-                {"message": {"model": "claude-opus-4-8"}},
-                {"message": {"model": "<synthetic>"}},
-            ])
-            self.assertEqual(
-                resolve_claude_model_from_transcript(sid, home), "claude-opus-4-8")
-
-    def test_transcript_returns_none_when_missing_or_empty_session(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            self.assertIsNone(resolve_claude_model_from_transcript("nope", home))
-            self.assertIsNone(resolve_claude_model_from_transcript("", home))
 
 
 class InfrastructureSpecKindTests(unittest.TestCase):

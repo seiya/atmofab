@@ -877,31 +877,22 @@ class ConductHappyPathTest(unittest.TestCase):
                     source_dependency_ref="d", until_phase="compile",
                     llm_config=_lc.load_llm_config(path), workflow_mode="dev", env={})
 
-    def test_agent_run_json_records_transcript_resolved_model(self) -> None:
-        from unittest.mock import patch
+    def test_agent_run_json_records_the_envelope_resolved_model(self) -> None:
+        """The EXACT model that ran comes from the leaf's own CLI result envelope. Since issue
+        #47 that holds for an agentic claude leaf as well as a pure one — both are launched with
+        `--output-format json` — so no path reads the ~/.claude transcript for provenance."""
         c = self._conductor()  # backend="claude"
-        refs = self._refs()
-        with patch(
-            "tools.orchestration_runtime.resolve_claude_model_from_transcript",
-            return_value="claude-opus-4-8",
-        ) as m:
-            payload = c._agent_run_json(
-                refs, "compile", "generate", "child-arid-1", "pass", [])
-        # the leaf's session id == its agent_run_id, so resolution keys on it
-        m.assert_called_once_with("child-arid-1")
+        payload = c._agent_run_json(
+            self._refs(), "compile", "generate", "child-arid-1", "pass", [],
+            agent_model_override="claude-opus-4-8")
         self.assertEqual(payload["agent_model"], "claude-opus-4-8")
 
-    def test_agent_run_json_omits_model_when_transcript_unresolved(self) -> None:
-        from unittest.mock import patch
+    def test_agent_run_json_omits_model_when_the_envelope_named_none(self) -> None:
+        """A provenance gap is left ABSENT for record_agent_run to backfill the launch alias —
+        never filled from the transcript, which is outside the access boundary."""
         c = self._conductor()  # backend="claude"
-        refs = self._refs()
-        with patch(
-            "tools.orchestration_runtime.resolve_claude_model_from_transcript",
-            return_value=None,
-        ):
-            payload = c._agent_run_json(
-                refs, "compile", "generate", "child-arid-2", "pass", [])
-        # unresolved -> left absent so record_agent_run backfills the launch alias
+        payload = c._agent_run_json(
+            self._refs(), "compile", "generate", "child-arid-2", "pass", [])
         self.assertNotIn("agent_model", payload)
 
     def test_agent_run_json_records_host_pinned_codex_model(self) -> None:
@@ -3121,13 +3112,16 @@ class UsageLimitTerminalLineStreamTests(unittest.TestCase):
         # Even where envelopes ARE expected it declines: no `is_error` / error-status keys.
         self.assertIsNone(wc._sole_content_usage_limit_line(forgery, allow_envelope=True))
 
-    def test_only_a_json_output_format_launch_may_unwrap_an_envelope(self) -> None:
-        """`allow_envelope` is the trust boundary: the CLI authors an envelope ONLY for a leaf
-        launched with `--output-format json` (the pure loops). An agentic leaf's stdout is its own
-        text, so a JSON line there is MODEL-written and its `is_error` / `api_error_status` keys
-        prove nothing — unwrapping it would hand the leaf the abort shape with the length ceiling
-        applied to the inner text instead of its whole output. Across 711 recorded leaf stdout logs
-        an envelope appears iff the launch was pure, with zero exceptions."""
+    def test_only_a_claude_pure_launch_may_unwrap_an_envelope(self) -> None:
+        """`allow_envelope` is the trust boundary: the stdout that reaches this function is
+        still a CLI-authored envelope ONLY for a `claude_cli` PURE launch. A codex or HTTP
+        leaf writes the model's own answer there, and an agentic claude leaf — which since
+        issue #47 IS launched with `--output-format json` — had its envelope lifted at the
+        capture boundary. In both cases a JSON line here is MODEL-written and its `is_error` /
+        `api_error_status` keys prove nothing; unwrapping it would hand the leaf the abort
+        shape with the length ceiling applied to the inner text instead of its whole output.
+        Across the leaf stdout logs recorded at the time of measurement (2026-07-24: 711) an
+        envelope appears iff the launch was pure, with zero exceptions."""
         abort = "You've hit your session limit · resets 12:30pm (Asia/Tokyo)"
         env = json.dumps({"is_error": True, "api_error_status": 429, "result": abort,
                           "terminal_reason": "api_error"})
@@ -4180,23 +4174,27 @@ class LeafTransientRetryTest(unittest.TestCase):
         declined = [f["reason"] for e, f in events if e == "leaf_usage_limit_wait_declined"]
         self.assertEqual(declined, ["no_reset_time"])
 
+    _ABORT_ENVELOPE = json.dumps({
+        "type": "result", "is_error": True, "api_error_status": 429, "num_turns": 1,
+        "result": "You've hit your session limit · resets 5:50pm (Asia/Tokyo)",
+        "terminal_reason": "api_error"})
+
     def test_the_agentic_loop_never_unwraps_an_envelope(self) -> None:
         """WIRING pin for `allow_envelope`. `run_substep` runs AGENTIC leaves — a pure substep is
-        dispatched away before this loop — and an agentic leaf is launched without
-        `--output-format json`, so a JSON line on its stdout is MODEL-written and its `is_error` /
-        `api_error_status` keys prove nothing. Passing `True` here would let a leaf that crashed for
-        an unrelated reason park the run for hours, with the 200-char ceiling applied to the inner
-        text instead of its whole output. The stdout below is the CLI's real abort envelope, so only
-        the call site's argument separates arming from declining."""
+        dispatched away before this loop — and by the time their output reaches here it is the
+        model's own text: an agentic claude leaf IS launched with `--output-format json` since
+        issue #47, but `_unwrap_agentic_envelope` lifted the answer out at the capture boundary,
+        and a codex/HTTP leaf never had an envelope. So a JSON line on this stdout is MODEL-written
+        and its `is_error` / `api_error_status` keys prove nothing. Passing `True` here would let a
+        leaf that crashed for an unrelated reason park the run for hours, with the 200-char ceiling
+        applied to the inner text instead of its whole output. The stdout below is the CLI's real
+        abort envelope, so only the call site's argument separates arming from declining."""
         now = 1_784_878_725.0
-        envelope = json.dumps({
-            "type": "result", "is_error": True, "api_error_status": 429, "num_turns": 1,
-            "result": "You've hit your session limit · resets 5:50pm (Asia/Tokyo)",
-            "terminal_reason": "api_error"})
         # The same bytes DO arm once unwrapping is allowed — so this test fails if the wiring flips,
         # not because the envelope is unresolvable.
-        self.assertIsNotNone(wc._sole_content_usage_limit_line(envelope, allow_envelope=True))
-        c = self._conductor([wc.ProcResult(1, envelope, "")], wait_usage_reset=True)
+        self.assertIsNotNone(
+            wc._sole_content_usage_limit_line(self._ABORT_ENVELOPE, allow_envelope=True))
+        c = self._conductor([wc.ProcResult(1, self._ABORT_ENVELOPE, "")], wait_usage_reset=True)
         events: list = []
         c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
         with mock.patch.object(wc.time, "time", return_value=now):
@@ -4211,6 +4209,30 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(declined[0]["dead_agent_run_id"], "child-1")
         self.assertIn("session limit", declined[0]["evidence"])
         self.assertLessEqual(len(declined[0]["evidence"]), 160)
+
+    def test_the_capture_boundary_hands_this_loop_the_arming_bare_line(self) -> None:
+        """The other half: the CLI's abort still ARMS the wait, because `_unwrap_agentic_envelope`
+        turns the envelope the CLI now writes into the bare line this loop has always armed on.
+        Without the unwrap this exact death would decline (the test above), so `--wait-usage-reset`
+        would be inert for every agentic leaf — the same bug, one layer in, that admitting only the
+        bare shape once caused for the pure loops."""
+        now = 1_784_878_725.0        # 2026-07-24 16:38 JST; the envelope says 17:50 JST
+        entry = _cfg("claude").entry_for("compile", "verify")
+        captured = wc._unwrap_agentic_envelope(
+            wc.ProcResult(1, self._ABORT_ENVELOPE, ""), entry, pure=False)
+        self.assertEqual(captured.stdout,
+                         "You've hit your session limit · resets 5:50pm (Asia/Tokyo)")
+        c = self._conductor([captured, wc.ProcResult(0, "done", "")], wait_usage_reset=True)
+        events: list = []
+        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+        with mock.patch.object(wc.time, "time", return_value=now):
+            oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(len(c.spawns), 2)                 # waited, then relaunched in place
+        self.assertEqual(c.slept, [4395.0])                # 1h11m15s to the reset + 120s margin
+        waits = [f for e, f in events if e == "leaf_usage_limit_wait"]
+        self.assertEqual([f["dead_agent_run_id"] for f in waits], ["child-1"])
+        self.assertEqual(waits[0]["reset_source"], "scrape_human")
 
     def test_real_cli_shape_on_stdout_arms_the_wait(self) -> None:
         """REGRESSION (the opted-in E2E that still fail_closed): the real `claude -p` reports a usage
@@ -5872,6 +5894,65 @@ class DiagnosticianTest(unittest.TestCase):
                        wc.PhaseOutcome("validate", "fail", failed_substeps=["child-9"]))
         self.assertEqual((d.action, d.target_phase, d.reason), ("reopen", "compile", "diag_ir"))
 
+    def test_the_diagnosticians_cost_is_emitted_because_it_has_no_agent_run_row(self) -> None:
+        """The diagnostician is a real billed leaf that finalizes no child, so the per-leaf
+        `usage` record has nowhere to land — and `_persist_leaf_output` reuses one fixed
+        `(arid, prefix)`, so a second escalate of the same phase overwrites the only other
+        copy. The event is therefore the durable record of what it cost (issue #47)."""
+        events: list = []
+        c = self._conductor()
+        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, 'analysis\n{"action":"reopen","target_phase":"compile","reason":"x"}', "",
+            usage={"input_tokens": 8, "output_tokens": 484, "total_tokens": 33619,
+                   "usage_source": "cli_result_envelope", "cost_usd": 0.065739},
+            model="claude-opus-5[1m]")
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        emitted = [f for e, f in events if e == "diagnose_leaf_usage"]
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(emitted[0]["phase"], "validate")
+        self.assertEqual(emitted[0]["total_tokens"], 33619)
+        self.assertEqual(emitted[0]["cost_usd"], 0.065739)
+        self.assertEqual(emitted[0]["model"], "claude-opus-5[1m]")
+
+    def test_the_diagnosticians_cost_is_normalized_before_it_is_emitted(self) -> None:
+        """A codex `defaults` is a legal configuration (the diagnostician only requires an
+        agentic provider), and the codex pump puts the RAW `turn.completed` object on
+        `proc.usage` — no `total_tokens`, no `cost_usd`. Reading those keys straight off it
+        would emit two empty strings: this issue's own blindness, on the one launch with no
+        `agent_runs.jsonl` row to fall back to."""
+        events: list = []
+        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                           orchestration_agent_run_id="ORCH",
+                           llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
+        c.calls = []
+        # The diagnostician builds a read-only sandbox profile only under bwrap; this test is
+        # about what it EMITS, and a codex profile needs a `.codex/hooks.json` this fake repo
+        # has no reason to carry.
+        c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, '{"action":"reopen","target_phase":"compile","reason":"x"}', "",
+            usage={"input_tokens": 10, "output_tokens": 20})
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        emitted = [f for e, f in events if e == "diagnose_leaf_usage"]
+        self.assertEqual(emitted[0]["total_tokens"], 30)
+
+    def test_a_diagnostician_with_no_usage_says_so_on_the_event(self) -> None:
+        """`usage_status` is the field that says WHY the numbers are empty — without it an
+        operator reading `total_tokens: ""` cannot tell a leaf that reported nothing from a
+        conductor that forgot to look. It is the only signal, since this launch writes no
+        `agent_runs.jsonl` row."""
+        events: list = []
+        c = self._conductor()
+        c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            -9, "", "killed", timed_out=True)
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        emitted = [f for e, f in events if e == "diagnose_leaf_usage"]
+        self.assertEqual(emitted[0]["usage_status"], "unavailable")
+        self.assertEqual(emitted[0]["total_tokens"], "")
+
     def test_escalate_names_its_own_substep_in_the_timeout_context(self) -> None:
         """The diagnostician is the fourth spawn site and the only one without a child
         `agent_run_id`. Its `leaf_timeout` event must still say WHICH leaf wedged — and it is
@@ -6405,12 +6486,12 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
         self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         self.assertEqual(
             self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
             ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
@@ -6441,7 +6522,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"],
+            ["claude", "--session-id", "arid-1", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
@@ -6454,7 +6535,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(
             c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
             ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"],
+             "--session-id", "new-arid", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
@@ -15645,7 +15726,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         DECLARE a model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+                         ["claude", "--model", "opus", "--effort", "medium", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         k = self._configured("codex")
         judge = k.leaf_command(k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
@@ -15662,10 +15743,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+        self.assertEqual(judge, ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         # ...and only that leaf.
         self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
-                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -15674,7 +15755,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"], msg=f"{phase}.{substep}")
+                             ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -15687,7 +15768,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+                         ["claude", "--effort", "xhigh", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
@@ -15714,7 +15795,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
@@ -15728,7 +15809,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command(entry), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "-p"])
+        self.assertEqual(c.leaf_command(entry), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     # --- capability predicates replace the backend tests --------------------------------
 
@@ -16189,6 +16270,485 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             with mock.patch.object(subprocess, "run", _fake_run):
                 c.runtime(["finalize-child", "--reply-from-stdin"])
             self.assertEqual(seen.get("input"), "")
+
+
+class AgenticEnvelopeUnwrapTests(unittest.TestCase):
+    """Issue #47: an agentic `claude` leaf is launched with `--output-format json` so its cost
+    and resolved model are readable in-boundary — and its answer is lifted back out of the
+    envelope at the capture boundary, because `stdout` is also this repository's diagnostic
+    channel and several consumers only work on the model's plain text.
+
+    The envelope bytes below are a REAL capture (`claude -p --disallowedTools … --output-format
+    json`, 2026-08-07), not a hand-built shape: key order, the `[1m]`-suffixed `modelUsage` key,
+    the absent top-level `model`, and the two-model accounting are all as the CLI writes them.
+    """
+
+    _ENVELOPE = json.dumps({
+        "type": "result", "is_error": False, "num_turns": 3, "session_id": "child-1",
+        "result": "done", "total_cost_usd": 0.065739,
+        "usage": {"input_tokens": 2, "output_tokens": 4,
+                  "cache_read_input_tokens": 14278, "cache_creation_input_tokens": 5849,
+                  "server_tool_use": {"web_search_requests": 0}},
+        "modelUsage": {
+            "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4,
+                                  "cacheReadInputTokens": 14278,
+                                  "cacheCreationInputTokens": 5849, "costUSD": 0.0521},
+            "claude-haiku-4-5-20251001": {"inputTokens": 6, "outputTokens": 480,
+                                          "cacheReadInputTokens": 13000,
+                                          "cacheCreationInputTokens": 0, "costUSD": 0.0136},
+        },
+    })
+
+    def _entry(self, backend: str = "claude"):
+        return _cfg(backend).entry_for("compile", "verify")
+
+    def test_the_answer_is_lifted_out_and_the_envelope_is_what_gets_persisted(self) -> None:
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, self._ENVELOPE, "err"), self._entry(), pure=False)
+        self.assertEqual(proc.stdout, "done")           # what every consumer reads
+        self.assertEqual(proc.persist_stdout, self._ENVELOPE)   # what the log keeps
+        self.assertEqual(proc.stderr, "err")
+        self.assertEqual(proc.returncode, 0)
+
+    def test_the_recorded_model_is_the_key_the_cli_actually_writes(self) -> None:
+        """`_resolve_model` returns the single `modelUsage` KEY when there is no top-level
+        `model`, and the real CLI's key carries its context-window suffix. Recording
+        `claude-opus-5` would be a value the CLI never wrote."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, json.dumps({"type": "result", "result": "x", "modelUsage": {
+                "claude-opus-5[1m]": {"inputTokens": 1}}}), ""),
+            self._entry(), pure=False)
+        self.assertEqual(proc.model, "claude-opus-5[1m]")
+
+    def test_usage_is_summed_across_every_model_the_leaf_ran(self) -> None:
+        """The top-level `usage` is the PRIMARY model's row; `modelUsage` is the accounting
+        `total_cost_usd` is computed from. Measured across the 136 result envelopes recorded in
+        this repository, taking `usage` alone loses a median 25.8% of the tokens (max 43.7%) —
+        so the row would report a cost that includes tokens it does not show."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, self._ENVELOPE, ""), self._entry(), pure=False)
+        self.assertEqual(proc.usage, {
+            "input_tokens": 2 + 6, "output_tokens": 4 + 480,
+            "cache_read_input_tokens": 14278 + 13000,
+            "cache_creation_input_tokens": 5849 + 0,
+            "total_tokens": 8 + 484 + 27278 + 5849,
+            "usage_source": "cli_result_envelope", "cost_usd": 0.065739})
+        # The top-level `usage` alone would have reported 20,133 — 40% short of the tokens
+        # `total_cost_usd` was billed for.
+        self.assertNotEqual(proc.usage["total_tokens"], 2 + 4 + 14278 + 5849)
+
+    def test_an_envelope_without_usable_modelusage_falls_back_and_drops_the_cost(self) -> None:
+        """`modelUsage` is a REQUIRED key in both of the CLI's envelope variants, so falling
+        back to the top-level `usage` always means the per-model accounting was unreadable —
+        never that this is a complete single-model envelope. The tokens are still reported
+        (they are real), but `total_cost_usd` covers models they do not, and pairing the two
+        is a silently wrong bill."""
+        for label, envelope in (
+                ("empty modelUsage", {"type": "result", "result": "x", "total_cost_usd": 0.41,
+                                      "modelUsage": {},
+                                      "usage": {"input_tokens": 11, "output_tokens": 22}}),
+                ("unreadable row", {"type": "result", "result": "x", "total_cost_usd": 0.41,
+                                    "modelUsage": {"claude-opus-5[1m]": "not-a-row"},
+                                    "usage": {"input_tokens": 11, "output_tokens": 22}}),
+                ("no modelUsage", {"type": "result", "result": "x", "total_cost_usd": 0.41,
+                                   "usage": {"input_tokens": 11, "output_tokens": 22}})):
+            with self.subTest(label):
+                proc = wc._unwrap_agentic_envelope(
+                    wc.ProcResult(0, json.dumps(envelope), ""), self._entry(), pure=False)
+                self.assertEqual(proc.usage["total_tokens"], 33)
+                self.assertNotIn("cost_usd", proc.usage)
+
+    def test_a_row_missing_a_token_class_makes_the_sum_partial(self) -> None:
+        """An ABSENT class is unknown, not zero. Counting the row as complete would spend the
+        difference: the full `total_cost_usd` would ride a sum that never saw that model's
+        cached input. Distinct from the uncountable-value case below — `.get()` returns
+        `None` for both, so only a rule keyed on "all four counted" closes them together."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, json.dumps({
+                "type": "result", "result": "x", "total_cost_usd": 0.41,
+                "usage": {"input_tokens": 2, "output_tokens": 4},
+                # The incomplete row FIRST, and a complete one after it: `partial` has to
+                # accumulate across rows, not describe the last one. Every other partial pin
+                # here puts the bad row last, where dropping the accumulation still passes.
+                "modelUsage": {"claude-haiku-4-5-20251001": {"inputTokens": 6},
+                               "claude-opus-5[1m]": {
+                                   "inputTokens": 2, "outputTokens": 4,
+                                   "cacheReadInputTokens": 0,
+                                   "cacheCreationInputTokens": 0}}}), ""),
+            self._entry(), pure=False)
+        self.assertEqual(proc.usage["total_tokens"], 2 + 4 + 6)
+        self.assertNotIn("cost_usd", proc.usage)
+
+    def test_a_row_that_counts_some_classes_and_not_others_makes_the_sum_partial(self) -> None:
+        """The hole a per-ROW rule does not close: a row that contributed a real count still
+        leaves a hole for the class whose value was PRESENT but uncountable (a negative, a
+        float, a flag). The sibling above catches the ABSENT-class spelling of the same hole;
+        this is its present-but-unusable twin, and without either the full `total_cost_usd`
+        rides a sum missing one model's output tokens."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, json.dumps({
+                "type": "result", "result": "x", "total_cost_usd": 0.41,
+                "usage": {"input_tokens": 2, "output_tokens": 4},
+                "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4},
+                               "claude-haiku-4-5-20251001": {"inputTokens": 6,
+                                                             "outputTokens": True}}}), ""),
+            self._entry(), pure=False)
+        self.assertEqual(proc.usage["total_tokens"], 2 + 4 + 6)
+        self.assertNotIn("cost_usd", proc.usage)
+
+    def test_a_success_envelope_with_an_empty_result_is_an_empty_answer(self) -> None:
+        """The CLI writes `subtype: "success", result: ""` on its deferred-tool and zero-turn
+        paths. That is an empty ANSWER, and the variants are disjoint (a success envelope
+        carries no `errors`), so there is nothing else to render. Falling back to the raw
+        envelope here would hand the classifier and the failure summary the accounting block —
+        the document this unwrap exists to keep away from them."""
+        envelope = json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                               "result": "", "deferred_tool_use": {"id": "t", "name": "Bash"},
+                               "total_cost_usd": 0.01, "usage": {"input_tokens": 1},
+                               "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 1}}})
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, envelope, ""), self._entry(), pure=False)
+        self.assertEqual(proc.stdout, "")
+        self.assertEqual(proc.persist_stdout, envelope)   # the evidence is still on disk
+        self.assertEqual(proc.usage["total_tokens"], 1)
+
+    def test_a_row_that_carries_no_counts_makes_the_sum_partial(self) -> None:
+        """The hole this closes: a row that IS a dict but reports nothing countable
+        contributes zero to the sum while leaving it looking complete — so the full
+        `total_cost_usd` would ride a token count missing that model entirely."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, json.dumps({
+                "type": "result", "result": "x", "total_cost_usd": 0.41,
+                "usage": {"input_tokens": 2, "output_tokens": 4},
+                "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4},
+                               "claude-haiku-4-5-20251001": {"inputTokens": None}}}), ""),
+            self._entry(), pure=False)
+        self.assertEqual(proc.usage["total_tokens"], 6)
+        self.assertNotIn("cost_usd", proc.usage)
+
+    def test_a_retryable_death_keeps_its_tag_through_the_capture(self) -> None:
+        """The reason the unwrap exists. `_classify_leaf_infra_error` matches LINE BY LINE and
+        most of its patterns are anchored to a line's start or end, so inside a single-line
+        envelope an `Overloaded` matches nothing: the tag is lost, `llm_overloaded` never
+        reaches `_RETRYABLE_LEAF_INFRA_TAGS`, and a transient death fails the phase closed
+        instead of being re-launched."""
+        envelope = json.dumps({"type": "result", "is_error": True, "api_error_status": 529,
+                               "terminal_reason": "api_error",
+                               "result": "API Error: Overloaded"})
+        raw = wc.ProcResult(1, envelope, "")
+        self.assertIsNone(wc._leaf_infra_error(raw))                      # enveloped: no tag
+        captured = wc._unwrap_agentic_envelope(raw, self._entry(), pure=False)
+        self.assertEqual(wc._leaf_infra_error(captured)[0], "llm_overloaded")
+        self.assertIn("llm_overloaded", wc._RETRYABLE_LEAF_INFRA_TAGS)
+
+    def test_a_routing_directive_survives_the_capture(self) -> None:
+        """`escalate` reads the diagnostician's directive with `_last_json_object`, which takes
+        the LAST balanced top-level object — the envelope itself, if it were still wrapped. Every
+        escalation would then route `fail_closed` as unparsable."""
+        directive = '{"action": "reopen", "target_phase": "compile", "reason": "diag_ir"}'
+        envelope = json.dumps({"type": "result", "is_error": False,
+                               "result": f"analysis\n{directive}"})
+        self.assertIsNone(wc._parse_directive(envelope))                  # enveloped: no route
+        captured = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, envelope, ""), self._entry(), pure=False)
+        self.assertEqual(wc._parse_directive(captured.stdout).action, "reopen")
+
+    def test_an_error_variant_envelope_is_rendered_as_lines_not_passed_through(self) -> None:
+        """The CLI writes TWO envelope families and only one has a `result`: the error
+        variants (`error_during_execution`, `error_max_turns`, …) carry `errors: [...]`
+        instead. That is exactly when the message matters, so passing the envelope through
+        would put the accounting block in `result_summary` and leave the line-anchored
+        classifier with nothing to match — the defect this whole unwrap exists to prevent,
+        surviving on the CLI's own failure path."""
+        envelope = json.dumps({
+            "type": "result", "is_error": True, "subtype": "error_during_execution",
+            "terminal_reason": "api_error", "num_turns": 4, "total_cost_usd": 0.41,
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+            "modelUsage": {"claude-opus-5[1m]": {"inputTokens": 1, "outputTokens": 2}},
+            # `Overloaded` ALONE, because the classifier pattern for it is `^\s*overloaded\s*$`
+            # — start-anchored, like its `^\s*api error\b` catch-all and the usage-limit
+            # lead-in. A message that also matches an unanchored alternative would pass this
+            # test whatever the rendering did to the start of the line.
+            "errors": ["Overloaded"]})
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(1, envelope, ""), self._entry(), pure=False)
+        # The subtype gets its OWN LINE: prefixing the message with `error_during_execution: `
+        # puts every start-anchored pattern out of reach (measured), which is a retryable
+        # death failing the run closed and a quota stop that never arms the wait.
+        self.assertEqual(proc.stdout, "error_during_execution\nOverloaded")
+        self.assertEqual(wc._leaf_infra_error(proc)[0], "llm_overloaded")
+        self.assertIn("llm_overloaded", wc._RETRYABLE_LEAF_INFRA_TAGS)
+        self.assertEqual(proc.persist_stdout, envelope)   # the record keeps everything
+        self.assertEqual(proc.usage["total_tokens"], 3)   # ...and the cost is still taken
+
+    def test_a_truncated_envelope_keeps_its_evidence_and_says_it_has_no_usage(self) -> None:
+        """A capture cut at `LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`, or a SIGKILL landing
+        mid-write, leaves an envelope that will not parse. Blanking it would destroy the only
+        evidence of what the leaf was doing, so the raw prefix stays — the residual is that
+        the line-oriented consumers see a JSON fragment, which is the lesser loss. The usage
+        side is unambiguous: nothing was read, so the row says `unavailable`."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(1, self._ENVELOPE[:200], ""), self._entry(), pure=False)
+        self.assertEqual(proc.stdout, self._ENVELOPE[:200])
+        self.assertIsNone(proc.usage)
+        row = wc._leaf_usage_row(proc, self._entry())
+        self.assertEqual(row["status"], "unavailable")
+
+    def test_the_primary_model_is_resolved_even_when_a_helper_model_ran(self) -> None:
+        """The ordinary shape: no top-level `model` and TWO `modelUsage` rows (a helper model
+        alongside the one that answered). Of the 136 result envelopes recorded in this
+        repository, none carries a top-level `model` and 78 carry two rows — so without
+        resolving the primary from the `usage` block those leaves record no exact model at
+        all and fall back to the launch request's unpinned alias."""
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(0, self._ENVELOPE, ""), self._entry(), pure=False)
+        # `usage` in the fixture is the opus row, so opus is the model that answered.
+        self.assertEqual(proc.model, "claude-opus-5[1m]")
+
+    def test_a_model_written_json_document_is_not_mistaken_for_an_envelope(self) -> None:
+        """`parse_result_envelope` says only that stdout was a JSON object — not that the CLI
+        wrote it. An operator's configured `command:` wrapper that does not emit the envelope
+        leaves the MODEL's own answer on stdout, and a substep whose answer is a JSON document
+        with a `result` key would then have its answer silently replaced by that field. The
+        CLI-authored `type: "result"` is what separates them, exactly as
+        `_cli_abort_envelope_result` gates on the CLI's own keys."""
+        answer = json.dumps({"result": "pass", "usage": {"input_tokens": 9},
+                             "modelUsage": {"whatever": {"inputTokens": 9}}})
+        proc = wc.ProcResult(0, answer, "")
+        self.assertIs(wc._unwrap_agentic_envelope(proc, self._entry(), pure=False), proc)
+
+    def test_a_pure_leaf_is_never_unwrapped(self) -> None:
+        """The pure loops parse the envelope themselves and read `is_error` / `parse_error` off
+        it — the contract that makes a malformed pure reply repairable rather than silently
+        empty. Unwrapping under them would hand the validators a bare document with no way to
+        tell a CLI error from a model one."""
+        proc = wc.ProcResult(0, self._ENVELOPE, "")
+        self.assertIs(wc._unwrap_agentic_envelope(proc, self._entry(), pure=True), proc)
+
+    def test_a_non_claude_leaf_and_an_unparsable_stdout_are_left_alone(self) -> None:
+        for label, proc, entry in (
+                ("codex", wc.ProcResult(0, self._ENVELOPE, ""), self._entry("codex")),
+                ("prose", wc.ProcResult(0, "just text", ""), self._entry()),
+                ("empty", wc.ProcResult(-9, "", "killed"), self._entry())):
+            with self.subTest(label):
+                self.assertIs(wc._unwrap_agentic_envelope(proc, entry, pure=False), proc)
+
+    def test_an_envelope_whose_result_is_not_a_string_keeps_its_stdout(self) -> None:
+        """An unrecognised envelope must not cost the diagnostic evidence it contains."""
+        envelope = json.dumps({"type": "result", "result": None,
+                               "usage": {"input_tokens": 3, "output_tokens": 4}})
+        proc = wc._unwrap_agentic_envelope(
+            wc.ProcResult(1, envelope, ""), self._entry(), pure=False)
+        self.assertEqual(proc.stdout, envelope)
+        self.assertEqual(proc.usage["total_tokens"], 7)   # ...and the numbers are still taken
+
+
+class SpawnLeafCaptureBoundaryTest(unittest.TestCase):
+    """The unwrap has to happen where the leaf is CAPTURED, not at one consumer: `spawn_leaf` is
+    the single place a claude leaf's output enters the conductor, and every consumer downstream
+    (classifier, failure summary, escalate's directive parser, the usage-limit scrape) reads
+    `ProcResult.stdout` from it."""
+
+    # All four token classes in the row, as every recorded envelope writes them: a row
+    # missing a class is an incomplete sum, and the capture would then drop `cost_usd`.
+    ENVELOPE = json.dumps({"type": "result", "is_error": False, "result": "the answer",
+                           "total_cost_usd": 0.5,
+                           "modelUsage": {"claude-opus-5[1m]": {
+                               "inputTokens": 7, "outputTokens": 9,
+                               "cacheReadInputTokens": 0, "cacheCreationInputTokens": 0}}})
+
+    def test_a_leaf_killed_after_answering_is_unwrapped_on_the_timeout_path_too(self) -> None:
+        """`spawn_leaf` has TWO returns. A leaf that answered and was then killed for a leaked
+        pipe-holder takes the timeout one, and it carries the same envelope — so leaving that
+        return unwrapped would lose the usage, the model, and the classifiable stdout for
+        exactly the deaths an operator most needs to read."""
+        streams = [_ScriptedStream((("write", self.ENVELOPE),)), _ScriptedStream((("write", ""),))]
+        for stream in streams:
+            self.addCleanup(stream.release)
+
+        class _Popen:
+            def __init__(self, *a, **kw):
+                self.pid = 4242
+                self.returncode = None
+                self.stdin = io.BytesIO()
+                self.stdout, self.stderr = streams[0].reader, streams[1].reader
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("claude", timeout or 0.01)
+
+            def poll(self):
+                return None
+
+        cfg = _cfg("claude")
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                         orchestration_agent_run_id="ORCH", llm_config=cfg, env={})
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc.Conductor, "_bwrap_enabled", lambda self: False), \
+                patch.object(wc, "_leaf_timeout_seconds", lambda: 0.05), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01), \
+                patch.object(wc.os, "getpgid", lambda pid: 4242), \
+                patch.object(wc.os, "killpg", lambda pgid, sig: None), \
+                redirect_stdout(io.StringIO()):
+            proc = c.spawn_leaf("P", {"HOME": "/h"}, cfg.entry_for("compile", "verify"),
+                                session_id="A", child_arid="A")
+        self.assertIs(proc.timed_out, True)
+        self.assertEqual(proc.stdout, "the answer")
+        self.assertEqual(proc.persist_stdout, self.ENVELOPE)
+        self.assertEqual(proc.usage["total_tokens"], 16)
+
+    def test_the_persisted_log_is_the_envelope_not_the_lifted_answer(self) -> None:
+        """`dialogs/leaf.stdout.log` is the operator's record and `docs/RUNBOOK.md` sends them
+        to it, so it must keep what the CLI actually wrote — the envelope, with the usage and
+        cost blocks — even though every in-process consumer reads the lifted text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                             env={})
+            proc = wc._unwrap_agentic_envelope(
+                wc.ProcResult(0, self.ENVELOPE, ""),
+                _cfg("claude").entry_for("compile", "verify"), pure=False)
+            c._persist_leaf_output("A", proc)
+            log = (repo / "workspace" / "orchestrations" / "o" / "agents" / "A" / "dialogs"
+                   / "leaf.stdout.log")
+            self.assertEqual(log.read_text(encoding="utf-8"), self.ENVELOPE)
+
+    def test_the_capture_returns_the_answer_with_the_envelope_alongside(self) -> None:
+        streams = [_ScriptedStream((("write", self.ENVELOPE),)), _ScriptedStream((("write", ""),))]
+        for stream in streams:
+            self.addCleanup(stream.release)
+
+        class _Popen:
+            """A leaf that answers with a CLI result envelope on real pipes and exits 0."""
+
+            def __init__(self, *a, **kw):
+                self.pid = 4242
+                self.returncode = 0
+                self.stdin = io.BytesIO()
+                self.stdout, self.stderr = streams[0].reader, streams[1].reader
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+        cfg = _cfg("claude")
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+                         orchestration_agent_run_id="ORCH", llm_config=cfg, env={})
+        with patch.object(wc.subprocess, "Popen", _Popen), \
+                patch.object(wc.Conductor, "_bwrap_enabled", lambda self: False):
+            proc = c.spawn_leaf("P", {"HOME": "/h"}, cfg.entry_for("compile", "verify"),
+                                session_id="A", child_arid="A")
+        self.assertEqual(proc.stdout, "the answer")
+        self.assertEqual(proc.persist_stdout, self.ENVELOPE)
+        self.assertEqual(proc.model, "claude-opus-5[1m]")
+        self.assertEqual(proc.usage["total_tokens"], 16)
+        self.assertEqual(proc.usage["cost_usd"], 0.5)
+
+
+class LeafUsageRecordingTests(unittest.TestCase):
+    """Issue #47: every launch records what it cost, or says why it cannot.
+
+    Before this, `agents/<arid>/dialogs/agent.result.json` carried
+    `{"status": "unavailable", "reason": "no locatable child transcript"}` for every agentic
+    `claude` leaf — a marker describing a ~/.claude lookup that the access boundary never lets
+    succeed. One full billed run produced zero token numbers for 10 of its 13 leaves.
+
+    These drive the loops, so their `ProcResult`s are POST-capture: `spawn_leaf` (stubbed here,
+    pinned by `SpawnLeafCaptureBoundaryTest`) has already unwrapped the claude envelope.
+    """
+
+    _CAPTURED_USAGE = {"input_tokens": 8, "output_tokens": 484,
+                       "cache_read_input_tokens": 27278, "cache_creation_input_tokens": 5849,
+                       "total_tokens": 33619, "usage_source": "cli_result_envelope",
+                       "cost_usd": 0.065739}
+
+    class _C(_FakeConductor):
+        proc: wc.ProcResult = wc.ProcResult(0, "", "")
+
+        def _write_lineage(self, refs):  # type: ignore[override]
+            return []
+
+        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+            return self.proc
+
+    def _conductor(self, proc: wc.ProcResult, backend: str = "claude") -> "_C":
+        c = self._C(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
+        c.calls, c.proc = [], proc
+        return c
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
+            binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
+
+    def _row(self, c: "_C") -> dict:
+        return [cap["--agent-run-json"] for sub, cap in c.calls
+                if sub == "finalize-child"][-1]
+
+    def test_an_agentic_leafs_usage_and_model_reach_its_agent_run_row(self) -> None:
+        """The whole point: the numbers the capture boundary took off the envelope are what the
+        durable row carries — in-boundary, and readable by `tools/audit_orchestration.py`."""
+        c = self._conductor(wc.ProcResult(0, "done", "", usage=dict(self._CAPTURED_USAGE),
+                                          model="claude-opus-5[1m]"))
+        c.run_substep(self._refs(), "compile", "verify")
+        row = self._row(c)
+        self.assertEqual(row["usage"], self._CAPTURED_USAGE)
+        self.assertEqual(row["agent_model"], "claude-opus-5[1m]")
+
+    def test_a_dead_leaf_says_its_tokens_are_unrecorded_and_names_the_exit(self) -> None:
+        """A leaf killed at the per-leaf cap leaves no envelope to take numbers from. Its tokens
+        were spent and are unrecorded — an honest `unavailable`, separable from a live leaf whose
+        envelope was malformed by naming the exit."""
+        c = self._conductor(wc.ProcResult(-9, "", "boom", timed_out=True))
+        c.run_substep(self._refs(), "compile", "verify")
+        usage = self._row(c)["usage"]
+        self.assertEqual(usage["status"], "unavailable")
+        self.assertIn("provider reported no usage", usage["reason"])
+        self.assertIn("leaf_exit=-9", usage["reason"])
+
+    def test_a_deterministic_substep_is_not_measured_rather_than_unavailable(self) -> None:
+        """`Build` and friends run in-process and launch no leaf, so there was never a number
+        to take. Reporting that as `unavailable` sends an operator hunting a defect that does
+        not exist — and reporting it as 0 would say the substep was free."""
+        c = self._conductor(wc.ProcResult(0, "", ""))
+        c.run_substep(self._refs(), "build", None)
+        usage = self._row(c)["usage"]
+        self.assertEqual(usage["status"], "not_measured")
+        self.assertIn("no leaf launched", usage["reason"])
+
+    def test_a_codex_turns_raw_usage_is_normalized_at_the_row(self) -> None:
+        """The codex pump takes `usage` verbatim off `turn.completed`, so unlike the claude and
+        HTTP paths it arrives RAW — `_leaf_usage_row` is where it gets its derived total and its
+        provenance. `usage_source` is the discriminator that keeps an already-normalized dict
+        from being normalized twice."""
+        c = self._conductor(
+            wc.ProcResult(0, "done", "", usage={"input_tokens": 10, "output_tokens": 20}),
+            backend="codex")
+        c.run_substep(self._refs(), "compile", "verify")
+        usage = self._row(c)["usage"]
+        self.assertEqual(usage["total_tokens"], 30)
+        self.assertEqual(usage["usage_source"], "codex_turn_event")
+        # The verbatim counts ride along: normalizing keeps only the names this repository
+        # can name, and a codex `turn.completed` may report others (there is no captured one
+        # here to say what they are). Before this, codex usage was persisted as it arrived.
+        self.assertEqual(usage["provider_details"],
+                         {"turn_usage": {"input_tokens": 10, "output_tokens": 20}})
+
+    def test_every_agentic_and_deterministic_launch_records_a_usage_field(self) -> None:
+        """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no
+        longer reconstructs anything, so a path that leaves `usage` absent silently loses the
+        measurement instead of falling back. (The pure loops are covered by
+        `test_pure_leaf_producer` / `test_llm_http_wiring`; this fixture drives no pure leaf.)"""
+        c = self._conductor(wc.ProcResult(0, "done", "", usage=dict(self._CAPTURED_USAGE)))
+        c.conduct(self._refs(), "validate")
+        rows = [cap["--agent-run-json"] for sub, cap in c.calls if sub == "finalize-child"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("usage", row, msg=row.get("step"))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -2,7 +2,10 @@
 """Tests for tools/audit_orchestration.py."""
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -217,7 +220,10 @@ class TokenCostSummaryTests(unittest.TestCase):
             repo, orch_id = self._setup(tmp)
             home = Path(tmp) / "home"
             with mock.patch.object(diag.Path, "home", return_value=home):
-                result = audit(repo, orch_id)
+                # Transcript reconstruction is OPT-IN since issue #47 — the workflow does not
+                # read ~/.claude, so the default audit never touches it. These rows carry no
+                # durable `usage`, which is what a pre-issue-#47 run looks like.
+                result = audit(repo, orch_id, token_cost_from_transcripts=True)
             tcs = result["token_cost_summary"]
             self.assertTrue(tcs["available"])
             self.assertEqual(tcs["parent_total_tokens"], 100 + 50 + 2000)
@@ -259,7 +265,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             # unavailable, but the parent total must still be reported.
             runs = [{"agent_run_id": parent_arid, "agent_role": "orchestration", "status": "pass"}]
             with mock.patch.object(diag.Path, "home", return_value=home):
-                tcs = collect_token_cost_summary(repo, meta, runs)
+                tcs = collect_token_cost_summary(repo, meta, runs, from_transcripts=True)
             self.assertEqual(tcs["children"]["matched_count"], 0)  # no children measured
             self.assertTrue(tcs["available"])  # parent rescues availability
             self.assertEqual(tcs["parent_total_tokens"], 2150)
@@ -306,6 +312,229 @@ class TokenCostSummaryTests(unittest.TestCase):
                 tcs2 = collect_token_cost_summary(repo, {}, runs2)
             self.assertEqual(tcs2["children"]["matched_count"], 0)
 
+    def test_every_backends_row_shape_is_accepted_by_the_durable_path(self) -> None:
+        """The gate is `total_tokens` being an int, and NO provider sends one — so before it
+        was derived (`normalize_leaf_usage`), even a correctly persisted pure-claude leaf's
+        envelope usage fell through to a ~/.claude lookup that could not match. Both shapes
+        the conductor now writes must be read straight off `agent_runs.jsonl`."""
+        from tools.audit_orchestration import _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            envelope_child = "aaaa1111-1111-4111-8111-111111111111"
+            http_child = "bbbb2222-2222-4222-8222-222222222222"
+            runs = [
+                {"agent_run_id": envelope_child, "agent_role": "substep", "status": "pass",
+                 "usage": {"input_tokens": 2, "output_tokens": 4,
+                           "cache_read_input_tokens": 14278,
+                           "cache_creation_input_tokens": 5849, "total_tokens": 20133,
+                           "usage_source": "cli_result_envelope", "cost_usd": 0.065739}},
+                {"agent_run_id": http_child, "agent_role": "substep", "status": "pass",
+                 "usage": {"input_tokens": 33000, "output_tokens": 23538,
+                           "reasoning_tokens": 23438, "cached_tokens": 32832,
+                           "total_tokens": 56538, "usage_source": "http_provider"}},
+            ]
+            # No `home` patch and no opt-in flag: the default audit must not need ~/.claude.
+            tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertEqual(tcs["children"]["matched_count"], 2)
+            self.assertEqual(tcs["children_total_tokens"], 20133 + 56538)
+            self.assertEqual(tcs["children"]["unmatched_arids"], [])
+            lines: list[str] = []
+            _render_token_cost(tcs, lines)
+            joined = "\n".join(lines)
+            # The term that made `output_tokens` alone misleading, and the cache split.
+            self.assertIn("of which reasoning: 23,438", joined)
+            self.assertIn("of which prompt-cache hits: 32,832", joined)
+            self.assertIn("$0.0657", joined)
+
+    def test_a_run_that_reported_no_cost_does_not_render_a_zero_bill(self) -> None:
+        """`$0.0000` reads as "this run was free", where the truth is that no provider
+        reported a figure — the same failure the node total avoids by saying `unavailable`."""
+        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [{"agent_run_id": "aaaa1111-1111-4111-8111-111111111111",
+                     "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}}]
+            tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertNotIn("cost_usd", tcs["children"]["children_total"])
+            lines: list[str] = []
+            _render_token_cost(tcs, lines)
+            self.assertNotIn("provider-reported cost", "\n".join(lines))
+
+    def test_the_default_audit_never_reads_the_claude_transcripts(self) -> None:
+        """The change's central policy claim, and the one a default flip would silently undo:
+        with no opt-in flag the collector must not call the ~/.claude aggregator AT ALL, even
+        for rows that carry no usage — those are reported as unaccounted instead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            child = "aaaa1111-1111-4111-8111-111111111111"
+            runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass"}]
+            with mock.patch.object(
+                    ao, "aggregate_child_usage",
+                    side_effect=AssertionError("the default audit read ~/.claude")):
+                tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertEqual(tcs["children"]["unmatched_arids"], [child])
+            # ...and the opt-in really is what reaches it.
+            with mock.patch.object(ao, "aggregate_child_usage",
+                                   return_value={"available": True, "per_child": {}}) as agg:
+                collect_token_cost_summary(repo, {}, runs, from_transcripts=True)
+            agg.assert_called_once_with(repo, [child])
+
+    def test_the_cli_flag_reaches_the_collector(self) -> None:
+        """The flag is the only way to ask for the legacy path, so an unwired flag would leave
+        a run recorded before issue #47 unreadable with no way to say so."""
+        seen: dict = {}
+
+        def _audit(repo_root, orchestration_id, *, token_cost_from_transcripts=False):
+            seen["from_transcripts"] = token_cost_from_transcripts
+            return {}
+
+        # `--format json` so the assertion is about the flag's wiring, not about what the
+        # markdown renderer needs to be handed.
+        for argv, expected in ((["--orchestration-id", "o", "--format", "json"], False),
+                               (["--orchestration-id", "o", "--format", "json",
+                                 "--token-cost-from-transcripts"], True)):
+            with mock.patch.object(ao, "audit", _audit), \
+                    mock.patch.object(sys, "argv", ["audit_orchestration.py", *argv]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ao.main()
+            self.assertIs(seen["from_transcripts"], expected, msg=str(argv))
+
+    def test_a_legacy_row_without_a_total_is_still_read(self) -> None:
+        """Rows written before `total_tokens` was derived at finalize time carry only the raw
+        pair — which is every HTTP leaf of the run that filed issue #47. Deriving the total
+        here as well is what makes those runs readable instead of reporting `available=False`
+        for a run that did record numbers."""
+        from tools.audit_orchestration import collect_token_cost_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            child = "aaaa1111-1111-4111-8111-111111111111"
+            runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass",
+                     "usage": {"input_tokens": 40_080, "output_tokens": 82_210}}]
+            tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertEqual(tcs["children_total_tokens"], 40_080 + 82_210)
+            self.assertEqual(tcs["children"]["per_child"][child]["source"], "agent_runs.jsonl")
+            # The channel that produced those numbers was not written down, and must not be
+            # guessed as one that exists — nor as the file they were read out of.
+            self.assertEqual(tcs["children"]["per_child"][child]["usage_source"], "unrecorded")
+
+    def test_the_per_child_table_names_the_reasoning_share_and_the_channel(self) -> None:
+        """The table is what an operator reads to find the expensive leaf. `reasoning` is the
+        term that made `output_tokens` unreadable, and `source` says which channel produced
+        the numbers — a row with neither is indistinguishable from one whose provider reported
+        no split, so both columns have to render what the row actually holds."""
+        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [
+                {"agent_run_id": "aaaa1111-1111-4111-8111-111111111111",
+                 "agent_role": "substep", "status": "pass",
+                 "usage": {"input_tokens": 33000, "output_tokens": 23538,
+                           "reasoning_tokens": 23438, "total_tokens": 56538,
+                           "usage_source": "http_provider"}},
+                {"agent_run_id": "bbbb2222-2222-4222-8222-222222222222",
+                 "agent_role": "substep", "status": "pass",
+                 "usage": {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6,
+                           "usage_source": "cli_result_envelope"}},
+            ]
+            lines: list[str] = []
+            _render_token_cost(collect_token_cost_summary(repo, {}, runs), lines)
+            joined = "\n".join(lines)
+            self.assertIn("| 56,538 | 23,438 | http_provider |", joined)
+            # ...and a provider that reported no split says so, rather than rendering a 0.
+            self.assertIn("| 6 | n/a | cli_result_envelope |", joined)
+
+    def test_the_markers_are_carried_for_a_json_consumer(self) -> None:
+        """The rendered lines only COUNT the markers; `--format json` is where an operator
+        (or a script) reads which arid said what, and `reason` is the only thing that
+        distinguishes a dead leaf from an envelope that carried no usage."""
+        from tools.audit_orchestration import collect_token_cost_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [{"agent_run_id": "aaaa1111-1111-4111-8111-111111111111",
+                     "agent_role": "substep", "status": "fail",
+                     "usage": {"status": "unavailable", "reason": "no result envelope"}},
+                    {"agent_run_id": "bbbb2222-2222-4222-8222-222222222222",
+                     "agent_role": "substep", "status": "pass",
+                     "usage": {"status": "not_measured", "reason": "deterministic"}}]
+            markers = collect_token_cost_summary(repo, {}, runs)["children"]["markers"]
+            self.assertEqual(markers["aaaa1111-1111-4111-8111-111111111111"],
+                             {"status": "unavailable", "reason": "no result envelope"})
+            self.assertEqual(markers["bbbb2222-2222-4222-8222-222222222222"]["status"],
+                             "not_measured")
+
+    def test_not_measured_is_reported_apart_from_a_failed_measurement(self) -> None:
+        """A deterministic in-process substep launched no leaf, so `not_measured` is an
+        accounted-for row, not a gap; `unavailable` IS a gap and keeps its warning. Reporting
+        both as "no locatable transcript" is what made every row look broken."""
+        from tools.audit_orchestration import _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [
+                {"agent_run_id": "aaaa1111-1111-4111-8111-111111111111",
+                 "agent_role": "substep", "status": "pass",
+                 "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}},
+                {"agent_run_id": "bbbb2222-2222-4222-8222-222222222222",
+                 "agent_role": "substep", "status": "pass",
+                 "usage": {"status": "not_measured", "reason": "deterministic"}},
+                {"agent_run_id": "cccc3333-3333-4333-8333-333333333333",
+                 "agent_role": "substep", "status": "fail",
+                 "usage": {"status": "unavailable", "reason": "no result envelope"}},
+            ]
+            tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertEqual(tcs["children"]["not_measured"],
+                             ["bbbb2222-2222-4222-8222-222222222222"])
+            self.assertEqual(tcs["children"]["usage_unavailable"],
+                             ["cccc3333-3333-4333-8333-333333333333"])
+            # Neither is "unmatched": both said what happened.
+            self.assertEqual(tcs["children"]["unmatched_arids"], [])
+            lines: list[str] = []
+            _render_token_cost(tcs, lines)
+            joined = "\n".join(lines)
+            self.assertIn("1 run(s) not measured", joined)
+            self.assertIn("1 leaf reported no usage", joined)
+
+    def test_a_run_whose_every_leaf_recorded_a_marker_still_renders(self) -> None:
+        """The shape of the run that filed issue #47 — and of any run whose leaves all died.
+        `available=False` would print "no child usage located", which is the opposite of what
+        happened: every leaf said what it had, and what it had was nothing."""
+        from tools.audit_orchestration import collect_token_cost_summary, _render_token_cost
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            runs = [{"agent_run_id": f"aaaa{i}111-1111-4111-8111-111111111111",
+                     "agent_role": "substep", "status": "fail",
+                     "usage": {"status": "unavailable", "reason": "no result envelope"}}
+                    for i in range(1, 4)]
+            tcs = collect_token_cost_summary(repo, {}, runs)
+            self.assertTrue(tcs["available"])
+            lines: list[str] = []
+            _render_token_cost(tcs, lines)
+            joined = "\n".join(lines)
+            self.assertIn("3 leaves reported no usage", joined)
+            self.assertNotIn("no child usage located", joined)
+            # ...and the total must NOT read `0 tokens`, which says the node was free. A
+            # marker makes the section renderable; it does not make it a measurement.
+            self.assertIn("**node total**: unavailable", joined)
+            self.assertNotIn("0 tokens", joined)
+            # ...and the JSON consumer is told the same thing as the renderer: something WAS
+            # located — every leaf said why it has no numbers.
+            self.assertNotIn("reason", tcs["children"])
+
     def test_unavailable_when_nothing_matched(self) -> None:
         # ~/.claude dir present but holds no transcripts for this orchestration, and
         # no persisted usage / parent: report unavailable, not a 0-token breakdown.
@@ -349,7 +578,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             meta: dict = {}  # no parent identity → parent unavailable
             runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass"}]
             with mock.patch.object(diag.Path, "home", return_value=home):
-                tcs = collect_token_cost_summary(repo, meta, runs)
+                tcs = collect_token_cost_summary(repo, meta, runs, from_transcripts=True)
             self.assertTrue(tcs["available"])
             self.assertFalse(tcs["parent"].get("found"))
             self.assertEqual(tcs["children_total_tokens"], 1020)
@@ -357,7 +586,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             _render_token_cost(tcs, lines)
             joined = "\n".join(lines)
             self.assertIn("parent orchestration: unavailable", joined)
-            self.assertIn("partial — parent transcript(s) unavailable", joined)
+            self.assertIn("partial — parent usage unavailable", joined)
             self.assertIn("1,020", joined)
 
     def test_render_handles_unavailable(self) -> None:

@@ -22,7 +22,8 @@ never returned, never persisted — the raw response body IS persisted by the ca
 request side is where that discipline has to live.
 
 Stdlib only (`urllib`), and importing only `tools.pure_leaf` for the shared prompt/category
-constants — the same transport-substrate role `pure_leaf.py` plays for the CLI path.
+constants — the same transport-substrate role `pure_leaf.py` plays for the CLI path — plus
+`tools.leaf_usage` for the ONE usage shape every backend's numbers are recorded in.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
 
+from tools.leaf_usage import LEAF_USAGE_SOURCE_HTTP, normalize_leaf_usage
 from tools.pure_leaf import PURE_SYSTEM_PROMPT
 
 # Wire version required by the Anthropic Messages API. Pinned, not "latest": the response shape
@@ -650,6 +652,82 @@ def _anthropic_request(
     return url, payload, headers, None
 
 
+def _normalized_usage(usage: "dict[str, Any] | None") -> "dict[str, Any] | None":
+    """A reader's canonical-name usage in the one shape every leaf backend records.
+
+    The readers speak their provider's dialect; this is where the result joins the CLI path's
+    shape — `total_tokens` derived, `usage_source` stamped, the detail objects moved
+    under `provider_details`. `None` when the provider reported nothing usable, which the
+    caller records as an explicit marker rather than as zero cost.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    raw = dict(usage)
+    return normalize_leaf_usage(raw, source=LEAF_USAGE_SOURCE_HTTP,
+                                details=raw.pop("provider_details", None))
+
+
+def _openai_usage(raw: Any) -> "dict[str, Any]":
+    """An OpenAI-dialect `usage` object in the canonical leaf-usage names.
+
+    Maps `prompt_tokens`/`completion_tokens` onto `input_tokens`/`output_tokens`, and lifts
+    the two counts that dominate the bill out of their nested detail objects:
+    `completion_tokens_details.reasoning_tokens` and `prompt_tokens_details.cached_tokens`.
+    Both were dropped before, and on `orch_20260807T002410Z_acf2b996` both were the story:
+    reasoning was 84% of `completion_tokens` on two `generate` calls and 99.6% on a `verify`
+    call whose answer was ~100 tokens, and two otherwise identical `generate` calls reported
+    64 vs 32,832 cached prompt tokens. Sizing `max_output_tokens` from `output_tokens` alone
+    reads a number that is mostly reasoning without knowing it.
+
+    Both detail objects also travel under `provider_details`, reduced to their INT-VALUED
+    entries (see the comment below), so a count this map does not model is still on disk.
+    `isinstance(v, int)` drops anything malformed rather than coercing it (a `bool` is an
+    `int`, and is filtered downstream by `leaf_usage.normalize_leaf_usage`).
+    """
+    usage = raw if isinstance(raw, dict) else {}
+    completion = usage.get("completion_tokens_details")
+    prompt = usage.get("prompt_tokens_details")
+    mapped = {
+        "input_tokens": usage.get("prompt_tokens"),
+        "output_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": (completion.get("reasoning_tokens")
+                             if isinstance(completion, dict) else None),
+        "cached_tokens": (prompt.get("cached_tokens")
+                          if isinstance(prompt, dict) else None),
+    }
+    out: dict[str, Any] = {k: v for k, v in mapped.items() if isinstance(v, int)}
+    # INT-VALUED entries only, not the objects verbatim. Everything else this module returns is
+    # passed through `_redact` before it can be persisted, because a provider may echo the API
+    # key back in any string it controls — and these dicts are persisted (the agent_runs row,
+    # the per-attempt metadata) without going through the answer channel's redaction. A token
+    # count cannot carry a key; a string-valued field this map does not model would.
+    details: dict[str, Any] = {}
+    for name, reported in (("completion_tokens_details", completion),
+                           ("prompt_tokens_details", prompt)):
+        counts = {k: v for k, v in (reported or {}).items()
+                  if isinstance(v, int) and not isinstance(v, bool)} \
+            if isinstance(reported, dict) else {}
+        if counts:
+            details[name] = counts
+    if out and details:
+        out["provider_details"] = details
+    return out
+
+
+def _anthropic_usage(raw: Any) -> "dict[str, Any]":
+    """A Messages-API `usage` object in the canonical leaf-usage names.
+
+    Its four token classes already carry those names, so this is a filter, not a map. The
+    two cache classes were dropped before; they are separate prompt classes (not a subset of
+    `input_tokens`), so losing them lost real billed input — and with it any view of whether
+    the prompt cache was hitting.
+    """
+    usage = raw if isinstance(raw, dict) else {}
+    keys = ("input_tokens", "output_tokens",
+            "cache_read_input_tokens", "cache_creation_input_tokens")
+    return {k: usage[k] for k in keys if isinstance(usage.get(k), int)}
+
+
 def _read_openai_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, bool, str | None]":
     choices = doc.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -659,15 +737,9 @@ def _read_openai_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, bool
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, str):
         return "", "", {}, False, "response_missing_message_content"
-    usage = doc.get("usage")
-    usage = usage if isinstance(usage, dict) else {}
-    normalized = {
-        "input_tokens": usage.get("prompt_tokens"),
-        "output_tokens": usage.get("completion_tokens"),
-    }
     model = doc.get("model")
     return (content, model if isinstance(model, str) else "",
-            {k: v for k, v in normalized.items() if isinstance(v, int)},
+            _openai_usage(doc.get("usage")),
             choice.get("finish_reason") == "length", None)
 
 
@@ -684,15 +756,9 @@ def _read_anthropic_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, b
         and isinstance(block.get("text"), str))
     if not text:
         return "", "", {}, False, "response_has_no_text_block"
-    usage = doc.get("usage")
-    usage = usage if isinstance(usage, dict) else {}
-    normalized = {
-        "input_tokens": usage.get("input_tokens"),
-        "output_tokens": usage.get("output_tokens"),
-    }
     model = doc.get("model")
     return (text, model if isinstance(model, str) else "",
-            {k: v for k, v in normalized.items() if isinstance(v, int)},
+            _anthropic_usage(doc.get("usage")),
             doc.get("stop_reason") == "max_tokens", None)
 
 
@@ -754,11 +820,7 @@ def _read_openai_stream(
             model = doc["model"]
         chunk_usage = doc.get("usage")
         if isinstance(chunk_usage, dict):
-            normalized = {
-                "input_tokens": chunk_usage.get("prompt_tokens"),
-                "output_tokens": chunk_usage.get("completion_tokens"),
-            }
-            usage = {k: v for k, v in normalized.items() if isinstance(v, int)} or usage
+            usage = _openai_usage(chunk_usage) or usage
         choices = doc.get("choices")
         # `choices` is legitimately EMPTY on the final chunk that `stream_options.include_usage`
         # asks for, so this must never index blindly.
@@ -819,9 +881,10 @@ def _read_anthropic_stream(
             if isinstance(message, dict):
                 if isinstance(message.get("model"), str):
                     model = message["model"]
-                started = message.get("usage")
-                if isinstance(started, dict) and isinstance(started.get("input_tokens"), int):
-                    usage["input_tokens"] = started["input_tokens"]
+                # `message_start` carries the whole input side — the uncached input AND the
+                # two cache classes — so take all of it, not just `input_tokens`. Only
+                # `output_tokens` arrives later, on `message_delta`.
+                usage.update(_anthropic_usage(message.get("usage")))
         elif event == "content_block_delta":
             delta = doc.get("delta")
             if (isinstance(delta, dict) and delta.get("type") == "text_delta"
@@ -956,7 +1019,7 @@ def run_pure_http_leaf(
     # nothing but a mangled model name in the case where the key is a substring of one, which
     # is the trade the answer channel could not make.
     return HttpLeafResponse(text, _redact(model, secret) or entry.model,
-                            usage or None, truncated, None, raw)
+                            _normalized_usage(usage), truncated, None, raw)
 
 
 # The default `max_tokens` when neither the entry nor the caller names one. Deliberately NOT

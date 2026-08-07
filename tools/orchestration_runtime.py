@@ -13763,8 +13763,9 @@ def _load_agent_graph_parent_map(root: Path) -> dict[str, str]:
 # NOT a pinned version (e.g. "claude-opus-4-8"): the configured model alias maps
 # to whatever the current default version is, so it never goes stale as versions
 # update. The EXACT version that actually ran is recorded separately on each
-# step/substep agent_runs row, resolved at runtime from the leaf's own session
-# transcript by `resolve_claude_model_from_transcript`.
+# step/substep agent_runs row, resolved by the conductor from the leaf's own CLI
+# result envelope (`--output-format json`) — never from the ~/.claude transcript,
+# which is outside the workflow's access boundary.
 DEFAULT_CLAUDE_MODEL_ALIAS = "opus"
 
 
@@ -13805,51 +13806,6 @@ def default_agent_model_for_backend(backend: str, home: Path | None = None) -> s
     if b == "codex":
         return "codex"
     return ""
-
-
-def resolve_claude_model_from_transcript(
-    session_id: str, home: Path | None = None
-) -> str | None:
-    """The EXACT Claude model id that actually ran in the session identified by
-    `session_id`, read from that session's transcript under
-    ~/.claude/projects/<slug>/<session_id>.jsonl (the conductor pins each leaf's
-    session id to its agent_run_id, so the leaf's transcript is addressable by it).
-
-    Returns the model id of the last assistant message that carries a real one, or
-    None when no transcript / no usable model id is found — in which case the caller
-    keeps the unpinned alias rather than recording a stale guess. Synthetic-message
-    placeholders (e.g. "<synthetic>") are skipped. This is the runtime-resolved
-    ground truth for the agent_runs log; the historical assumption that Claude Code
-    has no runtime-knowable model no longer holds."""
-    if not isinstance(session_id, str) or not session_id.strip():
-        return None
-    base = home if home is not None else Path.home()
-    proj = base / ".claude" / "projects"
-    try:
-        matches = sorted(proj.glob(f"*/{session_id.strip()}.jsonl"))
-    except OSError:
-        return None
-    model: str | None = None
-    for path in matches:
-        try:
-            with path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    msg = obj.get("message") if isinstance(obj, dict) else None
-                    if isinstance(msg, dict):
-                        m = msg.get("model")
-                        if (
-                            isinstance(m, str)
-                            and m.strip()
-                            and not m.strip().startswith("<")
-                        ):
-                            model = m.strip()
-        except OSError:
-            continue
-    return model
 
 
 def repair_legacy_agent_runs(
@@ -14330,8 +14286,8 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
             )
     # agent_model identifies the LLM that produced the child's artifacts. At launch
     # only the unpinned spec-side ALIAS is known (e.g. "opus"); the exact version is
-    # resolved post-run from the leaf transcript and recorded by the conductor onto
-    # the agent_runs row (see resolve_claude_model_from_transcript). record-launch
+    # resolved post-run from the leaf's own CLI result envelope and recorded by the
+    # conductor onto the agent_runs row (see `_agent_run_json`). record-launch
     # persists the alias into the request; record_agent_run only backfills it onto
     # the agent_runs entry when the conductor did not already supply the resolved
     # version (setdefault), satisfying the pre_judge step/substep requirement either
@@ -18846,37 +18802,6 @@ def record_reply_text(
     }
 
 
-def _collect_child_usage_for_finalize(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> dict[str, Any]:
-    """Best-effort token usage for a just-returned child, for durable in-repo persistence.
-
-    Child ``Agent`` subagents carry no usage in ``agent_runs.jsonl`` and are not
-    sidechains in the host transcript, so child cost (empirically the majority of
-    a node's total) is invisible once the machine-local, ephemeral ``~/.claude``
-    transcript is cleaned. Capturing it at finalize time — when the child has just
-    returned and its transcript is on disk — persists the numbers in-repo so later
-    audits aren't blind. Never raises and never blocks finalization: any failure
-    yields a ``status: "unavailable"`` marker. The post-hoc reconstruction path is
-    ``tools/audit_orchestration.py`` (same aggregator).
-    """
-    try:
-        try:  # script run: tools/ on sys.path ; package import: repo root on path
-            from orchestration_diagnostics import aggregate_child_usage
-        except ImportError:  # pragma: no cover - import-path shim
-            from tools.orchestration_diagnostics import aggregate_child_usage
-        agg = aggregate_child_usage(repo_root, [agent_run_id])
-        usage = (agg.get("per_child") or {}).get(agent_run_id)
-        if isinstance(usage, dict) and usage:
-            return usage
-        return {
-            "status": "unavailable",
-            "reason": agg.get("reason") or "no locatable child transcript",
-        }
-    except Exception as exc:  # noqa: BLE001 - usage capture must never break finalize
-        return {"status": "unavailable", "reason": f"usage capture error: {exc}"}
-
-
 def finalize_child(
     repo_root: Path,
     orchestration_id: str,
@@ -18974,14 +18899,15 @@ def finalize_child(
         agent_run_id=arid,
         reply_text=reply_text,
     )
-    # Persist child token usage in-repo (resolves the measurement blind spot for
-    # later audits, since ~/.claude transcripts are ephemeral). Best-effort and
-    # additive: never overrides a caller-supplied value, never blocks finalize.
-    if "usage" not in agent_run_payload:
-        agent_run_payload = dict(agent_run_payload)
-        agent_run_payload["usage"] = _collect_child_usage_for_finalize(
-            repo_root, orchestration_id, arid
-        )
+    # No usage backfill here. It used to reconstruct the child's token usage from the
+    # ~/.claude transcript when the caller left `usage` absent, and it could not succeed:
+    # the workflow does not read ~/.claude (access boundary), and the transcripts are
+    # machine-local and ephemeral besides — so every agentic leaf recorded
+    # `{"status": "unavailable", "reason": "no locatable child transcript"}`, a marker
+    # describing a lookup that policy would never let succeed (issue #47). The conductor now
+    # supplies `usage` on EVERY path from the leaf's own output — a normalized dict, or an
+    # explicit `not_measured` / `unavailable` marker naming why there is none
+    # (`workflow_conductor._leaf_usage_row`) — so there is nothing left to back-fill.
     run_record = record_agent_run(
         repo_root,
         orchestration_id,

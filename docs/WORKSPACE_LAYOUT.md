@@ -182,9 +182,32 @@ workspace/
 | `output_manifests/<arid>.json` | `record-launch` | runtime | self can Read | `allowed_output_paths` / `allowed_file_tool_paths` / `allowed_tmp_root` |
 | `read_manifests/<arid>.json` | `record-launch` | runtime | self can Read | `allowed_read_roots` / `denied_read_roots` |
 | `child_returns/<arid>.txt` | `record-child-return` | runtime | runtime (consumed by `deactivate-child`) | with Adv-30 token verification |
-| `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result |
+| `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result, including the per-leaf `usage` (below) |
 | `agents/<arid>/dialogs/agent.summary.txt` | same as above | runtime | same as above | single-line forbidden, must include the basis |
 | `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr | `2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt` |
+
+#### `usage` — the per-leaf token record
+
+Every terminal row a conductor leaf launch produces carries a `usage` field (also appended verbatim to `agent_runs.jsonl`, which is what `tools/audit_orchestration.py` reads). It is EITHER a measurement or an explicit statement that there is none — never an empty object that would read as zero cost. Every terminal row a `substep` produces carries one, whether or not it launched a leaf. The rows that carry none are the orchestration agent's own row, the `record-timeout` recovery path, and the failure diagnostician — which produces no `agent_runs.jsonl` row at all, so its cost is emitted as a `diagnose_leaf_usage` event (`phase`, `total_tokens`, `cost_usd`, `model`, `usage_status` — which is what says why the numbers are empty when they are) into the run log `run_logs/run_*.jsonl`, and is otherwise readable only in its own `dialogs/diagnose.<phase>.stdout.log` envelope — which a second escalate of the same phase overwrites.
+
+A measurement carries the token classes the launch's provider reported, plus:
+
+| key | meaning |
+|---|---|
+| `total_tokens` | DERIVED, never taken from a provider: the sum of `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens`. The cache classes are additional prompt classes, so they count. For a `claude` leaf the four classes are summed across every model in the envelope's `modelUsage`, not read off its top-level `usage` — that key reports the primary model alone, while `cost_usd` covers them all. An envelope with no usable `modelUsage` falls back to `usage`, and one whose `modelUsage` holds a row this reader cannot count leaves that model out of the sum; in both cases the row carries no `cost_usd`, because `total_cost_usd` covers models the tokens do not |
+| `reasoning_tokens` / `cached_tokens` | SUBSETS of output / input respectively, recorded but never summed into `total_tokens` — adding them would count the same tokens twice. They are large: on `orch_20260807T002410Z_acf2b996` reasoning was 84% of `completion_tokens` on two `generate` calls and 99.6% on a `verify` call, and two otherwise identical `generate` calls reported 64 vs 32,832 cached prompt tokens |
+| `usage_source` | which channel the numbers came from — `cli_result_envelope` (the `claude` CLI's `--output-format json` envelope, used by pure AND agentic leaves), `http_provider`, or `codex_turn_event` |
+| `cost_usd` | the provider's own billed figure, when it reports one |
+| `provider_details` | the provider's detail objects reduced to their integer counts (e.g. OpenAI's `completion_tokens_details`), so a count the normalizer does not model is still on disk. String-valued fields are dropped: this object is persisted without passing through the answer channel's redaction. For `codex_turn_event` it is `{"turn_usage": …}` — the raw `turn.completed` counts, kept because normalizing keeps only the names this repository can name |
+
+Otherwise it is `{"status": ..., "reason": ...}`, and the two states are NOT interchangeable:
+
+- `not_measured` — the launch has no usage channel: a deterministic in-process substep (`Build`, `Validate.execute`, …) spawns no leaf, so there was never a number. Not a defect.
+- `unavailable` — a usage channel existed and did not deliver (no result envelope on the leaf's stdout, or an envelope carrying no usage). A defect worth investigating; the `reason` names which stage failed, and the leaf's exit code where the failure was the leaf's own death.
+
+The conductor writes this from the leaf's own output (`workflow_conductor._leaf_usage_row`); the runtime never reconstructs it from `~/.claude`, which is outside the workflow's access boundary. The canonical shape and its two marker states live in `tools/leaf_usage.py`.
+
+**Not yet verified:** whether the CLI result envelope's `usage` / `modelUsage` / `total_cost_usd` describe the LAUNCH or the whole session when a pure attempt is relaunched warm (`--resume --fork-session`). `orchestration_diagnostics._sum_pure_attempt_usage` adds the attempts together, so if the CLI reports cumulatively a repaired substep overstates both tokens and cost. Every recorded envelope is `num_turns: 1` from a cold launch, so the corpus cannot settle it; check a repaired substep's summed row against the provider's own accounting on the first billed run.
 
 ### phase artifact
 

@@ -34,9 +34,9 @@ MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
   2) `usage.cache_read_input_tokens` is the context RE-READ on every turn; it
      grows as the session accumulates. Summing it across turns counts the same
      prompt many times. -> We never sum cache_read; we report its range only.
-  3) `agent_runs.jsonl` carries no usage and the substep records there share
-     ids with the phase_state_log `step` records; joining naively mislabels
-     leaves. -> Timing comes only from phase_state_log launch/terminal pairs,
+  3) `agent_runs.jsonl`'s substep records share ids with the phase_state_log
+     `step` records; joining naively mislabels leaves. (Its `usage` field is the
+     per-leaf token record — see issue #47 — but this script takes timing only.) -> Timing comes only from phase_state_log launch/terminal pairs,
      keyed by agent_run_id; the role/substep label is taken from the matching
      session_run_index / agent_runs entry, not re-derived.
   4) A WARM-RESUMED leaf's transcript REPLAYS the producer leaf's messages

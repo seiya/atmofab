@@ -548,8 +548,8 @@ re-run confirming Build passes on attempt 1 (operator-gated).
     `_CLI_USAGE_ABORT_LINE_MAX_CHARS`, *opening* with the limit (`_CLI_USAGE_ABORT_LINE_RE`, anchored
     and narrower than the classifier's bare phrase match), not a recovered retry banner, and a line
     the classifier's own usage pattern matches too (the carve-out may only narrow that tag) — applied
-    either to stdout directly (every agentic launch: there is no envelope mode, so the abort IS the
-    stdout) or, for a `--output-format json` launch whose envelope the CLI completed, to the message
+    either to stdout directly (every agentic launch: since issue #47 the CLI's envelope is lifted at
+    the capture boundary, so the abort IS the stdout by the time the scrape runs) or, for a `--output-format json` launch whose envelope the CLI completed, to the message
     it carried in `result` (`_cli_abort_envelope_result`,
     gated on the CLI's own `is_error` / error-status keys). That second shape is the one that struck
     the only recorded PURE-leaf usage limit, so admitting the bare line alone left the flag inert for
@@ -2668,7 +2668,7 @@ names the same hazard from the gate-history direction; this is the interface dir
 - The structural answer is `Z5`'s derivation-keyed store: content-hash derivation keys make an upstream re-certification
   invalidate the closure that consumed it. Until `Z5`, the gap is accepted and this entry is its record.
 
-## Problem leaf token usage is unmeasurable from `agent_runs.jsonl` — the transcript lookup targets the wrong layout (FILED 2026-07-16)
+## Problem leaf token usage is unmeasurable from `agent_runs.jsonl` — the transcript lookup targets the wrong layout (FILED 2026-07-16; RESOLVED 2026-08-07 by issue #47, but NOT as prescribed below)
 
 `finalize_child` records each child's token usage into `agent_runs.jsonl` so the cost survives `~/.claude` cleanup. It
 resolves that usage through `aggregate_child_usage`, which scans
@@ -2692,11 +2692,22 @@ persisted to `bundle_meta.json` / `verdict_meta.json` (`Z2` M-E), which is why t
 the pure-leaf metrics section and its `legacy` arm by summing the leaf's `<agent_run_id>.jsonl`
 transcript directly.
 
-**What is required.** `aggregate_child_usage` must also resolve `~/.claude/projects/<slug>/<agent_run_id>.jsonl`, the
-layout a conductor-spawned leaf actually produces, and keep the `subagents/` scan for the Agent-tool case. The existing
-`_own_arid_of_transcript` disambiguation is unnecessary for the direct form: the filename **is** the arid. Deterministic
-in-process substeps (`Compile.static`, `Generate.{lint,syntax,static}`, `Build`, `Validate.{pre_judge,execute,post_judge}`)
-spawn no leaf and legitimately have no transcript; they must stay `unavailable` rather than be reported as zero-cost.
+**Superseded prescription.** The obvious repair — teach `aggregate_child_usage` the
+`~/.claude/projects/<slug>/<agent_run_id>.jsonl` layout a conductor-spawned leaf actually produces — was the wrong fix,
+and issue #47 (2026-08-07) closed this the other way. The workflow does not read `~/.claude` at all (access boundary),
+and those transcripts are machine-local and ephemeral besides, so *any* locator there is a path policy will not let
+succeed. Fixing the glob would have turned a structurally-impossible lookup into an intermittently-possible one.
+
+**Resolution.** The agentic `claude` leaf is now launched with `--output-format json` like the pure one, so
+its cost and resolved model come from its OWN stdout — the same in-boundary CLI result envelope the pure path always
+used. The conductor supplies `usage` on every finalize path (`workflow_conductor._leaf_usage_row`), the runtime's
+transcript backfill in `finalize_child` is deleted, and every backend's numbers are normalized to one shape
+(`tools/leaf_usage.normalize_leaf_usage`) whose derived `total_tokens` is what the audit's durable path gates
+on. `aggregate_child_usage` survives only behind the audit's opt-in `--token-cost-from-transcripts`, for rows recorded
+before this. The entry's last observation stands and is now explicit rather than incidental: deterministic in-process
+substeps (`Compile.static`, `Generate.gate`, `Build`, `Validate.{pre_judge,execute,post_judge}`) spawn no leaf and
+legitimately have no measurement — they record `not_measured`, a state distinct from the `unavailable` that means a
+usage channel existed and failed.
 
 ## Z2 first billed A/B E2E — the pure executor had never run: one fixed defect, two information gaps (FILED 2026-07-16; defects FIXED 2026-07-17 — flux A/B established 2026-07-17, `shallow_water2d` P arm passed 2026-07-18; see "Z2 adoption" below)
 

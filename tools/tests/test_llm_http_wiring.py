@@ -70,7 +70,9 @@ def _sse_completion(text: str, *, finish_reason: str = "stop",
         frames.append({"model": "local-coder-resolved",
                        "choices": [{"delta": {}, "finish_reason": finish_reason}]})
         frames.append({"model": "local-coder-resolved", "choices": [],
-                       "usage": {"prompt_tokens": 5, "completion_tokens": 6}})
+                       "usage": {"prompt_tokens": 5, "completion_tokens": 6,
+                                 "completion_tokens_details": {"reasoning_tokens": 4},
+                                 "prompt_tokens_details": {"cached_tokens": 2}}})
     out = "".join(f"data: {json.dumps(frame)}\n\n" for frame in frames)
     return out + ("data: [DONE]\n\n" if terminated else "")
 
@@ -178,6 +180,22 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         row = agent_run[-1]["--agent-run-json"]
         self.assertEqual(row["agent_backend"], "openai_compatible")
         self.assertEqual(row["agent_model"], "local-coder-resolved")
+
+    def test_the_leafs_token_usage_reaches_the_agent_run_row(self) -> None:
+        """The wiring nobody had pinned: the transport parsed usage correctly and nothing
+        asserted it ever ARRIVED anywhere. It has to reach the durable `agent_runs.jsonl` /
+        `agent.result.json` row, because that row is what a cost audit reads — the alternative
+        source is a multi-MB raw SSE capture (issue #47)."""
+        self._serve([json.dumps(_valid_bundle())])
+        c = self._conductor()
+        c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        row = [payload["--agent-run-json"] for sub, payload in c.calls
+               if sub == "finalize-child" and "--agent-run-json" in payload][-1]
+        self.assertEqual(row["usage"], {
+            "input_tokens": 5, "output_tokens": 6, "reasoning_tokens": 4, "cached_tokens": 2,
+            "total_tokens": 11, "usage_source": "http_provider",
+            "provider_details": {"completion_tokens_details": {"reasoning_tokens": 4},
+                                 "prompt_tokens_details": {"cached_tokens": 2}}})
 
     def test_the_raw_response_body_is_persisted(self) -> None:
         """What arrives is now an EVENT STREAM, and it is kept as it arrived — framing, the
