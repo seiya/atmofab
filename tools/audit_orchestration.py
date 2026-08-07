@@ -27,6 +27,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
+    from leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
+except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
+    from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
+
+try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
     from llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
     from tools.llm_config import PURE_CAPABLE_SUBSTEPS as _PURE_CAPABLE_SUBSTEPS
@@ -432,16 +437,27 @@ def collect_token_cost_summary(
     meta: dict[str, Any] | None,
     agent_runs: list[dict[str, Any]],
     invalid_runs: list[dict[str, Any]] | None = None,
+    *,
+    from_transcripts: bool = False,
 ) -> dict[str, Any]:
     """Attribute token cost across the orchestration (parent) and its children.
 
-    Resolves the measurement blind spot where child ``Agent`` subagents — the
-    majority of a node's cost — are not sidechains in the host transcript. Child
-    usage comes first from the durable ``usage`` field ``finalize_child`` writes
-    into ``agent_runs.jsonl`` (survives ``~/.claude`` cleanup), then falls back to
-    the ephemeral subagent transcript for any child lacking it. ``parent`` is the
-    orchestration session(s)' own usage. Best-effort — reports ``available=False``
-    (never raises) when neither side yields data.
+    Child usage comes from the durable ``usage`` field the conductor writes into
+    ``agent_runs.jsonl`` via ``finalize_child`` — in-repo, and therefore surviving
+    ``~/.claude`` cleanup. Since issue #47 every leaf writes one: a normalized dict from
+    its own output, or an explicit marker saying why it has no numbers. The two markers
+    are NOT equivalent and are counted separately (``not_measured`` — a deterministic
+    in-process substep that launched no leaf, nothing to measure; ``unavailable`` — a
+    usage channel that failed, i.e. a defect).
+
+    ``from_transcripts`` opts into reconstructing the missing rows from the ephemeral
+    ``~/.claude`` subagent transcripts. OFF by default, because for conductor-spawned leaves
+    that lookup never matched anything; it remains available for the rows of runs recorded
+    before this change. (``parent`` below reads ``~/.claude`` unconditionally — it is the
+    orchestration session's own usage, which has no in-repo source.)
+
+    ``parent`` is the orchestration session(s)' own usage. Best-effort — reports
+    ``available=False`` (never raises) when neither side yields data.
     """
     meta = meta or {}
     # The orchestration agent's own arid appears in agent_runs.jsonl but is the
@@ -450,6 +466,7 @@ def collect_token_cost_summary(
     parent_arid = str(meta.get("orchestration_agent_run_id") or "").strip()
     arids: list[str] = []
     persisted: dict[str, dict[str, Any]] = {}
+    markers: dict[str, dict[str, Any]] = {}
     seen: set[str] = set()
     for run in list(agent_runs) + list(invalid_runs or []):
         arid = run.get("agent_run_id")
@@ -458,22 +475,34 @@ def collect_token_cost_summary(
         seen.add(arid)
         arids.append(arid)
         # Durable per-child usage persisted into agent_runs.jsonl by finalize_child
-        # survives ~/.claude cleanup; prefer it over the ephemeral transcript so a
-        # later post-cleanup audit still sees child totals. The
-        # {"status": "unavailable"} marker (no numeric total) is not data.
+        # survives ~/.claude cleanup. A `status` marker (no numeric total) is not data —
+        # it is kept aside so the render can say WHICH kind of non-measurement it was.
         u = run.get("usage")
-        if isinstance(u, dict) and isinstance(u.get("total_tokens"), int):
-            entry = dict(u)
-            entry.setdefault("source", "agent_runs.jsonl")
-            persisted[arid] = entry
+        if not isinstance(u, dict):
+            continue
+        # A row written before `total_tokens` was derived at finalize time carries only the
+        # raw classes — the HTTP leaf's `input_tokens`/`output_tokens` pair. Deriving it here
+        # too is what makes those runs readable at all; the rule is the same one
+        # `normalize_leaf_usage` applies, so the two cannot disagree. A marker has no token
+        # keys and normalizes to None, so it can never be mistaken for data.
+        numeric = (dict(u) if isinstance(u.get("total_tokens"), int)
+                   else normalize_leaf_usage(
+                       u, source=str(u.get("usage_source") or LEAF_USAGE_SOURCE_UNRECORDED)))
+        if numeric is not None:
+            numeric.setdefault("source", "agent_runs.jsonl")
+            persisted[arid] = numeric
+        elif isinstance(u.get("status"), str):
+            markers[arid] = dict(u)
 
-    # Reconstruct from the ephemeral transcripts only for children that lack durable
-    # usage (legacy rows, or non-finalize-child paths) — skipping ~/.claude entirely
-    # when every child is already covered.
+    # Reconstruct from the ephemeral transcripts only when the operator opted in, and only
+    # for children that lack durable usage (rows recorded before issue #47). Skipping the child
+    # transcripts is the DEFAULT: the conductor records usage in-repo now, and this lookup reads
+    # the `subagents/` layout, which a conductor-spawned leaf does not produce. (`parent` below still reads ~/.claude
+    # unconditionally — it is the orchestration session's own usage and has no in-repo source.)
     missing = [a for a in arids if a not in persisted]
     transcripts = (
         aggregate_child_usage(repo_root, missing)
-        if missing
+        if missing and from_transcripts
         else {"available": True, "per_child": {}, "unmatched_arids": [], "matched_count": 0}
     )
     per_child: dict[str, Any] = dict(persisted)
@@ -489,6 +518,10 @@ def collect_token_cost_summary(
         "cache_creation_input_tokens",
         "total_tokens",
         "assistant_turns",
+        # SUBSETS of output/input respectively — summed so the render can report the share
+        # they take, never added into `total_tokens` (see `normalize_leaf_usage`).
+        "reasoning_tokens",
+        "cached_tokens",
     )
     children_total = {k: 0 for k in sum_keys}
     for u in per_child.values():
@@ -498,15 +531,28 @@ def collect_token_cost_summary(
         (int(u.get("peak_context_tokens", 0) or 0) for u in per_child.values()),
         default=0,
     )
+    cost = sum(float(u.get("cost_usd", 0) or 0) for u in per_child.values())
+    if cost > 0:
+        children_total["cost_usd"] = round(cost, 6)
     children: dict[str, Any] = {
-        "available": bool(per_child) or bool(transcripts.get("available")),
+        "available": bool(per_child) or bool(markers) or bool(transcripts.get("available")),
         "per_child": per_child,
         "children_total": children_total,
         "matched_count": len(per_child),
-        "unmatched_arids": sorted(set(arids) - set(per_child)),
+        # A row that SAID why it has no numbers is accounted for, not missing. Only a row
+        # with neither numbers nor a marker is genuinely unaccounted.
+        "unmatched_arids": sorted(set(arids) - set(per_child) - set(markers)),
+        "not_measured": sorted(a for a, m in markers.items()
+                               if m.get("status") == "not_measured"),
+        "usage_unavailable": sorted(a for a, m in markers.items()
+                                    if m.get("status") == "unavailable"),
+        "markers": markers,
         "projects_dir": transcripts.get("projects_dir"),
     }
-    if not per_child:
+    if not per_child and not markers:
+        # Only when NOTHING was located. A markers-only run did locate something — every leaf
+        # said why it has no numbers — and a `--format json` consumer reading this field
+        # would otherwise be told the opposite of what the rows say.
         children["reason"] = transcripts.get("reason") or "no child usage located"
 
     # Parent usage: the multi-session sum across the orchestration agent's host
@@ -522,8 +568,12 @@ def collect_token_cost_summary(
     # and the surviving total is worth showing. But when NEITHER side matched
     # anything, report unavailable rather than a misleading 0-token breakdown — a
     # present-but-empty ~/.claude dir must not count as "available".
+    # `markers` counts toward availability: a run whose every leaf recorded WHY it has no
+    # numbers (all-deterministic, or every leaf dead) is not an absent measurement — it is a
+    # measurement that says "none, because …", and reporting it as "no usage located" would
+    # send an operator looking for data that was deliberately not there.
     summary: dict[str, Any] = {
-        "available": bool(per_child) or bool(parent.get("found")),
+        "available": bool(per_child) or bool(markers) or bool(parent.get("found")),
         "parent": parent,
         "children": children,
     }
@@ -751,7 +801,8 @@ def collect_pure_leaf_ab_summary(
     return result
 
 
-def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
+def audit(repo_root: Path, orchestration_id: str, *,
+          token_cost_from_transcripts: bool = False) -> dict[str, Any]:
     root = _orch_root(repo_root, orchestration_id)
     hook_events, hook_errs = _load_jsonl_with_errors(root / "hooks" / "native_hook_events.jsonl")
     phase_log, phase_errs = _load_jsonl_with_errors(root / "phase_state_log.jsonl")
@@ -773,12 +824,13 @@ def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
         launch_incident = build_launch_incident(repo_root, orchestration_id)
     except Exception:  # noqa: BLE001 - diagnostics must never break the audit
         launch_incident = None
-    # Token-cost attribution (parent orchestration vs child subagents). Children
-    # carry no usage in agent_runs.jsonl and aren't sidechains, so this reads the
-    # ephemeral ~/.claude transcripts. Best-effort — must never break the audit.
+    # Token-cost attribution (parent orchestration vs child subagents). Reads the durable
+    # per-leaf `usage` rows in agent_runs.jsonl; the ~/.claude transcript reconstruction is
+    # opt-in (see `collect_token_cost_summary`). Best-effort — must never break the audit.
     try:
         token_cost_summary = collect_token_cost_summary(
-            repo_root, meta, agent_runs, invalid_runs
+            repo_root, meta, agent_runs, invalid_runs,
+            from_transcripts=token_cost_from_transcripts,
         )
     except Exception:  # noqa: BLE001 - diagnostics must never break the audit
         token_cost_summary = {"available": False, "reason": "token-cost collection failed"}
@@ -970,8 +1022,9 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
         ).get("reason", "unavailable")
         lines.append(
             f"Child token attribution unavailable: {reason}. "
-            "(`~/.claude` transcripts are machine-local and ephemeral; run the "
-            "audit on the machine that executed the workflow, before cleanup.)"
+            "(Per-leaf usage is written into `agent_runs.jsonl` at finalize time; a run "
+            "recorded before that carries none, and `--token-cost-from-transcripts` can "
+            "try the machine-local, ephemeral `~/.claude` transcripts instead.)"
         )
         lines.append("")
         return
@@ -987,12 +1040,19 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
     child_t = summary.get("children_total_tokens", 0)
     frac = summary.get("children_fraction")
     frac_str = f" ({frac:.0%} of node)" if isinstance(frac, (int, float)) else ""
-    note = ""
-    if not (parent_ok and children_ok):
-        # Partial data (post-cleanup audit): node total covers only the side(s) below.
-        missing = "child subagent" if not children_ok else "parent"
-        note = f" (partial — {missing} transcript(s) unavailable)"
-    lines.append(f"- **node total**: {node} tokens{note}")
+    if not (parent_ok or children_ok):
+        # NEITHER side yielded a number. The section is still rendered — the marker lines
+        # below say what each row reported — but the total must not read `0 tokens`, which
+        # says the node was free. This is reachable since a marker counts as "available":
+        # a run whose every substep was deterministic, or whose every leaf died.
+        lines.append("- **node total**: unavailable (no launch reported a measurement)")
+    else:
+        note = ""
+        if not (parent_ok and children_ok):
+            # Partial data (post-cleanup audit): node total covers only the side(s) below.
+            missing = "child" if not children_ok else "parent"
+            note = f" (partial — {missing} usage unavailable)"
+        lines.append(f"- **node total**: {node} tokens{note}")
     lines.append(
         f"- parent orchestration: {_fmt_tok(parent_t) if parent_ok else 'unavailable'}"
     )
@@ -1005,11 +1065,42 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
             f"  - parent peak context: {_fmt_tok(parent.get('peak_context_tokens'))} "
             f"over {parent.get('assistant_turns', 'n/a')} turns"
         )
+    totals = children.get("children_total") or {}
+    reasoning = int(totals.get("reasoning_tokens", 0) or 0)
+    out_tokens = int(totals.get("output_tokens", 0) or 0)
+    if reasoning:
+        # The term that made `output_tokens` alone misleading: on
+        # `orch_20260807T002410Z_acf2b996` reasoning was 84-99.6% of the output tokens.
+        share = f" ({reasoning / out_tokens:.0%} of output)" if out_tokens else ""
+        lines.append(f"  - of which reasoning: {_fmt_tok(reasoning)}{share}")
+    cached = int(totals.get("cached_tokens", 0) or 0)
+    in_tokens = int(totals.get("input_tokens", 0) or 0)
+    if cached:
+        share = f" ({cached / in_tokens:.0%} of input)" if in_tokens else ""
+        lines.append(f"  - of which prompt-cache hits: {_fmt_tok(cached)}{share}")
+    if isinstance(totals.get("cost_usd"), (int, float)):
+        lines.append(f"  - provider-reported cost: ${totals['cost_usd']:.4f}")
+    # `not_measured` is not a gap. A deterministic in-process substep launched no leaf, so
+    # there was never a number; reporting it as missing data would send an operator looking
+    # for a defect that does not exist. `unavailable` IS a gap and is called one.
+    not_measured = children.get("not_measured") or []
+    if not_measured:
+        lines.append(
+            f"  - {len(not_measured)} run(s) not measured (no leaf launched — "
+            "deterministic in-process substeps)"
+        )
+    usage_unavailable = children.get("usage_unavailable") or []
+    if usage_unavailable:
+        count = len(usage_unavailable)
+        lines.append(
+            f"  - ⚠ {count} {'leaf' if count == 1 else 'leaves'} reported no usage "
+            "(see each row's `usage.reason`)"
+        )
     unmatched = children.get("unmatched_arids") or []
     if unmatched:
         lines.append(
-            f"  - ⚠ {len(unmatched)} child arid(s) had no locatable transcript "
-            "(ephemeral/cleaned)"
+            f"  - ⚠ {len(unmatched)} child arid(s) carry no usage field at all "
+            "(recorded before per-leaf usage was durable)"
         )
     lines.append("")
     per_child = children.get("per_child") or {}
@@ -1019,13 +1110,14 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
             key=lambda kv: int(kv[1].get("total_tokens", 0) or 0),
             reverse=True,
         )
-        lines.append("| child agent_run_id | total | turns | peak ctx |")
+        lines.append("| child agent_run_id | total | reasoning | source |")
         lines.append("|---|---|---|---|")
         for arid, usage in ranked:
+            reasoning_cell = (_fmt_tok(usage["reasoning_tokens"])
+                              if isinstance(usage.get("reasoning_tokens"), int) else "n/a")
             lines.append(
-                f"| `{arid}` | {_fmt_tok(usage.get('total_tokens'))} | "
-                f"{usage.get('assistant_turns', 'n/a')} | "
-                f"{_fmt_tok(usage.get('peak_context_tokens'))} |"
+                f"| `{arid}` | {_fmt_tok(usage.get('total_tokens'))} | {reasoning_cell} | "
+                f"{usage.get('usage_source') or usage.get('source') or 'n/a'} |"
             )
         lines.append("")
 
@@ -1288,10 +1380,18 @@ def main() -> None:
         default=".",
         help="Repository root (default: current directory)",
     )
+    parser.add_argument(
+        "--token-cost-from-transcripts",
+        action="store_true",
+        help=("Reconstruct per-leaf token usage from the machine-local, ephemeral "
+              "~/.claude transcripts for runs recorded before per-leaf usage became "
+              "durable. Off by default: the workflow does not read ~/.claude."),
+    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
-    result = audit(repo_root, args.orchestration_id)
+    result = audit(repo_root, args.orchestration_id,
+                   token_cost_from_transcripts=args.token_cost_from_transcripts)
 
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2))

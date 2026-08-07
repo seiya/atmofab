@@ -258,7 +258,8 @@ class ResponseReadingTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
         self.assertEqual(out.model, "test-model-resolved")
-        self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22})
+        self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22,
+                                     "total_tokens": 33, "usage_source": "http_provider"})
         self.assertFalse(out.truncated)
 
     def test_anthropic_response_is_read_and_usage_normalized(self) -> None:
@@ -268,7 +269,67 @@ class ResponseReadingTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
         self.assertEqual(out.model, "claude-opus-5-resolved")
-        self.assertEqual(out.usage, {"input_tokens": 33, "output_tokens": 44})
+        self.assertEqual(out.usage, {"input_tokens": 33, "output_tokens": 44,
+                                     "total_tokens": 77, "usage_source": "http_provider"})
+
+    def test_the_openai_reasoning_and_cache_splits_survive(self) -> None:
+        """The reality this transport was blind to. On `orch_20260807T002410Z_acf2b996` the
+        `verify` leaf reported 23,538 completion tokens of which 23,438 (99.6%) were reasoning —
+        the answer was ~100 tokens — and two otherwise identical `generate` calls reported 64 vs
+        32,832 cached prompt tokens. Reading `output_tokens` alone is reading a number that is
+        mostly reasoning without knowing it, which is how `max_output_tokens` gets sized wrong."""
+        body = dict(_OPENAI_OK, usage={
+            "prompt_tokens": 33_000, "completion_tokens": 23_538,
+            "completion_tokens_details": {"reasoning_tokens": 23_438},
+            "prompt_tokens_details": {"cached_tokens": 32_832}})
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        self.assertEqual(out.usage["reasoning_tokens"], 23_438)
+        self.assertEqual(out.usage["cached_tokens"], 32_832)
+        # SUBSETS of completion / prompt — counting them again would double the bill.
+        self.assertEqual(out.usage["total_tokens"], 33_000 + 23_538)
+        # ...and the provider's own detail objects travel too, so a count not modelled here is
+        # still on disk instead of recoverable only from the multi-MB raw SSE capture.
+        self.assertEqual(out.usage["provider_details"], {
+            "completion_tokens_details": {"reasoning_tokens": 23_438},
+            "prompt_tokens_details": {"cached_tokens": 32_832}})
+
+    def test_a_string_valued_detail_field_is_dropped_before_it_can_be_persisted(self) -> None:
+        """`provider_details` is persisted (the agent_runs row, the per-attempt metadata)
+        WITHOUT passing through `_redact` — unlike every other provider-supplied string this
+        module returns. So only COUNTS may travel: a provider that echoes the API key into a
+        detail object it controls must not put it on disk."""
+        body = dict(_OPENAI_OK, usage={
+            "prompt_tokens": 11, "completion_tokens": 22,
+            "completion_tokens_details": {"reasoning_tokens": 4, "note": "key=" + KEY_VALUE},
+            "prompt_tokens_details": {"cached_tokens": 2}})
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], opener=_opener(body))
+        self.assertEqual(out.usage["provider_details"], {
+            "completion_tokens_details": {"reasoning_tokens": 4},
+            "prompt_tokens_details": {"cached_tokens": 2}})
+        self.assertNotIn(KEY_VALUE, json.dumps(out.usage))
+
+    def test_a_provider_that_sends_no_detail_objects_stays_clean(self) -> None:
+        """Most `openai_compatible` endpoints (vLLM, llama.cpp, Ollama) send neither object.
+        Their rows must carry the plain pair, not keys with `None` in them."""
+        out = hl.run_pure_http_leaf(
+            _entry(), [{"role": "user", "content": "P"}], opener=_opener(_OPENAI_OK))
+        self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22,
+                                     "total_tokens": 33, "usage_source": "http_provider"})
+
+    def test_the_anthropic_cache_classes_survive(self) -> None:
+        """`cache_read_input_tokens` / `cache_creation_input_tokens` are ADDITIONAL prompt
+        classes, not subsets of `input_tokens` — dropping them lost real billed input, and with
+        it any view of whether the prompt cache was hitting. They count toward the total."""
+        body = dict(_ANTHROPIC_OK, usage={
+            "input_tokens": 33, "output_tokens": 44,
+            "cache_read_input_tokens": 14_278, "cache_creation_input_tokens": 5_849})
+        out = hl.run_pure_http_leaf(
+            _entry("anthropic_api"), [{"role": "user", "content": "P"}], opener=_opener(body))
+        self.assertEqual(out.usage["cache_read_input_tokens"], 14_278)
+        self.assertEqual(out.usage["cache_creation_input_tokens"], 5_849)
+        self.assertEqual(out.usage["total_tokens"], 33 + 44 + 14_278 + 5_849)
 
     def test_anthropic_text_blocks_are_concatenated_not_sampled(self) -> None:
         body = dict(_ANTHROPIC_OK, content=[
@@ -1097,7 +1158,21 @@ class OpenAiStreamReadingTests(unittest.TestCase):
                              terminator="[DONE]"))
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, "x")
-        self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22})
+        self.assertEqual(out.usage, {"input_tokens": 11, "output_tokens": 22,
+                                     "total_tokens": 33, "usage_source": "http_provider"})
+
+    def test_the_streamed_usage_chunk_carries_the_reasoning_and_cache_splits(self) -> None:
+        """The streaming reader must not be the poorer twin: production runs stream, so a split
+        that only the buffered path extracted would never be recorded at all."""
+        out = self._run(_sse(("", _openai_chunk("x", finish_reason="stop")),
+                             ("", _openai_chunk(usage={
+                                 "prompt_tokens": 33_000, "completion_tokens": 23_538,
+                                 "completion_tokens_details": {"reasoning_tokens": 23_438},
+                                 "prompt_tokens_details": {"cached_tokens": 32_832}})),
+                             terminator="[DONE]"))
+        self.assertEqual(out.usage["reasoning_tokens"], 23_438)
+        self.assertEqual(out.usage["cached_tokens"], 32_832)
+        self.assertEqual(out.usage["total_tokens"], 33_000 + 23_538)
 
     def test_an_openai_stream_finishing_on_length_is_reported_truncated(self) -> None:
         """The provider's own verdict, which the caller routes as `pure_response_truncated`
@@ -1344,7 +1419,28 @@ class AnthropicStreamReadingTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
         self.assertEqual(out.model, "claude-opus-5-resolved")
-        self.assertEqual(out.usage, {"input_tokens": 33, "output_tokens": 44})
+        self.assertEqual(out.usage, {"input_tokens": 33, "output_tokens": 44,
+                                     "total_tokens": 77, "usage_source": "http_provider"})
+
+    def test_an_anthropic_stream_takes_the_whole_input_side_from_message_start(self) -> None:
+        """`message_start` carries the uncached input AND both cache classes; only
+        `output_tokens` arrives later. Reading just `input_tokens` there dropped the cache
+        split on every streamed turn."""
+        body = _sse(
+            ("message_start", json.dumps({"message": {
+                "model": "claude-opus-5-resolved",
+                "usage": {"input_tokens": 33, "cache_read_input_tokens": 14_278,
+                          "cache_creation_input_tokens": 5_849}}})),
+            ("content_block_delta", json.dumps({"delta": {"type": "text_delta", "text": "x"}})),
+            ("message_delta", json.dumps({"delta": {"stop_reason": "end_turn"},
+                                          "usage": {"output_tokens": 44}})),
+            ("message_stop", json.dumps({"type": "message_stop"})),
+        )
+        out = self._run(body)
+        self.assertEqual(out.usage["cache_read_input_tokens"], 14_278)
+        self.assertEqual(out.usage["cache_creation_input_tokens"], 5_849)
+        self.assertEqual(out.usage["output_tokens"], 44)
+        self.assertEqual(out.usage["total_tokens"], 33 + 44 + 14_278 + 5_849)
 
     def test_a_thinking_delta_is_not_part_of_the_answer_document(self) -> None:
         """Mirrors the buffered reader, which concatenates only `type == "text"` blocks."""

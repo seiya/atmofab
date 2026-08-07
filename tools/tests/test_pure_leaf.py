@@ -102,10 +102,66 @@ class ParseResultEnvelopeTest(unittest.TestCase):
             _envelope(model=DROP, modelUsage={"a": {}, "b": {}}))
         self.assertIs(env.model, pl._MISSING)
 
+    def test_the_primary_model_is_resolved_from_the_usage_row(self):
+        """The ordinary CLI shape: no top-level `model`, and TWO `modelUsage` rows because a
+        helper model ran alongside the one that answered. The top-level `usage` reports the
+        PRIMARY model alone, so the row equal to it names the model that answered. Of the 136
+        result envelopes recorded in this repository none carries a top-level `model` and 78
+        carry two rows — without this they record no exact model at all."""
+        env = pl.parse_result_envelope(_envelope(
+            model=DROP,
+            usage={"input_tokens": 2, "output_tokens": 4,
+                   "cache_read_input_tokens": 14278, "cache_creation_input_tokens": 5849},
+            modelUsage={
+                "claude-opus-5[1m]": {"inputTokens": 2, "outputTokens": 4,
+                                      "cacheReadInputTokens": 14278,
+                                      "cacheCreationInputTokens": 5849},
+                "claude-haiku-4-5-20251001": {"inputTokens": 6, "outputTokens": 480,
+                                              "cacheReadInputTokens": 13000,
+                                              "cacheCreationInputTokens": 0}}))
+        self.assertEqual(env.model, "claude-opus-5[1m]")
+
+    def test_an_uncountable_row_is_never_named_the_primary_model(self):
+        """`None == None` is True four times over, so an EMPTY row would "match" a `usage`
+        block with no counts and be named the model that answered. At least one real count
+        has to have agreed."""
+        env = pl.parse_result_envelope(_envelope(
+            model=DROP, usage={}, modelUsage={"a": {}, "b": "not-a-row"}))
+        self.assertIs(env.model, pl._MISSING)
+
+    def test_a_flag_where_a_count_belongs_never_matches(self):
+        """`True == 1` in Python: a row reporting a flag where a token count belongs would
+        otherwise be named the primary whenever `usage` reported 1."""
+        env = pl.parse_result_envelope(_envelope(
+            model=DROP, usage={"input_tokens": 1},
+            modelUsage={"a": {"inputTokens": True}, "b": {"inputTokens": 9}}))
+        self.assertIs(env.model, pl._MISSING)
+
+    def test_two_rows_that_both_match_stay_ambiguous(self):
+        """A provenance gap is recorded as absent, never guessed: with two identical rows
+        there is no fact about which one answered."""
+        env = pl.parse_result_envelope(_envelope(
+            model=DROP, usage={"input_tokens": 5},
+            modelUsage={"a": {"inputTokens": 5}, "b": {"inputTokens": 5}}))
+        self.assertIs(env.model, pl._MISSING)
+
     def test_model_empty_top_level_falls_back_to_model_usage(self):
         env = pl.parse_result_envelope(
             _envelope(model="  ", modelUsage={"claude-x": {}}))
         self.assertEqual(env.model, "claude-x")
+
+    def test_the_two_model_usage_key_maps_stay_in_step(self):
+        """The CLI's `modelUsage` row names are written down TWICE — here, to identify the
+        primary model, and in `workflow_conductor._MODEL_USAGE_KEYS`, to sum the tokens. A
+        rename in the CLI breaks both, silently and differently: the conductor understates
+        the tokens, this module degrades model provenance to the unpinned alias. Nothing else
+        ties them."""
+        self.assertEqual(
+            [reported for reported, _canonical in pl._PRIMARY_MODEL_MATCH],
+            list(wc._MODEL_USAGE_KEYS))
+        self.assertEqual(
+            [canonical for _reported, canonical in pl._PRIMARY_MODEL_MATCH],
+            list(wc._MODEL_USAGE_KEYS.values()))
 
     def test_deeply_nested_stdout_does_not_raise(self):
         # RecursionError (not a JSONDecodeError) must not escape the "never raises" contract.

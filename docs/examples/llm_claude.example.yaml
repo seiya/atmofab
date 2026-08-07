@@ -20,7 +20,7 @@
 # build phase) is deterministic and runs in-process, so naming one here is rejected.
 #
 #   model    An unpinned ALIAS, never a pinned version: versions move, and the exact version
-#            that ran is recovered afterwards from the leaf's own transcript and recorded on its
+#            that ran is recovered afterwards from the leaf's own CLI result envelope and recorded on its
 #            `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus` — which overrides the `model` in the operator's own
 #            `~/.claude/settings.json`. Delete the `model:` lines to hand that choice back.

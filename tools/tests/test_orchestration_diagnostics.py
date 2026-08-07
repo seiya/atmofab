@@ -793,11 +793,11 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         self.assertFalse(out["found"])
 
     def test_usage_key_tuples_stay_consistent(self) -> None:
-        # Both sum-key tuples derive from the CLI token classes. Pin the relation AND
-        # the derived contents: the obvious re-derivation
-        # `(*_CLI_TOKEN_USAGE_KEYS, "assistant_turns")` silently drops "total_tokens",
-        # which the transcript aggregators sum.
-        self.assertEqual(diag._PURE_ATTEMPT_USAGE_KEYS, diag._CLI_TOKEN_USAGE_KEYS)
+        # Both sum-key tuples derive from the canonical token classes (`tools/leaf_usage.py`,
+        # the shape every backend records against). Pin the relation AND the derived contents:
+        # the obvious re-derivation `(*LEAF_TOKEN_CLASS_KEYS, "assistant_turns")` silently
+        # drops "total_tokens", which the transcript aggregators sum.
+        self.assertEqual(diag._PURE_ATTEMPT_USAGE_KEYS, diag.LEAF_TOKEN_CLASS_KEYS)
         self.assertTrue(set(diag._PURE_ATTEMPT_USAGE_KEYS) < set(diag._USAGE_SUM_KEYS))
         self.assertIn("total_tokens", diag._USAGE_SUM_KEYS)
         self.assertIn("assistant_turns", diag._USAGE_SUM_KEYS)

@@ -53,6 +53,14 @@ from tools.llm_config import (
     LlmConfig,
     ResolvedLeafEntry,
 )
+from tools.leaf_usage import (
+    LEAF_USAGE_SOURCE_CODEX,
+    LEAF_USAGE_SOURCE_ENVELOPE,
+    LEAF_USAGE_SOURCE_HTTP,
+    leaf_usage_not_measured,
+    leaf_usage_unavailable,
+    normalize_leaf_usage,
+)
 
 
 def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
@@ -2147,17 +2155,281 @@ class ProcResult:
     # conductor's own act, and routing it back through a regex over leaf-written text would let
     # any leaf claim it (see `_LEAF_INFRA_ERROR_PATTERNS`).
     timed_out: bool = False
-    # What to PERSIST in place of `stdout`, when `stdout` may carry a secret. The HTTP
-    # transport redacts the API key from every provider-supplied string, but the model's answer
-    # channel cannot be redacted in the value itself: the validators parse it, and a key that
-    # is a common substring would corrupt a legitimate document (a real defect, measured). So
-    # the split is here — the validators read `stdout`, the artifact gets this.
+    # What to PERSIST in place of `stdout`. Two users, both cases where the value the
+    # consumers must read is not the value the record should keep:
+    #   - the HTTP transport redacts the API key from every provider-supplied string, but the
+    #     model's answer channel cannot be redacted in the value itself: the validators parse
+    #     it, and a key that is a common substring would corrupt a legitimate document (a real
+    #     defect, measured). The validators read `stdout`, the artifact gets this.
+    #   - an AGENTIC claude leaf's envelope is lifted at the capture boundary
+    #     (`_unwrap_agentic_envelope`), so `stdout` is the model's text while this keeps the
+    #     whole envelope — the accounting blocks included — for `dialogs/leaf.stdout.log`.
     persist_stdout: str | None = None
     # An HTTP provider reported its own answer cut off at the output-token ceiling
     # (`finish_reason == "length"` / `stop_reason == "max_tokens"`). Authoritative, so the pure
     # loops classify it as `pure_response_truncated` without asking the extractor to infer it
     # from a partial document — which it can only do heuristically.
     response_truncated: bool = False
+
+
+# The CLI envelope's PER-MODEL usage rows, mapped onto the canonical token-class names.
+# `modelUsage` is the complete accounting and the top-level `usage` is not: `usage` reports
+# the primary model's row alone, while a leaf routinely runs a second model as well (of the 136
+# recorded envelopes 78 list two models, 57 list one, and one lists none). Measured across the 135
+# of them that carry a usable `modelUsage`, taking `usage` alone loses a
+# median 25.8% of the tokens (max 43.7%) — and `total_cost_usd`, on the same envelope, is the
+# sum across ALL of them, so the row would carry a cost that includes tokens it does not show.
+_MODEL_USAGE_KEYS: dict[str, str] = {
+    "inputTokens": "input_tokens",
+    "outputTokens": "output_tokens",
+    "cacheReadInputTokens": "cache_read_input_tokens",
+    "cacheCreationInputTokens": "cache_creation_input_tokens",
+}
+
+
+def _parse_leaf_envelope(stdout: Any) -> Any:
+    """`pure_leaf.parse_result_envelope`, imported lazily like every other use of that module.
+
+    One wrapper so every consumer of a leaf's envelope parses it with the same reader.
+    """
+    from tools.pure_leaf import parse_result_envelope
+    return parse_result_envelope(stdout)
+
+
+def _envelope_usage_totals(envelope: Any) -> tuple[dict[str, Any], bool]:
+    """`(tokens, covers_every_model)` from a CLI result envelope.
+
+    Prefers `modelUsage` for the reason in `_MODEL_USAGE_KEYS`: it is the per-model
+    accounting the envelope's own `total_cost_usd` is computed from, where the top-level
+    `usage` is one model's row. Falls back to `usage` when `modelUsage` is absent or carries
+    no usable counts, so an older/leaner envelope still reports what it has — and says so
+    with `covers_every_model=False`, because `total_cost_usd` covers models those numbers do
+    not, and a row pairing a partial token count with a full cost is a silently wrong bill.
+    """
+    if not isinstance(envelope, dict):
+        return {}, False
+    model_usage = envelope.get("modelUsage")
+    totals: dict[str, Any] = {}
+    partial = False
+    if isinstance(model_usage, dict):
+        for row in model_usage.values():
+            counted = 0
+            if isinstance(row, dict):
+                for reported, canonical in _MODEL_USAGE_KEYS.items():
+                    value = row.get(reported)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        totals[canonical] = totals.get(canonical, 0) + value
+                        counted += 1
+            # COMPLETE means all four classes counted. Anything less is a hole in the sum,
+            # and the three ways to fall short are the same defect: not a row at all, a class
+            # whose value is uncountable (negative, float, a flag), and a class simply absent
+            # — an absent count is unknown, not zero, and this reader must not spend the
+            # difference. Every recorded envelope writes all four in every row, so this
+            # narrows nothing today; it is what keeps `cost_usd` off an understated sum if
+            # the envelope shape ever drifts.
+            partial = partial or counted != len(_MODEL_USAGE_KEYS)
+    if totals:
+        return totals, not partial
+    usage = envelope.get("usage")
+    # `modelUsage` is a REQUIRED key in BOTH of the CLI's result-envelope variants (the
+    # `success` one and the `error_*` family), so reaching this fallback always means the
+    # per-model accounting was empty or unreadable — never that this is a complete
+    # single-model envelope. `total_cost_usd` covers models these numbers do not, so it must
+    # not ride them.
+    return (usage if isinstance(usage, dict) else {}), False
+
+
+def _is_cli_result_envelope(raw: Any) -> bool:
+    """True when this JSON object is the CLI's own result envelope, not a model document.
+
+    Keyed on `type: "result"`, which the CLI stamps in the envelope factory (it is on every
+    recorded envelope) and which no leaf answer this repository has recorded carries.
+    """
+    return isinstance(raw, dict) and raw.get("type") == "result"
+
+
+def _envelope_leaf_text(envelope: Any, fallback: str) -> str:
+    r"""The line-oriented text a result envelope carries, for the diagnostic consumers.
+
+    The CLI writes TWO envelope families, and only one of them has an answer to lift:
+
+    - `subtype: "success"` carries the model's reply in `result`;
+    - the error families (`error_during_execution`, `error_max_turns`, `error_max_budget_usd`,
+      `error_max_structured_output_retries`) carry NO `result` at all — they carry `errors`,
+      a list of strings, alongside `subtype` and `terminal_reason`.
+
+    An error envelope is exactly the case the diagnostic consumers exist for, so leaving it
+    unlifted would hand the classifier and the failure summary a one-line JSON document in
+    the one situation where the message matters: the recorded `result_summary` would be the
+    envelope's trailing accounting block, and `_classify_leaf_infra_error`'s line-anchored
+    patterns would see nothing. So its `errors` are rendered ONE PER LINE, with the subtype
+    on a line of its own.
+
+    The subtype's own line is load-bearing, not formatting. Three of the classifier's
+    patterns are start-anchored (`^\s*overloaded\s*$`, the `^\s*api error\b` catch-all, and
+    the usage-limit lead-in), so prefixing the first error with `<subtype>: ` puts every one
+    of them out of reach — measured: `Overloaded` tags `llm_overloaded`,
+    `error_during_execution: Overloaded` tags nothing. A lost tag is a retryable death that
+    fails the run closed, or a quota stop that never arms `--wait-usage-reset`.
+
+    The two variants are DISJOINT — a `success` envelope has no `errors` key and an error one
+    has no `result` key — so a string `result` is always the whole answer, empty included.
+    The CLI writes `result: ""` on its deferred-tool and zero-turn paths; that is an empty
+    answer, and returning it empty is what the text-mode launch did. Falling back to the raw
+    envelope there would put the accounting block in front of the classifier and the failure
+    summary, which is what this function exists to prevent.
+
+    Anything else — a `result` that is not a string, an unrecognised variant — keeps the raw
+    stdout: an envelope this reader does not model must not cost the evidence it contains.
+    """
+    if isinstance(envelope.result, str):
+        return envelope.result
+    raw = envelope.raw if isinstance(envelope.raw, dict) else {}
+    errors = [line for line in (raw.get("errors") or []) if isinstance(line, str) and line.strip()]
+    if not errors:
+        return fallback
+    subtype = raw.get("subtype")
+    head = [subtype.strip()] if isinstance(subtype, str) and subtype.strip() else []
+    return "\n".join(head + errors)
+
+
+def _unwrap_agentic_envelope(proc: ProcResult, entry: ResolvedLeafEntry, *,
+                             pure: bool) -> ProcResult:
+    """Lift an AGENTIC claude leaf's answer back out of its `--output-format json` envelope.
+
+    The leaf is launched with that flag so its cost and resolved model are readable from its
+    own stdout (issue #47) — but `stdout` is ALSO the repository's diagnostic channel, and
+    several consumers were written against the model's plain text and quietly stop working on
+    a one-line JSON document:
+
+    - `escalate` parses the diagnostician's routing directive with `_last_json_object`, which
+      would return the ENVELOPE rather than the directive inside `result` — every escalation
+      routing `fail_closed` as unparsable;
+    - `_classify_leaf_infra_error` matches LINE BY LINE, and most of its patterns are anchored
+      to the start or the end of a line. Inside a single-line envelope an `Overloaded` or a
+      `Premature close` matches nothing, so a retryable death loses its tag and terminalizes
+      instead of being re-launched;
+    - `_LEAF_RETRY_NOTICE_RE` skips a whole line, so one `retrying` anywhere in the envelope —
+      including inside the model's own `result` prose — would suppress classification entirely;
+    - the evidence excerpt and `_leaf_failure_summary` would quote the envelope's accounting
+      block instead of the message.
+
+    So the envelope is unwrapped HERE, once, at the capture boundary: everything downstream
+    sees exactly the text it saw before, and the envelope's numbers ride the `ProcResult`
+    fields that exist for them. The raw envelope is still what gets PERSISTED (`persist_stdout`
+    → `dialogs/leaf.stdout.log`), so nothing is lost from the record.
+
+    A pure leaf is deliberately untouched: its loops parse the envelope themselves and read
+    `is_error` / `parse_error` off it, which is the contract that makes a malformed pure reply
+    repairable rather than silently empty.
+
+    The residual: an envelope this reader cannot parse is returned UNCHANGED rather than
+    blanked, so those consumers see a JSON fragment. Reaching that state needs a capture cut
+    at `LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`, or a kill landing inside the CLI's single
+    terminal write — a leaf killed at the per-leaf cap writes nothing at all (measured, under
+    both output formats: `--output-format json` emits one result at exit, and the text form
+    buffers to the end too), which is why its stdout is empty rather than partial. Keeping
+    the fragment is the lesser loss: it is the only evidence of what the leaf was doing.
+    """
+    if pure or entry.provider != "claude_cli" or not isinstance(proc.stdout, str):
+        return proc
+    envelope = _parse_leaf_envelope(proc.stdout)
+    # `parsed` means "stdout was a JSON object", which is NOT the same as "the CLI wrote it".
+    # `type: "result"` is CLI-authored and present on every one of the 140 JSON-object leaf
+    # stdout logs recorded in this repository that is an envelope (136 of them; the other 4
+    # are pure leaves' own bundle documents). Gating on it keeps this from lifting a `result`
+    # key out of a document the MODEL wrote — reachable if an operator's configured
+    # `command:` wrapper does not emit the envelope, in which case stdout is the model's own
+    # answer and unwrapping it would silently replace the answer with one of its fields.
+    # Same trust rule as `_cli_abort_envelope_result`, which gates on the CLI's own keys.
+    if not envelope.parsed or not _is_cli_result_envelope(envelope.raw):
+        return proc
+    raw = envelope.raw if isinstance(envelope.raw, dict) else {}
+    totals, covers_every_model = _envelope_usage_totals(raw)
+    usage = normalize_leaf_usage(
+        totals, source=LEAF_USAGE_SOURCE_ENVELOPE,
+        cost_usd=raw.get("total_cost_usd") if covers_every_model else None)
+    model = envelope.model.strip() if isinstance(envelope.model, str) else ""
+    return replace(
+        proc,
+        stdout=_envelope_leaf_text(envelope, proc.stdout),
+        persist_stdout=proc.stdout if proc.persist_stdout is None else proc.persist_stdout,
+        usage=usage if usage is not None else proc.usage,
+        model=model or proc.model,
+    )
+
+
+def _leaf_usage_row(
+    proc: ProcResult,
+    entry: ResolvedLeafEntry,
+    *,
+    envelope: Any = None,
+    deterministic: bool = False,
+) -> dict[str, Any]:
+    """The `usage` value recorded for ONE launch. ALWAYS a dict, never absent.
+
+    Every backend's numbers converge here on the one shape
+    (`leaf_usage.normalize_leaf_usage`), and every launch that has no numbers
+    says WHY in a form an operator can act on:
+
+    - `not_measured` — a deterministic in-process substep spawns no leaf, so there was never
+      anything to measure. It must not read as a failure, and must not read as zero cost.
+    - `unavailable`  — a usage channel existed and did not deliver. That is a defect. Where
+      the caller passes an `envelope` (the pure loops) the reason separates the two halves —
+      no envelope on stdout at all, against an envelope carrying no usage; elsewhere it says
+      the provider reported none, and names the leaf's exit code.
+
+    Returning a value on EVERY path is what retires the `~/.claude` transcript backfill in
+    `orchestration_runtime.finalize_child`: that backfill only ever fired because the
+    conductor left `usage` absent, and it could not succeed under the access boundary anyway
+    (issue #47).
+
+    `envelope` is the parsed result envelope when the CALLER holds one — the two pure loops
+    parse it themselves. An agentic claude leaf's envelope was already consumed at the capture
+    boundary (`_unwrap_agentic_envelope`), so its numbers arrive on `proc.usage`.
+    """
+    if deterministic:
+        return leaf_usage_not_measured(
+            "deterministic in-process substep — no leaf launched")
+    if entry.provider == "claude_cli" and envelope is not None:
+        if not envelope.parsed:
+            # A leaf killed at the per-leaf cap writes nothing to stdout, so this is the
+            # honest state for a dead leaf: its tokens were spent and are unrecorded. Naming
+            # the exit code keeps it separable from a live leaf whose envelope was malformed.
+            return leaf_usage_unavailable(
+                f"no result envelope on leaf stdout: {envelope.parse_error} (leaf_exit="
+                f"{proc.returncode})")
+        raw = envelope.raw if isinstance(envelope.raw, dict) else {}
+        totals, covers_every_model = _envelope_usage_totals(raw)
+        usage = normalize_leaf_usage(
+            totals, source=LEAF_USAGE_SOURCE_ENVELOPE,
+            cost_usd=raw.get("total_cost_usd") if covers_every_model else None)
+        return usage or leaf_usage_unavailable(
+            "result envelope carried no usable usage object")
+    # Everything else already carries its numbers on the ProcResult: the claude envelope was
+    # unwrapped at capture, `tools/llm_http_leaf` normalized the HTTP dialect where it was
+    # still known, and the codex pump takes them off `turn.completed`.
+    source = (LEAF_USAGE_SOURCE_CODEX if entry.provider == "codex_cli"
+              else LEAF_USAGE_SOURCE_ENVELOPE if entry.provider == "claude_cli"
+              else LEAF_USAGE_SOURCE_HTTP)
+    if isinstance(proc.usage, dict) and proc.usage:
+        # An already-normalized dict (the claude and HTTP paths) is passed through as it
+        # stands; a raw provider dict (codex) is normalized here. `usage_source` is the
+        # discriminator, so re-normalizing a normalized dict cannot happen silently.
+        if proc.usage.get("usage_source"):
+            return dict(proc.usage)
+        # The raw object rides along under `provider_details`, because normalizing keeps only
+        # the names this repository can name — and there is no captured codex `turn.completed`
+        # here to say what the others are called. Before this, codex usage was persisted
+        # verbatim; carrying it forward costs nothing and loses nothing.
+        usage = normalize_leaf_usage(
+            proc.usage, source=source,
+            details={"turn_usage": {k: v for k, v in proc.usage.items()
+                                    if isinstance(v, int) and not isinstance(v, bool)}})
+        if usage is not None:
+            return usage
+    return leaf_usage_unavailable(
+        f"provider reported no usage (leaf_exit={proc.returncode})")
 
 
 # A leaf that dies on an LLM-infrastructure error exits nonzero with no artifacts, which the
@@ -2266,7 +2538,8 @@ _USAGE_ABORT_HIT_YOUR_LIMIT = r"^\s*" + _HIT_YOUR_LIMIT_BODY
 # field. In the ENVELOPED shape the line leads with `{"type":"result"...`, so a strictly
 # line-anchored pattern cannot see the message at all — and the fallback phrases only cover the
 # `usage` / `session` windows, so an enveloped `You've hit your 5-hour limit · resets ...` (a shape
-# only a `--output-format json` launch produces, i.e. the whole pure surface) terminalized UNTAGGED:
+# only a stdout that is still an envelope when it reaches here produces, i.e. the pure surface —
+# an agentic leaf's envelope is lifted at capture) terminalized UNTAGGED:
 # no `llm_usage_limit`, no wait, not even a decline to grep. That is round-3's defect surviving one
 # shape further in. Deliberately NOT shared with the arming form: arming an envelope goes through
 # `_cli_abort_envelope_result`, whose CLI-authored-key gates are the trust boundary, and letting a
@@ -2550,7 +2823,8 @@ _USAGE_RESET_HUMAN_GRACE_SECONDS = 900
 _CLI_USAGE_ABORT_LINE_MAX_CHARS = 200
 # A PARSE-COST guard on the CLI's `--output-format json` envelope, not a security bound: it only
 # keeps `json.loads` off a pathologically large line. The security work is done by `allow_envelope`
-# (only a `--output-format json` launch, where the leaf cannot forge the CLI's own keys) and by the
+# (only a `claude_cli` PURE launch, whose stdout is still the CLI's own envelope when it reaches
+# here — an agentic leaf's was unwrapped at capture — so the leaf cannot forge those keys) and by the
 # INNER text facing every abort-shape clause including `_CLI_USAGE_ABORT_LINE_MAX_CHARS`.
 # Sized ABOVE every recorded envelope (largest 47370 chars) on purpose. A tight bound here would be
 # the inertness bug again: envelope size is dominated by the CLI's own accounting blocks (`usage`,
@@ -2616,10 +2890,13 @@ def _sole_line(stream: str | None) -> str:
 def _cli_abort_envelope_result(line: str) -> str | None:
     """The `result` text of the CLI's OWN error envelope, or None when `line` is not one.
 
-    Only ever reached for a leaf launched with `--output-format json` (see the `allow_envelope`
-    gate in `_sole_content_usage_limit_line`), because only there does the CLI author an envelope:
-    the recorded incidents show one shape per launch mode — a bare abort line for the agentic
-    launches (5 of 6) and, for the one PURE launch, the same message carried in `result`:
+    Only ever reached for a `claude_cli` PURE launch (see the `allow_envelope` gate in
+    `_sole_content_usage_limit_line`), because only there is the stdout still a CLI-authored
+    envelope when it arrives: the recorded incidents show one shape per launch
+    mode — a bare abort line for the agentic launches (5 of 6) and, for the one PURE launch, the
+    same message carried in `result`. (Since issue #47 an agentic claude leaf is launched with the
+    flag too, but `_unwrap_agentic_envelope` lifts its answer out at the capture boundary, so the
+    bare shape is still what this side sees.)
 
         {"type":"result","is_error":true,"api_error_status":429,...,
          "result":"You've hit your session limit · resets 12:30pm (Asia/Tokyo)",
@@ -2681,12 +2958,18 @@ def _sole_content_usage_limit_line(stdout: str, *, allow_envelope: bool) -> str 
     it in production, which is how the opted-in E2E run still fail_closed. TWO recorded shapes, both
     with an EMPTY stderr, and BOTH must be admitted — this function was written against the first
     alone and stayed inert for the pure loops, the same bug one layer in. The direction this code
-    RELIES on is `envelope => the launch was --output-format json`, which holds by construction
-    (only the pure loops pass those flags); the converse is not assumed — a pure launch may still
-    abort bare, and the bare path accepts it. Across 711 recorded leaf stdout logs an envelope in
-    fact appears iff the launch was pure, with zero exceptions.
-      * BARE — all 5 agentic incidents across the recorded workspaces: there is no envelope to
-        carry the message, so stdout is the message, ~59 chars;
+    RELIES on is `envelope => the CLI authored this stdout`, which holds by construction: the
+    callers pass `allow_envelope` only for a `claude_cli` PURE launch. A codex or HTTP pure leaf
+    writes the model's own answer to stdout, and an agentic claude leaf's envelope was lifted at
+    the capture boundary (`_unwrap_agentic_envelope`) — in both cases a JSON line here is
+    model-written and its keys prove nothing. The converse is not assumed — a pure launch may
+    still abort bare, and the bare path accepts it. Every count in this docstring and the two
+    below comes from ONE sweep of the recorded workspaces (2026-07-24, 711 leaf stdout logs);
+    in it an envelope appears iff the launch was pure, with zero exceptions. The corpus has
+    grown since, so read them as that snapshot, not as today's totals.
+      * BARE — all 5 agentic incidents across the recorded workspaces: stdout is the message,
+        ~59 chars (in that snapshot there was no envelope at all; since issue #47 the capture
+        boundary unwraps the agentic one, so this scrape still sees the bare shape);
       * ENVELOPED — the single PURE incident: stdout is the `--output-format json` result envelope
         with the message in `result` and the CLI's own `is_error` / `api_error_status` /
         `terminal_reason` keys stamped alongside — see `_cli_abort_envelope_result`, which unwraps
@@ -2716,11 +2999,11 @@ def _sole_content_usage_limit_line(stdout: str, *, allow_envelope: bool) -> str 
     if _is_cli_usage_abort_line(line):
         return line
     # Not the bare shape — try the CLI's own error envelope, then apply the SAME clauses to the
-    # message it carries (never to the envelope, which is CLI-framed but leaf-filled). Only a leaf
-    # launched with `--output-format json` HAS a CLI-authored envelope: an agentic leaf's stdout is
-    # its own text, so a JSON line there is model-written and its `is_error` / `api_error_status`
-    # keys prove nothing. The record is unambiguous — across 711 recorded leaf stdout logs an
-    # envelope appears iff the launch was pure, with zero exceptions.
+    # message it carries (never to the envelope, which is CLI-framed but leaf-filled). Only a
+    # claude PURE leaf's stdout is still a CLI-authored envelope when it reaches here: a codex or
+    # HTTP leaf's stdout is its own answer text, and an agentic claude leaf's was unwrapped at
+    # capture, so a JSON line in either is model-written and its `is_error` / `api_error_status`
+    # keys prove nothing. That is exactly the distinction `allow_envelope` carries.
     if not allow_envelope:
         return None
     inner = _cli_abort_envelope_result(line)
@@ -3112,8 +3395,11 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     same run may also have logged), and among equally severe matches the LAST one — the terminal
     message, not one the run went on to survive.
 
-    `stderr` is authoritative: stdout carries a `claude -p` leaf's OWN PROSE, which may well
-    discuss "the rate-limiting step" of a numerical scheme, so a stdout match may override a
+    `stderr` is authoritative: stdout carries the leaf's OWN TEXT — the model's answer for a
+    codex or HTTP leaf, and for an AGENTIC claude leaf the `result` string
+    `_unwrap_agentic_envelope` lifted out of its envelope (a PURE claude leaf's stdout is
+    still the envelope itself, which is why the line-anchored patterns find nothing in it) —
+    which may well discuss "the rate-limiting step" of a numerical scheme, so a stdout match may override a
     stderr match only for a tag in _CROSS_STREAM_PROMOTING_TAGS. Otherwise stdout is consulted
     solely when stderr named nothing — which is the common case, since the CLI reports an
     infrastructure failure as its result text (the E2E #4 incident had an empty stderr).
@@ -3496,6 +3782,14 @@ class Conductor:
                 # boundary, so it must be absent rather than merely discouraged.
                 # A pure leaf already passes `--tools ""` and needs no exclusion.
                 flags += ["--disallowedTools", CLAUDE_LEAF_DISALLOWED_TOOLS]
+                # The SAME result envelope the pure path selects (`pure_leaf_flags`), for the
+                # same reason: it is the only in-boundary channel that reports what the leaf
+                # actually cost and which model ran. Without it an agentic leaf's `usage` was
+                # recoverable only from `~/.claude`, which the workflow does not read — so
+                # every agentic row recorded `unavailable` (issue #47: 10 of 13 leaves on one
+                # billed run). The envelope never reaches a consumer that expects prose:
+                # `_unwrap_agentic_envelope` lifts the answer back out at the capture boundary.
+                flags += ["--output-format", "json"]
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
@@ -4035,10 +4329,12 @@ class Conductor:
                     # one. Appended BEFORE `_timed_out_result`, which adds its own marker last
                     # (the tag's evidence is read from the last such line).
                     stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
-                return self._timed_out_result(
-                    returncode, "".join(list(stdout_chunks)), stderr, entry=entry,
-                    timeout_seconds=timeout_seconds, started=started,
-                    context=timeout_context)
+                return _unwrap_agentic_envelope(
+                    self._timed_out_result(
+                        returncode, "".join(list(stdout_chunks)), stderr, entry=entry,
+                        timeout_seconds=timeout_seconds, started=started,
+                        context=timeout_context),
+                    entry, pure=pure)
             # The leaf exited on its own, so its status is authoritative. Only a descendant it
             # leaked can still hold the pipes, and that gets the teardown grace, not the cap.
             # INSIDE the try: an interrupt arriving during these joins still has to reach the
@@ -4071,7 +4367,10 @@ class Conductor:
         stderr = "".join(list(stderr_chunks))
         if stream_abandoned:
             stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
-        return ProcResult(process.returncode, stdout, stderr)
+        # The ONE capture boundary for a claude leaf, so an agentic leaf's envelope is lifted
+        # exactly once and everything downstream reads the model's own text as it always has.
+        return _unwrap_agentic_envelope(
+            ProcResult(process.returncode, stdout, stderr), entry, pure=pure)
 
     def _timed_out_result(
         self, returncode: int | None, stdout: str, stderr: str, *,
@@ -5830,7 +6129,14 @@ clean:
                                        self._session_id_for_child(child_arid, entry) or _MISSING,
                                        None, None))
             model = None if envelope.model is _MISSING else envelope.model
-            usage = None if envelope.usage is _MISSING else envelope.usage
+            # Every backend's usage converges on the one recorded shape here, and a launch that
+            # produced no numbers records WHY instead of leaving the field absent (issue #47).
+            # The claude envelope is the one parsed just above — this loop owns it, unlike the
+            # agentic path where the capture boundary already consumed it; the other providers'
+            # numbers arrive normalized on `proc` itself.
+            usage = _leaf_usage_row(
+                proc, entry,
+                envelope=envelope if entry.provider == "claude_cli" else None)
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": model, "usage": usage}
             per_attempt.append(attempt_record)
@@ -5957,7 +6263,7 @@ clean:
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
                                      [], result_summary, entry=entry,
-                                     agent_model_override=model, pure=True,
+                                     agent_model_override=model,
                                      usage=usage, resume_mode=proc.resume_mode))
 
             if status == "pass":
@@ -6015,7 +6321,11 @@ clean:
                 plan = self._usage_reset_wait_plan(
                     proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase, substep=substep,
                     dead_agent_run_id=child_arid, evidence=infra_error[1],
-                    allow_envelope=True)   # pure leaves ARE `--output-format json`
+                    # Only a claude pure leaf's stdout IS a CLI-authored envelope. A codex or
+                    # HTTP pure leaf writes the model's own answer there, so its `is_error` /
+                    # `api_error_status` keys would be forgeable — the same predicate the
+                    # agentic loop uses, for the same reason.
+                    allow_envelope=entry.provider == "claude_cli")
                 if plan is not None:
                     self._wait_for_usage_reset(
                         node_key=refs.node_key, step=phase, substep=substep,
@@ -6283,7 +6593,14 @@ clean:
                                        self._session_id_for_child(child_arid, entry) or _MISSING,
                                        None, None))
             model = None if envelope.model is _MISSING else envelope.model
-            usage = None if envelope.usage is _MISSING else envelope.usage
+            # Every backend's usage converges on the one recorded shape here, and a launch that
+            # produced no numbers records WHY instead of leaving the field absent (issue #47).
+            # The claude envelope is the one parsed just above — this loop owns it, unlike the
+            # agentic path where the capture boundary already consumed it; the other providers'
+            # numbers arrive normalized on `proc` itself.
+            usage = _leaf_usage_row(
+                proc, entry,
+                envelope=envelope if entry.provider == "claude_cli" else None)
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": model, "usage": usage}
             per_attempt.append(attempt_record)
@@ -6367,7 +6684,7 @@ clean:
                     child_arid, token, reply,
                     self._agent_run_json(refs, phase, substep, child_arid, verify_status,
                                          [], result_summary, entry=entry,
-                                         agent_model_override=model, pure=True,
+                                         agent_model_override=model,
                                          usage=usage, resume_mode=proc.resume_mode))
                 try:
                     self._write_verify_source_meta(
@@ -6442,7 +6759,7 @@ clean:
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, "fail",
                                      [], result_summary, entry=entry,
-                                     agent_model_override=model, pure=True,
+                                     agent_model_override=model,
                                      usage=usage, resume_mode=proc.resume_mode))
 
             # --wait-usage-reset (opt-in): a transport death carrying a resolvable usage-limit
@@ -6459,7 +6776,11 @@ clean:
                 plan = self._usage_reset_wait_plan(
                     proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase, substep=substep,
                     dead_agent_run_id=child_arid, evidence=infra_error[1],
-                    allow_envelope=True)   # pure leaves ARE `--output-format json`
+                    # Only a claude pure leaf's stdout IS a CLI-authored envelope. A codex or
+                    # HTTP pure leaf writes the model's own answer there, so its `is_error` /
+                    # `api_error_status` keys would be forgeable — the same predicate the
+                    # agentic loop uses, for the same reason.
+                    allow_envelope=entry.provider == "claude_cli")
                 if plan is not None:
                     self._wait_for_usage_reset(
                         node_key=refs.node_key, step=phase, substep=substep,
@@ -6936,7 +7257,6 @@ clean:
                         *,
                         entry: ResolvedLeafEntry | None = None,
                         agent_model_override: str | None = None,
-                        pure: bool = False,
                         usage: dict[str, Any] | None = None,
                         resume_mode: str | None = None) -> dict[str, Any]:
         entry = entry if entry is not None else self.entry_for(None, None)
@@ -6982,11 +7302,11 @@ clean:
             payload["usage"] = usage
         if resume_mode in {"forked", "in_place"}:
             payload["resume_mode"] = resume_mode
-        # Record the EXACT model the leaf actually ran, resolved from its own session
-        # transcript (the leaf's session id == child_arid, pinned via --session-id at
-        # launch). This is the runtime-resolved ground truth that replaces the unpinned
-        # alias carried in the launch request — record_agent_run only setdefaults the
-        # alias, so a value set here wins. Codex instead pins an operator-selected
+        # Record the EXACT model the leaf actually ran, resolved from its own CLI result
+        # envelope (`--output-format json`, which since issue #47 every claude leaf carries)
+        # and passed in as `agent_model_override`. This is the runtime-resolved ground truth
+        # that replaces the unpinned alias carried in the launch request — record_agent_run
+        # only setdefaults the alias, so a value set here wins. Codex instead pins an operator-selected
         # model into the host-authored CLI argv; JSONL and hook audit data are not
         # trusted for model provenance because the leaf can write their log bind.
         if entry.provider == "codex_cli":
@@ -6997,21 +7317,18 @@ clean:
             payload["agent_model"] = self._codex_pinned_model(entry)
             payload["agent_model_provenance"] = "codex_launch_pinned"
         elif agent_model_override and str(agent_model_override).strip():
-            # Z2 pure leaf: the model the leaf ran under comes from the CLI result envelope
-            # (`--output-format json`), NOT the session transcript (~/.claude is not read on the
-            # pure path). A resolved override wins and skips the transcript lookup.
+            # The model the leaf ran under comes from the CLI result envelope
+            # (`--output-format json`), NOT the session transcript. Since issue #47 that is the
+            # source for the AGENTIC claude leaf as well as the pure one — both are launched with
+            # the flag — so ~/.claude is not read for model provenance on any path. A resolved
+            # override wins and skips every fallback.
             payload["agent_model"] = str(agent_model_override).strip()
-        elif pure:
-            # Pure path with no envelope model (a provenance gap): leave agent_model ABSENT for
-            # record_agent_run to backfill the launch-request alias. Crucially, do NOT fall back
-            # to the transcript resolver — the pure channel must not read ~/.claude (operator
-            # access boundary); the envelope is the only provenance source.
-            pass
         elif entry.provider == "claude_cli":
-            from tools.orchestration_runtime import resolve_claude_model_from_transcript
-            resolved = resolve_claude_model_from_transcript(child_arid)
-            if resolved:
-                payload["agent_model"] = resolved
+            # No envelope model (a provenance gap): leave agent_model ABSENT for record_agent_run
+            # to backfill the launch-request alias. Crucially, do NOT fall back to a transcript
+            # resolver — that would read ~/.claude, outside the operator's access boundary; the
+            # envelope is the only provenance source.
+            pass
         if status == "pass":
             payload["output_refs"] = output_refs
         # `_validate_agent_summary_text` requires a summary/reason token on any terminal row
@@ -8626,6 +8943,16 @@ clean:
             reply = f"status: {status}\noutput_refs: {len(output_refs)}\nleaf rc={proc.returncode}"
             if result_summary:
                 reply += f"\nresult_summary: {result_summary}"
+            # The agentic claude leaf now runs under `--output-format json` too, so its cost
+            # and the model it actually ran are readable from its own stdout — the in-boundary
+            # channel the pure path has always used. `_unwrap_agentic_envelope` already took
+            # both off it at the capture boundary, so they arrive on `proc`; a deterministic
+            # substep launched no leaf and records `not_measured` instead.
+            usage_row = _leaf_usage_row(proc, entry, deterministic=deterministic)
+            # `proc.model` REPLACES the `~/.claude` transcript lookup `_agent_run_json` used to
+            # fall back to for a claude leaf: the same value, from the leaf's own output
+            # instead of from outside the access boundary.
+            model_override = proc.model
             # Terminalize the attempt FIRST, and only then tombstone it. Both orderings have a
             # cost and this one is the survivable one:
             #   - `finalize_child` closes the child's write window: `record-agent-run` re-walks the
@@ -8649,8 +8976,8 @@ clean:
                 child_arid, token, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
                                      output_refs, result_summary, entry=entry,
-                                     agent_model_override=proc.model,
-                                     usage=proc.usage, resume_mode=proc.resume_mode))
+                                     agent_model_override=model_override,
+                                     usage=usage_row, resume_mode=proc.resume_mode))
             transient_death = (
                 not deterministic
                 and proc.returncode != 0
@@ -8694,8 +9021,10 @@ clean:
                     # reaches this loop (the dispatch above returns in BOTH branches), so the
                     # predicate is provably False here — evaluating it would only re-read the
                     # node's IR on the failure path and imply this loop can carry a pure leaf.
-                    # An agentic leaf is launched without `--output-format json`, so a JSON line on
-                    # ITS stdout is model-written and must never be unwrapped.
+                    # An agentic claude leaf IS launched with `--output-format json` (issue #47),
+                    # but `_unwrap_agentic_envelope` lifted its answer out at the capture
+                    # boundary, so what reaches here is the model's own text — and a JSON line in
+                    # THAT is model-written and must never be unwrapped, exactly as before.
                     plan = self._usage_reset_wait_plan(
                         proc, usage_waits, entry=entry, node_key=refs.node_key, step=phase,
                         substep=substep, dead_agent_run_id=child_arid,
@@ -10173,6 +10502,21 @@ clean:
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_sandbox_unavailable")
         self._persist_leaf_output(self.orchestration_agent_run_id, proc,
                                   prefix=f"diagnose.{phase}")
+        # The diagnostician is a real billed leaf that produces NO `agent_runs.jsonl` row —
+        # it reuses the orchestration agent's id and never finalizes a child — so the
+        # per-leaf `usage` record has nowhere to land, and `_persist_leaf_output` reuses one
+        # fixed `(arid, prefix)`, so a second escalate of the same phase overwrites the only
+        # other copy. Emitting it puts the cost in the run log (`run_logs/run_*.jsonl`, via
+        # the driver's stdout tee), which is durable and append-only (issue #47).
+        # Through `_leaf_usage_row`, not off `proc.usage`: on a codex `defaults` the raw
+        # `turn.completed` object arrives there with neither a `total_tokens` nor a
+        # `cost_usd`, so reading those keys directly would emit two empty strings — this
+        # issue's own blindness, reproduced on the one launch with no row to fall back to.
+        usage = _leaf_usage_row(proc, entry)
+        self.emit("diagnose_leaf_usage", phase=phase,
+                  total_tokens=usage.get("total_tokens", ""),
+                  cost_usd=usage.get("cost_usd", ""), model=proc.model or "",
+                  usage_status=usage.get("status", ""))
         # A diagnostician the conductor KILLED does not get to route the phase. Its partial
         # stdout can contain a complete-looking directive it wrote before it wedged (the claude
         # path returns that partial text verbatim), and acting on it would spend a phase attempt
