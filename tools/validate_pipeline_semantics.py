@@ -797,6 +797,18 @@ def _is_literal_like_expr(expr: str) -> bool:
     return bool(re.fullmatch(r"[0-9dDeE\.\+\-\*\/\(\)\s,_]+", lowered))
 
 
+# The `problem` model gates below match Fortran's KEYWORD STRUCTURE over raw source, so each
+# masks its input with `fortran_lines.mask_code_lookalikes` first. Without that mask this pattern
+# stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body, every
+# gate that reads the body goes silent, and a legal model passes — fail-open from a comment. The
+# mirror is a commented-out procedure minting a phantom match, which fails closed. Masking
+# preserves offsets, so `call` positions stay comparable with assignment positions.
+_PROBLEM_SUBROUTINE_ENVELOPE = re.compile(
+    r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
+    re.DOTALL,
+)
+
+
 def _validate_problem_model_literal_outputs(
     execution: NodeExecution,
     model_file: Path,
@@ -806,10 +818,8 @@ def _validate_problem_model_literal_outputs(
     if not execution.node_key.startswith("problem/"):
         return
 
-    subroutine_pattern = re.compile(
-        r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-        re.DOTALL,
-    )
+    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
     for match in subroutine_pattern.finditer(lowered):
@@ -914,10 +924,8 @@ def _validate_problem_model_dependency_dataflow(
     if not dep_prefixes:
         return
 
-    subroutine_pattern = re.compile(
-        r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-        re.DOTALL,
-    )
+    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
     for sub_match in subroutine_pattern.finditer(lowered):
@@ -996,10 +1004,8 @@ def _validate_problem_metric_only_scalar_kernel(
         return
     spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
 
-    subroutine_pattern = re.compile(
-        r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-        re.DOTALL,
-    )
+    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
     intent_in_or_inout_array_pattern = re.compile(
         r"intent\s*\(\s*(?:in|inout)\s*\)\s*::\s*[^\n]*\([^)]+\)"
@@ -2188,10 +2194,13 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
     Parentheses appearing inside single/double quoted strings are ignored so a
     format literal such as ``'(a,l1,a)'`` does not prematurely close the group.
 
-    A newline closes any open literal, which is gfortran's own rule (a literal crosses a line
-    break only through a continuation, and the callers that hand over raw multi-line text —
-    `_iter_fortran_calls` — see the source before joining). Without it an apostrophe in a
-    comment, `! it's`, opens a literal nothing closes and every later paren stops counting.
+    A newline closes an open literal unless the line continues it, per
+    `fortran_lines.literal_crosses_line_break` (the shared decision — do not re-derive it here).
+    This matters only for `_iter_fortran_calls`, the one caller that hands over raw multi-line
+    source; the others pass a joined logical line. Both errors were observed silencing the
+    dependency-dataflow gate: without the reset an apostrophe in a comment (`! it's`) opens a
+    literal nothing closes, and with an unconditional reset a legally continued literal
+    (`'rate &` / `&more'`) is cut in half so its closing quote reads as an opening one.
     """
     depth = 0
     in_single = False
@@ -2200,7 +2209,7 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
     n = len(text)
     while i < n:
         ch = text[i]
-        if ch == "\n":
+        if ch == "\n" and not fortran_lines.literal_crosses_line_break(text, i):
             in_single = False
             in_double = False
         elif in_single:

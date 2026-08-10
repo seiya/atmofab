@@ -367,13 +367,16 @@ class SplitTopLevelCommasTests(unittest.TestCase):
     def test_single_item_passes_through(self) -> None:
         self.assertEqual(split_top_level_commas("just one"), ["just one"])
 
-    def test_a_newline_closes_an_open_literal(self) -> None:
-        # gfortran's own rule: a literal crosses a line break only through a continuation. Both
-        # public splitters take one logical line, where this cannot arise; it is the answer for
-        # a caller handing over raw text, where `! it's` would otherwise open a literal nothing
-        # closes and swallow every later separator to end of text.
+    def test_a_newline_closes_an_open_literal_unless_continued(self) -> None:
+        # Defence for a caller handing over raw text. An apostrophe in a comment must not open a
+        # literal that swallows every later separator...
         self.assertEqual(split_top_level_commas("a, & ! it's\n b, c"),
                          ["a", " & ! it's\n b", " c"])
+        # ...but a LEGALLY continued literal must survive the break, or its closing quote reads
+        # as an opening one and the rest of the text is swallowed instead. Both errors were
+        # observed silencing Generate.static; the decision is `literal_crosses_line_break`.
+        self.assertEqual(split_top_level_commas("a, 'x, &\n     &y', b"),
+                         ["a", " 'x, &\n     &y'", " b"])
 
     def test_separator_must_be_one_character_the_brackets_do_not_claim(self) -> None:
         # Raised, not asserted, so `python3 -O` cannot elide it: a two-character separator

@@ -5319,6 +5319,80 @@ end module m
         # The same source with commas inside the literal must still be flagged.
         self.assertTrue(_run("call flux__log('recompute a, mid, now')"))
 
+    def test_a_comment_cannot_truncate_the_subroutine_envelope(self) -> None:
+        # The envelope regex `subroutine ... end subroutine` is DOTALL over raw source, so it
+        # used to stop at the first TEXTUAL `end subroutine`: one comment naming it truncated
+        # the body, `out_vars` came out empty, the gate `continue`d, and a model discarding a
+        # dependency result passed. Fail-open from a comment line. The mirror is a commented-out
+        # procedure minting a phantom match (fail-closed). Both are closed by masking the input
+        # with `fortran_lines.mask_code_lookalikes` before the match.
+        def _dataflow(inserted: str) -> list[str]:
+            source = f"""
+module m
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+{inserted}  call flux__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m
+"""
+            execution = NodeExecution(
+                node_key="problem/shallow_water2d@0.4.0",
+                node_dir=Path("/nonexistent/node"),
+                exec_dir=Path("/nonexistent/exec"),
+                pipeline_dir=Path("/nonexistent/pipeline"),
+            )
+            violations: list[str] = []
+            _validate_problem_model_dependency_dataflow(
+                execution=execution,
+                model_file=Path("shallow_water2d_model.f90"),
+                lowered=source.lower(),
+                dep_spec_ids=["flux"],
+                violations=violations,
+            )
+            return violations
+
+        for inserted in ("",
+                         "  ! end subroutine solve follows\n",
+                         "  write(*,*) 'end subroutine solve'\n"):
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(_dataflow(inserted)), f"violation lost for {inserted!r}")
+
+    def test_a_commented_out_procedure_is_not_a_phantom_match(self) -> None:
+        # The fail-closed mirror of the test above: a conformant model must stay silent even
+        # though a commented-out procedure below it textually matches the envelope.
+        source = """
+module m
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = x * 2.0
+end subroutine solve
+! subroutine legacy_solve(z)
+!   real, intent(out) :: z
+!   z = 1.0
+! end subroutine legacy_solve
+end module m
+"""
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_model_literal_outputs(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        self.assertEqual(violations, [])
+
     def test_split_fortran_names_ignores_commas_inside_a_literal(self) -> None:
         # The helper-level half of the reproducer above.
         self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
@@ -5372,8 +5446,14 @@ end module m
             )
             return violations
 
-        for literal in ("'rate'", "'rate )'", "'rate ('", '"rate )"', "'it''s )'"):
-            self.assertTrue(_run(literal), f"violation lost for {literal}")
+        for literal in ("'rate'", "'rate )'", "'rate ('", '"rate )"', "'it''s )'",
+                        # A LEGALLY continued literal (gfortran -std=f2008 accepts it). Closing
+                        # the literal unconditionally at the newline cut it in half, so the
+                        # closing quote on the resume line read as an opening one and the group
+                        # never closed — the same fail-open by the opposite error.
+                        "'rate &\n     &more'", "'rate (x) &\n     &more'"):
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(_run(literal)), f"violation lost for {literal!r}")
         # True negative: the same unbalanced literal, but the dependency result DOES reach
         # intent(out). Quote awareness must not manufacture a false positive.
         self.assertEqual(_run("'rate )'", tail="y = tmp"), [])
@@ -13795,16 +13875,44 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
             vps._declaration_atoms("subroutine hx__foo(a, b)"), ["subroutine hx__foo(a, b)"])
 
     def test_declaration_atoms_keep_a_comma_inside_a_character_literal(self) -> None:
-        # Consumer-level reproducer for the splitter consolidation: this module used to define
-        # `_split_top_level_commas` twice ~9,500 lines apart, and the later quote-UNAWARE
-        # definition shadowed the quote-aware one, so the initializer's comma read as an entity
-        # separator. That produced a phantom third atom (`character(len=1), parameter :: '`) and
-        # a truncated first one, i.e. a §5.1 comparison against entities the source never
-        # declares. The splitter now lives once, in `tools/fortran_lines`.
+        # Splitter-level reproducer: this module used to define `_split_top_level_commas` twice
+        # ~9,500 lines apart, and the later quote-UNAWARE definition shadowed the quote-aware
+        # one, so the initializer's comma read as an entity separator — a truncated first atom
+        # plus a phantom `character(len=1), parameter :: '`.
         self.assertEqual(
             vps._declaration_atoms("character(len=1), parameter :: sep = ',', tail = 'z'"),
             ["character(len=1), parameter :: sep = ','",
              "character(len=1), parameter :: tail = 'z'"])
+
+    def test_unbalanced_paren_in_an_initializer_does_not_split_the_forms_apart(self) -> None:
+        # The gate-level half, and the one the balanced case above does NOT reach: with a
+        # balanced literal both sides of the §5.1 comparison mis-split identically and cancel.
+        # An UNBALANCED paren inside the literal suppresses the split on the combined form only,
+        # so combined and one-per-line compared UNEQUAL and a legal declaration read as a
+        # signature mismatch — fail-closed. (gfortran -std=f2008 accepts the declaration.)
+        combined = ["character(len=3), parameter :: msg = 'a(b', tail = 'z'"]
+        per_line = ["character(len=3), parameter :: msg = 'a(b'",
+                    "character(len=3), parameter :: tail = 'z'"]
+        self.assertEqual(vps._stanza_atoms(combined), vps._stanza_atoms(per_line))
+
+    def test_unbalanced_paren_in_a_format_literal_still_reaches_the_json_gate(self) -> None:
+        # The fail-open-by-truncation half. A format literal carrying an unbalanced paren — an
+        # apostrophe edit descriptor emitting `)`, or a `)` inside a double-quoted piece — skewed
+        # the quote-blind paren depth and cut the format token short, so nothing was scanned and
+        # the gate went silent on a forbidden descriptor. Both forms compile under -std=f2008.
+        for write_stmt in ("""  write(10, '(a,'')'',l1)') "x", ok""",
+                           """  write(10, '(a,"m/s)",l1)') "x", ok"""):
+            source = f"""program p
+  logical :: ok
+  ok = .true.
+  open(10, file='o.json')
+{write_stmt}
+end program p
+"""
+            violations: list[str] = []
+            vps._validate_runner_json_serialization(Path("runner.f90"), source, violations)
+            self.assertTrue(any("L edit descriptor" in v for v in violations),
+                            f"violation lost for {write_stmt!r}")
 
     def test_combined_and_split_declarations_compare_equal(self) -> None:
         combined = vps._stanza_atoms(["integer, intent(in) :: a, b"])

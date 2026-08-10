@@ -55,9 +55,15 @@ never join anything, while these consumers read the JOINED logical line and comp
 a declared surface. So the logic returns here, restructured from statement level to
 logical-line level, with `;`-splitting and string masking factored out into the caller's hands.
 
-`split_top_level_commas` joined it later, for the same reason and out of the same defect class:
-three copies, one of them shadowed in-module by a weaker twin, disagreeing on whether a comma
-inside a character literal separates.
+`split_top_level_commas`, `literal_crosses_line_break` and `mask_code_lookalikes` joined it
+later, out of the same defect class and found the same way. Four copies of the comma splitter
+existed — one of them shadowed in-module by a weaker twin, one hidden under the name
+`_split_fortran_names` — disagreeing on whether a comma inside a character literal separates;
+a fifth copy of the shape was a quote-blind paren extractor (`_iter_fortran_calls`) duplicating
+its quote-aware twin in the same module; and above all of them a regex decided which text was a
+subroutine body while blind to both comments and literals. Each was found by a different search
+— the name, the shape, the other half of the shape, then the rule that selects the input — and
+every one of them turned a `Generate.static` verdict wrong for source gfortran accepts.
 
 Stdlib only and importing nothing from this package, so every site can depend on it. No
 existing module is a home: the validator may not import `orchestration_runtime`
@@ -237,6 +243,76 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     return logical
 
 
+def literal_crosses_line_break(text: str, newline_index: int) -> bool:
+    """Does a character literal open at ``text[newline_index]``'s line survive the line break?
+
+    Only through a continuation: free-form Fortran lets a literal cross a line break exactly when
+    the line ends with ``&`` (F2008 3.3.2.4), and gfortran diagnoses `Unterminated character
+    constant` otherwise. So the answer is "the last non-blank character before the newline is
+    ``&``". Inside a literal that ``&`` is unambiguous — a `!` there is literal text, so no
+    comment can hide it.
+
+    Every scanner that reads RAW multi-line Fortran needs this decision, and getting it wrong is
+    a defect in whichever direction it errs: resetting unconditionally cuts a continued literal
+    in half, so the closing quote on the resume line reads as an OPENING one and every later
+    paren stops counting; never resetting lets an apostrophe in a comment (``! it's``) open a
+    literal nothing closes, swallowing the rest of the text. Both were observed silencing
+    `Generate.static` — hence one shared implementation rather than a copy per scanner."""
+    j = newline_index - 1
+    while j >= 0 and text[j] in _BLANKS:
+        j -= 1
+    return j >= 0 and text[j] == "&"
+
+
+def mask_code_lookalikes(text: str) -> str:
+    """Blank out every `!` comment and the CONTENTS of every character literal, preserving the
+    length of ``text`` and the position of every surviving character.
+
+    For a rule that matches Fortran's KEYWORD STRUCTURE over RAW multi-line source: neither a
+    comment nor the inside of a literal is code, but a regex over raw text cannot tell. Offsets
+    are preserved so a caller may match on the mask and slice the ORIGINAL, and so two scans of
+    the same source stay comparable by position.
+
+    Quote delimiters survive (a masked literal is still recognisably a literal, so a rule keying
+    on `'...'` still matches); the `!` that opens a comment survives for the same reason. Do NOT
+    feed a masked text to a rule that inspects literal CONTENT — the forbidden-filename scans
+    deliberately catch a quoted `verdict.json`.
+
+    The defect this exists for: `subroutine\\s+(\\w+)\\s*\\((.*?)\\)(.*?)end\\s+subroutine` over raw
+    source stops at the first TEXTUAL `end subroutine`, so a comment mentioning one truncates the
+    body and the `Generate.static` gates that read that body go silent — fail-open from one
+    comment line. The mirror is a commented-out procedure minting a phantom match, which is
+    fail-closed. Both were observed."""
+    out: list[str] = []
+    quote: str | None = None
+    in_comment = False
+    for index, ch in enumerate(text):
+        if ch == "\n":
+            in_comment = False
+            if quote is not None and not literal_crosses_line_break(text, index):
+                quote = None
+            out.append(ch)
+        elif in_comment:
+            out.append(" ")
+        elif quote is not None:
+            # `&` survives inside a literal: a trailing one is the continuation marker, and both
+            # `literal_crosses_line_break` and `fortran_logical_lines` read it off the text they
+            # are given. Blanking it made a masked continued literal look terminated, so its
+            # closing quote read as an opening one — the same defect the mask exists to remove.
+            out.append(ch if ch in (quote, "&") else " ")
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        elif ch == "!":
+            in_comment = True
+            out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _split_top_level(line: str, separator: str, openers: str, closers: str) -> list[str]:
     """Split ``line`` on ``separator`` occurrences that are outside quotes and outside any
     ``openers``/``closers`` group. Shared body of the two public splitters below; the only
@@ -254,13 +330,11 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     doubled-quote escape: ``'it''s'`` leaves the literal at the second quote and re-enters at the
     third, with no character in between, so no separator can be seen outside the literal.
 
-    A newline closes any open literal. Both public splitters take ONE logical line, where that
-    cannot arise — a literal only crosses a line break through a continuation, and joining has
-    already happened by then. It is the compiler's rule for the case that DOES arise: a caller
-    handing over raw multi-line text, where an apostrophe in a comment (``! it's``) would
-    otherwise open a literal nothing ever closes and silently swallow every later separator to
-    end of text. gfortran does not let a literal run past the line either, so following it here
-    is the language's answer and not a patch over the misuse.
+    A newline closes an open literal unless the line continues it (`literal_crosses_line_break`).
+    Both public splitters take ONE logical line, where neither case arises — joining has already
+    happened. It is defence for a caller handing over raw multi-line text, where an apostrophe in
+    a comment (``! it's``) would otherwise open a literal nothing ever closes and swallow every
+    later separator to end of text.
 
     An unbalanced closer clamps the depth at zero rather than driving it negative. Only
     unparseable source gets there, but a stuck-negative depth would silence every later
@@ -275,8 +349,8 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     depth = 0
     in_single = False
     in_double = False
-    for ch in line:
-        if ch == "\n":
+    for index, ch in enumerate(line):
+        if ch == "\n" and not literal_crosses_line_break(line, index):
             in_single = False
             in_double = False
             current.append(ch)
@@ -343,13 +417,12 @@ def split_top_level_commas(text: str) -> list[str]:
       descriptor emitting ``)`` (``'(a,'')'',l1)'``), or a ``)`` inside a double-quoted piece.
       The quote-blind paren depth skews and the format token is cut short, so nothing is
       scanned. gfortran ``-std=f2008`` accepts both forms.
-    * **Fail-closed.** ``_declaration_atoms`` split an initializer literal into a truncated atom
-      plus a phantom one. Reaching the §5.1 comparison needs an unbalanced paren here too:
-      ``:: msg = 'a(b', tail = 'z'`` made the combined and one-per-line forms compare UNEQUAL,
-      so a legal declaration read as a signature mismatch. A balanced literal such as
-      ``:: sep = ',', tail = 'z'`` mis-splits identically on both sides of that comparison and
-      cancels out — measured, and the reason two independent reviews of this change concluded
-      "no gate-level effect" from the balanced case alone.
+    * **Fail-closed.** ``_declaration_atoms`` split a BALANCED initializer literal
+      (``:: sep = ',', tail = 'z'``) into a truncated atom plus a phantom one — identically on
+      both sides of the §5.1 comparison, so it cancelled and reached no gate. An UNBALANCED
+      paren (``:: msg = 'a(b', tail = 'z'``) instead suppressed the split on the combined form
+      alone, so combined and one-per-line compared UNEQUAL and a legal declaration read as a
+      signature mismatch. Probing only the balanced case makes the class look unreachable.
 
     Hence the shared form is the strictest of the copies — quote-aware from the shadowed one,
     bracket-aware and depth-clamped from the survivors."""
