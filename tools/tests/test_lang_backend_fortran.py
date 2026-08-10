@@ -592,5 +592,23 @@ class NeutralVocabularyTest(unittest.TestCase):
         self.assertIn("value: float64", block)
 
 
+class SharedSplitterMigrationTests(unittest.TestCase):
+    """`_split_paren_aware` delegates to `fortran_lines.split_top_level_commas`.
+
+    It used to reach into the validator for a private, quote-BLIND copy. A derived-type
+    component with a character initializer then split inside the literal and the §5.1 lowering
+    failed closed on legal Fortran — `gfortran -std=f2008` accepts the type below."""
+
+    def test_a_comma_in_a_component_initializer_does_not_break_the_lowering(self) -> None:
+        struct = parse_signatures_from_fortran(
+            "type :: cfg_t\n"
+            "  character(len=8) :: sep = ','\n"
+            "  real :: g\n"
+            "end type cfg_t\n"
+        )
+        names = [c["name"] for t in struct["types"] for c in t["components"]]
+        self.assertEqual(names, ["sep", "g"])
+
+
 if __name__ == "__main__":
     unittest.main()

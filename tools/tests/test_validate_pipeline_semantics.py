@@ -5411,6 +5411,38 @@ end module shallow_water2d_model
         self.assertTrue(any("missing dependency module use" in v for v in violations), violations)
         self.assertTrue(any("missing dependency operation call" in v for v in violations), violations)
 
+    def test_metric_only_kernel_gate_is_not_truncated_by_a_comment(self) -> None:
+        # The third gate that masks its input. Its two siblings are pinned above; without this,
+        # deleting its mask leaves the suite green while one trailing comment naming
+        # `end subroutine` truncates the envelope and silences it. Fail-open.
+        source = """module m
+contains
+subroutine metrics(a, e_tot, e_kin, e_pot, mass, enstrophy) ! end subroutine metrics
+  real, intent(in) :: a
+  real, intent(out) :: e_tot, e_kin, e_pot, mass, enstrophy
+  e_tot = a
+  e_kin = a
+  e_pot = a
+  mass = a
+  enstrophy = a
+end subroutine metrics
+end module m
+"""
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_metric_only_scalar_kernel(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        self.assertTrue(any("metric-only scalar kernel" in v for v in violations), violations)
+
     def test_a_commented_out_procedure_is_not_a_phantom_match(self) -> None:
         # The fail-closed mirror of the test above: a conformant model must stay silent even
         # though a commented-out procedure below it textually matches the envelope.
