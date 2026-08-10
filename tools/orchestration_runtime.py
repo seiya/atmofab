@@ -1482,27 +1482,6 @@ _FORTRAN_TYPE_KEYWORDS = (
 )
 
 
-def _split_top_level_commas(text: str) -> list[str]:
-    """Split `text` on commas at paren/bracket depth 0 (nested `(...)`/`[...]` kept intact)."""
-    parts: list[str] = []
-    depth = 0
-    buf = ""
-    for ch in text:
-        if ch in "([":
-            depth += 1
-            buf += ch
-        elif ch in ")]":
-            depth -= 1
-            buf += ch
-        elif ch == "," and depth == 0:
-            parts.append(buf)
-            buf = ""
-        else:
-            buf += ch
-    parts.append(buf)
-    return parts
-
-
 def _rank_of_shape(shape: str) -> int | None:
     """Rank implied by a Fortran array-spec string: depth-aware count of top-level, non-empty
     comma segments. A trailing coarray codimension `[...]` does not add array rank. Returns
@@ -1516,7 +1495,7 @@ def _rank_of_shape(shape: str) -> int | None:
         s = s[: s.rindex("[")].strip()
     if not s:
         return 0
-    segs = [seg.strip() for seg in _split_top_level_commas(s) if seg.strip()]
+    segs = [seg.strip() for seg in fortran_lines.split_top_level_commas(s) if seg.strip()]
     if any(seg == ".." for seg in segs):
         return None
     return len(segs)
@@ -1659,7 +1638,7 @@ def _parse_one_declaration(
     type_text, rest = _consume_type_spec(left.strip(), type_kw)
     intent: str | None = None
     shared_shape: str | None = None
-    for attr in _split_top_level_commas(rest):
+    for attr in fortran_lines.split_top_level_commas(rest):
         al = attr.strip().lower()
         if al.startswith("intent"):
             m = re.search(r"intent\s*\(\s*(in\s*out|inout|in|out)\s*\)", al)
@@ -1674,7 +1653,7 @@ def _parse_one_declaration(
     has_dim_attr = shared_shape is not None
     shared_rank = _rank_of_shape(shared_shape) if has_dim_attr else None
     entities: list[tuple[str, int | None, str | None]] = []
-    for ent in _split_top_level_commas(right):
+    for ent in fortran_lines.split_top_level_commas(right):
         ent = ent.strip()
         if not ent:
             continue

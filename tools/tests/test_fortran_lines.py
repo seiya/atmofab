@@ -11,11 +11,15 @@ reproducers live with their gates in `test_orchestration_runtime` /
 
 from __future__ import annotations
 
+import time
 import unittest
 
 from tools.fortran_lines import (
+    _split_top_level,
     fortran_logical_lines,
+    mask_code_lookalikes,
     split_fortran_statements,
+    split_top_level_commas,
     strip_fortran_comment_tracking_quotes,
 )
 
@@ -317,6 +321,124 @@ class SplitFortranStatementsTests(unittest.TestCase):
     def test_single_statement_passes_through(self) -> None:
         self.assertEqual(split_fortran_statements("just one statement"),
                          ["just one statement"])
+
+
+class SplitTopLevelCommasTests(unittest.TestCase):
+    """`split_top_level_commas`: the consolidation of four copies that disagreed.
+
+    `validate_pipeline_semantics` defined this twice ~9,500 lines apart — the later
+    quote-UNAWARE definition shadowed the earlier quote-aware one — plus a third time under the
+    name `_split_fortran_names`; `orchestration_runtime` held a fourth. The first test is the
+    reproducer at splitter level; the consumer-level ones live with their gates in
+    `test_validate_pipeline_semantics`."""
+
+    def test_comma_inside_a_character_literal_is_not_a_separator(self) -> None:
+        # The reproduced defect: every surviving copy split inside the literal. Both harm
+        # directions were reachable — a phantom identifier suppressing a Generate.static
+        # dependency-dataflow violation (fail-open), and a truncated + phantom §5.1 declaration
+        # atom (fail-closed). The consumer-level reproducers live with their gates in
+        # `test_validate_pipeline_semantics`.
+        self.assertEqual(split_top_level_commas("sep = ','"), ["sep = ','"])
+        self.assertEqual(split_top_level_commas("a, 'x,y', b"), ["a", " 'x,y'", " b"])
+        self.assertEqual(split_top_level_commas('a, "x,y", b'), ["a", ' "x,y"', " b"])
+
+    def test_doubled_quote_escape_keeps_the_literal_closed(self) -> None:
+        # Fortran escapes a quote by doubling it. The plain toggle leaves the literal at the
+        # second quote and re-enters at the third with no character in between, so a comma
+        # after the escape is still inside the literal.
+        self.assertEqual(split_top_level_commas("s = 'it''s, fine', t"),
+                         ["s = 'it''s, fine'", " t"])
+
+    def test_comma_inside_parens_or_brackets_is_not_a_separator(self) -> None:
+        # An entity list: the array-spec comma and the array-constructor / coarray-codimension
+        # comma are part of one entity, not separators between entities.
+        self.assertEqual(split_top_level_commas("a(:), b(2,2), c"),
+                         ["a(:)", " b(2,2)", " c"])
+        self.assertEqual(split_top_level_commas("x = [1,2], y"), ["x = [1,2]", " y"])
+
+    def test_unbalanced_close_does_not_silence_later_separators(self) -> None:
+        # Depth clamps at zero, as in `split_fortran_statements`. Left negative it would stay
+        # negative for the rest of the text and drop every later entity of the list.
+        self.assertEqual(split_top_level_commas("a), b"), ["a)", " b"])
+        self.assertEqual(split_top_level_commas("a], b"), ["a]", " b"])
+
+    def test_parts_are_neither_stripped_nor_filtered(self) -> None:
+        self.assertEqual(split_top_level_commas("  a ,, b "), ["  a ", "", " b "])
+        self.assertEqual(split_top_level_commas(""), [""])
+
+    def test_single_item_passes_through(self) -> None:
+        self.assertEqual(split_top_level_commas("just one"), ["just one"])
+
+    def test_the_continuation_rule_follows_whether_the_text_is_masked(self) -> None:
+        # On RAW text this splitter cannot see comments, so for it a comment-only line HAS opened
+        # a literal; skipping past it to the `&` above would carry that bogus literal onward and
+        # swallow every later separator (`c` here).
+        self.assertEqual(split_top_level_commas("a, &\n! it's here\nb, c"),
+                         ["a", " &\n! it's here\nb", " c"])
+        # On MASKED text the same line is visibly a comment and must be skipped, as
+        # `fortran_logical_lines` skips it — otherwise the literal closes at the wrong newline,
+        # the closing quote on the resume line reads as an opening one, and `b` is swallowed
+        # instead. Both errors lose a list item, and a lost item is a lost violation.
+        masked = mask_code_lookalikes("a, 'x&\n! note\n&y', b")
+        self.assertEqual(len(split_top_level_commas(masked)), 3, masked)
+
+    def test_a_newline_closes_an_open_literal_unless_continued(self) -> None:
+        # Defence for a caller handing over raw text. An apostrophe in a comment must not open a
+        # literal that swallows every later separator...
+        self.assertEqual(split_top_level_commas("a, & ! it's\n b, c"),
+                         ["a", " & ! it's\n b", " c"])
+        # ...but a LEGALLY continued literal must survive the break, or its closing quote reads
+        # as an opening one and the rest of the text is swallowed instead. Both errors were
+        # observed silencing Generate.static; the decision is `continuation_state_after_line`.
+        self.assertEqual(split_top_level_commas("a, 'x, &\n     &y', b"),
+                         ["a", " 'x, &\n     &y'", " b"])
+
+    def test_mask_preserves_length_and_blanks_code_lookalikes(self) -> None:
+        for text in ("  banner = 'x&\n! progress note\n      &end subroutine y'\n",
+                     "  banner = 'x&\n\n      &end subroutine y'\n",
+                     "  banner = 'x&\n      &end subroutine y'\n",
+                     "  a = 1 ! end subroutine\n  b = 'end subroutine'\n",
+                     "  s = 'abc\n  t = 1\n"):
+            masked = mask_code_lookalikes(text)
+            self.assertEqual(len(masked), len(text), text)
+            # The whole point: no `end subroutine` survives from a comment or a literal, in any
+            # of these shapes. A comment or blank line BETWEEN a `&` and its resume does not end
+            # the continuation, so the literal's tail must stay masked across it — masking it as
+            # terminated left the tail live, which is what truncates a subroutine envelope.
+            self.assertNotIn("end subroutine", masked, text)
+
+    def test_mask_is_linear_in_a_run_of_skipped_continuation_lines(self) -> None:
+        # The continuation rule is a FORWARD fold. Stated as a backward search from each newline
+        # it rescanned the whole run of skipped lines every time, so a legal continued literal
+        # spanning a comment block was quadratic: 8,000 comment lines took 4.6 s to mask, and a
+        # deterministic gate that slow on generated source is a defect of its own. Doubling the
+        # run must roughly double the work, not quadruple it.
+        def _mask(n: int) -> float:
+            text = "  banner = 'x&\n" + "! note\n" * n + "      &end'\n"
+            start = time.perf_counter()
+            masked = mask_code_lookalikes(text)
+            self.assertNotIn("end'", masked[masked.index("!"):])
+            return time.perf_counter() - start
+
+        _mask(2000)  # warm the interpreter so the first call is not the slow one
+        small = min(_mask(2000) for _ in range(3))
+        large = min(_mask(8000) for _ in range(3))
+        # 4x the input. Linear predicts ~4x; the quadratic form was ~16x. 8x leaves room for a
+        # noisy machine while still failing the shape this pins.
+        self.assertLess(large, small * 8, f"{small=} {large=} — looks superlinear")
+
+    def test_mask_keeps_delimiters_and_the_continuation_marker(self) -> None:
+        self.assertEqual(mask_code_lookalikes("x = 'rate &\n&more' ! note & tail"),
+                         "x = '     &\n&    ' !            ")
+
+    def test_separator_must_be_one_character_the_brackets_do_not_claim(self) -> None:
+        # Raised, not asserted, so `python3 -O` cannot elide it: a two-character separator
+        # (Fortran's `//`) matches nothing per-character and would return the input unsplit —
+        # a silently dead gate, the shape this consolidation exists to remove.
+        with self.assertRaises(ValueError):
+            _split_top_level("a//b", "//", "(", ")")
+        with self.assertRaises(ValueError):
+            _split_top_level("a(b", "(", "([", ")]")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

@@ -55,6 +55,16 @@ never join anything, while these consumers read the JOINED logical line and comp
 a declared surface. So the logic returns here, restructured from statement level to
 logical-line level, with `;`-splitting and string masking factored out into the caller's hands.
 
+`split_top_level_commas`, `continuation_state_after_line` and `mask_code_lookalikes` joined it
+later, out of the same defect class and found the same way. Four copies of the comma splitter
+existed — one of them shadowed in-module by a weaker twin, one hidden under the name
+`_split_fortran_names` — disagreeing on whether a comma inside a character literal separates;
+a fifth copy of the shape was a quote-blind paren extractor (`_iter_fortran_calls`) duplicating
+its quote-aware twin in the same module; and above all of them a regex decided which text was a
+subroutine body while blind to both comments and literals. Each was found by a different search
+— the name, the shape, the other half of the shape, then the rule that selects the input — and
+every one of them turned a `Generate.static` verdict wrong for source gfortran accepts.
+
 Stdlib only and importing nothing from this package, so every site can depend on it. No
 existing module is a home: the validator may not import `orchestration_runtime`
 (module-boundary rule); `lang_backend_fortran` imports the validator at module level, so
@@ -233,25 +243,166 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     return logical
 
 
-def split_fortran_statements(line: str) -> list[str]:
-    """Split one logical line on top-level ``;`` statement separators.
+def continuation_state_after_line(
+    line: str, previous: bool, skip_comment_lines: bool = True
+) -> bool:
+    """Does a character literal open before ``line``'s end survive that line break?
 
-    Semicolons inside quotes or parentheses are ignored, so a line such as
-    ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements. Parts are returned as-is —
-    neither stripped nor filtered for emptiness — because the callers differ on both (one keeps
-    the ``^\\s*`` its patterns anchor on, another wants stripped statements).
+    Only through a continuation: free-form Fortran lets a literal cross a line break exactly when
+    the line ends with ``&`` (F2008 3.3.2.4), and gfortran diagnoses `Unterminated character
+    constant` otherwise. So the answer is "the last non-blank character of the line is ``&``".
+    Inside a literal that ``&`` is unambiguous — a `!` there is literal text, so no comment can
+    hide it.
 
-    An unbalanced ``)`` clamps the depth at zero rather than driving it negative. Only
-    unparseable source gets there, but a stuck-negative depth would silence every later ``;``
-    on the line, and the harm direction of that is a declaration after a ``;`` going
-    unseen — a published operation reported absent."""
+    An all-blank or comment-only physical line does not contribute to the statement, so it does
+    not end the continuation either: the resume line's leading ``&`` still pairs with the ``&``
+    above the skipped lines (F2008 3.3.2.4, and what `fortran_logical_lines` does). Such a line
+    therefore carries ``previous`` through unchanged. Without that a `! note` between ``'x&`` and
+    ``&y'`` closed the literal, and the closing quote on the resume line then read as an OPENING
+    one, leaking the literal's tail as code.
+
+    ``skip_comment_lines=False`` is for a caller that cannot tell a comment from code — for such
+    a scanner a comment-only line HAS opened the literal it is looking at, and carrying the state
+    past it would keep that bogus literal alive instead of letting the line break close it. Only
+    a comment-aware caller, or one reading already-masked text, may take the skip.
+
+    Every scanner that reads RAW multi-line Fortran needs this decision, and getting it wrong is
+    a defect in whichever direction it errs: closing unconditionally cuts a continued literal in
+    half, so the closing quote on the resume line reads as an OPENING one and every later paren
+    stops counting; never closing lets an apostrophe in a comment (``! it's``) open a literal
+    nothing closes, swallowing the rest of the text. Both were observed silencing
+    `Generate.static` — hence one shared implementation rather than a copy per scanner.
+
+    Stated as a FORWARD fold over lines, not a backward search from a newline. The backward form
+    rescanned the whole run of skipped lines at every newline inside an open literal, which is
+    quadratic in the length of that run: a legal continued literal spanning 8,000 comment lines
+    took 4.6 s to mask, and a deterministic gate that slow on generated source is a defect of its
+    own. Threading the state costs each caller one variable."""
+    stripped = _lstrip_blanks(line)
+    if skip_comment_lines and (not stripped or stripped.startswith("!")):
+        return previous
+    return _rstrip_blanks(line).endswith("&")
+
+
+def mask_code_lookalikes(text: str) -> str:
+    """Blank out every `!` comment and the CONTENTS of every character literal, preserving the
+    length of ``text`` and the position of every surviving character.
+
+    For a rule that matches Fortran's KEYWORD STRUCTURE over RAW multi-line source: neither a
+    comment nor the inside of a literal is code, but a regex over raw text cannot tell. Offsets
+    are preserved so a caller may match on the mask and slice the ORIGINAL, and so two scans of
+    the same source stay comparable by position.
+
+    Quote delimiters survive (a masked literal is still recognisably a literal, so a rule keying
+    on `'...'` still matches); the `!` that opens a comment survives for the same reason. Do NOT
+    feed a masked text to a rule that inspects literal CONTENT — the forbidden-filename scans
+    deliberately catch a quoted `verdict.json`.
+
+    The defect this exists for: `subroutine\\s+(\\w+)\\s*\\((.*?)\\)(.*?)end\\s+subroutine` over raw
+    source stops at the first TEXTUAL `end subroutine`, so a comment mentioning one truncates the
+    body and the `Generate.static` gates that read that body go silent — fail-open from one
+    comment line. The mirror is a commented-out procedure minting a phantom match, which is
+    fail-closed. Both were observed."""
+    out: list[str] = []
+    quote: str | None = None
+    in_comment = False
+    line_start = 0
+    continues = False
+    for index, ch in enumerate(text):
+        if ch == "\n":
+            in_comment = False
+            continues = continuation_state_after_line(text[line_start:index], continues)
+            if quote is not None and not continues:
+                quote = None
+            line_start = index + 1
+            out.append(ch)
+        elif quote is not None and ch == "!" and _is_all_blank(text[line_start:index]):
+            # A comment-only line INSIDE a continued literal is a comment, not literal content
+            # (`continuation_state_after_line` carries the state past it for the same reason).
+            # Masking it as content would leave its text live if it happened to look like code.
+            in_comment = True
+            out.append(ch)
+        elif in_comment:
+            out.append(" ")
+        elif quote is not None:
+            # `&` survives inside a literal: a trailing one is the continuation marker, and both
+            # `continuation_state_after_line` and `fortran_logical_lines` read it off the text
+            # they are given. Blanking it made a masked continued literal look terminated, so its
+            # closing quote read as an opening one — the same defect the mask exists to remove.
+            out.append(ch if ch in (quote, "&") else " ")
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            out.append(ch)
+        elif ch == "!":
+            in_comment = True
+            out.append(ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _split_top_level(line: str, separator: str, openers: str, closers: str) -> list[str]:
+    """Split ``line`` on ``separator`` occurrences that are outside quotes and outside any
+    ``openers``/``closers`` group. Shared body of the two public splitters below; the only
+    differences between them are the separator and which bracket kinds nest.
+
+    Whether a comment-only line ends a continuation depends on whether ``line`` has been through
+    `mask_code_lookalikes`, and that is DERIVED here rather than passed in. On masked text such a
+    line is visible as a comment and must be skipped, as `fortran_logical_lines` skips it; on raw
+    text this scanner cannot see comments at all, so for it the line HAS opened a literal and
+    skipping past it would carry that bogus literal onward. Masked text is a fixed point of the
+    mask, which decides it. The rule was got wrong in four different places while it was a choice
+    a caller had to make correctly — including once by defaulting it and once by freezing it here
+    — so the choice is removed rather than documented. The probe runs only when ``line`` spans
+    lines, which no caller's normal input does.
+
+    ``separator`` must be ONE character, and not one the brackets already claim. The scan is
+    per-character, so a two-character separator such as Fortran's ``//`` concatenation operator
+    would match nothing and return the input unsplit — a silently dead gate, which is the failure
+    shape this consolidation exists to remove, so it is checked rather than left to a future
+    caller to discover. (``_split_top_level_concat`` in the validator is exactly such a caller
+    waiting to happen.) Raised, not asserted, so the guard survives ``python3 -O``, which would
+    otherwise elide it and hand back exactly the unsplit input it exists to prevent.
+
+    Character-literal state is tracked with a plain toggle, which is also correct for Fortran's
+    doubled-quote escape: ``'it''s'`` leaves the literal at the second quote and re-enters at the
+    third, with no character in between, so no separator can be seen outside the literal.
+
+    A newline closes an open literal unless the line continues it
+    (`continuation_state_after_line`).
+    Both public splitters take ONE logical line, where neither case arises — joining has already
+    happened. It is defence for a caller handing over raw multi-line text, where an apostrophe in
+    a comment (``! it's``) would otherwise open a literal nothing ever closes and swallow every
+    later separator to end of text.
+
+    An unbalanced closer clamps the depth at zero rather than driving it negative. Only
+    unparseable source gets there, but a stuck-negative depth would silence every later
+    separator on the line, and the harm direction of that is a fragment going unseen — for
+    ``;``, a declaration after the separator reported absent; for ``,``, an entity of a
+    declaration list dropped."""
+    if len(separator) != 1 or separator in openers + closers:
+        raise ValueError(
+            f"separator must be one character the brackets do not claim, got {separator!r}")
+    skip_comment_lines = "\n" in line and mask_code_lookalikes(line) == line
     parts: list[str] = []
     current: list[str] = []
     depth = 0
     in_single = False
     in_double = False
-    for ch in line:
-        if in_single:
+    line_start = 0
+    continues = False
+    for index, ch in enumerate(line):
+        if ch == "\n":
+            continues = continuation_state_after_line(
+                line[line_start:index], continues, skip_comment_lines=skip_comment_lines)
+            line_start = index + 1
+            if not continues:
+                in_single = False
+                in_double = False
+            current.append(ch)
+        elif in_single:
             current.append(ch)
             if ch == "'":
                 in_single = False
@@ -265,16 +416,65 @@ def split_fortran_statements(line: str) -> list[str]:
         elif ch == '"':
             in_double = True
             current.append(ch)
-        elif ch == "(":
+        elif ch in openers:
             depth += 1
             current.append(ch)
-        elif ch == ")":
+        elif ch in closers:
             depth = max(0, depth - 1)
             current.append(ch)
-        elif ch == ";" and depth == 0:
+        elif ch == separator and depth == 0:
             parts.append("".join(current))
             current = []
         else:
             current.append(ch)
     parts.append("".join(current))
     return parts
+
+
+def split_fortran_statements(line: str) -> list[str]:
+    """Split one logical line on top-level ``;`` statement separators.
+
+    Semicolons inside quotes or parentheses are ignored, so a line such as
+    ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements. Parts are returned as-is —
+    neither stripped nor filtered for emptiness — because the callers differ on both (one keeps
+    the ``^\\s*`` its patterns anchor on, another wants stripped statements)."""
+    return _split_top_level(line, ";", "(", ")")
+
+
+def split_top_level_commas(text: str) -> list[str]:
+    """Split ``text`` on commas that separate top-level items — the one implementation the
+    gates share.
+
+    A comma inside quotes (``sep = ','``), inside parentheses (``b(2,2)``) or inside a bracket
+    group (an array constructor ``[1,2]``, a coarray codimension ``x[*]``) is not a separator,
+    so an entity list ``a(:), b(2,2), c`` splits into ``a(:)`` / ``b(2,2)`` / ``c``. Parts are
+    returned as-is — neither stripped nor filtered for emptiness — because the callers differ on
+    both.
+
+    Four copies of this used to exist — two in the SAME module ~9,500 lines apart, where the
+    later quote-unaware definition shadowed the earlier quote-aware one; one more in
+    ``orchestration_runtime``; and ``validate_pipeline_semantics._split_fortran_names`` under a
+    different name. Every surviving copy was quote-blind, and both harm directions were reachable
+    from valid Fortran:
+
+    * **Fail-open, by phantom item.** ``_split_fortran_names`` made a comma inside a character
+      literal manufacture an extra identifier, and that phantom suppressed a real
+      `Generate.static` dependency-dataflow violation (see that function).
+    * **Fail-open, by truncation.** The runner JSON descriptor gate lost a violation by the
+      other route, whenever a format literal carries an UNBALANCED paren — an apostrophe edit
+      descriptor emitting ``)`` (``'(a,'')'',l1)'``), or a ``)`` inside a double-quoted piece.
+      The quote-blind paren depth skews and the format token is cut short, so nothing is
+      scanned. gfortran ``-std=f2008`` accepts both forms.
+    * **Fail-closed.** ``_declaration_atoms`` split a BALANCED initializer literal
+      (``:: sep = ',', tail = 'z'``) into a truncated atom plus a phantom one — identically on
+      both sides of the §5.1 comparison, so it cancelled and reached no gate. An UNBALANCED
+      paren (``:: msg = 'a(b', tail = 'z'``) instead suppressed the split on the combined form
+      alone, so combined and one-per-line compared UNEQUAL and a legal declaration read as a
+      signature mismatch. Probing only the balanced case makes the class look unreachable.
+
+    Hence the shared form is the strictest of the copies — quote-aware from the shadowed one,
+    bracket-aware and depth-clamped from the survivors.
+
+    Multi-line ``text`` is handled but is not the normal case; `_split_top_level` documents the
+    continuation rule it derives for it."""
+    return _split_top_level(text, ",", "([", ")]")

@@ -35,11 +35,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from tools import fortran_lines
 from tools.validate_pipeline_semantics import (
     _fortran_logical_lines,
     _normalize_fortran_line,
     _parse_interface_stanzas,
-    _split_top_level_commas,
 )
 
 # --- struct vocabulary (documentation) ----------------------------------------------------------
@@ -113,9 +113,10 @@ class SignatureParseError(ValueError):
 # --- parse: Fortran interface block -> structured signatures -------------------------------------
 
 def _split_paren_aware(text: str) -> list[str]:
-    """Split ``text`` on top-level commas (commas inside parentheses are kept). Delegates to the
-    validator's shared splitter so paren handling matches the rest of the pipeline."""
-    return [p for p in _split_top_level_commas(text)]
+    """Split ``text`` on top-level commas (commas inside parentheses, brackets or quotes are
+    kept). Delegates to `fortran_lines`, the shared splitter, so the handling matches the rest of
+    the pipeline."""
+    return [p for p in fortran_lines.split_top_level_commas(text)]
 
 
 def _parse_type_spec(head: str) -> dict[str, Any]:

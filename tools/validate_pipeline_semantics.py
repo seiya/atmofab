@@ -744,18 +744,46 @@ def _agent_role(item: dict[str, Any]) -> str | None:
 
 
 def _split_fortran_names(raw: str) -> list[str]:
-    parts: list[str] = []
-    depth = 0
-    start = 0
-    for idx, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(depth - 1, 0)
-        elif ch == "," and depth == 0:
-            parts.append(raw[start:idx])
-            start = idx + 1
-    parts.append(raw[start:])
+    """The bare identifiers of a comma-separated Fortran list (argument list, `intent(out)`
+    entity list, call actuals) — non-identifier items are dropped, not reported.
+
+    Three `Generate.static` gates consume it: `_validate_problem_model_literal_outputs`,
+    `_validate_problem_model_dependency_dataflow` and `_validate_problem_metric_only_scalar_kernel`.
+    The reproducers below are all at the dataflow gate, which is the one that reads `call`
+    actuals and so sees the widest input.
+
+    Unlike this module's other splitter callers, `raw` arrives as RAW source text: the enclosing
+    regexes are `re.DOTALL` over the whole file, so a continued argument list reaches here with
+    its `&`, its newlines and its `!` comments intact. Comments and literal contents are therefore
+    blanked first, in place, by `fortran_lines.mask_code_lookalikes` — the shared masker, not a
+    private copy — and only then split by `fortran_lines.split_top_level_commas`. The mask
+    answers three defects:
+
+    * **Comments (pre-existing).** A comma inside a comment manufactured a PHANTOM identifier:
+      `call flux__apply(h_in, & ! set a, mid, b` yielded `mid`. The phantom lands in
+      `dep_output_candidates`, meets the backward assignment closure, and the `isdisjoint` test
+      stops firing — a real "dependency output never reaches intent(out)" violation suppressed
+      by the text of a comment. Fail-open.
+    * **Character literals (the same phantom by another route).** `call flux__log('recompute a,
+      mid, now')` yielded `mid`, back when this function hand-rolled a quote-blind fourth copy
+      of the splitter. Fail-open.
+    * **Apostrophes in comments.** Once the split became quote-aware, a `! it's` in a continued
+      argument list opened a literal that no newline closed, swallowing every later item — the
+      dependency-call output lost (fail-open) or a dummy lost out of `arg_names` (fail-closed),
+      depending on which list carried the comment. Masking removes the apostrophe with its
+      comment before the splitter can see it.
+
+    All three are one root cause: raw multi-line text fed to a single-logical-line helper.
+
+    NOT fixed here, deliberately: `&` continuations. The mask blanks in place and does not join,
+    so the first name after each `&` still carries the marker and the newline, is not an
+    identifier, and is dropped — a wrapped argument list loses one name per continuation.
+    Joining first recovers those names and is the obviously correct parse, but it flips three
+    real models in this tree to a FALSE "does not propagate", because the candidate and
+    consumption rules below are over-approximations that the dropped names were masking. Closing
+    that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
+    `TODO.md`, not a parser change."""
+    parts = fortran_lines.split_top_level_commas(fortran_lines.mask_code_lookalikes(raw))
 
     names: list[str] = []
     for token in parts:
@@ -777,6 +805,18 @@ def _is_literal_like_expr(expr: str) -> bool:
     return bool(re.fullmatch(r"[0-9dDeE\.\+\-\*\/\(\)\s,_]+", lowered))
 
 
+# The `problem` model gates below match Fortran's KEYWORD STRUCTURE over raw source, so each
+# masks its input with `fortran_lines.mask_code_lookalikes` first. Without that mask this pattern
+# stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body, every
+# gate that reads the body goes silent, and a legal model passes — fail-open from a comment. The
+# mirror is a commented-out procedure minting a phantom match, which fails closed. Masking
+# preserves offsets, so `call` positions stay comparable with assignment positions.
+_PROBLEM_SUBROUTINE_ENVELOPE = re.compile(
+    r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
+    re.DOTALL,
+)
+
+
 def _validate_problem_model_literal_outputs(
     execution: NodeExecution,
     model_file: Path,
@@ -786,10 +826,8 @@ def _validate_problem_model_literal_outputs(
     if not execution.node_key.startswith("problem/"):
         return
 
-    subroutine_pattern = re.compile(
-        r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-        re.DOTALL,
-    )
+    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
     for match in subroutine_pattern.finditer(lowered):
@@ -894,10 +932,8 @@ def _validate_problem_model_dependency_dataflow(
     if not dep_prefixes:
         return
 
-    subroutine_pattern = re.compile(
-        r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-        re.DOTALL,
-    )
+    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
     for sub_match in subroutine_pattern.finditer(lowered):
@@ -930,9 +966,10 @@ def _validate_problem_model_dependency_dataflow(
             continue
 
         # A dependency RESULT is consumed into output through ASSIGNMENTS (you assign the call's
-        # output argument into your state / an intent(out)). Backward-close over assignment RHS only:
-        # crossing calls here has no sound flow-insensitive form (see the function docstring), and
-        # the assignment closure is the origin/main behavior with no false-positive history.
+        # output argument into your state / an intent(out)). Backward-close over assignment RHS
+        # only: crossing calls here has no sound flow-insensitive form (see the function
+        # docstring) and fails open — `test_discarded_dep_result_flagged_even_when_call_shares_an_input`
+        # pins that it must not be done.
         dependency_sources = set(out_vars)
         changed = True
         while changed:
@@ -976,10 +1013,8 @@ def _validate_problem_metric_only_scalar_kernel(
         return
     spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
 
-    subroutine_pattern = re.compile(
-        r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-        re.DOTALL,
-    )
+    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
     intent_in_or_inout_array_pattern = re.compile(
         r"intent\s*\(\s*(?:in|inout)\s*\)\s*::\s*[^\n]*\([^)]+\)"
@@ -1023,26 +1058,24 @@ def _extract_first_output_block(lowered: str, output_name: str) -> str | None:
 
 
 def _iter_fortran_calls(text: str) -> list[tuple[str, str, int]]:
+    """Every `call name(...)` in ``text`` as (name, actual-argument text, offset).
+
+    The paren matching is `_extract_balanced_parens`, the quote-aware extractor in this module.
+    It used to be hand-rolled here and quote-BLIND, which made a paren inside a character-literal
+    actual move the depth: `call flux__report('rate )', tmp)` closed the group early and truncated
+    the actuals to `'rate `, while `'rate ('` never closed and swallowed the rest of the body.
+    Either way `tmp` stopped being a `dep_output_candidates` member and
+    `_validate_problem_model_dependency_dataflow` went silent on a real
+    "dependency output never reaches intent(out)" violation — fail-open, from the text of a
+    diagnostic string. Same defect class as the comma splitter, on the other half of the shape:
+    duplicated Fortran text scanning, the copy blind to quotes."""
     calls: list[tuple[str, str, int]] = []
     call_start_pattern = re.compile(r"\bcall\s+([a-z_][a-z0-9_]*)\s*\(")
     for match in call_start_pattern.finditer(text):
         name = match.group(1).lower()
         start = match.start()
         open_pos = match.end() - 1
-        depth = 1
-        idx = open_pos + 1
-        while idx < len(text) and depth > 0:
-            ch = text[idx]
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-            idx += 1
-        if depth == 0:
-            args = text[open_pos + 1 : idx - 1]
-        else:
-            args = text[open_pos + 1 :]
-        calls.append((name, args, start))
+        calls.append((name, _extract_balanced_parens(text, open_pos), start))
     return calls
 
 
@@ -2169,15 +2202,34 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
 
     Parentheses appearing inside single/double quoted strings are ignored so a
     format literal such as ``'(a,l1,a)'`` does not prematurely close the group.
+
+    A newline closes an open literal unless the line continues it, per
+    `fortran_lines.continuation_state_after_line` (the shared decision — do not re-derive it
+    here; it is a forward fold, so the state is threaded rather than searched for).
+    This matters only for `_iter_fortran_calls`, the one caller that hands over multi-line text;
+    the others pass a joined logical line. That text is masked before it gets here, so a
+    comment-only line inside a continued literal is visible as one and the skip applies. Both errors were observed silencing the
+    dependency-dataflow gate: without the reset an apostrophe in a comment (`! it's`) opens a
+    literal nothing closes, and with an unconditional reset a legally continued literal
+    (`'rate &` / `&more'`) is cut in half so its closing quote reads as an opening one.
     """
     depth = 0
     in_single = False
     in_double = False
     i = open_index
     n = len(text)
+    line_start = text.rfind("\n", 0, open_index) + 1
+    continues = False
     while i < n:
         ch = text[i]
-        if in_single:
+        if ch == "\n":
+            continues = fortran_lines.continuation_state_after_line(
+                text[line_start:i], continues)
+            line_start = i + 1
+            if not continues:
+                in_single = False
+                in_double = False
+        elif in_single:
             if ch == "'":
                 in_single = False
         elif in_double:
@@ -2195,43 +2247,6 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
                 return text[open_index + 1 : i]
         i += 1
     return text[open_index + 1 :]
-
-
-def _split_top_level_commas(text: str) -> list[str]:
-    """Split on commas that are outside parentheses and quotes."""
-    parts: list[str] = []
-    current: list[str] = []
-    depth = 0
-    in_single = False
-    in_double = False
-    for ch in text:
-        if in_single:
-            current.append(ch)
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            current.append(ch)
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-            current.append(ch)
-        elif ch == '"':
-            in_double = True
-            current.append(ch)
-        elif ch == "(":
-            depth += 1
-            current.append(ch)
-        elif ch == ")":
-            depth -= 1
-            current.append(ch)
-        elif ch == "," and depth == 0:
-            parts.append("".join(current))
-            current = []
-        else:
-            current.append(ch)
-    parts.append("".join(current))
-    return parts
 
 
 def _fortran_literal_value(token: str) -> str:
@@ -2303,7 +2318,7 @@ _NON_JSON_WRITE_UNITS = {"*", "output_unit", "error_unit"}
 
 def _runner_write_unit(io_control: str) -> str | None:
     """Return the unit designator of a ``write`` control list (``*`` / name / id)."""
-    items = [item.strip() for item in _split_top_level_commas(io_control)]
+    items = [item.strip() for item in fortran_lines.split_top_level_commas(io_control)]
     for item in items:
         keyword = _RUNNER_UNIT_KEYWORD.match(item)
         if keyword:
@@ -2321,7 +2336,7 @@ def _runner_write_format_token(io_control: str) -> str | None:
     name); ``None`` when there is no format (e.g. list-directed ``write(u, *)``
     is returned as ``*`` and filtered by the caller).
     """
-    items = [item.strip() for item in _split_top_level_commas(io_control)]
+    items = [item.strip() for item in fortran_lines.split_top_level_commas(io_control)]
     for item in items:
         keyword = _RUNNER_FMT_KEYWORD.match(item)
         if keyword:
@@ -2380,7 +2395,7 @@ def _depth0_assignment_rhs(line: str, name: str) -> str | None:
                 # Stop at the next top-level comma so a sibling initializer in a
                 # multi-name declaration (``:: a = '(...)', b = '(...)'``) is not
                 # folded into this name's RHS.
-                return _split_top_level_commas(line[i + 1 :])[0].strip()
+                return fortran_lines.split_top_level_commas(line[i + 1 :])[0].strip()
         i += 1
     return None
 
@@ -8099,7 +8114,15 @@ def _validate_dependency_operation_on_model_files(
 ) -> None:
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
-        lowered = text.lower()
+        # All three checks below ask whether a KEYWORD appears in code, so neither a comment nor
+        # the inside of a literal may answer. Unmasked, each was satisfiable from prose: a
+        # commented-out `! use dep_model` or `! call dep__op(...)` silenced the two presence
+        # requirements (fail-open — and the `use` one especially, since a model that host-
+        # associates instead of using the module still compiles, which is exactly what this
+        # check exists to catch), while a `write(*,*) 'calls subroutine dep__op'` or a
+        # `! subroutine dep__op is external` raised a redefinition violation against a model that
+        # defines nothing (fail-closed).
+        lowered = fortran_lines.mask_code_lookalikes(text.lower())
 
         for spec_id in dep_spec_ids:
             spec_id_l = spec_id.lower()
@@ -11669,29 +11692,6 @@ def _validate_infrastructure_public_api(
         derived_path, public_api, cs_path, violations)
 
 
-def _split_top_level_commas(text: str) -> list[str]:
-    """Split ``text`` on commas that are not inside ``()`` / ``[]`` — so an entity list
-    ``a(:), b(2,2), c`` splits into ``a(:)`` / ``b(2,2)`` / ``c`` (the comma inside ``(2,2)`` is
-    NOT a separator)."""
-    parts: list[str] = []
-    depth = 0
-    cur: list[str] = []
-    for ch in text:
-        if ch in "([":
-            depth += 1
-            cur.append(ch)
-        elif ch in ")]":
-            depth = max(0, depth - 1)
-            cur.append(ch)
-        elif ch == "," and depth == 0:
-            parts.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    parts.append("".join(cur))
-    return parts
-
-
 def _declaration_atoms(logical_line: str) -> list[str]:
     """Canonicalize a declaration into one line per declared entity, so a combined declarator
     (``integer, intent(in) :: a, b`` — legal Fortran, ABI-identical, and explicitly permitted by
@@ -11703,7 +11703,7 @@ def _declaration_atoms(logical_line: str) -> list[str]:
     if "::" not in logical_line:
         return [logical_line]
     lhs, _sep, rhs = logical_line.partition("::")
-    entities = [e.strip() for e in _split_top_level_commas(rhs)]
+    entities = [e.strip() for e in fortran_lines.split_top_level_commas(rhs)]
     entities = [e for e in entities if e]
     if not entities:
         return [logical_line]
