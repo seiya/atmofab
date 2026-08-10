@@ -783,7 +783,8 @@ def _split_fortran_names(raw: str) -> list[str]:
     consumption rules below are over-approximations that the dropped names were masking. Closing
     that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
     `TODO.md`, not a parser change."""
-    parts = fortran_lines.split_top_level_commas(fortran_lines.mask_code_lookalikes(raw))
+    parts = fortran_lines.split_top_level_commas(
+        fortran_lines.mask_code_lookalikes(raw), masked=True)
 
     names: list[str] = []
     for token in parts:
@@ -2205,8 +2206,9 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
 
     A newline closes an open literal unless the line continues it, per
     `fortran_lines.literal_crosses_line_break` (the shared decision — do not re-derive it here).
-    This matters only for `_iter_fortran_calls`, the one caller that hands over raw multi-line
-    source; the others pass a joined logical line. Both errors were observed silencing the
+    This matters only for `_iter_fortran_calls`, the one caller that hands over multi-line text;
+    the others pass a joined logical line. That text is masked before it gets here, so a
+    comment-only line inside a continued literal is visible as one and the skip applies. Both errors were observed silencing the
     dependency-dataflow gate: without the reset an apostrophe in a comment (`! it's`) opens a
     literal nothing closes, and with an unconditional reset a legally continued literal
     (`'rate &` / `&more'`) is cut in half so its closing quote reads as an opening one.

@@ -368,14 +368,19 @@ class SplitTopLevelCommasTests(unittest.TestCase):
     def test_single_item_passes_through(self) -> None:
         self.assertEqual(split_top_level_commas("just one"), ["just one"])
 
-    def test_a_comment_only_line_still_closes_a_literal_for_a_comment_blind_caller(self) -> None:
-        # `split_top_level_commas` cannot tell a comment from code, so for IT a comment-only line
-        # HAS opened the literal — skipping past that line to the `&` above would carry the bogus
-        # literal onward and swallow every later separator (`c` here). Only a comment-aware
-        # caller, or one reading masked text, may take the skip, which is what the
-        # `skip_comment_lines` argument of `literal_crosses_line_break` selects.
+    def test_the_continuation_rule_follows_whether_the_text_is_masked(self) -> None:
+        # On RAW text this splitter cannot see comments, so for it a comment-only line HAS opened
+        # a literal; skipping past it to the `&` above would carry that bogus literal onward and
+        # swallow every later separator (`c` here).
         self.assertEqual(split_top_level_commas("a, &\n! it's here\nb, c"),
                          ["a", " &\n! it's here\nb", " c"])
+        # On MASKED text the same line is visibly a comment and must be skipped, as
+        # `fortran_logical_lines` skips it — otherwise the literal closes at the wrong newline,
+        # the closing quote on the resume line reads as an opening one, and `b` is swallowed
+        # instead. Both errors lose a list item, and a lost item is a lost violation.
+        masked = mask_code_lookalikes("a, 'x&\n! note\n&y', b")
+        self.assertEqual(len(split_top_level_commas(masked, masked=True)), 3, masked)
+        self.assertEqual(len(split_top_level_commas(masked)), 2, masked)
 
     def test_a_newline_closes_an_open_literal_unless_continued(self) -> None:
         # Defence for a caller handing over raw text. An apostrophe in a comment must not open a
@@ -411,9 +416,9 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         # (Fortran's `//`) matches nothing per-character and would return the input unsplit —
         # a silently dead gate, the shape this consolidation exists to remove.
         with self.assertRaises(ValueError):
-            _split_top_level("a//b", "//", "(", ")")
+            _split_top_level("a//b", "//", "(", ")", skip_comment_lines=False)
         with self.assertRaises(ValueError):
-            _split_top_level("a(b", "(", "([", ")]")
+            _split_top_level("a(b", "(", "([", ")]", skip_comment_lines=False)
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

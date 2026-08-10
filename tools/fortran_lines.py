@@ -340,7 +340,9 @@ def mask_code_lookalikes(text: str) -> str:
     return "".join(out)
 
 
-def _split_top_level(line: str, separator: str, openers: str, closers: str) -> list[str]:
+def _split_top_level(
+    line: str, separator: str, openers: str, closers: str, skip_comment_lines: bool
+) -> list[str]:
     """Split ``line`` on ``separator`` occurrences that are outside quotes and outside any
     ``openers``/``closers`` group. Shared body of the two public splitters below; the only
     differences between them are the separator and which bracket kinds nest.
@@ -378,7 +380,7 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     in_double = False
     for index, ch in enumerate(line):
         if ch == "\n" and not literal_crosses_line_break(
-                line, index, skip_comment_lines=False):
+                line, index, skip_comment_lines=skip_comment_lines):
             in_single = False
             in_double = False
             current.append(ch)
@@ -418,10 +420,10 @@ def split_fortran_statements(line: str) -> list[str]:
     ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements. Parts are returned as-is —
     neither stripped nor filtered for emptiness — because the callers differ on both (one keeps
     the ``^\\s*`` its patterns anchor on, another wants stripped statements)."""
-    return _split_top_level(line, ";", "(", ")")
+    return _split_top_level(line, ";", "(", ")", skip_comment_lines=False)
 
 
-def split_top_level_commas(text: str) -> list[str]:
+def split_top_level_commas(text: str, masked: bool = False) -> list[str]:
     """Split ``text`` on commas that separate top-level items — the one implementation the
     gates share.
 
@@ -453,5 +455,13 @@ def split_top_level_commas(text: str) -> list[str]:
       signature mismatch. Probing only the balanced case makes the class look unreachable.
 
     Hence the shared form is the strictest of the copies — quote-aware from the shadowed one,
-    bracket-aware and depth-clamped from the survivors."""
-    return _split_top_level(text, ",", "([", ")]")
+    bracket-aware and depth-clamped from the survivors.
+
+    Set ``masked=True`` when ``text`` has been through `mask_code_lookalikes`. It selects the
+    continuation rule that goes with the input: on masked text a comment-only line is visible as
+    such and must be SKIPPED when deciding whether a literal survives a line break, exactly as
+    `fortran_logical_lines` skips it; on raw text this splitter cannot see comments at all, so
+    for it such a line HAS opened a literal, and skipping past it would carry that bogus literal
+    onward and swallow every later separator. Getting either wrong loses list items, and a lost
+    item is a lost violation."""
+    return _split_top_level(text, ",", "([", ")]", skip_comment_lines=masked)
