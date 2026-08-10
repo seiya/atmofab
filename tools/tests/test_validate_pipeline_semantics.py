@@ -5323,6 +5323,61 @@ end module m
         # The helper-level half of the reproducer above.
         self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
 
+    def test_split_fortran_names_normalizes_comments_and_continuations(self) -> None:
+        # `_split_fortran_names` receives RAW source text (the enclosing regexes are re.DOTALL),
+        # so a continued list arrives with its `&`, newlines and `!` comments. Two defects:
+        # a comma in a comment manufactured a phantom identifier (`mid`), and — once the split
+        # became quote-aware — an apostrophe in a comment opened a literal no newline closed,
+        # swallowing every later item (`tmp` lost). Both are fail-open at the dataflow gate.
+        self.assertEqual(
+            vps._split_fortran_names("h_in, & ! set a, mid, b\n       h_in, tmp"),
+            ["h_in", "h_in", "tmp"])
+        self.assertEqual(
+            vps._split_fortran_names("h_in, & ! it's the field\n       h_in, tmp"),
+            ["h_in", "h_in", "tmp"])
+
+    def test_paren_in_a_call_string_literal_does_not_suppress_the_violation(self) -> None:
+        # `_iter_fortran_calls` used to hand-roll a quote-BLIND balanced-paren scan, the other
+        # half of the duplicated-Fortran-scanning shape. A paren inside a character-literal
+        # actual moved the depth: `'rate )'` closed the group early and truncated the actuals,
+        # `'rate ('` never closed and swallowed the body. Either way `tmp` stopped being a
+        # dependency-output candidate and the gate went silent. It now delegates to the
+        # quote-aware `_extract_balanced_parens`.
+        def _run(literal: str, tail: str = "y = x") -> list[str]:
+            source = f"""
+module m
+contains
+subroutine step(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: tmp
+  call flux__report({literal}, tmp)
+  {tail}
+end subroutine step
+end module m
+"""
+            execution = NodeExecution(
+                node_key="problem/shallow_water2d@0.4.0",
+                node_dir=Path("/nonexistent/node"),
+                exec_dir=Path("/nonexistent/exec"),
+                pipeline_dir=Path("/nonexistent/pipeline"),
+            )
+            violations: list[str] = []
+            _validate_problem_model_dependency_dataflow(
+                execution=execution,
+                model_file=Path("shallow_water2d_model.f90"),
+                lowered=source.lower(),
+                dep_spec_ids=["flux"],
+                violations=violations,
+            )
+            return violations
+
+        for literal in ("'rate'", "'rate )'", "'rate ('", '"rate )"', "'it''s )'"):
+            self.assertTrue(_run(literal), f"violation lost for {literal}")
+        # True negative: the same unbalanced literal, but the dependency result DOES reach
+        # intent(out). Quote awareness must not manufacture a false positive.
+        self.assertEqual(_run("'rate )'", tail="y = tmp"), [])
+
     # NOTE: the required-semantic-sources reachability check was removed from this gate. Every
     # flow-insensitive approximation of it either false-rejected physically-correct code (a required
     # source reaching intent(out) through a dependency-call chain) or failed open (a source co-passed

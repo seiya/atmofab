@@ -747,15 +747,35 @@ def _split_fortran_names(raw: str) -> list[str]:
     """The bare identifiers of a comma-separated Fortran list (argument list, `intent(out)`
     entity list, call actuals) — non-identifier items are dropped, not reported.
 
-    The split itself is `fortran_lines.split_top_level_commas`, the shared splitter. This used to
-    hand-roll a fourth copy of it that was quote-blind, and a comma inside a character literal
-    then manufactured a PHANTOM identifier: `call dep__log('recompute a, mid, now')` yielded
-    `mid`. In `_validate_problem_model_dependency_dataflow` that phantom lands in
-    `dep_output_candidates`, meets the backward assignment closure, and the `isdisjoint` test
-    stops firing — a real "dependency output never reaches intent(out)" violation suppressed by
-    the text of an unrelated log message. Fail-open, and reachable from a diagnostic string a
-    leaf may legitimately write."""
-    parts = fortran_lines.split_top_level_commas(raw)
+    Three `Generate.static` gates consume it: `_validate_problem_model_literal_outputs`,
+    `_validate_problem_model_dependency_dataflow` and `_validate_problem_metric_only_scalar_kernel`.
+    The reproducers below are all at the dataflow gate, which is the one that reads `call`
+    actuals and so sees the widest input.
+
+    Unlike this module's other splitter callers, `raw` arrives as RAW source text: the enclosing
+    regexes are `re.DOTALL` over the whole file, so a continued argument list reaches here with
+    its `&`, its newlines and its `!` comments intact. Both are therefore normalized away first,
+    by `fortran_lines.fortran_logical_lines` — the shared scanner, not a private copy — and only
+    then split by `fortran_lines.split_top_level_commas`. Each step answers a defect:
+
+    * **Comments (pre-existing).** A comma inside a comment manufactured a PHANTOM identifier:
+      `call flux__apply(h_in, & ! set a, mid, b` yielded `mid`. The phantom lands in
+      `dep_output_candidates`, meets the backward assignment closure, and the `isdisjoint` test
+      stops firing — a real "dependency output never reaches intent(out)" violation suppressed
+      by the text of a comment. Fail-open.
+    * **Character literals (the same phantom by another route).** `call flux__log('recompute a,
+      mid, now')` yielded `mid`, back when this function hand-rolled a quote-blind fourth copy
+      of the splitter. Fail-open.
+    * **Apostrophes in comments.** Once the split became quote-aware, a `! it's` in a continued
+      argument list opened a literal that no newline closed, swallowing every later item — the
+      dependency-call output lost (fail-open) or a dummy lost out of `arg_names` (fail-closed),
+      depending on which list carried the comment. Stripping the comment removes the apostrophe
+      before the splitter can see it; `split_top_level_commas` independently closes an open
+      literal at a newline, as gfortran does.
+
+    All three are one root cause: raw multi-line text fed to a single-logical-line helper."""
+    parts = fortran_lines.split_top_level_commas(
+        " ".join(joined for _lineno, joined in fortran_lines.fortran_logical_lines(raw)))
 
     names: list[str] = []
     for token in parts:
@@ -1023,26 +1043,24 @@ def _extract_first_output_block(lowered: str, output_name: str) -> str | None:
 
 
 def _iter_fortran_calls(text: str) -> list[tuple[str, str, int]]:
+    """Every `call name(...)` in ``text`` as (name, actual-argument text, offset).
+
+    The paren matching is `_extract_balanced_parens`, the quote-aware extractor in this module.
+    It used to be hand-rolled here and quote-BLIND, which made a paren inside a character-literal
+    actual move the depth: `call flux__report('rate )', tmp)` closed the group early and truncated
+    the actuals to `'rate `, while `'rate ('` never closed and swallowed the rest of the body.
+    Either way `tmp` stopped being a `dep_output_candidates` member and
+    `_validate_problem_model_dependency_dataflow` went silent on a real
+    "dependency output never reaches intent(out)" violation — fail-open, from the text of a
+    diagnostic string. Same defect class as the comma splitter, on the other half of the shape:
+    duplicated Fortran text scanning, the copy blind to quotes."""
     calls: list[tuple[str, str, int]] = []
     call_start_pattern = re.compile(r"\bcall\s+([a-z_][a-z0-9_]*)\s*\(")
     for match in call_start_pattern.finditer(text):
         name = match.group(1).lower()
         start = match.start()
         open_pos = match.end() - 1
-        depth = 1
-        idx = open_pos + 1
-        while idx < len(text) and depth > 0:
-            ch = text[idx]
-            if ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-            idx += 1
-        if depth == 0:
-            args = text[open_pos + 1 : idx - 1]
-        else:
-            args = text[open_pos + 1 :]
-        calls.append((name, args, start))
+        calls.append((name, _extract_balanced_parens(text, open_pos), start))
     return calls
 
 
@@ -2169,6 +2187,11 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
 
     Parentheses appearing inside single/double quoted strings are ignored so a
     format literal such as ``'(a,l1,a)'`` does not prematurely close the group.
+
+    A newline closes any open literal, which is gfortran's own rule (a literal crosses a line
+    break only through a continuation, and the callers that hand over raw multi-line text —
+    `_iter_fortran_calls` — see the source before joining). Without it an apostrophe in a
+    comment, `! it's`, opens a literal nothing closes and every later paren stops counting.
     """
     depth = 0
     in_single = False
@@ -2177,7 +2200,10 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
     n = len(text)
     while i < n:
         ch = text[i]
-        if in_single:
+        if ch == "\n":
+            in_single = False
+            in_double = False
+        elif in_single:
             if ch == "'":
                 in_single = False
         elif in_double:

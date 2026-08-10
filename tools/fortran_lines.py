@@ -245,28 +245,42 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     ``separator`` must be ONE character, and not one the brackets already claim. The scan is
     per-character, so a two-character separator such as Fortran's ``//`` concatenation operator
     would match nothing and return the input unsplit — a silently dead gate, which is the failure
-    shape this consolidation exists to remove, so it is asserted rather than left to a future
+    shape this consolidation exists to remove, so it is checked rather than left to a future
     caller to discover. (``_split_top_level_concat`` in the validator is exactly such a caller
-    waiting to happen.)
+    waiting to happen.) Raised, not asserted, so the guard survives ``python3 -O``, which would
+    otherwise elide it and hand back exactly the unsplit input it exists to prevent.
 
     Character-literal state is tracked with a plain toggle, which is also correct for Fortran's
     doubled-quote escape: ``'it''s'`` leaves the literal at the second quote and re-enters at the
     third, with no character in between, so no separator can be seen outside the literal.
+
+    A newline closes any open literal. Both public splitters take ONE logical line, where that
+    cannot arise — a literal only crosses a line break through a continuation, and joining has
+    already happened by then. It is the compiler's rule for the case that DOES arise: a caller
+    handing over raw multi-line text, where an apostrophe in a comment (``! it's``) would
+    otherwise open a literal nothing ever closes and silently swallow every later separator to
+    end of text. gfortran does not let a literal run past the line either, so following it here
+    is the language's answer and not a patch over the misuse.
 
     An unbalanced closer clamps the depth at zero rather than driving it negative. Only
     unparseable source gets there, but a stuck-negative depth would silence every later
     separator on the line, and the harm direction of that is a fragment going unseen — for
     ``;``, a declaration after the separator reported absent; for ``,``, an entity of a
     declaration list dropped."""
-    assert len(separator) == 1 and separator not in openers + closers, (
-        f"separator must be one character the brackets do not claim, got {separator!r}")
+    if len(separator) != 1 or separator in openers + closers:
+        raise ValueError(
+            f"separator must be one character the brackets do not claim, got {separator!r}")
     parts: list[str] = []
     current: list[str] = []
     depth = 0
     in_single = False
     in_double = False
     for ch in line:
-        if in_single:
+        if ch == "\n":
+            in_single = False
+            in_double = False
+            current.append(ch)
+        elif in_single:
             current.append(ch)
             if ch == "'":
                 in_single = False
@@ -321,16 +335,21 @@ def split_top_level_commas(text: str) -> list[str]:
     different name. Every surviving copy was quote-blind, and both harm directions were reachable
     from valid Fortran:
 
-    * **Fail-open.** ``_split_fortran_names`` manufactured a phantom identifier out of a comma
-      inside a character literal, and that phantom suppressed a real `Generate.static`
-      dependency-dataflow violation (see that function). The runner JSON descriptor gate lost a
-      violation the same way whenever a format literal carries an UNBALANCED paren — an
-      apostrophe edit descriptor emitting ``)`` (``'(a,'')'',l1)'``), or a ``)`` inside a
-      double-quoted piece — which skews the quote-blind paren depth and truncates the format
-      token. gfortran ``-std=f2008`` accepts both forms.
-    * **Fail-closed.** ``_declaration_atoms`` split ``:: sep = ',', tail = 'z'`` inside the
-      literal into a truncated atom plus a phantom one, so a §5.1 signature comparison ran
-      against entities the source never declares.
+    * **Fail-open, by phantom item.** ``_split_fortran_names`` made a comma inside a character
+      literal manufacture an extra identifier, and that phantom suppressed a real
+      `Generate.static` dependency-dataflow violation (see that function).
+    * **Fail-open, by truncation.** The runner JSON descriptor gate lost a violation by the
+      other route, whenever a format literal carries an UNBALANCED paren — an apostrophe edit
+      descriptor emitting ``)`` (``'(a,'')'',l1)'``), or a ``)`` inside a double-quoted piece.
+      The quote-blind paren depth skews and the format token is cut short, so nothing is
+      scanned. gfortran ``-std=f2008`` accepts both forms.
+    * **Fail-closed.** ``_declaration_atoms`` split an initializer literal into a truncated atom
+      plus a phantom one. Reaching the §5.1 comparison needs an unbalanced paren here too:
+      ``:: msg = 'a(b', tail = 'z'`` made the combined and one-per-line forms compare UNEQUAL,
+      so a legal declaration read as a signature mismatch. A balanced literal such as
+      ``:: sep = ',', tail = 'z'`` mis-splits identically on both sides of that comparison and
+      cancels out — measured, and the reason two independent reviews of this change concluded
+      "no gate-level effect" from the balanced case alone.
 
     Hence the shared form is the strictest of the copies — quote-aware from the shadowed one,
     bracket-aware and depth-clamped from the survivors."""

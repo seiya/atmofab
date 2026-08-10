@@ -14,6 +14,7 @@ from __future__ import annotations
 import unittest
 
 from tools.fortran_lines import (
+    _split_top_level,
     fortran_logical_lines,
     split_fortran_statements,
     split_top_level_commas,
@@ -321,12 +322,13 @@ class SplitFortranStatementsTests(unittest.TestCase):
 
 
 class SplitTopLevelCommasTests(unittest.TestCase):
-    """`split_top_level_commas`: the consolidation of three copies that disagreed.
+    """`split_top_level_commas`: the consolidation of four copies that disagreed.
 
-    Before the consolidation `validate_pipeline_semantics` defined this twice ~9,500 lines
-    apart and the later quote-UNAWARE definition shadowed the earlier quote-aware one, so the
-    runner static gates ran with the wrong semantics. The first test is that reproducer at
-    splitter level."""
+    `validate_pipeline_semantics` defined this twice ~9,500 lines apart — the later
+    quote-UNAWARE definition shadowed the earlier quote-aware one — plus a third time under the
+    name `_split_fortran_names`; `orchestration_runtime` held a fourth. The first test is the
+    reproducer at splitter level; the consumer-level ones live with their gates in
+    `test_validate_pipeline_semantics`."""
 
     def test_comma_inside_a_character_literal_is_not_a_separator(self) -> None:
         # The reproduced defect: every surviving copy split inside the literal. Both harm
@@ -364,6 +366,23 @@ class SplitTopLevelCommasTests(unittest.TestCase):
 
     def test_single_item_passes_through(self) -> None:
         self.assertEqual(split_top_level_commas("just one"), ["just one"])
+
+    def test_a_newline_closes_an_open_literal(self) -> None:
+        # gfortran's own rule: a literal crosses a line break only through a continuation. Both
+        # public splitters take one logical line, where this cannot arise; it is the answer for
+        # a caller handing over raw text, where `! it's` would otherwise open a literal nothing
+        # closes and swallow every later separator to end of text.
+        self.assertEqual(split_top_level_commas("a, & ! it's\n b, c"),
+                         ["a", " & ! it's\n b", " c"])
+
+    def test_separator_must_be_one_character_the_brackets_do_not_claim(self) -> None:
+        # Raised, not asserted, so `python3 -O` cannot elide it: a two-character separator
+        # (Fortran's `//`) matches nothing per-character and would return the input unsplit —
+        # a silently dead gate, the shape this consolidation exists to remove.
+        with self.assertRaises(ValueError):
+            _split_top_level("a//b", "//", "(", ")")
+        with self.assertRaises(ValueError):
+            _split_top_level("a(b", "(", "([", ")]")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation
