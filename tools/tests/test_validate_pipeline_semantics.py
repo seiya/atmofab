@@ -5275,6 +5275,54 @@ end module shallow_water2d_model
             violations,
         )
 
+    def test_comma_in_a_call_string_literal_does_not_suppress_the_violation(self) -> None:
+        # Fail-open reproducer for the splitter consolidation. `_split_fortran_names` was a
+        # fourth, quote-blind copy of the top-level-comma splitter, so a comma inside a
+        # character literal actual manufactured a PHANTOM identifier: `'recompute a, mid, now'`
+        # yielded `mid`. `mid` then entered dep_output_candidates, met the backward assignment
+        # closure from h_out, and the isdisjoint test stopped firing — a real violation
+        # suppressed by the text of an unrelated log message. Only the literal differs between
+        # the two sources below, so the assertion isolates the splitter.
+        def _run(log_call: str) -> list[str]:
+            source = f"""
+module m
+contains
+subroutine advance(h_in, h_out)
+  real, intent(in) :: h_in(:)
+  real, intent(out) :: h_out(:)
+  real :: tmp(size(h_in)), mid(size(h_in))
+  {log_call}
+  call flux__apply(h_in, tmp)
+  mid = h_in
+  h_out = mid
+end subroutine advance
+end module m
+"""
+            execution = NodeExecution(
+                node_key="problem/shallow_water2d@0.4.0",
+                node_dir=Path("/nonexistent/node"),
+                exec_dir=Path("/nonexistent/exec"),
+                pipeline_dir=Path("/nonexistent/pipeline"),
+            )
+            violations: list[str] = []
+            _validate_problem_model_dependency_dataflow(
+                execution=execution,
+                model_file=Path("shallow_water2d_model.f90"),
+                lowered=source.lower(),
+                dep_spec_ids=["flux"],
+                violations=violations,
+            )
+            return violations
+
+        # Control: `tmp` is a dependency-call output that never reaches h_out.
+        self.assertTrue(_run("call flux__log('recompute mid now')"))
+        # The same source with commas inside the literal must still be flagged.
+        self.assertTrue(_run("call flux__log('recompute a, mid, now')"))
+
+    def test_split_fortran_names_ignores_commas_inside_a_literal(self) -> None:
+        # The helper-level half of the reproducer above.
+        self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
+
     # NOTE: the required-semantic-sources reachability check was removed from this gate. Every
     # flow-insensitive approximation of it either false-rejected physically-correct code (a required
     # source reaching intent(out) through a dependency-call chain) or failed open (a source co-passed

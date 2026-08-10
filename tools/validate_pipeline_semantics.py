@@ -744,18 +744,18 @@ def _agent_role(item: dict[str, Any]) -> str | None:
 
 
 def _split_fortran_names(raw: str) -> list[str]:
-    parts: list[str] = []
-    depth = 0
-    start = 0
-    for idx, ch in enumerate(raw):
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth = max(depth - 1, 0)
-        elif ch == "," and depth == 0:
-            parts.append(raw[start:idx])
-            start = idx + 1
-    parts.append(raw[start:])
+    """The bare identifiers of a comma-separated Fortran list (argument list, `intent(out)`
+    entity list, call actuals) — non-identifier items are dropped, not reported.
+
+    The split itself is `fortran_lines.split_top_level_commas`, the shared splitter. This used to
+    hand-roll a fourth copy of it that was quote-blind, and a comma inside a character literal
+    then manufactured a PHANTOM identifier: `call dep__log('recompute a, mid, now')` yielded
+    `mid`. In `_validate_problem_model_dependency_dataflow` that phantom lands in
+    `dep_output_candidates`, meets the backward assignment closure, and the `isdisjoint` test
+    stops firing — a real "dependency output never reaches intent(out)" violation suppressed by
+    the text of an unrelated log message. Fail-open, and reachable from a diagnostic string a
+    leaf may legitimately write."""
+    parts = fortran_lines.split_top_level_commas(raw)
 
     names: list[str] = []
     for token in parts:

@@ -329,9 +329,11 @@ class SplitTopLevelCommasTests(unittest.TestCase):
     splitter level."""
 
     def test_comma_inside_a_character_literal_is_not_a_separator(self) -> None:
-        # The reproduced defect: the shadowing definition split inside the literal, so the
-        # runner JSON descriptor gate read a truncated right-hand side (`'`) and the check it
-        # exists to make silently passed — the fail-open direction.
+        # The reproduced defect: every surviving copy split inside the literal. Both harm
+        # directions were reachable — a phantom identifier suppressing a Generate.static
+        # dependency-dataflow violation (fail-open), and a truncated + phantom §5.1 declaration
+        # atom (fail-closed). The consumer-level reproducers live with their gates in
+        # `test_validate_pipeline_semantics`.
         self.assertEqual(split_top_level_commas("sep = ','"), ["sep = ','"])
         self.assertEqual(split_top_level_commas("a, 'x,y', b"), ["a", " 'x,y'", " b"])
         self.assertEqual(split_top_level_commas('a, "x,y", b'), ["a", ' "x,y"', " b"])

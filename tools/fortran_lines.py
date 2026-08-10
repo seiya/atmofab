@@ -242,6 +242,13 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     ``openers``/``closers`` group. Shared body of the two public splitters below; the only
     differences between them are the separator and which bracket kinds nest.
 
+    ``separator`` must be ONE character, and not one the brackets already claim. The scan is
+    per-character, so a two-character separator such as Fortran's ``//`` concatenation operator
+    would match nothing and return the input unsplit — a silently dead gate, which is the failure
+    shape this consolidation exists to remove, so it is asserted rather than left to a future
+    caller to discover. (``_split_top_level_concat`` in the validator is exactly such a caller
+    waiting to happen.)
+
     Character-literal state is tracked with a plain toggle, which is also correct for Fortran's
     doubled-quote escape: ``'it''s'`` leaves the literal at the second quote and re-enters at the
     third, with no character in between, so no separator can be seen outside the literal.
@@ -251,6 +258,8 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     separator on the line, and the harm direction of that is a fragment going unseen — for
     ``;``, a declaration after the separator reported absent; for ``,``, an entity of a
     declaration list dropped."""
+    assert len(separator) == 1 and separator not in openers + closers, (
+        f"separator must be one character the brackets do not claim, got {separator!r}")
     parts: list[str] = []
     current: list[str] = []
     depth = 0
@@ -306,10 +315,23 @@ def split_top_level_commas(text: str) -> list[str]:
     returned as-is — neither stripped nor filtered for emptiness — because the callers differ on
     both.
 
-    Three copies of this used to exist (two of them in the SAME module ~9,500 lines apart, where
-    the later quote-unaware definition shadowed the earlier quote-aware one), and the surviving
-    definition split ``sep = ','`` inside the literal: the runner's JSON descriptor gate then
-    read a broken right-hand side and silently passed the source it exists to reject. That is the
-    fail-open direction, which is why the shared form is the strictest of the three — quote-aware
-    from one copy, bracket-aware and depth-clamped from the others."""
+    Four copies of this used to exist — two in the SAME module ~9,500 lines apart, where the
+    later quote-unaware definition shadowed the earlier quote-aware one; one more in
+    ``orchestration_runtime``; and ``validate_pipeline_semantics._split_fortran_names`` under a
+    different name. Every surviving copy was quote-blind, and both harm directions were reachable
+    from valid Fortran:
+
+    * **Fail-open.** ``_split_fortran_names`` manufactured a phantom identifier out of a comma
+      inside a character literal, and that phantom suppressed a real `Generate.static`
+      dependency-dataflow violation (see that function). The runner JSON descriptor gate lost a
+      violation the same way whenever a format literal carries an UNBALANCED paren — an
+      apostrophe edit descriptor emitting ``)`` (``'(a,'')'',l1)'``), or a ``)`` inside a
+      double-quoted piece — which skews the quote-blind paren depth and truncates the format
+      token. gfortran ``-std=f2008`` accepts both forms.
+    * **Fail-closed.** ``_declaration_atoms`` split ``:: sep = ',', tail = 'z'`` inside the
+      literal into a truncated atom plus a phantom one, so a §5.1 signature comparison ran
+      against entities the source never declares.
+
+    Hence the shared form is the strictest of the copies — quote-aware from the shadowed one,
+    bracket-aware and depth-clamped from the survivors."""
     return _split_top_level(text, ",", "([", ")]")
