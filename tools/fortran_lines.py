@@ -55,7 +55,7 @@ never join anything, while these consumers read the JOINED logical line and comp
 a declared surface. So the logic returns here, restructured from statement level to
 logical-line level, with `;`-splitting and string masking factored out into the caller's hands.
 
-`split_top_level_commas`, `literal_crosses_line_break` and `mask_code_lookalikes` joined it
+`split_top_level_commas`, `continuation_state_after_line` and `mask_code_lookalikes` joined it
 later, out of the same defect class and found the same way. Four copies of the comma splitter
 existed — one of them shadowed in-module by a weaker twin, one hidden under the name
 `_split_fortran_names` — disagreeing on whether a comma inside a character literal separates;
@@ -243,45 +243,45 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     return logical
 
 
-def literal_crosses_line_break(
-    text: str, newline_index: int, skip_comment_lines: bool = True
+def continuation_state_after_line(
+    line: str, previous: bool, skip_comment_lines: bool = True
 ) -> bool:
-    """Does a character literal open at ``text[newline_index]``'s line survive the line break?
+    """Does a character literal open before ``line``'s end survive that line break?
 
     Only through a continuation: free-form Fortran lets a literal cross a line break exactly when
     the line ends with ``&`` (F2008 3.3.2.4), and gfortran diagnoses `Unterminated character
-    constant` otherwise. So the answer is "the last non-blank character before the newline is
-    ``&``". Inside a literal that ``&`` is unambiguous — a `!` there is literal text, so no
-    comment can hide it.
+    constant` otherwise. So the answer is "the last non-blank character of the line is ``&``".
+    Inside a literal that ``&`` is unambiguous — a `!` there is literal text, so no comment can
+    hide it.
+
+    An all-blank or comment-only physical line does not contribute to the statement, so it does
+    not end the continuation either: the resume line's leading ``&`` still pairs with the ``&``
+    above the skipped lines (F2008 3.3.2.4, and what `fortran_logical_lines` does). Such a line
+    therefore carries ``previous`` through unchanged. Without that a `! note` between ``'x&`` and
+    ``&y'`` closed the literal, and the closing quote on the resume line then read as an OPENING
+    one, leaking the literal's tail as code.
+
+    ``skip_comment_lines=False`` is for a caller that cannot tell a comment from code — for such
+    a scanner a comment-only line HAS opened the literal it is looking at, and carrying the state
+    past it would keep that bogus literal alive instead of letting the line break close it. Only
+    a comment-aware caller, or one reading already-masked text, may take the skip.
 
     Every scanner that reads RAW multi-line Fortran needs this decision, and getting it wrong is
-    a defect in whichever direction it errs: resetting unconditionally cuts a continued literal
-    in half, so the closing quote on the resume line reads as an OPENING one and every later
-    paren stops counting; never resetting lets an apostrophe in a comment (``! it's``) open a
-    literal nothing closes, swallowing the rest of the text. Both were observed silencing
-    `Generate.static` — hence one shared implementation rather than a copy per scanner."""
-    end = newline_index
-    while True:
-        line_start = text.rfind("\n", 0, end) + 1
-        line = text[line_start:end]
-        stripped = _lstrip_blanks(line)
-        if stripped and not stripped.startswith("!"):
-            return _rstrip_blanks(line).endswith("&")
-        # An all-blank or comment-only physical line does not contribute to the statement, so it
-        # does not end the continuation either — the resume line's leading `&` still pairs with
-        # the `&` above the skipped lines (F2008 3.3.2.4, and what `fortran_logical_lines` does).
-        # Without this skip a `! note` between `'x&` and `&y'` closed the literal, and the
-        # closing quote on the resume line then read as an OPENING one, leaking the literal's
-        # tail as code.
-        #
-        # `skip_comment_lines=False` is for a caller that cannot tell a comment from code — for
-        # such a scanner a comment-only line HAS opened the literal it is looking at, and
-        # skipping past it would carry that bogus literal onward instead of letting the line
-        # break close it. Only a comment-aware caller, or one reading already-masked text, may
-        # take the skip.
-        if not skip_comment_lines or line_start == 0:
-            return False
-        end = line_start - 1
+    a defect in whichever direction it errs: closing unconditionally cuts a continued literal in
+    half, so the closing quote on the resume line reads as an OPENING one and every later paren
+    stops counting; never closing lets an apostrophe in a comment (``! it's``) open a literal
+    nothing closes, swallowing the rest of the text. Both were observed silencing
+    `Generate.static` — hence one shared implementation rather than a copy per scanner.
+
+    Stated as a FORWARD fold over lines, not a backward search from a newline. The backward form
+    rescanned the whole run of skipped lines at every newline inside an open literal, which is
+    quadratic in the length of that run: a legal continued literal spanning 8,000 comment lines
+    took 4.6 s to mask, and a deterministic gate that slow on generated source is a defect of its
+    own. Threading the state costs each caller one variable."""
+    stripped = _lstrip_blanks(line)
+    if skip_comment_lines and (not stripped or stripped.startswith("!")):
+        return previous
+    return _rstrip_blanks(line).endswith("&")
 
 
 def mask_code_lookalikes(text: str) -> str:
@@ -306,25 +306,28 @@ def mask_code_lookalikes(text: str) -> str:
     out: list[str] = []
     quote: str | None = None
     in_comment = False
+    line_start = 0
+    continues = False
     for index, ch in enumerate(text):
         if ch == "\n":
             in_comment = False
-            if quote is not None and not literal_crosses_line_break(text, index):
+            continues = continuation_state_after_line(text[line_start:index], continues)
+            if quote is not None and not continues:
                 quote = None
+            line_start = index + 1
             out.append(ch)
-        elif quote is not None and ch == "!" and _is_all_blank(
-                text[text.rfind("\n", 0, index) + 1 : index]):
+        elif quote is not None and ch == "!" and _is_all_blank(text[line_start:index]):
             # A comment-only line INSIDE a continued literal is a comment, not literal content
-            # (`literal_crosses_line_break` skips it for the same reason). Masking it as content
-            # would leave its text live if it happened to look like code.
+            # (`continuation_state_after_line` carries the state past it for the same reason).
+            # Masking it as content would leave its text live if it happened to look like code.
             in_comment = True
             out.append(ch)
         elif in_comment:
             out.append(" ")
         elif quote is not None:
             # `&` survives inside a literal: a trailing one is the continuation marker, and both
-            # `literal_crosses_line_break` and `fortran_logical_lines` read it off the text they
-            # are given. Blanking it made a masked continued literal look terminated, so its
+            # `continuation_state_after_line` and `fortran_logical_lines` read it off the text
+            # they are given. Blanking it made a masked continued literal look terminated, so its
             # closing quote read as an opening one — the same defect the mask exists to remove.
             out.append(ch if ch in (quote, "&") else " ")
             if ch == quote:
@@ -367,7 +370,8 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     doubled-quote escape: ``'it''s'`` leaves the literal at the second quote and re-enters at the
     third, with no character in between, so no separator can be seen outside the literal.
 
-    A newline closes an open literal unless the line continues it (`literal_crosses_line_break`).
+    A newline closes an open literal unless the line continues it
+    (`continuation_state_after_line`).
     Both public splitters take ONE logical line, where neither case arises — joining has already
     happened. It is defence for a caller handing over raw multi-line text, where an apostrophe in
     a comment (``! it's``) would otherwise open a literal nothing ever closes and swallow every
@@ -387,11 +391,16 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     depth = 0
     in_single = False
     in_double = False
+    line_start = 0
+    continues = False
     for index, ch in enumerate(line):
-        if ch == "\n" and not literal_crosses_line_break(
-                line, index, skip_comment_lines=skip_comment_lines):
-            in_single = False
-            in_double = False
+        if ch == "\n":
+            continues = continuation_state_after_line(
+                line[line_start:index], continues, skip_comment_lines=skip_comment_lines)
+            line_start = index + 1
+            if not continues:
+                in_single = False
+                in_double = False
             current.append(ch)
         elif in_single:
             current.append(ch)

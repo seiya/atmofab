@@ -2204,7 +2204,8 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
     format literal such as ``'(a,l1,a)'`` does not prematurely close the group.
 
     A newline closes an open literal unless the line continues it, per
-    `fortran_lines.literal_crosses_line_break` (the shared decision — do not re-derive it here).
+    `fortran_lines.continuation_state_after_line` (the shared decision — do not re-derive it
+    here; it is a forward fold, so the state is threaded rather than searched for).
     This matters only for `_iter_fortran_calls`, the one caller that hands over multi-line text;
     the others pass a joined logical line. That text is masked before it gets here, so a
     comment-only line inside a continued literal is visible as one and the skip applies. Both errors were observed silencing the
@@ -2217,11 +2218,17 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
     in_double = False
     i = open_index
     n = len(text)
+    line_start = text.rfind("\n", 0, open_index) + 1
+    continues = False
     while i < n:
         ch = text[i]
-        if ch == "\n" and not fortran_lines.literal_crosses_line_break(text, i):
-            in_single = False
-            in_double = False
+        if ch == "\n":
+            continues = fortran_lines.continuation_state_after_line(
+                text[line_start:i], continues)
+            line_start = i + 1
+            if not continues:
+                in_single = False
+                in_double = False
         elif in_single:
             if ch == "'":
                 in_single = False

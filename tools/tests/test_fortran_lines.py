@@ -11,6 +11,7 @@ reproducers live with their gates in `test_orchestration_runtime` /
 
 from __future__ import annotations
 
+import time
 import unittest
 
 from tools.fortran_lines import (
@@ -388,7 +389,7 @@ class SplitTopLevelCommasTests(unittest.TestCase):
                          ["a", " & ! it's\n b", " c"])
         # ...but a LEGALLY continued literal must survive the break, or its closing quote reads
         # as an opening one and the rest of the text is swallowed instead. Both errors were
-        # observed silencing Generate.static; the decision is `literal_crosses_line_break`.
+        # observed silencing Generate.static; the decision is `continuation_state_after_line`.
         self.assertEqual(split_top_level_commas("a, 'x, &\n     &y', b"),
                          ["a", " 'x, &\n     &y'", " b"])
 
@@ -405,6 +406,26 @@ class SplitTopLevelCommasTests(unittest.TestCase):
             # the continuation, so the literal's tail must stay masked across it — masking it as
             # terminated left the tail live, which is what truncates a subroutine envelope.
             self.assertNotIn("end subroutine", masked, text)
+
+    def test_mask_is_linear_in_a_run_of_skipped_continuation_lines(self) -> None:
+        # The continuation rule is a FORWARD fold. Stated as a backward search from each newline
+        # it rescanned the whole run of skipped lines every time, so a legal continued literal
+        # spanning a comment block was quadratic: 8,000 comment lines took 4.6 s to mask, and a
+        # deterministic gate that slow on generated source is a defect of its own. Doubling the
+        # run must roughly double the work, not quadruple it.
+        def _mask(n: int) -> float:
+            text = "  banner = 'x&\n" + "! note\n" * n + "      &end'\n"
+            start = time.perf_counter()
+            masked = mask_code_lookalikes(text)
+            self.assertNotIn("end'", masked[masked.index("!"):])
+            return time.perf_counter() - start
+
+        _mask(2000)  # warm the interpreter so the first call is not the slow one
+        small = min(_mask(2000) for _ in range(3))
+        large = min(_mask(8000) for _ in range(3))
+        # 4x the input. Linear predicts ~4x; the quadratic form was ~16x. 8x leaves room for a
+        # noisy machine while still failing the shape this pins.
+        self.assertLess(large, small * 8, f"{small=} {large=} — looks superlinear")
 
     def test_mask_keeps_delimiters_and_the_continuation_marker(self) -> None:
         self.assertEqual(mask_code_lookalikes("x = 'rate &\n&more' ! note & tail"),
