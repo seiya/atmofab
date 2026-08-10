@@ -368,6 +368,15 @@ class SplitTopLevelCommasTests(unittest.TestCase):
     def test_single_item_passes_through(self) -> None:
         self.assertEqual(split_top_level_commas("just one"), ["just one"])
 
+    def test_a_comment_only_line_still_closes_a_literal_for_a_comment_blind_caller(self) -> None:
+        # `split_top_level_commas` cannot tell a comment from code, so for IT a comment-only line
+        # HAS opened the literal — skipping past that line to the `&` above would carry the bogus
+        # literal onward and swallow every later separator (`c` here). Only a comment-aware
+        # caller, or one reading masked text, may take the skip, which is what the
+        # `skip_comment_lines` argument of `literal_crosses_line_break` selects.
+        self.assertEqual(split_top_level_commas("a, &\n! it's here\nb, c"),
+                         ["a", " &\n! it's here\nb", " c"])
+
     def test_a_newline_closes_an_open_literal_unless_continued(self) -> None:
         # Defence for a caller handing over raw text. An apostrophe in a comment must not open a
         # literal that swallows every later separator...

@@ -243,7 +243,9 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     return logical
 
 
-def literal_crosses_line_break(text: str, newline_index: int) -> bool:
+def literal_crosses_line_break(
+    text: str, newline_index: int, skip_comment_lines: bool = True
+) -> bool:
     """Does a character literal open at ``text[newline_index]``'s line survive the line break?
 
     Only through a continuation: free-form Fortran lets a literal cross a line break exactly when
@@ -271,7 +273,13 @@ def literal_crosses_line_break(text: str, newline_index: int) -> bool:
         # Without this skip a `! note` between `'x&` and `&y'` closed the literal, and the
         # closing quote on the resume line then read as an OPENING one, leaking the literal's
         # tail as code.
-        if line_start == 0:
+        #
+        # `skip_comment_lines=False` is for a caller that cannot tell a comment from code — for
+        # such a scanner a comment-only line HAS opened the literal it is looking at, and
+        # skipping past it would carry that bogus literal onward instead of letting the line
+        # break close it. Only a comment-aware caller, or one reading already-masked text, may
+        # take the skip.
+        if not skip_comment_lines or line_start == 0:
             return False
         end = line_start - 1
 
@@ -369,7 +377,8 @@ def _split_top_level(line: str, separator: str, openers: str, closers: str) -> l
     in_single = False
     in_double = False
     for index, ch in enumerate(line):
-        if ch == "\n" and not literal_crosses_line_break(line, index):
+        if ch == "\n" and not literal_crosses_line_break(
+                line, index, skip_comment_lines=False):
             in_single = False
             in_double = False
             current.append(ch)

@@ -754,9 +754,10 @@ def _split_fortran_names(raw: str) -> list[str]:
 
     Unlike this module's other splitter callers, `raw` arrives as RAW source text: the enclosing
     regexes are `re.DOTALL` over the whole file, so a continued argument list reaches here with
-    its `&`, its newlines and its `!` comments intact. Both are therefore normalized away first,
-    by `fortran_lines.fortran_logical_lines` — the shared scanner, not a private copy — and only
-    then split by `fortran_lines.split_top_level_commas`. Each step answers a defect:
+    its `&`, its newlines and its `!` comments intact. Comments and literal contents are therefore
+    blanked first, in place, by `fortran_lines.mask_code_lookalikes` — the shared masker, not a
+    private copy — and only then split by `fortran_lines.split_top_level_commas`. The mask
+    answers three defects:
 
     * **Comments (pre-existing).** A comma inside a comment manufactured a PHANTOM identifier:
       `call flux__apply(h_in, & ! set a, mid, b` yielded `mid`. The phantom lands in
@@ -774,11 +775,11 @@ def _split_fortran_names(raw: str) -> list[str]:
 
     All three are one root cause: raw multi-line text fed to a single-logical-line helper.
 
-    NOT fixed here, deliberately: `&` continuations. The first name after each `&` is not an
-    identifier once the marker and newline are attached, so it is dropped, and a wrapped
-    argument list loses one name per continuation. Joining the lines first recovers those names
-    and is the obviously correct parse — but it changes this gate's verdict on 33 of the 119
-    real models in this tree, all to a FALSE "does not propagate", because the candidate and
+    NOT fixed here, deliberately: `&` continuations. The mask blanks in place and does not join,
+    so the first name after each `&` still carries the marker and the newline, is not an
+    identifier, and is dropped — a wrapped argument list loses one name per continuation.
+    Joining first recovers those names and is the obviously correct parse, but it flips three
+    real models in this tree to a FALSE "does not propagate", because the candidate and
     consumption rules below are over-approximations that the dropped names were masking. Closing
     that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
     `TODO.md`, not a parser change."""
