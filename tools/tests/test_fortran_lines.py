@@ -379,8 +379,7 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         # the closing quote on the resume line reads as an opening one, and `b` is swallowed
         # instead. Both errors lose a list item, and a lost item is a lost violation.
         masked = mask_code_lookalikes("a, 'x&\n! note\n&y', b")
-        self.assertEqual(len(split_top_level_commas(masked, masked=True)), 3, masked)
-        self.assertEqual(len(split_top_level_commas(masked)), 2, masked)
+        self.assertEqual(len(split_top_level_commas(masked)), 3, masked)
 
     def test_a_newline_closes_an_open_literal_unless_continued(self) -> None:
         # Defence for a caller handing over raw text. An apostrophe in a comment must not open a
@@ -416,9 +415,9 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         # (Fortran's `//`) matches nothing per-character and would return the input unsplit —
         # a silently dead gate, the shape this consolidation exists to remove.
         with self.assertRaises(ValueError):
-            _split_top_level("a//b", "//", "(", ")", skip_comment_lines=False)
+            _split_top_level("a//b", "//", "(", ")")
         with self.assertRaises(ValueError):
-            _split_top_level("a(b", "(", "([", ")]", skip_comment_lines=False)
+            _split_top_level("a(b", "(", "([", ")]")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

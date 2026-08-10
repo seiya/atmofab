@@ -5499,6 +5499,13 @@ end module m
             return violations
 
         for literal in ("'rate'", "'rate )'", "'rate ('", '"rate )"', "'it''s )'",
+                        # A continued literal with a comment or blank line between the `&` and
+                        # its resume. Those lines do not end the continuation (F2008 3.3.2.4), so
+                        # the literal must stay open across them; closing it there makes the
+                        # resume line's closing quote read as an OPENING one and swallows the
+                        # rest of the actuals. This is the shape that regressed twice, at two
+                        # different layers, while both were pinned only at helper level.
+                        "'rate &\n! note\n&more'", "'rate &\n\n&more'",
                         # A LEGALLY continued literal (gfortran -std=f2008 accepts it). Closing
                         # the literal unconditionally at the newline cut it in half, so the
                         # closing quote on the resume line read as an opening one and the group
@@ -13965,6 +13972,21 @@ end program p
             vps._validate_runner_json_serialization(Path("runner.f90"), source, violations)
             self.assertTrue(any("L edit descriptor" in v for v in violations),
                             f"violation lost for {write_stmt!r}")
+
+        # The named-`fmt` path reaches the gate through `_depth0_assignment_rhs` instead of the
+        # io-control list, and lost the violation the same way.
+        source = """program p
+  logical :: ok
+  character(len=32) :: fmtv
+  ok = .true.
+  open(10, file='o.json')
+  fmtv = '(a,'')'',l1)'
+  write(10, fmtv) "x", ok
+end program p
+"""
+        violations = []
+        vps._validate_runner_json_serialization(Path("runner.f90"), source, violations)
+        self.assertTrue(any("L edit descriptor" in v for v in violations), violations)
 
     def test_combined_and_split_declarations_compare_equal(self) -> None:
         combined = vps._stanza_atoms(["integer, intent(in) :: a, b"])

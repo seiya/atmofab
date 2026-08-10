@@ -783,8 +783,7 @@ def _split_fortran_names(raw: str) -> list[str]:
     consumption rules below are over-approximations that the dropped names were masking. Closing
     that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
     `TODO.md`, not a parser change."""
-    parts = fortran_lines.split_top_level_commas(
-        fortran_lines.mask_code_lookalikes(raw), masked=True)
+    parts = fortran_lines.split_top_level_commas(fortran_lines.mask_code_lookalikes(raw))
 
     names: list[str] = []
     for token in parts:
