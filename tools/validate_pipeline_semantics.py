@@ -769,13 +769,20 @@ def _split_fortran_names(raw: str) -> list[str]:
     * **Apostrophes in comments.** Once the split became quote-aware, a `! it's` in a continued
       argument list opened a literal that no newline closed, swallowing every later item — the
       dependency-call output lost (fail-open) or a dummy lost out of `arg_names` (fail-closed),
-      depending on which list carried the comment. Stripping the comment removes the apostrophe
-      before the splitter can see it; `split_top_level_commas` independently closes an open
-      literal at a newline, as gfortran does.
+      depending on which list carried the comment. Masking removes the apostrophe with its
+      comment before the splitter can see it.
 
-    All three are one root cause: raw multi-line text fed to a single-logical-line helper."""
-    parts = fortran_lines.split_top_level_commas(
-        " ".join(joined for _lineno, joined in fortran_lines.fortran_logical_lines(raw)))
+    All three are one root cause: raw multi-line text fed to a single-logical-line helper.
+
+    NOT fixed here, deliberately: `&` continuations. The first name after each `&` is not an
+    identifier once the marker and newline are attached, so it is dropped, and a wrapped
+    argument list loses one name per continuation. Joining the lines first recovers those names
+    and is the obviously correct parse — but it changes this gate's verdict on 33 of the 119
+    real models in this tree, all to a FALSE "does not propagate", because the candidate and
+    consumption rules below are over-approximations that the dropped names were masking. Closing
+    that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
+    `TODO.md`, not a parser change."""
+    parts = fortran_lines.split_top_level_commas(fortran_lines.mask_code_lookalikes(raw))
 
     names: list[str] = []
     for token in parts:
@@ -958,9 +965,10 @@ def _validate_problem_model_dependency_dataflow(
             continue
 
         # A dependency RESULT is consumed into output through ASSIGNMENTS (you assign the call's
-        # output argument into your state / an intent(out)). Backward-close over assignment RHS only:
-        # crossing calls here has no sound flow-insensitive form (see the function docstring), and
-        # the assignment closure is the origin/main behavior with no false-positive history.
+        # output argument into your state / an intent(out)). Backward-close over assignment RHS
+        # only: crossing calls here has no sound flow-insensitive form (see the function
+        # docstring) and fails open — `test_discarded_dep_result_flagged_even_when_call_shares_an_input`
+        # pins that it must not be done.
         dependency_sources = set(out_vars)
         changed = True
         while changed:
@@ -8097,7 +8105,15 @@ def _validate_dependency_operation_on_model_files(
 ) -> None:
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
-        lowered = text.lower()
+        # All three checks below ask whether a KEYWORD appears in code, so neither a comment nor
+        # the inside of a literal may answer. Unmasked, each was satisfiable from prose: a
+        # commented-out `! use dep_model` or `! call dep__op(...)` silenced the two presence
+        # requirements (fail-open — and the `use` one especially, since a model that host-
+        # associates instead of using the module still compiles, which is exactly what this
+        # check exists to catch), while a `write(*,*) 'calls subroutine dep__op'` or a
+        # `! subroutine dep__op is external` raised a redefinition violation against a model that
+        # defines nothing (fail-closed).
+        lowered = fortran_lines.mask_code_lookalikes(text.lower())
 
         for spec_id in dep_spec_ids:
             spec_id_l = spec_id.lower()

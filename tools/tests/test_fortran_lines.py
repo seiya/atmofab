@@ -16,6 +16,7 @@ import unittest
 from tools.fortran_lines import (
     _split_top_level,
     fortran_logical_lines,
+    mask_code_lookalikes,
     split_fortran_statements,
     split_top_level_commas,
     strip_fortran_comment_tracking_quotes,
@@ -377,6 +378,24 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         # observed silencing Generate.static; the decision is `literal_crosses_line_break`.
         self.assertEqual(split_top_level_commas("a, 'x, &\n     &y', b"),
                          ["a", " 'x, &\n     &y'", " b"])
+
+    def test_mask_preserves_length_and_blanks_code_lookalikes(self) -> None:
+        for text in ("  banner = 'x&\n! progress note\n      &end subroutine y'\n",
+                     "  banner = 'x&\n\n      &end subroutine y'\n",
+                     "  banner = 'x&\n      &end subroutine y'\n",
+                     "  a = 1 ! end subroutine\n  b = 'end subroutine'\n",
+                     "  s = 'abc\n  t = 1\n"):
+            masked = mask_code_lookalikes(text)
+            self.assertEqual(len(masked), len(text), text)
+            # The whole point: no `end subroutine` survives from a comment or a literal, in any
+            # of these shapes. A comment or blank line BETWEEN a `&` and its resume does not end
+            # the continuation, so the literal's tail must stay masked across it — masking it as
+            # terminated left the tail live, which is what truncates a subroutine envelope.
+            self.assertNotIn("end subroutine", masked, text)
+
+    def test_mask_keeps_delimiters_and_the_continuation_marker(self) -> None:
+        self.assertEqual(mask_code_lookalikes("x = 'rate &\n&more' ! note & tail"),
+                         "x = '     &\n&    ' !            ")
 
     def test_separator_must_be_one_character_the_brackets_do_not_claim(self) -> None:
         # Raised, not asserted, so `python3 -O` cannot elide it: a two-character separator

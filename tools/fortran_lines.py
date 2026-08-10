@@ -258,10 +258,22 @@ def literal_crosses_line_break(text: str, newline_index: int) -> bool:
     paren stops counting; never resetting lets an apostrophe in a comment (``! it's``) open a
     literal nothing closes, swallowing the rest of the text. Both were observed silencing
     `Generate.static` — hence one shared implementation rather than a copy per scanner."""
-    j = newline_index - 1
-    while j >= 0 and text[j] in _BLANKS:
-        j -= 1
-    return j >= 0 and text[j] == "&"
+    end = newline_index
+    while True:
+        line_start = text.rfind("\n", 0, end) + 1
+        line = text[line_start:end]
+        stripped = _lstrip_blanks(line)
+        if stripped and not stripped.startswith("!"):
+            return _rstrip_blanks(line).endswith("&")
+        # An all-blank or comment-only physical line does not contribute to the statement, so it
+        # does not end the continuation either — the resume line's leading `&` still pairs with
+        # the `&` above the skipped lines (F2008 3.3.2.4, and what `fortran_logical_lines` does).
+        # Without this skip a `! note` between `'x&` and `&y'` closed the literal, and the
+        # closing quote on the resume line then read as an OPENING one, leaking the literal's
+        # tail as code.
+        if line_start == 0:
+            return False
+        end = line_start - 1
 
 
 def mask_code_lookalikes(text: str) -> str:
@@ -291,6 +303,13 @@ def mask_code_lookalikes(text: str) -> str:
             in_comment = False
             if quote is not None and not literal_crosses_line_break(text, index):
                 quote = None
+            out.append(ch)
+        elif quote is not None and ch == "!" and _is_all_blank(
+                text[text.rfind("\n", 0, index) + 1 : index]):
+            # A comment-only line INSIDE a continued literal is a comment, not literal content
+            # (`literal_crosses_line_break` skips it for the same reason). Masking it as content
+            # would leave its text live if it happened to look like code.
+            in_comment = True
             out.append(ch)
         elif in_comment:
             out.append(" ")

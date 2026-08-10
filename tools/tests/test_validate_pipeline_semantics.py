@@ -5361,6 +5361,56 @@ end module m
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(_dataflow(inserted)), f"violation lost for {inserted!r}")
 
+    def test_dependency_presence_checks_ignore_comments_and_literals(self) -> None:
+        # `_validate_dependency_operation_on_model_files` asks whether three KEYWORDS appear in
+        # CODE. Unmasked, prose answered for them: a commented-out `use`/`call` satisfied the two
+        # presence requirements (fail-open — a model that host-associates instead of using the
+        # module still compiles, which is what the `use` check exists to catch), and a literal or
+        # comment naming `subroutine dep__op` raised a redefinition violation against a model
+        # that defines nothing (fail-closed).
+        def _run(body: str) -> list[str]:
+            path = Path(tempfile.mkdtemp()) / "m.f90"
+            path.write_text(f"""module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine advance(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute(x, y)
+{body}end subroutine advance
+end module shallow_water2d_model
+""")
+            violations: list[str] = []
+            vps._validate_dependency_operation_on_model_files(
+                [path], ["dynamics_shallow_water_flux_2d_rusanov_p0"], violations)
+            return violations
+
+        self.assertEqual(_run(""), [])
+        # A comment or literal naming the operation as a subroutine is not a redefinition.
+        self.assertEqual(_run("  ! subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute is external\n"), [])
+        self.assertEqual(_run("  write(*,*) 'calls subroutine dynamics_shallow_water_flux_2d_rusanov_p0__compute'\n"), [])
+
+    def test_dependency_presence_is_not_satisfied_by_a_comment(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "m2.f90"
+        path.write_text("""module shallow_water2d_model
+implicit none
+contains
+subroutine advance(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  ! use dynamics_shallow_water_flux_2d_rusanov_p0_model
+  ! call dynamics_shallow_water_flux_2d_rusanov_p0__compute(x, y)
+  y = x
+end subroutine advance
+end module shallow_water2d_model
+""")
+        violations: list[str] = []
+        vps._validate_dependency_operation_on_model_files(
+            [path], ["dynamics_shallow_water_flux_2d_rusanov_p0"], violations)
+        self.assertTrue(any("missing dependency module use" in v for v in violations), violations)
+        self.assertTrue(any("missing dependency operation call" in v for v in violations), violations)
+
     def test_a_commented_out_procedure_is_not_a_phantom_match(self) -> None:
         # The fail-closed mirror of the test above: a conformant model must stay silent even
         # though a commented-out procedure below it textually matches the envelope.
@@ -5397,18 +5447,20 @@ end module m
         # The helper-level half of the reproducer above.
         self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
 
-    def test_split_fortran_names_normalizes_comments_and_continuations(self) -> None:
+    def test_split_fortran_names_masks_comments_in_a_continued_list(self) -> None:
         # `_split_fortran_names` receives RAW source text (the enclosing regexes are re.DOTALL),
-        # so a continued list arrives with its `&`, newlines and `!` comments. Two defects:
-        # a comma in a comment manufactured a phantom identifier (`mid`), and — once the split
-        # became quote-aware — an apostrophe in a comment opened a literal no newline closed,
-        # swallowing every later item (`tmp` lost). Both are fail-open at the dataflow gate.
-        self.assertEqual(
-            vps._split_fortran_names("h_in, & ! set a, mid, b\n       h_in, tmp"),
-            ["h_in", "h_in", "tmp"])
-        self.assertEqual(
-            vps._split_fortran_names("h_in, & ! it's the field\n       h_in, tmp"),
-            ["h_in", "h_in", "tmp"])
+        # so a continued list arrives with its `&`, newlines and `!` comments. Two defects, both
+        # fail-open at the dataflow gate: a comma in a comment manufactured a phantom identifier
+        # (`mid`), and — once the split became quote-aware — an apostrophe in a comment opened a
+        # literal no newline closed, swallowing every later item (`tmp` lost).
+        #
+        # The name immediately after the `&` is still dropped, as on origin/main: recovering it
+        # would be the correct parse but flips three real models in this tree to a false "does
+        # not propagate", because the gate's candidate rule is an over-approximation those
+        # dropped names were masking. That is a separate, recorded task.
+        for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
+                    "h_in, & ! it's the field\n       h_in, tmp"):
+            self.assertEqual(vps._split_fortran_names(raw), ["h_in", "tmp"], raw)
 
     def test_paren_in_a_call_string_literal_does_not_suppress_the_violation(self) -> None:
         # `_iter_fortran_calls` used to hand-roll a quote-BLIND balanced-paren scan, the other
