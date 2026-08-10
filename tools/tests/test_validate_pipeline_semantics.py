@@ -13691,6 +13691,18 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         self.assertEqual(
             vps._declaration_atoms("subroutine hx__foo(a, b)"), ["subroutine hx__foo(a, b)"])
 
+    def test_declaration_atoms_keep_a_comma_inside_a_character_literal(self) -> None:
+        # Consumer-level reproducer for the splitter consolidation: this module used to define
+        # `_split_top_level_commas` twice ~9,500 lines apart, and the later quote-UNAWARE
+        # definition shadowed the quote-aware one, so the initializer's comma read as an entity
+        # separator. That produced a phantom third atom (`character(len=1), parameter :: '`) and
+        # a truncated first one, i.e. a §5.1 comparison against entities the source never
+        # declares. The splitter now lives once, in `tools/fortran_lines`.
+        self.assertEqual(
+            vps._declaration_atoms("character(len=1), parameter :: sep = ',', tail = 'z'"),
+            ["character(len=1), parameter :: sep = ','",
+             "character(len=1), parameter :: tail = 'z'"])
+
     def test_combined_and_split_declarations_compare_equal(self) -> None:
         combined = vps._stanza_atoms(["integer, intent(in) :: a, b"])
         split = vps._stanza_atoms(

@@ -16,6 +16,7 @@ import unittest
 from tools.fortran_lines import (
     fortran_logical_lines,
     split_fortran_statements,
+    split_top_level_commas,
     strip_fortran_comment_tracking_quotes,
 )
 
@@ -317,6 +318,50 @@ class SplitFortranStatementsTests(unittest.TestCase):
     def test_single_statement_passes_through(self) -> None:
         self.assertEqual(split_fortran_statements("just one statement"),
                          ["just one statement"])
+
+
+class SplitTopLevelCommasTests(unittest.TestCase):
+    """`split_top_level_commas`: the consolidation of three copies that disagreed.
+
+    Before the consolidation `validate_pipeline_semantics` defined this twice ~9,500 lines
+    apart and the later quote-UNAWARE definition shadowed the earlier quote-aware one, so the
+    runner static gates ran with the wrong semantics. The first test is that reproducer at
+    splitter level."""
+
+    def test_comma_inside_a_character_literal_is_not_a_separator(self) -> None:
+        # The reproduced defect: the shadowing definition split inside the literal, so the
+        # runner JSON descriptor gate read a truncated right-hand side (`'`) and the check it
+        # exists to make silently passed — the fail-open direction.
+        self.assertEqual(split_top_level_commas("sep = ','"), ["sep = ','"])
+        self.assertEqual(split_top_level_commas("a, 'x,y', b"), ["a", " 'x,y'", " b"])
+        self.assertEqual(split_top_level_commas('a, "x,y", b'), ["a", ' "x,y"', " b"])
+
+    def test_doubled_quote_escape_keeps_the_literal_closed(self) -> None:
+        # Fortran escapes a quote by doubling it. The plain toggle leaves the literal at the
+        # second quote and re-enters at the third with no character in between, so a comma
+        # after the escape is still inside the literal.
+        self.assertEqual(split_top_level_commas("s = 'it''s, fine', t"),
+                         ["s = 'it''s, fine'", " t"])
+
+    def test_comma_inside_parens_or_brackets_is_not_a_separator(self) -> None:
+        # An entity list: the array-spec comma and the array-constructor / coarray-codimension
+        # comma are part of one entity, not separators between entities.
+        self.assertEqual(split_top_level_commas("a(:), b(2,2), c"),
+                         ["a(:)", " b(2,2)", " c"])
+        self.assertEqual(split_top_level_commas("x = [1,2], y"), ["x = [1,2]", " y"])
+
+    def test_unbalanced_close_does_not_silence_later_separators(self) -> None:
+        # Depth clamps at zero, as in `split_fortran_statements`. Left negative it would stay
+        # negative for the rest of the text and drop every later entity of the list.
+        self.assertEqual(split_top_level_commas("a), b"), ["a)", " b"])
+        self.assertEqual(split_top_level_commas("a], b"), ["a]", " b"])
+
+    def test_parts_are_neither_stripped_nor_filtered(self) -> None:
+        self.assertEqual(split_top_level_commas("  a ,, b "), ["  a ", "", " b "])
+        self.assertEqual(split_top_level_commas(""), [""])
+
+    def test_single_item_passes_through(self) -> None:
+        self.assertEqual(split_top_level_commas("just one"), ["just one"])
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

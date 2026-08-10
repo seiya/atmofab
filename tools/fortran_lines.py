@@ -55,6 +55,10 @@ never join anything, while these consumers read the JOINED logical line and comp
 a declared surface. So the logic returns here, restructured from statement level to
 logical-line level, with `;`-splitting and string masking factored out into the caller's hands.
 
+`split_top_level_commas` joined it later, for the same reason and out of the same defect class:
+three copies, one of them shadowed in-module by a weaker twin, disagreeing on whether a comma
+inside a character literal separates.
+
 Stdlib only and importing nothing from this package, so every site can depend on it. No
 existing module is a home: the validator may not import `orchestration_runtime`
 (module-boundary rule); `lang_backend_fortran` imports the validator at module level, so
@@ -233,18 +237,20 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     return logical
 
 
-def split_fortran_statements(line: str) -> list[str]:
-    """Split one logical line on top-level ``;`` statement separators.
+def _split_top_level(line: str, separator: str, openers: str, closers: str) -> list[str]:
+    """Split ``line`` on ``separator`` occurrences that are outside quotes and outside any
+    ``openers``/``closers`` group. Shared body of the two public splitters below; the only
+    differences between them are the separator and which bracket kinds nest.
 
-    Semicolons inside quotes or parentheses are ignored, so a line such as
-    ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements. Parts are returned as-is —
-    neither stripped nor filtered for emptiness — because the callers differ on both (one keeps
-    the ``^\\s*`` its patterns anchor on, another wants stripped statements).
+    Character-literal state is tracked with a plain toggle, which is also correct for Fortran's
+    doubled-quote escape: ``'it''s'`` leaves the literal at the second quote and re-enters at the
+    third, with no character in between, so no separator can be seen outside the literal.
 
-    An unbalanced ``)`` clamps the depth at zero rather than driving it negative. Only
-    unparseable source gets there, but a stuck-negative depth would silence every later ``;``
-    on the line, and the harm direction of that is a declaration after a ``;`` going
-    unseen — a published operation reported absent."""
+    An unbalanced closer clamps the depth at zero rather than driving it negative. Only
+    unparseable source gets there, but a stuck-negative depth would silence every later
+    separator on the line, and the harm direction of that is a fragment going unseen — for
+    ``;``, a declaration after the separator reported absent; for ``,``, an entity of a
+    declaration list dropped."""
     parts: list[str] = []
     current: list[str] = []
     depth = 0
@@ -265,16 +271,45 @@ def split_fortran_statements(line: str) -> list[str]:
         elif ch == '"':
             in_double = True
             current.append(ch)
-        elif ch == "(":
+        elif ch in openers:
             depth += 1
             current.append(ch)
-        elif ch == ")":
+        elif ch in closers:
             depth = max(0, depth - 1)
             current.append(ch)
-        elif ch == ";" and depth == 0:
+        elif ch == separator and depth == 0:
             parts.append("".join(current))
             current = []
         else:
             current.append(ch)
     parts.append("".join(current))
     return parts
+
+
+def split_fortran_statements(line: str) -> list[str]:
+    """Split one logical line on top-level ``;`` statement separators.
+
+    Semicolons inside quotes or parentheses are ignored, so a line such as
+    ``fmt = '(a,l1,a)'; write(u, fmt) x`` becomes two statements. Parts are returned as-is —
+    neither stripped nor filtered for emptiness — because the callers differ on both (one keeps
+    the ``^\\s*`` its patterns anchor on, another wants stripped statements)."""
+    return _split_top_level(line, ";", "(", ")")
+
+
+def split_top_level_commas(text: str) -> list[str]:
+    """Split ``text`` on commas that separate top-level items — the one implementation the
+    gates share.
+
+    A comma inside quotes (``sep = ','``), inside parentheses (``b(2,2)``) or inside a bracket
+    group (an array constructor ``[1,2]``, a coarray codimension ``x[*]``) is not a separator,
+    so an entity list ``a(:), b(2,2), c`` splits into ``a(:)`` / ``b(2,2)`` / ``c``. Parts are
+    returned as-is — neither stripped nor filtered for emptiness — because the callers differ on
+    both.
+
+    Three copies of this used to exist (two of them in the SAME module ~9,500 lines apart, where
+    the later quote-unaware definition shadowed the earlier quote-aware one), and the surviving
+    definition split ``sep = ','`` inside the literal: the runner's JSON descriptor gate then
+    read a broken right-hand side and silently passed the source it exists to reject. That is the
+    fail-open direction, which is why the shared form is the strictest of the three — quote-aware
+    from one copy, bracket-aware and depth-clamped from the others."""
+    return _split_top_level(text, ",", "([", ")]")

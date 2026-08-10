@@ -2197,43 +2197,6 @@ def _extract_balanced_parens(text: str, open_index: int) -> str:
     return text[open_index + 1 :]
 
 
-def _split_top_level_commas(text: str) -> list[str]:
-    """Split on commas that are outside parentheses and quotes."""
-    parts: list[str] = []
-    current: list[str] = []
-    depth = 0
-    in_single = False
-    in_double = False
-    for ch in text:
-        if in_single:
-            current.append(ch)
-            if ch == "'":
-                in_single = False
-        elif in_double:
-            current.append(ch)
-            if ch == '"':
-                in_double = False
-        elif ch == "'":
-            in_single = True
-            current.append(ch)
-        elif ch == '"':
-            in_double = True
-            current.append(ch)
-        elif ch == "(":
-            depth += 1
-            current.append(ch)
-        elif ch == ")":
-            depth -= 1
-            current.append(ch)
-        elif ch == "," and depth == 0:
-            parts.append("".join(current))
-            current = []
-        else:
-            current.append(ch)
-    parts.append("".join(current))
-    return parts
-
-
 def _fortran_literal_value(token: str) -> str:
     """Return the character value of a quoted Fortran literal token.
 
@@ -2303,7 +2266,7 @@ _NON_JSON_WRITE_UNITS = {"*", "output_unit", "error_unit"}
 
 def _runner_write_unit(io_control: str) -> str | None:
     """Return the unit designator of a ``write`` control list (``*`` / name / id)."""
-    items = [item.strip() for item in _split_top_level_commas(io_control)]
+    items = [item.strip() for item in fortran_lines.split_top_level_commas(io_control)]
     for item in items:
         keyword = _RUNNER_UNIT_KEYWORD.match(item)
         if keyword:
@@ -2321,7 +2284,7 @@ def _runner_write_format_token(io_control: str) -> str | None:
     name); ``None`` when there is no format (e.g. list-directed ``write(u, *)``
     is returned as ``*`` and filtered by the caller).
     """
-    items = [item.strip() for item in _split_top_level_commas(io_control)]
+    items = [item.strip() for item in fortran_lines.split_top_level_commas(io_control)]
     for item in items:
         keyword = _RUNNER_FMT_KEYWORD.match(item)
         if keyword:
@@ -2380,7 +2343,7 @@ def _depth0_assignment_rhs(line: str, name: str) -> str | None:
                 # Stop at the next top-level comma so a sibling initializer in a
                 # multi-name declaration (``:: a = '(...)', b = '(...)'``) is not
                 # folded into this name's RHS.
-                return _split_top_level_commas(line[i + 1 :])[0].strip()
+                return fortran_lines.split_top_level_commas(line[i + 1 :])[0].strip()
         i += 1
     return None
 
@@ -11669,29 +11632,6 @@ def _validate_infrastructure_public_api(
         derived_path, public_api, cs_path, violations)
 
 
-def _split_top_level_commas(text: str) -> list[str]:
-    """Split ``text`` on commas that are not inside ``()`` / ``[]`` — so an entity list
-    ``a(:), b(2,2), c`` splits into ``a(:)`` / ``b(2,2)`` / ``c`` (the comma inside ``(2,2)`` is
-    NOT a separator)."""
-    parts: list[str] = []
-    depth = 0
-    cur: list[str] = []
-    for ch in text:
-        if ch in "([":
-            depth += 1
-            cur.append(ch)
-        elif ch in ")]":
-            depth = max(0, depth - 1)
-            cur.append(ch)
-        elif ch == "," and depth == 0:
-            parts.append("".join(cur))
-            cur = []
-        else:
-            cur.append(ch)
-    parts.append("".join(cur))
-    return parts
-
-
 def _declaration_atoms(logical_line: str) -> list[str]:
     """Canonicalize a declaration into one line per declared entity, so a combined declarator
     (``integer, intent(in) :: a, b`` — legal Fortran, ABI-identical, and explicitly permitted by
@@ -11703,7 +11643,7 @@ def _declaration_atoms(logical_line: str) -> list[str]:
     if "::" not in logical_line:
         return [logical_line]
     lhs, _sep, rhs = logical_line.partition("::")
-    entities = [e.strip() for e in _split_top_level_commas(rhs)]
+    entities = [e.strip() for e in fortran_lines.split_top_level_commas(rhs)]
     entities = [e for e in entities if e]
     if not entities:
         return [logical_line]
