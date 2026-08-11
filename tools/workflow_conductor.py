@@ -7893,8 +7893,9 @@ clean:
         error) raises and surfaces as a transport fail_closed likewise — an environment
         problem, not something the generate retry loop could fix. Optional additional stages
         from METDSL_SYNTAX_COMPILERS (comma-separated adapter ids, e.g. "gfortran,frt" — the
-        future target-compiler second stage) are recorded as skipped when their binary is not
-        installed, so one configuration runs on machines with and without the target compiler.
+        future target-compiler second stage) are recorded as skipped when their compiler has no
+        registered adapter or its binary is not installed, so one configuration runs on
+        machines with and without the target compiler.
 
         Staging: each compiler stage gets its own throwaway dir under
         workspace/tmp/<child_arid>/syntax/<compiler>/ holding the node's src *.f90 plus
