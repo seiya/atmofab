@@ -426,7 +426,28 @@ DEPENDENCY_AWARE_BUILD_SYSTEMS = {
     "poetry",
 }
 
-_ENV_PROPERTY_SCHEMA: dict[str, Any] = {
+def _env_property_schema(tool_name: str) -> dict[str, Any]:
+    """The `env` argument as the tool actually accepts it.
+
+    The three tools the workflow passes no `env` to accept none under an orchestration,
+    so their schema says that rather than listing make variables that mean nothing to a
+    linter or a syntax check."""
+    if not _ORCHESTRATED_ENV_KEYS_BY_TOOL.get(tool_name):
+        return {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+            "description": (
+                "Environment overrides for the command. Under an orchestration this "
+                "tool accepts none. Standalone, keys that redirect execution (LD_*, "
+                "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
+                "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
+                "MAKESHELL) are refused."
+            ),
+        }
+    return dict(_MAKE_VARIABLE_ENV_SCHEMA)
+
+
+_MAKE_VARIABLE_ENV_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": {"type": "string"},
     "description": (
@@ -1401,7 +1422,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
+                "project_dir": {"type": "string"},
                 "language": {"type": "string"},
             },
         },
@@ -1448,7 +1469,7 @@ TOOLS: dict[str, Tool] = {
                         "under the repository root."
                     ),
                 },
-                "env": _ENV_PROPERTY_SCHEMA,
+                "env": _env_property_schema("compile_project"),
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],
@@ -1487,7 +1508,7 @@ TOOLS: dict[str, Tool] = {
                     "additionalProperties": True,
                 },
                 "threads_per_rank": {"type": "integer", "minimum": 1},
-                "env": _ENV_PROPERTY_SCHEMA,
+                "env": _env_property_schema("run_program"),
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir", "command"],
@@ -1515,7 +1536,7 @@ TOOLS: dict[str, Tool] = {
                         "under the repository root."
                     ),
                 },
-                "env": _ENV_PROPERTY_SCHEMA,
+                "env": _env_property_schema("run_quality_checks"),
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],
@@ -1547,7 +1568,7 @@ TOOLS: dict[str, Tool] = {
                         "under the repository root."
                     ),
                 },
-                "env": _ENV_PROPERTY_SCHEMA,
+                "env": _env_property_schema("run_linter"),
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],
@@ -1599,7 +1620,7 @@ TOOLS: dict[str, Tool] = {
                         "under the repository root."
                     ),
                 },
-                "env": _ENV_PROPERTY_SCHEMA,
+                "env": _env_property_schema("run_syntax_check"),
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],

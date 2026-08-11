@@ -15185,6 +15185,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         """Both ids are interpolated into the paths this gate reads its own evidence
         from, so a `..` in either relocates the check to a directory the caller wrote —
         including the capability it is then validated against, and the audit record."""
+        from tools.orchestration_runtime import _validate_run_gate_permissions
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             cap = self._build_child_capability(repo_root, "vperm10")
@@ -15203,6 +15204,18 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                             tool_name="compile_project",
                         )
                     self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
+                    # The run-gate mirror reads the same ids out of the same paths and
+                    # carries the same check, so it is pinned here rather than left to
+                    # diverge.
+                    with self.assertRaises(RuntimeError) as ctx_gate:
+                        _validate_run_gate_permissions(
+                            repo_root,
+                            orchestration_id=oid,
+                            agent_run_id=arid,
+                            gate_name="orchestration_read",
+                            capability_token=token,
+                        )
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_gate.exception))
 
     def test_ir_build_system_is_read_structurally_not_line_scanned(self) -> None:
         """A line of prose containing `build_system:` must not answer for the toolchain.
