@@ -7910,6 +7910,7 @@ clean:
             _FORTRAN_SYNTAX_SOURCE_SUFFIXES,
             _SYNTAX_COMPILER_ADAPTERS,
             SYNTAX_CANARY_SOURCE,
+            SyntaxSourceNameError,
             tool_run_syntax_check,
         )
         from tools.hooks.syntax_evidence import write_syntax_evidence
@@ -8015,7 +8016,7 @@ clean:
                         "agent_run_id": child_arid,
                         "capability_token": cap_token,
                     })
-                except ValueError as exc:
+                except SyntaxSourceNameError as exc:
                     # A source name the tool refuses (an option-shaped `-o.f90`, a
                     # response file, a name that is not a Fortran file) is the leaf's
                     # own output and the leaf can rename it, so this is a CONTENT
@@ -8023,12 +8024,26 @@ clean:
                     # fail_closed an uncaught raise here would produce. The other two
                     # fail_closed causes of this substep (a broken `-std` invocation, a
                     # dependency closure that does not compile) are things the leaf
-                    # cannot repair; this one it can.
+                    # cannot repair; this one it can. Only this exception class is
+                    # caught: every other refusal from the tool is about arguments the
+                    # CONDUCTOR supplies, and blaming the leaf for those would spend its
+                    # whole retry budget on a message no regenerated source can clear.
+                    #
+                    # The stage is recorded `skipped`, which is what it is — no compiler
+                    # ran, so there is no command id to certify with — and the evidence
+                    # certificate below records the same, keeping this checker's
+                    # symmetry with the lint one.
                     stages.append({
                         "compiler": compiler,
-                        "status": "fail",
+                        "status": "skipped",
                         "reason": str(exc),
                     })
+                    write_syntax_evidence(
+                        pipeline_root=self.repo_root / refs.pipeline_ref,
+                        source_id=refs.source_id or "",
+                        ok=False,
+                        stages=stages,
+                    )
                     return {
                         "status": "fail",
                         "language": language,

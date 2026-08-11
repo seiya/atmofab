@@ -374,6 +374,15 @@ def _validate_build_argv_overrides(
     return resolved_target
 
 
+class SyntaxSourceNameError(ValueError):
+    """A staged file whose NAME the syntax check refuses.
+
+    Its own class because the caller's response differs: the leaf authored the name and
+    can rename it, so `Generate.gate` records this as a content failure, while every
+    other argument refusal from this module is the caller's own bug and must stay a
+    transport failure. Catching by `ValueError` there would blame the leaf for both."""
+
+
 def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: str) -> None:
     """Constrain the source list appended to the compiler front-end argv.
 
@@ -394,7 +403,7 @@ def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: st
         if resolved.parent != root or not resolved.is_file():
             offending.append(name)
     if offending:
-        raise ValueError(
+        raise SyntaxSourceNameError(
             f"{tool_name} sources must be Fortran source files in project_dir; "
             "refused: " + ", ".join(sorted(offending))
         )

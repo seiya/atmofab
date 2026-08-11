@@ -9,7 +9,7 @@ Conventions every agent (Codex / Claude Code) working in this repository must fo
 
 ## MCP execution rules
 - Always run `compile` / `run` / `quality check` through the MCP server.
-- The standard server is `mcp_servers/build_runtime_server.py`; use `detect_build_system` / `compile_project` / `run_program` / `run_quality_checks` / `run_linter` / `run_syntax_check`.
+- The standard server is `mcp_servers/build_runtime_server.py`; use `compile_project` / `run_program` / `run_quality_checks` / `run_linter` / `run_syntax_check`. (`detect_build_system` is a standalone-only helper: under the workflow the build system comes from the IR's toolchain and the tool is refused.)
 - When `compile` handles `fortran` / `c` / `cpp` / `mixed` families, only allow standard build tools that can handle dependencies. The default is `make`.
 - Forbid one-off builds that call `gcc` / `clang` / `gfortran` directly.
 - Under the workflow, `compile_project` / `run_program` / `run_quality_checks` / `run_linter` / `run_syntax_check` require `orchestration_id`, `agent_run_id`, and `capability_token`; a call that omits them is refused, not exempted from the capability gate. There, every caller-supplied input that decides what runs — `env`, `extra_args`, `target`, `sources`, `project_dir`, `command_log_path` — is an allowlist over what the workflow declares; everything else is refused. Canonical: `mcp_servers/README.md`.

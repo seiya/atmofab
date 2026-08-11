@@ -12617,6 +12617,51 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(section["status"], "fail")
             self.assertEqual(section["failure_category"], "syntax_error")
             self.assertIn("-o.f90", section["failure_excerpt"])
+            # No compiler ran, so the stage is `skipped` — the shape the evidence
+            # reader accepts without a command id — and the certificate is written,
+            # like the lint checker's on a content fail.
+            self.assertEqual(section["stages"][0]["status"], "skipped")
+            from tools.hooks.syntax_evidence import read_syntax_evidence
+            evidence = read_syntax_evidence(
+                pipeline_root=repo / refs.pipeline_ref, source_id=refs.source_id)
+            self.assertFalse(evidence["ok"])
+
+    def test_gate_syntax_keeps_a_conductor_side_refusal_fail_closed(self) -> None:
+        """Only a source NAME is the leaf's to fix. Every other refusal from the tool is
+        about an argument the conductor supplies, so it must still raise — blaming the
+        leaf for one would spend its retry budget on a message no regenerated source can
+        clear."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n",
+                encoding="utf-8")
+            src = repo / refs.source_dir() / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "ok.f90").write_text("program p\nend program p\n", encoding="utf-8")
+
+            def refuse(args):
+                raise ValueError("run_syntax_check project_dir must stay under the "
+                                 "repository root under an orchestration")
+
+            with mock.patch.object(build_runtime_server, "tool_run_syntax_check", refuse):
+                with self.assertRaises(ValueError):
+                    c._gate_syntax_check(refs, "child-1", "captok")
 
     def test_execute_inproc_payload_survives_the_real_mcp_validators(self) -> None:
         """Validate.execute is where the six-key `env` allowlist is actually used, and
