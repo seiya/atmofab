@@ -40,7 +40,7 @@
       },
       "command_log_path": {
         "type": "string",
-        "description": "JSONL path for command logs. Relative paths are resolved from project_dir."
+        "description": "JSONL path for command logs. Relative paths are resolved from project_dir; under an orchestration the path must stay under the repository root."
       },
       "env": {
         "type": "object",

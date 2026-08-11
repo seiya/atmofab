@@ -15197,6 +15197,12 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 ({"extra_args": ["FC=/tmp/evil"]}, "make variables in extra_args"),
                 ({"extra_args": ["--eval=$(shell id)"]}, "make variables in extra_args"),
                 ({"target": "--eval=$(shell id)"}, "must be a build target name"),
+                # The value is interpolated unquoted into the recipe's shell line.
+                ({"extra_args": ["BIN=x; touch /tmp/evil;"]}, "reach the make recipe's shell"),
+                # command_log_path is a write, and only run_program at Validate has a
+                # placement rule in the phase gate.
+                ({"command_log_path": "/tmp/evil.jsonl"},
+                 "must stay under the repository root"),
             ):
                 with self.subTest(extra=extra):
                     with self.assertRaises(ValueError) as ctx:

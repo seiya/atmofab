@@ -159,22 +159,22 @@ _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> None:
     """Constrain caller-supplied environment overrides.
 
-    Every tool here constrains argv to a fixed preset or a build-tool invocation, and
-    the environment is the door around that constraint — and it is not a door that can
-    be closed by listing what to keep out. Each program these tools run reads its own
-    configuration from the environment: the loader takes `LD_PRELOAD`, the gcc driver
+    Every tool here except `run_program` (whose `command` is caller-chosen argv by
+    design) constrains argv to a fixed preset or a build-tool invocation, and the
+    environment goes around that constraint. Listing what to keep out does not finish:
+    each program these tools run reads its own configuration from the environment: the loader takes `LD_PRELOAD`, the gcc driver
     takes `COMPILER_PATH` to find the front end it execs, make takes `MAKEFLAGS` as
     command-line switches and imports any other name as a make variable, so `FC` alone
     redirects a certified Makefile's compiler. Enumerating those names is a list that
-    grows by one every time someone looks at it.
+    grows by one every time someone reads it.
 
     So under an orchestration only the keys the workflow declares are accepted, and
     every other key is refused whether or not anyone has thought of it. Outside an
     orchestration the denylist applies: the operator chose the argv, so the check is
     there to catch a mistake, not to confine the caller.
 
-    The rule is over key NAMES. The values of the accepted keys are unconstrained and
-    reach the make recipe's shell, so they are part of the same trust as the argv.
+    The accepted keys' VALUES are checked too: they reach the make recipe's shell
+    unquoted, so a value carrying a shell metacharacter is a command, not a value.
 
     Refusing names the key instead of dropping it silently, so a mistake and an attack
     are both visible in the caller's result. `tools/hooks/cli.py` refuses a `VAR=value`
@@ -199,6 +199,8 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
                 f"{tool_name} accepts only these env overrides under an orchestration "
                 f"({permitted}); refused: " + ", ".join(offending)
             )
+        _refuse_unsafe_values(
+            {str(k): str(v) for k, v in env.items()}, tool_name, "env")
         return
     offending = sorted(
         str(key)
@@ -214,37 +216,70 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
 
 
 _MAKE_TARGET_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-/]*$")
+# A make variable's value is interpolated unquoted into the recipe's shell line (the
+# host-authored Makefile runs `$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so the value
+# is as much a command as the argv is. Paths, identifiers, and the space-separated case
+# list are what the workflow passes; a shell metacharacter is not.
+_MAKE_VALUE_RE = re.compile(r"^[A-Za-z0-9_/.][A-Za-z0-9_ ./,:=+-]*$")
+# A source name is appended to the compiler front-end argv. The gcc driver reads its
+# own options out of that list wherever they appear — `-B<dir>/` to exec a planted
+# `f951`, `@file` to read further options out of a file whose own name may end in
+# `.f90` — so the rule is what a source name IS, not a list of the spellings that have
+# been noticed.
+_SYNTAX_SOURCE_RE = re.compile(
+    r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.(f90|f95|f03|f08)$", re.IGNORECASE
+)
+
+
+def _refuse_unsafe_values(values: dict[str, str], tool_name: str, kind: str) -> None:
+    """Refuse an accepted key whose VALUE would carry more than a value."""
+    offending = sorted(
+        f"{key}={value}" for key, value in values.items()
+        if value and not _MAKE_VALUE_RE.match(value)
+    )
+    if offending:
+        raise ValueError(
+            f"{tool_name} {kind} values reach the make recipe's shell and must be "
+            "plain paths, identifiers, or a space-separated list; refused: "
+            + ", ".join(offending)
+        )
 
 
 def _validate_build_argv_overrides(
-    target: Any, extra_args: list[str], tool_name: str, *, orchestrated: bool
-) -> None:
-    """Constrain the caller-chosen part of the build argv.
+    target: Any, extra_args: Any, tool_name: str, *, orchestrated: bool
+) -> str | None:
+    """Constrain the caller-chosen part of the build argv; return the target to use.
 
     `target` and `extra_args` are appended to the build tool's command line, and for
     make a command-line assignment overrides even a hard assignment in the Makefile —
-    strictly more authority than the environment. `FC=/tmp/x` there replaces the
-    compiler a certified Makefile invokes, and `--eval=$(shell ...)` runs before the
-    Makefile is read at all. Constraining the environment while leaving this open would
-    close one half of one door.
+    more authority than the environment. `FC=/tmp/x` there replaces the compiler a
+    certified Makefile invokes, and `--eval=$(shell ...)` runs before the Makefile is
+    read at all.
 
-    So under an orchestration the same declared set governs both: an `extra_args`
-    element must be an assignment to one of those make variables, and `target` must be
-    a target name rather than a switch. Outside an orchestration the operator's argv is
-    their own.
+    So under an orchestration the same declared set governs the argv as governs the
+    environment: an `extra_args` element must assign one of those make variables, its
+    value must be a value, and `target` must be a target name rather than a switch.
+    Outside an orchestration the operator chose the argv already.
+
+    The validated `target` is returned so the string that was checked is the string
+    that runs.
     """
+    if target is not None and not isinstance(target, str):
+        raise ValueError(f"{tool_name} target must be a string")
+    if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
+        raise ValueError(f"{tool_name} extra_args must be an array of strings")
+    resolved_target = target.strip() if isinstance(target, str) and target.strip() else None
     if not orchestrated:
-        return
-    if target is not None and str(target).strip():
-        if not _MAKE_TARGET_RE.match(str(target).strip()):
-            raise ValueError(
-                f"{tool_name} target must be a build target name under an "
-                f"orchestration (got {str(target)!r})"
-            )
+        return resolved_target
+    if resolved_target is not None and not _MAKE_TARGET_RE.match(resolved_target):
+        raise ValueError(
+            f"{tool_name} target must be a build target name under an "
+            f"orchestration (got {resolved_target!r})"
+        )
     permitted = sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS)
     offending = [
         arg for arg in extra_args
-        if arg.split("=", 1)[0] not in _ORCHESTRATED_ENV_OVERRIDE_KEYS or "=" not in arg
+        if "=" not in arg or arg.split("=", 1)[0] not in _ORCHESTRATED_ENV_OVERRIDE_KEYS
     ]
     if offending:
         raise ValueError(
@@ -252,27 +287,33 @@ def _validate_build_argv_overrides(
             f"extra_args under an orchestration ({', '.join(permitted)}); refused: "
             + ", ".join(offending)
         )
+    _refuse_unsafe_values(
+        dict(arg.split("=", 1) for arg in extra_args), tool_name, "extra_args")
+    return resolved_target
 
 
-def _validate_syntax_sources(sources: list[str], tool_name: str) -> None:
+def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: str) -> None:
     """Constrain the source list appended to the compiler front-end argv.
 
-    The gcc driver reads its own options from this list wherever they appear, and
-    `-B<dir>/` makes it exec a planted `f951`: the check then returns `ok: True` having
-    compiled nothing, which is a syntax gate that passes anything. A source is a plain
-    file name in `project_dir`, so anything else is refused in every mode.
+    A source is a Fortran file sitting in `project_dir`. Anything else the driver would
+    accept there — an option, a response file, a path out of the directory, a symlink
+    to one — makes the check compile something other than what was staged, and it
+    reports `ok: True` either way. Refused in every mode; the workflow never passes
+    this argument at all, and an operator passing it means file names.
     """
-    offending = sorted(
-        name for name in sources
-        if name.startswith("-")
-        or "/" in name
-        or os.sep in name
-        or not name.lower().endswith(_FORTRAN_SYNTAX_SOURCE_SUFFIXES)
-    )
+    root = Path(project_dir).resolve()
+    offending = []
+    for name in sources:
+        if not _SYNTAX_SOURCE_RE.match(name):
+            offending.append(name)
+            continue
+        resolved = (root / name).resolve()
+        if resolved.parent != root or not resolved.is_file():
+            offending.append(name)
     if offending:
         raise ValueError(
-            f"{tool_name} sources must be plain source file names in project_dir; "
-            "refused: " + ", ".join(offending)
+            f"{tool_name} sources must be Fortran source files in project_dir; "
+            "refused: " + ", ".join(sorted(offending))
         )
 
 
@@ -409,6 +450,28 @@ def _resolve_command_log_path(project_dir: str, command_log_path: str | None) ->
     if raw_path.is_absolute():
         return raw_path
     return base_dir / raw_path
+
+
+def _validate_command_log_path(
+    command_log_path: Any, args: dict[str, Any], project_dir: str, tool_name: str
+) -> None:
+    """Keep the command log inside the repository under an orchestration.
+
+    The log path is a caller-chosen path that `_append_command_log` creates directories
+    for and appends to, so it is a write, and the only placement rule the phase gate
+    carries covers `run_program` at Validate. Under an orchestration a write belongs
+    inside the checkout the capability is scoped to; the conductor's own paths (the node
+    directory, `workspace/tmp/<agent_run_id>/...`) all are.
+    """
+    if not _is_orchestrated_call(args) or command_log_path is None:
+        return
+    root = Path(str(args.get("repo_root") or project_dir)).resolve()
+    resolved = _resolve_command_log_path(project_dir, str(command_log_path)).resolve()
+    if root != resolved and root not in resolved.parents:
+        raise ValueError(
+            f"{tool_name} command_log_path must stay under the repository root "
+            f"under an orchestration (got {str(command_log_path)!r})"
+        )
 
 
 def _path_to_ref(path: Path) -> str | None:
@@ -678,12 +741,13 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    extra_args = [str(x) for x in args.get("extra_args", [])]
+    _validate_command_log_path(command_log_path, args, project_dir, "compile_project")
+    extra_args = args.get("extra_args", [])
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
     _validate_env_overrides(env, "compile_project", orchestrated=_is_orchestrated_call(args))
-    _validate_build_argv_overrides(
+    target = _validate_build_argv_overrides(
         target, extra_args, "compile_project", orchestrated=_is_orchestrated_call(args))
 
     build_system = args.get("build_system")
@@ -741,6 +805,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
+    _validate_command_log_path(command_log_path, args, project_dir, "run_program")
     env = args.get("env")
     target_class = _resolve_target_class(args)
     threads_per_rank = _parse_threads_per_rank(args)
@@ -799,6 +864,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
+    _validate_command_log_path(command_log_path, args, project_dir, "run_quality_checks")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -869,6 +935,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
+    _validate_command_log_path(command_log_path, args, project_dir, "run_linter")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -1134,6 +1201,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
+    _validate_command_log_path(command_log_path, args, project_dir, "run_syntax_check")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -1158,7 +1226,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("sources must be an array of source file names")
     if sources:
-        _validate_syntax_sources(list(sources), "run_syntax_check")
+        _validate_syntax_sources(list(sources), project_dir, "run_syntax_check")
 
     proj = Path(project_dir)
     if not proj.is_dir():
@@ -1236,14 +1304,33 @@ TOOLS: dict[str, Tool] = {
                 "project_dir": {"type": "string", "default": "."},
                 "language": {"type": "string"},
                 "build_system": {"type": "string"},
-                "target": {"type": "string"},
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Build target name. Under an orchestration it must be a target "
+                        "name, not a switch."
+                    ),
+                },
                 "jobs": {"type": "integer", "minimum": 1},
-                "extra_args": {"type": "array", "items": {"type": "string"}},
+                "extra_args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Extra build-tool arguments. Under an orchestration only "
+                        "assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are "
+                        "accepted, and a value must be a plain path, identifier, or "
+                        "space-separated list — it reaches the make recipe's shell."
+                    ),
+                },
                 "timeout_sec": {"type": "integer", "minimum": 1},
                 "capture_limit": {"type": "integer", "minimum": 1000},
                 "command_log_path": {
                     "type": "string",
-                    "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
+                    "description": (
+                        "JSONL path for command logs. Relative paths are resolved "
+                        "from project_dir; under an orchestration the path must stay "
+                        "under the repository root."
+                    ),
                 },
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
@@ -1268,7 +1355,11 @@ TOOLS: dict[str, Tool] = {
                 "capture_limit": {"type": "integer", "minimum": 1000},
                 "command_log_path": {
                     "type": "string",
-                    "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
+                    "description": (
+                        "JSONL path for command logs. Relative paths are resolved "
+                        "from project_dir; under an orchestration the path must stay "
+                        "under the repository root."
+                    ),
                 },
                 "target_class": {"type": "string"},
                 "target.class": {"type": "string"},
@@ -1302,7 +1393,11 @@ TOOLS: dict[str, Tool] = {
                 "capture_limit": {"type": "integer", "minimum": 1000},
                 "command_log_path": {
                     "type": "string",
-                    "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
+                    "description": (
+                        "JSONL path for command logs. Relative paths are resolved "
+                        "from project_dir; under an orchestration the path must stay "
+                        "under the repository root."
+                    ),
                 },
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
@@ -1330,7 +1425,11 @@ TOOLS: dict[str, Tool] = {
                 "capture_limit": {"type": "integer", "minimum": 1000},
                 "command_log_path": {
                     "type": "string",
-                    "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
+                    "description": (
+                        "JSONL path for command logs. Relative paths are resolved "
+                        "from project_dir; under an orchestration the path must stay "
+                        "under the repository root."
+                    ),
                 },
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
@@ -1378,7 +1477,11 @@ TOOLS: dict[str, Tool] = {
                 "capture_limit": {"type": "integer", "minimum": 1000},
                 "command_log_path": {
                     "type": "string",
-                    "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
+                    "description": (
+                        "JSONL path for command logs. Relative paths are resolved "
+                        "from project_dir; under an orchestration the path must stay "
+                        "under the repository root."
+                    ),
                 },
                 "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,

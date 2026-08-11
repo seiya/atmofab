@@ -494,7 +494,8 @@ class OrchestrationGateFailClosedTests(unittest.TestCase):
 class EnvOverrideDenylistTests(unittest.TestCase):
     """Caller-supplied `env` may not redirect what runs.
 
-    argv is constrained to fixed presets and build-tool invocations, but before this
+    argv is constrained to fixed presets and build-tool invocations (except
+    `run_program`, whose `command` is caller-chosen by design), but before this
     `_run_command` merged the caller's `env` into `os.environ` unfiltered, so
     `LD_PRELOAD` / `PATH` / `BASH_ENV` walked around that constraint.
 
@@ -675,6 +676,43 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
             self.mod._ORCHESTRATED_ENV_OVERRIDE_KEYS,
             frozenset({"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}))
 
+    def test_values_that_reach_the_recipe_shell_are_refused(self) -> None:
+        # The host-authored Makefile interpolates these unquoted into a recipe line
+        # (`$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so an accepted key with a
+        # metacharacter in its value is a command. Names alone are not the rule.
+        for value in ("c1; touch /tmp/x", "c1 && id", "$(shell id)", "`id`", "a|b",
+                      "a\nb", "a>b", "'x'"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({"CASES": value})
+                self.assertIn("reach the make recipe's shell", str(ctx.exception))
+        # What the workflow really sends stays acceptable: absolute paths, an
+        # identifier, and a space-separated case list.
+        self._check({"BINDIR": "/repo/workspace/binary/bin_1/bin", "BIN": "sw2d_runner",
+                     "SPEC": "/repo/workspace/ir/x/spec.ir.yaml", "CASES": "case_a case_b"})
+
+    def test_argv_values_are_refused_the_same_way(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            self.mod._validate_build_argv_overrides(
+                None, ["OBJDIR=obj; touch /tmp/x;"], "compile_project", orchestrated=True)
+        self.assertIn("reach the make recipe's shell", str(ctx.exception))
+
+    def test_standalone_argv_is_the_operators_own(self) -> None:
+        # The deliberate counterpart to the standalone env guardrail: outside an
+        # orchestration the caller already chose the command, so `target` and
+        # `extra_args` are not restricted. Pinned so the asymmetry is a decision.
+        self.assertEqual(
+            self.mod._validate_build_argv_overrides(
+                "all", ["-j2", "FC=gfortran-13"], "compile_project", orchestrated=False),
+            "all")
+
+    def test_non_string_argv_arguments_are_refused_not_crashed(self) -> None:
+        for target, extra in ((True, []), (3, []), (None, 7), (None, [1])):
+            with self.subTest(target=target, extra_args=extra):
+                with self.assertRaises(ValueError):
+                    self.mod._validate_build_argv_overrides(
+                        target, extra, "compile_project", orchestrated=True)
+
     def test_blank_orchestration_id_is_not_orchestrated(self) -> None:
         # The gate reads a blank orchestration_id as absent; this predicate must agree,
         # or a whitespace value would pick a different rule than the gate applied.
@@ -683,18 +721,21 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         self.assertTrue(self.mod._is_orchestrated_call({"orchestration_id": "orch_x"}))
 
 
-class SyntaxCheckSourcesTests(unittest.TestCase):
+class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
     """`sources` is appended to the compiler front-end argv, so it is argv, not data.
 
-    The gcc driver reads its own options anywhere in that list: with `-B<dir>/` it execs
-    a planted `f951` and the check returns ok=True having compiled nothing — a syntax
-    gate that passes anything. Refused in every mode; a source is a file name."""
+    The gcc driver reads its own options anywhere in that list: `-B<dir>/` execs a
+    planted `f951` and `@file` reads further options out of a file — whose own name may
+    end in `.f90` — and either way the check returns ok=True having compiled something
+    other than what was staged. The rule is what a source name IS. Refused in every
+    mode; the workflow never passes this argument at all."""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.mod = _load_server_module()
 
     def setUp(self) -> None:
+        super().setUp()
         self.project_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
         (self.project_dir / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
@@ -703,15 +744,28 @@ class SyntaxCheckSourcesTests(unittest.TestCase):
         return self.mod.tool_run_syntax_check(
             {"project_dir": str(self.project_dir), "sources": sources})
 
-    def test_compiler_options_and_paths_are_refused(self) -> None:
-        for bad in (["-B/tmp/fake/", "a.f90"], ["--param=x", "a.f90"],
-                    ["../outside/a.f90"], ["/etc/passwd"], ["notes.txt"]):
+    def test_anything_that_is_not_a_staged_source_file_is_refused(self) -> None:
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (outside / "b.f90").write_text("program q\nend program q\n", encoding="utf-8")
+        (self.project_dir / "resp.f90").write_text("-Bfake/\na.f90\n", encoding="utf-8")
+        (self.project_dir / "link.f90").symlink_to(outside / "b.f90")
+        for bad in (
+            ["-B/tmp/fake/", "a.f90"],          # option: exec a planted front end
+            ["--param=x", "a.f90"],
+            ["@resp.f90"],                      # response file: options out of a file
+            ["../outside/a.f90"],
+            ["/etc/passwd"],
+            ["notes.txt"],                      # not a source
+            ["missing.f90"],                    # not staged
+            ["link.f90"],                       # symlink out of project_dir
+        ):
             with self.subTest(sources=bad):
                 with self.assertRaises(ValueError) as ctx:
                     self._call(bad)
-                self.assertIn("plain source file names", str(ctx.exception))
+                self.assertIn("Fortran source files in project_dir", str(ctx.exception))
 
-    def test_plain_source_names_are_accepted(self) -> None:
+    def test_staged_source_names_are_accepted(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
             result = self._call(["a.f90"])
         # Reaches the ordinary missing-compiler skip, i.e. it was not refused.
@@ -749,9 +803,11 @@ class ToolSchemaDocumentParityTests(unittest.TestCase):
                         self.assertEqual(
                             spec.get("description"), served[name][key].get("description"),
                             f"{path.name}:{key} description differs from the served schema")
-                for key in ("orchestration_id", "agent_run_id", "capability_token", "env"):
-                    self.assertIn(key, doc["arguments"]["properties"],
-                                  f"{path.name} omits {key}, which the tool enforces")
+                # Both directions: a property added to the served schema must appear in
+                # the document too, or the document quietly describes a smaller tool.
+                self.assertEqual(
+                    set(doc["arguments"]["properties"]), set(served[name]),
+                    f"{path.name} and the served schema declare different arguments")
 
 
 if __name__ == "__main__":  # pragma: no cover
