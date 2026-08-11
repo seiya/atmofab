@@ -67,7 +67,25 @@ class DisableBytecodeWritesTests(unittest.TestCase):
 _HAVE_GFORTRAN = shutil.which("gfortran") is not None
 
 
-class RunSyntaxCheckTests(unittest.TestCase):
+class _StandaloneServerEnvMixin:
+    """Pin the server's own environment to standalone for tests that call a gated
+    handler without `orchestration_id`.
+
+    Those calls are refused when the server runs under the workflow
+    (`METDSL_WORKFLOW_MODE` / `METDSL_ORCHESTRATION_ID` in its environment), so without
+    this the verdict would depend on the shell that started the suite — and commands in
+    this repository are routinely prefixed with those variables."""
+
+    def setUp(self) -> None:
+        super().setUp()  # type: ignore[misc]
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)  # type: ignore[attr-defined]
+        os.environ.pop("METDSL_WORKFLOW_MODE", None)
+        os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+
+
+class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
     """Unit tests for tool_run_syntax_check (no compiler required — subprocess mocked
     or skipped paths)."""
 
@@ -213,7 +231,7 @@ class RunSyntaxCheckTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
-class RunSyntaxCheckGfortranSmokeTests(unittest.TestCase):
+class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestCase):
     """Real-compiler smoke: the gate must catch, with the actual gfortran front-end,
     the error classes the retired post_generate text heuristics used to mimic
     (identifier > 63 chars / implicit none spec-list / non-constant STOP code) plus the
