@@ -8070,13 +8070,17 @@ end program shallow_water2d_runner
             ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                        "/shallow-water2d_20260415_001/spec.ir.yaml")
             doc = json.loads(ir_path.read_text())
+            # `-c1` reaches the runner's argv as an option; `../../evil` escapes the run
+            # directory. Both are refused by the same grammar, at Compile.
             doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}},
+                                             {"case_id": "-c1", "inputs": {}},
                                              {"case_id": "../../evil", "inputs": {}}]}
             ir_path.write_text(json.dumps(doc))
             v = validate_compile_stage(
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
+            self.assertTrue(any("'-c1'" in x for x in v), v)
 
     def test_validate_compile_stage_rejects_an_unsupported_toolchain(self) -> None:
         # Wiring test: `_validate_toolchain_backend_supported` must fire THROUGH the full

@@ -5675,6 +5675,19 @@ def validate_mcp_build_tool_invocation(
     mcp_args: dict[str, Any] | None = None,
 ) -> None:
     """The phase gate before a `compile_project` / `run_linter` / `run_program` / `run_quality_checks` call."""
+    # Both ids are interpolated into the paths every artifact this gate trusts is read
+    # from — the orchestration root, `launches/<arid>.response.json`, the capability
+    # file, and the audit log this function appends to. A separator or a `..` in either
+    # relocates the whole check to a directory the caller can write, so the capability
+    # it is validated against becomes one the caller authored. Same predicate the
+    # write_root pins use, for the same reason.
+    for label, value in (("orchestration_id", orchestration_id),
+                         ("agent_run_id", agent_run_id)):
+        if not _is_safe_path_id(str(value).strip()):
+            raise RuntimeError(
+                f"MCP phase gate: {label} must be a plain [A-Za-z0-9_-] token "
+                f"(got {value!r})"
+            )
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
 
     root = _orchestration_root(repo_root, orchestration_id)
@@ -5905,20 +5918,37 @@ def _launch_ir_ref_for_agent(
 
 
 def _impl_resolved_build_system(repo_root: Path, ir_ref: str) -> str | None:
+    """`impl_defaults.toolchain.build_system` from the IR, read structurally.
+
+    Read as YAML rather than scanned line by line. The scanner took the first line whose
+    key merely CONTAINED `build_system` and ignored nesting, so one line of prose
+    anywhere above `impl_defaults` — `algorithm.invariants` is a free-text array the
+    same LLM substep authors — decided the answer. A non-`make` answer exempts the
+    make-only contract in the MCP phase gate and suppresses the mandatory Makefile pin
+    in `record_launch`, so a decoy line bought both.
+
+    `None` when the file is missing, unreadable, or declares no value; every caller
+    reads `None` as `make`, which is the fail-closed direction."""
     path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
+    return _impl_defaults_toolchain_value(path, "build_system")
+
+
+def _impl_defaults_toolchain_value(path: Path, field: str) -> str | None:
+    """One `impl_defaults.toolchain.<field>` string from a spec.ir.yaml, or None."""
     if not path.is_file():
         return None
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line or ":" not in line:
-            continue
-        key, _, rest = line.partition(":")
-        if "build_system" not in key.strip().lower():
-            continue
-        val = rest.strip().strip("\"'")
-        return val.lower() or None
-    return None
+    try:
+        doc = _require_yaml().safe_load(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    impl = doc.get("impl_defaults")
+    toolchain = impl.get("toolchain") if isinstance(impl, dict) else None
+    value = toolchain.get(field) if isinstance(toolchain, dict) else None
+    if not isinstance(value, str):
+        return None
+    return value.strip().lower() or None
 
 
 def _impl_resolved_language(repo_root: Path, ir_ref: str) -> str | None:
@@ -6184,6 +6214,19 @@ def _validate_run_gate_permissions(
     agent_run_id: str,
     capability_token: str,
 ) -> None:
+    # Both ids are interpolated into the paths every artifact this gate trusts is read
+    # from — the orchestration root, `launches/<arid>.response.json`, the capability
+    # file, and the audit log this function appends to. A separator or a `..` in either
+    # relocates the whole check to a directory the caller can write, so the capability
+    # it is validated against becomes one the caller authored. Same predicate the
+    # write_root pins use, for the same reason.
+    for label, value in (("orchestration_id", orchestration_id),
+                         ("agent_run_id", agent_run_id)):
+        if not _is_safe_path_id(str(value).strip()):
+            raise RuntimeError(
+                f"run-gate phase gate: {label} must be a plain [A-Za-z0-9_-] token "
+                f"(got {value!r})"
+            )
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     root = _orchestration_root(repo_root, orchestration_id)
 

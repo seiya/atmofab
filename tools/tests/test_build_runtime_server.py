@@ -646,9 +646,9 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         self.repo_root = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.repo_root, ignore_errors=True)
 
-    def _check(self, env: dict) -> None:
+    def _check(self, env: dict, tool: str = "run_quality_checks") -> None:
         self.mod._validate_env_overrides(
-            env, "run_quality_checks", orchestrated=True, repo_root=self.repo_root)
+            env, tool, orchestrated=True, repo_root=self.repo_root)
 
     def _paths(self, **extra: str) -> dict:
         payload = {
@@ -677,17 +677,44 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
 
     def test_allowlist_is_case_exact(self) -> None:
         # `objdir` is a different environment variable: accepting it would leave the
-        # make_test re-run on the Makefile's own OBJDIR default instead of failing.
+        # make_test re-run on the Makefile's own OBJDIR default instead of failing. The
+        # value is one a folded key would ACCEPT, so only the key rule can refuse it.
         with self.assertRaises(ValueError) as ctx:
-            self._check({"objdir": str(self.repo_root)})
-        self.assertIn("objdir", str(ctx.exception))
+            self._check({"objdir": "runner"})
+        self.assertIn("accepts only these env overrides", str(ctx.exception))
+
+    def test_the_case_id_grammar_fits_the_CASES_value_rule(self) -> None:
+        # Validate.execute joins the IR's case ids into CASES, so every id the Compile
+        # gate accepts must be a word this rule accepts. Otherwise a run passes Compile
+        # and Build and fails several phases later on an id no gate objected to.
+        from tools.runner_renderer import _CASE_ID_TOKEN_RE
+        for case_id in ("c1", "l0_v1.2-alpha", "A.b_c-d", "9x"):
+            with self.subTest(case_id=case_id):
+                self.assertTrue(_CASE_ID_TOKEN_RE.match(case_id))
+                self.assertTrue(self.mod._MAKE_NAME_VALUE_RE.match(case_id))
+        # The Compile grammar is the regex plus a separate `..` exclusion; the ids it
+        # refuses outright are refused here too.
+        for rejected in ("-c1", "a/b", "x y"):
+            with self.subTest(rejected=rejected):
+                self.assertIsNone(_CASE_ID_TOKEN_RE.match(rejected))
+                self.assertIsNone(self.mod._MAKE_NAME_VALUE_RE.match(rejected))
+
+    def test_tools_the_workflow_passes_no_env_to_accept_none(self) -> None:
+        # `run_program` / `run_linter` / `run_syntax_check` are never given a caller env
+        # by the workflow, and a make variable means nothing to a linter, so their
+        # allowlist is empty rather than the six.
+        for tool in ("run_program", "run_linter", "run_syntax_check"):
+            with self.subTest(tool=tool):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({"OBJDIR": f"{self.repo_root}/obj"}, tool=tool)
+                self.assertIn("(none)", str(ctx.exception))
 
     def test_allowlist_matches_the_conductor_payload(self) -> None:
         # The set is exactly what Validate.execute passes (workflow_conductor.py's
         # make_test re-run, canonical in docs/workflow/phases/phase_04_validate.md).
         # If that payload grows, this fails rather than the run failing mid-phase.
         self.assertEqual(
-            self.mod._ORCHESTRATED_ENV_OVERRIDE_KEYS,
+            self.mod._MAKE_VARIABLE_ALLOWLIST,
             frozenset({"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}))
 
     def test_values_that_reach_the_recipe_shell_are_refused(self) -> None:
@@ -741,6 +768,17 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
                     self._check({"BIN": value})
                 self.assertIn(f"BIN={value}", str(ctx.exception))
         self._check({"CASES": "case_a case_b"})
+
+    def test_a_path_value_may_not_hold_a_shell_metacharacter(self) -> None:
+        # Absolute, inside the repository, no space — and still a command, because the
+        # recipe interpolates it unquoted. Containment cannot see this; this rule is
+        # the only thing between it and `cd $(RUNDIR) && $(BINDIR)/$(BIN) ...`.
+        for value in (f"{self.repo_root}/x`id`", f"{self.repo_root}/a$FOO",
+                      f"{self.repo_root}/a;id", f"{self.repo_root}/a|id"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({"OBJDIR": value})
+                self.assertIn("reach the make recipe's shell", str(ctx.exception))
 
     def test_a_path_value_may_not_hold_a_space(self) -> None:
         # The other half of the path rule: `<repo>/a b` resolves inside the repository
@@ -938,7 +976,7 @@ class GatedHandlerWiringTests(unittest.TestCase):
                     "orchestrated=_is_orchestrated_call(args),",
                     source)
                 self.assertIn(
-                    f'_validate_command_log_path(command_log_path, args, project_dir, "{tool}")',
+                    f'_validate_orchestrated_paths(command_log_path, args, project_dir, "{tool}")',
                     source)
 
 

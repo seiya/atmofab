@@ -6,7 +6,7 @@
     "properties": {
       "project_dir": {
         "type": "string",
-        "default": "."
+        "description": "Absolute path under an orchestration."
       },
       "preset": {
         "type": "string",

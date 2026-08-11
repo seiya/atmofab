@@ -157,13 +157,24 @@ def _is_orchestrated_call(args: dict[str, Any]) -> bool:
     return raw is not None and bool(str(raw).strip())
 
 
-# The complete set of environment overrides a workflow call may carry: the make
-# variables `Validate.execute` passes to the make_test re-run (canonical:
-# docs/workflow/phases/phase_04_validate.md). Adding a key here is adding a way to
+# The make variables `Validate.execute` passes to the make_test re-run (canonical:
+# docs/workflow/phases/phase_04_validate.md), which are also the only assignments
+# `compile_project` accepts in `extra_args`. Adding a key here is adding a way to
 # influence a certified build, so it belongs with the phase contract that needs it.
-_ORCHESTRATED_ENV_OVERRIDE_KEYS = frozenset(
+_MAKE_VARIABLE_ALLOWLIST = frozenset(
     {"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}
 )
+
+# Which tools may carry any of them at all. The workflow passes `env` to exactly one
+# tool; for the other three an empty allowlist says so, rather than advertising make
+# variables that mean nothing to a linter or a syntax check.
+_ORCHESTRATED_ENV_KEYS_BY_TOOL: dict[str, frozenset[str]] = {
+    "compile_project": _MAKE_VARIABLE_ALLOWLIST,
+    "run_quality_checks": _MAKE_VARIABLE_ALLOWLIST,
+    "run_program": frozenset(),
+    "run_linter": frozenset(),
+    "run_syntax_check": frozenset(),
+}
 
 _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
     "BASH_ENV", "ENV", "IFS", "PATH", "PYTHONPATH",
@@ -213,12 +224,10 @@ def _validate_env_overrides(
     if orchestrated:
         # Exact names: `objdir` is a different environment variable, and accepting it
         # would leave the make_test re-run on the Makefile's own default.
-        offending = sorted(
-            str(key) for key in env
-            if str(key) not in _ORCHESTRATED_ENV_OVERRIDE_KEYS
-        )
+        allowed = _ORCHESTRATED_ENV_KEYS_BY_TOOL.get(tool_name, frozenset())
+        offending = sorted(str(key) for key in env if str(key) not in allowed)
         if offending:
-            permitted = ", ".join(sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS))
+            permitted = ", ".join(sorted(allowed)) or "none"
             raise ValueError(
                 f"{tool_name} accepts only these env overrides under an orchestration "
                 f"({permitted}); refused: " + ", ".join(offending)
@@ -346,10 +355,10 @@ def _validate_build_argv_overrides(
             f"{tool_name} does not accept a target under an orchestration "
             f"(got {resolved_target!r}); the build is the Makefile's default goal"
         )
-    permitted = sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS)
+    permitted = sorted(_MAKE_VARIABLE_ALLOWLIST)
     offending = [
         arg for arg in extra_args
-        if "=" not in arg or arg.split("=", 1)[0] not in _ORCHESTRATED_ENV_OVERRIDE_KEYS
+        if "=" not in arg or arg.split("=", 1)[0] not in _MAKE_VARIABLE_ALLOWLIST
     ]
     if offending:
         raise ValueError(
@@ -529,7 +538,7 @@ def _resolve_command_log_path(project_dir: str, command_log_path: str | None) ->
     return base_dir / raw_path
 
 
-def _validate_command_log_path(
+def _validate_orchestrated_paths(
     command_log_path: Any, args: dict[str, Any], project_dir: str, tool_name: str
 ) -> None:
     """Keep the working directory and the command log inside the repository.
@@ -836,7 +845,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_command_log_path(command_log_path, args, project_dir, "compile_project")
+    _validate_orchestrated_paths(command_log_path, args, project_dir, "compile_project")
     extra_args = args.get("extra_args", [])
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
@@ -903,7 +912,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_command_log_path(command_log_path, args, project_dir, "run_program")
+    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_program")
     env = args.get("env")
     target_class = _resolve_target_class(args)
     threads_per_rank = _parse_threads_per_rank(args)
@@ -964,7 +973,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_command_log_path(command_log_path, args, project_dir, "run_quality_checks")
+    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_quality_checks")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -1037,7 +1046,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_command_log_path(command_log_path, args, project_dir, "run_linter")
+    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_linter")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -1305,7 +1314,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
-    _validate_command_log_path(command_log_path, args, project_dir, "run_syntax_check")
+    _validate_orchestrated_paths(command_log_path, args, project_dir, "run_syntax_check")
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
@@ -1392,7 +1401,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "default": "."},
+                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
                 "language": {"type": "string"},
             },
         },
@@ -1407,7 +1416,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "default": "."},
+                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
                 "language": {"type": "string"},
                 "build_system": {"type": "string"},
                 "target": {
@@ -1456,7 +1465,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "default": "."},
+                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
                 "command": {"type": "array", "items": {"type": "string"}},
                 "timeout_sec": {"type": "integer", "minimum": 1},
                 "capture_limit": {"type": "integer", "minimum": 1000},
@@ -1494,7 +1503,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "default": "."},
+                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
                 "preset": {"type": "string", "default": "make_test"},
                 "timeout_sec": {"type": "integer", "minimum": 1},
                 "capture_limit": {"type": "integer", "minimum": 1000},
@@ -1522,7 +1531,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "default": "."},
+                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
                 "preset": {
                     "type": "string",
                     "default": "fortitude",
@@ -1555,7 +1564,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string", "default": "."},
+                "project_dir": {"type": "string", "description": "Absolute path under an orchestration."},
                 "compiler": {
                     "type": "string",
                     "default": "gfortran",

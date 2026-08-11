@@ -12577,6 +12577,62 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(env["CASES"], "c_alpha c_beta")  # read_case_ids is sorted
             self.assertEqual(env["BIN"], "spec_x_runner")
 
+    def test_execute_inproc_payload_survives_the_real_mcp_validators(self) -> None:
+        """Validate.execute is where the six-key `env` allowlist is actually used, and
+        its values are derived from the IR (`CASES` from the case ids, `BIN` from the
+        spec id, `SPEC` from the IR path) rather than written out here. Replace
+        `_run_command` rather than the tool functions, so the real payload crosses the
+        real value rules."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n"
+                "case:\n  test_case_set:\n    - case_id: c_alpha\n    - case_id: c_beta\n",
+                encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            binary_bin = repo / refs.binary_dir() / "bin"
+            binary_bin.mkdir(parents=True, exist_ok=True)
+            (binary_bin / "spec_x_runner").write_text("binary\n", encoding="utf-8")
+
+            seen: list[dict] = []
+
+            def fake_run_command(**kwargs):
+                seen.append(kwargs)
+                return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
+                        "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server,
+                                   "_maybe_enforce_orchestration_mcp_gate",
+                                   lambda **kw: None), \
+                    mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+                try:
+                    c._execute_inproc(refs, "child-1", "captok")
+                except Exception:
+                    pass  # downstream promotion/gates are irrelevant here
+
+            # Both calls reached the subprocess layer, i.e. no validator refused them.
+            self.assertEqual(len(seen), 2, seen)
+            qc_env = seen[1]["env"]
+            self.assertEqual(qc_env["CASES"], "c_alpha c_beta")
+            self.assertEqual(qc_env["BIN"], "spec_x_runner")
+            self.assertEqual(seen[1]["command"], ["make", "test"])
+
     def test_execute_inproc_clears_stale_verdict_on_runtime_error(self) -> None:
         # R2 guard: a structural (runtime-error) execute failure must leave NO verdict.json, so a
         # STALE one from a prior run cannot make classify_failure misroute the runner failure as a

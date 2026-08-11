@@ -15181,7 +15181,58 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 brs.tool_run_quality_checks({**base, "env": dict(payload)})
             self.assertEqual(run_command.call_args.kwargs["env"], payload)
 
-    def test_validate_mcp_omitted_build_system_is_treated_as_make(self) -> None:
+    def test_validate_mcp_refuses_ids_that_are_not_plain_path_tokens(self) -> None:
+        """Both ids are interpolated into the paths this gate reads its own evidence
+        from, so a `..` in either relocates the check to a directory the caller wrote —
+        including the capability it is then validated against, and the audit record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm10")
+            token = str(cap["capability_token"])
+            for oid, arid in (("../vperm10", "build_child"),
+                              ("vperm10", "../../elsewhere/build_child"),
+                              ("vperm10/x", "build_child"),
+                              ("vperm10", "build_child/../y")):
+                with self.subTest(orchestration_id=oid, agent_run_id=arid):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        validate_mcp_build_tool_invocation(
+                            repo_root,
+                            orchestration_id=oid,
+                            agent_run_id=arid,
+                            capability_token=token,
+                            tool_name="compile_project",
+                        )
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
+
+    def test_ir_build_system_is_read_structurally_not_line_scanned(self) -> None:
+        """A line of prose containing `build_system:` must not answer for the toolchain.
+
+        `algorithm.invariants` is free text authored by the same substep that writes the
+        IR, and it precedes `impl_defaults`. A line scanner returned the decoy, and a
+        non-make answer exempts the make-only contract entirely."""
+        from tools.orchestration_runtime import _impl_resolved_build_system
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "algorithm:\n"
+                "  invariants:\n"
+                "    - \"the build_system: pytest harness is out of scope here\"\n"
+                "impl_defaults:\n"
+                "  toolchain:\n"
+                "    language: fortran\n"
+                "    build_system: make\n",
+                encoding="utf-8")
+            self.assertEqual(
+                _impl_resolved_build_system(repo_root, _FIX_IR_REF), "make")
+            # A top-level `toolchain:` is a shape the pipeline never produces, and a
+            # structured reader does not find the field there.
+            ir_path.write_text(
+                "toolchain:\n  build_system: cmake\n", encoding="utf-8")
+            self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
+
+    def test_validate_mcp_omitted_build_system_is_accepted_under_a_make_toolchain(self) -> None:
         """An omitted (or blank) `build_system` means make, so the make-only contract
         applies to it. Reading the omission as "no policy" was the bypass: the argument
         is the caller's, and dropping it skipped the check while the server went on to
