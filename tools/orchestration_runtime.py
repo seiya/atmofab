@@ -5854,8 +5854,13 @@ def validate_mcp_build_tool_invocation(
             bs = _impl_resolved_build_system(repo_root, ir_ref)
             if bs == "make":
                 if tool_name == "compile_project":
-                    req_bs = str(args_obj.get("build_system", "")).strip().lower()
-                    if req_bs and req_bs != "make":
+                    # An absent build_system means make, the same reading record_launch
+                    # applies to an IR that omits toolchain.build_system. Treating the
+                    # omission as "no policy" instead let a caller skip this check
+                    # entirely while the server auto-detected a build system from
+                    # marker files in project_dir.
+                    req_bs = str(args_obj.get("build_system", "")).strip().lower() or "make"
+                    if req_bs != "make":
                         raise RuntimeError(
                             "MCP phase gate: toolchain.build_system=make requires compile_project "
                             f"build_system make (got {req_bs!r})"

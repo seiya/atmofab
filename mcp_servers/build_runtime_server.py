@@ -555,6 +555,13 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     build_system = args.get("build_system")
     if build_system:
         build_system = str(build_system).strip().lower()
+    elif args.get("orchestration_id"):
+        # Under an orchestration the phase gate reads an omitted build_system as make
+        # (as record_launch does for an IR that omits toolchain.build_system), so
+        # detecting one from marker files here would run a build the gate never saw:
+        # a project_dir without a Makefile but with a CMakeLists.txt was the bypass.
+        # The workflow is make-only, so make is also the right answer.
+        build_system = "make"
     else:
         build_system = _recommended_build_system(project_dir, language)["build_system"]
 

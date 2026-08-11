@@ -15085,6 +15085,100 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 )
             self.assertIn("not permitted by capability", str(ctx.exception))
 
+    def _build_child_capability(self, repo_root: Path, orchestration_id: str) -> dict:
+        """A build-step child holding the compile_project grant, ready for the gate."""
+        import tools.workflow_conductor as wc
+        self._perm_test_preflight(repo_root, orchestration_id)
+        self._perm_test_plant_lineage(repo_root)
+        req = wc.build_launch_request(
+            self._perm_test_refs(binary_id="bin_20260415_001"),
+            step="build", substep=None,
+            orchestration_id=orchestration_id,
+            orchestration_agent_run_id=f"orch_{orchestration_id}",
+            child_agent_run_id="build_child",
+            agent_model="claude-opus-4-8",
+            workflow_mode="dev",
+            exe_name="simulate",
+        )
+        return self._perm_record_and_cap(
+            repo_root, orchestration_id=orchestration_id,
+            parent=f"orch_{orchestration_id}", child="build_child", req=req,
+        )
+
+    def test_validate_mcp_omitted_build_system_is_treated_as_make(self) -> None:
+        """An omitted (or blank) `build_system` means make, so the make-only contract
+        applies to it. Reading the omission as "no policy" was the bypass: the argument
+        is the caller's, and dropping it skipped the check while the server went on to
+        pick a build system from marker files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm5")
+            _plant_spec_ir_yaml_make(repo_root)
+            token = str(cap["capability_token"])
+
+            def check(mcp_args: dict) -> None:
+                validate_mcp_build_tool_invocation(
+                    repo_root,
+                    orchestration_id="vperm5",
+                    agent_run_id="build_child",
+                    capability_token=token,
+                    tool_name="compile_project",
+                    mcp_args=mcp_args,
+                )
+
+            check({})
+            check({"build_system": ""})
+            check({"build_system": "  "})
+            check({"build_system": "make"})
+            with self.assertRaises(RuntimeError) as ctx:
+                check({"build_system": "cmake"})
+            self.assertIn("requires compile_project build_system make", str(ctx.exception))
+
+    def test_gate_and_server_agree_on_omitted_build_system(self) -> None:
+        """Gate and server read an omitted `build_system` the same way. They did not:
+        the gate skipped its check and the server auto-detected from marker files, so a
+        project_dir with a CMakeLists.txt and no Makefile built with cmake under a
+        make-only toolchain."""
+        import mcp_servers.build_runtime_server as brs
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm6")
+            _plant_spec_ir_yaml_make(repo_root)
+            project_dir = repo_root / "cmakeish"
+            project_dir.mkdir()
+            (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
+            # Precondition: marker detection alone would answer cmake here.
+            self.assertEqual(
+                brs._recommended_build_system(str(project_dir), "")["build_system"], "cmake")
+
+            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+            with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                result = tool_compile_project({
+                    "project_dir": str(project_dir),
+                    "repo_root": str(repo_root),
+                    "orchestration_id": "vperm6",
+                    "agent_run_id": "build_child",
+                    "capability_token": str(cap["capability_token"]),
+                })
+            self.assertEqual(result["build_system"], "make")
+            self.assertEqual(run_command.call_args.kwargs["command"][0], "make")
+
+    def test_omitted_build_system_standalone_still_marker_detects(self) -> None:
+        """The asymmetry is deliberate: outside an orchestration there is no toolchain
+        declaration to agree with, so marker detection stays the answer."""
+        import mcp_servers.build_runtime_server as brs
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
+            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+            with patch.dict(os.environ, {}, clear=False):
+                for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+                    os.environ.pop(name, None)
+                with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                    result = tool_compile_project({"project_dir": str(project_dir)})
+            self.assertEqual(result["build_system"], "cmake")
+            self.assertEqual(run_command.call_args.kwargs["command"][0], "cmake")
+
     def test_validate_mcp_execute_grant_accepts_program_and_quality_checks(self) -> None:
         """The validate.execute grant is exercised through the REAL authz gate: its capability
         token authorizes BOTH run_program and run_quality_checks and refuses an unrelated
