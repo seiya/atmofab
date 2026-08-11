@@ -26,6 +26,12 @@ Investigate the logs of a completed or interrupted workflow execution across the
 | failure analysis | `workspace/orchestrations/<orch_id>/failure_analysis.json` |
 | session conversation log | `~/.claude/projects/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`) |
 
+> **Operator context only.** The `~/.claude` read in the row above is of the backend CLI's
+> credential/session home, which the Bash read guard rejects fail-closed whenever
+> `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical:
+> `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
+> workflow run — inside one, every such read blocks, and that block is correct.
+
 ## Investigation procedure
 
 ### Step 1 — Identify the orchestration_id

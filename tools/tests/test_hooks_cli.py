@@ -3251,6 +3251,196 @@ class BashReadManifestGuardTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(self._log_lines(repo_root), [])
 
+    def test_out_of_repo_target_is_withheld_from_auto_approve(self) -> None:
+        """Not blocked, but not auto-approved either.
+
+        Auto-approval bypasses the harness permission list; the repo-relative
+        manifest authorized nothing here, so that list must stay in charge. The
+        in-repo twin is auto-approved, which is what makes this a real
+        distinction rather than a dead branch.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            for command in (
+                "cat /etc/hostname",
+                "cat /etc/*.conf",
+                # `~` / `$HOME` spellings: `_resolve_target_path` is literal, so
+                # these used to read as the in-repo path `<repo>/~/...`, miss as
+                # "nonexistent", and land in the auto-approve.
+                "cat ~/.ssh/id_rsa",
+                "cat ~/.ssh/*",
+                "cat $HOME/.aws/credentials",
+                # An unquoted `$` makes the target unprovable at all: the
+                # extractor declares `$VAR` operands as residue it cannot see.
+                "cat $SOMEVAR/x",
+                # ANSI-C quoting: `$'\057etc'` is `/etc`, and the `$` check
+                # exempts `$` before a quote unless it is spelled for it.
+                "cat $'\\057etc\\057hostname'",
+                # A brace expansion mixing an in-repo and an out-of-repo variant
+                # is the shape only `_expanded_target_path` decides: the `~` word
+                # check does not see it, because the token starts with `{`.
+                "cat {~/.ssh/id_rsa,docs/WORKFLOW.md}",
+            ):
+                code, body = self._run(repo_root, command)
+                self.assertEqual(code, 0, msg=command)
+                # A plain allow emits no envelope at all; only the auto-approve
+                # writes permissionDecision=allow.
+                decision = (
+                    json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision")
+                    if body
+                    else None
+                )
+                self.assertNotEqual(decision, "allow", msg=command)
+            for command in (
+                "cat docs/WORKFLOW.md",
+                "true && cat docs/WORKFLOW.md",
+                "cat docs/*.md",
+                # `/dev/null` is out-of-repo but reads nothing, and
+                # `diff -u /dev/null <file>` is a common real shape.
+                "diff -u /dev/null docs/WORKFLOW.md",
+            ):
+                code, body = self._run(repo_root, command)
+                self.assertEqual(code, 0, msg=command)
+                self.assertEqual(
+                    json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision"),
+                    "allow",
+                    msg=command,
+                )
+
+    def test_quoted_variable_reads_are_withheld_from_auto_approve(self) -> None:
+        """bash expands `$HOME` inside double quotes.
+
+        Testing the quote-STRIPPED copy let `cat "$HOME/.aws/credentials"`
+        through while rejecting the identical unquoted read — the target is
+        equally invisible to `extract_bash_read_targets` in both spellings.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            for command in (
+                'cat "$HOME/.aws/credentials"',
+                'cat "$HOME"/.ssh/id_rsa',
+                'cat "${HOME}/.ssh/id_rsa"',
+                'grep x "$HOME/.aws/credentials"',
+                "cat ~-/.ssh/id_rsa",
+                "ls -la ~",
+            ):
+                code, body = self._run(repo_root, command)
+                self.assertEqual(code, 0, msg=command)
+                decision = (
+                    json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision")
+                    if body
+                    else None
+                )
+                self.assertNotEqual(decision, "allow", msg=command)
+            # A `$` that names no path keeps its auto-approve: a regex anchor,
+            # `$?`, `$$`. Withholding those would be pure friction.
+            for command in (
+                'grep -n "foo$" docs/WORKFLOW.md',
+                # A regex anchor in a SINGLE-quoted word: here `$'` closes a word
+                # rather than opening one, and treating it as ANSI-C quoting cost
+                # four real commands their auto-approve.
+                "grep -n 'foo$' docs/WORKFLOW.md",
+                r"cat docs/WORKFLOW.md | grep -n '^\$'",
+                'echo "EXIT:$?"',
+                r'grep -E "\.(py|md)$" docs/WORKFLOW.md',
+            ):
+                code, body = self._run(repo_root, command)
+                self.assertEqual(code, 0, msg=command)
+                self.assertEqual(
+                    json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision"),
+                    "allow",
+                    msg=command)
+
+    def test_symlinked_glob_match_is_withheld_like_its_literal_twin(self) -> None:
+        """`cat docs/link.txt` and `cat docs/*.txt` must agree.
+
+        Containment was decided on the UNRESOLVED match, so an in-repo symlink
+        pointing outside was classified in-repo — the glob form authorized
+        against the repo-relative manifest what the literal form withheld.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(Path(tmp) / "repo", roots=["docs/"])
+            (Path(tmp) / "outside.txt").write_text("secret", encoding="utf-8")
+            os.symlink(Path(tmp) / "outside.txt", repo_root / "docs" / "link.txt")
+            for command in ("cat docs/link.txt", "cat docs/*.txt"):
+                code, body = self._run(repo_root, command)
+                self.assertEqual(code, 0, msg=command)
+                decision = (
+                    json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision")
+                    if body
+                    else None
+                )
+                self.assertNotEqual(decision, "allow", msg=command)
+
+    def test_glob_escaping_the_repo_is_withheld_from_auto_approve(self) -> None:
+        """A glob whose PREFIX is in-repo can still match outside it.
+
+        `docs/*/../../outside.txt` expands to a real out-of-repo file; the
+        expanded matches were dropped silently, so the command reached the
+        auto-approve with nothing having authorized the path.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(Path(tmp) / "repo", roots=["docs/"])
+            (repo_root / "docs" / "sub").mkdir(parents=True, exist_ok=True)
+            (Path(tmp) / "outside.txt").write_text("secret", encoding="utf-8")
+            code, body = self._run(repo_root, "cat docs/*/../../../outside.txt")
+            self.assertEqual(code, 0)
+            decision = (
+                json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision")
+                if body
+                else None
+            )
+            self.assertNotEqual(decision, "allow")
+
+    def test_read_tool_parity_on_backend_credential_home(self) -> None:
+        """Parity: the Read tool never reached these paths, and still does not.
+
+        allowed_read_roots is repo-relative, so an absolute home path can never
+        be in it — this pins the property the Bash guard was closing the gap to.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            for target in (
+                str(Path.home() / ".claude.json"),
+                str(Path.home() / ".claude" / "settings.json"),
+                str(Path.home() / ".codex" / "auth.json"),
+                str(Path.home() / ".met-dsl" / "operator_tokens" / "x.txt"),
+            ):
+                payload = {
+                    "orchestration_id": self.ORCH,
+                    "repo_root": str(repo_root),
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": target},
+                }
+                out = io.StringIO()
+                with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+                    with redirect_stdout(out):
+                        code = cli.main(
+                            [
+                                "--backend",
+                                "claude",
+                                "--event",
+                                "PreToolUse",
+                                "--input-json",
+                                json.dumps(payload),
+                            ]
+                        )
+                self.assertEqual(code, 2, msg=target)
+                # Pin the REASON, not just the exit code: a block for an
+                # unrelated future reason would satisfy the code alone.
+                self.assertIn(
+                    "read_manifest allowed_read_roots", json.loads(out.getvalue()).get("reason", ""),
+                    msg=target)
+
+    def test_backend_credential_read_blocks_before_auto_approve(self) -> None:
+        """The one path that must not merely lose the auto-approve, but block."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, roots=["docs/"])
+            for command in ("cat ~/.claude.json", "cat ~/.claude/settings.json"):
+                code, body = self._run(repo_root, command)
+                self.assertEqual(code, 2, msg=command)
+                self.assertIn("backend CLI's credential", json.loads(body).get("reason", ""))
+
     def test_failed_cd_does_not_disarm_the_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, roots=["docs/"])
@@ -3386,7 +3576,7 @@ class BashReadManifestGuardTests(unittest.TestCase):
                 _bounded_glob_read_targets(
                     repo_root, resolved, "docs/*/../../spec/*/*/*"
                 ),
-                [(".", resolved)],
+                ([(".", resolved)], []),
             )
 
     def test_broad_glob_with_a_nonexistent_prefix_is_not_blocked(self) -> None:
@@ -3403,7 +3593,7 @@ class BashReadManifestGuardTests(unittest.TestCase):
             repo_root = Path(tmp)
             self.assertEqual(
                 _bounded_glob_read_targets(repo_root, repo_root.resolve(), "/*/*/*/*/*/*"),
-                [],
+                ([], ["/*/*/*/*/*/*"]),
             )
 
     def test_glob_matching_nothing_is_not_blocked(self) -> None:

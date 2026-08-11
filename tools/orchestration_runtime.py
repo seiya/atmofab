@@ -69,6 +69,7 @@ try:
         _ALLOWED_BYPRODUCT_EXTENSIONS,
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
+        backend_credential_home_paths as _backend_credential_home_paths,
         validate_pipeline_semantics_stage,
     )
     from tools.meta_contracts import (
@@ -97,6 +98,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         _ALLOWED_BYPRODUCT_EXTENSIONS,
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
+        backend_credential_home_paths as _backend_credential_home_paths,
         validate_pipeline_semantics_stage,
     )
     from tools.meta_contracts import (
@@ -7762,7 +7764,10 @@ def _backend_runtime_bind_paths(
       from the command's first token (a custom wrapper resolves to the wrapper binary).
     - rw: the backend's config/credential home (``~/.claude`` + ``~/.claude.json``
       for claude; ``~/.codex`` for codex), keyed on the backend *type* (not the command
-      string, which may be a wrapper). Writable because the CLI refreshes auth and writes
+      string, which may be a wrapper), and resolved by the canonical
+      ``tools.hooks.common.backend_credential_home_paths`` so this profile and the Bash
+      read guard that forbids reading these paths cannot drift. Writable because the CLI
+      refreshes auth and writes
       its session transcript there (the latter is also what Phase 4's ``--session-id`` /
       ``--resume`` rely on). An unconfined leaf already had full access to these, so
       binding them is strictly less permissive than today.
@@ -7779,23 +7784,19 @@ def _backend_runtime_bind_paths(
     if home:
         if btype == "claude":
             ro.add(str(Path(home) / ".local" / "share" / "claude"))
-            rw.add(str(Path(home) / ".claude"))  # config dir (creatable if absent)
-            # auth FILE: include only if present — it cannot be fabricated, and gating it
-            # here means every *missing* rw entry the caller sees is a creatable dir (no
-            # fragile dir-vs-file suffix guessing during materialization).
-            auth_file = Path(home) / ".claude.json"
-            if auth_file.exists():
-                rw.add(str(auth_file))
-        elif btype == "codex":
-            # Mirror preflight's codex-home resolution (`Path(raw).expanduser()`) so the
-            # bound dir matches what preflight checked; coerce to absolute because bwrap
-            # binds require an absolute source (a `~`/relative CODEX_HOME otherwise
-            # yields a wrong or non-absolute bind target).
-            raw_codex = os.environ.get("CODEX_HOME", "").strip()
-            if not raw_codex:
-                raw_codex = os.environ.get("METDSL_HOME", "").strip()
-            codex_home = Path(raw_codex).expanduser() if raw_codex else Path(home) / ".codex"
-            rw.add(str(codex_home if codex_home.is_absolute() else codex_home.resolve()))
+        # The credential-home paths themselves come from the single canonical
+        # resolver in tools/hooks/common.py, which the Bash read guard reads from
+        # the same call — what this profile binds writable is exactly what that
+        # guard forbids reading, with no second spelling to drift.
+        cred_dirs, cred_files = _backend_credential_home_paths(btype)
+        for cred_dir in cred_dirs:  # config dir (creatable if absent)
+            rw.add(str(cred_dir))
+        # auth FILE: include only if present — it cannot be fabricated, and gating it
+        # here means every *missing* rw entry the caller sees is a creatable dir (no
+        # fragile dir-vs-file suffix guessing during materialization).
+        for cred_file in cred_files:
+            if cred_file.exists():
+                rw.add(str(cred_file))
     ro_paths = sorted(p for p in ro if p and Path(p).exists())
     # rw (backend config/credential home) is returned unfiltered by existence; the
     # caller (build_bwrap_profile) materializes a missing config *dir* before binding,

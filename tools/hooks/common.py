@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import ast
 from datetime import datetime, timezone
 from enum import Enum
-import fnmatch
 import glob
 import json
 import os
@@ -15,7 +14,7 @@ import re
 import shlex
 import time
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, Sequence
 
 # fcntl is POSIX-only.  On Windows we fall through to fail-closed when the
 # auto-read seen-set needs an exclusive lock — there is no portable
@@ -1571,93 +1570,1460 @@ _PIPE_TAIL_ALLOWED_ATTRS: frozenset[str] = frozenset({
 })
 
 
-def _command_reads_operator_secret(
+def _home_dir() -> Path:
+    """The host home directory, read the same way the bwrap profile reads it."""
+    raw = (os.environ.get("HOME") or "").strip()
+    return Path(raw) if raw else Path.home()
+
+
+def operator_secret_root() -> Path:
+    """`~/.met-dsl/` — where the operator-only dismiss-violation tokens live."""
+    return (_home_dir() / ".met-dsl").resolve()
+
+
+BACKEND_CREDENTIAL_BACKEND_TYPES = ("claude", "codex")
+
+
+def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """The backend CLI's config/credential home, as `(dirs, files)`.
+
+    CANONICAL for two consumers that must not diverge:
+      * `tools/orchestration_runtime.py::_backend_runtime_bind_paths`, which
+        rw-binds these into a leaf's bwrap sandbox (the CLI refreshes auth and
+        writes its session transcript there);
+      * the Bash read guard below, which must forbid reading exactly what that
+        profile makes reachable.
+    Split dirs/files because the bind side materializes a missing config *dir*
+    but existence-gates the auth *file* (it cannot be fabricated).
+    """
+    home = _home_dir()
+    btype = (backend_type or "").strip().lower()
+    if btype == "claude":
+        return (home / ".claude",), (home / ".claude.json",)
+    if btype == "codex":
+        # Mirror preflight's codex-home resolution so the guarded path is the
+        # bound one even when CODEX_HOME relocates it.
+        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
+        codex_home = Path(raw).expanduser() if raw else home / ".codex"
+        if not codex_home.is_absolute():
+            codex_home = codex_home.resolve()
+        return (codex_home,), ()
+    return (), ()
+
+
+def protected_host_read_roots() -> tuple[Path, ...]:
+    """Out-of-repo host paths a Bash command in workflow mode may never read.
+
+    Two classes, one rule: the operator-secret root (dismiss-violation tokens)
+    and every backend credential home the sandbox rw-binds (OAuth credentials +
+    session transcripts).  The Read tool reaches neither — the read manifest's
+    allowed_read_roots are repo-relative — so this closes the Bash-only route.
+    """
+    roots: list[Path] = [operator_secret_root()]
+    for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
+        dirs, files = backend_credential_home_paths(btype)
+        roots.extend(dirs)
+        roots.extend(files)
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except (OSError, ValueError, RuntimeError):
+            resolved = root
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(resolved)
+    # Longest path first, so a nested/suffixed root is attributed to itself:
+    # `~/.claude.json` must be named by the block message rather than `~/.claude`,
+    # whose marker regex also matches it (the `.` after "claude" is a word
+    # boundary). Only the message differs — either way the read is blocked.
+    unique.sort(key=lambda p: len(str(p)), reverse=True)
+    return tuple(unique)
+
+
+def _protected_root_marker_regex(root: Path) -> re.Pattern[str]:
+    """Regex catching the ~ / $HOME / ${HOME} / <abs-home> spellings of `root`.
+
+    Matching the raw command string (not tokens) is what catches the spellings
+    adjacent shell punctuation would mangle.
+
+    The root must end where the regex ends: the next character is `/` or not a
+    filename character at all. A bare `\b` would be satisfied by `-` and `.`, so
+    `~/.claude-notes.txt` would be read as a `~/.claude` hit — and, worse, every
+    `~/.claude.json` hit would be attributed to the directory root.
+    """
+    boundary = r"(?:/|(?![\w.\-]))"
+    home = str(_home_dir()).rstrip("/")
+    root_s = str(root)
+    if root_s.startswith(home + "/"):
+        tail = root_s[len(home) + 1 :]
+        # `\$\{HOME[^}]*\}` — not just `${HOME}`: every bash parameter expansion
+        # of HOME (`${HOME:-/x}`, `${HOME:+$HOME}`, `${HOME%%x}`, `${HOME/x/y}`)
+        # expands to the home directory in practice, and `os.path.expandvars`
+        # understands none of them, so the token layer below cannot be the one to
+        # catch them.
+        prefix = r"(?:~|\$HOME\b|\$\{HOME[^}]*\}|" + re.escape(home) + r")/"
+        return re.compile(prefix + re.escape(tail) + boundary)
+    return re.compile(re.escape(root_s) + boundary)
+
+
+# `${NAME…}` / `${!NAME…}` — a parameter expansion with any operator body. The
+# `[^}]*` tail is deliberately opaque: this guard only needs to know the
+# expansion is of NAME.
+_PARAM_EXPANSION_RE = re.compile(r"\$\{(!?)([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}")
+# The word after a `:-` / `:=` / `:+` / `-` / `=` / `+` / `#` / `%` operator.
+_PARAM_EXPANSION_OPERATOR_RE = re.compile(r"^(?::?[-=+]|#{1,2}|%{1,2})(.*)$")
+_ASSIGNMENT_TOKEN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+# Any `$NAME` / `${NAME…}` reference, used to keep only the assignments that
+# something in the command actually reads.
+_VAR_REFERENCE_SCAN_RE = re.compile(r"\$\{?!?([A-Za-z_][A-Za-z0-9_]*)")
+# `${NAME}` or `$NAME`, for one-pass substitution from a resolved value map.
+# A `$` that cannot begin a variable reference and is not a trailing regex
+# anchor — i.e. one left behind by a stripped `$'…'` / `$"…"` construct.
+_OBFUSCATING_DOLLAR_RE = re.compile(r"\$[^A-Za-z_{\s]")
+_SIMPLE_VAR_REFERENCE_RE = re.compile(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)"
+)
+# `$'…'` — ANSI-C quoting. bash decodes the escapes inside, so `$'\057etc'` IS
+# `/etc`: a spelling in which no protected path appears literally anywhere.
+_ANSI_C_QUOTE_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+# `$"…"` — locale translation. With no catalogue it is the string itself, so it
+# is pure obfuscation: `~/$".claude.json"` is `~/.claude.json`.
+_LOCALE_QUOTE_RE = re.compile(r'\$"((?:[^"\\]|\\.)*)"')
+_ANSI_C_SIMPLE_ESCAPES = {
+    "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n",
+    "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?",
+}
+# Bounds. This predicate runs synchronously on every tool call, and every axis is
+# attacker-chosen: N assignments x M tokens (an `re.sub` each) and N `cd` anchors
+# x M relative tokens (a `.resolve()` syscall each) are quadratic uncapped, and a
+# cyclic assignment chain (`A=$B$B$B$B; B=$C$C$C$C; C=$A$A$A$A`) grows the
+# substituted string exponentially — a 56-character command took 134s.
+#
+# The bound is on WORK (candidate length, and tokens that can carry an
+# expansion), NOT on how many assignments or anchors are considered. Capping the
+# latter is fail-OPEN to padding: an evader writes eight throwaway assignments,
+# or four throwaway `cd`s, and puts the real one last.
+_ASSIGNMENT_PASSES = 3
+_CANDIDATE_MAX_LEN = 4096
+# Passes over the parameter-expansion phase, for nested `${A:-${HOME}}`.
+_PARAM_EXPANSION_PASSES = 2
+# (positions x pattern elements) steps allowed in one `${X//pat/rep}` scan.
+_GLOB_SUBSTITUTION_OPS_MAX = 60_000
+# Total transformation work allowed for ONE command, across every expansion.
+_TOTAL_TRANSFORM_OPS_MAX = 120_000
+# Ceiling on (candidate x base) path checks in one call. High because each
+# check is now a lexical normpath, with a syscall only for a path that exists.
+_RESOLVE_OPS_MAX = 40_000
+_CD_ANCHOR_MAX_DEPTH = 32
+# Matches an exempt glob may have before the exemption is refused outright.
+_GLOB_EXEMPT_MATCH_MAX = 256
+_CD_FOLD_MAX = 512
+# How far past a `cd` to look for its target while skipping the command's own
+# options. A literal, not `len(_CD_OPTION_TOKENS)`: the window must not silently
+# move when an option spelling is added to or removed from that set.
+_CD_OPTION_SCAN_MAX = 8
+# `cd`'s own options, skipped when looking for its target directory. `-n` is
+# pushd's (it suppresses the directory change, so its operand is not a target —
+# skipping it keeps a bogus anchor out of the fold).
+_CD_OPTION_TOKENS = frozenset({"--", "-L", "-P", "-e", "-@", "-LP", "-PL", "-n"})
+# Options that name a working directory — but only for the commands that use
+# them that way. `rsync -C` is `--cvs-exclude`, `scp -C` is compress, `ls -C` and
+# `tree -C` take no operand at all, and treating them as directory changes
+# deleted the NEXT token (the real read target) from the ancestor rule.
+# `${NAME/pat/rep}` / `${NAME//pat/rep}` / `${NAME/#pat/rep}` / `${NAME/%pat/rep}`
+# — pattern substitution; the pattern may carry a backslash-escaped `/`.
+_PARAM_PATTERN_SUB_RE = re.compile(r"^(//|/#|/%|/)((?:\\.|[^/])*)(?:/(.*))?$")
+# `${NAME^^}` / `${NAME,,}` / `${NAME^}` / `${NAME,}`, with an optional glob
+# selecting which characters convert.
+_PARAM_CASE_RE = re.compile(r"^(\^\^|,,|\^|,)(.*)$")
+# `${NAME#pfx}` / `${NAME##pfx}` / `${NAME%sfx}` / `${NAME%%sfx}` — affix strip.
+_PARAM_AFFIX_RE = re.compile(r"^(#{1,2}|%{1,2})(.*)$")
+# `${NAME:off}` / `${NAME:off:len}` — substring. The negative lookahead keeps the
+# alternate-word operators (`:-`, `:+`, `:=`, `:?`) out; bash needs a space
+# before a negative offset. The offset is an arithmetic expression.
+_PARAM_SUBSTRING_RE = re.compile(r"^:(?![-+=?])([\d +-]*?)(?::([\d +-]+))?$")
+_ARITH_TERM_RE = re.compile(r"([+-]?)\s*(\d+)")
+_SHELL_SEPARATOR_TOKENS = frozenset({"&&", "||", ";", "|", "&"})
+_SHELL_SEPARATOR_CHARS = ";|&"
+_DIRECTORY_OPTION_TOKENS = frozenset({"-C", "--directory", "--cd", "--chdir"})
+_DIRECTORY_OPTION_COMMANDS = frozenset({
+    "tar", "gtar", "bsdtar", "git", "make", "gmake", "cpio", "pax", "ninja",
+    "cmake", "patch", "env",
+})
+# Commands that prefix another command rather than being the one that runs.
+_COMMAND_PREFIX_WRAPPERS = frozenset({"sudo", "env", "nohup", "time", "nice", "stdbuf", "xargs"})
+
+
+def _directory_option_indices(cmd_tokens: Sequence[str]) -> set[int]:
+    """Indices of `-C` / `--directory` / `--chdir` tokens that name a directory.
+
+    One FORWARD pass, tracking each segment's argv0: the backward scan this
+    replaces was O(index) per token and quadratic over the command (13.6s of CPU
+    on a 32 KB one), and it accepted a command NAME appearing as an ARGUMENT, so
+    `ls -R tar -C ~` deleted `~` from the ancestor rule.
+    """
+    marked: set[int] = set()
+    argv0: str | None = None
+    expect_command = True
+    for index, tok in enumerate(cmd_tokens):
+        bare = tok.strip().strip("<>();|&\"'`")
+        if not bare:
+            continue
+        if bare in _SHELL_SEPARATOR_TOKENS or any(
+            ch in tok for ch in _SHELL_SEPARATOR_CHARS
+        ):
+            expect_command = True
+            argv0 = None
+            if bare in _SHELL_SEPARATOR_TOKENS:
+                continue
+        if expect_command and not bare.startswith("-"):
+            name = bare.split("/")[-1]
+            if name in _COMMAND_PREFIX_WRAPPERS:
+                # `sudo` / `env` pass the real command through, but `env` also
+                # has its own `-C`, so it owns the options that follow IT until
+                # the real command name arrives.
+                argv0 = name
+                continue
+            argv0 = name
+            expect_command = False
+            continue
+        head = bare.split("=")[0]
+        if head in _DIRECTORY_OPTION_TOKENS and (
+            head != "-C" or (argv0 in _DIRECTORY_OPTION_COMMANDS)
+        ):
+            marked.add(index)
+    return marked
+
+
+
+# `[[:alpha:]]` and friends, which bash accepts inside a `[…]` class.
+_POSIX_CLASS_PREDICATES = {
+    "alpha": str.isalpha, "digit": str.isdigit, "alnum": str.isalnum,
+    "upper": str.isupper, "lower": str.islower, "space": str.isspace,
+    "punct": lambda c: not c.isalnum() and not c.isspace() and c.isprintable(),
+    "print": str.isprintable, "graph": lambda c: c.isprintable() and not c.isspace(),
+    "blank": lambda c: c in " \t", "cntrl": lambda c: not c.isprintable(),
+    "xdigit": lambda c: c in "0123456789abcdefABCDEF",
+}
+
+
+def _decode_ansi_c_quotes(text: str) -> str:
+    """`$'\\057etc'` -> `/etc`. Unknown escapes are left as their literal char."""
+
+    def _decode(match: "re.Match[str]") -> str:
+        body = match.group(1)
+        out: list[str] = []
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if ch != "\\" or i + 1 >= len(body):
+                out.append(ch)
+                i += 1
+                continue
+            nxt = body[i + 1]
+            if nxt in _ANSI_C_SIMPLE_ESCAPES:
+                out.append(_ANSI_C_SIMPLE_ESCAPES[nxt])
+                i += 2
+            elif nxt in "01234567":
+                octal = ""
+                for d in body[i + 1 : i + 4]:
+                    if d not in "01234567":
+                        break
+                    octal += d
+                out.append(chr(int(octal, 8) % 256))
+                i += 1 + len(octal)
+            elif nxt in "xuU":
+                width = {"x": 2, "u": 4, "U": 8}[nxt]
+                hexs = ""
+                for d in body[i + 2 : i + 2 + width]:
+                    if d not in "0123456789abcdefABCDEF":
+                        break
+                    hexs += d
+                if hexs:
+                    codepoint = int(hexs, 16)
+                    # `$'\\UFFFFFFFF'` is above Unicode's maximum: `chr` raises, and
+                    # the raise escaped as a generic hook entrypoint failure on an
+                    # otherwise valid command. Leave it literal.
+                    out.append(
+                        chr(codepoint) if codepoint < 0x110000 else body[i : i + 2 + len(hexs)]
+                    )
+                    i += 2 + len(hexs)
+                else:
+                    out.append(nxt)
+                    i += 2
+            else:
+                out.append(nxt)
+                i += 2
+        return "".join(out)
+
+    decoded = _LOCALE_QUOTE_RE.sub(lambda m: m.group(1), text)
+    decoded = _ANSI_C_QUOTE_RE.sub(_decode, decoded)
+    if decoded == text and text.startswith("$") and "\\" in text:
+        # shlex strips the quotes before this guard ever sees the token, leaving
+        # `$\\057etc` — the same string with no `'` for the pattern above to
+        # anchor on. Decode the remainder directly.
+        return _ANSI_C_QUOTE_RE.sub(_decode, "$'" + text[1:] + "'")
+    return decoded
+
+
+def _local_shell_assignments(cmd_tokens: Sequence[str]) -> dict[str, str]:
+    """`NAME=value` assignments made INSIDE the same command.
+
+    `H=$HOME; cat $H/.claude.json` is one command string to this hook, so the
+    variable is resolvable here even though it is not in the environment.
+    """
+    joined = " ".join(cmd_tokens)
+    referenced = {m.group(1) for m in _VAR_REFERENCE_SCAN_RE.finditer(joined)}
+    indirect = "${!" in joined
+    found: dict[str, str] = {}
+    for tok in cmd_tokens:
+        match = _ASSIGNMENT_TOKEN_RE.match(tok.strip().strip("<>();|&\"'`"))
+        if not match:
+            continue
+        if not indirect and match.group(1) not in referenced:
+            # Unreferenced: cannot change where a read lands.
+            continue
+        # The value carries the same glued shell punctuation a path token does
+        # (`H=$HOME;` when shlex keeps the separator attached). Truncated per
+        # VALUE, the same bound every candidate carries — but the NUMBER of
+        # assignments is deliberately unbounded here, and so is their total size.
+        # Every bound tried on this axis (a count, then a byte budget) was
+        # fail-open the same way: an evader pads with assignments that satisfy
+        # the bound, and appends the real one after it. The work is linear in the
+        # command's own length, which the OS already bounds.
+        found[match.group(1)] = match.group(2).strip().strip("<>();|&\"'`")[:_CANDIDATE_MAX_LEN]
+    if indirect:
+        # `${!V}` names its target by V's VALUE, not by any `$`-spelling of the
+        # target's own name, so relevance-by-reference would drop exactly the
+        # assignment the read uses (`T=.codex; V=T; cat ${!V}/config.toml`).
+        referenced |= {value.strip() for value in found.values()}
+    # An assignment nothing references cannot change where a read lands. This is
+    # a RELEVANCE bound, not a count: truncating at N is fail-open to padding.
+    return {name: value for name, value in found.items() if name in referenced}
+
+
+def _resolved_assignment_map(assignments: dict[str, str]) -> dict[str, str]:
+    """`assignments` with each value expanded through the others, to a fixpoint.
+
+    Resolving the map ONCE, rather than substituting every assignment into every
+    token, is what keeps the per-token cost independent of how many assignments
+    the command carries — the property that lets this bound relevance instead of
+    count. Bounded by pass count and value length: a cyclic chain
+    (`A=$B$B$B$B; B=$C$C$C$C; C=$A$A$A$A`) otherwise multiplies each value per
+    pass, and a 56-character command took over a minute.
+    """
+    resolved = dict(assignments)
+    for _pass in range(_ASSIGNMENT_PASSES):
+        changed = False
+        for name, value in list(resolved.items()):
+            if "$" not in value:
+                continue
+            new_value = _substitute_variables(value, resolved)
+            if new_value != value:
+                resolved[name] = new_value
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
+def _substitute_variables(text: str, values: dict[str, str]) -> str:
+    r"""One pass of `$NAME` / `${NAME…}` substitution from `values`, length-bounded.
+
+    A single regex pass over the text, so the cost is the text's length rather
+    than the number of assignments.
+
+    The `_CANDIDATE_MAX_LEN` bound is applied DURING the pass, not to the result:
+    one `re.sub` over a token carrying N references to an M-character value
+    allocates N*M bytes before any caller could truncate it, and both factors are
+    attacker-chosen — a single command drove a hook process to 18 GB RSS. Once
+    the budget is spent the remaining references are left unexpanded.
+
+    Never uses a value as an `re.sub` replacement TEMPLATE: a value is command
+    text, and a ``\1`` / ``\d`` / trailing backslash in one makes re.sub raise —
+    which crashed the hook on ordinary commands like ``PAT='\d+' grep -E "$PAT" f``.
+    """
+    if "$" not in text or not values:
+        return text[:_CANDIDATE_MAX_LEN]
+    budget = _CANDIDATE_MAX_LEN
+
+    def _replace(match: "re.Match[str]") -> str:
+        nonlocal budget
+        literal = match.group(0)
+        name = match.group(1) or match.group(2)
+        value = values.get(name)
+        if value is None:
+            budget -= len(literal)
+            return literal
+        if len(value) > budget:
+            budget = 0
+            return literal
+        budget -= len(value)
+        return value
+
+    return _SIMPLE_VAR_REFERENCE_RE.sub(_replace, text)[:_CANDIDATE_MAX_LEN]
+
+
+def _glob_class_members(body: str) -> tuple[Callable[[str], bool], bool]:
+    """The characters a `[…]` class body matches, and whether it is negated.
+
+    A `]` as the FIRST member is a literal `]`, which is why the caller's
+    terminator search skips it.
+    """
+    negate = body.startswith(("!", "^"))
+    if negate:
+        body = body[1:]
+    singles: set[str] = set()
+    ranges: list[tuple[int, int]] = []
+    classes: list[str] = []
+    i = 0
+    while i < len(body):
+        if body.startswith("[:", i):
+            close = body.find(":]", i + 2)
+            if close != -1:
+                if body[i + 2 : close] in _POSIX_CLASS_PREDICATES:
+                    classes.append(body[i + 2 : close])
+                i = close + 2
+                continue
+        if i + 2 < len(body) and body[i + 1] == "-":
+            # Kept as a RANGE, never expanded: `[a-\U0010ffff]` is one element in
+            # the pattern but 1.1M characters as a set, and materializing it took
+            # 293s of CPU in a hook that runs on every tool call.
+            ranges.append((ord(body[i]), ord(body[i + 2])))
+            i += 3
+        else:
+            singles.add(body[i])
+            i += 1
+    predicates = [_POSIX_CLASS_PREDICATES[name] for name in classes]
+
+    def _member(ch: str) -> bool:
+        if ch in singles:
+            return True
+        code = ord(ch)
+        if any(low <= code <= high for low, high in ranges):
+            return True
+        return any(predicate(ch) for predicate in predicates)
+
+    return _member, negate
+
+
+def _glob_class_end(pattern: str, open_index: int) -> int:
+    """Index of the `]` closing the class opened at `open_index`, or -1."""
+    scan = open_index + 1
+    if pattern[scan : scan + 1] in ("!", "^"):
+        scan += 1
+    if pattern[scan : scan + 1] == "]":  # a leading `]` is a literal member
+        scan += 1
+    while pattern.startswith("[:", scan):
+        # A POSIX class carries its own `]`; the class ends at the one AFTER it.
+        inner = pattern.find(":]", scan + 2)
+        if inner == -1:
+            break
+        scan = inner + 2
+    return pattern.find("]", scan)
+
+
+def _glob_match_frontier(
+    pattern: str, text: str, start: int = 0, mask_cache: dict[str, int] | None = None
+) -> int:
+    """The reachable-position bitset after matching `pattern` from `start`."""
+    return _glob_match_lengths(pattern, text, start, mask_cache, _frontier=True)
+
+
+def _glob_match_lengths(
+    pattern: str,
+    text: str,
+    start: int = 0,
+    mask_cache: dict[str, int] | None = None,
+    _frontier: bool = False,
+):
+    """Lengths of every prefix of `text[start:]` that the glob `pattern` matches.
+
+    A bitset dynamic program, NOT a regex: `${V##*a*a*a*a*b}` makes a translated
+    regex backtrack catastrophically — measured 8s at a 240-character value and
+    no return at all at the 4096-character bound, in a hook that runs
+    synchronously on every tool call. Each pattern element is one pass over a
+    single big integer whose bit `i` means "position `i` is reachable", so a
+    whole match set costs O(len(pattern) x len(text)/64) with no backtracking.
+
+    `mask_cache` holds the per-character and per-class position masks for THIS
+    text. Passing one across the calls of a `${X//pat/rep}` scan is what keeps
+    that scan linear: rebuilding a `[a-z]` mask per start position is a Python
+    loop over the whole value, and a 4 KB value with a few classes took 10-65s.
+    """
+    n = len(text)
+    full = (1 << (n + 1)) - 1
+    if mask_cache is None:
+        mask_cache = {}
+
+    def _mask(key: str, matches) -> int:
+        cached = mask_cache.get(key)
+        if cached is None:
+            cached = 0
+            for pos, tc in enumerate(text):
+                if matches(tc):
+                    cached |= 1 << pos
+            mask_cache[key] = cached
+        return cached
+
+    frontier = 1 << start
+    i = 0
+    while i < len(pattern):
+        if not frontier:
+            return 0 if _frontier else []
+        ch = pattern[i]
+        if ch == "*":
+            low = frontier & -frontier
+            frontier = full & ~(low - 1)
+            i += 1
+            continue
+        if ch == "?":
+            frontier = (frontier << 1) & full
+            i += 1
+            continue
+        if ch == "[":
+            close = _glob_class_end(pattern, i)
+            if close != -1:
+                body = pattern[i + 1 : close]
+                member, negate = _glob_class_members(body)
+                frontier = (
+                    (frontier & _mask("k" + body, lambda tc: member(tc) != negate)) << 1
+                ) & full
+                i = close + 1
+                continue
+        if ch == "\\" and i + 1 < len(pattern):
+            i += 1
+            ch = pattern[i]
+        frontier = ((frontier & _mask("c" + ch, lambda tc, _c=ch: tc == _c)) << 1) & full
+        i += 1
+    if _frontier:
+        return frontier
+    return [pos - start for pos in range(start, n + 1) if frontier >> pos & 1]
+
+
+def _glob_match_bounds(
+    pattern: str, text: str, start: int = 0, mask_cache: dict[str, int] | None = None
+) -> tuple[int, int] | None:
+    """`(shortest, longest)` match length at `start`, or None if no match.
+
+    Bit arithmetic on the frontier, not a list comprehension over the text: the
+    comprehension made every call O(len(text)) even when the caller only needed
+    the extremes, which is what left a `${X//[a-z]/_}` scan quadratic after its
+    per-position work was supposedly bounded.
+    """
+    frontier = _glob_match_frontier(pattern, text, start, mask_cache)
+    if not frontier:
+        return None
+    return (
+        (frontier & -frontier).bit_length() - 1 - start,
+        frontier.bit_length() - 1 - start,
+    )
+
+
+def _apply_parameter_transformation(
+    value: str, tail: str, work_budget: list[int] | None = None
+) -> str:
+    """Apply the `${NAME…}` operator in `tail` to `value`, as bash would.
+
+    Only the transforming operators: the operators that select an ALTERNATE word
+    (`:-`, `:=`, `:+`) are the caller's business, since which side bash takes is
+    decided by whether the variable is set. The operand of `/`, `#` and `%` is a
+    GLOB in bash, not a literal — `${X/x*/seiya}` turns `/home/x` into
+    `/home/seiya` — so it is matched as one, with bash's shortest (`#`, `%`) vs
+    longest (`##`, `%%`) semantics.
+    """
+    if not tail:
+        return value
+    if work_budget is not None:
+        if work_budget[0] <= 0:
+            # The per-expansion budget below bounds ONE substitution; nothing
+            # bounded their NUMBER, and n assignments x n expansions reached 26s
+            # of CPU on a 1.6 MB command. This budget is per COMMAND.
+            return value
+        work_budget[0] -= len(value) + len(tail)
+    match = _PARAM_SUBSTRING_RE.match(tail)
+    if match:
+        # `${X:2}` / `${X:2:5}` / `${X: -4}`. NOT `${X:-word}`, which is the
+        # alternate-word operator — the pattern requires a digit, a `+`, or the
+        # space bash itself requires before a negative offset.
+        offset = 0 if not match.group(1).strip() else _evaluate_integer_arithmetic(match.group(1))
+        if offset is None:
+            return value
+        if offset < 0:
+            offset = max(0, len(value) + offset)
+        if match.group(2) is None:
+            return value[offset:]
+        length = _evaluate_integer_arithmetic(match.group(2))
+        if length is None:
+            return value
+        return value[offset:length] if length < 0 else value[offset : offset + length]
+    match = _PARAM_PATTERN_SUB_RE.match(tail)
+    if match:
+        pattern = match.group(2)
+        # bash removes the escapes from the REPLACEMENT too: the operand of
+        # `${V/#\/tmp/\/home}` is `/home`, not `\/home`.
+        replacement = re.sub(r"\\(.)", r"\1", match.group(3) or "")
+        anchor = match.group(1)
+        if not pattern and anchor in ("//", "/"):
+            return value
+        if anchor in ("/#", "/%") and not pattern:
+            # `${V/#/rep}` with an EMPTY pattern prepends (or appends).
+            return replacement + value if anchor == "/#" else value + replacement
+        if anchor in ("/#", "/%"):
+            # `${V/#pat/rep}` / `${V/%pat/rep}` replace an anchored prefix/suffix.
+            if anchor == "/#":
+                bounds = _glob_match_bounds(pattern, value)
+                return replacement + value[bounds[1]:] if bounds else value
+            bounds = _glob_match_bounds(_reverse_glob(pattern), value[::-1])
+            return value[: len(value) - bounds[1]] + replacement if bounds else value
+        out: list[str] = []
+        pos = 0
+        first_only = anchor == "/"
+        mask_cache: dict[str, int] = {}
+        # Work budget: the scan is (positions x pattern elements) big-integer
+        # steps, and BOTH are attacker-chosen — a 100-class operand over a 4 KB
+        # value costs 2.8s. Past the budget the tail is left untransformed, the
+        # same direction as every other work bound here.
+        budget = _GLOB_SUBSTITUTION_OPS_MAX
+        # Each position costs O(len(pattern) x len(value)/64) big-integer steps;
+        # debiting only the pattern length left the real work uncounted, and a
+        # 2.3 KB command still cost seconds.
+        per_position = max(1, len(pattern)) * (len(value) // 64 + 1)
+        while pos <= len(value):
+            budget -= per_position
+            if budget <= 0:
+                return "".join(out) + value[pos:]
+            bounds = _glob_match_bounds(pattern, value, pos, mask_cache)
+            if bounds and bounds[1] > 0:
+                out.append(replacement)
+                pos += bounds[1]
+                if first_only:
+                    return "".join(out) + value[pos:]
+                continue
+            if pos < len(value):
+                out.append(value[pos])
+            pos += 1
+        return "".join(out)
+    match = _PARAM_CASE_RE.match(tail)
+    if match:
+        op, selector = match.group(1), match.group(2)
+        # `${V,,pat}` / `${V^^pat}` case-convert only the characters the glob
+        # `pat` matches; with no pattern, every character.
+        if selector:
+            # The selector is a GLOB, not a class or a literal: `${V,,?}` and
+            # `${V,,*}` select every character, and both were left unconverted.
+            def _selected(ch: str, _sel: str = selector) -> bool:
+                return _glob_matches_whole(_sel, ch)
+
+        else:
+            def _selected(ch: str) -> bool:
+                return True
+
+        convert = str.upper if op in ("^", "^^") else str.lower
+        if op in ("^^", ",,"):
+            return "".join(convert(ch) if _selected(ch) else ch for ch in value)
+        if value and _selected(value[0]):
+            return convert(value[0]) + value[1:]
+        return value
+    match = _PARAM_AFFIX_RE.match(tail)
+    if match:
+        op, affix = match.group(1), match.group(2)
+        if not affix:
+            return value
+        longest = len(op) == 2
+        if op.startswith("#"):
+            bounds = _glob_match_bounds(affix, value)
+            return value[(bounds[1] if longest else bounds[0]):] if bounds else value
+        # A suffix is a prefix of the reversed text against the reversed glob;
+        # a glob's structure is symmetric, so this needs no separate matcher and
+        # avoids the O(len(value)**2) backward scan it replaces.
+        bounds = _glob_match_bounds(_reverse_glob(affix), value[::-1])
+        if not bounds:
+            return value
+        strip = bounds[1] if longest else bounds[0]
+        return value[: len(value) - strip]
+    return value
+
+
+def _evaluate_integer_arithmetic(text: str) -> int | None:
+    """`1+1` / `-3` / ` 2 ` — bash evaluates a substring offset arithmetically."""
+    terms = _ARITH_TERM_RE.findall(text)
+    if not terms or _ARITH_TERM_RE.sub("", text).strip():
+        return None
+    return sum(int(sign + digits) if sign else int(digits) for sign, digits in terms)
+
+
+def _reverse_glob(pattern: str) -> str:
+    """`pattern` reversed, keeping `[…]` classes and `\\x` escapes intact."""
+    parts: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "[":
+            close = _glob_class_end(pattern, i)
+            if close != -1:
+                parts.append(pattern[i : close + 1])
+                i = close + 1
+                continue
+        if ch == "\\" and i + 1 < len(pattern):
+            # A LONE trailing backslash stays literal; pairing it with the next
+            # character after reversal would turn it into an escape.
+            parts.append(pattern[i : i + 2])
+            i += 2
+            continue
+        parts.append(ch)
+        i += 1
+    return "".join(reversed(parts))
+
+
+def _shell_expansion_variants(
+    text: str, assignments: dict[str, str], work_budget: list[int] | None = None
+) -> list[str]:
+    """Fail-closed candidate spellings of `text` after shell expansion.
+
+    `os.path.expandvars` handles only bare `$NAME` / `${NAME}`, and only from the
+    real environment. Three gaps it leaves, all of which reached a protected
+    path: a `${NAME…}` form carrying any operator, `${!NAME}` indirection, and a
+    variable assigned earlier in the same command (possibly through another
+    variable, hence the bounded fixpoint). All are answered by generating
+    candidates rather than by emulating bash: a candidate that over-approximates
+    can only make this predicate block more, which is the safe direction for a
+    read guard.
+    """
+    variants = [text]
+    # `os.path.expanduser` knows `~` and `~user` only. bash also has `~+` ($PWD),
+    # `~-` ($OLDPWD) and `~N` (dirstack) — all of which can BE the home directory,
+    # and none of which expanduser touches, so the token would stay lexically
+    # relative and resolve inside the repo.
+    tilde = re.match(r"^~(\+|-|\d+)(/.*)?$", text)
+    if tilde:
+        tail = (tilde.group(2) or "").lstrip("/")
+        base_dir = os.getcwd() if tilde.group(1) == "+" else str(_home_dir())
+        variants.append(os.path.join(base_dir, tail) if tail else base_dir)
+    decoded = _decode_ansi_c_quotes(text)
+    if decoded != text and decoded:
+        variants.append(decoded)
+    # Substitution comes BEFORE the heuristic candidates below, so a caller that
+    # takes the first plausible spelling (the `cd` fold) gets the real expansion
+    # rather than a `$`-stripped guess.
+    if assignments:
+        for base in list(variants):
+            substituted = _substitute_variables(base, assignments)
+            if substituted != base and substituted not in variants:
+                variants.append(substituted)
+    if "$" in text:
+        # A stripped `$'c'laude.json` reaches this guard as `$claude.json`: the
+        # `$` is followed by a LETTER, so it looks like a variable reference and
+        # the punctuation rule below does not fire. A reference to a name that is
+        # defined nowhere is not a reference — bash would expand it to nothing,
+        # and the only way the token names a real path is if the `$` was a
+        # quoting construct's remains. Dropping only the UNDEFINED ones keeps
+        # `$HOME` / `$PATH` out of this heuristic.
+        def _drop_undefined(match: re.Match[str]) -> str:
+            name = match.group(1)
+            if name in assignments or name in os.environ:
+                return match.group(0)
+            return name
+
+        undefined_dropped = re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", _drop_undefined, text)
+        if undefined_dropped != text and undefined_dropped not in variants:
+            variants.append(undefined_dropped)
+    if _OBFUSCATING_DOLLAR_RE.search(text):
+        # shlex strips the quotes of a MID-token construct before this guard sees
+        # it, leaving `~/$.claude.json` for `~/$'.'claude.json` — nothing left to
+        # decode, but dropping the `$` recovers the path. Restricted to a `$`
+        # that CANNOT start a variable reference: applying it to every `$` made
+        # `cd ~ && grep -c '\.claude\.json$' notes.txt` a protected read, because
+        # the trailing regex anchor also decodes to `.claude.json`.
+        dropped = text.replace("$", "")
+        if dropped and dropped not in variants:
+            variants.append(dropped)
+        if "\\" in dropped:
+            # `/home/sei$'\171'a/…` reaches this guard as `/home/sei$\171a/…`:
+            # the quotes are gone, so the escapes have to be decoded where they
+            # sit rather than inside a `$'…'` construct.
+            unescaped = _decode_ansi_c_quotes("$'" + dropped + "'")
+            if unescaped and unescaped not in variants:
+                variants.append(unescaped)
+    expanded: list[str] = []
+    # Two passes: `${A:-${HOME}}` is truncated by the expansion pattern's
+    # `[^}]*`, and the candidate it recovers (`${HOME}/…`) is itself an
+    # expansion. One pass produced it and then never looked at it again.
+    for _pass in range(_PARAM_EXPANSION_PASSES):
+      pass_input = list(variants) if _pass == 0 else list(expanded)
+      for base in pass_input:
+          if "${" not in base:
+              continue
+          # Every expansion in the token is substituted — the substitution is
+          # linear in their number and the fan-out is 2 candidates regardless, so
+          # there is nothing here to cap. Capping the COUNT would only be
+          # fail-open to a `${Z1}…${Z9}${HOME}` padding shape.
+          if not _PARAM_EXPANSION_RE.search(base):
+              continue
+          # bash decides each `${X:-word}` INDEPENDENTLY, and which side it takes
+          # is not a guess: `:-` / `:=` take the operand exactly when the variable
+          # is unset or empty, and `-` / `=` / `+` when it is unset. So resolve
+          # each one, rather than enumerating combinations — enumerating was both
+          # exponential and incomplete past its bit cap, and
+          # `A=$HOME/; cat ${A:-x}${B:-.codex}/auth.json` (A's value with B's
+          # operand) is exactly the mixed shape a uniform choice cannot express.
+          # The two uniform spellings are kept as extra candidates, for the cases
+          # where "set" here and "set" in the real shell disagree.
+          for operand_mode in ("resolved", "never", "always"):
+
+              def _replace(match: re.Match[str], _mode: str = operand_mode) -> str:
+                  indirect, name, tail = match.group(1), match.group(2), match.group(3)
+                  operand = _PARAM_EXPANSION_OPERATOR_RE.match(tail)
+                  _use_operand = False
+                  if operand:
+                      raw = assignments.get(name, os.environ.get(name))
+                      if _mode == "always":
+                          _use_operand = True
+                      elif _mode == "resolved":
+                          colon = tail.startswith(":")
+                          op_char = tail[1] if colon and len(tail) > 1 else tail[:1]
+                          present = raw is not None and (bool(raw) or not colon)
+                          # `+` INVERTS the test: `${X:+w}` yields the word when X
+                          # is set and non-empty, `${X:-w}` when it is not.
+                          _use_operand = present if op_char == "+" else not present
+                  if _use_operand:
+                      return operand.group(1)
+                  value = assignments.get(name)
+                  if value is None:
+                      value = os.environ.get(name, "")
+                  if not _use_operand:
+                      # `${X/x/y}` / `${X^^}` / `${X#pfx}` TRANSFORM the value.
+                      # Falling through to the untransformed value let
+                      # `X=/home/x; cat ${X/x/seiya}/.codex/auth.json` reach the
+                      # credential home while this predicate said nothing.
+                      value = _apply_parameter_transformation(value, tail, work_budget)
+                  if indirect:
+                      # `${!V}` names the variable whose NAME is V's value.
+                      target = value.strip()
+                      if not target:
+                          return ""
+                      indirect_value = assignments.get(target)
+                      if indirect_value is None:
+                          indirect_value = os.environ.get(target, "")
+                      return indirect_value
+                  return value
+
+              candidate = _PARAM_EXPANSION_RE.sub(_replace, base)
+              if candidate and candidate not in variants and candidate not in expanded:
+                  expanded.append(candidate)
+    return variants + expanded
+
+
+def _blank_persisted_tool_results(command: str, repo_root: Path) -> str:
+    """`command` with any persisted tool-result path replaced by a placeholder."""
+    try:
+        prefix = str(
+            _home_dir() / _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL
+            / _claude_project_slug(repo_root.resolve())
+        )
+    except (OSError, RuntimeError, ValueError):
+        return command
+    home = str(_home_dir()).rstrip("/")
+    tail = prefix[len(home) + 1 :] if prefix.startswith(home + "/") else None
+    heads = [re.escape(prefix)]
+    if tail:
+        # The same file is spelled `~/…`, `$HOME/…` and `${HOME}/…` too; blanking
+        # only the absolute form left those reaching the marker scan.
+        heads.append(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(tail))
+    if not any(re.search(head, command) for head in heads):
+        return command
+    # Components, not "anything": `[^\s'\"]+` can swallow slashes, and the
+    # backtracking that follows cost 6s of CPU on a 120 KB command.
+    body = r"/[^\s'\"/]+/" + re.escape(_AUTO_READ_PROJECT_TOOL_RESULTS_DIR_COMPONENT) + r"/[^\s'\"/]+"
+    for head in heads:
+        command = re.sub(head + body + r"\.txt", "PERSISTED_TOOL_RESULT", command)
+        # A glob over the same directory is the same read.
+        command = re.sub(head + body, "PERSISTED_TOOL_RESULT", command)
+    return command
+
+
+def _is_persisted_tool_result_shape(repo_root: Path, target: Path) -> bool:
+    """Whether `target` is a persisted tool-result of THIS repo's project.
+
+    `~/.claude/projects/<repo-slug>/<session>/tool-results/<id>.txt` is where the
+    harness saves an oversized tool output and then tells the agent to read it —
+    the Read tool has always permitted it (`_is_persisted_tool_result_read`), and
+    blocking it for Bash made that mechanism unreachable from a shell. Three real
+    commands in this repository's own hook logs are of this shape.
+
+    Shape-and-slug only: the per-session check the Read path makes needs an
+    agent_run_id this guard does not have. What it exempts is a tool output, not
+    a credential; the file-tool layer still enforces the session for `Read`.
+    """
+    try:
+        if target.suffix != ".txt" or target.parent.name != _AUTO_READ_PROJECT_TOOL_RESULTS_DIR_COMPONENT:
+            return False
+        project_root = (
+            _home_dir() / _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL
+            / _claude_project_slug(repo_root.resolve())
+        )
+        if len(target.relative_to(project_root).parts) != 3:
+            return False
+        # A hardlink resolves to ITSELF, so resolution cannot tell one from the
+        # credential file it points at. A persisted output has one link.
+        try:
+            return target.stat().st_nlink <= 1
+        except (OSError, ValueError):
+            return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _cd_operand_indices(cmd_tokens: Sequence[str]) -> set[int]:
+    """Indices of the tokens that are a `cd` / `pushd` / `-C` operand.
+
+    By INDEX, not by spelling: excluding the spelling let a no-op `cd ~` delete
+    `~` from every later position too, so `cd ~ && grep -r sk-ant- ~` stopped
+    being a recursive read of the home directory.
+    """
+    operands: set[int] = set()
+    option_indices = _directory_option_indices(cmd_tokens)
+    for index, tok in enumerate(cmd_tokens):
+        bare = tok.strip().strip("<>();|&\"'`")
+        if bare.split("/")[-1] not in ("cd", "pushd") and index not in option_indices:
+            continue
+        for offset, follower in enumerate(
+            cmd_tokens[index + 1 : index + 1 + _CD_OPTION_SCAN_MAX]
+        ):
+            candidate = follower.strip().strip("<>();|&\"'`")
+            for sep in _SHELL_SEPARATOR_CHARS:
+                candidate = candidate.split(sep, 1)[0]
+            candidate = candidate.strip()
+            if not candidate or candidate in _SHELL_SEPARATOR_TOKENS:
+                break
+            if candidate in _CD_OPTION_TOKENS:
+                continue
+            operands.add(index + 1 + offset)
+            break
+    return operands
+
+
+def _cd_anchor_dirs(
+    cmd_tokens: Sequence[str],
+    repo_root: Path,
+    assignments: dict[str, str],
+    work_budget: list[int] | None = None,
+) -> list[Path]:
+    """Directories a `cd` in this command makes later relative paths resolve from.
+
+    `cd ~ && cat .claude.json` reads a protected path with no protected spelling
+    anywhere in the token list. The `cd`s are FOLDED in order — each resolves
+    against the directory the previous one reached — so a relative walk
+    (`cd ..; cd ..`) lands where bash lands, and every intermediate directory is
+    kept as an anchor. Anchors then apply to every relative token, not only to
+    the ones that syntactically follow their `cd`: an over-approximation in the
+    blocking direction, which keeps this a cheap predicate rather than a shell
+    simulator.
+
+    Covered spellings: `cd`, `pushd`, a `cd` glued to a separator or wrapped in
+    `(`…`)`, a separator glued to its TARGET (`cd ~;cat x`), `cd` with its own
+    options (`-P`, `--`, `-n`, …), and a BARE `cd`, which goes to `$HOME` — the
+    same shape as `cd ~`, and the one an evader reaches for once `cd ~` closes.
+
+    Every fold step is kept as an anchor. Capping their NUMBER was fail-open:
+    ten throwaway `cd`s after the real one pushed it out of the window. The
+    number is already bounded by `_CD_FOLD_MAX` folds.
+    """
+    anchors: list[Path] = []
+    home = _home_dir()
+    current = repo_root
+    # `-C <dir>` / `--directory <dir>` change the directory the way `cd` does:
+    # `tar cf - -C ~ .codex`, `git -C ~ log`, `make -C ~ x` all read from there.
+    directory_option_indices = _directory_option_indices(cmd_tokens)
+    cd_indices = [
+        i
+        for i, tok in enumerate(cmd_tokens)
+        if tok.strip().strip("<>();|&\"'`").split("/")[-1] in ("cd", "pushd")
+        or i in directory_option_indices
+    ]
+    # Fold at most the LAST `_CD_FOLD_MAX` of them, from repo_root. Each fold
+    # step is a `.resolve()`, so an unbounded chain is quadratic; taking the tail
+    # rather than the head keeps the padding shape (`cd a; … ; cd ~`) closed, and
+    # starting the truncated fold at repo_root only widens what is tested.
+    for index in cd_indices[-_CD_FOLD_MAX:]:
+        tok = cmd_tokens[index]
+        target: str | None = None
+        # A separator glued to the `cd` token itself (`cd; cat x`) means the cd
+        # took no argument — the following token is the next COMMAND, not a
+        # directory, and a bare `cd` goes to $HOME.
+        glued = tok.strip().strip("<>();|&\"'`")
+        if "=" in glued and glued.split("=")[0] in _DIRECTORY_OPTION_TOKENS:
+            # `--directory=../..` carries its operand in the same token.
+            followers = [glued.split("=", 1)[1]]
+        else:
+            followers = (
+                []
+                if any(ch in tok for ch in _SHELL_SEPARATOR_CHARS)
+                else cmd_tokens[index + 1 : index + 1 + _CD_OPTION_SCAN_MAX]
+            )
+        for follower in followers:
+            candidate = follower.strip().strip("<>();|&\"'`")
+            # A separator glued to the TARGET (`cd ~;cat x`) leaves the next
+            # command attached, which end-stripping cannot remove.
+            for sep in _SHELL_SEPARATOR_CHARS:
+                candidate = candidate.split(sep, 1)[0]
+            candidate = candidate.strip()
+            if not candidate or candidate in _SHELL_SEPARATOR_TOKENS:
+                break  # bare `cd` — target stays None
+            if candidate in _CD_OPTION_TOKENS:
+                continue
+            target = candidate
+            break
+        if target is None:
+            spellings = [str(home)]
+        else:
+            spellings = _shell_expansion_variants(target, assignments, work_budget)
+            # `cd $UNSET` / `cd ${NOPE}` / `cd ""` — bash treats an empty or
+            # unresolvable operand as no operand at all, which is `cd $HOME`.
+            # Decided on the TARGET, not on the derived spellings: the heuristic
+            # candidates include `$`-stripped guesses, which always look
+            # resolvable and would hide this case.
+            probe = os.path.expanduser(
+                os.path.expandvars(_substitute_variables(target, assignments))
+            )
+            if not probe.strip() or "$" in probe:
+                spellings = [*spellings, str(home)]
+        landed: Path | None = None
+        for spelling in spellings:
+            expanded = os.path.expanduser(os.path.expandvars(spelling))
+            if any(ch in expanded for ch in "*?[{"):
+                continue
+            if "$" in expanded:
+                # An unexpanded reference is not a directory. Accepting it as one
+                # (`.resolve()` succeeds on any non-glob string) made the literal
+                # `$H` win and discarded the resolved spelling behind it, so
+                # `H=/home/x; cd $H && cat .claude.json` anchored nowhere.
+                continue
+            try:
+                anchor = (
+                    Path(expanded).resolve()
+                    if os.path.isabs(expanded)
+                    else (current / expanded).resolve()
+                )
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if len(anchor.parts) > _CD_ANCHOR_MAX_DEPTH:
+                # Do not deepen past this: `.resolve()` is O(depth), so letting a
+                # chain of throwaway `cd`s grow `current` unboundedly makes the
+                # fold itself quadratic. `continue`, not `break` — the token's
+                # remaining spellings may still name a shallow directory.
+                continue
+            if anchor not in anchors:
+                anchors.append(anchor)
+            # Fold: the first PLAUSIBLE spelling is where this cd landed, and the
+            # next cd resolves from there. Every spelling is still kept as an
+            # anchor, since which one bash took is not knowable here.
+            if landed is None:
+                landed = anchor
+        if landed is not None:
+            current = landed
+    # Drop implausibly deep anchors before capping. A folded chain of throwaway
+    # `cd`s (`cd d0 && … && cd d799`) builds an 800-component path, and every
+    # later token then resolves against it — `.resolve()` is O(depth), so the
+    # pair is quadratic (measured 16s). No real working directory is that deep,
+    # and dropping these costs no coverage: the tokens still resolve against
+    # repo_root and against the anchors that survive.
+    anchors = [a for a in anchors if len(a.parts) <= _CD_ANCHOR_MAX_DEPTH]
+    # Keep the TAIL: an evader pads with throwaway `cd`s and puts `cd ~` last.
+    return anchors
+
+
+def _glob_matches_stay_exempt(repo_root: Path, pattern: str) -> bool:
+    """Whether every existing match of `pattern` is still exempt once RESOLVED.
+
+    The literal path re-tests the exemption after `.resolve()`; the glob branch
+    did not, so a symlink planted at an exempt-shaped name was readable through
+    `cat …/tool-results/z*` while its literal spelling blocked.
+    """
+    try:
+        matches = glob.glob(pattern)
+    except (OSError, ValueError):
+        return False
+    for match in matches[:_GLOB_EXEMPT_MATCH_MAX]:
+        try:
+            resolved = Path(match).resolve()
+        except (OSError, ValueError, RuntimeError):
+            return False
+        if not _is_persisted_tool_result_shape(repo_root, resolved):
+            return False
+    return len(matches) <= _GLOB_EXEMPT_MATCH_MAX
+
+
+def _glob_pattern_reaches_root(
+    pattern: str, roots: Sequence[Path], repo_root: Path, anchors: Sequence[Path]
+) -> Path | None:
+    """The root a wildcard read target can reach, else None.
+
+    A RELATIVE pattern is anchored the same way a literal relative target is:
+    against repo_root and against every `cd` the command carries. Checking only
+    the repo-relative form let `cd ~ && cat .clau*e.json` through —
+    `_glob_pattern_targets_root` rejects a non-absolute pattern outright, and
+    `glob.glob` would have run from the hook process's own cwd.
+    """
+    literal_prefix = pattern.split("*")[0].split("?")[0].split("[")[0]
+    if (
+        literal_prefix
+        and ".." not in pattern.split("/")
+        and _is_persisted_tool_result_shape(repo_root, Path(literal_prefix + "x.txt"))
+        and _glob_matches_stay_exempt(repo_root, pattern)
+    ):
+        # A glob over the persisted tool-results directory is the same read the
+        # literal spelling is exempt for.
+        return None
+    bases: list[Path] = [repo_root] if os.path.isabs(pattern) else [repo_root, *anchors]
+    candidates = [
+        pattern if os.path.isabs(pattern) else os.path.join(str(base), pattern)
+        for base in bases
+    ]
+    # Cheap lexical check FIRST for every (pattern, root) pair (no filesystem
+    # touch), only then the bounded real-glob — never an unbounded glob.glob on
+    # attacker patterns, and never one root's filesystem walk ahead of another
+    # root's free lexical answer.
+    for candidate in candidates:
+        for root in roots:
+            if _glob_pattern_targets_root(candidate, root):
+                return root
+    for candidate in candidates:
+        for root in roots:
+            if _glob_targets_secret_bounded(candidate, root):
+                return root
+    return None
+
+
+# Commands that read a whole subtree, for which naming an ANCESTOR of a
+# protected root reads the root. `rg` recurses by default; the rest need a flag.
+# Commands that read a whole subtree, for which naming an ANCESTOR of a
+# protected root reads the root. The value is the short-flag letters that make
+# THAT command recursive; an empty set means it always is. Read per command, not
+# as one letter soup: `cp -a` is an archive copy, while `ls -a` merely shows
+# dotfiles and `ls -la ~` must stay an ordinary listing.
+_RECURSIVE_READ_COMMANDS: dict[str, set[str]] = {
+    "find": set(), "tar": set(), "du": set(), "cpio": set(), "pax": set(),
+    "7z": set(), "7za": set(), "rg": set(), "ag": set(), "ack": set(),
+    "grep": {"r", "R"}, "egrep": {"r", "R"}, "fgrep": {"r", "R"},
+    "cp": {"r", "R", "a"}, "rsync": {"r", "R", "a"}, "scp": {"r", "R"},
+    "ls": {"R"}, "zip": {"r"}, "tree": set(), "chmod": {"R"}, "chown": {"R"},
+}
+_RECURSIVE_READ_LONG_FLAGS = ("--recursive", "--archive", "--dereference-recursive")
+
+
+def _command_reads_recursively(command: str, cmd_tokens: Sequence[str]) -> bool:
+    """Whether the command walks a directory tree rather than named files."""
+    lowered = command.lower()
+    if any(flag in lowered for flag in _RECURSIVE_READ_LONG_FLAGS) or "-d recurse" in lowered:
+        return True
+    letters: set[str] | None = None
+    for tok in cmd_tokens:
+        bare = tok.strip().strip("<>();|&\"'`")
+        entry = _RECURSIVE_READ_COMMANDS.get(bare.split("/")[-1])
+        if entry is not None:
+            if not entry:
+                return True
+            letters = entry
+            continue
+        if letters and bare.startswith("-") and not bare.startswith("--"):
+            if set(bare[1:]) & letters:
+                return True
+    return False
+
+
+def _protected_component_in(
+    text: str, roots: Sequence[Path], repo_root: Path, left_repo: bool = False
+) -> Path | None:
+    """The root whose own final path component `text` spells literally, if any.
+
+    `~/.claude.json` and `~/.codex` are distinctive names — `.claude.json`,
+    `.codex`, `.met-dsl` — and a token that carries one as a whole path
+    component is naming that root, whatever the rest of it expands to.
+
+    A name that ALSO exists inside the repository is not distinctive and is
+    skipped: this checkout has its own `.claude/`, so `cat ${PWD}/.claude/settings.json`
+    is an ordinary read of that, not of the credential home.
+    """
+    components: set[str] = set()
+    for part in text.split("/"):
+        # A component can be glued to the substitution that follows it
+        # (`.claude$(echo /)creds.json` arrives as one token).
+        for fragment in re.split(r"[$(`)\"' ]", part):
+            if fragment:
+                components.add(fragment)
+    # A token that references HOME (or starts with `~`) is reaching for the home
+    # directory whatever the expansion resolves to; without that, an in-repo name
+    # is the likelier reading.
+    home = str(_home_dir()).rstrip("/")
+    home_ward = (
+        "HOME" in text
+        or text.startswith("~")
+        or (home and home in text)
+        or left_repo
+        or "$(" in text
+        or "`" in text
+    )
+    for root in roots:
+        if not root.name or root.name not in components:
+            continue
+        if (repo_root / root.name).exists() and not home_ward:
+            continue
+        return root
+    return None
+
+
+def _command_reads_protected_host_path(
     command: str,
     cmd_tokens: list[str],
     repo_root: Path,
-    met_dsl_root: Path,
-) -> bool:
-    """True if a Bash command appears to read anything under ~/.met-dsl/.
+    roots: Sequence[Path],
+) -> Path | None:
+    """The first root of `roots` a Bash command appears to read, else None.
 
-    Operator tokens live under ~/.met-dsl/.  This guard is NOT gated on the
-    command name (the prior version only fired for cat/head/etc., letting
-    `od`, `xxd`, `cut`, `read X < ...`, and `x=$(cat ...)` slip through).  Two
-    complementary checks:
-      (1) a raw-command marker regex catching ~ / $HOME / ${HOME} / <abs-home>
+    This guard is NOT gated on the command name (an earlier version only fired
+    for cat/head/etc., letting `od`, `xxd`, `cut`, `read X < ...`, and
+    `x=$(cat ...)` slip through).  Two complementary checks:
+      (1) a raw-command marker regex catching ~ / $HOME / ${HOME…} / <abs-home>
           spellings even when adjacent shell punctuation mangles tokenization;
       (2) per-token path resolution catching `..` traversal and symlinks
-          (.resolve() normalizes both) regardless of the leading command.
+          (.resolve() normalizes both) regardless of the leading command, over
+          the shell-expansion candidates of each token (parameter expansions and
+          same-command variable assignments) and against every `cd` anchor in
+          the command as well as repo_root.
+
+    A CREDENTIAL root with any containment relationship to repo_root is dropped —
+    one that contains it (a misconfigured `CODEX_HOME` above the checkout would
+    make every ordinary in-repo read a credential-home read) and one inside it
+    (an in-repo `CODEX_HOME` would fail-close reads of the workspace).
+    `_resolve_backend_rw_binds` rejects both directions on the bind side, so
+    nothing under such a root is bound writable and there is nothing here to
+    protect. The OPERATOR-SECRET root is never dropped: that justification does
+    not apply to it (it is not an rw bind at all), so a checkout placed inside or
+    around `~/.met-dsl` must keep failing closed rather than lose the guard.
     """
-    home = str(Path.home())
-    marker_re = re.compile(
-        r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")/\.met-dsl(?:/|\b)"
-    )
-    if marker_re.search(command):
-        return True
+    repo_resolved = repo_root.resolve()
+    secret_root = operator_secret_root()
+    roots = [
+        root
+        for root in roots
+        if root == secret_root
+        or (
+            not _is_path_under_root(repo_resolved, root)
+            and not _is_path_under_root(root, repo_resolved)
+        )
+    ]
+    if not roots:
+        return None
+    # Blank the harness's own persisted tool-results before the marker scan: the
+    # path lives under `~/.claude`, so the marker matches it, but reading it is
+    # what the "Full output saved to …" mechanism tells the agent to do (the Read
+    # tool has always permitted it). Three real commands in this repository's
+    # hook logs are of this shape.
+    command = _blank_persisted_tool_results(command, repo_root)
+    marker_res = [(root, _protected_root_marker_regex(root)) for root in roots]
+    for root, marker_re in marker_res:
+        if marker_re.search(command):
+            return root
     # Also test a quote/backslash-collapsed copy of the whole command: shlex
     # normally removes embedded quotes (`~/.met-d''sl`) and escapes (`~/\.met-dsl`),
     # but on a shlex parse failure evaluate_common_policy falls back to
     # command.split(), which does NOT — so collapse them here too (mirrors
     # _command_invokes_dismiss_violation).
     collapsed_cmd = re.sub(r"""['"\\]""", "", command)
-    if collapsed_cmd != command and marker_re.search(collapsed_cmd):
-        return True
+    if collapsed_cmd != command:
+        for root, marker_re in marker_res:
+            if marker_re.search(collapsed_cmd):
+                return root
     candidate_tokens = list(cmd_tokens)
     if collapsed_cmd != command:
         candidate_tokens += collapsed_cmd.split()
-    for tok in candidate_tokens:
+    # Resolve the assignment map ONCE — `$B` may be `$A` may be `$HOME` — so each
+    # token needs only a single substitution pass.
+    assignments = _resolved_assignment_map(_local_shell_assignments(candidate_tokens))
+    # `$(…)` / backticks are unresolvable for the same reason a nested `${…}` is,
+    # and they can put the protected component in a DIFFERENT token from the
+    # substitution (`cat $HOME/$(echo .claude.json)` splits at the space), so the
+    # signal is the command's, not the token's.
+    unresolvable_command = "$(" in command or "`" in command
+    recursive_read = _command_reads_recursively(command, cmd_tokens)
+    # Quote-collapsing turns prose into tokens: `echo "docs / runtime"` yields a
+    # bare `/`, which is an ancestor of every root and blocked a real command
+    # from this repository's own logs. A `/` that appears only inside quotes is
+    # not a read target.
+
+    work_budget = [_TOTAL_TRANSFORM_OPS_MAX]
+    anchors = _cd_anchor_dirs(candidate_tokens, repo_root, assignments, work_budget)
+    candidates: list[str] = []
+    seen_candidates: set[str] = set()
+    # The ancestor rule (a recursive reader handed a parent of a root) applies
+    # only to REAL operands: the quote/backslash-collapsed copy splits prose into
+    # words (`echo "docs / runtime"` yields a bare `/`), and a `cd`'s own operand
+    # is a directory change, not a read (`cd .. && grep -rn foo repo/docs` was
+    # resolved against the anchor that same `cd` produced, landing on $HOME).
+    # Both fail-closed real commands from this repository's logs.
+    operand_candidates: set[str] = set()
+    cd_operand_indices = _cd_operand_indices(cmd_tokens)
+    for token_index, tok in enumerate(candidate_tokens):
         # Strip shell punctuation that can wrap a path token (redirects,
         # substitution parens, quotes) but keep `$` (expandvars), glob
         # metacharacters `[` `]` `*` `?`, and braces `{` `}` (brace expansion,
         # all handled explicitly below).
-        t = tok.strip().strip("<>();|&\"'`")
-        if not t:
+        stripped = tok.strip().strip("<>();|&\"'`")
+        if not stripped:
             continue
+        for spelling in _shell_expansion_variants(stripped, assignments, work_budget):
+            # Dedup through a SET: an `in list` test here is a linear scan, and
+            # the list is one entry per (token, variant), so a long command made
+            # the dedup itself quadratic.
+            if spelling and spelling not in seen_candidates:
+                seen_candidates.add(spelling)
+                candidates.append(spelling)
+            if (
+                spelling
+                and token_index < len(cmd_tokens)
+                and token_index not in cd_operand_indices
+            ):
+                operand_candidates.add(spelling)
+    if anchors and len(anchors) * len(candidates) > _RESOLVE_OPS_MAX:
+        # Last work bound: every (candidate, base) pair is a `.resolve()` syscall,
+        # and both factors are attacker-chosen. Past the budget, keep the anchors
+        # with a containment relationship to a root (the ones a `..`-free token
+        # can reach) and as much of the TAIL as still fits — the tail because an
+        # evader pads AFTER the real `cd`. Residue documented in docs/HOOKS.md.
+        keep = max(1, _RESOLVE_OPS_MAX // max(1, len(candidates)))
+        related = [
+            a
+            for a in anchors
+            if any(_is_path_under_root(a, root) or _is_path_under_root(root, a) for root in roots)
+        ]
+        head_keep = max(1, keep // 2)
+        ends = [*anchors[:head_keep], *anchors[-(keep - head_keep) :]]
+        # BOTH ends: padding `cd`s can precede the decisive one (round 4) or
+        # follow it (round 10), and keeping only the tail lost the second case.
+        picked: list[Path] = []
+        for anchor in [*related, *ends]:
+            if anchor not in picked:
+                picked.append(anchor)
+        anchors = picked[:keep] or anchors[-1:]
+    # A `cd` that leaves the checkout makes an in-repo name the UNLIKELY reading:
+    # `cd ../.. && cat $(echo .claude)/creds.json` is the credential directory.
+    repo_resolved_root = repo_root.resolve()
+    left_repo = any(
+        not _is_path_under_root(a, repo_resolved_root) for a in anchors
+    ) or any(
+        ".." in candidate.split("/")
+        and not _is_path_under_root(
+            Path(os.path.normpath(os.path.join(str(repo_root), candidate))), repo_resolved_root
+        )
+        for candidate in candidates
+    )
+    for t in candidates:
+        # An expansion this guard could not resolve leaves `${` in the candidate.
+        # Emulating bash one syntactic corner at a time is a losing game —
+        # nesting depth, arithmetic bases, POSIX classes, the next operator — so
+        # stop chasing it: if the token ALSO spells a protected root's own path
+        # component literally, the unresolved part is treated as reaching it.
+        # That is the whole class (`cat ${A:-${B:-${HOME}}}/.claude.json`,
+        # `${A:0x7}/.claude.json`, and whatever syntax comes next), and the false
+        # positives it costs are the ones already accepted: a command that names
+        # a protected path.
+        if (unresolvable_command or "${" in t) and _blank_persisted_tool_results(
+            t, repo_root
+        ) == t:
+            # `$(…)` and backticks are unresolvable for the same reason a nested
+            # `${…}` is, and `cat $HOME/$(echo .claude.json)` puts the component
+            # inside the substitution body.
+            named = _protected_component_in(t, roots, repo_root, left_repo)
+            if named is not None:
+                return named
         # Brace expansion (`~/.met-{dsl,x}/...`, `{k..m}`, nested) happens in the
         # shell before the path exists; expanduser/glob never see it.  Expand to
         # the cartesian product and test every variant precisely.
-        for variant in _brace_expand(t):
+        brace_variants = _brace_expand(t)
+        if len(brace_variants) > BRACE_EXPAND_MAX_RESULTS:
+            # The expander is bounded, and past the bound it returns a TRUNCATED
+            # product rather than something still carrying braces — so the
+            # fail-closed fallback below never fired and the dropped
+            # alternatives were simply unchecked (`cat ~/{x0,…,x256,.codex}/…`).
+            # Add the glob form explicitly, which is what that fallback does.
+            brace_variants = [*brace_variants, _braces_to_glob(t)]
+        for variant in brace_variants:
             # If braces REMAIN (bounded-out >8 groups, or malformed), fall back
             # to the fail-closed `{...}`→`*` glob catch-all for this variant.
             # (Precise variants skip this, so legit `~/.{config,local}` reads are
             # not over-blocked.)
             if "{" in variant:
                 _bg = os.path.expanduser(os.path.expandvars(_braces_to_glob(variant)))
-                # Cheap lexical check FIRST (no filesystem touch), then a bounded
-                # real-glob — never an unbounded glob.glob on attacker patterns.
-                if _glob_pattern_targets_root(_bg, met_dsl_root):
-                    return True
-                if _glob_targets_secret_bounded(_bg, met_dsl_root):
-                    return True
+                matched = _glob_pattern_reaches_root(_bg, roots, repo_root, anchors)
+                if matched is not None:
+                    return matched
                 continue
             expanded = os.path.expanduser(os.path.expandvars(variant))
             # Glob metacharacters (`*?[`) are expanded by the shell at runtime;
             # a literal .resolve() would keep them and miss the match.  e.g.
             # `cat ~/.met-d*/operator_tokens/x.txt` reads the real token.
             if any(ch in expanded for ch in "*?["):
-                # Cheap lexical fnmatch FIRST: does the glob pattern target the
-                # .met-dsl directory components?  This catches `~/*/*/*` shapes
-                # (a `*` at the .met-dsl depth fnmatches it) WITHOUT walking the
-                # filesystem — the prior ordering ran glob.glob first and hung
-                # the synchronous hook on `~/*/*/*/x`.
-                if _glob_pattern_targets_root(expanded, met_dsl_root):
-                    return True
-                # Then a BOUNDED real-glob for symlink redirection the lexical
-                # check can't see (≤1 wildcard component → cheap).
-                if _glob_targets_secret_bounded(expanded, met_dsl_root):
-                    return True
+                matched = _glob_pattern_reaches_root(expanded, roots, repo_root, anchors)
+                if matched is not None:
+                    return matched
                 continue
-            try:
-                    p = (
-                        Path(expanded).resolve()
-                        if os.path.isabs(expanded)
-                        else (repo_root / expanded).resolve()
-                    )
-            except (OSError, ValueError, RuntimeError):
-                continue
-            if _is_path_under_root(p, met_dsl_root):
-                return True
-    return False
+            # A relative path resolves against repo_root, and against EVERY `cd`
+            # anchor the command carries (`cd ~ && cat .claude.json`). An earlier
+            # version restricted `..`-free tokens to the anchors related to a
+            # root, on the reasoning that such a token cannot leave its base —
+            # but `.resolve()` follows symlinks, so it can (`cd /tmp/w && cat
+            # link/.claude.json` where `link -> ~`).
+            bases: list[Path] = [repo_root] if os.path.isabs(expanded) else [repo_root, *anchors]
+            for base in bases:
+                # Lexical first, no syscall: `..` is normalized here, and every
+                # spelling that reaches a root WITHOUT crossing a symlink is
+                # answered for free. `.resolve()` is what makes this loop
+                # expensive (it walks every component), and both the token count
+                # and the anchor count are attacker-chosen.
+                joined = expanded if os.path.isabs(expanded) else os.path.join(str(base), expanded)
+                try:
+                    lexical = Path(os.path.normpath(joined))
+                except (OSError, ValueError):
+                    continue
+                if _is_persisted_tool_result_shape(repo_root, lexical):
+                    # After resolution, not before: `~/.claude` is an rw bind, so
+                    # a leaf can plant a symlink at an exempt-shaped path and
+                    # read the credential file through it.
+                    try:
+                        resolved_exempt = lexical.resolve()
+                    except (OSError, ValueError, RuntimeError):
+                        resolved_exempt = lexical
+                    if _is_persisted_tool_result_shape(repo_root, resolved_exempt):
+                        continue
+                for root in roots:
+                    if _is_path_under_root(lexical, root):
+                        return root
+                    if recursive_read and t in operand_candidates and _is_path_under_root(
+                        root, lexical
+                    ):
+                        # A RECURSIVE reader handed an ANCESTOR reads the root
+                        # too: `grep -r sessionKey ~`, `ls -R ~`,
+                        # `find ~ -exec cat {} +`, `tar cf - ~`. Containment was
+                        # only ever tested one way.
+                        return root
+                # The remaining way in is a symlink, which needs the path to
+                # exist — and a path that is not there leaks nothing, the same
+                # rule the read-manifest guard applies to a nonexistent target.
+                if not os.path.lexists(lexical):
+                    continue
+                try:
+                    p = lexical.resolve()
+                except (OSError, ValueError, RuntimeError):
+                    continue
+                for root in roots:
+                    if _is_path_under_root(p, root):
+                        return root
+    return None
 
 
 def _split_top_commas(s: str) -> list[str]:
@@ -1795,9 +3161,9 @@ def _braces_to_glob(s: str) -> str:
 def _glob_pattern_targets_root(pattern: str, root: Path) -> bool:
     """True if an absolute glob `pattern` could match a path under `root`.
 
-    Component-wise fnmatch: each literal component of `root` must be matched by
-    the corresponding glob component of `pattern` (e.g. `.met-d*` / `.m?t-dsl` /
-    `.[m]et-dsl` all fnmatch the literal `.met-dsl`).  Used to fail-closed on
+    Component-wise glob match: each literal component of `root` must be matched
+    by the corresponding glob component of `pattern` (e.g. `.met-d*` / `.m?t-dsl`
+    / `.[m]et-dsl` all match the literal `.met-dsl`).  Used to fail-closed on
     globbed operator-secret reads even when the file does not yet exist.
     """
     pat = Path(pattern)
@@ -1807,9 +3173,18 @@ def _glob_pattern_targets_root(pattern: str, root: Path) -> bool:
     root_parts = root.parts
     if len(pat_parts) < len(root_parts):
         return False
+    # The repo's own matcher, not `fnmatch`: fnmatch does not know POSIX classes,
+    # so `~/.met-d[[:alpha:]]l/…` and `~/.[[:lower:]]laude.json` slipped past a
+    # check that caught their `[a-z]` / `[c]` twins.
     return all(
-        fnmatch.fnmatch(rp, pp) for pp, rp in zip(pat_parts, root_parts)
+        _glob_matches_whole(pp, rp) for pp, rp in zip(pat_parts, root_parts)
     )
+
+
+def _glob_matches_whole(pattern: str, text: str) -> bool:
+    """Whether the glob `pattern` matches the WHOLE of `text`."""
+    bounds = _glob_match_bounds(pattern, text)
+    return bounds is not None and bounds[1] == len(text)
 
 
 def _glob_targets_secret_bounded(pattern: str, root: Path) -> bool:
@@ -1890,7 +3265,16 @@ def _command_invokes_dismiss_violation(command: str, cmd_tokens: list[str]) -> b
         r"\$\{([A-Za-z_]\w*)(,,|\^\^|,|\^)\}", _case_sub, resolved
     )
     for name, val in assigns.items():
-        resolved = re.sub(r"\$\{?" + re.escape(name) + r"\}?", val, resolved)
+        # A lambda, never `val` as a replacement TEMPLATE. `val` is command text:
+        # a `\1` / `\d` / trailing `\` in it makes re.sub raise, and the raise
+        # escapes evaluate_common_policy as a `hook entrypoint failure` block on
+        # a command that has nothing to do with dismiss-violation — `PAT='\d+'
+        # grep -E "$PAT" f` was unrunnable in workflow mode. (Pre-existing;
+        # `_shell_expansion_variants` had the same defect and is fixed the same
+        # way.)
+        resolved = re.sub(
+            r"\$\{?" + re.escape(name) + r"\}?", lambda _m, v=val: v, resolved
+        )
     # Case-fold the collapsed string so case-mangled spellings still match the
     # (lowercase) dismiss-violation token.
     collapsed = re.sub(r"""['"\\]""", "", resolved).lower()
@@ -2020,22 +3404,47 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
             if isinstance(repo_root_raw, str) and repo_root_raw.strip()
             else Path.cwd()
         )
-        # ~/.met-dsl/ holds operator-only secrets (dismiss-violation tokens).
-        # NOT gated on the command name: any command that reads under ~/.met-dsl/
-        # (cat, od, xxd, cut, `read X < ...`, `x=$(cat ...)`, ..-traversal, etc.)
-        # is blocked.  The Read tool already excludes it (not in
-        # allowed_read_roots); this closes the Bash path.
-        met_dsl_root = (Path.home() / ".met-dsl").resolve()
-        if _command_reads_operator_secret(command, cmd_tokens, repo_root, met_dsl_root):
+        # Out-of-repo host paths that must never enter agent context: ~/.met-dsl/
+        # (operator-only dismiss-violation tokens) and the backend credential
+        # homes the bwrap profile rw-binds (~/.claude, ~/.claude.json, ~/.codex —
+        # OAuth credentials + session transcripts).  NOT gated on the command
+        # name: any command that reads them (cat, od, xxd, cut, `read X < ...`,
+        # `x=$(cat ...)`, ..-traversal, etc.) is blocked.  The Read tool already
+        # excludes all of them (allowed_read_roots is repo-relative); this closes
+        # the Bash path, which is the only other route.
+        met_dsl_root = operator_secret_root()
+        matched_root = _command_reads_protected_host_path(
+            command, cmd_tokens, repo_root, protected_host_read_roots()
+        )
+        if matched_root is not None:
+            if matched_root == met_dsl_root:
+                return HookDecision(
+                    action=HookDecisionAction.BLOCK,
+                    reason=(
+                        "blocked: direct read from ~/.met-dsl/ via Bash is forbidden in "
+                        "workflow mode. Operator tokens live there and must not enter "
+                        "agent context; dismiss-violation is an operator-only action."
+                    ),
+                    continue_processing=False,
+                    audit_detail={
+                        "policy": "forbid_operator_secret_direct_read",
+                        "command": command,
+                    },
+                )
             return HookDecision(
                 action=HookDecisionAction.BLOCK,
                 reason=(
-                    "blocked: direct read from ~/.met-dsl/ via Bash is forbidden in "
-                    "workflow mode. Operator tokens live there and must not enter "
-                    "agent context; dismiss-violation is an operator-only action."
+                    f"blocked: direct read from {matched_root} via Bash is forbidden in "
+                    "workflow mode. That path is the backend CLI's credential/session "
+                    "home (the sandbox binds it writable so the CLI can refresh its own "
+                    "auth); no agent task requires reading it."
                 ),
                 continue_processing=False,
-                audit_detail={"policy": "forbid_operator_secret_direct_read", "command": command},
+                audit_detail={
+                    "policy": "forbid_backend_credential_direct_read",
+                    "command": command,
+                    "protected_root": str(matched_root),
+                },
             )
         if first_cmd in bash_read_cmds:
             repo_tools_root = (repo_root / "tools").resolve()

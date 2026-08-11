@@ -23,6 +23,7 @@ from tools.hooks.common import (
     _is_path_under_root,
     _is_self_agent_manifest_read_path,
     _load_read_manifest_allowed_roots,
+    _is_persisted_tool_result_shape,
     _read_target_in_allowed_roots,
     _resolve_target_path,
     _strip_quoted_strings,
@@ -567,6 +568,46 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # command string (NOT the shlex token list), because shlex does not surface a
 # separator glued to an adjacent word (`cat a;curl x` -> ['cat','a;curl','x']).
 _SEPARATOR_RE = re.compile(r"\|\||&&|;|\|")
+# Out-of-repo paths that are not reads of anything: withholding the auto-approve
+# for them is pure friction.
+_OUT_OF_REPO_READ_EXEMPT = frozenset({"/dev/null", "/dev/stdin", "/dev/zero"})
+
+
+def _command_carries_expansion(command: str) -> bool:
+    """Whether `command` contains a shell expansion that could name a path.
+
+    `$NAME`, `${…}`, and the quoting constructs `$'…'` (ANSI-C, where
+    `$'\057etc'` IS `/etc`, a path with no path characters in it) and `$"…"`.
+
+    Decided by tracking QUOTE STATE rather than by a word-start pattern: `$'`
+    opens an ANSI-C quote anywhere a word can continue (`cat /etc/host$'name'`),
+    while the `$` in `grep 'foo$'` is a literal regex anchor precisely because it
+    sits INSIDE a single-quoted region. A word-start rule read both the same way —
+    first denying the regex anchor its auto-approve, then, once loosened, letting
+    the mid-word construct through.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == "\\" and not in_single:
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "$" and not in_single and i + 1 < len(command):
+            # Inside double quotes bash still expands `$NAME` / `${…}`; `$'…'` is
+            # a construct only outside them.
+            nxt = command[i + 1]
+            if nxt == "{" or nxt.isalpha() or nxt == "_":
+                return True
+            if nxt in "'\"" and not in_double:
+                return True
+        i += 1
+    return False
 
 
 def _looks_like_sed_script(token: str) -> bool:
@@ -652,7 +693,9 @@ def _detect_bash_write_targets(command: str | None) -> list[str]:
     return targets
 
 
-def _is_auto_approvable_readonly_bash(command: str | None) -> bool:
+def _is_auto_approvable_readonly_bash(
+    command: str | None, repo_root: Path | None = None
+) -> bool:
     """True iff `command` is a provably read-only composition safe to auto-approve.
 
     Auto-approval (ALLOW_AUTO_APPROVE -> permissionDecision="allow") bypasses the
@@ -685,6 +728,36 @@ def _is_auto_approvable_readonly_bash(command: str | None) -> bool:
         residual = residual.replace(op, " ")
     if any(ch in residual for ch in (">", "<", "(", ")", "&", "#", "\n")):
         return False
+    # A variable reference makes the read TARGET unprovable:
+    # `extract_bash_read_targets` declares `$VAR` operands as residue it cannot
+    # see, so the manifest guard authorized nothing and the out-of-repo check saw
+    # nothing either. This must be tested on the RAW command, not on `scanned`:
+    # bash expands `$HOME` inside double quotes, so testing the quote-stripped
+    # copy let `cat "$HOME/.aws/credentials"` through while rejecting the
+    # identical unquoted read. Requiring `[A-Za-z_{]` after the `$` keeps the
+    # shapes that name no path — a `grep 'foo$'` anchor, `$?`, `$$` — approvable.
+    if _command_carries_expansion(command):
+        return False
+    # `~` is always outside the repository, and `ls ~` names a target the
+    # extractor does not model at all (`ls` is not a reader command), so nothing
+    # else would have looked at it.
+    if any(word.startswith("~") for word in scanned.split()):
+        return False
+    # An ABSOLUTE path outside the repository is the same class: `ls /etc` names
+    # a target `extract_bash_read_targets` does not model (`ls` is not a reader
+    # command), so nothing else looked at it either. Only the `~` spelling was
+    # patched before.
+    if repo_root is not None:
+        repo_resolved = repo_root.resolve()
+        for word in scanned.split():
+            if not word.startswith("/"):
+                continue
+            if word in _OUT_OF_REPO_READ_EXEMPT or _is_persisted_tool_result_shape(
+                repo_root, _expanded_target_path(repo_root, word)
+            ):
+                continue
+            if not _is_path_under_root(_resolve_target_path(repo_root, word), repo_resolved):
+                return False
     # Segment on shell command separators and validate every command's argv0.
     # Split the QUOTE-STRIPPED string (`scanned`) — not the shlex token list —
     # so a separator glued to an adjacent word (`cat a;curl x`) still segments
@@ -1084,9 +1157,52 @@ def _path_exists(path: Path) -> bool:
         return False
 
 
+def _glob_literal_prefix(repo_root: Path, target: str) -> tuple[list[str], str, Path]:
+    """A glob's literal prefix: `(components, prefix, resolved prefix)`.
+
+    Every match of the glob lies under this prefix, so it is what decides
+    whether the pattern reaches outside repo_root. Shared by the expander below
+    and the out-of-repo detection in the read-manifest policy, so both answer
+    "where does this pattern live" the same way.
+    """
+    literal: list[str] = []
+    for component in target.split("/"):
+        if _GLOB_META_RE.search(component):
+            break
+        literal.append(component)
+    # An absolute pattern's first component is empty; joining it back would drop
+    # the leading "/" and make an out-of-repo pattern look repo-relative.
+    prefix = "/".join(literal) or ("/" if target.startswith("/") else ".")
+    # Expanded, for the same reason literal targets are: `~/.ssh/*` must not read
+    # as the in-repo prefix `<repo>/~/.ssh`. Expansion is a no-op on every
+    # repo-relative spelling, so in-repo patterns are unaffected.
+    return literal, prefix, _expanded_target_path(repo_root, prefix)
+
+
+def _expanded_target_path(repo_root: Path, target: str) -> Path:
+    """`_resolve_target_path` after shell `~` / `$VAR` expansion.
+
+    `_resolve_target_path` is deliberately literal — it feeds manifest matching,
+    which is over repo-relative spellings. Deciding whether a target LEAVES the
+    repository is a different question, and there `~/.ssh/id_rsa` must not be
+    read as the in-repo path `<repo>/~/.ssh/id_rsa`.
+    """
+    try:
+        expanded = os.path.expanduser(os.path.expandvars(target))
+    except (OSError, ValueError):
+        return _resolve_target_path(repo_root, target)
+    if expanded.startswith("~"):
+        # `expanduser` knows `~` and `~user`; bash also has `~+` ($PWD), `~-`
+        # ($OLDPWD) and `~N` (dirstack). An unexpanded one is NOT the in-repo
+        # path `<repo>/~-/…` it would otherwise resolve to — and `~-` can be the
+        # home directory, so treat it as leaving the repository.
+        return Path("/")
+    return _resolve_target_path(repo_root, expanded)
+
+
 def _bounded_glob_read_targets(
     repo_root: Path, repo_root_resolved: Path, target: str
-) -> list[tuple[str, Path]]:
+) -> tuple[list[tuple[str, Path]], list[str]]:
     """Resolve a wildcard read target to the paths it names, without a wide walk.
 
     Every match of a glob lies under the literal prefix that precedes its first
@@ -1102,19 +1218,17 @@ def _bounded_glob_read_targets(
     same reasons a literal target is: out-of-repo is bwrap's domain, and a path
     that is not there leaks nothing. Skipping the out-of-repo case BEFORE
     globbing is what keeps `/*/*/*/*` from walking the filesystem.
+
+    Returns `(in_repo_targets, out_of_repo_spellings)`. The second list is what
+    the pattern reaches OUTSIDE the repository — an out-of-repo prefix, or an
+    expanded match that escaped through a `..` after the wildcard. Those cannot
+    be authorized here, but the caller must still know they exist, or the
+    read-only auto-approve would be granted over them.
     """
     components = target.split("/")
-    literal: list[str] = []
-    for component in components:
-        if _GLOB_META_RE.search(component):
-            break
-        literal.append(component)
-    # An absolute pattern's first component is empty; joining it back would drop
-    # the leading "/" and make an out-of-repo pattern look repo-relative.
-    prefix = "/".join(literal) or ("/" if target.startswith("/") else ".")
-    prefix_abs = _resolve_target_path(repo_root, prefix)
+    literal, prefix, prefix_abs = _glob_literal_prefix(repo_root, target)
     if not _is_path_under_root(prefix_abs, repo_root_resolved):
-        return []
+        return [], [target]
     wildcard_components = sum(
         1 for component in components[len(literal) :] if _GLOB_META_RE.search(component)
     )
@@ -1123,16 +1237,30 @@ def _bounded_glob_read_targets(
             # "every match lies under the prefix" fails once a `..` follows a
             # wildcard: `docs/*/../../spec/*/*/*` reaches outside docs/. Validate
             # at the repository root, the only prefix that still contains it.
-            return [(".", repo_root_resolved)]
-        return [(prefix, prefix_abs)] if _path_exists(prefix_abs) else []
+            return [(".", repo_root_resolved)], []
+        return ([(prefix, prefix_abs)] if _path_exists(prefix_abs) else []), []
     out: list[tuple[str, Path]] = []
+    escaped: list[str] = []
     for match in sorted(glob.glob(str(_resolve_target_path(repo_root, target)))):
         abs_match = Path(match)
-        if not _is_path_under_root(abs_match, repo_root_resolved):
+        # Containment is decided on the RESOLVED path, as the literal-target path
+        # does: an in-repo symlink pointing outside is a read of the target, and
+        # comparing the unresolved name classified it as in-repo — so `cat
+        # docs/*.txt` authorized a symlinked-out file that `cat docs/link.txt`
+        # withheld. The unresolved name is still what gets reported, so a block
+        # names the path the agent typed.
+        try:
+            resolved_match = abs_match.resolve()
+        except (OSError, ValueError, RuntimeError):
+            resolved_match = abs_match
+        if not _is_path_under_root(resolved_match, repo_root_resolved):
+            # `docs/*/../../outside.txt` — the prefix is in-repo but the match is
+            # not. Unauthorizable, and previously invisible to the caller.
+            escaped.append(match)
             continue
         # Name the match, not the pattern, so the block points at a real path.
         out.append((abs_match.relative_to(repo_root_resolved).as_posix(), abs_match))
-    return out
+    return out, escaped
 
 
 def _is_active_child_return_token_path(
@@ -1170,23 +1298,30 @@ def _evaluate_bash_read_manifest_policy(
     orchestration_id: str,
     backend: str,
     resolved_run_id: str | None,
-) -> tuple[HookDecision | None, str | None]:
+) -> tuple[HookDecision | None, str | None, list[str]]:
     """Authorize the read targets of a Bash command against the read manifest.
 
-    Returns `(decision, resolved_run_id)`; a non-None decision must be returned
-    to the caller as-is.  Only targets that EXIST on disk and resolve inside
-    repo_root are validated: a nonexistent path leaks nothing (this also absorbs
-    over-extraction), and paths outside the repo are bwrap's domain — blocking
-    them here would break benign commands while adding no confinement.  Every
-    real repo file is inside the sandbox's ro-bind, so the incident class this
-    guard exists for is fully covered.
+    Returns `(decision, resolved_run_id, out_of_repo_targets)`; a non-None
+    decision must be returned to the caller as-is.  Only targets that EXIST on
+    disk and resolve inside repo_root are validated against the manifest: a
+    nonexistent path leaks nothing (this also absorbs over-extraction), and
+    paths outside the repo are bwrap's domain — blocking them here would break
+    benign commands while adding no confinement.  Every real repo file is inside
+    the sandbox's ro-bind, so the incident class this guard exists for is fully
+    covered.
 
-    With no surviving target the command is left on its previous path entirely,
+    Out-of-repo targets are still REPORTED, because they are not authorizable
+    here: the caller must keep such a command off the read-only auto-approve,
+    which bypasses the harness permission list entirely.  Falling back to that
+    list is friction, not a block.
+
+    With no target at all the command is left on its previous path entirely,
     including the read-only auto-approve; the extractor's blind spots
     (`xargs cat`, substitution) are accepted residue, not proof of safety.
     """
     repo_root_resolved = repo_root.resolve()
     surviving: list[tuple[str, Path]] = []
+    out_of_repo: list[str] = []
     extracted: list[str] = []
     for raw_target in extract_bash_read_targets(decoded.command, repo_root=repo_root):
         # Brace expansion is lexical, so `cat spec/{a,b}.md` names real files;
@@ -1206,18 +1341,36 @@ def _evaluate_bash_read_manifest_policy(
             # "A nonexistent path leaks nothing" does NOT hold for a glob: the
             # shell expands it to real files. Dropping it would hand
             # `cat secret/*.txt` to the read-only auto-approve.
-            surviving.extend(
-                _bounded_glob_read_targets(repo_root, repo_root_resolved, target)
+            in_repo_matches, escaped = _bounded_glob_read_targets(
+                repo_root, repo_root_resolved, target
             )
+            surviving.extend(in_repo_matches)
+            out_of_repo.extend(escaped)
+            continue
+        if target in _OUT_OF_REPO_READ_EXEMPT or _is_persisted_tool_result_shape(
+            repo_root, _expanded_target_path(repo_root, target)
+        ):
+            # Not a file read at all — and `diff -u /dev/null <in-repo file>` is a
+            # real, common shape whose auto-approve is worth keeping.
             continue
         abs_target = _resolve_target_path(repo_root, target)
-        if not _is_path_under_root(abs_target, repo_root_resolved):
+        # A `~`- or `$HOME`-spelled target is NOT the in-repo path the literal
+        # resolution makes of it; deciding "does this leave the repo" has to see
+        # the expansion, or `cat ~/.ssh/id_rsa` reads as an in-repo miss and is
+        # dropped straight into the auto-approve.
+        expanded_abs = _expanded_target_path(repo_root, target)
+        if not _is_path_under_root(abs_target, repo_root_resolved) or not _is_path_under_root(
+            expanded_abs, repo_root_resolved
+        ):
+            # Not authorizable against a repo-relative manifest — reported so the
+            # caller withholds the auto-approve, whether or not the path exists.
+            out_of_repo.append(target)
             continue
         if not _path_exists(abs_target):
             continue
         surviving.append((target, abs_target))
     if not surviving:
-        return None, resolved_run_id
+        return None, resolved_run_id, out_of_repo
     if resolved_run_id is None:
         resolved_run_id, resolution_error = _resolve_agent_run_id_for_file_tool(
             backend=backend,
@@ -1228,7 +1381,7 @@ def _evaluate_bash_read_manifest_policy(
             tool_name="Read",
         )
         if resolution_error is not None:
-            return resolution_error, None
+            return resolution_error, None, out_of_repo
     if resolved_run_id is None:
         return (
             HookDecision(
@@ -1237,12 +1390,13 @@ def _evaluate_bash_read_manifest_policy(
                 continue_processing=False,
             ),
             None,
+            out_of_repo,
         )
     allowed_roots, manifest_block = _load_read_manifest_allowed_roots(
         repo_root, orchestration_id, resolved_run_id
     )
     if manifest_block is not None or allowed_roots is None:
-        return manifest_block, resolved_run_id
+        return manifest_block, resolved_run_id, out_of_repo
     for target, _abs_target in surviving:
         if (
             _is_self_agent_manifest_read_path(
@@ -1298,8 +1452,8 @@ def _evaluate_bash_read_manifest_policy(
             decision="block",
             policy="read_manifest_read_guard",
         )
-        return decision, resolved_run_id
-    return None, resolved_run_id
+        return decision, resolved_run_id, out_of_repo
+    return None, resolved_run_id, out_of_repo
 
 
 def _evaluate_pre_command_file_access_policy(
@@ -1464,12 +1618,14 @@ def _evaluate_pre_command_file_access_policy(
         # Read-manifest guard for Bash reads. This runs BEFORE the read-only
         # auto-approve below: a command the manifest rejects must never be
         # auto-approved, which is exactly the historical behavior this changes.
-        read_decision, resolved_run_id = _evaluate_bash_read_manifest_policy(
-            decoded=decoded,
-            repo_root=repo_root,
-            orchestration_id=orchestration_id,
-            backend=backend,
-            resolved_run_id=resolved_run_id,
+        read_decision, resolved_run_id, out_of_repo_reads = (
+            _evaluate_bash_read_manifest_policy(
+                decoded=decoded,
+                repo_root=repo_root,
+                orchestration_id=orchestration_id,
+                backend=backend,
+                resolved_run_id=resolved_run_id,
+            )
         )
         if read_decision is not None:
             return read_decision
@@ -1479,9 +1635,16 @@ def _evaluate_pre_command_file_access_policy(
             # auto-approve to bypass the harness's native `;`/pipe permission
             # decomposition (the source of compound-command friction). Anything
             # not proven safe falls back to the allowlist-governed path.
+            # A read target outside repo_root is withheld from the auto-approve:
+            # the manifest is repo-relative, so nothing here authorized it, and
+            # auto-approval would bypass the harness permission list that is the
+            # only remaining check on it (~/.claude.json and the other backend
+            # credential homes are blocked outright one layer up, in
+            # evaluate_common_policy). Withholding only costs that fallback.
             if (
                 common_decision.action == HookDecisionAction.ALLOW
-                and _is_auto_approvable_readonly_bash(decoded.command)
+                and not out_of_repo_reads
+                and _is_auto_approvable_readonly_bash(decoded.command, repo_root)
             ):
                 return HookDecision(
                     action=HookDecisionAction.ALLOW_AUTO_APPROVE,
