@@ -15105,6 +15105,29 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             parent=f"orch_{orchestration_id}", child="build_child", req=req,
         )
 
+    def test_an_unresolvable_ir_ref_does_not_exempt_the_make_contract(self) -> None:
+        """Every absence on the way to the make-only contract means make. An ir_ref the
+        launch request does not carry used to skip the block outright, so a `ctest`
+        preset — arbitrary execution in place of `make test` — was accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm12")
+            req_path = (repo_root / "workspace/orchestrations/vperm12/launches"
+                        / "build_child.request.json")
+            doc = json.loads(req_path.read_text(encoding="utf-8"))
+            doc.pop("ir_ref", None)
+            req_path.write_text(json.dumps(doc), encoding="utf-8")
+            with self.assertRaises(RuntimeError) as ctx:
+                validate_mcp_build_tool_invocation(
+                    repo_root,
+                    orchestration_id="vperm12",
+                    agent_run_id="build_child",
+                    capability_token=str(cap["capability_token"]),
+                    tool_name="compile_project",
+                    mcp_args={"build_system": "cmake"},
+                )
+            self.assertIn("requires compile_project build_system make", str(ctx.exception))
+
     def test_orchestrated_run_quality_checks_env_is_restricted_through_the_handler(self) -> None:
         """`run_quality_checks` is the only tool a workflow call passes `env` to, so its
         call site is the one whose downgrade to the standalone denylist would matter

@@ -6168,7 +6168,9 @@ def _validate_generate_syntax_command_logs(
     toolchain.language=fortran (the only language with a syntax-check adapter); the
     MANDATORY stage is gfortran and must have passed. Optional additional stages (the
     METDSL_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
-    their compiler is not installed; a recorded `fail` stage always fails certification."""
+    their compiler is not installed, or when the stage refused before running (a staged
+    source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
+    either way, as does a recorded `fail` stage."""
     source_id = meta_path.parent.name
     pipeline_root = meta_path.parents[2]
     from tools.hooks.syntax_evidence import read_syntax_evidence, syntax_evidence_path

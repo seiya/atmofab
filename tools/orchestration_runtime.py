@@ -5850,35 +5850,29 @@ def validate_mcp_build_tool_invocation(
                     "tool-execution evidence at canonical placement."
                 )
     if tool_name in {"compile_project", "run_quality_checks"}:
+        # Every absence on the way to this contract means make, which is the reading
+        # record_launch already applies to an IR that omits toolchain.build_system (and
+        # the conductor's own `str(toolchain.build_system or "make")`). Reading any of
+        # them as "no policy" exempts the whole contract: an unresolvable ir_ref, an IR
+        # without the key, an omitted argument, and an omitted preset each did so in
+        # turn, and the project is make-only.
         ir_ref = _launch_ir_ref_for_agent(repo_root, orchestration_id, agent_run_id)
-        if ir_ref:
-            # An absent value means make on BOTH sides of this comparison, which is the
-            # reading record_launch already applies to an IR that omits
-            # toolchain.build_system (and the conductor's own
-            # `str(toolchain.build_system or "make")`). Reading either absence as "no
-            # policy" instead skipped the whole contract: an IR without the key exempted
-            # a cmake compile and a ctest preset outright, and an omitted argument
-            # exempted the compile while the server went on to pick a build system from
-            # marker files in project_dir.
-            bs = _impl_resolved_build_system(repo_root, ir_ref) or "make"
-            if bs == "make":
-                if tool_name == "compile_project":
-                    req_bs = str(args_obj.get("build_system", "")).strip().lower() or "make"
-                    if req_bs != "make":
-                        raise RuntimeError(
-                            "MCP phase gate: toolchain.build_system=make requires compile_project "
-                            f"build_system make (got {req_bs!r})"
-                        )
-                if tool_name == "run_quality_checks":
-                    # An absent preset is the server's own default, read here the same
-                    # way — the same reading this block applies to an absent
-                    # build_system on either side.
-                    preset = str(args_obj.get("preset", "")).strip().lower() or "make_test"
-                    if preset not in {"make_test", "make_check"}:
-                        raise RuntimeError(
-                            "MCP phase gate: toolchain.build_system=make requires run_quality_checks "
-                            f"preset make_test or make_check (got {preset!r})"
-                        )
+        bs = (_impl_resolved_build_system(repo_root, ir_ref) if ir_ref else None) or "make"
+        if bs == "make":
+            if tool_name == "compile_project":
+                req_bs = str(args_obj.get("build_system", "")).strip().lower() or "make"
+                if req_bs != "make":
+                    raise RuntimeError(
+                        "MCP phase gate: toolchain.build_system=make requires compile_project "
+                        f"build_system make (got {req_bs!r})"
+                    )
+            if tool_name == "run_quality_checks":
+                preset = str(args_obj.get("preset", "")).strip().lower() or "make_test"
+                if preset not in {"make_test", "make_check"}:
+                    raise RuntimeError(
+                        "MCP phase gate: toolchain.build_system=make requires run_quality_checks "
+                        f"preset make_test or make_check (got {preset!r})"
+                    )
 
     _append_workflow_hook_log(
         repo_root,
@@ -16004,7 +15998,7 @@ _CLAUDE_MCP_REMEDIATION = (
     "build-runtime MCP server is not enabled for this project via the repo-committed "
     "`.claude/settings.json`. Required tools (run_linter, run_syntax_check, compile_project, "
     "run_program, run_quality_checks) are needed by Generate/Build/Validate phases "
-    "(detect_build_system is advisory — provided by the server but not gated). "
+    "(detect_build_system is advisory — provided by the server, not gated, and refused under the workflow). "
     "Remediation: add `\"enabledMcpjsonServers\": [\"build-runtime\"]` (or "
     "`\"enableAllProjectMcpServers\": true`) to the top level of the committed "
     "`.claude/settings.json`, and ensure no `disabledMcpjsonServers` entry for build-runtime "
@@ -16238,7 +16232,7 @@ def _evaluate_build_runtime_tool_permission(
         alias and are not denied" (and there is no server-level deny)
     Claude Code's deny rule takes precedence over allow. Because a tool-specific deny cancels a server-level allow,
     and a server-level deny cancels an individual tool allow, granted=false if either deny exists
-    (false-pass prevention). `detect_build_system` is advisory (out of gate scope because no phase invokes it).
+    (false-pass prevention). `detect_build_system` is advisory (out of gate scope because no phase invokes it; refused under the workflow).
     """
     allow_set, deny_set, default_mode, perms_detail = _read_repo_mcp_tool_permissions(
         repo_root,
