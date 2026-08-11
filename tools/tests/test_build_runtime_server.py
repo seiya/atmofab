@@ -401,5 +401,202 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         self.assertTrue(result["ok"], msg=result.get("stderr"))
 
 
+class OrchestrationGateFailClosedTests(unittest.TestCase):
+    """The capability gate under the workflow.
+
+    A leaf holds the committed `mcp__build-runtime` permission, so before this the only
+    thing standing between it and an unattributed build/run was one optional argument:
+    dropping `orchestration_id` skipped the capability, the role/phase check, and the
+    audit record. Under the workflow the omission is refused; standalone use (no
+    workflow environment) keeps working, because there is no orchestration to attribute
+    a call to."""
+
+    GATED_TOOLS = (
+        "compile_project",
+        "run_program",
+        "run_quality_checks",
+        "run_linter",
+        "run_syntax_check",
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+            os.environ.pop(name, None)
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _args(self, tool: str) -> dict:
+        args: dict = {"project_dir": str(self.project_dir)}
+        if tool == "run_program":
+            args["command"] = ["true"]
+        return args
+
+    def _call(self, tool: str, args: dict) -> dict:
+        return getattr(self.mod, f"tool_{tool}")(args)
+
+    def test_workflow_mode_refuses_gated_tool_without_orchestration_id(self) -> None:
+        for tool in self.GATED_TOOLS:
+            with self.subTest(tool=tool):
+                os.environ["METDSL_WORKFLOW_MODE"] = "1"
+                with self.assertRaises(ValueError) as ctx:
+                    self._call(tool, self._args(tool))
+                # Both halves are diagnosable: what is missing, and why it is required.
+                self.assertIn("orchestration_id", str(ctx.exception))
+                self.assertIn("METDSL_WORKFLOW_MODE", str(ctx.exception))
+
+    def test_orchestration_id_env_alone_also_refuses(self) -> None:
+        # Either signal suffices: the conductor sets METDSL_ORCHESTRATION_ID per child
+        # on top of the run-wide METDSL_WORKFLOW_MODE.
+        os.environ["METDSL_ORCHESTRATION_ID"] = "orch_x"
+        with self.assertRaises(ValueError) as ctx:
+            self._call("run_linter", self._args("run_linter"))
+        self.assertIn("METDSL_ORCHESTRATION_ID", str(ctx.exception))
+
+    def test_workflow_mode_off_is_not_workflow_mode(self) -> None:
+        # `METDSL_WORKFLOW_MODE=0` is the explicit non-workflow spelling the hook layer
+        # already uses; it must not be read as merely "set".
+        os.environ["METDSL_WORKFLOW_MODE"] = "0"
+        result = self._call("run_syntax_check", self._args("run_syntax_check"))
+        self.assertTrue(result["skipped"])
+
+    def test_standalone_mode_allows_gated_tool_without_orchestration_id(self) -> None:
+        result = self._call("run_syntax_check", self._args("run_syntax_check"))
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+
+    def test_detect_build_system_is_never_gated(self) -> None:
+        # The deliberate exception: it runs nothing and is advisory, which
+        # test_probe_claude_mcp_registry_passes_without_detect_build_system_grant pins
+        # from the permission side. Gating it would need that grant table changed too.
+        os.environ["METDSL_WORKFLOW_MODE"] = "1"
+        result = self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
+        self.assertEqual(result["recommended_build_system"], "make")
+
+    def test_refusal_precedes_loading_the_orchestration_runtime(self) -> None:
+        # The refusal cannot be defeated by pointing the call at a directory with no
+        # orchestration workspace: it never reaches a filesystem lookup.
+        os.environ["METDSL_WORKFLOW_MODE"] = "1"
+        with mock.patch.object(self.mod, "_load_orchestration_runtime") as loader:
+            with self.assertRaises(ValueError):
+                self._call("compile_project", self._args("compile_project"))
+        loader.assert_not_called()
+
+
+class EnvOverrideDenylistTests(unittest.TestCase):
+    """Caller-supplied `env` may not redirect what runs.
+
+    argv is constrained to fixed presets and build-tool invocations, but before this
+    `_run_command` merged the caller's `env` into `os.environ` unfiltered, so
+    `LD_PRELOAD` / `PATH` / `BASH_ENV` walked around that constraint."""
+
+    UNSAFE = (
+        "LD_PRELOAD",
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "BASH_ENV",
+        "ENV",
+        "IFS",
+        "PATH",
+        "PYTHONPATH",
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        patcher = mock.patch.dict(os.environ, {}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+            os.environ.pop(name, None)
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+
+    def _spy_run_command(self):
+        return mock.patch.object(
+            self.mod,
+            "_run_command",
+            return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
+        )
+
+    def _args(self, tool: str, env: dict) -> dict:
+        args: dict = {"project_dir": str(self.project_dir), "env": env}
+        if tool == "run_program":
+            args["command"] = ["true"]
+        if tool == "compile_project":
+            args["build_system"] = "make"
+        return args
+
+    def test_denylisted_keys_are_refused_by_every_env_accepting_tool(self) -> None:
+        tools = (
+            "compile_project",
+            "run_program",
+            "run_quality_checks",
+            "run_linter",
+            "run_syntax_check",
+        )
+        for tool in tools:
+            for key in self.UNSAFE:
+                with self.subTest(tool=tool, key=key):
+                    with self._spy_run_command() as run_command:
+                        with self.assertRaises(ValueError) as ctx:
+                            getattr(self.mod, f"tool_{tool}")(
+                                self._args(tool, {key: "/tmp/evil"}))
+                    self.assertIn(key, str(ctx.exception))
+                    # Refused, not stripped after the merge: nothing ran.
+                    run_command.assert_not_called()
+
+    def test_denylist_is_case_insensitive_and_prefix_exact(self) -> None:
+        with self._spy_run_command():
+            with self.assertRaises(ValueError):
+                self.mod.tool_run_linter(self._args("run_linter", {"ld_preload": "x"}))
+        # Neighbours that merely look similar stay usable.
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_linter(
+                self._args("run_linter", {"LDFLAGS": "-lm", "ENVIRONMENT": "ci"}))
+        self.assertEqual(
+            run_command.call_args.kwargs["env"], {"LDFLAGS": "-lm", "ENVIRONMENT": "ci"})
+
+    def test_conductor_quality_check_env_payload_is_accepted(self) -> None:
+        # The only caller-supplied env in the repository (Validate.execute's make_test
+        # re-run) must survive the denylist unmodified.
+        payload = {
+            "OBJDIR": "/tmp/obj", "BINDIR": "/tmp/bin", "RUNDIR": "/tmp/run",
+            "BIN": "sw2d_runner", "SPEC": "/tmp/spec.ir.yaml", "CASES": "c1 c2",
+        }
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_quality_checks(
+                {"project_dir": str(self.project_dir), "preset": "make_test",
+                 "env": dict(payload)})
+        self.assertEqual(run_command.call_args.kwargs["env"], payload)
+
+    def test_server_injected_env_is_not_subject_to_the_denylist(self) -> None:
+        # The check sits where the caller's argument is read, so the server's own
+        # additions still happen. PYTHONPATH for the pytest preset...
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_quality_checks(
+                {"project_dir": str(self.project_dir), "preset": "pytest"})
+        # project_dir goes first; anything after it is this server's own inherited
+        # PYTHONPATH, which varies with how the suite was started.
+        self.assertEqual(
+            run_command.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0],
+            str(self.project_dir.resolve()))
+        # ...and OMP_* for a CPU run_program.
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_program({
+                "project_dir": str(self.project_dir), "command": ["true"],
+                "target": {"class": "cpu"}, "threads_per_rank": 4})
+        self.assertEqual(run_command.call_args.kwargs["env"]["OMP_NUM_THREADS"], "4")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

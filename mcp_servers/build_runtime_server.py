@@ -61,15 +61,49 @@ def _load_orchestration_runtime() -> Any:
     return module
 
 
+_WORKFLOW_MODE_ENV_VARS = ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID")
+
+
+def _workflow_mode_env_signal() -> str | None:
+    """The workflow environment variable that puts this server under a run, if any.
+
+    `tools/run_workflow.py` sets `METDSL_WORKFLOW_MODE=1` in the node environment and
+    the conductor adds `METDSL_ORCHESTRATION_ID` per child; bwrap passes the environment
+    through, so both reach the leaf's CLI and the MCP server it spawns. Read
+    `os.environ` on every call — tests substitute the environment per case, so a cached
+    answer would be wrong.
+    """
+    for name in _WORKFLOW_MODE_ENV_VARS:
+        value = os.environ.get(name, "").strip()
+        if not value:
+            continue
+        if name == "METDSL_WORKFLOW_MODE" and value == "0":
+            continue
+        return name
+    return None
+
+
 def _maybe_enforce_orchestration_mcp_gate(
     *,
     tool_name: str,
     project_dir: str,
     args: dict[str, Any],
 ) -> None:
-    """When `orchestration_id` is set, require launch + capability token + phase_state."""
+    """When `orchestration_id` is set, require launch + capability token + phase_state.
+
+    Under the workflow the argument itself is mandatory: omitting it would otherwise
+    buy an unattributed call with no capability, no role/phase check, and no audit
+    record, which is the whole gate. Outside a run (no workflow environment) the server
+    stays usable standalone, where there is no orchestration to attribute a call to.
+    """
     orch_raw = args.get("orchestration_id")
     if orch_raw is None or not str(orch_raw).strip():
+        signal = _workflow_mode_env_signal()
+        if signal is not None:
+            raise ValueError(
+                f"{tool_name} requires orchestration_id under the workflow "
+                f"({signal} is set in this server's environment)"
+            )
         return
     orch_id = str(orch_raw).strip()
     agent_raw = args.get("agent_run_id")
@@ -89,6 +123,42 @@ def _maybe_enforce_orchestration_mcp_gate(
         tool_name=tool_name,
         mcp_args=args,
     )
+
+
+_UNSAFE_ENV_OVERRIDE_KEYS = frozenset({"BASH_ENV", "ENV", "IFS", "PATH", "PYTHONPATH"})
+_UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
+
+
+def _reject_unsafe_env_overrides(env: Any, tool_name: str) -> None:
+    """Refuse caller-supplied environment overrides that redirect what actually runs.
+
+    Every tool here constrains argv to a fixed preset or a build-tool invocation, and
+    the environment is the door around that constraint: `LD_PRELOAD` / `LD_AUDIT` load
+    caller code into the process, `PATH` picks a different binary for the same name,
+    and `BASH_ENV` / `ENV` / `IFS` reach any shell the command starts. Refusing names
+    the key instead of dropping it silently, so a mistake and an attack are both
+    visible in the caller's result. `tools/hooks/cli.py` refuses a `VAR=value` prefix
+    on a Bash command for the same reason.
+
+    Call this on the raw `env` argument, before the server composes its own additions
+    (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
+    server's own decisions and are not caller-controlled.
+    """
+    if not env:
+        return
+    offending = sorted(
+        str(key)
+        for key in env
+        if (norm := str(key).strip().upper()) in _UNSAFE_ENV_OVERRIDE_KEYS
+        or norm.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES)
+    )
+    if offending:
+        raise ValueError(
+            f"{tool_name} does not accept env overrides that redirect execution: "
+            + ", ".join(offending)
+        )
+
+
 SERVER_VERSION = "0.1.0"
 DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_COMMAND_LOG_FILE = "command_log.jsonl"
@@ -121,8 +191,9 @@ _ORCHESTRATION_GATE_PROPERTIES: dict[str, Any] = {
     "orchestration_id": {
         "type": "string",
         "description": (
-            "When set together with agent_run_id and capability_token, enforces preflight, "
-            "record-launch artifacts, phase_state child_running, and capability permissions."
+            "Required under the workflow: with agent_run_id and capability_token it "
+            "enforces preflight, record-launch artifacts, phase_state child_running, and "
+            "capability permissions. Omitting it is refused, not exempted."
         ),
     },
     "agent_run_id": {
@@ -479,6 +550,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    _reject_unsafe_env_overrides(env, "compile_project")
 
     build_system = args.get("build_system")
     if build_system:
@@ -537,6 +609,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command = [str(item) for item in command]
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    _reject_unsafe_env_overrides(env, "run_program")
 
     run_env: dict[str, str] | None
     if env is None:
@@ -588,6 +661,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    _reject_unsafe_env_overrides(env, "run_quality_checks")
     preset = str(args.get("preset", "make_test"))
 
     presets: dict[str, list[str]] = {
@@ -616,7 +690,9 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
         if run_env is None:
             run_env = {}
         project_path = str(Path(project_dir).resolve())
-        existing = run_env.get("PYTHONPATH") or os.environ.get("PYTHONPATH", "")
+        # The caller cannot contribute PYTHONPATH (_reject_unsafe_env_overrides), so the
+        # only inherited value is this server's own.
+        existing = os.environ.get("PYTHONPATH", "")
         if existing:
             run_env["PYTHONPATH"] = f"{project_path}{os.pathsep}{existing}"
         else:
@@ -655,6 +731,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    _reject_unsafe_env_overrides(env, "run_linter")
     preset = str(args.get("preset", "fortitude")).strip().lower()
 
     if "command" in args:
@@ -919,6 +996,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    _reject_unsafe_env_overrides(env, "run_syntax_check")
     compiler = str(args.get("compiler", "gfortran")).strip().lower()
     std = str(args.get("std", "f2008")).strip().lower()
     openmp = bool(args.get("openmp", False))
