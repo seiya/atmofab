@@ -134,6 +134,14 @@ def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
     return value
 
 
+def _server_checkout_root() -> Path:
+    """The checkout this server file lives in — `<root>/mcp_servers/this_file.py`.
+
+    The same anchor `_load_orchestration_runtime` uses to find the runtime it enforces
+    with."""
+    return Path(__file__).resolve().parent.parent
+
+
 def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
     """The root a call's paths are judged against.
 
@@ -141,9 +149,26 @@ def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
     root a capability is validated at is the root its paths are measured from. Only an
     ABSENT `repo_root` falls back to `project_dir`: a present but empty value is a
     value, and reading it as an omission in one place and not the other would let the
-    caller choose its own containment root."""
+    caller choose its own containment root.
+
+    Under the workflow the root must be this server's own checkout. Everything the gate
+    trusts — preflight, phase_state, the launch record, the capability file — is read
+    from under this path, so a caller that names its own root brings its own evidence:
+    a leaf can write a whole orchestration tree in the scratch directory the agent
+    contract grants it (`workspace/tmp/<agent_run_id>`, rw-bound, reachable through the
+    sanctioned `python3 workspace/tmp/...` route), point `repo_root` at it, and hold a
+    capability it wrote itself. Outside a run there is no orchestration to anchor, and
+    the server is a general tool for its operator."""
     raw = args.get("repo_root")
-    return Path(str(raw if raw is not None else project_dir)).resolve()
+    root = Path(str(raw if raw is not None else project_dir)).resolve()
+    signal = _workflow_mode_env_signal()
+    if signal is not None and root != _server_checkout_root():
+        raise ValueError(
+            "repo_root must be this server's own checkout under the workflow "
+            f"({signal} is set in this server's environment); got {str(root)!r}, "
+            f"expected {str(_server_checkout_root())!r}"
+        )
+    return root
 
 
 def _is_orchestrated_call(args: dict[str, Any]) -> bool:
