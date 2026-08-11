@@ -107,6 +107,12 @@ The bundled script handles all seven structurally; do not hand-sum these:
 | per-leaf token usage | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` (`usage`), mirrored in `agents/<agent_run_id>/dialogs/agent.result.json` |
 | per-leaf full transcript (per-TURN detail: thinking split, tool time) | `~/.claude/projects/<cwd-slug>/<agent_run_id>.jsonl` (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
 
+> **Operator context only.** The `~/.claude` read in the row above is of the backend CLI's
+> credential/session home, which the Bash read guard rejects fail-closed whenever
+> `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical:
+> `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
+> workflow run — inside one, every such read blocks, and that block is correct.
+
 Note: since issue #47 the conductor records each leaf's usage in-repo, from the leaf's own
 output — a normalized dict (`total_tokens`, `usage_source`, and where the provider reports
 them `reasoning_tokens` / `cached_tokens`) or an explicit `not_measured` / `unavailable`

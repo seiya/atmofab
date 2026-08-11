@@ -2564,6 +2564,1051 @@ class PipeTailInlinePythonAstTests(unittest.TestCase):
                 msg=f"alias body should block: {body}")
 
 
+class ForbidBackendCredentialReadTests(unittest.TestCase):
+    """Bash reads of the backend credential homes are blocked on both backends.
+
+    The bwrap profile rw-binds `~/.claude` / `~/.claude.json` / `~/.codex` so the
+    backend CLI can refresh its own auth, which put OAuth credentials inside a
+    confined leaf's reach. The Read tool never reached them (allowed_read_roots
+    is repo-relative); Bash was the open route.
+    """
+
+    def _call(self, command: str, backend: str = "claude") -> HookDecision:
+        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            return evaluate_common_policy(
+                HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE,
+                    backend=backend,
+                    payload={"command": command, "repo_root": os.getcwd()},
+                    command=command,
+                )
+            )
+
+    def _policy(self, command: str, backend: str = "claude") -> str:
+        return (self._call(command, backend).audit_detail or {}).get("policy", "")
+
+    def test_blocks_shell_expansions_expandvars_cannot_do(self) -> None:
+        """`os.path.expandvars` handles only bare `$NAME` / `${NAME}`.
+
+        Every one of these expands to the home directory in bash and reached the
+        credential file with a `permissionDecision=allow` before the guard
+        generated expansion candidates.
+        """
+        for command in (
+            "cat ${HOME:-/x}/.claude.json",
+            "cat ${HOME:+$HOME}/.claude.json",
+            "cat ${HOME%%zzz}/.claude.json",
+            "cat ${HOME#/nope}/.claude.json",
+            "cat ${HOME/x/x}/.claude.json",
+            'cat "${HOME:?}"/.claude.json',
+            "jq . ${HOME:-/x}/.claude.json",
+            "cat ${PWD}/../../.claude.json",
+            # An UNSET variable's default operand is the other half: the path is
+            # in the operand, not in any environment value.
+            "cat ${METDSL_NO_SUCH_VAR:-~/.claude.json}",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        # The same class on the pre-existing operator-secret root.
+        self.assertEqual(
+            self._policy("cat ${HOME:-/x}/.met-dsl/operator_tokens/t.txt"),
+            "forbid_operator_secret_direct_read")
+
+    def test_blocks_same_command_variable_indirection(self) -> None:
+        """A variable assigned in THIS command is resolvable here."""
+        for command in (
+            "H=$HOME; cat $H/.claude.json",
+            "export X=~; cat $X/.claude.json",
+            "A=~/.claude.json; od -c $A",
+            "H=$HOME cat $H/.codex/auth.json",
+            "H=${HOME}; cat ${H}/.claude/settings.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_blocks_cd_anchored_relative_reads(self) -> None:
+        """`cd ~ && cat .claude.json` has no protected spelling in any token."""
+        home = str(Path.home())
+        for command in (
+            "cd ~ && cat .claude.json",
+            "cd $HOME && cat .claude/settings.json",
+            f"cd {home}; cat .claude.json",
+            "cd ~ && cat .codex/auth.json",
+            "P=.claude.json; cd ~ && cat $P",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        # An in-repo `cd` must not start blocking ordinary reads.
+        self.assertNotEqual(self._policy("cd docs && cat HOOKS.md"), "forbid_backend_credential_direct_read")
+        self.assertNotEqual(self._policy("cd ~ && cat .bashrc"), "forbid_backend_credential_direct_read")
+
+    def test_blocks_indirect_and_chained_variable_forms(self) -> None:
+        """One substitution pass is not enough, and `${!V}` names a variable."""
+        for command in (
+            "A=$HOME; B=$A; cat $B/.claude.json",
+            "A=$HOME; B=$A; C=$B; cat $C/.claude.json",
+            "V=HOME; cat ${!V}/.claude.json",
+            # `${!V}` names its target by V's VALUE, so a relevance-by-reference
+            # filter drops exactly the assignment the read uses.
+            "IND=H; H=$HOME; cat ${!IND}/.claude.json",
+            "cd ~ && T=.codex && V=T && cat ${!V}/config.toml",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_blocks_bash_only_tilde_prefixes(self) -> None:
+        """`expanduser` knows `~` and `~user`; bash also has `~+` / `~-` / `~N`.
+
+        `~-` is `$OLDPWD`, which can be the home directory, so an unexpanded
+        tilde prefix must not be read as the in-repo path `<repo>/~-/…`.
+        """
+        for command in (
+            "cat ~-/.claude.json",
+            "cat ~+/../../.claude.json",
+            "cat ~1/.claude.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_blocks_every_cd_spelling_that_reaches_home(self) -> None:
+        """A bare `cd` goes to $HOME — the shape reached for once `cd ~` closes."""
+        for command in (
+            "cd; cat .claude.json",
+            "cd && cat .claude.json",
+            "cd -P ~ && cat .claude.json",
+            "cd -- ~ && cat .claude.json",
+            "pushd ~ >/dev/null && cat .claude.json",
+            "(cd ~; cat .claude.json)",
+            "cd ~/.claude && cat settings.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        # An in-repo `cd` still reads in-repo files.
+        self.assertEqual(self._call("cd docs; cat HOOKS.md").action, HookDecisionAction.ALLOW)
+
+    def test_a_regex_valued_assignment_does_not_crash_the_hook(self) -> None:
+        """A shell value is command text, never an `re.sub` replacement template.
+
+        `\\1` / `\\d` / a trailing `\\` in a value made `re.sub` raise, and the
+        raise surfaced as a `hook entrypoint failure` block on commands with no
+        relation to any protected path. Both substitution sites are covered:
+        `_shell_expansion_variants` (added with this guard) and the pre-existing
+        `_command_invokes_dismiss_violation`.
+        """
+        for command in (
+            r"PAT='\d+' grep -nE \"$PAT\" docs/HOOKS.md",
+            r"D='C:\Users' printf %s \"$D\"",
+            r"P='\1' grep \"$P\" docs/HOOKS.md",
+            r"S='\g<0>' echo $S",
+            "T='a\\' cat docs/HOOKS.md",
+        ):
+            # `evaluate_common_policy` RAISES on the defect (the CLI turns that
+            # into a `hook entrypoint failure` block), so reaching an ALLOW at
+            # all is the assertion; there is no reason string to inspect.
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+        # The dismiss-violation detection those substitutions exist for still works.
+        self.assertEqual(
+            (self._call("V=dismiss-violation; $V").audit_detail or {}).get("policy"),
+            "forbid_dismiss_violation_in_workflow")
+
+    def test_blocks_ansi_c_quoted_paths(self) -> None:
+        """`$'\\057etc'` IS `/etc` — a path spelled with no path characters.
+
+        This reached the credential file with `permissionDecision=allow`: no
+        protected substring for the marker regex, a nonexistent relative path for
+        the extractor, and a `$` the auto-approve check exempted because it is
+        followed by a quote rather than an identifier.
+        """
+        home = str(Path.home())
+        octal_home = "".join(f"\\{ord(c):03o}" if c in "/." else c for c in f"{home}/.claude.json")
+        # Built from the real home path, not from an assumed `/home/<name>`
+        # layout: one octal-escaped char in the middle of the token, and one
+        # `$"…"` locale-quoted segment, neither of which leaves a protected
+        # substring anywhere in the command.
+        mid = home[:-1] + f"$'\\{ord(home[-1]):03o}'" + "/.claude.json"
+        for command in (
+            f"cat $'{octal_home}'",
+            f"cat {mid}",
+            f'cat {home}/$".claude.json"',
+            f'cat {home}/$".codex"/auth.json',
+            "cat ~/$'.'claude.json",
+            'cat ~/$".claude.json"',
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_blocks_a_quote_stripped_dollar_before_a_letter(self) -> None:
+        """`~/.$'c'laude.json` reaches this guard as `~/.$claude.json`.
+
+        The `$` is followed by a LETTER, so it reads as a variable reference and
+        the punctuation-only heuristic did not fire — while bash expands the
+        construct to the real path. A reference to a name defined NOWHERE is not
+        a reference, so dropping only those recovers the path without touching
+        `$HOME` / `$PATH`.
+        """
+        home = str(Path.home())
+        for command in (
+            "cat ~/.$'c'laude.json",
+            "cat ~/.c$'o'dex/auth.json",
+            f"cat {home}/.$'c'laude.json",
+            "od -c ~/.$'c'laude.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        self.assertEqual(
+            self._policy("cat ~/.m$'e't-dsl/operator_tokens/x.txt"),
+            "forbid_operator_secret_direct_read")
+        # A defined variable is a real expansion, not an obfuscated path.
+        self.assertEqual(self._call("echo $HOME").action, HookDecisionAction.ALLOW)
+        self.assertEqual(self._call("echo $METDSL_NO_SUCH_VAR").action, HookDecisionAction.ALLOW)
+
+    def test_decodes_the_quoting_constructs_directly(self) -> None:
+        """Unit pin for the decoder: the reachable shapes go through other
+        candidates, so nothing else fails when it regresses."""
+        from tools.hooks.common import _decode_ansi_c_quotes
+        self.assertEqual(_decode_ansi_c_quotes("$'\\057etc\\057x'"), "/etc/x")
+        self.assertEqual(_decode_ansi_c_quotes("$'\\x2f'etc"), "/etc")
+        self.assertEqual(_decode_ansi_c_quotes('$".claude.json"'), ".claude.json")
+        self.assertEqual(_decode_ansi_c_quotes("a$'\\057'b$'\\057'c"), "a/b/c")
+        self.assertEqual(_decode_ansi_c_quotes("$''"), "")
+        self.assertEqual(_decode_ansi_c_quotes("plain/path"), "plain/path")
+        # The no-quote fallback: shlex has already removed the quotes.
+        self.assertEqual(_decode_ansi_c_quotes("$\\057etc"), "/etc")
+
+    def test_applies_parameter_transformations_to_the_value(self) -> None:
+        """`${X/x/y}` TRANSFORMS the value; falling through to the raw value
+        let `X=/home/x; cat ${X/x/seiya}/.codex/auth.json` reach the credential
+        home while this predicate said nothing."""
+        home = str(Path.home())
+        head, last = home[:-1], home[-1]
+        for command in (
+            f"X={head}x; cat ${{X/x/{last}}}/.codex/auth.json",
+            f"X={head}x; cat ${{X//x/{last}}}/.claude.json",
+            f"X={home.upper()}; cat ${{X,,}}/.claude.json",
+            f"X=zz{home}; cat ${{X#zz}}/.claude.json",
+            f"X={home}zz; cat ${{X%zz}}/.claude.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        # The operand of `/`, `#` and `%` is a GLOB in bash, not a literal.
+        for command in (
+            f"X=/home/x; cat ${{X/x*/{Path.home().name}}}/.codex/auth.json",
+            f"X=abc{home}; cat ${{X#a*c}}/.claude.json",
+            f"X={home}.tmp; cat ${{X%.t*}}/.claude.json",
+            f"X={home}zzz; cat ${{X%%z*}}/.claude.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        # A transformation that names nothing protected is still allowed.
+        self.assertEqual(self._call("X=abc; echo ${X/b/Z}").action, HookDecisionAction.ALLOW)
+        self.assertEqual(self._call("X=abc; echo ${X/b*/Z}").action, HookDecisionAction.ALLOW)
+
+    def test_blocks_substring_expansions(self) -> None:
+        """`${X:2}` / `${X:2:5}` change the value; the untransformed value was
+        used, so the real target was never tested. `${X:-w}` is the
+        alternate-word operator and must not be read as an offset."""
+        home = str(Path.home())
+        for command in (
+            f"X=QQ{home}; cat ${{X:2}}/.codex/auth.json",
+            f"X=QQ{home}; cat ${{X:2}}/.met-dsl/operator_tokens/x.txt",
+            f"X={home}xx; cat ${{X:0:{len(home)}}}/.claude.json",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        self.assertEqual(
+            self._policy("cat ${METDSL_NO_SUCH:-~}/.claude.json"),
+            "forbid_backend_credential_direct_read")
+
+    def test_alternate_words_are_resolved_not_enumerated(self) -> None:
+        """Which side bash takes is decided by whether the variable is set, so a
+        MIXED outcome (`${A:-x}` value with `${B:-.codex}` operand) is reachable
+        no matter how many expansions the token carries — an enumeration capped
+        at N bits could not express it past the cap."""
+        home = str(Path.home())
+        # `Z0=` … set-but-EMPTY: `${Z-q}` (no colon) then takes the value, so
+        # bash's own outcome mixes values and operands across nine expansions.
+        pads = " ".join(f"Z{i}=" for i in range(9))
+        many = "".join(f"${{Z{i}-q}}" for i in range(9))
+        for command in (
+            "A=$HOME/; cat ${A:-x}${B:-.codex}/auth.json",
+            f"{pads}; cat ${{A:-{home}}}{many}${{G:-/.met-dsl/operator_tokens/x.txt}}",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command[:60])
+
+    def test_alternate_word_plus_inverts_the_test(self) -> None:
+        """`${X:+w}` yields the word when X IS set; `${X:-w}` when it is not.
+
+        Resolving both the same way made a MIXED token — one expansion keeping
+        its value, one taking its operand — expressible by no candidate.
+        """
+        self.assertEqual(
+            self._policy("H=$HOME; S=1; cat ${H:-/tmp}${S:+/.codex}/auth.json"),
+            "forbid_backend_credential_direct_read")
+        self.assertEqual(self._call("A=1; echo ${A:+x}").action, HookDecisionAction.ALLOW)
+
+    def test_blocks_nested_expansions(self) -> None:
+        """`${A:-${HOME}}` is truncated by the expansion pattern's `[^}]*`, and
+        the candidate it recovers is itself an expansion — one pass produced it
+        and never looked at it again."""
+        for command in (
+            "cat ${A:-${HOME}}/.codex/auth.json",
+            "cat ${A:-${HOME}}/.claude.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_arithmetic_substring_offsets(self) -> None:
+        """bash evaluates a substring offset arithmetically."""
+        home = str(Path.home())
+        self.assertEqual(
+            self._policy(f"X=zz{home}; cat ${{X:1+1}}/.codex/auth.json"),
+            "forbid_backend_credential_direct_read")
+
+    def test_unresolvable_expansions_that_name_a_root_fail_closed(self) -> None:
+        """The backstop that ends the emulation arms race.
+
+        Nesting depth, arithmetic bases, POSIX classes, the next operator — each
+        round of review found the next syntactic corner bash has and this guard
+        did not. A candidate that still carries `${` is one this guard could not
+        resolve; if the token ALSO spells a protected root's own path component,
+        the read is treated as reaching it, whatever the rest expands to.
+        """
+        for command in (
+            "cat ${A:-${B:-${HOME}}}/.claude.json",
+            "cat ${A:-${B:-${C:-${HOME}}}}/.codex/auth.json",
+            "A=PADDING$HOME; cat ${A:0x7}/.claude.json",
+            "A=PAD$HOME; cat ${A:1*3}/.claude.json",
+            "A=$HOME; cat ${A//[[:alpha:]]/x}/.met-dsl/t",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        # An unresolved expansion that names nothing protected is NOT blocked —
+        # this backstop must not turn every `${VAR}` into a violation.
+        for command in (
+            "cat ${TMPDIR:-/tmp}/f.txt",
+            "echo ${A:-x}/y",
+            "cat ${HOME}/notes.txt",
+            "cat ${A:-${B:-docs}}/HOOKS.md",
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_recursive_readers_reach_a_root_through_its_ancestor(self) -> None:
+        """Containment was only ever tested one way: `grep -r sessionKey ~` reads
+        the credential file without naming it, and needs no expansion trick."""
+        for command in (
+            "grep -r sessionKey ~",
+            "grep -rn token $HOME",
+            "ls -R ~",
+            'find ~ -name "*.json" -exec cat {} +',
+            "tar cf - ~",
+            "rsync -a ~/ /tmp/x/",
+            "du -sh ~",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        # A non-recursive read of the ancestor, and recursive reads that stay in
+        # the repository, are untouched.
+        for command in ("ls ~", "cat ~/.bashrc", "grep -rn TODO docs/", "find docs -name '*.md'"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_directory_options_anchor_like_cd(self) -> None:
+        """`-C <dir>` changes the working directory the way `cd` does, in both
+        the spaced and the glued spelling."""
+        for command in (
+            "tar cf - -C ~ .codex",
+            "tar cf - --directory=../.. .claude",
+            "tar cf - -C=../.. .claude",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        self.assertEqual(self._call("git -C docs log").action, HookDecisionAction.ALLOW)
+
+    def test_recursive_flags_are_read_per_command(self) -> None:
+        """`cp -a` is an archive copy; `ls -a` merely shows dotfiles.
+
+        A single letter set across all commands made `ls -la ~` a credential
+        read — an ordinary listing, and the shape a leaf actually runs.
+        """
+        for command in ("ls -R ~", "ls -laR ~", "cp -a ~ /tmp/o", "cp --archive ~ /tmp/o",
+                        "grep -rn x ~", "grep -d recurse x ~", "rsync -a ~/ /tmp/x/"):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        for command in ("ls -la ~", "ls ~", "cp x.txt ~/y", "cat ~/.bashrc"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_a_cd_operand_is_not_a_read_target(self) -> None:
+        """`cd .. && grep -rn foo repo/docs` — the `cd`'s own operand was
+        re-resolved against the anchor that same `cd` produced, landing on
+        `$HOME` and blocking an ordinary command."""
+        for command in (
+            "cd .. && grep -rn foo met-dsl/docs",
+            "cd .. && ls -R met-dsl/docs",
+            "cd .. ; du -sh met-dsl/docs",
+            "cd .. && cp -a met-dsl/docs /tmp/x",
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_a_no_op_cd_does_not_disarm_the_ancestor_rule(self) -> None:
+        """The `cd` operand is excluded by INDEX, not by spelling: excluding the
+        spelling let a prepended `cd ~` delete `~` from every later position, so
+        `cd ~ && grep -r sk-ant- ~` stopped being a recursive read of home."""
+        for command in (
+            "cd ~ && grep -r sk-ant- ~",
+            "cd $HOME && grep -r x $HOME",
+            "pushd ~ && grep -r x ~",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        for command in ("cd .. && grep -rn foo met-dsl/docs", "cd .. && ls -R met-dsl/docs"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_a_substitution_elsewhere_does_not_block_the_repo_s_own_dot_claude(self) -> None:
+        """`$(…)` anywhere in the command forced the in-repo narrowing off, so an
+        ordinary settings read one substitution away from a protected component
+        blocked. The signal has to be the TOKEN's."""
+        for command in (
+            "echo $(date) && cat .claude/settings.json",
+            "grep -n $(echo permissions) .claude/settings.json",
+            "cat `ls .claude/settings.json`",
+            "cat .codex/config.toml | head -$(echo 5)",
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+        # A substitution that supplies the HOME prefix is still the credential dir.
+        home = str(Path.home())
+        self.assertNotEqual(self._policy(f"cat $(echo {home})/.claude/.credentials.json"), "")
+
+    def test_a_c_flag_that_takes_no_directory_is_not_an_anchor(self) -> None:
+        """`rsync -C` is `--cvs-exclude`, `scp -C` is compress, `ls -C` and
+        `tree -C` take no operand at all — treating them as directory changes
+        deleted the NEXT token, the real read target, from the ancestor rule."""
+        for command in ("rsync -a -C ~ /tmp/out", "scp -r -C ~ host:/x", "ls -R -C ~", "tree -C ~"):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        # The commands whose `-C` really is a directory keep their anchor.
+        self.assertNotEqual(self._policy("tar cf - -C ~ .codex"), "")
+        self.assertEqual(self._call("make -C docs all").action, HookDecisionAction.ALLOW)
+
+    def test_a_directory_option_belongs_to_its_own_command(self) -> None:
+        """`env -C` and `gtar -C` are directory changes; `ls -R tar -C ~` is not.
+
+        The owning command is the segment's argv0, found in ONE forward pass: a
+        backward scan was quadratic (13.6s of CPU on a 32 KB command) and
+        accepted a command NAME appearing as an argument.
+        """
+        for command in ("env -C ~ cat .claude.json", "env --chdir=~ cat .claude.json",
+                        "gtar -C ~ -cf - .codex", "sudo tar -C ~ -cf - .codex", "ls -R tar -C ~"):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        for command in ("git -C docs log", "make -C docs all", "env FOO=1 cat docs/HOOKS.md"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_the_directory_option_scan_is_linear(self) -> None:
+        """One forward pass, not a backward scan per token."""
+        import time
+        t0 = time.process_time()
+        self._policy(" ".join(["ls"] + ["-C", "x"] * 6400))
+        self.assertLess(time.process_time() - t0, 2.0)
+
+    def test_blanking_persisted_paths_is_linear(self) -> None:
+        """A `[^\\s'\"]+` component could swallow slashes, and the backtracking
+        that followed cost 6s of CPU on a 120 KB command."""
+        import time
+        persisted = "/home/x/.claude/projects/-slug/s/tool-results/a.txt "
+        t0 = time.process_time()
+        self._policy("cat " + persisted * 1000)
+        self.assertLess(time.process_time() - t0, 2.0)
+
+    def test_a_quoted_root_operand_still_blocks(self) -> None:
+        """The prose rule must key on what is an OPERAND, not on what is quoted:
+        `grep -r x '/'` is a real recursive read of everything."""
+        for command in ("grep -r x '/'", 'grep -r x "/"', "tar cf - '/'", "ls -R '/'"):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+
+    def test_persisted_tool_results_stay_readable(self) -> None:
+        """`~/.claude/projects/<slug>/<session>/tool-results/<id>.txt` is where
+        the harness saves an oversized tool output and then tells the agent to
+        read it; the Read tool has always permitted it."""
+        from tools.hooks.common import (
+            _AUTO_READ_PROJECT_TOOL_RESULTS_DIR_COMPONENT,
+            _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL,
+            _claude_project_slug,
+        )
+        persisted = (
+            Path.home()
+            / _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL
+            / _claude_project_slug(Path.cwd().resolve())
+            / "a5ebfa52-5935-403c-bc4c-803c80f6c5ee"
+            / _AUTO_READ_PROJECT_TOOL_RESULTS_DIR_COMPONENT
+            / "boxrcs3l7.txt"
+        )
+        tail = str(persisted)[len(str(Path.home())) + 1 :]
+        for command in (
+            f"grep -n strip {persisted}",
+            f"cat {persisted}",
+            f"cat ~/{tail}",
+            f"cat $HOME/{tail}",
+            f"cat ${{HOME}}/{tail}",
+            f"cat {persisted.parent}/*.txt",
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+        # Anything else under the same home stays blocked, including a `..` back
+        # out of the exempt directory and a glob over a different one.
+        self.assertNotEqual(self._policy(f"cat {persisted.parent}/../other.json"), "")
+        self.assertNotEqual(self._policy("cat ~/.claude/projects/x/y/other.json"), "")
+        self.assertNotEqual(self._policy("cat ~/.claude/projects/x/*.json"), "")
+        # A glob that walks back OUT of the exempt directory is not exempt.
+        self.assertNotEqual(
+            self._policy(f"cat {persisted.parent}/*/../../../../../../.claude.json"), "")
+
+    def test_the_persisted_exemption_holds_only_after_resolution(self) -> None:
+        """`~/.claude` is an rw bind, so a leaf can plant a symlink at an
+        exempt-shaped path; the exemption is applied to the RESOLVED path."""
+        import os
+        import tempfile
+        from tools.hooks.common import _is_persisted_tool_result_shape
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "secret.json"
+            secret.write_text("x", encoding="utf-8")
+            link_dir = Path(tmp) / "tool-results"
+            link_dir.mkdir()
+            link = link_dir / "evil.txt"
+            os.symlink(secret, link)
+            # The shape test itself is lexical; the guard resolves before using it.
+            self.assertFalse(_is_persisted_tool_result_shape(Path.cwd(), link.resolve()))
+
+    def test_prose_does_not_become_a_read_target(self) -> None:
+        """Quote-collapsing turns `echo "docs / runtime"` into a bare `/` token,
+        which is an ancestor of every root — this blocked a real command from
+        this repository's own hook logs."""
+        for command in (
+            'grep -rn foo docs/ && echo "docs / runtime"',
+            'ls -a .; echo "in / out"',
+            'find . -name x; echo "spec / impl"',
+            'du -sh workspace; echo "used / total"',
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+        # An UNQUOTED `/` operand is still a real recursive read of everything.
+        self.assertNotEqual(self._policy("grep -r x /"), "")
+
+    def test_the_backstop_fires_once_a_path_leaves_the_repository(self) -> None:
+        """`.claude/` exists in the checkout, so the component alone is not
+        decisive — but a `cd` or a `../..` that leaves the repository makes the
+        credential directory the reading that matters."""
+        for command in (
+            "cd ../.. && cat $(echo .claude)/creds.json",
+            "cat ../../$(echo .claude)/creds.json",
+            "cd ../.. && cat .claude$(echo /)creds.json",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        for command in ("cat ${PWD}/.claude/settings.json", "cat ../README.md"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_command_substitution_that_names_a_root_component(self) -> None:
+        """`$(…)` is unresolvable for the same reason a nested `${…}` is, and it
+        can put the component in a DIFFERENT token from the substitution."""
+        for command in (
+            "cat $HOME/$(echo .claude.json)",
+            'cat "$HOME/$(echo .claude.json)"',
+            "cat $HOME/`echo .claude.json`",
+            "cat ~/$(echo .met-dsl)/operator_tokens/t.txt",
+            "A=$(echo .claude.json); cat $HOME/$A",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        # Substitutions that name nothing protected stay allowed.
+        for command in ("cat $(ls docs)", "echo $(date)", "git log --format=%H $(git rev-parse HEAD)"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_the_backstop_does_not_fire_on_the_in_repo_dot_claude(self) -> None:
+        """`.claude/` and `.codex/` exist in this checkout, so the component
+        alone does not name the credential home — unless the token also reaches
+        for HOME."""
+        for command in (
+            "cat ${PWD}/.claude/settings.json",
+            "grep -n hooks ${REPO}/.claude/settings.json",
+            "cat ${D}/.codex/hooks.json",
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+        for command in (
+            "cat ${A:-${B:-${HOME}}}/.codex/auth.json",
+            "cat ${A:-${B:-${HOME}}}/.claude/settings.json",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+
+    def test_glob_matching_cannot_backtrack(self) -> None:
+        """`${V##*a*a*a*a*b}` made a translated regex backtrack catastrophically
+        — 8s at a 240-character value and no return at all at the 4096-character
+        bound, in a hook that runs synchronously on every tool call."""
+        import time
+        # CPU time, not wall clock: these are budget assertions about the hook's
+        # own work, and a wall-clock version flaked when the suite ran under
+        # load beside other processes.
+        t0 = time.process_time()
+        self._policy("V=" + "a" * 4096 + "; cat ${V##*a*a*a*a*a*a*b}")
+        self._policy("V=" + "a" * 4096 + "; cat " + " ".join("${V%*zzz" + str(i) + "}" for i in range(200)))
+        self._policy("V=" + "ab" * 2048 + "; cat ${V//a*b/Q}")
+        # A `[…]` class mask is a Python loop over the whole value; rebuilding it
+        # per start position made a 4 KB value with a few classes cost 10-65s.
+        for classes in (5, 20, 100):
+            self._policy("X=" + "a" * 4096 + "; cat ${X//" + "[a-z]" * classes + "b/y}/.claude.json")
+        # Many substitutions over one long value: the per-position work is
+        # O(len(value)), which a budget debiting only the pattern length missed.
+        self._policy(
+            "A=" + "a" * 4000 + "; cat "
+            + " ".join("${A//[a-z]/_" + str(i) + "}" for i in range(50)) + " x/y")
+        # Many assignments x many substitutions: the per-expansion budget bounds
+        # ONE of them, and their number was unbounded (26s of CPU at 1.6 MB).
+        self._policy(
+            "; ".join(f"V{i}=" + "a" * 400 for i in range(400))
+            + "; cat " + " ".join("${V" + str(i) + "//[a-z]/_}" for i in range(400)) + "/x")
+        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
+        # the assertion is that nothing here is quadratic or exponential —
+        # every regression this family caught cost 8-135s. A tight bound on
+        # a ~1s measurement only buys flakes when the suite runs under load.
+        self.assertLess(time.process_time() - t0, 5.0)
+
+    def test_transformations_match_bash_shortest_and_longest(self) -> None:
+        """`#`/`%` strip the shortest match, `##`/`%%` the longest — verified
+        against bash for each of these values."""
+        from tools.hooks.common import _apply_parameter_transformation as t
+        home = str(Path.home())
+        self.assertEqual(t("zzz" + home, "#z*"), "zz" + home)
+        self.assertEqual(t("zzz" + home, "##z*"), "")
+        self.assertEqual(t(home + ".zz.zz", "%.z*"), home + ".zz")
+        self.assertEqual(t(home + ".zz.zz", "%%.z*"), home)
+        self.assertEqual(t("/home/x", "/x*/seiya"), "/home/seiya")
+        self.assertEqual(t("abc", "//b/X"), "aXc")
+        self.assertEqual(t("abc", "^^"), "ABC")
+        # Verified against bash for each of these:
+        self.assertEqual(t("QQ" + home, ":2"), home)
+        self.assertEqual(t(home + "xx", f":0:{len(home)}"), home)
+        self.assertEqual(t("aaaa", "//*/Q"), "Q")
+        self.assertEqual(t("abcabc", "/[a-b]*c/Q"), "Q")
+        self.assertEqual(t("abcabc", "//[!a]/X"), "aXXaXX")
+        self.assertEqual(t("abcabc", "#[ab]"), "bcabc")
+        self.assertEqual(t("AbC dE", "//[[:upper:]]/_"), "_b_ d_")
+        # Anchored substitution and pattern-selected case conversion.
+        self.assertEqual(t("Xa/b", "/#X/"), "a/b")
+        self.assertEqual(t("a/bZ", "/%Z/"), "a/b")
+        self.assertEqual(t(".CLAUDE.JSON", ",,[A-Z]"), ".claude.json")
+        self.assertEqual(t("abc", "^^[b]"), "aBc")
+        # The case selector is a GLOB, and an empty anchored pattern prepends.
+        self.assertEqual(t(".CLAUDE.JSON", ",,?"), ".claude.json")
+        self.assertEqual(t(".CODEX", ",,*"), ".codex")
+        self.assertEqual(t("/.claude.json", "/#//home/seiya"), "/home/seiya/.claude.json")
+        # An escaped `/` belongs to the pattern, and the replacement is unescaped.
+        self.assertEqual(t("/tmp/x/.clau", "/#\\/tmp\\/x/\\/home\\/seiya"), "/home/seiya/.clau")
+        self.assertEqual(t("a/b/c", "//\\//_"), "a_b_c")
+        self.assertEqual(t("/home/x", "::4"), "/hom")
+        # A `]` as the FIRST class member is a literal `]`.
+        self.assertEqual(t("a]b", "#[]a]"), "]b")
+        self.assertEqual(t("/tmp/x", ":1+2"), "p/x")
+        self.assertEqual(t("/tmp/x", ":0:4"), "/tmp")
+
+    def test_the_operator_secret_root_is_never_dropped(self) -> None:
+        """The containment drop is a CREDENTIAL-root rule.
+
+        Its justification is that the bind side rejects such a configuration, so
+        nothing under the root is bound writable — and `~/.met-dsl` is not an rw
+        bind at all, so a checkout placed inside or around it must keep failing
+        closed rather than lose the guard.
+        """
+        from tools.hooks.common import _command_reads_protected_host_path, protected_host_read_roots
+        inside = Path.home() / ".met-dsl" / "checkout"
+        command = "cat ~/.met-dsl/operator_tokens/x.txt"
+        self.assertEqual(
+            _command_reads_protected_host_path(
+                command, command.split(), inside, protected_host_read_roots()),
+            (Path.home() / ".met-dsl").resolve())
+
+    def test_no_budget_on_the_number_or_size_of_assignments(self) -> None:
+        """The assignment axis carries NO bound an evader can satisfy and then
+        append the real assignment after — neither a count nor a byte budget.
+
+        Both were shipped and both fell to the same shape: pad until the bound
+        is spent, then write `H=$HOME; cat $H/…`.
+        """
+        pad = "; ".join(f"V{i}=" + "y" * 400 for i in range(700))
+        refs = " ".join(f"$V{i}" for i in range(700))
+        self.assertEqual(
+            self._policy(f"{pad}; echo {refs}; H=$HOME; cat $H/.codex/auth.json"),
+            "forbid_backend_credential_direct_read")
+
+    def test_a_relative_glob_is_anchored_like_a_relative_path(self) -> None:
+        """`cd ~ && cat .clau*e.json` — the glob branch ignored the `cd` anchors,
+        so the pattern was only ever checked as repo-relative."""
+        for command in (
+            "cd ~ && cat .clau*e.json",
+            "cd ~ && cat .co*x/auth.json",
+            "cd ~ && cat .{claude,x}.json",
+            "cd ~ && od -c .m*t-dsl/operator_tokens/x.txt",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command)
+        # An in-repo `cd` with an ordinary glob is untouched.
+        for command in ("cd docs && cat *.md", "cat docs/*.md", "cd ~ && cat .bashr*"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_a_malformed_escape_does_not_crash_the_decoder(self) -> None:
+        """`$'\\UFFFFFFFF'` is above Unicode's maximum: `chr` raises, and the
+        raise escaped as a generic hook entrypoint failure."""
+        from tools.hooks.common import _decode_ansi_c_quotes
+        self.assertEqual(_decode_ansi_c_quotes(r"$'\UFFFFFFFF'"), r"\UFFFFFFFF")
+        self.assertEqual(_decode_ansi_c_quotes(r"$'\U0001F600'"), chr(0x1F600))
+        for command in (r"printf $'\UFFFFFFFF'", r"cat $'\uZZZZ'", r"cat $'\x'", r"cat $'\'"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_alternate_word_expansions_are_decided_independently(self) -> None:
+        """bash chooses per expansion; all-values and all-operands is not the
+        outcome set. With `B` unset, `A=$HOME/; cat ${A:-x}${B:-.codex}/…` needs
+        A's VALUE and B's OPERAND together."""
+        for command in (
+            "A=$HOME/; cat ${A:-x}${B:-.codex}/auth.json",
+            "cat ${METDSL_NO_SUCH_A:-~}/${METDSL_NO_SUCH_B:-.claude.json}",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+        self.assertEqual(self._call("A=1; echo ${A:-x}${B:-y}").action, HookDecisionAction.ALLOW)
+
+    def test_a_truncated_brace_expansion_still_reaches_the_glob_fallback(self) -> None:
+        """The expander is bounded and returns a TRUNCATED product, not something
+        still carrying braces — so the fail-closed `{…}`→`*` fallback never fired
+        and the dropped alternatives went unchecked."""
+        alternatives = ",".join(f"x{i}" for i in range(300))
+        for command in (
+            "cat ~/{" + alternatives + ",.codex}/auth.json",
+            "cat ~/{" + alternatives + ",.claude.json}",
+        ):
+            self.assertNotEqual(self._policy(command), "", msg=command[:60])
+        # A small brace group is still expanded precisely, not globbed.
+        for command in ("cat ~/.{bashrc,profile}", "cat docs/{HOOKS,RUNBOOK}.md"):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_padding_does_not_disarm_the_bounded_candidates(self) -> None:
+        """Every cap must drop WORK, never the candidate that matters.
+
+        Capping the assignment / anchor / expansion COUNT is fail-open: an evader
+        writes eight throwaway assignments, or four throwaway `cd`s, and puts the
+        real one last. Each shape below was allowed under the count caps.
+        """
+        for command in (
+            # Padded PAST every shipped cap: the counts are 80, not 12, because
+            # a cap of N is disarmed by N pads, which is the whole point.
+            "; ".join(f"V{i}=1" for i in range(80)) + "; H=$HOME; cat $H/.claude.json",
+            "; ".join(f"V{i}=1" for i in range(80)) + "; P=.claude.json; cd ~ && cat $P",
+            "; ".join(f"cd d{i}" for i in range(80)) + "; cd ~ && cat .claude.json",
+            "A=$HOME; cat " + "".join(f"${{Z{i}}}" for i in range(80)) + "${A}/.claude.json",
+            # Referenced pads: the relevance filter cannot drop these, so only a
+            # bound that is not a count survives them.
+            "; ".join(f"V{i}=$V{i + 1}" for i in range(80)) + "; H=$HOME; cat $H/.claude.json",
+            # Unreferenced pads past any plausible count cap: these must not
+            # spend the scan budget either.
+            "; ".join(f"Z{i}=1" for i in range(600)) + "; H=~; cat $H/.claude.json",
+            # A `..` read, and a plain one, each followed by more `cd`s than any
+            # anchor window: the anchor they need is neither root-related nor
+            # among the last few.
+            "cd ~/work && cat ../.claude.json" + "".join(f" && cd e{i}" for i in range(30)),
+            "cd ~ && cat .claude.json" + "".join(f" && cd e{i}" for i in range(30)),
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_folds_chained_relative_cd(self) -> None:
+        """`cd ..; cd ..` lands where bash lands, not where one `cd ..` would."""
+        from tools.hooks.common import _is_path_under_root
+
+        cwd, home = Path.cwd().resolve(), Path.home().resolve()
+        if not _is_path_under_root(cwd, home):
+            self.skipTest("needs the checkout under $HOME")
+        depth = len(cwd.parts) - len(home.parts)
+        self.assertGreater(depth, 1, "this test needs the checkout below ~")
+        self.assertEqual(
+            self._policy("; ".join(["cd .."] * depth) + "; cat .claude.json"),
+            "forbid_backend_credential_direct_read")
+
+    def test_blocks_separator_glued_cd_targets(self) -> None:
+        """`cd ~;cat x` — end-stripping cannot remove a glued next command."""
+        for command in (
+            "cd ~;cat .claude.json",
+            "cd ~&&cat .claude.json",
+            "cd $HOME;cat .claude.json",
+            "cat ~10/.claude.json",
+            # An unexpanded `$H` is not a directory; accepting it as one
+            # discarded the resolved spelling behind it.
+            "H=/home/" + Path.home().name + "; cd $H && cat .claude.json",
+            # bash treats an empty or unresolvable `cd` operand as no operand at
+            # all, which is `cd $HOME`.
+            "cd $METDSL_NO_SUCH_VAR && cat .claude.json",
+            "cd ${METDSL_NO_SUCH_VAR} && cat .claude.json",
+            "E=; cd $E && cat .claude.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_a_root_inside_repo_root_is_dropped_too(self) -> None:
+        """The bind side rejects BOTH containment directions; so must the guard.
+
+        `CODEX_HOME=<repo>/workspace` on a claude run would otherwise fail-close
+        every workspace read as a credential-home read.
+        """
+        repo = Path.cwd()
+        with patch.dict(os.environ, {"CODEX_HOME": str(repo / "workspace")}, clear=False):
+            self.assertEqual(
+                self._call("cat workspace/orchestrations/o/meta.json").action,
+                HookDecisionAction.ALLOW)
+
+    def test_a_variable_cd_target_folds_from_where_bash_lands(self) -> None:
+        """The `$`-stripped junk candidate must not win the fold.
+
+        `_shell_expansion_variants` also yields `H` for `$H`; taking that as the
+        landing directory folded the NEXT `cd` from `<repo>/H`.
+        """
+        home = str(Path.home())
+        self.assertEqual(
+            self._policy(f"H={home}/work; cd $H; cd ..; cat .claude.json"),
+            "forbid_backend_credential_direct_read")
+
+    def test_a_regex_anchor_is_not_an_obfuscated_path(self) -> None:
+        """The `$`-dropping heuristic applies only to a `$` that cannot open a
+        variable reference — a trailing regex anchor decodes to the same text."""
+        for command in (
+            r"cd ~ && grep -c '\.claude\.json$' notes.txt",
+            r"cd ~ && grep -n '^\.codex$' list.txt",
+        ):
+            self.assertEqual(self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_expansion_candidates_are_memory_bounded(self) -> None:
+        """The length bound must hold DURING substitution, not after it.
+
+        One `re.sub` over a token carrying N references to an M-character value
+        allocates N*M bytes before any caller can truncate the result, and both
+        factors are attacker-chosen: a 100 KB token expanded to a single 200 MB
+        string, and a hook process reached 18 GB RSS — which is what kept killing
+        this machine while the guard was being written. Asserted on lengths
+        rather than on RSS so the pin is deterministic.
+        """
+        from tools.hooks.common import (
+            _CANDIDATE_MAX_LEN,
+            _resolved_assignment_map,
+            _shell_expansion_variants,
+            _substitute_variables,
+        )
+        values = {"A": "x" * 4000}
+        self.assertLessEqual(
+            len(_substitute_variables("$A" * 50_000, values)), _CANDIDATE_MAX_LEN)
+        for candidate in _shell_expansion_variants("$A" * 50_000, values):
+            self.assertLessEqual(len(candidate), max(_CANDIDATE_MAX_LEN, 100_000))
+        # The map's own fixpoint has the same shape: a cyclic chain multiplies
+        # every value on every pass.
+        cyclic = {"A": "$B$B$B$B", "B": "$C$C$C$C", "C": "$D$D$D$D", "D": "$A$A$A$A"}
+        for value in _resolved_assignment_map(cyclic).values():
+            self.assertLessEqual(len(value), _CANDIDATE_MAX_LEN)
+        # And the whole predicate stays bounded on the same input.
+        self._policy("A=" + "x" * 4000 + "; cat " + "$A" * 50_000 + "/x")
+
+    def test_expansion_candidates_do_not_hang_the_hook(self) -> None:
+        """Candidate generation is bounded — this hook runs on every tool call.
+
+        Both axes are attacker-chosen and were quadratic when first written: N
+        `cd` anchors x M relative tokens (a `.resolve()` syscall each), and N
+        assignments x M tokens (an `re.sub` each). The 800-`cd` case below took
+        24s before the caps; the 1200-assignment case took 18s. Each shape is
+        exercised at a size where a quadratic implementation cannot pass.
+        """
+        import time
+        # CPU time, not wall clock: these are budget assertions about the hook's
+        # own work, and a wall-clock version flaked when the suite ran under
+        # load beside other processes.
+        t0 = time.process_time()
+        self._policy("cat " + " ".join(["${A:-${B:-${C:-x}}}"] * 40))
+        self._policy("cat " + " ".join([f"V{i}=$HOME" for i in range(40)]) + "; cat $V1/x")
+        self._policy("cd ~ && cat " + " ".join([f"f{i}.txt" for i in range(200)]))
+        # Many distinct cd targets (the anchor axis).
+        self._policy(" ".join(f"cd d{i} && cat f{i}.txt" for i in range(800)))
+        # Many assignments (the substitution axis).
+        self._policy(" ".join(f"V{i}=$HOME" for i in range(1200)) + "; cat $V1/x")
+        # A CYCLIC assignment chain: the caps bound the count, but each pass
+        # applies every assignment to the whole string, so this multiplied the
+        # candidate's length per pass — a 56-character command took 134s.
+        self._policy("A=$B$B$B$B; B=$C$C$C$C; C=$D$D$D$D; D=$A$A$A$A; cat $A/x")
+        self._policy(
+            "; ".join(f"V{i}=$V{(i + 1) % 8}$V{(i + 1) % 8}$V{(i + 1) % 8}$V{(i + 1) % 8}"
+                      for i in range(8))
+            + "; cat $V0/x")
+        # Many parameter expansions in ONE token (the per-token fan-out axis).
+        self._policy("cat " + "".join(f"${{Z{i}:-x}}" for i in range(200)) + "/x")
+        # Anchors x tokens is the last quadratic pair: both factors are
+        # attacker-chosen, and every combination is a `.resolve()` syscall.
+        self._policy(" ".join(f"cd d{i}" for i in range(800))
+                     + " && " + " ".join(f"cat ../g{i}.txt" for i in range(800)))
+        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
+        # the assertion is that nothing here is quadratic or exponential —
+        # every regression this family caught cost 8-135s. A tight bound on
+        # a ~1s measurement only buys flakes when the suite runs under load.
+        self.assertLess(time.process_time() - t0, 5.0)
+
+    def test_a_root_containing_repo_root_is_dropped_not_enforced(self) -> None:
+        """A misconfigured CODEX_HOME above the checkout must not block everything.
+
+        The bind side rejects that configuration outright, so nothing under such
+        a root is bound writable and there is nothing here to protect — while
+        enforcing it would fail-close every ordinary in-repo read.
+        """
+        from tools.hooks.common import _command_reads_protected_host_path
+        repo = Path.cwd()
+        self.assertIsNone(
+            _command_reads_protected_host_path(
+                "cat docs/HOOKS.md", ["cat", "docs/HOOKS.md"], repo, [repo.parent]))
+        with patch.dict(os.environ, {"CODEX_HOME": str(repo.parent)}, clear=False):
+            self.assertNotEqual(
+                self._policy("cat docs/HOOKS.md"),
+                "forbid_backend_credential_direct_read")
+
+    def test_blocks_backend_homes_on_both_backends(self) -> None:
+        home = str(Path.home())
+        commands = (
+            "cat ~/.claude.json",
+            "cat ~/.claude/settings.json",
+            "ls ~/.claude",
+            "cat ~/.codex/auth.json",
+            "cat $HOME/.claude.json",
+            "cat ${HOME}/.claude/statsig/x",
+            f"cat {home}/.claude.json",
+            f"cat {home}/foo/../.claude.json",
+            # Not gated on the command name, same as the operator-secret guard.
+            "od -c ~/.claude.json",
+            "xxd ~/.codex/auth.json",
+            "read X < ~/.claude.json",
+            "x=$(cat ~/.claude.json)",
+        )
+        # `evaluate_common_policy` has no backend branch, so the second pass is
+        # a pin against one being introduced, not independent evidence. The
+        # backend-parity claim proper is that `.codex/hooks.json` routes Codex
+        # `Shell` through this same function (docs/HOOKS.md).
+        for backend in ("claude", "codex"):
+            for command in commands:
+                self.assertEqual(
+                    self._policy(command, backend),
+                    "forbid_backend_credential_direct_read",
+                    msg=f"{backend}: {command}")
+
+    def test_blocks_shell_reassembled_forms(self) -> None:
+        """The quote/backslash-collapse and brace/glob passes cover these too."""
+        for command in (
+            r"cat ~/\.claude.json 'unbalanced",
+            "cat ~/.cl''aude.json 'unbalanced",
+            # The same reassembled shapes the ~/.met-dsl suite pins: comma
+            # braces, `{k..m}` sequences, 3-part step sequences, nested braces,
+            # and the `*` / `?` / `[c]` glob spellings — for BOTH backend roots.
+            "cat ~/.{claude,foo}/settings.json",
+            "cat ~/.{codex,foo}/auth.json",
+            "cat ~/.clau*e.json",
+            "cat ~/.clau?e.json",
+            "cat ~/.[c]laude.json",
+            "cat ~/.cod*x/auth.json",
+            "cat ~/.cod{e,f}x/auth.json",
+            "cat ~/.code{w..y}/auth.json",
+            "cat ~/.cod{e..f..1}x/auth.json",
+            "cat ~/.{cla,cod}{ude.json,ex/auth.json}",
+            "cat ~/.claude/../.codex/auth.json",
+        ):
+            self.assertEqual(
+                self._policy(command),
+                "forbid_backend_credential_direct_read",
+                msg=command)
+
+    def test_decision_is_a_terminal_block(self) -> None:
+        decision = self._call("cat ~/.claude.json")
+        self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+        self.assertFalse(decision.continue_processing)
+        self.assertEqual(
+            (decision.audit_detail or {}).get("protected_root"),
+            str((Path.home() / ".claude.json").resolve()))
+
+    def test_does_not_block_the_in_repo_dot_claude_directory(self) -> None:
+        """`.claude/settings.json` in the repo is a committed config, not a home."""
+        for command in (
+            "cat .claude/settings.json",
+            "cat ./.claude/settings.json",
+            "cat docs/HOOKS.md",
+            "cat ~/.claude-notes.txt",
+            "cat ~/.claude.json.bak.notmine",
+            "cat ~/.codexterous/x",
+        ):
+            # Assert the ACTION, not just "some other policy": the name of this
+            # test is "does not block".
+            self.assertEqual(
+                self._call(command).action, HookDecisionAction.ALLOW, msg=command)
+
+    def test_guard_covers_every_path_the_sandbox_rw_binds(self) -> None:
+        """The bind side and the read guard read ONE resolver, so they agree.
+
+        This is the invariant the finding rests on: anything the profile makes
+        writable inside the sandbox must be unreadable through Bash.
+        """
+        from tools.hooks.common import protected_host_read_roots
+        from tools.orchestration_runtime import _backend_runtime_bind_paths
+
+        roots = set(protected_host_read_roots())
+        # Drive the REAL bwrap-profile function, not the resolver both sides
+        # call: asserting the resolver against itself would be tautological and
+        # would stay green if a bind were added directly to the profile.
+        for backend_type, backend_command in (
+            ("claude", "claude"),
+            ("codex", "codex"),
+            ("", "claude"),
+            ("unknown", "some-wrapper"),
+        ):
+            _ro, rw = _backend_runtime_bind_paths(backend_type, backend_command)
+            if backend_type in ("claude", "codex", ""):
+                self.assertTrue(rw, msg=f"{backend_type}: expected at least one rw bind")
+            for path in rw:
+                self.assertIn(
+                    Path(path).resolve(), roots, msg=f"{backend_type}: {path} bound rw but unguarded")
+
+    def test_codex_home_follows_codex_home_env(self) -> None:
+        """A relocated CODEX_HOME is what the profile binds, so it is guarded."""
+        from tools.hooks.common import backend_credential_home_paths, protected_host_read_roots
+        with tempfile.TemporaryDirectory() as tmp:
+            relocated = Path(tmp) / "codex_home"
+            with patch.dict(os.environ, {"CODEX_HOME": str(relocated)}, clear=False):
+                dirs, files = backend_credential_home_paths("codex")
+                self.assertEqual(dirs, (relocated,))
+                self.assertEqual(files, ())
+                self.assertIn(relocated.resolve(), protected_host_read_roots())
+                self.assertEqual(
+                    self._policy(f"cat {relocated}/auth.json"),
+                    "forbid_backend_credential_direct_read")
+            # METDSL_HOME is the documented deprecated alias preflight also
+            # honors; the guard must follow the same fallback order.
+            legacy = Path(tmp) / "legacy_home"
+            env = {"METDSL_HOME": str(legacy)}
+            with patch.dict(os.environ, env, clear=False):
+                os.environ.pop("CODEX_HOME", None)
+                self.assertEqual(backend_credential_home_paths("codex")[0], (legacy,))
+                self.assertEqual(
+                    self._policy(f"cat {legacy}/auth.json"),
+                    "forbid_backend_credential_direct_read")
+
+
 class ForbidOperatorSecretReadTests(unittest.TestCase):
     """P1: ~/.met-dsl/ reads are blocked regardless of the read command."""
 
@@ -2652,49 +3697,74 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
         """`~/*/*/*` patterns must not trigger an unbounded glob.glob walk of
         $HOME in this synchronous hook — the cheap lexical check fires first."""
         import time
-        t0 = time.time()
-        # `*` at the .met-dsl depth lexically targets the secret root → blocks,
-        # but crucially must do so WITHOUT a multi-second filesystem walk.
-        self.assertEqual(
+        # CPU time, not wall clock: these are budget assertions about the hook's
+        # own work, and a wall-clock version flaked when the suite ran under
+        # load beside other processes.
+        t0 = time.process_time()
+        # `*` at the protected roots' depth lexically targets ALL of them (the
+        # secret root and every backend credential home) → blocks, but crucially
+        # must do so WITHOUT a multi-second filesystem walk. Which root the
+        # message names is genuinely ambiguous for such a pattern; only the block
+        # is asserted.
+        self.assertIn(
             self._policy("echo ~/*/*/*/x"),
-            "forbid_operator_secret_direct_read")
+            {"forbid_operator_secret_direct_read", "forbid_backend_credential_direct_read"})
         self._policy("cat " + " ".join(["~/*/*/*/q"] * 40))
-        self.assertLess(time.time() - t0, 2.0)
+        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
+        # the assertion is that nothing here is quadratic or exponential —
+        # every regression this family caught cost 8-135s. A tight bound on
+        # a ~1s measurement only buys flakes when the suite runs under load.
+        self.assertLess(time.process_time() - t0, 5.0)
 
     def test_single_wildcard_glob_allowed_fast(self) -> None:
         """A single-wildcard glob not targeting the secret root is allowed and fast."""
         import time
-        t0 = time.time()
+        # CPU time, not wall clock: these are budget assertions about the hook's
+        # own work, and a wall-clock version flaked when the suite ran under
+        # load beside other processes.
+        t0 = time.process_time()
         self.assertNotEqual(
             self._policy("ls ~/.config/*"),
             "forbid_operator_secret_direct_read")
-        self.assertLess(time.time() - t0, 2.0)
+        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
+        # the assertion is that nothing here is quadratic or exponential —
+        # every regression this family caught cost 8-135s. A tight bound on
+        # a ~1s measurement only buys flakes when the suite runs under load.
+        self.assertLess(time.process_time() - t0, 5.0)
 
     def test_giant_brace_sequence_no_dos(self) -> None:
         """A huge single `{0..N}` sequence must not allocate/hang the hook,
         and a met-dsl-targeting one must still block."""
         import time
-        t0 = time.time()
+        # CPU time, not wall clock: these are budget assertions about the hook's
+        # own work, and a wall-clock version flaked when the suite ran under
+        # load beside other processes.
+        t0 = time.process_time()
         self.assertEqual(
             self._policy("cat ~/.met-ds{0..999999999}/operator_tokens/x.txt"),
             "forbid_operator_secret_direct_read")
         self._policy("cat ~/x{0..999999999}/y")  # non-secret, must also be fast
-        self.assertLess(time.time() - t0, 2.0)
+        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
+        # the assertion is that nothing here is quadratic or exponential —
+        # every regression this family caught cost 8-135s. A tight bound on
+        # a ~1s measurement only buys flakes when the suite runs under load.
+        self.assertLess(time.process_time() - t0, 5.0)
 
     def test_blocks_embedded_quote_backslash_fallback(self) -> None:
         """When shlex parse fails and evaluate_common_policy falls back to
         command.split(), embedded quote/backslash forms (`~/.met-d''sl`,
         `~/\\.met-dsl`) must still be caught by the collapse pass."""
         from pathlib import Path
-        from tools.hooks.common import _command_reads_operator_secret
+        from tools.hooks.common import _command_reads_protected_host_path
         repo = Path.cwd()
         root = (Path.home() / ".met-dsl").resolve()
         for cmd in (
             r"cat ~/\.met-dsl/operator_tokens/x.txt 'unbalanced",
             "cat ~/.met-d''sl/operator_tokens/x.txt 'unbalanced",
         ):
-            self.assertTrue(
-                _command_reads_operator_secret(cmd, cmd.split(), repo, root),
+            self.assertEqual(
+                _command_reads_protected_host_path(cmd, cmd.split(), repo, [root]),
+                root,
                 msg=cmd)
 
     def test_brace_expansion_is_bounded_no_dos(self) -> None:
@@ -2703,7 +3773,11 @@ class ForbidOperatorSecretReadTests(unittest.TestCase):
         c = "cat " + "{a,b}" * 25 + "x"
         t0 = time.time()
         self._policy(c)  # must return quickly
-        self.assertLess(time.time() - t0, 2.0)
+        # 5s, not 2s: measured ~1s of CPU for these shapes, and the point of
+        # the assertion is that nothing here is quadratic or exponential —
+        # every regression this family caught cost 8-135s. A tight bound on
+        # a ~1s measurement only buys flakes when the suite runs under load.
+        self.assertLess(time.process_time() - t0, 5.0)
 
     def test_blocks_home_var_and_absolute_and_traversal(self) -> None:
         from pathlib import Path
