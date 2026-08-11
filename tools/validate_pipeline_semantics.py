@@ -6168,8 +6168,8 @@ def _validate_generate_syntax_command_logs(
     toolchain.language=fortran (the only language with a syntax-check adapter); the
     MANDATORY stage is gfortran and must have passed. Optional additional stages (the
     METDSL_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
-    their compiler is not installed, or when the stage refused before running (a staged
-    source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
+    their compiler has no registered adapter or no installed binary, or when the stage
+    refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
     either way, as does a recorded `fail` stage."""
     source_id = meta_path.parent.name
     pipeline_root = meta_path.parents[2]
@@ -11184,15 +11184,16 @@ def _validate_toolchain_backend_supported(
       ``language: null`` and ``""`` — all of them default on both sides — and diverge on a
       non-string SCALAR: ``build_system: 5`` / ``true`` reads as ``None`` (→ make) for one
       side and as ``"5"`` / ``"true"`` for the other, which leaves ``src/Makefile``
-      authored by NOBODY. Because the parsed IR cannot tell the harmless spellings from
+      authored by NOBODY. The same happens to an untrimmed value of EITHER key
+      (``"make "``, ``" fortran"``), since the reader strips and the conductor does not. Because the parsed IR cannot tell the harmless spellings from
       that one, every such value is rejected — give the key a plain token or remove it. An
       ABSENT key is a different thing and stays legal.
-    - a value that is not equal to its stripped form (``"make "``). The conductor compares
-      with ``.lower()`` and no ``.strip()``, so a padded value is not the token it looks
-      like and host authorship of the Makefile and the runner silently flips off. For
-      ``build_system`` it is worse: ``record_launch``'s reader DOES strip, so it concludes
-      the host authored the file and suppresses the leaf's write-pin — leaving
-      ``src/Makefile`` authored by NOBODY. (The pair comparison below is ``.lower()``-only
+    - a value that is not equal to its stripped form (``"make "``, ``" fortran"``). The
+      conductor compares with ``.lower()`` and no ``.strip()``, so a padded value is not the
+      token it looks like and host authorship of the Makefile and the runner silently flips
+      off, while ``record_launch``'s reader DOES strip and concludes the host authored the
+      file — suppressing the leaf's write-pin and leaving ``src/Makefile`` authored by
+      NOBODY. This holds for either key. (The pair comparison below is ``.lower()``-only
       too, but that is unobservable: this check returns first for every untrimmed value.)
 
     The former RESIDUAL here — spellings that parse to the right token but line-scanned to
@@ -11241,40 +11242,42 @@ def _validate_toolchain_backend_supported(
         value = tc[key]
         if not isinstance(value, str) or not value.strip():
             shape_bad = True
-            # Measured over the two readers, this branch spans three outcomes — which is why
-            # the message states the RULE and cites the extremes rather than claiming one
+            # Measured over the two readers, this branch spans two outcomes — which is why
+            # the message states the RULE and cites the harmful one rather than claiming a
             # consequence for the value at hand:
-            #   language: null / ~ / no / off / 0 / []  -> src/Makefile DOUBLE-OWNED
-            #   build_system: 5 / true / "   "          -> src/Makefile authored by NOBODY
-            #   `key:` (bare) and `key: ""`             -> both readers agree (harmless)
-            # The harmless pair is rejected anyway because the PARSED value cannot be told
-            # from the harmful ones; only the line scan can, and that is the whole defect.
+            #   key: 5 / true (a non-string SCALAR)  -> src/Makefile authored by NOBODY
+            #   `key:` (bare), `key: null`, `key: ""` -> both readers default (harmless)
+            # The harmless spellings are rejected anyway because the PARSED value cannot be
+            # told from the harmful one: record_launch reads impl_defaults.toolchain
+            # structurally and coerces a non-string to None, which is the same default the
+            # bare key takes.
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} must be a plain non-empty "
-                f"string token; found {value!r}. The conductor reads the PARSED value while "
-                f"record_launch decides src/Makefile authorship by LINE-SCANNING this file, "
-                f"and for a value that is not a plain token the two CAN reach different answers: "
-                f"measured, `language: null` (likewise `~` / `no` / `off` / `0` / `[]`) "
-                f"leaves src/Makefile double-owned, while `build_system: 5` or "
-                f"`build_system: \"   \"` leaves it authored by nobody. The bare `{key}:` and "
-                f"`{key}: \"\"` spellings happen to be harmless, but the parsed IR cannot tell "
-                f"them from the rest, so every present-but-not-a-plain-token value is "
+                f"string token; found {value!r}. The conductor reads the parsed value as "
+                f"`str(value or default)` while record_launch, which decides src/Makefile "
+                f"authorship, coerces anything that is not a string to the default, so for a "
+                f"value that is not a plain token the two CAN reach different answers: "
+                f"measured, `{key}: 5` or `{key}: true` leaves src/Makefile authored by "
+                f"nobody, while the bare `{key}:`, `{key}: null` and `{key}: \"\"` spellings "
+                f"happen to agree. The parsed IR cannot tell them apart, so every "
+                f"present-but-not-a-plain-token value is "
                 f"rejected (docs/workflow/phases/phase_01_compile.md). Give the key an "
                 f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or remove "
                 f"it entirely — an ABSENT key is legal and takes that same default.")
         elif value != value.strip():
             shape_bad = True
-            # Measured: `build_system: "make "` orphans the file (conductor declines, scanner
-            # strips and still reports the host as author, so the leaf's pin is suppressed).
-            # `language: " fortran"` is consistent — both decline and the leaf is pinned — but
-            # the node has silently stopped being M3c, which is its own defect.
+            # Measured, for EITHER key: an untrimmed value orphans the file. The conductor
+            # compares without stripping and declines to author; record_launch's reader
+            # strips and still reports the host as the author, which suppresses the leaf's
+            # write-pin. For `language` the node additionally stops being M3c.
             consequence = (
-                "record_launch's line scan — which does strip — still reports the host as "
-                "the author and suppresses the leaf's write-pin, so src/Makefile ends up "
-                "authored by nobody"
-                if key == "build_system" else
-                "the node silently stops being an M3c node: its runner is no longer "
-                "host-rendered and its checks-module ABI no longer applies")
+                "src/Makefile ends up authored by nobody: record_launch's reader — which "
+                "does strip — still reports the host as the author and suppresses the "
+                "leaf's write-pin")
+            if key == "language":
+                consequence += (
+                    ", and the node silently stops being an M3c node: its runner is no "
+                    "longer host-rendered and its checks-module ABI no longer applies")
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
                 "leading or trailing whitespace. The conductor compares this value with "

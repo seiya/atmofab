@@ -317,12 +317,21 @@ def _refuse_unsafe_values(
         elif not _MAKE_NAME_VALUE_RE.match(value):
             offending.append(f"{key}={value}")
     if offending:
-        raise ValueError(
+        message = (
             f"{tool_name} {kind} values reach the make recipe's shell: a path must be "
             "absolute and inside the repository, a name must be an identifier, and only "
             "CASES may be empty; refused: "
             + ", ".join(sorted(offending))
         )
+        # A refusal caused by the CHECKOUT's own path (a space, a parenthesis) reads as a
+        # complaint about a value the caller composed correctly, so name the real cause.
+        if set(str(repo_root)) & _SHELL_ACTIVE_CHARS:
+            message += (
+                f". The repository path itself ({str(repo_root)!r}) contains a character "
+                "this rule refuses, so no value derived from it can pass — the checkout "
+                "has to live somewhere without one"
+            )
+        raise ValueError(message)
 
 
 def _validate_build_argv_overrides(

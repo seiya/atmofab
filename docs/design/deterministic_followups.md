@@ -1968,7 +1968,7 @@ then fails at runtime, in a host-authored file no leaf can repair:
    case_id of `../../pwned` traverses out of the run directory and the cleanly-compiling, cleanly-running runner
    writes an arbitrary file (reproduced through gfortran: it wrote `pwned.json` a directory above the run node). The
    compile gates only required a case_id to be non-empty, and `_flit`/`CASE_ID_LEN` pass anything printable and short.
-   `_case_ids` now restricts a case_id to `[A-Za-z0-9._-]` with no `..` — the same safe-token grammar the dependency
+   `_case_ids` now restricts a case_id to `[A-Za-z0-9._][A-Za-z0-9._-]*` with no `..` (narrowed 2026-08-12 to bar a leading `-`, which the runner's argv would read as an option) — close to the safe-token grammar the dependency
    layer (`orchestration_runtime._is_safe_path_token`) uses for the path segments it interpolates. All 20 existing
    spec case_ids already satisfy it. An apostrophe is thereby also barred from a case_id (it is a filename), so
    `_flit`'s apostrophe-doubling now only ever fires on the non-path names (test_id, metric address, snapshot
@@ -2081,7 +2081,7 @@ outside the run directory (reproduced: a two-level `..` dropped a `.json` a dire
 is a plain `run_program` subprocess, not bwrap-confined). Same class as (4), a layer up.
 
 The canonical fix is a spec-input gate, not a renderer one: `_validate_case_ids` (compile stage, ALL node kinds)
-rejects any `case.test_case_set[].case_id` outside `[A-Za-z0-9._-]`/no-`..`, routing to `compile.generate` before any
+rejects any `case.test_case_set[].case_id` outside `[A-Za-z0-9._][A-Za-z0-9._-]*`/no-`..`, routing to `compile.generate` before any
 build. It reuses the renderer's `_CASE_ID_TOKEN_RE` as the single grammar. `read_case_ids` — the shared runtime argv
 boundary for M3c and non-M3c alike — additionally DROPS any unsafe token, so even a hand-crafted IR that bypassed
 Compile can never place a traversal string on the argv (the dropped case then fails its own in-directory deliverable

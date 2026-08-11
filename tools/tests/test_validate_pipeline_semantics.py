@@ -15191,14 +15191,15 @@ class ToolchainBackendGateTests(unittest.TestCase):
             # The remedy must quote the STRIPPED token; echoing the padded value back would
             # tell the author to write exactly what was just rejected.
             self.assertIn(f"Write the bare token ({tc[key].strip()!r})", v[0])
-        # Each key states ITS OWN measured consequence, not a shared story: a padded
-        # build_system orphans src/Makefile (conductor declines, the scanner strips and still
-        # names the host, so the leaf's pin is suppressed); a padded language is consistent
-        # about ownership but silently drops the node out of M3c.
+        # An untrimmed value orphans src/Makefile for EITHER key: the conductor compares
+        # without stripping and declines to author, while record_launch's reader strips and
+        # still names the host, so the leaf's pin is suppressed. (Before the readers became
+        # structural only build_system did this; a padded language was merely inconsistent
+        # about M3c.) A padded language additionally drops the node out of M3c.
         bs_msg = self._run(toolchain={"build_system": "make "})[0]
         lang_msg = self._run(toolchain={"language": " fortran"})[0]
         self.assertIn("authored by nobody", bs_msg)
-        self.assertNotIn("authored by nobody", lang_msg)
+        self.assertIn("authored by nobody", lang_msg)
         self.assertIn("stops being an M3c node", lang_msg)
         self.assertNotIn("stops being an M3c node", bs_msg)
         # Both keys padded -> one violation each, and the pair check does not also fire
@@ -15228,12 +15229,14 @@ class ToolchainBackendGateTests(unittest.TestCase):
                     f"explicit value ({'make' if key == 'build_system' else 'fortran'})",
                     v[0])
                 self.assertNotIn("{key}", v[0])
-        # The branch spans three measured outcomes, so the message cites the extremes rather
-        # than claiming one consequence for the value at hand — a per-value story has been
-        # wrong three times here. Both extremes must stay named.
+        # The message cites the harmful outcome rather than claiming one consequence for
+        # the value at hand — a per-value story has been wrong three times here. Since the
+        # readers became structural, `null` / bare / `""` agree on both sides and only a
+        # non-string SCALAR diverges, so that is what must stay named.
         msg = self._run(toolchain={"language": None})[0]
-        self.assertIn("double-owned", msg)
         self.assertIn("authored by nobody", msg)
+        self.assertIn("happen to agree", msg)
+        self.assertNotIn("double-owned", msg)
         # An ABSENT key is a different thing and stays legal.
         self.assertEqual(self._run(toolchain={}), [])
 

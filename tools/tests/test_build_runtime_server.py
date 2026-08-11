@@ -785,6 +785,18 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
                     self._check({"OBJDIR": value})
                 self.assertIn("reach the make recipe's shell", str(ctx.exception))
 
+    def test_a_refusal_caused_by_the_checkout_path_names_it(self) -> None:
+        # Otherwise the message blames a value the caller composed correctly from a
+        # repo_root it does not choose.
+        root = Path(tempfile.mkdtemp()) / "my repo"
+        root.mkdir()
+        self.addCleanup(shutil.rmtree, root.parent, ignore_errors=True)
+        with self.assertRaises(ValueError) as ctx:
+            self.mod._validate_env_overrides(
+                {"OBJDIR": f"{root}/obj"}, "run_quality_checks",
+                orchestrated=True, repo_root=root)
+        self.assertIn("repository path itself", str(ctx.exception))
+
     def test_a_path_value_may_not_hold_a_space(self) -> None:
         # The other half of the path rule: `<repo>/a b` resolves inside the repository
         # and still word-splits in `cd $(RUNDIR) && $(BINDIR)/$(BIN) …`.
