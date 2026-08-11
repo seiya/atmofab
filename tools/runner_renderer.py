@@ -82,7 +82,11 @@ MAX_IDENTIFIER_LEN = 63
 # only require a case_id to be a non-empty string, and `_flit` only bars non-printable-ASCII, so
 # `..`/`/` slip through both. Restrict the id to the same safe-token grammar the dependency layer
 # uses for path segments (`orchestration_runtime._is_safe_path_token`): `[A-Za-z0-9._-]`, no `..`.
-_CASE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# The first character additionally may not be `-`: a case id reaches the runner's argv
+# through `--cases $(SPEC) $(CASES)` and the build-runtime MCP server refuses a leading
+# `-` there, so accepting one here would pass Compile and Build and then fail
+# Validate.execute on an id no gate had objected to.
+_CASE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 
 
 def spec_id_length_violation(spec_id: Any) -> str | None:

@@ -63,7 +63,7 @@
       },
       "repo_root": {
         "type": "string",
-        "description": "Repository root containing workspace/orchestrations/. Defaults to project_dir."
+        "description": "Repository root containing workspace/orchestrations/. Omit to use project_dir; an empty value is not an omission."
       }
     },
     "required": [

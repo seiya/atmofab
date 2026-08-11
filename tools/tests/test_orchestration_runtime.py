@@ -15253,6 +15253,9 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             _plant_spec_ir_yaml_make(repo_root)
             project_dir = repo_root / "src"
             project_dir.mkdir()
+            outside_stack = tempfile.TemporaryDirectory()
+            self.addCleanup(outside_stack.cleanup)
+            outside_dir = Path(outside_stack.name)
             gate_args = {
                 "repo_root": str(repo_root),
                 "orchestration_id": "vperm8",
@@ -15280,7 +15283,11 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 # command_log_path is a write, and only run_program at Validate has a
                 # placement rule in the phase gate.
                 ({"command_log_path": "/tmp/evil.jsonl"},
-                 "must stay under the repository root"),
+                 "command_log_path must stay under the repository root"),
+                # project_dir is the subprocess cwd, and a relative log path resolves
+                # against it.
+                ({"project_dir": str(outside_dir)},
+                 "project_dir must stay under the repository root"),
             ):
                 with self.subTest(extra=extra):
                     with self.assertRaises(ValueError) as ctx:

@@ -124,6 +124,16 @@ def _maybe_enforce_orchestration_mcp_gate(
     )
 
 
+def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
+    """An integer argument, held to the minimum its served schema declares."""
+    if raw is None:
+        return default
+    value = int(raw)
+    if value < minimum:
+        raise ValueError(f"{name} must be >= {minimum} (got {value})")
+    return value
+
+
 def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
     """The root a call's paths are judged against.
 
@@ -258,11 +268,14 @@ def _refuse_unsafe_values(
 ) -> None:
     """Refuse an accepted key whose VALUE would carry more than a value.
 
-    A path value must land inside the repository — the value names where the build
-    writes and what it runs, and `BINDIR` alone points the recipe at any executable on
-    the machine. A name value (`BIN`, `CASES`) must be an identifier, or a
-    space-separated list of them for the case ids. Either way no value may carry a
-    character the recipe's shell acts on.
+    A path value must be absolute and land inside the repository — the value names
+    where the build writes and what it runs, and `BINDIR` alone points the recipe at any
+    executable on the machine. Absolute because a relative one has no single base: make
+    reads `OBJDIR` from its own working directory and `BINDIR` / `SPEC` from wherever
+    `cd $(RUNDIR)` left it, so a check here would be measuring a different path from the
+    one that runs. `BIN` must be one identifier — it is a command name, and a space in
+    it appends an argument to the runner — and `CASES` a space-separated list of them.
+    No value may carry a character the recipe's shell acts on.
 
     An empty value is refused rather than skipped, for every key the recipe uses as a
     path or a command name. Make imports it as a variable that IS set, so `?=` does not
@@ -282,10 +295,15 @@ def _refuse_unsafe_values(
         if set(value) & _SHELL_ACTIVE_CHARS - {" "}:
             offending.append(f"{key}={value}")
         elif key in _ORCHESTRATED_PATH_VALUE_KEYS:
-            resolved = (repo_root / value).resolve()
-            if " " in value or (resolved != repo_root and repo_root not in resolved.parents):
+            candidate = Path(value)
+            resolved = candidate.resolve()
+            if (" " in value or not candidate.is_absolute()
+                    or (resolved != repo_root and repo_root not in resolved.parents)):
                 offending.append(f"{key}={value}")
-        elif not all(_MAKE_NAME_VALUE_RE.match(word) for word in value.split(" ") if word):
+        elif key == "CASES":
+            if not all(_MAKE_NAME_VALUE_RE.match(word) for word in value.split(" ") if word):
+                offending.append(f"{key}={value}")
+        elif not _MAKE_NAME_VALUE_RE.match(value):
             offending.append(f"{key}={value}")
     if offending:
         raise ValueError(
@@ -433,7 +451,10 @@ _ORCHESTRATION_GATE_PROPERTIES: dict[str, Any] = {
     },
     "repo_root": {
         "type": "string",
-        "description": "Repository root containing workspace/orchestrations/. Defaults to project_dir.",
+        "description": (
+            "Repository root containing workspace/orchestrations/. Omit to use "
+            "project_dir; an empty value is not an omission."
+        ),
     },
 }
 
@@ -523,7 +544,9 @@ def _validate_command_log_path(
     # project_dir is the subprocess cwd and the base a relative log path resolves
     # against, so it belongs inside the same root the capability was validated at.
     for label, candidate in (
-        ("project_dir", Path(project_dir).resolve()),
+        # A relative project_dir is resolved against the same root the gate resolves it
+        # against, not against whatever directory the server was started in.
+        ("project_dir", (root / project_dir).resolve()),
         *(() if command_log_path is None else
           (("command_log_path",
             _resolve_command_log_path(project_dir, str(command_log_path)).resolve()),)),
@@ -796,9 +819,12 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     )
     language = str(args.get("language", "")).strip().lower()
     target = args.get("target")
-    jobs = int(args.get("jobs", max(1, (os.cpu_count() or 1) // 2)))
-    timeout_sec = int(args.get("timeout_sec", 1800))
-    capture_limit = int(args.get("capture_limit", 120000))
+    # The served schema declares these minimums; an MCP argument schema is advisory, so
+    # enforce them here. `make -j-5` waits forever, which spends the caller's whole
+    # timeout on nothing.
+    jobs = _bounded_int(args.get("jobs"), max(1, (os.cpu_count() or 1) // 2), 1, "jobs")
+    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
+    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
@@ -864,8 +890,8 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
         project_dir=project_dir,
         args=args,
     )
-    timeout_sec = int(args.get("timeout_sec", 3600))
-    capture_limit = int(args.get("capture_limit", 120000))
+    timeout_sec = _bounded_int(args.get("timeout_sec"), 3600, 1, "timeout_sec")
+    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
@@ -925,8 +951,8 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
         project_dir=project_dir,
         args=args,
     )
-    timeout_sec = int(args.get("timeout_sec", 1800))
-    capture_limit = int(args.get("capture_limit", 120000))
+    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
+    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
@@ -998,8 +1024,8 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
         project_dir=project_dir,
         args=args,
     )
-    timeout_sec = int(args.get("timeout_sec", 1800))
-    capture_limit = int(args.get("capture_limit", 120000))
+    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
+    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")
@@ -1266,8 +1292,8 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         project_dir=project_dir,
         args=args,
     )
-    timeout_sec = int(args.get("timeout_sec", 1800))
-    capture_limit = int(args.get("capture_limit", 120000))
+    timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
+    capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
     if command_log_path is not None and not isinstance(command_log_path, str):
         raise ValueError("command_log_path must be a string")

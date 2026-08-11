@@ -710,8 +710,13 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     self._check({"BINDIR": value})
                 self.assertIn("inside the repository", str(ctx.exception))
-        # A relative path is resolved against the same root and stays acceptable.
-        self._check({"BINDIR": "workspace/binary/bin_1/bin"})
+        # A relative path is refused outright: make would read it from its own working
+        # directory (or from wherever `cd $(RUNDIR)` left it), never from the root this
+        # check measures against, so a relative value can only ever be checked as a
+        # different path from the one that runs.
+        with self.assertRaises(ValueError) as ctx:
+            self._check({"BINDIR": "workspace/binary/bin_1/bin"})
+        self.assertIn("inside the repository", str(ctx.exception))
 
     def test_a_path_value_may_hold_any_character_the_filesystem_does(self) -> None:
         # The rule for a path is containment, not a character class: a checkout whose
@@ -719,6 +724,14 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         # metacharacters.
         nested = self.repo_root / "作業" / "build"
         self._check({"OBJDIR": str(nested)})
+
+    def test_bin_is_one_name_not_a_list(self) -> None:
+        # `BIN` is a command name in `$(BINDIR)/$(BIN) --cases ...`, so a space in it
+        # appends an argument to the runner. Only CASES is a list.
+        with self.assertRaises(ValueError) as ctx:
+            self._check({"BIN": "runner extra"})
+        self.assertIn("BIN=runner extra", str(ctx.exception))
+        self._check({"CASES": "case_a case_b"})
 
     def test_a_path_value_may_not_hold_a_space(self) -> None:
         # The other half of the path rule: `<repo>/a b` resolves inside the repository

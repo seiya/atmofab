@@ -12419,6 +12419,46 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "make_error")
             self.assertTrue(meta["failure_source_refs"][0].endswith("/Makefile"))
 
+    def test_build_inproc_payload_survives_the_real_mcp_validators(self) -> None:
+        """The conductor's own compile payload must pass the server's orchestrated
+        argument rules — the make-variable allowlist, the absolute-path-inside-the-repo
+        value rule, and the project_dir / command_log_path containment.
+
+        The other Build tests replace `tool_compile_project` wholesale, so none of them
+        crosses the validation the workflow depends on; this one replaces `_run_command`
+        instead, leaving every check in the path."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+            def fake_run_command(**kwargs):
+                fake_run_command.seen = kwargs
+                return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
+                        "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server, "_maybe_enforce_orchestration_mcp_gate",
+                                   lambda **kw: None), \
+                    mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+                c._build_inproc(refs, "child-1", "captok")
+
+            # It reached the subprocess layer, i.e. no validator refused the payload.
+            argv = fake_run_command.seen["command"]
+            self.assertEqual(argv[0], "make")
+            self.assertTrue(any(a.startswith("OBJDIR=") for a in argv), argv)
+            self.assertTrue(any(a.startswith("BIN=") for a in argv), argv)
+
     def test_build_inproc_imposes_canonical_bin_override(self) -> None:
         # The binary name is imposed (not derived from the Makefile): Build passes
         # BIN=<spec_id>_runner on the make command line and produces the binary there.
