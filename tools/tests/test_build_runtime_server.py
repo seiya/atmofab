@@ -796,6 +796,13 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
                 {"OBJDIR": f"{root}/obj"}, "run_quality_checks",
                 orchestrated=True, repo_root=root)
         self.assertIn("repository path itself", str(ctx.exception))
+        # Not appended to a refusal it did not cause: BIN is never composed from the
+        # checkout path, so the clause would explain the wrong thing.
+        with self.assertRaises(ValueError) as ctx_name:
+            self.mod._validate_env_overrides(
+                {"BIN": "my runner"}, "run_quality_checks",
+                orchestrated=True, repo_root=root)
+        self.assertNotIn("repository path itself", str(ctx_name.exception))
 
     def test_a_path_value_may_not_hold_a_space(self) -> None:
         # The other half of the path rule: `<repo>/a b` resolves inside the repository

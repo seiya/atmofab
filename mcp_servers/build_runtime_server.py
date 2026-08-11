@@ -166,7 +166,7 @@ _MAKE_VARIABLE_ALLOWLIST = frozenset(
 )
 
 # Which tools may carry any of them at all. The workflow passes `env` to exactly one
-# tool; for the other three an empty allowlist says so, rather than advertising make
+# tool; for the other four an empty allowlist says so, rather than advertising make
 # variables that mean nothing to a linter or a syntax check.
 _ORCHESTRATED_ENV_KEYS_BY_TOOL: dict[str, frozenset[str]] = {
     # Build passes these on the make command line (`extra_args`), not in the
@@ -324,8 +324,12 @@ def _refuse_unsafe_values(
             + ", ".join(sorted(offending))
         )
         # A refusal caused by the CHECKOUT's own path (a space, a parenthesis) reads as a
-        # complaint about a value the caller composed correctly, so name the real cause.
-        if set(str(repo_root)) & _SHELL_ACTIVE_CHARS:
+        # complaint about a value the caller composed correctly, so name the real cause —
+        # but only for the keys whose value is derived from that path, or the clause
+        # explains a refusal it did not cause.
+        offending_keys = {item.split("=", 1)[0] for item in offending}
+        if (offending_keys & _ORCHESTRATED_PATH_VALUE_KEYS
+                and set(str(repo_root)) & _SHELL_ACTIVE_CHARS):
             message += (
                 f". The repository path itself ({str(repo_root)!r}) contains a character "
                 "this rule refuses, so no value derived from it can pass — the checkout "

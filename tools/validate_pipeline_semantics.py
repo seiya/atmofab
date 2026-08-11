@@ -11246,6 +11246,7 @@ def _validate_toolchain_backend_supported(
             # the message states the RULE and cites the harmful one rather than claiming a
             # consequence for the value at hand:
             #   key: 5 / true (a non-string SCALAR)  -> src/Makefile authored by NOBODY
+            #   key: "   " (whitespace only)          -> likewise NOBODY (the reader strips)
             #   `key:` (bare), `key: null`, `key: ""` -> both readers default (harmless)
             # The harmless spellings are rejected anyway because the PARSED value cannot be
             # told from the harmful one: record_launch reads impl_defaults.toolchain
@@ -11266,18 +11267,18 @@ def _validate_toolchain_backend_supported(
                 f"it entirely — an ABSENT key is legal and takes that same default.")
         elif value != value.strip():
             shape_bad = True
-            # Measured, for EITHER key: an untrimmed value orphans the file. The conductor
-            # compares without stripping and declines to author; record_launch's reader
-            # strips and still reports the host as the author, which suppresses the leaf's
-            # write-pin. For `language` the node additionally stops being M3c.
+            # Measured, for EITHER key: an untrimmed value orphans the file AND drops the
+            # node out of M3c. The conductor compares without stripping and declines to
+            # author, while record_launch's reader strips and still reports the host as the
+            # author, which suppresses the leaf's write-pin; and
+            # `_conductor_authors_runner` keys on both `build_system` and `language`, so a
+            # padded value of either stops the runner being host-rendered.
             consequence = (
                 "src/Makefile ends up authored by nobody: record_launch's reader — which "
                 "does strip — still reports the host as the author and suppresses the "
-                "leaf's write-pin")
-            if key == "language":
-                consequence += (
-                    ", and the node silently stops being an M3c node: its runner is no "
-                    "longer host-rendered and its checks-module ABI no longer applies")
+                "leaf's write-pin, and the node silently stops being an M3c node: its "
+                "runner is no longer host-rendered and its checks-module ABI no longer "
+                "applies")
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
                 "leading or trailing whitespace. The conductor compares this value with "

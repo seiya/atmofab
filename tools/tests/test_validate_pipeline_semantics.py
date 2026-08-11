@@ -15191,17 +15191,18 @@ class ToolchainBackendGateTests(unittest.TestCase):
             # The remedy must quote the STRIPPED token; echoing the padded value back would
             # tell the author to write exactly what was just rejected.
             self.assertIn(f"Write the bare token ({tc[key].strip()!r})", v[0])
-        # An untrimmed value orphans src/Makefile for EITHER key: the conductor compares
-        # without stripping and declines to author, while record_launch's reader strips and
-        # still names the host, so the leaf's pin is suppressed. (Before the readers became
-        # structural only build_system did this; a padded language was merely inconsistent
-        # about M3c.) A padded language additionally drops the node out of M3c.
+        # An untrimmed value has BOTH consequences for EITHER key: the conductor compares
+        # without stripping and declines to author while record_launch's reader strips and
+        # still names the host (so the leaf's pin is suppressed and nobody owns the file),
+        # and `_conductor_authors_runner` keys on both fields, so the runner stops being
+        # host-rendered either way. (Before the readers became structural, only
+        # build_system orphaned the file — the split this used to assert was measured on
+        # that older code.)
         bs_msg = self._run(toolchain={"build_system": "make "})[0]
         lang_msg = self._run(toolchain={"language": " fortran"})[0]
-        self.assertIn("authored by nobody", bs_msg)
-        self.assertIn("authored by nobody", lang_msg)
-        self.assertIn("stops being an M3c node", lang_msg)
-        self.assertNotIn("stops being an M3c node", bs_msg)
+        for msg in (bs_msg, lang_msg):
+            self.assertIn("authored by nobody", msg)
+            self.assertIn("stops being an M3c node", msg)
         # Both keys padded -> one violation each, and the pair check does not also fire
         # (its message would name a value nobody wrote).
         v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
