@@ -11176,20 +11176,17 @@ def _validate_toolchain_backend_supported(
       isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
       rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
       sides identically and is left alone.
-    - a key present with a value that is not a plain non-empty string. ``language:`` (no
-      value) and ``language: null`` are the same ``None`` once the IR is parsed, but
-      ``record_launch`` decides Makefile authorship from line-scanning readers
-      (``_impl_resolved_build_system`` / ``_impl_resolved_language``) that read the file
-      TEXTUALLY and do tell them apart. Measured, the branch spans three outcomes:
-      ``language: null`` (likewise ``~`` / ``no`` / ``off`` / ``0`` / ``[]``) leaves a
-      DOUBLE-OWNED ``src/Makefile`` — the scanner returns the literal token, concludes the
-      Makefile is leaf-authored and injects the write-pin while the conductor host-authors
-      it anyway, exactly what ``_conductor_authors_makefile``'s single-source-of-truth
-      contract exists to prevent; ``build_system: 5`` / ``true`` / ``"   "`` leaves it
-      authored by NOBODY; and the bare-key and ``""`` spellings agree harmlessly. Because
-      the parsed IR cannot tell the harmless ones from the rest, every such value is
-      rejected — give the key a plain token or remove it. An ABSENT key is a different
-      thing and stays legal.
+    - a key present with a value that is not a plain non-empty string. ``record_launch``
+      decides Makefile authorship from ``_impl_resolved_build_system`` /
+      ``_impl_resolved_language``, which read ``impl_defaults.toolchain`` structurally and
+      coerce anything that is not a string to ``None``; the conductor takes
+      ``str(value or default)``. The two therefore agree on ``language:`` (no value),
+      ``language: null`` and ``""`` — all of them default on both sides — and diverge on a
+      non-string SCALAR: ``build_system: 5`` / ``true`` reads as ``None`` (→ make) for one
+      side and as ``"5"`` / ``"true"`` for the other, which leaves ``src/Makefile``
+      authored by NOBODY. Because the parsed IR cannot tell the harmless spellings from
+      that one, every such value is rejected — give the key a plain token or remove it. An
+      ABSENT key is a different thing and stays legal.
     - a value that is not equal to its stripped form (``"make "``). The conductor compares
       with ``.lower()`` and no ``.strip()``, so a padded value is not the token it looks
       like and host authorship of the Makefile and the runner silently flips off. For
@@ -11198,14 +11195,11 @@ def _validate_toolchain_backend_supported(
       ``src/Makefile`` authored by NOBODY. (The pair comparison below is ``.lower()``-only
       too, but that is unobservable: this check returns first for every untrimmed value.)
 
-    RESIDUAL, deliberately not closed here: these checks read the PARSED mapping, so they
-    catch only the divergences a parse can see. Spellings that parse to the right token but
-    line-scan to a different one — a duplicate ``language:`` key, a block scalar
-    (``language: >-`` / ``|-``), a YAML alias — still reach the same double-owned
-    ``src/Makefile``. The root cause is that ``_impl_resolved_build_system`` /
-    ``_impl_resolved_language`` line-scan the file at all (and unscoped to
-    ``impl_defaults.toolchain`` at that); a gate over the parsed IR structurally cannot fix
-    it, and growing this one to chase text spellings would only look like it had.
+    The former RESIDUAL here — spellings that parse to the right token but line-scanned to
+    a different one (a duplicate ``language:`` key, a block scalar, a YAML alias, or a
+    decoy ``language:`` line in a free-text field above ``impl_defaults``) — is closed at
+    the root: both readers parse the document instead of scanning it, so a parse-visible
+    check now covers the whole class.
 
     A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
     derived_path = ir_dir / "spec.ir.yaml"

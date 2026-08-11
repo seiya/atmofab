@@ -837,11 +837,15 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
     def test_every_assignment_is_checked_not_just_the_last(self) -> None:
         # Both elements reach the command line, so a duplicate key must not let the
         # first one through unchecked.
+        # The LAST assignment is the one make keeps, so it is valid here: only the
+        # earlier element is dangerous, and collapsing the pairs into a mapping would
+        # drop exactly that one.
+        good = f"OBJDIR={self.repo_root}/obj"
         with self.assertRaises(ValueError) as ctx:
             self.mod._validate_build_argv_overrides(
-                None, ["OBJDIR=obj; touch /tmp/x;", "OBJDIR=obj"], "compile_project",
-                orchestrated=True, repo_root=self.repo_root)
-        self.assertIn("reach the make recipe's shell", str(ctx.exception))
+                None, [f"OBJDIR={self.repo_root}/obj; touch /tmp/x;", good],
+                "compile_project", orchestrated=True, repo_root=self.repo_root)
+        self.assertIn("touch /tmp/x", str(ctx.exception))
 
     def test_a_target_is_refused_under_an_orchestration(self) -> None:
         # Build names no target, and a target runs whatever else the Makefile defines

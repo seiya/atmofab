@@ -2388,9 +2388,9 @@ Not changed, deliberately: the `algorithm.state_contract` / `algorithm.update_se
 `phase_01_compile.md` §"Placement of the multi-dimensional contract" documents them as shadow detectors for an IR that
 authors the contract in the wrong place, so they are intentional rather than dead. Filed, not fixed: the
 `isinstance(d, str)` tolerance for `direct_deps` in `orchestration_runtime` (no producer emits it, and no fixture
-relies on it any more), and the line-scanning `_impl_resolved_build_system` / `_impl_resolved_language`, which are
-nesting-blind by construction (see L4) and therefore cannot pin the `impl_defaults.toolchain` nesting their fixtures
-now use.
+relies on it any more). CLOSED 2026-08-12: `_impl_resolved_build_system` / `_impl_resolved_language` no longer
+line-scan — both read `impl_defaults.toolchain` through the parsed document, so the nesting-blindness that made them
+disagree with the conductor (and let a decoy line in a free-text field answer for the toolchain) is gone.
 
 ## Z0 — CodegenBundle and the optimization-boundary contract (LANDED 2026-07-14)
 
