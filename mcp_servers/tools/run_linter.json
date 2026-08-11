@@ -30,7 +30,7 @@
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Environment overrides for the command. Under an orchestration only the exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted; any other key is refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
+        "description": "Environment overrides for the command. Under an orchestration only the exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted, a path value must resolve inside the repository, and a name value must be an identifier; any other key is refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
       },
       "orchestration_id": {
         "type": "string",

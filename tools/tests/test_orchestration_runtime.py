@@ -15153,6 +15153,21 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         brs.tool_run_quality_checks({**base, "env": env})
                     self.assertIn(expected, str(ctx.exception))
 
+            # The sibling reading, on the same gate block: an omitted preset is the
+            # server's own `make_test` default, so it satisfies the make-only contract
+            # rather than tripping it, while a non-make preset still trips it.
+            _plant_spec_ir_yaml_make(repo_root)
+            gate_kwargs = dict(
+                orchestration_id="vperm9", agent_run_id="exec_child",
+                capability_token=str(cap["capability_token"]),
+                tool_name="run_quality_checks",
+            )
+            validate_mcp_build_tool_invocation(repo_root, mcp_args={}, **gate_kwargs)
+            with self.assertRaises(RuntimeError) as ctx_qc:
+                validate_mcp_build_tool_invocation(
+                    repo_root, mcp_args={"preset": "ctest"}, **gate_kwargs)
+            self.assertIn("preset make_test or make_check", str(ctx_qc.exception))
+
             # What Validate.execute actually sends still runs.
             payload = {
                 "OBJDIR": f"{repo_root}/workspace/tmp/a/obj",
@@ -15191,6 +15206,8 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             check({"build_system": ""})
             check({"build_system": "  "})
             check({"build_system": "make"})
+
+
             with self.assertRaises(RuntimeError) as ctx:
                 check({"build_system": "cmake"})
             self.assertIn("requires compile_project build_system make", str(ctx.exception))

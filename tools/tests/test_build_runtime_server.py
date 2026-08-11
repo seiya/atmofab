@@ -720,6 +720,35 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         nested = self.repo_root / "作業" / "build"
         self._check({"OBJDIR": str(nested)})
 
+    def test_a_path_value_may_not_hold_a_space(self) -> None:
+        # The other half of the path rule: `<repo>/a b` resolves inside the repository
+        # and still word-splits in `cd $(RUNDIR) && $(BINDIR)/$(BIN) …`.
+        with self.assertRaises(ValueError) as ctx:
+            self._check({"OBJDIR": f"{self.repo_root}/a b"})
+        self.assertIn("reach the make recipe's shell", str(ctx.exception))
+
+    def test_an_empty_path_or_command_value_is_refused(self) -> None:
+        # `RUNDIR=` is not "unset": make imports it as set, so `?=` keeps the default
+        # away and `cd $(RUNDIR)` becomes a bare `cd`, which lands in the home
+        # directory. `$(OBJDIR)/x` likewise becomes an absolute path at the root.
+        for key in ("OBJDIR", "BINDIR", "RUNDIR", "SPEC", "BIN"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({key: ""})
+                self.assertIn(key, str(ctx.exception))
+        # An empty case list is a list.
+        self._check({"CASES": ""})
+
+    def test_a_blank_repo_root_does_not_move_the_root(self) -> None:
+        # The gate reads `repo_root` as absent only when it is None, so a present-but-
+        # empty value used to validate the capability against the server's own
+        # directory while the containment checks fell back to the caller's project_dir.
+        self.assertEqual(
+            self.mod._repo_root_for_call({"repo_root": ""}, "/some/caller/dir"),
+            Path("").resolve())
+        self.assertEqual(
+            self.mod._repo_root_for_call({}, str(self.repo_root)), self.repo_root)
+
     def test_argv_values_are_refused_the_same_way(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self.mod._validate_build_argv_overrides(

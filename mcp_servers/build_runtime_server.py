@@ -112,8 +112,7 @@ def _maybe_enforce_orchestration_mcp_gate(
         raise ValueError(f"{tool_name} requires agent_run_id when orchestration_id is set")
     if cap_raw is None or not str(cap_raw).strip():
         raise ValueError(f"{tool_name} requires capability_token when orchestration_id is set")
-    rr_raw = args.get("repo_root")
-    repo_root = Path(str(rr_raw if rr_raw is not None else project_dir)).resolve()
+    repo_root = _repo_root_for_call(args, project_dir)
     rt = _load_orchestration_runtime()
     rt.validate_mcp_build_tool_invocation(
         repo_root,
@@ -126,8 +125,15 @@ def _maybe_enforce_orchestration_mcp_gate(
 
 
 def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
-    """The root a call's paths are judged against — the same one the gate resolves."""
-    return Path(str(args.get("repo_root") or project_dir)).resolve()
+    """The root a call's paths are judged against.
+
+    One spelling, used by the capability gate and by every containment check. A present
+    but empty `repo_root` used to fall back differently in the two places — the gate
+    validated the capability against the server's own directory while the containment
+    checks fell back to the caller's `project_dir`, so the caller chose the root its
+    paths were judged against and both rules went quiet."""
+    raw = args.get("repo_root")
+    return Path(str(raw if raw is not None else project_dir)).resolve()
 
 
 def _is_orchestrated_call(args: dict[str, Any]) -> bool:
@@ -224,12 +230,16 @@ def _validate_env_overrides(
 
 
 # The declared make variables split by what their value IS: four name a location, two
-# name what to run and which cases to run. A path is checked by where it lands, not by
-# its spelling — a checkout path may hold any character an operator's filesystem does.
+# name what to run and which cases to run. A path is checked mainly by where it lands
+# rather than by its spelling, so a checkout path holding a non-ASCII character stays
+# usable.
 _ORCHESTRATED_PATH_VALUE_KEYS = frozenset({"OBJDIR", "BINDIR", "RUNDIR", "SPEC"})
 # The recipe interpolates every one of them unquoted (`cd $(RUNDIR) &&
 # $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so no value may carry a character that
-# line's shell would act on — whitespace included, since it splits the words.
+# line's shell or make acts on — whitespace included, since it splits the words, and
+# `#`, which ends a make line. A checkout whose own path holds one of these is not
+# usable under the workflow; that is a real constraint on where a repository lives,
+# stated in mcp_servers/README.md.
 _SHELL_ACTIVE_CHARS = set(" \t\n\r;&|$`'\"\\<>()*?[]{}~#!")
 _MAKE_NAME_VALUE_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.+-]*$")
 
@@ -254,12 +264,20 @@ def _refuse_unsafe_values(
     space-separated list of them for the case ids. Either way no value may carry a
     character the recipe's shell acts on.
 
+    An empty value is refused rather than skipped, for every key the recipe uses as a
+    path or a command name. Make imports it as a variable that IS set, so `?=` does not
+    restore the default: `RUNDIR=` turns `cd $(RUNDIR)` into a bare `cd`, which lands in
+    the home directory, and `$(OBJDIR)/x` into an absolute path at the root. Only
+    `CASES` may be empty — an empty case list is a list.
+
     Takes pairs rather than a mapping: two assignments to the same key both reach the
     command line, so both are checked.
     """
     offending: list[str] = []
     for key, value in values:
         if not value:
+            if key != "CASES":
+                offending.append(f"{key}=")
             continue
         if set(value) & _SHELL_ACTIVE_CHARS - {" "}:
             offending.append(f"{key}={value}")
@@ -385,8 +403,9 @@ _ENV_PROPERTY_SCHEMA: dict[str, Any] = {
     "additionalProperties": {"type": "string"},
     "description": (
         "Environment overrides for the command. Under an orchestration only the "
-        "exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted; any "
-        "other key is refused. Standalone, keys that redirect execution (LD_*, "
+        "exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted, a path "
+        "value must resolve inside the repository, and a name value must be an "
+        "identifier; any other key is refused. Standalone, keys that redirect execution (LD_*, "
         "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
         "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
         "MAKESHELL) are refused."
@@ -490,7 +509,7 @@ def _resolve_command_log_path(project_dir: str, command_log_path: str | None) ->
 def _validate_command_log_path(
     command_log_path: Any, args: dict[str, Any], project_dir: str, tool_name: str
 ) -> None:
-    """Keep the command log inside the repository under an orchestration.
+    """Keep the working directory and the command log inside the repository.
 
     The log path is a caller-chosen path that `_append_command_log` creates directories
     for and appends to, so it is a write, and the only placement rule the phase gate
@@ -498,15 +517,22 @@ def _validate_command_log_path(
     inside the checkout the capability is scoped to; the conductor's own paths (the node
     directory, `workspace/tmp/<agent_run_id>/...`) all are.
     """
-    if not _is_orchestrated_call(args) or command_log_path is None:
+    if not _is_orchestrated_call(args):
         return
-    root = Path(str(args.get("repo_root") or project_dir)).resolve()
-    resolved = _resolve_command_log_path(project_dir, str(command_log_path)).resolve()
-    if root != resolved and root not in resolved.parents:
-        raise ValueError(
-            f"{tool_name} command_log_path must stay under the repository root "
-            f"under an orchestration (got {str(command_log_path)!r})"
-        )
+    root = _repo_root_for_call(args, project_dir)
+    # project_dir is the subprocess cwd and the base a relative log path resolves
+    # against, so it belongs inside the same root the capability was validated at.
+    for label, candidate in (
+        ("project_dir", Path(project_dir).resolve()),
+        *(() if command_log_path is None else
+          (("command_log_path",
+            _resolve_command_log_path(project_dir, str(command_log_path)).resolve()),)),
+    ):
+        if root != candidate and root not in candidate.parents:
+            raise ValueError(
+                f"{tool_name} {label} must stay under the repository root under an "
+                f"orchestration (got {str(candidate)!r})"
+            )
 
 
 def _path_to_ref(path: Path) -> str | None:
@@ -1353,8 +1379,8 @@ TOOLS: dict[str, Tool] = {
                 "target": {
                     "type": "string",
                     "description": (
-                        "Build target name. Under an orchestration it must be a target "
-                        "name, not a switch."
+                        "Build target name. Refused under an orchestration — the build "
+                        "is the Makefile's default goal."
                     ),
                 },
                 "jobs": {"type": "integer", "minimum": 1},
@@ -1364,8 +1390,9 @@ TOOLS: dict[str, Tool] = {
                     "description": (
                         "Extra build-tool arguments. Under an orchestration only "
                         "assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are "
-                        "accepted, and a value must be a plain path, identifier, or "
-                        "space-separated list — it reaches the make recipe's shell."
+                        "accepted; a path value must resolve inside the repository and "
+                        "a name value must be an identifier, because every value "
+                        "reaches the make recipe's shell unquoted."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
