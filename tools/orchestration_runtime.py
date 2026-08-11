@@ -5917,9 +5917,12 @@ def _require_safe_gate_ids(
     becomes one the caller authored. Same predicate the write_root pins use, for the
     same reason.
     """
+    # The raw value, not a stripped copy: `_orchestration_root` builds the path from
+    # what the caller sent, so the string that is checked has to be the string that is
+    # used.
     for label, value in (("orchestration_id", orchestration_id),
                          ("agent_run_id", agent_run_id)):
-        if not _is_safe_path_id(str(value).strip()):
+        if not _is_safe_path_id(str(value)):
             raise RuntimeError(
                 f"{gate_label}: {label} must be a plain [A-Za-z0-9_-] token "
                 f"(got {value!r})"
@@ -13468,6 +13471,15 @@ def enable_checkpoint_resume(
 
     Raise a RuntimeError when the orchestration does not exist.
     """
+    # `init` refuses an id that is not a plain path token; a resume must refuse it too,
+    # or a workspace created before that rule restarts and then fails at its first MCP
+    # call, several phases in, on the id it was resumed with.
+    if not _is_safe_path_id(str(orchestration_id)):
+        raise RuntimeError(
+            "resume: orchestration_id must be a plain [A-Za-z0-9_-] token "
+            f"(got {orchestration_id!r}); an orchestration created under an older "
+            "id grammar cannot be resumed and must be re-run under a new id"
+        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     if not meta_path.exists():
         raise RuntimeError(
@@ -16796,7 +16808,7 @@ def init_orchestration(
     # The id becomes a directory name and is later interpolated into every gate's path,
     # where anything but a plain token is refused. Refuse it here so an operator learns
     # at `init` rather than losing the run at its first MCP call.
-    if not _is_safe_path_id(str(orchestration_id).strip()):
+    if not _is_safe_path_id(str(orchestration_id)):
         raise RuntimeError(
             "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
             f"(got {orchestration_id!r})"

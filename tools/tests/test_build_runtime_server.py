@@ -939,6 +939,16 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.assertTrue(self.mod._build_syntax_source_re().match(f"a{suffix}"))
 
+    def test_auto_discovery_is_held_to_the_same_rule(self) -> None:
+        # The workflow never passes `sources`, so this is the reading that actually
+        # runs. Auto-discovery filters on suffix alone, so a staged `-o.f90` walked
+        # into the compiler argv as an option and the file was never parsed.
+        (self.project_dir / "-o.f90").write_text("program r\nend program r\n",
+                                                 encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
+        self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+
     def test_staged_source_names_are_accepted(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
             result = self._call(["a.f90"])

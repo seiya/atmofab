@@ -15245,6 +15245,55 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "toolchain:\n  build_system: cmake\n", encoding="utf-8")
             self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
 
+    def test_ir_language_is_read_structurally_and_decides_makefile_ownership(self) -> None:
+        """The language half of the toolchain read, pinned at its consequence.
+
+        `_resolved_makefile_host_authored` is make AND fortran. Line-scanning the
+        language let a decoy line in a free-text field make record_launch believe the
+        conductor did not author `src/Makefile`, which pins it back as a path the leaf
+        may write with a file tool — the certified Makefile, writable, and then run by
+        `compile_project`."""
+        from tools.orchestration_runtime import (
+            _impl_resolved_build_system, _impl_resolved_language)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "algorithm:\n"
+                "  invariants:\n"
+                "    - \"the discretization order is fixed\n"
+                "      language: c is irrelevant to this invariant\"\n"
+                "impl_defaults:\n"
+                "  toolchain:\n"
+                "    language: fortran\n"
+                "    build_system: make\n",
+                encoding="utf-8")
+            self.assertEqual(_impl_resolved_language(repo_root, _FIX_IR_REF), "fortran")
+            # The expression record_launch computes from the two reads.
+            lang = _impl_resolved_language(repo_root, _FIX_IR_REF)
+            bs = _impl_resolved_build_system(repo_root, _FIX_IR_REF)
+            self.assertTrue((bs or "make") == "make" and (lang or "fortran") == "fortran")
+
+    def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
+        """The id becomes a directory name and every gate's path base, so both entry
+        points refuse it. Resume as well as init: a workspace created under an older
+        grammar would otherwise restart and fail at its first MCP call instead."""
+        from tools.orchestration_runtime import enable_checkpoint_resume
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for bad in ("../escape", "orch.1", "a/b", " orch_1 "):
+                with self.subTest(orchestration_id=bad):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        init_orchestration(repo_root=repo_root, orchestration_id=bad)
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
+                    with self.assertRaises(RuntimeError) as ctx_resume:
+                        enable_checkpoint_resume(repo_root, bad)
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_resume.exception))
+            # The generated form still works.
+            init_orchestration(repo_root=repo_root,
+                               orchestration_id="orch_20260812T010203Z_ab12cd34")
+
     def test_validate_mcp_omitted_build_system_is_accepted_under_a_make_toolchain(self) -> None:
         """An omitted (or blank) `build_system` means make, so the make-only contract
         applies to it. Reading the omission as "no policy" was the bypass: the argument

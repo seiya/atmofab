@@ -97,7 +97,7 @@ def _maybe_enforce_orchestration_mcp_gate(
     stays usable standalone, where there is no orchestration to attribute a call to.
     """
     orch_raw = args.get("orchestration_id")
-    if orch_raw is None or not str(orch_raw).strip():
+    if not _is_orchestrated_call(args):
         signal = _workflow_mode_env_signal()
         if signal is not None:
             raise ValueError(
@@ -169,7 +169,9 @@ _MAKE_VARIABLE_ALLOWLIST = frozenset(
 # tool; for the other three an empty allowlist says so, rather than advertising make
 # variables that mean nothing to a linter or a syntax check.
 _ORCHESTRATED_ENV_KEYS_BY_TOOL: dict[str, frozenset[str]] = {
-    "compile_project": _MAKE_VARIABLE_ALLOWLIST,
+    # Build passes these on the make command line (`extra_args`), not in the
+    # environment, so `compile_project` accepts no caller `env` either.
+    "compile_project": frozenset(),
     "run_quality_checks": _MAKE_VARIABLE_ALLOWLIST,
     "run_program": frozenset(),
     "run_linter": frozenset(),
@@ -1361,8 +1363,6 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         not isinstance(sources, list) or not all(isinstance(s, str) for s in sources)
     ):
         raise ValueError("sources must be an array of source file names")
-    if sources:
-        _validate_syntax_sources(list(sources), project_dir, "run_syntax_check")
 
     proj = Path(project_dir)
     if not proj.is_dir():
@@ -1378,6 +1378,11 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     ordered_sources = list(sources) if sources is not None else _fortran_syntax_source_order(proj)
+    # The same rule for both readings. Auto-discovery filters on suffix alone, so a
+    # staged file named `-o.f90` or `@resp.f90` walked into the compiler argv as an
+    # option — and the workflow always takes this branch, since it passes no `sources`.
+    # A stray one is a visible gate failure rather than a silently skipped file.
+    _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check")
     if not ordered_sources:
         return {
             "ok": True,
@@ -1422,7 +1427,7 @@ TOOLS: dict[str, Tool] = {
         input_schema={
             "type": "object",
             "properties": {
-                "project_dir": {"type": "string"},
+                "project_dir": {"type": "string", "default": "."},
                 "language": {"type": "string"},
             },
         },
