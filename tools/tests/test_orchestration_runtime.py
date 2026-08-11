@@ -15193,7 +15193,12 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             for oid, arid in (("../vperm10", "build_child"),
                               ("vperm10", "../../elsewhere/build_child"),
                               ("vperm10/x", "build_child"),
-                              ("vperm10", "build_child/../y")):
+                              ("vperm10", "build_child/../y"),
+                              # The raw value is what builds the path, so it is what is
+                              # checked: a padded id would otherwise pass the check and
+                              # then address a different directory.
+                              (" vperm10 ", "build_child"),
+                              ("vperm10", " build_child ")):
                 with self.subTest(orchestration_id=oid, agent_run_id=arid):
                     with self.assertRaises(RuntimeError) as ctx:
                         validate_mcp_build_tool_invocation(
@@ -15270,10 +15275,28 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "    build_system: make\n",
                 encoding="utf-8")
             self.assertEqual(_impl_resolved_language(repo_root, _FIX_IR_REF), "fortran")
-            # The expression record_launch computes from the two reads.
-            lang = _impl_resolved_language(repo_root, _FIX_IR_REF)
-            bs = _impl_resolved_build_system(repo_root, _FIX_IR_REF)
-            self.assertTrue((bs or "make") == "make" and (lang or "fortran") == "fortran")
+            self.assertEqual(_impl_resolved_build_system(repo_root, _FIX_IR_REF), "make")
+            # The consequence: record_launch persists what it concluded, and a decoy
+            # answer here drops the Makefile from the conductor-authored set and pins it
+            # back as a path the leaf may write.
+            import tools.workflow_conductor as wc
+            self._perm_test_preflight(repo_root, "vperm11")
+            req = wc.build_launch_request(
+                self._perm_test_refs(),
+                step="generate", substep="generate",
+                orchestration_id="vperm11",
+                orchestration_agent_run_id="orch_vperm11",
+                child_agent_run_id="gen_child",
+                agent_model="claude-opus-4-8",
+                workflow_mode="dev",
+            )
+            self._perm_record_and_cap(
+                repo_root, orchestration_id="vperm11", parent="orch_vperm11",
+                child="gen_child", req=req)
+            persisted = json.loads(
+                (repo_root / "workspace/orchestrations/vperm11/launches"
+                 "/gen_child.request.json").read_text(encoding="utf-8"))
+            self.assertTrue(persisted["_resolved_makefile_host_authored"])
 
     def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
         """The id becomes a directory name and every gate's path base, so both entry

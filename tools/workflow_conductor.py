@@ -8002,18 +8002,41 @@ clean:
                     shutil.copy2(p, stage_dir / p.name)
                 for p in dep_files:
                     shutil.copy2(p, stage_dir / p.name)
-                result = tool_run_syntax_check({
-                    "compiler": compiler,
-                    "std": tc["standard"],
-                    "openmp": tc["backend"] == "openmp",
-                    "project_dir": str(stage_dir),
-                    "repo_root": str(self.repo_root),
-                    "command_log_path": str(src_dir / "command_log.jsonl"),
-                    "capture_limit": _FULL_CAPTURE_LIMIT,
-                    "orchestration_id": self.orchestration_id,
-                    "agent_run_id": child_arid,
-                    "capability_token": cap_token,
-                })
+                try:
+                    result = tool_run_syntax_check({
+                        "compiler": compiler,
+                        "std": tc["standard"],
+                        "openmp": tc["backend"] == "openmp",
+                        "project_dir": str(stage_dir),
+                        "repo_root": str(self.repo_root),
+                        "command_log_path": str(src_dir / "command_log.jsonl"),
+                        "capture_limit": _FULL_CAPTURE_LIMIT,
+                        "orchestration_id": self.orchestration_id,
+                        "agent_run_id": child_arid,
+                        "capability_token": cap_token,
+                    })
+                except ValueError as exc:
+                    # A source name the tool refuses (an option-shaped `-o.f90`, a
+                    # response file, a name that is not a Fortran file) is the leaf's
+                    # own output and the leaf can rename it, so this is a CONTENT
+                    # failure routed back to generate.generate — not the transport
+                    # fail_closed an uncaught raise here would produce. The other two
+                    # fail_closed causes of this substep (a broken `-std` invocation, a
+                    # dependency closure that does not compile) are things the leaf
+                    # cannot repair; this one it can.
+                    stages.append({
+                        "compiler": compiler,
+                        "status": "fail",
+                        "reason": str(exc),
+                    })
+                    return {
+                        "status": "fail",
+                        "language": language,
+                        "stages": stages,
+                        "skipped_reason": None,
+                        "failure_category": "syntax_error",
+                        "failure_excerpt": str(exc),
+                    }
                 if result.get("skipped"):
                     if compiler == "gfortran":
                         raise RuntimeError(

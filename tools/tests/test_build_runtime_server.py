@@ -473,11 +473,16 @@ class OrchestrationGateFailClosedTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
 
-    def test_detect_build_system_is_never_gated(self) -> None:
-        # The deliberate exception: it runs nothing and is advisory, which
-        # test_probe_claude_mcp_registry_passes_without_detect_build_system_grant pins
-        # from the permission side. Gating it would need that grant table changed too.
+    def test_detect_build_system_is_refused_under_the_workflow(self) -> None:
+        # It holds no capability by design (no substep is granted it), but it reports
+        # which marker files exist in any directory it is pointed at and the resolved
+        # path of that directory — a read outside the manifest boundary, with no command
+        # log to attribute it. Refused under the workflow, usable standalone.
         os.environ["METDSL_WORKFLOW_MODE"] = "1"
+        with self.assertRaises(ValueError) as ctx:
+            self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
+        self.assertIn("not available under the workflow", str(ctx.exception))
+        os.environ.pop("METDSL_WORKFLOW_MODE")
         result = self.mod.tool_detect_build_system({"project_dir": str(self.project_dir)})
         self.assertEqual(result["recommended_build_system"], "make")
 
@@ -703,7 +708,7 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         # `run_program` / `run_linter` / `run_syntax_check` are never given a caller env
         # by the workflow, and a make variable means nothing to a linter, so their
         # allowlist is empty rather than the six.
-        for tool in ("run_program", "run_linter", "run_syntax_check"):
+        for tool in ("compile_project", "run_program", "run_linter", "run_syntax_check"):
             with self.subTest(tool=tool):
                 with self.assertRaises(ValueError) as ctx:
                     self._check({"OBJDIR": f"{self.repo_root}/obj"}, tool=tool)
@@ -945,7 +950,8 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # into the compiler argv as an option and the file was never parsed.
         (self.project_dir / "-o.f90").write_text("program r\nend program r\n",
                                                  encoding="utf-8")
-        with self.assertRaises(ValueError) as ctx:
+        with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"), \
+                self.assertRaises(ValueError) as ctx:
             self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
         self.assertIn("Fortran source files in project_dir", str(ctx.exception))
 

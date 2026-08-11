@@ -12577,6 +12577,47 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(env["CASES"], "c_alpha c_beta")  # read_case_ids is sorted
             self.assertEqual(env["BIN"], "spec_x_runner")
 
+    def test_gate_syntax_refuses_a_bad_source_name_as_content_not_transport(self) -> None:
+        """A staged source whose NAME the syntax tool refuses is the leaf's own output,
+        and the leaf can rename it. It must reach `generate.generate` as a content
+        failure rather than terminating the run the way this substep's other two
+        fail_closed causes (a broken `-std`, a dependency closure that will not compile)
+        do — those the leaf cannot repair."""
+        import sys
+        import tempfile
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore  # noqa: F401
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n",
+                encoding="utf-8")
+            src = repo / refs.source_dir() / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "ok.f90").write_text("program p\nend program p\n", encoding="utf-8")
+            # The leaf's write_root is the whole source tree, so it can author this name.
+            (src / "-o.f90").write_text("program q\nend program q\n", encoding="utf-8")
+
+            from unittest import mock
+            with mock.patch.object(build_runtime_server,
+                                   "_maybe_enforce_orchestration_mcp_gate",
+                                   lambda **kw: None):
+                section = c._gate_syntax_check(refs, "child-1", "captok")
+
+            self.assertEqual(section["status"], "fail")
+            self.assertEqual(section["failure_category"], "syntax_error")
+            self.assertIn("-o.f90", section["failure_excerpt"])
+
     def test_execute_inproc_payload_survives_the_real_mcp_validators(self) -> None:
         """Validate.execute is where the six-key `env` allowlist is actually used, and
         its values are derived from the IR (`CASES` from the case ids, `BIN` from the

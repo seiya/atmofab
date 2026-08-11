@@ -840,6 +840,18 @@ def _build_command(
 
 def tool_detect_build_system(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
+    # Advisory and capability-free — it runs nothing and no substep is granted it — but
+    # it does report which of eleven marker files exist in any directory it is pointed
+    # at, and the resolved path of that directory. Under the workflow that is a read
+    # outside the boundary the read manifest draws, with no command log to attribute it,
+    # so the tool is refused there rather than gated.
+    signal = _workflow_mode_env_signal()
+    if signal is not None:
+        raise ValueError(
+            "detect_build_system is not available under the workflow "
+            f"({signal} is set in this server's environment); the build system comes "
+            "from the IR's toolchain, not from marker files"
+        )
     language = str(args.get("language", "")).strip().lower()
     recommended = _recommended_build_system(project_dir, language)
     return {
