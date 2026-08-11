@@ -15162,6 +15162,54 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 )
             self.assertIn("requires compile_project build_system make", str(ctx.exception))
 
+    def test_orchestrated_call_env_and_argv_are_restricted_through_the_handler(self) -> None:
+        """Through a real capability, an orchestrated `compile_project` accepts only the
+        declared make variables — in `env` and in the argv alike. Pinning this at the
+        handler rather than at the helper is the point: the restriction is chosen per
+        call from `orchestration_id`, so a call site that asked for the standalone rule
+        would leave the workflow on the weaker one with every helper test still green."""
+        import mcp_servers.build_runtime_server as brs
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm8")
+            _plant_spec_ir_yaml_make(repo_root)
+            project_dir = repo_root / "src"
+            project_dir.mkdir()
+            gate_args = {
+                "repo_root": str(repo_root),
+                "orchestration_id": "vperm8",
+                "agent_run_id": "build_child",
+                "capability_token": str(cap["capability_token"]),
+            }
+            base = {"project_dir": str(project_dir), "build_system": "make", **gate_args}
+
+            def call(extra: dict) -> dict:
+                fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+                with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                    tool_compile_project({**base, **extra})
+                return run_command.call_args.kwargs
+
+            # `FC` in the environment and `FC=` on the make command line both replace the
+            # compiler the certified Makefile invokes; a make command-line assignment
+            # overrides even a hard assignment in the Makefile.
+            for extra, expected in (
+                ({"env": {"FC": "/tmp/evil"}}, "accepts only these env overrides"),
+                ({"extra_args": ["FC=/tmp/evil"]}, "make variables in extra_args"),
+                ({"extra_args": ["--eval=$(shell id)"]}, "make variables in extra_args"),
+                ({"target": "--eval=$(shell id)"}, "must be a build target name"),
+            ):
+                with self.subTest(extra=extra):
+                    with self.assertRaises(ValueError) as ctx:
+                        call(extra)
+                    self.assertIn(expected, str(ctx.exception))
+
+            # What Build actually sends still runs.
+            kwargs = call({"extra_args": ["OBJDIR=/tmp/o", "BINDIR=/tmp/b", "BIN=runner"]})
+            self.assertEqual(
+                kwargs["command"],
+                ["make", f"-j{max(1, (os.cpu_count() or 1) // 2)}",
+                 "OBJDIR=/tmp/o", "BINDIR=/tmp/b", "BIN=runner"])
+
     def test_gate_and_server_agree_on_omitted_build_system(self) -> None:
         """Gate and server read an omitted `build_system` the same way. They did not:
         the gate skipped its check and the server auto-detected from marker files, so a

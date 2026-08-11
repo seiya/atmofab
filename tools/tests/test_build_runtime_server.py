@@ -660,6 +660,13 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
                 # The message tells the caller what IS accepted.
                 self.assertIn("OBJDIR", str(ctx.exception))
 
+    def test_allowlist_is_case_exact(self) -> None:
+        # `objdir` is a different environment variable: accepting it would leave the
+        # make_test re-run on the Makefile's own OBJDIR default instead of failing.
+        with self.assertRaises(ValueError) as ctx:
+            self._check({"objdir": "/tmp/obj"})
+        self.assertIn("objdir", str(ctx.exception))
+
     def test_allowlist_matches_the_conductor_payload(self) -> None:
         # The set is exactly what Validate.execute passes (workflow_conductor.py's
         # make_test re-run, canonical in docs/workflow/phases/phase_04_validate.md).
@@ -674,6 +681,41 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         self.assertFalse(self.mod._is_orchestrated_call({"orchestration_id": "   "}))
         self.assertFalse(self.mod._is_orchestrated_call({}))
         self.assertTrue(self.mod._is_orchestrated_call({"orchestration_id": "orch_x"}))
+
+
+class SyntaxCheckSourcesTests(unittest.TestCase):
+    """`sources` is appended to the compiler front-end argv, so it is argv, not data.
+
+    The gcc driver reads its own options anywhere in that list: with `-B<dir>/` it execs
+    a planted `f951` and the check returns ok=True having compiled nothing — a syntax
+    gate that passes anything. Refused in every mode; a source is a file name."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def setUp(self) -> None:
+        self.project_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
+        (self.project_dir / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
+
+    def _call(self, sources: list) -> dict:
+        return self.mod.tool_run_syntax_check(
+            {"project_dir": str(self.project_dir), "sources": sources})
+
+    def test_compiler_options_and_paths_are_refused(self) -> None:
+        for bad in (["-B/tmp/fake/", "a.f90"], ["--param=x", "a.f90"],
+                    ["../outside/a.f90"], ["/etc/passwd"], ["notes.txt"]):
+            with self.subTest(sources=bad):
+                with self.assertRaises(ValueError) as ctx:
+                    self._call(bad)
+                self.assertIn("plain source file names", str(ctx.exception))
+
+    def test_plain_source_names_are_accepted(self) -> None:
+        with mock.patch.object(self.mod.shutil, "which", return_value=None):
+            result = self._call(["a.f90"])
+        # Reaches the ordinary missing-compiler skip, i.e. it was not refused.
+        self.assertTrue(result["skipped"])
 
 
 class ToolSchemaDocumentParityTests(unittest.TestCase):

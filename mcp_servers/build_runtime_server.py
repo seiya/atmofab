@@ -126,9 +126,14 @@ def _maybe_enforce_orchestration_mcp_gate(
 
 
 def _is_orchestrated_call(args: dict[str, Any]) -> bool:
-    """Whether this call is attributed to an orchestration, read exactly as the gate
-    reads it — a blank `orchestration_id` is absent to both."""
-    return bool(str(args.get("orchestration_id") or "").strip())
+    """Whether this call is attributed to an orchestration.
+
+    The predicate is the gate's, spelled the same way: only `None` and a blank string
+    are absent. Reading any falsy value as absent instead would hand a call the gate
+    validated (`orchestration_id` of `0` or `False` becomes the id `"0"` / `"False"`)
+    the rules meant for an unattributed one."""
+    raw = args.get("orchestration_id")
+    return raw is not None and bool(str(raw).strip())
 
 
 # The complete set of environment overrides a workflow call may carry: the make
@@ -163,12 +168,13 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
     redirects a certified Makefile's compiler. Enumerating those names is a list that
     grows by one every time someone looks at it.
 
-    So under an orchestration the rule is the other direction: only the keys the
-    workflow actually declares are accepted, and everything else is refused whether or
-    not anyone has thought of it. Outside an orchestration the server stays a general
-    tool for its operator, and the denylist remains as a guardrail against the known
-    execution-redirecting names — a guardrail, not a boundary, since a local caller can
-    reach the same effect through the argv the operator chose anyway.
+    So under an orchestration only the keys the workflow declares are accepted, and
+    every other key is refused whether or not anyone has thought of it. Outside an
+    orchestration the denylist applies: the operator chose the argv, so the check is
+    there to catch a mistake, not to confine the caller.
+
+    The rule is over key NAMES. The values of the accepted keys are unconstrained and
+    reach the make recipe's shell, so they are part of the same trust as the argv.
 
     Refusing names the key instead of dropping it silently, so a mistake and an attack
     are both visible in the caller's result. `tools/hooks/cli.py` refuses a `VAR=value`
@@ -181,9 +187,11 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
     if not env:
         return
     if orchestrated:
+        # Exact names: `objdir` is a different environment variable, and accepting it
+        # would leave the make_test re-run on the Makefile's own default.
         offending = sorted(
             str(key) for key in env
-            if str(key).strip().upper() not in _ORCHESTRATED_ENV_OVERRIDE_KEYS
+            if str(key) not in _ORCHESTRATED_ENV_OVERRIDE_KEYS
         )
         if offending:
             permitted = ", ".join(sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS))
@@ -202,6 +210,69 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
         raise ValueError(
             f"{tool_name} does not accept env overrides that redirect execution: "
             + ", ".join(offending)
+        )
+
+
+_MAKE_TARGET_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-/]*$")
+
+
+def _validate_build_argv_overrides(
+    target: Any, extra_args: list[str], tool_name: str, *, orchestrated: bool
+) -> None:
+    """Constrain the caller-chosen part of the build argv.
+
+    `target` and `extra_args` are appended to the build tool's command line, and for
+    make a command-line assignment overrides even a hard assignment in the Makefile —
+    strictly more authority than the environment. `FC=/tmp/x` there replaces the
+    compiler a certified Makefile invokes, and `--eval=$(shell ...)` runs before the
+    Makefile is read at all. Constraining the environment while leaving this open would
+    close one half of one door.
+
+    So under an orchestration the same declared set governs both: an `extra_args`
+    element must be an assignment to one of those make variables, and `target` must be
+    a target name rather than a switch. Outside an orchestration the operator's argv is
+    their own.
+    """
+    if not orchestrated:
+        return
+    if target is not None and str(target).strip():
+        if not _MAKE_TARGET_RE.match(str(target).strip()):
+            raise ValueError(
+                f"{tool_name} target must be a build target name under an "
+                f"orchestration (got {str(target)!r})"
+            )
+    permitted = sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS)
+    offending = [
+        arg for arg in extra_args
+        if arg.split("=", 1)[0] not in _ORCHESTRATED_ENV_OVERRIDE_KEYS or "=" not in arg
+    ]
+    if offending:
+        raise ValueError(
+            f"{tool_name} accepts only assignments to these make variables in "
+            f"extra_args under an orchestration ({', '.join(permitted)}); refused: "
+            + ", ".join(offending)
+        )
+
+
+def _validate_syntax_sources(sources: list[str], tool_name: str) -> None:
+    """Constrain the source list appended to the compiler front-end argv.
+
+    The gcc driver reads its own options from this list wherever they appear, and
+    `-B<dir>/` makes it exec a planted `f951`: the check then returns `ok: True` having
+    compiled nothing, which is a syntax gate that passes anything. A source is a plain
+    file name in `project_dir`, so anything else is refused in every mode.
+    """
+    offending = sorted(
+        name for name in sources
+        if name.startswith("-")
+        or "/" in name
+        or os.sep in name
+        or not name.lower().endswith(_FORTRAN_SYNTAX_SOURCE_SUFFIXES)
+    )
+    if offending:
+        raise ValueError(
+            f"{tool_name} sources must be plain source file names in project_dir; "
+            "refused: " + ", ".join(offending)
         )
 
 
@@ -237,11 +308,12 @@ _ENV_PROPERTY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": {"type": "string"},
     "description": (
-        "Environment overrides for the command. Under an orchestration only "
-        "OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted; any other key is "
-        "refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, "
-        "PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, "
-        "LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
+        "Environment overrides for the command. Under an orchestration only the "
+        "exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted; any "
+        "other key is refused. Standalone, keys that redirect execution (LD_*, "
+        "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
+        "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
+        "MAKESHELL) are refused."
     ),
 }
 
@@ -611,6 +683,8 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
     _validate_env_overrides(env, "compile_project", orchestrated=_is_orchestrated_call(args))
+    _validate_build_argv_overrides(
+        target, extra_args, "compile_project", orchestrated=_is_orchestrated_call(args))
 
     build_system = args.get("build_system")
     if build_system:
@@ -757,7 +831,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
         if run_env is None:
             run_env = {}
         project_path = str(Path(project_dir).resolve())
-        # The caller cannot contribute PYTHONPATH (_reject_unsafe_env_overrides), so the
+        # The caller cannot contribute PYTHONPATH (_validate_env_overrides), so the
         # only inherited value is this server's own.
         existing = os.environ.get("PYTHONPATH", "")
         if existing:
@@ -1083,6 +1157,8 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         not isinstance(sources, list) or not all(isinstance(s, str) for s in sources)
     ):
         raise ValueError("sources must be an array of source file names")
+    if sources:
+        _validate_syntax_sources(list(sources), "run_syntax_check")
 
     proj = Path(project_dir)
     if not proj.is_dir():
@@ -1293,8 +1369,9 @@ TOOLS: dict[str, Tool] = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Source file names in compile order. Omit to let the tool order "
-                        "the project_dir Fortran sources by a module/use scan."
+                        "Source file names in compile order — plain names in project_dir, "
+                        "no paths and no compiler options. Omit to let the tool order the "
+                        "project_dir Fortran sources by a module/use scan."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
