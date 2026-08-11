@@ -10622,7 +10622,8 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
     run directory. The M3c renderer's ``_case_ids`` gate bounds only the literals IT embeds, so it
     covers host-rendered nodes; a non-M3c leaf-authored runner has no such gate. This spec-input
     gate closes the gap uniformly at Compile — a violation routes to ``compile.generate``, and the
-    id must match the same ``[A-Za-z0-9._-]`` (no ``..``) grammar the renderer pins."""
+    id must match the same ``[A-Za-z0-9._][A-Za-z0-9._-]*`` (no ``..``) grammar the
+    renderer pins."""
     from tools.runner_renderer import _CASE_ID_TOKEN_RE
 
     derived_path = ir_dir / "spec.ir.yaml"
@@ -10652,8 +10653,9 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
         violations.append(
             f"{derived_path}: case.test_case_set has case_id(s) {sorted(set(unsafe))} that are "
             "not safe tokens; a case_id is concatenated into the per-case snapshot path "
-            "(raw/state_snapshots/<case_id>.json), so it must match [A-Za-z0-9._-] with no '..' "
-            "(else the run writes outside its directory)")
+            "(raw/state_snapshots/<case_id>.json) and reaches the runner's argv, so it must "
+            "match [A-Za-z0-9._][A-Za-z0-9._-]* with no '..' (a leading '-' would be read as "
+            "an option; anything else makes the run write outside its directory)")
 
 
 def _validate_component_dep_operations(

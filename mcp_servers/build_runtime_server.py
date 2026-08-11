@@ -137,11 +137,11 @@ def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
 def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
     """The root a call's paths are judged against.
 
-    One spelling, used by the capability gate and by every containment check. A present
-    but empty `repo_root` used to fall back differently in the two places — the gate
-    validated the capability against the server's own directory while the containment
-    checks fell back to the caller's `project_dir`, so the caller chose the root its
-    paths were judged against and both rules went quiet."""
+    One spelling, shared by the capability gate and by every containment check, so the
+    root a capability is validated at is the root its paths are measured from. Only an
+    ABSENT `repo_root` falls back to `project_dir`: a present but empty value is a
+    value, and reading it as an omission in one place and not the other would let the
+    caller choose its own containment root."""
     raw = args.get("repo_root")
     return Path(str(raw if raw is not None else project_dir)).resolve()
 
@@ -308,7 +308,8 @@ def _refuse_unsafe_values(
     if offending:
         raise ValueError(
             f"{tool_name} {kind} values reach the make recipe's shell: a path must be "
-            "inside the repository and a name must be an identifier; refused: "
+            "absolute and inside the repository, a name must be an identifier, and only "
+            "CASES may be empty; refused: "
             + ", ".join(sorted(offending))
         )
 
@@ -422,8 +423,8 @@ _ENV_PROPERTY_SCHEMA: dict[str, Any] = {
     "description": (
         "Environment overrides for the command. Under an orchestration only the "
         "exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted, a path "
-        "value must resolve inside the repository, and a name value must be an "
-        "identifier; any other key is refused. Standalone, keys that redirect execution (LD_*, "
+        "value must be absolute and resolve inside the repository, a name value must "
+        "be an identifier, and only CASES may be empty; any other key is refused. Standalone, keys that redirect execution (LD_*, "
         "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
         "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
         "MAKESHELL) are refused."
@@ -435,7 +436,8 @@ _ORCHESTRATION_GATE_PROPERTIES: dict[str, Any] = {
         "type": "string",
         "description": (
             "Required under the workflow (METDSL_ORCHESTRATION_ID set, or "
-            "METDSL_WORKFLOW_MODE set to anything but 0, in the server's environment): "
+            "METDSL_WORKFLOW_MODE set to a non-empty value other than 0, in the "
+            "server's environment): "
             "with agent_run_id and capability_token it enforces preflight, record-launch "
             "artifacts, phase_state child_running, and capability permissions. Omitting "
             "it is refused, not exempted."
@@ -543,10 +545,16 @@ def _validate_command_log_path(
     root = _repo_root_for_call(args, project_dir)
     # project_dir is the subprocess cwd and the base a relative log path resolves
     # against, so it belongs inside the same root the capability was validated at.
+    # A relative project_dir has two bases: the gate resolves it against repo_root, and
+    # `_run_command` hands it to the subprocess, which resolves it against the server's
+    # own working directory. Refuse rather than check one and run the other.
+    if not Path(project_dir).is_absolute():
+        raise ValueError(
+            f"{tool_name} project_dir must be an absolute path under an orchestration "
+            f"(got {project_dir!r})"
+        )
     for label, candidate in (
-        # A relative project_dir is resolved against the same root the gate resolves it
-        # against, not against whatever directory the server was started in.
-        ("project_dir", (root / project_dir).resolve()),
+        ("project_dir", Path(project_dir).resolve()),
         *(() if command_log_path is None else
           (("command_log_path",
             _resolve_command_log_path(project_dir, str(command_log_path)).resolve()),)),
@@ -1416,9 +1424,9 @@ TOOLS: dict[str, Tool] = {
                     "description": (
                         "Extra build-tool arguments. Under an orchestration only "
                         "assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are "
-                        "accepted; a path value must resolve inside the repository and "
-                        "a name value must be an identifier, because every value "
-                        "reaches the make recipe's shell unquoted."
+                        "accepted; a path value must be absolute and resolve inside "
+                        "the repository and a name value must be an identifier, because "
+                        "every value reaches the make recipe's shell unquoted."
                     ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},

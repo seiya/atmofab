@@ -710,13 +710,20 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
                 with self.assertRaises(ValueError) as ctx:
                     self._check({"BINDIR": value})
                 self.assertIn("inside the repository", str(ctx.exception))
-        # A relative path is refused outright: make would read it from its own working
-        # directory (or from wherever `cd $(RUNDIR)` left it), never from the root this
-        # check measures against, so a relative value can only ever be checked as a
-        # different path from the one that runs.
+    def test_a_path_value_must_be_absolute(self) -> None:
+        # Refused even when the relative value WOULD land inside the repository: make
+        # reads it from its own working directory (or from wherever `cd $(RUNDIR)` left
+        # it), never from the root this check measures against, so a relative value can
+        # only ever be checked as a different path from the one that runs.
+        (self.repo_root / "workspace/binary/bin_1/bin").mkdir(parents=True)
+        cwd = os.getcwd()
+        os.chdir(self.repo_root)
+        self.addCleanup(os.chdir, cwd)
+        self.assertTrue(
+            Path("workspace/binary/bin_1/bin").resolve().is_relative_to(self.repo_root))
         with self.assertRaises(ValueError) as ctx:
             self._check({"BINDIR": "workspace/binary/bin_1/bin"})
-        self.assertIn("inside the repository", str(ctx.exception))
+        self.assertIn("absolute", str(ctx.exception))
 
     def test_a_path_value_may_hold_any_character_the_filesystem_does(self) -> None:
         # The rule for a path is containment, not a character class: a checkout whose
@@ -728,9 +735,11 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
     def test_bin_is_one_name_not_a_list(self) -> None:
         # `BIN` is a command name in `$(BINDIR)/$(BIN) --cases ...`, so a space in it
         # appends an argument to the runner. Only CASES is a list.
-        with self.assertRaises(ValueError) as ctx:
-            self._check({"BIN": "runner extra"})
-        self.assertIn("BIN=runner extra", str(ctx.exception))
+        for value in ("runner extra", "/bin/sh", "../../bin/sh", "sub/runner"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({"BIN": value})
+                self.assertIn(f"BIN={value}", str(ctx.exception))
         self._check({"CASES": "case_a case_b"})
 
     def test_a_path_value_may_not_hold_a_space(self) -> None:
@@ -752,15 +761,28 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         # An empty case list is a list.
         self._check({"CASES": ""})
 
-    def test_a_blank_repo_root_does_not_move_the_root(self) -> None:
-        # The gate reads `repo_root` as absent only when it is None, so a present-but-
-        # empty value used to validate the capability against the server's own
-        # directory while the containment checks fell back to the caller's project_dir.
-        self.assertEqual(
+    def test_only_an_absent_repo_root_falls_back_to_project_dir(self) -> None:
+        # A present but empty `repo_root` is a value, not an omission — the capability
+        # gate reads it that way, so every containment check must too, or the caller
+        # picks the root its paths are measured from.
+        self.assertNotEqual(
             self.mod._repo_root_for_call({"repo_root": ""}, "/some/caller/dir"),
-            Path("").resolve())
+            Path("/some/caller/dir"))
         self.assertEqual(
             self.mod._repo_root_for_call({}, str(self.repo_root)), self.repo_root)
+
+    def test_the_numeric_arguments_are_held_to_their_declared_minimums(self) -> None:
+        # The served schema declares these minimums and an MCP argument schema is
+        # advisory, so the server enforces them. `make -j-5` waits forever.
+        for raw, minimum, name in ((0, 1, "jobs"), (-5, 1, "jobs"), (0, 1, "timeout_sec"),
+                                   (999, 1000, "capture_limit")):
+            with self.subTest(name=name, raw=raw):
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod._bounded_int(raw, 10, minimum, name)
+                self.assertIn(f"{name} must be >= {minimum}", str(ctx.exception))
+        # An absent value and an explicit null both take the default.
+        self.assertEqual(self.mod._bounded_int(None, 7, 1, "jobs"), 7)
+        self.assertEqual(self.mod._bounded_int(3, 7, 1, "jobs"), 3)
 
     def test_argv_values_are_refused_the_same_way(self) -> None:
         with self.assertRaises(ValueError) as ctx:
@@ -923,10 +945,11 @@ class GatedHandlerWiringTests(unittest.TestCase):
 class ToolSchemaDocumentParityTests(unittest.TestCase):
     """`mcp_servers/tools/*.json` must say what the served schema says.
 
-    Those files are read by the harness and by people, and nothing loads them — the
-    served schema is `TOOLS` in the server module. Until this test they were free to go
-    on describing a call shape the server refuses (they carried no orchestration
-    properties at all and an unrestricted `env`)."""
+    The server does not load them — `TOOLS` in the module is what a client is served —
+    but the harness reads them at startup and so do people, and until this test they
+    were free to go on describing a call shape the server refuses (they carried no
+    orchestration properties at all and an unrestricted `env`). Only the two tools that
+    have a document are covered; the other four are served-schema-only by choice."""
 
     @classmethod
     def setUpClass(cls) -> None:

@@ -15288,6 +15288,9 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 # against it.
                 ({"project_dir": str(outside_dir)},
                  "project_dir must stay under the repository root"),
+                # A relative project_dir has two bases — the gate's root and the
+                # subprocess's own working directory.
+                ({"project_dir": "src"}, "project_dir must be an absolute path"),
             ):
                 with self.subTest(extra=extra):
                     with self.assertRaises(ValueError) as ctx:

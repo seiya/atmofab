@@ -47,11 +47,11 @@
         "additionalProperties": {
           "type": "string"
         },
-        "description": "Environment overrides for the command. Under an orchestration only the exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted, a path value must resolve inside the repository, and a name value must be an identifier; any other key is refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
+        "description": "Environment overrides for the command. Under an orchestration only the exact keys OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted, a path value must be absolute and resolve inside the repository, a name value must be an identifier, and only CASES may be empty; any other key is refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
       },
       "orchestration_id": {
         "type": "string",
-        "description": "Required under the workflow (METDSL_ORCHESTRATION_ID set, or METDSL_WORKFLOW_MODE set to anything but 0, in the server's environment): with agent_run_id and capability_token it enforces preflight, record-launch artifacts, phase_state child_running, and capability permissions. Omitting it is refused, not exempted."
+        "description": "Required under the workflow (METDSL_ORCHESTRATION_ID set, or METDSL_WORKFLOW_MODE set to a non-empty value other than 0, in the server's environment): with agent_run_id and capability_token it enforces preflight, record-launch artifacts, phase_state child_running, and capability permissions. Omitting it is refused, not exempted."
       },
       "agent_run_id": {
         "type": "string",
