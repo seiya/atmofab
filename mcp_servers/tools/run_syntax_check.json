@@ -46,7 +46,24 @@
         "type": "object",
         "additionalProperties": {
           "type": "string"
-        }
+        },
+        "description": "Environment overrides for the command. Under an orchestration only OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted; any other key is refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
+      },
+      "orchestration_id": {
+        "type": "string",
+        "description": "Required under the workflow (METDSL_ORCHESTRATION_ID set, or METDSL_WORKFLOW_MODE set to anything but 0, in the server's environment): with agent_run_id and capability_token it enforces preflight, record-launch artifacts, phase_state child_running, and capability permissions. Omitting it is refused, not exempted."
+      },
+      "agent_run_id": {
+        "type": "string",
+        "description": "Child agent_run_id that owns the capability token."
+      },
+      "capability_token": {
+        "type": "string",
+        "description": "Secret from workspace/orchestrations/<id>/capabilities/<agent_run_id>.json."
+      },
+      "repo_root": {
+        "type": "string",
+        "description": "Repository root containing workspace/orchestrations/. Defaults to project_dir."
       }
     },
     "required": [

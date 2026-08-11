@@ -125,26 +125,72 @@ def _maybe_enforce_orchestration_mcp_gate(
     )
 
 
-_UNSAFE_ENV_OVERRIDE_KEYS = frozenset({"BASH_ENV", "ENV", "IFS", "PATH", "PYTHONPATH"})
+def _is_orchestrated_call(args: dict[str, Any]) -> bool:
+    """Whether this call is attributed to an orchestration, read exactly as the gate
+    reads it — a blank `orchestration_id` is absent to both."""
+    return bool(str(args.get("orchestration_id") or "").strip())
+
+
+# The complete set of environment overrides a workflow call may carry: the make
+# variables `Validate.execute` passes to the make_test re-run (canonical:
+# docs/workflow/phases/phase_04_validate.md). Adding a key here is adding a way to
+# influence a certified build, so it belongs with the phase contract that needs it.
+_ORCHESTRATED_ENV_OVERRIDE_KEYS = frozenset(
+    {"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}
+)
+
+_UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
+    "BASH_ENV", "ENV", "IFS", "PATH", "PYTHONPATH",
+    # gcc/gfortran is a driver: it finds and execs its own front end (`f951`), `as`
+    # and `ld` through these, none of which is PATH or LD_*.
+    "COMPILER_PATH", "GCC_EXEC_PREFIX", "LIBRARY_PATH",
+    # GNU make parses these as command-line switches / extra makefiles, so
+    # `--eval=$(shell ...)` runs before the certified Makefile is read.
+    "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKESHELL",
+})
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
 
-def _reject_unsafe_env_overrides(env: Any, tool_name: str) -> None:
-    """Refuse caller-supplied environment overrides that redirect what actually runs.
+def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> None:
+    """Constrain caller-supplied environment overrides.
 
     Every tool here constrains argv to a fixed preset or a build-tool invocation, and
-    the environment is the door around that constraint: `LD_PRELOAD` / `LD_AUDIT` load
-    caller code into the process, `PATH` picks a different binary for the same name,
-    and `BASH_ENV` / `ENV` / `IFS` reach any shell the command starts. Refusing names
-    the key instead of dropping it silently, so a mistake and an attack are both
-    visible in the caller's result. `tools/hooks/cli.py` refuses a `VAR=value` prefix
-    on a Bash command for the same reason.
+    the environment is the door around that constraint — and it is not a door that can
+    be closed by listing what to keep out. Each program these tools run reads its own
+    configuration from the environment: the loader takes `LD_PRELOAD`, the gcc driver
+    takes `COMPILER_PATH` to find the front end it execs, make takes `MAKEFLAGS` as
+    command-line switches and imports any other name as a make variable, so `FC` alone
+    redirects a certified Makefile's compiler. Enumerating those names is a list that
+    grows by one every time someone looks at it.
+
+    So under an orchestration the rule is the other direction: only the keys the
+    workflow actually declares are accepted, and everything else is refused whether or
+    not anyone has thought of it. Outside an orchestration the server stays a general
+    tool for its operator, and the denylist remains as a guardrail against the known
+    execution-redirecting names — a guardrail, not a boundary, since a local caller can
+    reach the same effect through the argv the operator chose anyway.
+
+    Refusing names the key instead of dropping it silently, so a mistake and an attack
+    are both visible in the caller's result. `tools/hooks/cli.py` refuses a `VAR=value`
+    prefix on a Bash command for the same reason.
 
     Call this on the raw `env` argument, before the server composes its own additions
     (`OMP_*` for run_program, `PYTHONPATH` for the pytest preset) — those are the
     server's own decisions and are not caller-controlled.
     """
     if not env:
+        return
+    if orchestrated:
+        offending = sorted(
+            str(key) for key in env
+            if str(key).strip().upper() not in _ORCHESTRATED_ENV_OVERRIDE_KEYS
+        )
+        if offending:
+            permitted = ", ".join(sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS))
+            raise ValueError(
+                f"{tool_name} accepts only these env overrides under an orchestration "
+                f"({permitted}); refused: " + ", ".join(offending)
+            )
         return
     offending = sorted(
         str(key)
@@ -187,13 +233,27 @@ DEPENDENCY_AWARE_BUILD_SYSTEMS = {
     "poetry",
 }
 
+_ENV_PROPERTY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": {"type": "string"},
+    "description": (
+        "Environment overrides for the command. Under an orchestration only "
+        "OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted; any other key is "
+        "refused. Standalone, keys that redirect execution (LD_*, DYLD_*, PATH, "
+        "PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, GCC_EXEC_PREFIX, "
+        "LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, MAKESHELL) are refused."
+    ),
+}
+
 _ORCHESTRATION_GATE_PROPERTIES: dict[str, Any] = {
     "orchestration_id": {
         "type": "string",
         "description": (
-            "Required under the workflow: with agent_run_id and capability_token it "
-            "enforces preflight, record-launch artifacts, phase_state child_running, and "
-            "capability permissions. Omitting it is refused, not exempted."
+            "Required under the workflow (METDSL_ORCHESTRATION_ID set, or "
+            "METDSL_WORKFLOW_MODE set to anything but 0, in the server's environment): "
+            "with agent_run_id and capability_token it enforces preflight, record-launch "
+            "artifacts, phase_state child_running, and capability permissions. Omitting "
+            "it is refused, not exempted."
         ),
     },
     "agent_run_id": {
@@ -550,12 +610,12 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _reject_unsafe_env_overrides(env, "compile_project")
+    _validate_env_overrides(env, "compile_project", orchestrated=_is_orchestrated_call(args))
 
     build_system = args.get("build_system")
     if build_system:
         build_system = str(build_system).strip().lower()
-    elif args.get("orchestration_id"):
+    elif _is_orchestrated_call(args):
         # Under an orchestration the phase gate reads an omitted build_system as make
         # (as record_launch does for an IR that omits toolchain.build_system), so
         # detecting one from marker files here would run a build the gate never saw:
@@ -616,7 +676,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command = [str(item) for item in command]
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _reject_unsafe_env_overrides(env, "run_program")
+    _validate_env_overrides(env, "run_program", orchestrated=_is_orchestrated_call(args))
 
     run_env: dict[str, str] | None
     if env is None:
@@ -668,7 +728,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _reject_unsafe_env_overrides(env, "run_quality_checks")
+    _validate_env_overrides(env, "run_quality_checks", orchestrated=_is_orchestrated_call(args))
     preset = str(args.get("preset", "make_test"))
 
     presets: dict[str, list[str]] = {
@@ -738,7 +798,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _reject_unsafe_env_overrides(env, "run_linter")
+    _validate_env_overrides(env, "run_linter", orchestrated=_is_orchestrated_call(args))
     preset = str(args.get("preset", "fortitude")).strip().lower()
 
     if "command" in args:
@@ -1003,7 +1063,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _reject_unsafe_env_overrides(env, "run_syntax_check")
+    _validate_env_overrides(env, "run_syntax_check", orchestrated=_is_orchestrated_call(args))
     compiler = str(args.get("compiler", "gfortran")).strip().lower()
     std = str(args.get("std", "f2008")).strip().lower()
     openmp = bool(args.get("openmp", False))
@@ -1109,10 +1169,7 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
                 },
-                "env": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
+                "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],
@@ -1147,10 +1204,7 @@ TOOLS: dict[str, Tool] = {
                     "additionalProperties": True,
                 },
                 "threads_per_rank": {"type": "integer", "minimum": 1},
-                "env": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
+                "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir", "command"],
@@ -1174,10 +1228,7 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
                 },
-                "env": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
+                "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],
@@ -1205,10 +1256,7 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
                 },
-                "env": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
+                "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],
@@ -1255,10 +1303,7 @@ TOOLS: dict[str, Tool] = {
                     "type": "string",
                     "description": "JSONL path for command logs. Relative paths are resolved from project_dir.",
                 },
-                "env": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                },
+                "env": _ENV_PROPERTY_SCHEMA,
                 **_ORCHESTRATION_GATE_PROPERTIES,
             },
             "required": ["project_dir"],

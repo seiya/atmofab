@@ -460,8 +460,10 @@ class OrchestrationGateFailClosedTests(unittest.TestCase):
         self.assertIn("METDSL_ORCHESTRATION_ID", str(ctx.exception))
 
     def test_workflow_mode_off_is_not_workflow_mode(self) -> None:
-        # `METDSL_WORKFLOW_MODE=0` is the explicit non-workflow spelling the hook layer
-        # already uses; it must not be read as merely "set".
+        # `0` is the explicit non-workflow spelling (`tools/hooks/cli.py` uses it too)
+        # and must not be read as merely "set". Every OTHER value counts as workflow
+        # mode: the hook layer's allowlist (`{"1","true","yes"}`) is the fail-open
+        # direction for a check whose job is to refuse.
         os.environ["METDSL_WORKFLOW_MODE"] = "0"
         result = self._call("run_syntax_check", self._args("run_syntax_check"))
         self.assertTrue(result["skipped"])
@@ -494,7 +496,12 @@ class EnvOverrideDenylistTests(unittest.TestCase):
 
     argv is constrained to fixed presets and build-tool invocations, but before this
     `_run_command` merged the caller's `env` into `os.environ` unfiltered, so
-    `LD_PRELOAD` / `PATH` / `BASH_ENV` walked around that constraint."""
+    `LD_PRELOAD` / `PATH` / `BASH_ENV` walked around that constraint.
+
+    These cases cover the standalone guardrail. The workflow rule is an allowlist and
+    is covered by OrchestratedEnvAllowlistTests below — a denylist cannot be complete,
+    because every program these tools run reads its own configuration from the
+    environment."""
 
     UNSAFE = (
         "LD_PRELOAD",
@@ -506,6 +513,18 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         "IFS",
         "PATH",
         "PYTHONPATH",
+        # The gcc driver finds and execs its own front end through these: with
+        # COMPILER_PATH pointing at a directory holding an executable `f951`,
+        # run_syntax_check returned ok=True on Fortran no compiler had parsed.
+        "COMPILER_PATH",
+        "GCC_EXEC_PREFIX",
+        "LIBRARY_PATH",
+        # GNU make reads these as switches / extra makefiles, so
+        # MAKEFLAGS='--eval=$(shell ...)' runs before the certified Makefile is read.
+        "MAKEFLAGS",
+        "GNUMAKEFLAGS",
+        "MAKEFILES",
+        "MAKESHELL",
     )
 
     @classmethod
@@ -566,6 +585,17 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         self.assertEqual(
             run_command.call_args.kwargs["env"], {"LDFLAGS": "-lm", "ENVIRONMENT": "ci"})
 
+    def test_standalone_denylist_is_not_claimed_to_be_complete(self) -> None:
+        # Names that redirect execution just as effectively and are NOT refused
+        # standalone: make imports any environment name as a make variable, so `FC`
+        # replaces the compiler a certified Makefile invokes. This is what the
+        # orchestrated allowlist exists for; pinned here so the standalone rule is not
+        # mistaken for a boundary.
+        with self._spy_run_command() as run_command:
+            self.mod.tool_run_quality_checks(
+                self._args("run_quality_checks", {"FC": "/tmp/evil-gfortran"}))
+        self.assertEqual(run_command.call_args.kwargs["env"], {"FC": "/tmp/evil-gfortran"})
+
     def test_conductor_quality_check_env_payload_is_accepted(self) -> None:
         # The only caller-supplied env in the repository (Validate.execute's make_test
         # re-run) must survive the denylist unmodified.
@@ -596,6 +626,90 @@ class EnvOverrideDenylistTests(unittest.TestCase):
                 "project_dir": str(self.project_dir), "command": ["true"],
                 "target": {"class": "cpu"}, "threads_per_rank": 4})
         self.assertEqual(run_command.call_args.kwargs["env"]["OMP_NUM_THREADS"], "4")
+
+
+class OrchestratedEnvAllowlistTests(unittest.TestCase):
+    """Under an orchestration the caller's `env` is an allowlist, not a denylist.
+
+    A denylist over environment names cannot be finished: the loader reads `LD_*`, the
+    gcc driver reads `COMPILER_PATH` to find the front end it execs, and make reads
+    `MAKEFLAGS` as switches and imports every other name as a make variable. Only the
+    keys `Validate.execute` declares are accepted, so a name nobody has thought of is
+    refused by construction."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _check(self, env: dict) -> None:
+        self.mod._validate_env_overrides(env, "run_quality_checks", orchestrated=True)
+
+    def test_declared_make_variables_are_accepted(self) -> None:
+        self._check({
+            "OBJDIR": "/tmp/obj", "BINDIR": "/tmp/bin", "RUNDIR": "/tmp/run",
+            "BIN": "sw2d_runner", "SPEC": "/tmp/spec.ir.yaml", "CASES": "c1 c2",
+        })
+
+    def test_everything_else_is_refused(self) -> None:
+        for key in ("FC", "CC", "CFLAGS", "MAKEFLAGS", "LD_PRELOAD", "COMPILER_PATH",
+                    "SOMETHING_NOBODY_LISTED"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({"OBJDIR": "/tmp/obj", key: "x"})
+                self.assertIn(key, str(ctx.exception))
+                # The message tells the caller what IS accepted.
+                self.assertIn("OBJDIR", str(ctx.exception))
+
+    def test_allowlist_matches_the_conductor_payload(self) -> None:
+        # The set is exactly what Validate.execute passes (workflow_conductor.py's
+        # make_test re-run, canonical in docs/workflow/phases/phase_04_validate.md).
+        # If that payload grows, this fails rather than the run failing mid-phase.
+        self.assertEqual(
+            self.mod._ORCHESTRATED_ENV_OVERRIDE_KEYS,
+            frozenset({"OBJDIR", "BINDIR", "RUNDIR", "BIN", "SPEC", "CASES"}))
+
+    def test_blank_orchestration_id_is_not_orchestrated(self) -> None:
+        # The gate reads a blank orchestration_id as absent; this predicate must agree,
+        # or a whitespace value would pick a different rule than the gate applied.
+        self.assertFalse(self.mod._is_orchestrated_call({"orchestration_id": "   "}))
+        self.assertFalse(self.mod._is_orchestrated_call({}))
+        self.assertTrue(self.mod._is_orchestrated_call({"orchestration_id": "orch_x"}))
+
+
+class ToolSchemaDocumentParityTests(unittest.TestCase):
+    """`mcp_servers/tools/*.json` must say what the served schema says.
+
+    Those files are read by the harness and by people, and nothing loads them — the
+    served schema is `TOOLS` in the server module. Until this test they were free to go
+    on describing a call shape the server refuses (they carried no orchestration
+    properties at all and an unrestricted `env`)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def test_documents_match_the_served_schema(self) -> None:
+        doc_dir = _SERVER_PATH.parent / "tools"
+        served = {
+            name: tool.input_schema["properties"] for name, tool in self.mod.TOOLS.items()
+        }
+        documents = sorted(doc_dir.glob("*.json"))
+        self.assertTrue(documents, "no tool schema documents found")
+        for path in documents:
+            with self.subTest(document=path.name):
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                name = doc["name"]
+                self.assertIn(name, served, f"{path.name} documents an unserved tool")
+                for key, spec in doc["arguments"]["properties"].items():
+                    self.assertIn(key, served[name],
+                                  f"{path.name} documents an argument the tool does not take")
+                    if "description" in spec or "description" in served[name][key]:
+                        self.assertEqual(
+                            spec.get("description"), served[name][key].get("description"),
+                            f"{path.name}:{key} description differs from the served schema")
+                for key in ("orchestration_id", "agent_run_id", "capability_token", "env"):
+                    self.assertIn(key, doc["arguments"]["properties"],
+                                  f"{path.name} omits {key}, which the tool enforces")
 
 
 if __name__ == "__main__":  # pragma: no cover

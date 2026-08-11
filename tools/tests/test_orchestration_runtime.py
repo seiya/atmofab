@@ -15134,6 +15134,34 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 check({"build_system": "cmake"})
             self.assertIn("requires compile_project build_system make", str(ctx.exception))
 
+    def test_validate_mcp_ir_without_build_system_still_enforces_make(self) -> None:
+        """An IR that declares no `toolchain.build_system` means make too, so the
+        make-only contract applies to its node. Reading THAT absence as "no policy" left
+        the whole block inert: a cmake compile and a ctest preset both sailed through,
+        while record_launch had already read the same IR as make and pinned its
+        Makefile."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm7")
+            # An IR document with a toolchain but no build_system key.
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "impl_defaults:\n  toolchain:\n    language: fortran\n", encoding="utf-8")
+            from tools.orchestration_runtime import _impl_resolved_build_system
+            self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
+            token = str(cap["capability_token"])
+            with self.assertRaises(RuntimeError) as ctx:
+                validate_mcp_build_tool_invocation(
+                    repo_root,
+                    orchestration_id="vperm7",
+                    agent_run_id="build_child",
+                    capability_token=token,
+                    tool_name="compile_project",
+                    mcp_args={"build_system": "cmake"},
+                )
+            self.assertIn("requires compile_project build_system make", str(ctx.exception))
+
     def test_gate_and_server_agree_on_omitted_build_system(self) -> None:
         """Gate and server read an omitted `build_system` the same way. They did not:
         the gate skipped its check and the server auto-detected from marker files, so a
@@ -15207,14 +15235,16 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 child="exec_child", req=req,
             )
             self.assertEqual(cap["mcp_permissions"], ["run_program", "run_quality_checks"])
-            # run_quality_checks passes the grant gate cleanly (no spec.ir.yaml planted, so the
-            # make-preset contract check is skipped) — a full clean pass through the real gate.
+            # run_quality_checks passes the grant gate cleanly — a full clean pass through
+            # the real gate. The make-preset contract applies here even with no spec.ir.yaml
+            # planted, because an IR that declares no build_system means make.
             validate_mcp_build_tool_invocation(
                 repo_root,
                 orchestration_id="vperm4",
                 agent_run_id="exec_child",
                 capability_token=str(cap["capability_token"]),
                 tool_name="run_quality_checks",
+                mcp_args={"preset": "make_test"},
             )
             # run_program is ALSO granted: it gets PAST the perms gate and only then trips its
             # own command-array contract (which is out of scope here). Asserting it fails on the

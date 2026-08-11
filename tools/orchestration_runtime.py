@@ -5851,14 +5851,17 @@ def validate_mcp_build_tool_invocation(
     if tool_name in {"compile_project", "run_quality_checks"}:
         ir_ref = _launch_ir_ref_for_agent(repo_root, orchestration_id, agent_run_id)
         if ir_ref:
-            bs = _impl_resolved_build_system(repo_root, ir_ref)
+            # An absent value means make on BOTH sides of this comparison, which is the
+            # reading record_launch already applies to an IR that omits
+            # toolchain.build_system (and the conductor's own
+            # `str(toolchain.build_system or "make")`). Reading either absence as "no
+            # policy" instead skipped the whole contract: an IR without the key exempted
+            # a cmake compile and a ctest preset outright, and an omitted argument
+            # exempted the compile while the server went on to pick a build system from
+            # marker files in project_dir.
+            bs = _impl_resolved_build_system(repo_root, ir_ref) or "make"
             if bs == "make":
                 if tool_name == "compile_project":
-                    # An absent build_system means make, the same reading record_launch
-                    # applies to an IR that omits toolchain.build_system. Treating the
-                    # omission as "no policy" instead let a caller skip this check
-                    # entirely while the server auto-detected a build system from
-                    # marker files in project_dir.
                     req_bs = str(args_obj.get("build_system", "")).strip().lower() or "make"
                     if req_bs != "make":
                         raise RuntimeError(
