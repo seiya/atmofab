@@ -924,6 +924,20 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         return self.mod.tool_run_syntax_check(
             {"project_dir": str(self.project_dir), "sources": sources})
 
+    def test_an_explicit_source_is_refused_without_a_compiler_too(self) -> None:
+        # The skip for an uninstalled compiler used to return first, so `/etc/passwd`
+        # came back `{ok: True, skipped: True}` on a machine without gfortran.
+        with mock.patch.object(self.mod.shutil, "which", return_value=None):
+            with self.assertRaises(ValueError) as ctx:
+                self._call(["/etc/passwd"])
+        self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+
+    def test_a_clean_tree_still_skips_when_the_compiler_is_absent(self) -> None:
+        with mock.patch.object(self.mod.shutil, "which", return_value=None):
+            result = self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
+        self.assertTrue(result["skipped"])
+        self.assertIn("compiler not available", result["reason"])
+
     def test_anything_that_is_not_a_staged_source_file_is_refused(self) -> None:
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
@@ -973,10 +987,15 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # into the compiler argv as an option and the file was never parsed.
         (self.project_dir / "-o.f90").write_text("program r\nend program r\n",
                                                  encoding="utf-8")
-        with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"), \
-                self.assertRaises(ValueError) as ctx:
-            self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
-        self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+        # Refused whether or not a compiler is installed: the rule is about the names,
+        # not about what a compiler would do with them, and an optional stage skipping on
+        # a machine without that compiler must not be why a bad name goes unnoticed.
+        for which in ("/usr/bin/gfortran", None):
+            with self.subTest(compiler_installed=which is not None):
+                with mock.patch.object(self.mod.shutil, "which", return_value=which), \
+                        self.assertRaises(ValueError) as ctx:
+                    self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir)})
+                self.assertIn("Fortran source files in project_dir", str(ctx.exception))
 
     def test_staged_source_names_are_accepted(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):

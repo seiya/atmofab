@@ -1402,6 +1402,16 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     if not proj.is_dir():
         raise ValueError(f"project_dir is not a directory: {project_dir}")
 
+    ordered_sources = list(sources) if sources is not None else _fortran_syntax_source_order(proj)
+    # The same rule for both readings, and BEFORE the compiler-availability skip below:
+    # the rule is about the names, not about what a compiler would do with them, and an
+    # optional stage skipping on a machine without that compiler must not be the reason
+    # a bad name goes unnoticed. Auto-discovery filters on suffix alone, so a staged file
+    # named `-o.f90` or `@resp.f90` walked into the compiler argv as an option — and the
+    # workflow always takes that branch, since it passes no `sources`. A stray one is a
+    # visible gate failure rather than a silently skipped file.
+    _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check")
+
     if shutil.which(str(adapter["exe"])) is None:
         return {
             "ok": True,
@@ -1411,12 +1421,6 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
             "reason": f"compiler not available: {adapter['exe']}",
         }
 
-    ordered_sources = list(sources) if sources is not None else _fortran_syntax_source_order(proj)
-    # The same rule for both readings. Auto-discovery filters on suffix alone, so a
-    # staged file named `-o.f90` or `@resp.f90` walked into the compiler argv as an
-    # option — and the workflow always takes this branch, since it passes no `sources`.
-    # A stray one is a visible gate failure rather than a silently skipped file.
-    _validate_syntax_sources(ordered_sources, project_dir, "run_syntax_check")
     if not ordered_sources:
         return {
             "ok": True,
