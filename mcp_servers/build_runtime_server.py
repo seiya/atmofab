@@ -125,6 +125,11 @@ def _maybe_enforce_orchestration_mcp_gate(
     )
 
 
+def _repo_root_for_call(args: dict[str, Any], project_dir: str) -> Path:
+    """The root a call's paths are judged against — the same one the gate resolves."""
+    return Path(str(args.get("repo_root") or project_dir)).resolve()
+
+
 def _is_orchestrated_call(args: dict[str, Any]) -> bool:
     """Whether this call is attributed to an orchestration.
 
@@ -156,13 +161,16 @@ _UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
 _UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
 
 
-def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> None:
+def _validate_env_overrides(
+    env: Any, tool_name: str, *, orchestrated: bool, repo_root: Path
+) -> None:
     """Constrain caller-supplied environment overrides.
 
     Every tool here except `run_program` (whose `command` is caller-chosen argv by
     design) constrains argv to a fixed preset or a build-tool invocation, and the
     environment goes around that constraint. Listing what to keep out does not finish:
-    each program these tools run reads its own configuration from the environment: the loader takes `LD_PRELOAD`, the gcc driver
+    each program these tools run reads its own configuration from the environment. The
+    loader takes `LD_PRELOAD`, the gcc driver
     takes `COMPILER_PATH` to find the front end it execs, make takes `MAKEFLAGS` as
     command-line switches and imports any other name as a make variable, so `FC` alone
     redirects a certified Makefile's compiler. Enumerating those names is a list that
@@ -200,7 +208,7 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
                 f"({permitted}); refused: " + ", ".join(offending)
             )
         _refuse_unsafe_values(
-            {str(k): str(v) for k, v in env.items()}, tool_name, "env")
+            [(str(k), str(v)) for k, v in env.items()], tool_name, "env", repo_root)
         return
     offending = sorted(
         str(key)
@@ -215,38 +223,62 @@ def _validate_env_overrides(env: Any, tool_name: str, *, orchestrated: bool) -> 
         )
 
 
-_MAKE_TARGET_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-/]*$")
-# A make variable's value is interpolated unquoted into the recipe's shell line (the
-# host-authored Makefile runs `$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so the value
-# is as much a command as the argv is. Paths, identifiers, and the space-separated case
-# list are what the workflow passes; a shell metacharacter is not.
-_MAKE_VALUE_RE = re.compile(r"^[A-Za-z0-9_/.][A-Za-z0-9_ ./,:=+-]*$")
-# A source name is appended to the compiler front-end argv. The gcc driver reads its
-# own options out of that list wherever they appear — `-B<dir>/` to exec a planted
-# `f951`, `@file` to read further options out of a file whose own name may end in
-# `.f90` — so the rule is what a source name IS, not a list of the spellings that have
-# been noticed.
-_SYNTAX_SOURCE_RE = re.compile(
-    r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.(f90|f95|f03|f08)$", re.IGNORECASE
-)
+# The declared make variables split by what their value IS: four name a location, two
+# name what to run and which cases to run. A path is checked by where it lands, not by
+# its spelling — a checkout path may hold any character an operator's filesystem does.
+_ORCHESTRATED_PATH_VALUE_KEYS = frozenset({"OBJDIR", "BINDIR", "RUNDIR", "SPEC"})
+# The recipe interpolates every one of them unquoted (`cd $(RUNDIR) &&
+# $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so no value may carry a character that
+# line's shell would act on — whitespace included, since it splits the words.
+_SHELL_ACTIVE_CHARS = set(" \t\n\r;&|$`'\"\\<>()*?[]{}~#!")
+_MAKE_NAME_VALUE_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.+-]*$")
 
 
-def _refuse_unsafe_values(values: dict[str, str], tool_name: str, kind: str) -> None:
-    """Refuse an accepted key whose VALUE would carry more than a value."""
-    offending = sorted(
-        f"{key}={value}" for key, value in values.items()
-        if value and not _MAKE_VALUE_RE.match(value)
-    )
+def _build_syntax_source_re() -> re.Pattern[str]:
+    """A source name: a Fortran file name, over the one suffix set the tool uses.
+
+    Derived from `_FORTRAN_SYNTAX_SOURCE_SUFFIXES` so an added suffix cannot make
+    auto-discovery accept a file an explicit `sources` list refuses."""
+    suffixes = "|".join(s.lstrip(".") for s in _FORTRAN_SYNTAX_SOURCE_SUFFIXES)
+    return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({suffixes})$", re.IGNORECASE)
+
+
+def _refuse_unsafe_values(
+    values: list[tuple[str, str]], tool_name: str, kind: str, repo_root: Path
+) -> None:
+    """Refuse an accepted key whose VALUE would carry more than a value.
+
+    A path value must land inside the repository — the value names where the build
+    writes and what it runs, and `BINDIR` alone points the recipe at any executable on
+    the machine. A name value (`BIN`, `CASES`) must be an identifier, or a
+    space-separated list of them for the case ids. Either way no value may carry a
+    character the recipe's shell acts on.
+
+    Takes pairs rather than a mapping: two assignments to the same key both reach the
+    command line, so both are checked.
+    """
+    offending: list[str] = []
+    for key, value in values:
+        if not value:
+            continue
+        if set(value) & _SHELL_ACTIVE_CHARS - {" "}:
+            offending.append(f"{key}={value}")
+        elif key in _ORCHESTRATED_PATH_VALUE_KEYS:
+            resolved = (repo_root / value).resolve()
+            if " " in value or (resolved != repo_root and repo_root not in resolved.parents):
+                offending.append(f"{key}={value}")
+        elif not all(_MAKE_NAME_VALUE_RE.match(word) for word in value.split(" ") if word):
+            offending.append(f"{key}={value}")
     if offending:
         raise ValueError(
-            f"{tool_name} {kind} values reach the make recipe's shell and must be "
-            "plain paths, identifiers, or a space-separated list; refused: "
-            + ", ".join(offending)
+            f"{tool_name} {kind} values reach the make recipe's shell: a path must be "
+            "inside the repository and a name must be an identifier; refused: "
+            + ", ".join(sorted(offending))
         )
 
 
 def _validate_build_argv_overrides(
-    target: Any, extra_args: Any, tool_name: str, *, orchestrated: bool
+    target: Any, extra_args: Any, tool_name: str, *, orchestrated: bool, repo_root: Path
 ) -> str | None:
     """Constrain the caller-chosen part of the build argv; return the target to use.
 
@@ -257,9 +289,10 @@ def _validate_build_argv_overrides(
     read at all.
 
     So under an orchestration the same declared set governs the argv as governs the
-    environment: an `extra_args` element must assign one of those make variables, its
-    value must be a value, and `target` must be a target name rather than a switch.
-    Outside an orchestration the operator chose the argv already.
+    environment: an `extra_args` element must assign one of those make variables and its
+    value must be a value. `target` is refused outright — Build names no target, and a
+    target is a way to run whatever the Makefile's other rules do under a grant that
+    covers compiling. Outside an orchestration the operator chose the argv already.
 
     The validated `target` is returned so the string that was checked is the string
     that runs.
@@ -271,10 +304,10 @@ def _validate_build_argv_overrides(
     resolved_target = target.strip() if isinstance(target, str) and target.strip() else None
     if not orchestrated:
         return resolved_target
-    if resolved_target is not None and not _MAKE_TARGET_RE.match(resolved_target):
+    if resolved_target is not None:
         raise ValueError(
-            f"{tool_name} target must be a build target name under an "
-            f"orchestration (got {resolved_target!r})"
+            f"{tool_name} does not accept a target under an orchestration "
+            f"(got {resolved_target!r}); the build is the Makefile's default goal"
         )
     permitted = sorted(_ORCHESTRATED_ENV_OVERRIDE_KEYS)
     offending = [
@@ -288,7 +321,8 @@ def _validate_build_argv_overrides(
             + ", ".join(offending)
         )
     _refuse_unsafe_values(
-        dict(arg.split("=", 1) for arg in extra_args), tool_name, "extra_args")
+        [(arg.split("=", 1)[0], arg.split("=", 1)[1]) for arg in extra_args],
+        tool_name, "extra_args", repo_root)
     return resolved_target
 
 
@@ -302,9 +336,10 @@ def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: st
     this argument at all, and an operator passing it means file names.
     """
     root = Path(project_dir).resolve()
+    source_re = _build_syntax_source_re()
     offending = []
     for name in sources:
-        if not _SYNTAX_SOURCE_RE.match(name):
+        if not source_re.match(name):
             offending.append(name)
             continue
         resolved = (root / name).resolve()
@@ -746,9 +781,12 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "compile_project", orchestrated=_is_orchestrated_call(args))
+    _validate_env_overrides(
+        env, "compile_project", orchestrated=_is_orchestrated_call(args),
+        repo_root=_repo_root_for_call(args, project_dir))
     target = _validate_build_argv_overrides(
-        target, extra_args, "compile_project", orchestrated=_is_orchestrated_call(args))
+        target, extra_args, "compile_project", orchestrated=_is_orchestrated_call(args),
+        repo_root=_repo_root_for_call(args, project_dir))
 
     build_system = args.get("build_system")
     if build_system:
@@ -815,7 +853,9 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command = [str(item) for item in command]
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_program", orchestrated=_is_orchestrated_call(args))
+    _validate_env_overrides(
+        env, "run_program", orchestrated=_is_orchestrated_call(args),
+        repo_root=_repo_root_for_call(args, project_dir))
 
     run_env: dict[str, str] | None
     if env is None:
@@ -868,7 +908,9 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_quality_checks", orchestrated=_is_orchestrated_call(args))
+    _validate_env_overrides(
+        env, "run_quality_checks", orchestrated=_is_orchestrated_call(args),
+        repo_root=_repo_root_for_call(args, project_dir))
     preset = str(args.get("preset", "make_test"))
 
     presets: dict[str, list[str]] = {
@@ -939,7 +981,9 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_linter", orchestrated=_is_orchestrated_call(args))
+    _validate_env_overrides(
+        env, "run_linter", orchestrated=_is_orchestrated_call(args),
+        repo_root=_repo_root_for_call(args, project_dir))
     preset = str(args.get("preset", "fortitude")).strip().lower()
 
     if "command" in args:
@@ -1205,7 +1249,9 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_syntax_check", orchestrated=_is_orchestrated_call(args))
+    _validate_env_overrides(
+        env, "run_syntax_check", orchestrated=_is_orchestrated_call(args),
+        repo_root=_repo_root_for_call(args, project_dir))
     compiler = str(args.get("compiler", "gfortran")).strip().lower()
     std = str(args.get("std", "f2008")).strip().lower()
     openmp = bool(args.get("openmp", False))

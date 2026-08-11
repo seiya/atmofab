@@ -642,21 +642,35 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_server_module()
 
+    def setUp(self) -> None:
+        self.repo_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.repo_root, ignore_errors=True)
+
     def _check(self, env: dict) -> None:
-        self.mod._validate_env_overrides(env, "run_quality_checks", orchestrated=True)
+        self.mod._validate_env_overrides(
+            env, "run_quality_checks", orchestrated=True, repo_root=self.repo_root)
+
+    def _paths(self, **extra: str) -> dict:
+        payload = {
+            "OBJDIR": f"{self.repo_root}/workspace/tmp/a/obj",
+            "BINDIR": f"{self.repo_root}/workspace/binary/bin_1/bin",
+            "RUNDIR": f"{self.repo_root}/workspace/tmp/a/qc_run",
+            "BIN": "sw2d_runner",
+            "SPEC": f"{self.repo_root}/workspace/ir/x/spec.ir.yaml",
+            "CASES": "case_a case_b",
+        }
+        payload.update(extra)
+        return payload
 
     def test_declared_make_variables_are_accepted(self) -> None:
-        self._check({
-            "OBJDIR": "/tmp/obj", "BINDIR": "/tmp/bin", "RUNDIR": "/tmp/run",
-            "BIN": "sw2d_runner", "SPEC": "/tmp/spec.ir.yaml", "CASES": "c1 c2",
-        })
+        self._check(self._paths())
 
     def test_everything_else_is_refused(self) -> None:
         for key in ("FC", "CC", "CFLAGS", "MAKEFLAGS", "LD_PRELOAD", "COMPILER_PATH",
                     "SOMETHING_NOBODY_LISTED"):
             with self.subTest(key=key):
                 with self.assertRaises(ValueError) as ctx:
-                    self._check({"OBJDIR": "/tmp/obj", key: "x"})
+                    self._check({key: "x"})
                 self.assertIn(key, str(ctx.exception))
                 # The message tells the caller what IS accepted.
                 self.assertIn("OBJDIR", str(ctx.exception))
@@ -665,7 +679,7 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         # `objdir` is a different environment variable: accepting it would leave the
         # make_test re-run on the Makefile's own OBJDIR default instead of failing.
         with self.assertRaises(ValueError) as ctx:
-            self._check({"objdir": "/tmp/obj"})
+            self._check({"objdir": str(self.repo_root)})
         self.assertIn("objdir", str(ctx.exception))
 
     def test_allowlist_matches_the_conductor_payload(self) -> None:
@@ -678,24 +692,58 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
 
     def test_values_that_reach_the_recipe_shell_are_refused(self) -> None:
         # The host-authored Makefile interpolates these unquoted into a recipe line
-        # (`$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so an accepted key with a
-        # metacharacter in its value is a command. Names alone are not the rule.
+        # (`cd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so an accepted
+        # key with a metacharacter in its value is a command. Names alone are not the
+        # rule.
         for value in ("c1; touch /tmp/x", "c1 && id", "$(shell id)", "`id`", "a|b",
-                      "a\nb", "a>b", "'x'"):
+                      "a\nb", "a>b", "'x'", "c1 --evil"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError) as ctx:
                     self._check({"CASES": value})
                 self.assertIn("reach the make recipe's shell", str(ctx.exception))
-        # What the workflow really sends stays acceptable: absolute paths, an
-        # identifier, and a space-separated case list.
-        self._check({"BINDIR": "/repo/workspace/binary/bin_1/bin", "BIN": "sw2d_runner",
-                     "SPEC": "/repo/workspace/ir/x/spec.ir.yaml", "CASES": "case_a case_b"})
+
+    def test_a_path_value_must_land_inside_the_repository(self) -> None:
+        # BINDIR alone points the recipe at any executable on the machine, so a path
+        # value is judged by where it resolves, not by its spelling.
+        for value in ("/usr/bin", "../../usr/bin", f"{self.repo_root}/../etc"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    self._check({"BINDIR": value})
+                self.assertIn("inside the repository", str(ctx.exception))
+        # A relative path is resolved against the same root and stays acceptable.
+        self._check({"BINDIR": "workspace/binary/bin_1/bin"})
+
+    def test_a_path_value_may_hold_any_character_the_filesystem_does(self) -> None:
+        # The rule for a path is containment, not a character class: a checkout whose
+        # path is non-ASCII must not fail every Build with a message about shell
+        # metacharacters.
+        nested = self.repo_root / "作業" / "build"
+        self._check({"OBJDIR": str(nested)})
 
     def test_argv_values_are_refused_the_same_way(self) -> None:
         with self.assertRaises(ValueError) as ctx:
             self.mod._validate_build_argv_overrides(
-                None, ["OBJDIR=obj; touch /tmp/x;"], "compile_project", orchestrated=True)
+                None, ["OBJDIR=obj; touch /tmp/x;"], "compile_project",
+                orchestrated=True, repo_root=self.repo_root)
         self.assertIn("reach the make recipe's shell", str(ctx.exception))
+
+    def test_every_assignment_is_checked_not_just_the_last(self) -> None:
+        # Both elements reach the command line, so a duplicate key must not let the
+        # first one through unchecked.
+        with self.assertRaises(ValueError) as ctx:
+            self.mod._validate_build_argv_overrides(
+                None, ["OBJDIR=obj; touch /tmp/x;", "OBJDIR=obj"], "compile_project",
+                orchestrated=True, repo_root=self.repo_root)
+        self.assertIn("reach the make recipe's shell", str(ctx.exception))
+
+    def test_a_target_is_refused_under_an_orchestration(self) -> None:
+        # Build names no target, and a target runs whatever else the Makefile defines
+        # under a grant that covers compiling.
+        with self.assertRaises(ValueError) as ctx:
+            self.mod._validate_build_argv_overrides(
+                "test", [], "compile_project", orchestrated=True,
+                repo_root=self.repo_root)
+        self.assertIn("does not accept a target", str(ctx.exception))
 
     def test_standalone_argv_is_the_operators_own(self) -> None:
         # The deliberate counterpart to the standalone env guardrail: outside an
@@ -703,7 +751,8 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         # `extra_args` are not restricted. Pinned so the asymmetry is a decision.
         self.assertEqual(
             self.mod._validate_build_argv_overrides(
-                "all", ["-j2", "FC=gfortran-13"], "compile_project", orchestrated=False),
+                "all", ["-j2", "FC=gfortran-13"], "compile_project", orchestrated=False,
+                repo_root=self.repo_root),
             "all")
 
     def test_non_string_argv_arguments_are_refused_not_crashed(self) -> None:
@@ -711,7 +760,8 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
             with self.subTest(target=target, extra_args=extra):
                 with self.assertRaises(ValueError):
                     self.mod._validate_build_argv_overrides(
-                        target, extra, "compile_project", orchestrated=True)
+                        target, extra, "compile_project", orchestrated=True,
+                        repo_root=self.repo_root)
 
     def test_blank_orchestration_id_is_not_orchestrated(self) -> None:
         # The gate reads a blank orchestration_id as absent; this predicate must agree,
@@ -765,11 +815,67 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
                     self._call(bad)
                 self.assertIn("Fortran source files in project_dir", str(ctx.exception))
 
+    def test_a_staged_file_whose_NAME_is_an_option_is_still_refused(self) -> None:
+        # The leaf writes its own src/, so it can stage a file called `@resp.f90` — a
+        # real regular file in project_dir, which the containment half accepts. The gcc
+        # driver reads `@file` as a list of further options regardless of suffix, so the
+        # name shape is the half that refuses it.
+        (self.project_dir / "@resp.f90").write_text("-Bfake/\na.f90\n", encoding="utf-8")
+        (self.project_dir / "-Bx.f90").write_text("program r\nend program r\n", encoding="utf-8")
+        for name in ("@resp.f90", "-Bx.f90"):
+            with self.subTest(name=name):
+                self.assertTrue((self.project_dir / name).is_file())
+                with self.assertRaises(ValueError) as ctx:
+                    self._call([name])
+                self.assertIn("Fortran source files in project_dir", str(ctx.exception))
+
+    def test_the_source_suffixes_are_the_tool_s_own(self) -> None:
+        # The name rule is built from the same tuple auto-discovery uses, so an added
+        # suffix cannot make an explicit `sources` list refuse a file the tool would
+        # otherwise have found itself.
+        for suffix in self.mod._FORTRAN_SYNTAX_SOURCE_SUFFIXES:
+            with self.subTest(suffix=suffix):
+                self.assertTrue(self.mod._build_syntax_source_re().match(f"a{suffix}"))
+
     def test_staged_source_names_are_accepted(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):
             result = self._call(["a.f90"])
         # Reaches the ordinary missing-compiler skip, i.e. it was not refused.
         self.assertTrue(result["skipped"])
+
+
+class GatedHandlerWiringTests(unittest.TestCase):
+    """Every gated handler must apply the orchestrated rules, and must choose them per
+    call.
+
+    The restriction is selected from `orchestration_id` at each call site, so a site
+    that asked for the standalone rule instead would leave the workflow on the weaker
+    one — with every helper-level test still green. Asserting the call literal is how
+    `test_mcp_grant_table_matches_conductor_call_sites` pins the capability gate for the
+    same reason."""
+
+    GATED_TOOLS = (
+        "compile_project", "run_program", "run_quality_checks", "run_linter",
+        "run_syntax_check",
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def test_each_gated_handler_applies_the_orchestrated_rules(self) -> None:
+        import inspect
+        for tool in self.GATED_TOOLS:
+            source = inspect.getsource(getattr(self.mod, f"tool_{tool}"))
+            with self.subTest(tool=tool):
+                self.assertIn("_maybe_enforce_orchestration_mcp_gate", source)
+                self.assertIn(
+                    f'_validate_env_overrides(\n        env, "{tool}", '
+                    "orchestrated=_is_orchestrated_call(args),",
+                    source)
+                self.assertIn(
+                    f'_validate_command_log_path(command_log_path, args, project_dir, "{tool}")',
+                    source)
 
 
 class ToolSchemaDocumentParityTests(unittest.TestCase):

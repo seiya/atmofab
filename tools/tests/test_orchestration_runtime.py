@@ -15105,6 +15105,67 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             parent=f"orch_{orchestration_id}", child="build_child", req=req,
         )
 
+    def test_orchestrated_run_quality_checks_env_is_restricted_through_the_handler(self) -> None:
+        """`run_quality_checks` is the only tool a workflow call passes `env` to, so its
+        call site is the one whose downgrade to the standalone denylist would matter
+        most. Driven through a real Validate.execute capability."""
+        import mcp_servers.build_runtime_server as brs
+        import tools.workflow_conductor as wc
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._perm_test_preflight(repo_root, "vperm9")
+            self._perm_test_plant_lineage(repo_root, binary_id="bin_20260415_001")
+            req = wc.build_launch_request(
+                self._perm_test_refs(
+                    binary_id="bin_20260415_001",
+                    source_binary_id="bin_20260415_001",
+                    run_id="run_20260415_001",
+                ),
+                step="validate", substep="execute",
+                orchestration_id="vperm9",
+                orchestration_agent_run_id="orch_vperm9",
+                child_agent_run_id="exec_child",
+                agent_model="claude-opus-4-8",
+                workflow_mode="dev",
+                case_ids=("case_a",),
+            )
+            cap = self._perm_record_and_cap(
+                repo_root, orchestration_id="vperm9", parent="orch_vperm9",
+                child="exec_child", req=req,
+            )
+            project_dir = repo_root / "src"
+            project_dir.mkdir()
+            base = {
+                "project_dir": str(project_dir), "preset": "make_test",
+                "repo_root": str(repo_root), "orchestration_id": "vperm9",
+                "agent_run_id": "exec_child",
+                "capability_token": str(cap["capability_token"]),
+            }
+            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+            for env, expected in (
+                ({"FC": "/tmp/evil"}, "accepts only these env overrides"),
+                ({"CASES": "c1; touch /tmp/evil"}, "reach the make recipe's shell"),
+                ({"BINDIR": "/usr/bin"}, "inside the repository"),
+            ):
+                with self.subTest(env=env):
+                    with self.assertRaises(ValueError) as ctx:
+                        brs.tool_run_quality_checks({**base, "env": env})
+                    self.assertIn(expected, str(ctx.exception))
+
+            # What Validate.execute actually sends still runs.
+            payload = {
+                "OBJDIR": f"{repo_root}/workspace/tmp/a/obj",
+                "BINDIR": f"{repo_root}/workspace/binary/b1/bin",
+                "RUNDIR": f"{repo_root}/workspace/tmp/a/qc_run",
+                "BIN": "sw2d_runner",
+                "SPEC": f"{repo_root}/workspace/ir/x/spec.ir.yaml",
+                "CASES": "case_a case_b",
+            }
+            with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                brs.tool_run_quality_checks({**base, "env": dict(payload)})
+            self.assertEqual(run_command.call_args.kwargs["env"], payload)
+
     def test_validate_mcp_omitted_build_system_is_treated_as_make(self) -> None:
         """An omitted (or blank) `build_system` means make, so the make-only contract
         applies to it. Reading the omission as "no policy" was the bypass: the argument
@@ -15196,7 +15257,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 ({"env": {"FC": "/tmp/evil"}}, "accepts only these env overrides"),
                 ({"extra_args": ["FC=/tmp/evil"]}, "make variables in extra_args"),
                 ({"extra_args": ["--eval=$(shell id)"]}, "make variables in extra_args"),
-                ({"target": "--eval=$(shell id)"}, "must be a build target name"),
+                ({"target": "test"}, "does not accept a target"),
                 # The value is interpolated unquoted into the recipe's shell line.
                 ({"extra_args": ["BIN=x; touch /tmp/evil;"]}, "reach the make recipe's shell"),
                 # command_log_path is a write, and only run_program at Validate has a
@@ -15209,12 +15270,15 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         call(extra)
                     self.assertIn(expected, str(ctx.exception))
 
-            # What Build actually sends still runs.
-            kwargs = call({"extra_args": ["OBJDIR=/tmp/o", "BINDIR=/tmp/b", "BIN=runner"]})
+            # What Build actually sends still runs (its paths are inside the checkout).
+            kwargs = call({"extra_args": [
+                f"OBJDIR={repo_root}/workspace/tmp/a/obj",
+                f"BINDIR={repo_root}/workspace/binary/b1/bin", "BIN=runner"]})
             self.assertEqual(
                 kwargs["command"],
                 ["make", f"-j{max(1, (os.cpu_count() or 1) // 2)}",
-                 "OBJDIR=/tmp/o", "BINDIR=/tmp/b", "BIN=runner"])
+                 f"OBJDIR={repo_root}/workspace/tmp/a/obj",
+                 f"BINDIR={repo_root}/workspace/binary/b1/bin", "BIN=runner"])
 
     def test_gate_and_server_agree_on_omitted_build_system(self) -> None:
         """Gate and server read an omitted `build_system` the same way. They did not:

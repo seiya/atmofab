@@ -5869,7 +5869,10 @@ def validate_mcp_build_tool_invocation(
                             f"build_system make (got {req_bs!r})"
                         )
                 if tool_name == "run_quality_checks":
-                    preset = str(args_obj.get("preset", "")).strip().lower()
+                    # An absent preset is the server's own default, read here the same
+                    # way — the same reading this block applies to an absent
+                    # build_system on either side.
+                    preset = str(args_obj.get("preset", "")).strip().lower() or "make_test"
                     if preset not in {"make_test", "make_check"}:
                         raise RuntimeError(
                             "MCP phase gate: toolchain.build_system=make requires run_quality_checks "
