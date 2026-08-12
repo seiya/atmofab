@@ -1192,6 +1192,20 @@ _FORTRAN_INTERFACE_SPAN_OPEN = re.compile(r"^(?:abstract\s+)?interface\b")
 _FORTRAN_INTERFACE_SPAN_END = re.compile(r"^end\s*interface\b")
 # CONTAINS is the whole statement (the view has already stripped any label).
 _FORTRAN_CONTAINS_STATEMENT = re.compile(r"^contains\s*$")
+# A CONSTRUCT NAME, which may precede any construct statement (`loop: do i = 1, n`), and which the
+# construct's own end repeats (`end do loop`). It is stripped for the same reason the view strips a
+# statement label: every rule below anchors on the keyword, so anything that can sit in front of
+# the keyword has to come off first, ONCE, rather than being guarded for in each rule.
+#
+# Without it, `endsubroutine: do i = 1, 3` — a construct named after a keyword, which is legal
+# because none of these words is reserved, and which `gfortran -fsyntax-only -std=f2008` accepts —
+# reached `_FORTRAN_UNIT_END_KIND` and popped the enclosing subroutine at the loop header, and
+# `interface: do …` opened an interface span that blanked the rest of the file. Both silenced all
+# three gates. `(?!:)` keeps a declaration's `::` out of this: `type :: holder` is not a named
+# construct. The same prefix is already stripped by `_FORTRAN_ASSOCIATE_OPEN` and
+# `_FORTRAN_CONSTRUCT_OPEN` for their own rules — this is that shape moved to where it covers all
+# of them.
+_FORTRAN_CONSTRUCT_NAME_PREFIX = re.compile(r"^[a-z_][a-z0-9_]*\s*:(?!:)\s*")
 # The prefix words before `subroutine` are deliberately NOT enumerated. F2008 has
 # `pure` / `impure` / `elemental` / `recursive` / `module`, F2018 adds `non_recursive`, so the set
 # is not closed ACROSS STANDARDS — `orchestration_runtime._FORTRAN_SUBROUTINE_RE` enumerates them
@@ -1276,7 +1290,10 @@ def _fortran_statement_assigns_to_its_first_token(statement: str) -> bool:
                 if statement[index + 1 : index + 2] == "=":
                     return False
                 return statement[index - 1] not in "<>/="
-            if not (char.isalnum() or char in " _%"):
+            # `isspace`, not `" "`: a TAB before the `=` is nonconforming free-form Fortran that
+            # `gfortran -fsyntax-only -std=f2008` accepts with a warning, and `Generate.gate`'s
+            # syntax check does not promote `-Wtabs`, so `endsubroutine\t= 1.0` reaches here.
+            if not (char.isalnum() or char.isspace() or char in "_%"):
                 return False
         index += 1
     return False
@@ -1384,7 +1401,12 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     # (body_start, body_end, name, dummy_args). The bodies are sliced after the walk, once
     # `blanked` is complete — a frame closes before the text it does not cover has been read.
     closed: list[tuple[int, int, str, str]] = []
-    in_interface = False
+    # A DEPTH, not a flag: an interface body may declare a procedure whose own dummy is a
+    # procedure, and that declaration is a nested `interface` block. `gfortran -fsyntax-only
+    # -std=f2008` accepts it, and with a flag the inner `end interface` reopened the file — the
+    # outer interface body's `end subroutine` was then read as real code and closed the enclosing
+    # subroutine at the interface. Fail-open, and precisely the hole the span was added to close.
+    interface_depth = 0
     type_depth = 0
 
     def close(frame: _FortranUnitFrame, body_end: int) -> None:
@@ -1394,19 +1416,26 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
         closed.append((frame.body_start, max(end, frame.body_start), frame.name, frame.dummy_args))
 
     for index, line in enumerate(lines):
-        statement = _fortran_statement_body(line)
+        # Normalised ONCE for every rule below: the view has already taken off a statement label,
+        # this takes off a construct name. What remains starts with the statement's own keyword.
+        statement = _FORTRAN_CONSTRUCT_NAME_PREFIX.sub(
+            "", _fortran_statement_body(line), count=1
+        )
         line_start = starts[index]
 
-        if in_interface:
+        if interface_depth:
             blanked.append(" " * len(line))
             if _FORTRAN_INTERFACE_SPAN_END.match(statement):
-                in_interface = False
+                interface_depth -= 1
+                continue
+            if _FORTRAN_INTERFACE_SPAN_OPEN.match(statement):
+                interface_depth += 1
                 continue
             # An interface nobody closed must not swallow the rest of the file: the END of the
             # enclosing program unit ends it too, and falls through to be handled below.
             if not re.match(r"^end\s*(?:module|submodule|program)\b", statement):
                 continue
-            in_interface = False
+            interface_depth = 0
         else:
             blanked.append(line)
 
@@ -1440,7 +1469,7 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             continue
 
         if _FORTRAN_INTERFACE_SPAN_OPEN.match(statement):
-            in_interface = True
+            interface_depth = 1
             blanked[-1] = " " * len(line)
             continue
 

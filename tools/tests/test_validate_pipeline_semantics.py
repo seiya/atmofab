@@ -5660,6 +5660,79 @@ end module m2
                 self.assertIn("does not propagate dependency operation outputs",
                               " ".join(self._dataflow_violations(source)), assignment)
 
+    def test_a_construct_named_after_a_keyword_is_not_structure(self) -> None:
+        # The second spelling of the same family, found one review round after the first. A
+        # CONSTRUCT NAME may precede any construct statement, so `endsubroutine: do i = 1, 3` is
+        # legal (`gfortran -fsyntax-only -std=f2008`, executed) — and it reached the terminator
+        # rule, which popped the subroutine at the loop header. `interface: do …` opened a span
+        # that blanked the rest of the file. Both silenced all three gates, and both were
+        # REGRESSIONS: origin/main's flat regex needed a literal `end subroutine`.
+        #
+        # The first spelling was `=` and was closed with a predicate; this one is `:` and is closed
+        # by stripping the name where the view already strips a statement label. Two spellings in
+        # two rounds is the signal that the answer is a normalisation step, not another guard: any
+        # rule added after this one gets both for free.
+        for name in ("endsubroutine", "endmodule", "endprocedure", "interface", "contains",
+                     "module", "type"):
+            for construct, closer in (("do i = 1, 3", "end do"),
+                                      ("block", "end block"),
+                                      ("if (u > 0.0) then", "end if"),
+                                      ("select case (i)\n  case default", "end select"),
+                                      ("associate (w => u)", "end associate")):
+                source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
+                          f"  real, intent(in) :: x\n  real, intent(out) :: y\n"
+                          f"  real :: scratch, u\n  integer :: i\n  u = x\n"
+                          f"  {name}: {construct}\n    y = x\n  {closer} {name}\n"
+                          f"  call dep__apply(x, scratch)\n  y = x\n"
+                          f"end subroutine solve\nend module m\n")
+                self.assertIn("does not propagate dependency operation outputs",
+                              " ".join(self._dataflow_violations(source)), f"{name}: {construct}")
+
+    def test_an_interface_inside_an_interface_body_does_not_reopen_the_file(self) -> None:
+        # `interface_depth` is a depth and not a flag because an interface body may declare a
+        # procedure whose own dummy is a procedure — a nested interface block, accepted by
+        # `gfortran -fsyntax-only -std=f2008`. With a flag the INNER `end interface` ended the
+        # span, the outer body's `end subroutine` was read as real code, and the enclosing
+        # subroutine closed at the interface. Fail-open, and the exact hole the span exists for.
+        source = """module m
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  interface
+    subroutine outer_cb(f)
+      implicit none
+      interface
+        real function f(a)
+          implicit none
+          real, intent(in) :: a
+        end function f
+      end interface
+    end subroutine outer_cb
+  end interface
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
+    def test_a_tab_before_the_assignment_operator_is_still_an_assignment(self) -> None:
+        # A tab in free-form source is nonconforming, but `gfortran -fsyntax-only -std=f2008`
+        # accepts it with a warning and `Generate.gate`'s syntax check does not promote `-Wtabs`,
+        # so it reaches these gates. With the predicate keying on a literal space, the tab form
+        # was read as a terminator and silenced the gate where origin/main flagged it.
+        source = ("module m\ncontains\nsubroutine solve(x, y)\n"
+                  "  real, intent(in) :: x\n  real, intent(out) :: y\n"
+                  "  real :: scratch, endsubroutine\n"
+                  "  endsubroutine\t= 1.0\n"
+                  "  call dep__apply(x, scratch)\n  y = x + endsubroutine\n"
+                  "end subroutine solve\nend module m\n")
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
     def test_the_assignment_predicate_leaves_structural_statements_alone(self) -> None:
         # The other half: over-classifying would make a real structural statement invisible, which
         # fails LONG rather than open, but silently changes what every rule below sees. `=` inside
