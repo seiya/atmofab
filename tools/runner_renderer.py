@@ -81,8 +81,13 @@ MAX_IDENTIFIER_LEN = 63
 # and the runner (which compiles and runs cleanly) writes an arbitrary file. The compile gates
 # only require a case_id to be a non-empty string, and `_flit` only bars non-printable-ASCII, so
 # `..`/`/` slip through both. Restrict the id to the same safe-token grammar the dependency layer
-# uses for path segments (`orchestration_runtime._is_safe_path_token`): `[A-Za-z0-9._-]`, no `..`.
-_CASE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+# uses for path segments (`orchestration_runtime._is_safe_path_token`): `[A-Za-z0-9._-]`, no `..`,
+# narrowed further below because a case id also reaches the runner's argv.
+# The first character additionally may not be `-`: a case id reaches the runner's argv
+# through `--cases $(SPEC) $(CASES)` and the build-runtime MCP server refuses a leading
+# `-` there, so accepting one here would pass Compile and Build and then fail
+# Validate.execute on an id no gate had objected to.
+_CASE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
 
 
 def spec_id_length_violation(spec_id: Any) -> str | None:
@@ -271,8 +276,10 @@ def _case_ids(ir: dict[str, Any]) -> list[str]:
     if unsafe:
         raise RenderError(
             f"case_id(s) {unsafe} are not safe tokens; a case_id is concatenated into the "
-            "per-case snapshot path (raw/state_snapshots/<case_id>.json), so it must match "
-            "[A-Za-z0-9._-] with no '..' (else it escapes the run directory at runtime)")
+            "per-case snapshot path (raw/state_snapshots/<case_id>.json) and reaches the "
+            "runner's argv, so it must match [A-Za-z0-9._][A-Za-z0-9._-]* with no '..' "
+            "(a leading '-' would be read as an option; anything else escapes the run "
+            "directory at runtime)")
     # Duplicate case_ids would render two identical `case ('id')` labels in the runner's
     # `select case`, a hard gfortran error the leaf cannot repair (host-rendered runner).
     # Fail closed rather than emit a non-compiling, unrepairable runner.

@@ -5675,6 +5675,7 @@ def validate_mcp_build_tool_invocation(
     mcp_args: dict[str, Any] | None = None,
 ) -> None:
     """The phase gate before a `compile_project` / `run_linter` / `run_program` / `run_quality_checks` call."""
+    _require_safe_gate_ids(orchestration_id, agent_run_id, "MCP phase gate")
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
 
     root = _orchestration_root(repo_root, orchestration_id)
@@ -5849,24 +5850,29 @@ def validate_mcp_build_tool_invocation(
                     "tool-execution evidence at canonical placement."
                 )
     if tool_name in {"compile_project", "run_quality_checks"}:
+        # Every absence on the way to this contract means make, which is the reading
+        # record_launch already applies to an IR that omits toolchain.build_system (and
+        # the conductor's own `str(toolchain.build_system or "make")`). Reading any of
+        # them as "no policy" exempts the whole contract: an unresolvable ir_ref, an IR
+        # without the key, an omitted argument, and an omitted preset each did so in
+        # turn, and the project is make-only.
         ir_ref = _launch_ir_ref_for_agent(repo_root, orchestration_id, agent_run_id)
-        if ir_ref:
-            bs = _impl_resolved_build_system(repo_root, ir_ref)
-            if bs == "make":
-                if tool_name == "compile_project":
-                    req_bs = str(args_obj.get("build_system", "")).strip().lower()
-                    if req_bs and req_bs != "make":
-                        raise RuntimeError(
-                            "MCP phase gate: toolchain.build_system=make requires compile_project "
-                            f"build_system make (got {req_bs!r})"
-                        )
-                if tool_name == "run_quality_checks":
-                    preset = str(args_obj.get("preset", "")).strip().lower()
-                    if preset not in {"make_test", "make_check"}:
-                        raise RuntimeError(
-                            "MCP phase gate: toolchain.build_system=make requires run_quality_checks "
-                            f"preset make_test or make_check (got {preset!r})"
-                        )
+        bs = (_impl_resolved_build_system(repo_root, ir_ref) if ir_ref else None) or "make"
+        if bs == "make":
+            if tool_name == "compile_project":
+                req_bs = str(args_obj.get("build_system", "")).strip().lower() or "make"
+                if req_bs != "make":
+                    raise RuntimeError(
+                        "MCP phase gate: toolchain.build_system=make requires compile_project "
+                        f"build_system make (got {req_bs!r})"
+                    )
+            if tool_name == "run_quality_checks":
+                preset = str(args_obj.get("preset", "")).strip().lower() or "make_test"
+                if preset not in {"make_test", "make_check"}:
+                    raise RuntimeError(
+                        "MCP phase gate: toolchain.build_system=make requires run_quality_checks "
+                        f"preset make_test or make_check (got {preset!r})"
+                    )
 
     _append_workflow_hook_log(
         repo_root,
@@ -5893,43 +5899,76 @@ def _launch_ir_ref_for_agent(
     return pr.strip() if isinstance(pr, str) and pr.strip() else None
 
 
+def _require_safe_gate_ids(
+    orchestration_id: str, agent_run_id: str, gate_label: str
+) -> None:
+    """Both gate ids must be plain path tokens.
+
+    They are interpolated into the paths every artifact a gate trusts is read from — the
+    orchestration root, `launches/<arid>.response.json`, the capability file, and the
+    audit log the gate appends to. A separator or a `..` in either relocates the whole
+    check to a directory the caller can write, so the capability it validates against
+    becomes one the caller authored. Same predicate the write_root pins use, for the
+    same reason.
+    """
+    # The raw value, not a stripped copy: `_orchestration_root` builds the path from
+    # what the caller sent, so the string that is checked has to be the string that is
+    # used.
+    for label, value in (("orchestration_id", orchestration_id),
+                         ("agent_run_id", agent_run_id)):
+        if not _is_safe_path_id(str(value)):
+            raise RuntimeError(
+                f"{gate_label}: {label} must be a plain [A-Za-z0-9_-] token "
+                f"(got {value!r})"
+            )
+
+
 def _impl_resolved_build_system(repo_root: Path, ir_ref: str) -> str | None:
+    """`impl_defaults.toolchain.build_system` from the IR, read structurally.
+
+    Read as YAML rather than scanned line by line. The scanner took the first line whose
+    key merely CONTAINED `build_system` and ignored nesting, so one line of prose
+    anywhere above `impl_defaults` — `algorithm.invariants` is a free-text array the
+    same LLM substep authors — decided the answer. A non-`make` answer exempts the
+    make-only contract in the MCP phase gate and suppresses the mandatory Makefile pin
+    in `record_launch`, so a decoy line bought both.
+
+    `None` when the file is missing, unreadable, or declares no value; every caller
+    reads `None` as `make`, which is the fail-closed direction."""
     path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
-    if not path.is_file():
-        return None
-    text = path.read_text(encoding="utf-8", errors="ignore")
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line or ":" not in line:
-            continue
-        key, _, rest = line.partition(":")
-        if "build_system" not in key.strip().lower():
-            continue
-        val = rest.strip().strip("\"'")
-        return val.lower() or None
-    return None
+    return _impl_defaults_toolchain_value(path, "build_system")
 
 
-def _impl_resolved_language(repo_root: Path, ir_ref: str) -> str | None:
-    """spec.ir.yaml's `impl_defaults.toolchain.language`, line-scanned (mirrors
-    `_impl_resolved_build_system`). None when absent/unreadable."""
-    path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
+def _impl_defaults_toolchain_value(path: Path, field: str) -> str | None:
+    """One `impl_defaults.toolchain.<field>` string from a spec.ir.yaml, or None."""
     if not path.is_file():
         return None
     try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+        doc = _require_yaml().safe_load(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
         return None
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line or ":" not in line:
-            continue
-        key, _, rest = line.partition(":")
-        if key.strip().lower() != "language":
-            continue
-        val = rest.strip().strip("\"'")
-        return val.lower() or None
-    return None
+    if not isinstance(doc, dict):
+        return None
+    impl = doc.get("impl_defaults")
+    toolchain = impl.get("toolchain") if isinstance(impl, dict) else None
+    value = toolchain.get(field) if isinstance(toolchain, dict) else None
+    if not isinstance(value, str):
+        return None
+    return value.strip().lower() or None
+
+
+def _impl_resolved_language(repo_root: Path, ir_ref: str) -> str | None:
+    """spec.ir.yaml's `impl_defaults.toolchain.language`, read structurally.
+
+    The twin of `_impl_resolved_build_system`, and it was line-scanned for the same
+    reason and with the same consequence: unscoped to nesting, so a `language:` line in
+    any free-text field above `impl_defaults` answered for the toolchain. This one
+    decides `_resolved_makefile_host_authored`, so a decoy flipped who owns
+    `src/Makefile` — the conductor authors it and omits it from the leaf's write set,
+    while record_launch concluded it was not host-authored and pinned it back as a
+    writable path. `None` when absent or unreadable; callers default to fortran."""
+    path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
+    return _impl_defaults_toolchain_value(path, "language")
 
 
 def _impl_is_leaf_node(repo_root: Path, ir_ref: str) -> bool | None:
@@ -5941,10 +5980,13 @@ def _impl_is_leaf_node(repo_root: Path, ir_ref: str) -> bool | None:
     `_resolved_makefile_host_authored` in record_launch); covered by its own unit test and
     referenced by latent item L4 in docs/design/deterministic_followups.md.
 
-    Returns None when the IR / dependency block cannot be located. Line-scanned (no yaml
-    import here, mirroring `_impl_resolved_build_system`): finds the top-level `dependency:`
-    block, then `direct_deps:` within it — empty (`[]` inline, or no `- ` list item before
-    the block dedents) means leaf.
+    Returns None when the IR / dependency block cannot be located. Line-scanned, unlike
+    the toolchain readers above, and deliberately: the scan is anchored at a top-level
+    `dependency:` key and tracks indentation, and a value nested under any other key
+    cannot produce a physical line at column 0, so the decoy that defeated an unscoped
+    scan has nothing to write. Finds the top-level `dependency:` block, then
+    `direct_deps:` within it — empty (`[]` inline, or no `- ` list item before the block
+    dedents) means leaf.
     """
     path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
     if not path.is_file():
@@ -6173,6 +6215,7 @@ def _validate_run_gate_permissions(
     agent_run_id: str,
     capability_token: str,
 ) -> None:
+    _require_safe_gate_ids(orchestration_id, agent_run_id, "run-gate phase gate")
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     root = _orchestration_root(repo_root, orchestration_id)
 
@@ -13422,6 +13465,15 @@ def enable_checkpoint_resume(
 
     Raise a RuntimeError when the orchestration does not exist.
     """
+    # `init` refuses an id that is not a plain path token; a resume must refuse it too,
+    # or a workspace created before that rule restarts and then fails at its first MCP
+    # call, several phases in, on the id it was resumed with.
+    if not _is_safe_path_id(str(orchestration_id)):
+        raise RuntimeError(
+            "resume: orchestration_id must be a plain [A-Za-z0-9_-] token "
+            f"(got {orchestration_id!r}); an orchestration created under an older "
+            "id grammar cannot be resumed and must be re-run under a new id"
+        )
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
     if not meta_path.exists():
         raise RuntimeError(
@@ -15946,7 +15998,7 @@ _CLAUDE_MCP_REMEDIATION = (
     "build-runtime MCP server is not enabled for this project via the repo-committed "
     "`.claude/settings.json`. Required tools (run_linter, run_syntax_check, compile_project, "
     "run_program, run_quality_checks) are needed by Generate/Build/Validate phases "
-    "(detect_build_system is advisory — provided by the server but not gated). "
+    "(detect_build_system is advisory — provided by the server, not gated, and refused under the workflow). "
     "Remediation: add `\"enabledMcpjsonServers\": [\"build-runtime\"]` (or "
     "`\"enableAllProjectMcpServers\": true`) to the top level of the committed "
     "`.claude/settings.json`, and ensure no `disabledMcpjsonServers` entry for build-runtime "
@@ -16180,7 +16232,7 @@ def _evaluate_build_runtime_tool_permission(
         alias and are not denied" (and there is no server-level deny)
     Claude Code's deny rule takes precedence over allow. Because a tool-specific deny cancels a server-level allow,
     and a server-level deny cancels an individual tool allow, granted=false if either deny exists
-    (false-pass prevention). `detect_build_system` is advisory (out of gate scope because no phase invokes it).
+    (false-pass prevention). `detect_build_system` is advisory (out of gate scope because no phase invokes it; refused under the workflow).
     """
     allow_set, deny_set, default_mode, perms_detail = _read_repo_mcp_tool_permissions(
         repo_root,
@@ -16747,6 +16799,14 @@ def init_orchestration(
     invocation: dict[str, Any] | None = None,
     driver: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # The id becomes a directory name and is later interpolated into every gate's path,
+    # where anything but a plain token is refused. Refuse it here so an operator learns
+    # at `init` rather than losing the run at its first MCP call.
+    if not _is_safe_path_id(str(orchestration_id)):
+        raise RuntimeError(
+            "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
+            f"(got {orchestration_id!r})"
+        )
     root = _orchestration_root(repo_root, orchestration_id)
     root.mkdir(parents=True, exist_ok=True)
     (repo_root / "workspace" / "tmp").mkdir(parents=True, exist_ok=True)

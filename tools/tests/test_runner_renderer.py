@@ -873,10 +873,20 @@ class RenderErrorMatrixTest(unittest.TestCase):
                     ir["case"]["test_case_set"][0].__setitem__("case_id", n),
                     ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", [n])))
 
+    def test_leading_dash_case_id_fails_closed(self) -> None:
+        # A case id also reaches the runner's argv (`--cases <spec> <case_id>...`), where
+        # a leading `-` reads as an option. Rejected at Compile so the run does not get
+        # several phases further and fail at the MCP argument rule instead.
+        for name in ("-c1", "--cases", "-"):
+            with self.subTest(name=name):
+                self._expect(lambda ir, n=name: (
+                    ir["case"]["test_case_set"][0].__setitem__("case_id", n),
+                    ir["io_contract"]["test_predicates"][0].__setitem__("target_cases", [n])))
+
     def test_dotted_and_dashed_case_id_still_renders(self) -> None:
         # The safe grammar allows `.` and `-`; a single dot is not `..` and must pass.
         ir = copy.deepcopy(_boundary_ir())
-        ok = "l0_v1.2-alpha"
+        ok = "l0_v1.2-alpha"  # a dash INSIDE the id stays legal; only a leading one does not
         ir["case"]["test_case_set"][0]["case_id"] = ok
         ir["io_contract"]["test_predicates"][0]["target_cases"] = [ok]
         self.assertIn(f"case ('{ok}')", render_runner(ir, BOUNDARY_SID, HARNESS))

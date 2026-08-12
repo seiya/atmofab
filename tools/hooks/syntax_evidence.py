@@ -20,10 +20,14 @@ step==generate ∧ substep==gate. The exemption is the exact file, NOT the whole
 `syntax_evidence/` directory; the sandboxed `generate.generate` leaf is never exempted.
 
 Stage schema: each entry of `stages` records one compiler adapter run —
-`{compiler, status: "pass"|"fail"|"skipped", compiler_version?, command_id?, command_log_ref?}`.
+`{compiler, status: "pass"|"fail"|"skipped", compiler_version?, command_id?, command_log_ref?, reason?}`.
 `command_id`/`command_log_ref` are required for pass/fail stages (they bind the stage to a
-`command_log.jsonl` record) and absent/ignored for a `skipped` stage (an optional target
-compiler that is not installed in this environment — nothing ran, so there is no record).
+`command_log.jsonl` record) and absent/ignored for a `skipped` stage, whose producers are
+an optional target compiler with no registered adapter or no installed binary, and a stage
+that refused before running (a staged source whose NAME the tool rejects). Either
+way nothing ran, so there is no record to cite. The reader does not distinguish them and
+does not need to: a `skipped` MANDATORY gfortran stage fails certification whichever
+produced it.
 """
 
 from __future__ import annotations

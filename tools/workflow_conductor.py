@@ -7893,8 +7893,9 @@ clean:
         error) raises and surfaces as a transport fail_closed likewise — an environment
         problem, not something the generate retry loop could fix. Optional additional stages
         from METDSL_SYNTAX_COMPILERS (comma-separated adapter ids, e.g. "gfortran,frt" — the
-        future target-compiler second stage) are recorded as skipped when their binary is not
-        installed, so one configuration runs on machines with and without the target compiler.
+        future target-compiler second stage) are recorded as skipped when their compiler has no
+        registered adapter or its binary is not installed, so one configuration runs on
+        machines with and without the target compiler.
 
         Staging: each compiler stage gets its own throwaway dir under
         workspace/tmp/<child_arid>/syntax/<compiler>/ holding the node's src *.f90 plus
@@ -7910,6 +7911,7 @@ clean:
             _FORTRAN_SYNTAX_SOURCE_SUFFIXES,
             _SYNTAX_COMPILER_ADAPTERS,
             SYNTAX_CANARY_SOURCE,
+            SyntaxSourceNameError,
             tool_run_syntax_check,
         )
         from tools.hooks.syntax_evidence import write_syntax_evidence
@@ -8002,18 +8004,55 @@ clean:
                     shutil.copy2(p, stage_dir / p.name)
                 for p in dep_files:
                     shutil.copy2(p, stage_dir / p.name)
-                result = tool_run_syntax_check({
-                    "compiler": compiler,
-                    "std": tc["standard"],
-                    "openmp": tc["backend"] == "openmp",
-                    "project_dir": str(stage_dir),
-                    "repo_root": str(self.repo_root),
-                    "command_log_path": str(src_dir / "command_log.jsonl"),
-                    "capture_limit": _FULL_CAPTURE_LIMIT,
-                    "orchestration_id": self.orchestration_id,
-                    "agent_run_id": child_arid,
-                    "capability_token": cap_token,
-                })
+                try:
+                    result = tool_run_syntax_check({
+                        "compiler": compiler,
+                        "std": tc["standard"],
+                        "openmp": tc["backend"] == "openmp",
+                        "project_dir": str(stage_dir),
+                        "repo_root": str(self.repo_root),
+                        "command_log_path": str(src_dir / "command_log.jsonl"),
+                        "capture_limit": _FULL_CAPTURE_LIMIT,
+                        "orchestration_id": self.orchestration_id,
+                        "agent_run_id": child_arid,
+                        "capability_token": cap_token,
+                    })
+                except SyntaxSourceNameError as exc:
+                    # A source name the tool refuses (an option-shaped `-o.f90`, a
+                    # response file, a name that is not a Fortran file) is the leaf's
+                    # own output and the leaf can rename it, so this is a CONTENT
+                    # failure routed back to generate.generate — not the transport
+                    # fail_closed an uncaught raise here would produce. The other two
+                    # fail_closed causes of this substep (a broken `-std` invocation, a
+                    # dependency closure that does not compile) are things the leaf
+                    # cannot repair; this one it can. Only this exception class is
+                    # caught: every other refusal from the tool is about arguments the
+                    # CONDUCTOR supplies, and blaming the leaf for those would spend its
+                    # whole retry budget on a message no regenerated source can clear.
+                    #
+                    # The stage is recorded `skipped`, which is what it is — no compiler
+                    # ran, so there is no command id to certify with — and the evidence
+                    # certificate below records the same, keeping this checker's
+                    # symmetry with the lint one.
+                    stages.append({
+                        "compiler": compiler,
+                        "status": "skipped",
+                        "reason": str(exc),
+                    })
+                    write_syntax_evidence(
+                        pipeline_root=self.repo_root / refs.pipeline_ref,
+                        source_id=refs.source_id or "",
+                        ok=False,
+                        stages=stages,
+                    )
+                    return {
+                        "status": "fail",
+                        "language": language,
+                        "stages": stages,
+                        "skipped_reason": None,
+                        "failure_category": "syntax_error",
+                        "failure_excerpt": str(exc),
+                    }
                 if result.get("skipped"):
                     if compiler == "gfortran":
                         raise RuntimeError(

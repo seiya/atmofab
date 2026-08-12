@@ -15085,6 +15085,432 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 )
             self.assertIn("not permitted by capability", str(ctx.exception))
 
+    def _build_child_capability(self, repo_root: Path, orchestration_id: str) -> dict:
+        """A build-step child holding the compile_project grant, ready for the gate."""
+        import tools.workflow_conductor as wc
+        self._perm_test_preflight(repo_root, orchestration_id)
+        self._perm_test_plant_lineage(repo_root)
+        req = wc.build_launch_request(
+            self._perm_test_refs(binary_id="bin_20260415_001"),
+            step="build", substep=None,
+            orchestration_id=orchestration_id,
+            orchestration_agent_run_id=f"orch_{orchestration_id}",
+            child_agent_run_id="build_child",
+            agent_model="claude-opus-4-8",
+            workflow_mode="dev",
+            exe_name="simulate",
+        )
+        return self._perm_record_and_cap(
+            repo_root, orchestration_id=orchestration_id,
+            parent=f"orch_{orchestration_id}", child="build_child", req=req,
+        )
+
+    def test_an_unresolvable_ir_ref_does_not_exempt_the_make_contract(self) -> None:
+        """Every absence on the way to the make-only contract means make. An ir_ref the
+        launch request does not carry used to skip the block outright, so a `ctest`
+        preset — arbitrary execution in place of `make test` — was accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm12")
+            req_path = (repo_root / "workspace/orchestrations/vperm12/launches"
+                        / "build_child.request.json")
+            doc = json.loads(req_path.read_text(encoding="utf-8"))
+            doc.pop("ir_ref", None)
+            req_path.write_text(json.dumps(doc), encoding="utf-8")
+            with self.assertRaises(RuntimeError) as ctx:
+                validate_mcp_build_tool_invocation(
+                    repo_root,
+                    orchestration_id="vperm12",
+                    agent_run_id="build_child",
+                    capability_token=str(cap["capability_token"]),
+                    tool_name="compile_project",
+                    mcp_args={"build_system": "cmake"},
+                )
+            self.assertIn("requires compile_project build_system make", str(ctx.exception))
+
+    def test_orchestrated_run_quality_checks_env_is_restricted_through_the_handler(self) -> None:
+        """`run_quality_checks` is the only tool a workflow call passes `env` to, so its
+        call site is the one whose downgrade to the standalone denylist would matter
+        most. Driven through a real Validate.execute capability."""
+        import mcp_servers.build_runtime_server as brs
+        import tools.workflow_conductor as wc
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._perm_test_preflight(repo_root, "vperm9")
+            self._perm_test_plant_lineage(repo_root, binary_id="bin_20260415_001")
+            req = wc.build_launch_request(
+                self._perm_test_refs(
+                    binary_id="bin_20260415_001",
+                    source_binary_id="bin_20260415_001",
+                    run_id="run_20260415_001",
+                ),
+                step="validate", substep="execute",
+                orchestration_id="vperm9",
+                orchestration_agent_run_id="orch_vperm9",
+                child_agent_run_id="exec_child",
+                agent_model="claude-opus-4-8",
+                workflow_mode="dev",
+                case_ids=("case_a",),
+            )
+            cap = self._perm_record_and_cap(
+                repo_root, orchestration_id="vperm9", parent="orch_vperm9",
+                child="exec_child", req=req,
+            )
+            project_dir = repo_root / "src"
+            project_dir.mkdir()
+            base = {
+                "project_dir": str(project_dir), "preset": "make_test",
+                "repo_root": str(repo_root), "orchestration_id": "vperm9",
+                "agent_run_id": "exec_child",
+                "capability_token": str(cap["capability_token"]),
+            }
+            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+            for env, expected in (
+                ({"FC": "/tmp/evil"}, "accepts only these env overrides"),
+                ({"CASES": "c1; touch /tmp/evil"}, "reach the make recipe's shell"),
+                ({"BINDIR": "/usr/bin"}, "inside the repository"),
+            ):
+                with self.subTest(env=env):
+                    with self.assertRaises(ValueError) as ctx:
+                        brs.tool_run_quality_checks({**base, "env": env})
+                    self.assertIn(expected, str(ctx.exception))
+
+            # The sibling reading, on the same gate block: an omitted preset is the
+            # server's own `make_test` default, so it satisfies the make-only contract
+            # rather than tripping it, while a non-make preset still trips it.
+            _plant_spec_ir_yaml_make(repo_root)
+            gate_kwargs = dict(
+                orchestration_id="vperm9", agent_run_id="exec_child",
+                capability_token=str(cap["capability_token"]),
+                tool_name="run_quality_checks",
+            )
+            validate_mcp_build_tool_invocation(repo_root, mcp_args={}, **gate_kwargs)
+            with self.assertRaises(RuntimeError) as ctx_qc:
+                validate_mcp_build_tool_invocation(
+                    repo_root, mcp_args={"preset": "ctest"}, **gate_kwargs)
+            self.assertIn("preset make_test or make_check", str(ctx_qc.exception))
+
+            # What Validate.execute actually sends still runs.
+            payload = {
+                "OBJDIR": f"{repo_root}/workspace/tmp/a/obj",
+                "BINDIR": f"{repo_root}/workspace/binary/b1/bin",
+                "RUNDIR": f"{repo_root}/workspace/tmp/a/qc_run",
+                "BIN": "sw2d_runner",
+                "SPEC": f"{repo_root}/workspace/ir/x/spec.ir.yaml",
+                "CASES": "case_a case_b",
+            }
+            with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                brs.tool_run_quality_checks({**base, "env": dict(payload)})
+            self.assertEqual(run_command.call_args.kwargs["env"], payload)
+
+    def test_validate_mcp_refuses_ids_that_are_not_plain_path_tokens(self) -> None:
+        """Both ids are interpolated into the paths this gate reads its own evidence
+        from, so a `..` in either relocates the check to a directory the caller wrote —
+        including the capability it is then validated against, and the audit record."""
+        from tools.orchestration_runtime import _validate_run_gate_permissions
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm10")
+            token = str(cap["capability_token"])
+            for oid, arid in (("../vperm10", "build_child"),
+                              ("vperm10", "../../elsewhere/build_child"),
+                              ("vperm10/x", "build_child"),
+                              ("vperm10", "build_child/../y"),
+                              # The raw value is what builds the path, so it is what is
+                              # checked: a padded id would otherwise pass the check and
+                              # then address a different directory.
+                              (" vperm10 ", "build_child"),
+                              ("vperm10", " build_child ")):
+                with self.subTest(orchestration_id=oid, agent_run_id=arid):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        validate_mcp_build_tool_invocation(
+                            repo_root,
+                            orchestration_id=oid,
+                            agent_run_id=arid,
+                            capability_token=token,
+                            tool_name="compile_project",
+                        )
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
+                    # The run-gate mirror reads the same ids out of the same paths and
+                    # carries the same check, so it is pinned here rather than left to
+                    # diverge.
+                    with self.assertRaises(RuntimeError) as ctx_gate:
+                        _validate_run_gate_permissions(
+                            repo_root,
+                            orchestration_id=oid,
+                            agent_run_id=arid,
+                            gate_name="orchestration_read",
+                            capability_token=token,
+                        )
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_gate.exception))
+
+    def test_ir_build_system_is_read_structurally_not_line_scanned(self) -> None:
+        """A line of prose containing `build_system:` must not answer for the toolchain.
+
+        `algorithm.invariants` is free text authored by the same substep that writes the
+        IR, and it precedes `impl_defaults`. A line scanner returned the decoy, and a
+        non-make answer exempts the make-only contract entirely."""
+        from tools.orchestration_runtime import _impl_resolved_build_system
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "algorithm:\n"
+                "  invariants:\n"
+                "    - \"the build_system: pytest harness is out of scope here\"\n"
+                "impl_defaults:\n"
+                "  toolchain:\n"
+                "    language: fortran\n"
+                "    build_system: make\n",
+                encoding="utf-8")
+            self.assertEqual(
+                _impl_resolved_build_system(repo_root, _FIX_IR_REF), "make")
+            # A top-level `toolchain:` is a shape the pipeline never produces, and a
+            # structured reader does not find the field there.
+            ir_path.write_text(
+                "toolchain:\n  build_system: cmake\n", encoding="utf-8")
+            self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
+
+    def test_ir_language_is_read_structurally_and_decides_makefile_ownership(self) -> None:
+        """The language half of the toolchain read, pinned at its consequence.
+
+        `_resolved_makefile_host_authored` is make AND fortran. Line-scanning the
+        language let a decoy line in a free-text field make record_launch believe the
+        conductor did not author `src/Makefile`, which pins it back as a path the leaf
+        may write with a file tool — the certified Makefile, writable, and then run by
+        `compile_project`."""
+        from tools.orchestration_runtime import (
+            _impl_resolved_build_system, _impl_resolved_language)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "algorithm:\n"
+                "  invariants:\n"
+                "    - \"the discretization order is fixed\n"
+                "      language: c is irrelevant to this invariant\"\n"
+                "impl_defaults:\n"
+                "  toolchain:\n"
+                "    language: fortran\n"
+                "    build_system: make\n",
+                encoding="utf-8")
+            self.assertEqual(_impl_resolved_language(repo_root, _FIX_IR_REF), "fortran")
+            self.assertEqual(_impl_resolved_build_system(repo_root, _FIX_IR_REF), "make")
+            # The consequence: record_launch persists what it concluded, and a decoy
+            # answer here drops the Makefile from the conductor-authored set and pins it
+            # back as a path the leaf may write.
+            import tools.workflow_conductor as wc
+            self._perm_test_preflight(repo_root, "vperm11")
+            req = wc.build_launch_request(
+                self._perm_test_refs(),
+                step="generate", substep="generate",
+                orchestration_id="vperm11",
+                orchestration_agent_run_id="orch_vperm11",
+                child_agent_run_id="gen_child",
+                agent_model="claude-opus-4-8",
+                workflow_mode="dev",
+            )
+            self._perm_record_and_cap(
+                repo_root, orchestration_id="vperm11", parent="orch_vperm11",
+                child="gen_child", req=req)
+            persisted = json.loads(
+                (repo_root / "workspace/orchestrations/vperm11/launches"
+                 "/gen_child.request.json").read_text(encoding="utf-8"))
+            self.assertTrue(persisted["_resolved_makefile_host_authored"])
+
+    def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
+        """The id becomes a directory name and every gate's path base, so both entry
+        points refuse it. Resume as well as init: a workspace created under an older
+        grammar would otherwise restart and fail at its first MCP call instead."""
+        from tools.orchestration_runtime import enable_checkpoint_resume
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for bad in ("../escape", "orch.1", "a/b", " orch_1 "):
+                with self.subTest(orchestration_id=bad):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        init_orchestration(repo_root=repo_root, orchestration_id=bad)
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx.exception))
+                    with self.assertRaises(RuntimeError) as ctx_resume:
+                        enable_checkpoint_resume(repo_root, bad)
+                    self.assertIn("plain [A-Za-z0-9_-] token", str(ctx_resume.exception))
+            # The generated form still works.
+            init_orchestration(repo_root=repo_root,
+                               orchestration_id="orch_20260812T010203Z_ab12cd34")
+
+    def test_validate_mcp_omitted_build_system_is_accepted_under_a_make_toolchain(self) -> None:
+        """An omitted (or blank) `build_system` means make, so the make-only contract
+        applies to it. Reading the omission as "no policy" was the bypass: the argument
+        is the caller's, and dropping it skipped the check while the server went on to
+        pick a build system from marker files."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm5")
+            _plant_spec_ir_yaml_make(repo_root)
+            token = str(cap["capability_token"])
+
+            def check(mcp_args: dict) -> None:
+                validate_mcp_build_tool_invocation(
+                    repo_root,
+                    orchestration_id="vperm5",
+                    agent_run_id="build_child",
+                    capability_token=token,
+                    tool_name="compile_project",
+                    mcp_args=mcp_args,
+                )
+
+            check({})
+            check({"build_system": ""})
+            check({"build_system": "  "})
+            check({"build_system": "make"})
+
+
+            with self.assertRaises(RuntimeError) as ctx:
+                check({"build_system": "cmake"})
+            self.assertIn("requires compile_project build_system make", str(ctx.exception))
+
+    def test_validate_mcp_ir_without_build_system_still_enforces_make(self) -> None:
+        """An IR that declares no `toolchain.build_system` means make too, so the
+        make-only contract applies to its node. Reading THAT absence as "no policy" left
+        the whole block inert: a cmake compile and a ctest preset both sailed through,
+        while record_launch had already read the same IR as make and pinned its
+        Makefile."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm7")
+            # An IR document with a toolchain but no build_system key.
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "impl_defaults:\n  toolchain:\n    language: fortran\n", encoding="utf-8")
+            from tools.orchestration_runtime import _impl_resolved_build_system
+            self.assertIsNone(_impl_resolved_build_system(repo_root, _FIX_IR_REF))
+            token = str(cap["capability_token"])
+            with self.assertRaises(RuntimeError) as ctx:
+                validate_mcp_build_tool_invocation(
+                    repo_root,
+                    orchestration_id="vperm7",
+                    agent_run_id="build_child",
+                    capability_token=token,
+                    tool_name="compile_project",
+                    mcp_args={"build_system": "cmake"},
+                )
+            self.assertIn("requires compile_project build_system make", str(ctx.exception))
+
+    def test_orchestrated_call_env_and_argv_are_restricted_through_the_handler(self) -> None:
+        """Through a real capability, an orchestrated `compile_project` accepts only the
+        declared make variables — in `env` and in the argv alike. Pinning this at the
+        handler rather than at the helper is the point: the restriction is chosen per
+        call from `orchestration_id`, so a call site that asked for the standalone rule
+        would leave the workflow on the weaker one with every helper test still green."""
+        import mcp_servers.build_runtime_server as brs
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm8")
+            _plant_spec_ir_yaml_make(repo_root)
+            project_dir = repo_root / "src"
+            project_dir.mkdir()
+            outside_stack = tempfile.TemporaryDirectory()
+            self.addCleanup(outside_stack.cleanup)
+            outside_dir = Path(outside_stack.name)
+            gate_args = {
+                "repo_root": str(repo_root),
+                "orchestration_id": "vperm8",
+                "agent_run_id": "build_child",
+                "capability_token": str(cap["capability_token"]),
+            }
+            base = {"project_dir": str(project_dir), "build_system": "make", **gate_args}
+
+            def call(extra: dict) -> dict:
+                fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+                with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                    tool_compile_project({**base, **extra})
+                return run_command.call_args.kwargs
+
+            # `FC` in the environment and `FC=` on the make command line both replace the
+            # compiler the certified Makefile invokes; a make command-line assignment
+            # overrides even a hard assignment in the Makefile.
+            for extra, expected in (
+                ({"env": {"FC": "/tmp/evil"}}, "accepts only these env overrides"),
+                ({"extra_args": ["FC=/tmp/evil"]}, "make variables in extra_args"),
+                ({"extra_args": ["--eval=$(shell id)"]}, "make variables in extra_args"),
+                ({"target": "test"}, "does not accept a target"),
+                # The value is interpolated unquoted into the recipe's shell line.
+                ({"extra_args": ["BIN=x; touch /tmp/evil;"]}, "reach the make recipe's shell"),
+                # command_log_path is a write, and only run_program at Validate has a
+                # placement rule in the phase gate.
+                ({"command_log_path": "/tmp/evil.jsonl"},
+                 "command_log_path must stay under the repository root"),
+                # project_dir is the subprocess cwd, and a relative log path resolves
+                # against it.
+                ({"project_dir": str(outside_dir)},
+                 "project_dir must stay under the repository root"),
+                # A relative project_dir has two bases — the gate's root and the
+                # subprocess's own working directory.
+                ({"project_dir": "src"}, "project_dir must be an absolute path"),
+            ):
+                with self.subTest(extra=extra):
+                    with self.assertRaises(ValueError) as ctx:
+                        call(extra)
+                    self.assertIn(expected, str(ctx.exception))
+
+            # What Build actually sends still runs (its paths are inside the checkout).
+            kwargs = call({"extra_args": [
+                f"OBJDIR={repo_root}/workspace/tmp/a/obj",
+                f"BINDIR={repo_root}/workspace/binary/b1/bin", "BIN=runner"]})
+            self.assertEqual(
+                kwargs["command"],
+                ["make", f"-j{max(1, (os.cpu_count() or 1) // 2)}",
+                 f"OBJDIR={repo_root}/workspace/tmp/a/obj",
+                 f"BINDIR={repo_root}/workspace/binary/b1/bin", "BIN=runner"])
+
+    def test_gate_and_server_agree_on_omitted_build_system(self) -> None:
+        """Gate and server read an omitted `build_system` the same way. They did not:
+        the gate skipped its check and the server auto-detected from marker files, so a
+        project_dir with a CMakeLists.txt and no Makefile built with cmake under a
+        make-only toolchain."""
+        import mcp_servers.build_runtime_server as brs
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm6")
+            _plant_spec_ir_yaml_make(repo_root)
+            project_dir = repo_root / "cmakeish"
+            project_dir.mkdir()
+            (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
+            # Precondition: marker detection alone would answer cmake here.
+            self.assertEqual(
+                brs._recommended_build_system(str(project_dir), "")["build_system"], "cmake")
+
+            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+            with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                result = tool_compile_project({
+                    "project_dir": str(project_dir),
+                    "repo_root": str(repo_root),
+                    "orchestration_id": "vperm6",
+                    "agent_run_id": "build_child",
+                    "capability_token": str(cap["capability_token"]),
+                })
+            self.assertEqual(result["build_system"], "make")
+            self.assertEqual(run_command.call_args.kwargs["command"][0], "make")
+
+    def test_omitted_build_system_standalone_still_marker_detects(self) -> None:
+        """The asymmetry is deliberate: outside an orchestration there is no toolchain
+        declaration to agree with, so marker detection stays the answer."""
+        import mcp_servers.build_runtime_server as brs
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
+            fake = {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+            with patch.dict(os.environ, {}, clear=False):
+                for name in ("METDSL_WORKFLOW_MODE", "METDSL_ORCHESTRATION_ID"):
+                    os.environ.pop(name, None)
+                with patch.object(brs, "_run_command", return_value=dict(fake)) as run_command:
+                    result = tool_compile_project({"project_dir": str(project_dir)})
+            self.assertEqual(result["build_system"], "cmake")
+            self.assertEqual(run_command.call_args.kwargs["command"][0], "cmake")
+
     def test_validate_mcp_execute_grant_accepts_program_and_quality_checks(self) -> None:
         """The validate.execute grant is exercised through the REAL authz gate: its capability
         token authorizes BOTH run_program and run_quality_checks and refuses an unrelated
@@ -15113,14 +15539,16 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 child="exec_child", req=req,
             )
             self.assertEqual(cap["mcp_permissions"], ["run_program", "run_quality_checks"])
-            # run_quality_checks passes the grant gate cleanly (no spec.ir.yaml planted, so the
-            # make-preset contract check is skipped) — a full clean pass through the real gate.
+            # run_quality_checks passes the grant gate cleanly — a full clean pass through
+            # the real gate. The make-preset contract applies here even with no spec.ir.yaml
+            # planted, because an IR that declares no build_system means make.
             validate_mcp_build_tool_invocation(
                 repo_root,
                 orchestration_id="vperm4",
                 agent_run_id="exec_child",
                 capability_token=str(cap["capability_token"]),
                 tool_name="run_quality_checks",
+                mcp_args={"preset": "make_test"},
             )
             # run_program is ALSO granted: it gets PAST the perms gate and only then trips its
             # own command-array contract (which is out of scope here). Asserting it fails on the

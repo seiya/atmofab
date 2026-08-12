@@ -6168,7 +6168,9 @@ def _validate_generate_syntax_command_logs(
     toolchain.language=fortran (the only language with a syntax-check adapter); the
     MANDATORY stage is gfortran and must have passed. Optional additional stages (the
     METDSL_SYNTAX_COMPILERS target-compiler stages) may be recorded as `skipped` when
-    their compiler is not installed; a recorded `fail` stage always fails certification."""
+    their compiler has no registered adapter or no installed binary, or when the stage
+    refused before running (a staged source whose name the tool rejects); a `skipped` MANDATORY stage fails certification
+    either way, as does a recorded `fail` stage."""
     source_id = meta_path.parent.name
     pipeline_root = meta_path.parents[2]
     from tools.hooks.syntax_evidence import read_syntax_evidence, syntax_evidence_path
@@ -10622,7 +10624,8 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
     run directory. The M3c renderer's ``_case_ids`` gate bounds only the literals IT embeds, so it
     covers host-rendered nodes; a non-M3c leaf-authored runner has no such gate. This spec-input
     gate closes the gap uniformly at Compile — a violation routes to ``compile.generate``, and the
-    id must match the same ``[A-Za-z0-9._-]`` (no ``..``) grammar the renderer pins."""
+    id must match the same ``[A-Za-z0-9._][A-Za-z0-9._-]*`` (no ``..``) grammar the
+    renderer pins."""
     from tools.runner_renderer import _CASE_ID_TOKEN_RE
 
     derived_path = ir_dir / "spec.ir.yaml"
@@ -10652,8 +10655,9 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
         violations.append(
             f"{derived_path}: case.test_case_set has case_id(s) {sorted(set(unsafe))} that are "
             "not safe tokens; a case_id is concatenated into the per-case snapshot path "
-            "(raw/state_snapshots/<case_id>.json), so it must match [A-Za-z0-9._-] with no '..' "
-            "(else the run writes outside its directory)")
+            "(raw/state_snapshots/<case_id>.json) and reaches the runner's argv, so it must "
+            "match [A-Za-z0-9._][A-Za-z0-9._-]* with no '..' (a leading '-' would be read as "
+            "an option; anything else makes the run write outside its directory)")
 
 
 def _validate_component_dep_operations(
@@ -11172,36 +11176,31 @@ def _validate_toolchain_backend_supported(
       isinstance-guarded), but it silently disables every ``impl_defaults`` gate, so it is
       rejected too. A FALSY non-mapping (``[]``, ``""``, ``0``) is coerced to ``{}`` by both
       sides identically and is left alone.
-    - a key present with a value that is not a plain non-empty string. ``language:`` (no
-      value) and ``language: null`` are the same ``None`` once the IR is parsed, but
-      ``record_launch`` decides Makefile authorship from line-scanning readers
-      (``_impl_resolved_build_system`` / ``_impl_resolved_language``) that read the file
-      TEXTUALLY and do tell them apart. Measured, the branch spans three outcomes:
-      ``language: null`` (likewise ``~`` / ``no`` / ``off`` / ``0`` / ``[]``) leaves a
-      DOUBLE-OWNED ``src/Makefile`` — the scanner returns the literal token, concludes the
-      Makefile is leaf-authored and injects the write-pin while the conductor host-authors
-      it anyway, exactly what ``_conductor_authors_makefile``'s single-source-of-truth
-      contract exists to prevent; ``build_system: 5`` / ``true`` / ``"   "`` leaves it
-      authored by NOBODY; and the bare-key and ``""`` spellings agree harmlessly. Because
-      the parsed IR cannot tell the harmless ones from the rest, every such value is
-      rejected — give the key a plain token or remove it. An ABSENT key is a different
-      thing and stays legal.
-    - a value that is not equal to its stripped form (``"make "``). The conductor compares
-      with ``.lower()`` and no ``.strip()``, so a padded value is not the token it looks
-      like and host authorship of the Makefile and the runner silently flips off. For
-      ``build_system`` it is worse: ``record_launch``'s reader DOES strip, so it concludes
-      the host authored the file and suppresses the leaf's write-pin — leaving
-      ``src/Makefile`` authored by NOBODY. (The pair comparison below is ``.lower()``-only
+    - a key present with a value that is not a plain non-empty string. ``record_launch``
+      decides Makefile authorship from ``_impl_resolved_build_system`` /
+      ``_impl_resolved_language``, which read ``impl_defaults.toolchain`` structurally and
+      coerce anything that is not a string to ``None``; the conductor takes
+      ``str(value or default)``. The two therefore agree on ``language:`` (no value),
+      ``language: null`` and ``""`` — all of them default on both sides — and diverge on a
+      non-string SCALAR: ``build_system: 5`` / ``true`` reads as ``None`` (→ make) for one
+      side and as ``"5"`` / ``"true"`` for the other, which leaves ``src/Makefile``
+      authored by NOBODY. The same happens to an untrimmed value of EITHER key
+      (``"make "``, ``" fortran"``), since the reader strips and the conductor does not. Because the parsed IR cannot tell the harmless spellings from
+      that one, every such value is rejected — give the key a plain token or remove it. An
+      ABSENT key is a different thing and stays legal.
+    - a value that is not equal to its stripped form (``"make "``, ``" fortran"``). The
+      conductor compares with ``.lower()`` and no ``.strip()``, so a padded value is not the
+      token it looks like and host authorship of the Makefile and the runner silently flips
+      off, while ``record_launch``'s reader DOES strip and concludes the host authored the
+      file — suppressing the leaf's write-pin and leaving ``src/Makefile`` authored by
+      NOBODY. This holds for either key. (The pair comparison below is ``.lower()``-only
       too, but that is unobservable: this check returns first for every untrimmed value.)
 
-    RESIDUAL, deliberately not closed here: these checks read the PARSED mapping, so they
-    catch only the divergences a parse can see. Spellings that parse to the right token but
-    line-scan to a different one — a duplicate ``language:`` key, a block scalar
-    (``language: >-`` / ``|-``), a YAML alias — still reach the same double-owned
-    ``src/Makefile``. The root cause is that ``_impl_resolved_build_system`` /
-    ``_impl_resolved_language`` line-scan the file at all (and unscoped to
-    ``impl_defaults.toolchain`` at that); a gate over the parsed IR structurally cannot fix
-    it, and growing this one to chase text spellings would only look like it had.
+    The former RESIDUAL here — spellings that parse to the right token but line-scanned to
+    a different one (a duplicate ``language:`` key, a block scalar, a YAML alias, or a
+    decoy ``language:`` line in a free-text field above ``impl_defaults``) — is closed at
+    the root: both readers parse the document instead of scanning it, so a parse-visible
+    check now covers the whole class.
 
     A missing / unparseable ``spec.ir.yaml`` is another gate's responsibility."""
     derived_path = ir_dir / "spec.ir.yaml"
@@ -11243,40 +11242,43 @@ def _validate_toolchain_backend_supported(
         value = tc[key]
         if not isinstance(value, str) or not value.strip():
             shape_bad = True
-            # Measured over the two readers, this branch spans three outcomes — which is why
-            # the message states the RULE and cites the extremes rather than claiming one
+            # Measured over the two readers, this branch spans two outcomes — which is why
+            # the message states the RULE and cites the harmful one rather than claiming a
             # consequence for the value at hand:
-            #   language: null / ~ / no / off / 0 / []  -> src/Makefile DOUBLE-OWNED
-            #   build_system: 5 / true / "   "          -> src/Makefile authored by NOBODY
-            #   `key:` (bare) and `key: ""`             -> both readers agree (harmless)
-            # The harmless pair is rejected anyway because the PARSED value cannot be told
-            # from the harmful ones; only the line scan can, and that is the whole defect.
+            #   key: 5 / true (a non-string SCALAR)  -> src/Makefile authored by NOBODY
+            #   key: "   " (whitespace only)          -> likewise NOBODY (the reader strips)
+            #   `key:` (bare), `key: null`, `key: ""` -> both readers default (harmless)
+            # The harmless spellings are rejected anyway because the PARSED value cannot be
+            # told from the harmful one: record_launch reads impl_defaults.toolchain
+            # structurally and coerces a non-string to None, which is the same default the
+            # bare key takes.
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} must be a plain non-empty "
-                f"string token; found {value!r}. The conductor reads the PARSED value while "
-                f"record_launch decides src/Makefile authorship by LINE-SCANNING this file, "
-                f"and for a value that is not a plain token the two CAN reach different answers: "
-                f"measured, `language: null` (likewise `~` / `no` / `off` / `0` / `[]`) "
-                f"leaves src/Makefile double-owned, while `build_system: 5` or "
-                f"`build_system: \"   \"` leaves it authored by nobody. The bare `{key}:` and "
-                f"`{key}: \"\"` spellings happen to be harmless, but the parsed IR cannot tell "
-                f"them from the rest, so every present-but-not-a-plain-token value is "
+                f"string token; found {value!r}. The conductor reads the parsed value as "
+                f"`str(value or default)` while record_launch, which decides src/Makefile "
+                f"authorship, coerces anything that is not a string to the default, so for a "
+                f"value that is not a plain token the two CAN reach different answers: "
+                f"measured, `{key}: 5` or `{key}: true` leaves src/Makefile authored by "
+                f"nobody, while the bare `{key}:`, `{key}: null` and `{key}: \"\"` spellings "
+                f"happen to agree. The parsed IR cannot tell them apart, so every "
+                f"present-but-not-a-plain-token value is "
                 f"rejected (docs/workflow/phases/phase_01_compile.md). Give the key an "
                 f"explicit value ({'make' if key == 'build_system' else 'fortran'}) or remove "
                 f"it entirely — an ABSENT key is legal and takes that same default.")
         elif value != value.strip():
             shape_bad = True
-            # Measured: `build_system: "make "` orphans the file (conductor declines, scanner
-            # strips and still reports the host as author, so the leaf's pin is suppressed).
-            # `language: " fortran"` is consistent — both decline and the leaf is pinned — but
-            # the node has silently stopped being M3c, which is its own defect.
+            # Measured, for EITHER key: an untrimmed value orphans the file AND drops the
+            # node out of M3c. The conductor compares without stripping and declines to
+            # author, while record_launch's reader strips and still reports the host as the
+            # author, which suppresses the leaf's write-pin; and
+            # `_conductor_authors_runner` keys on both `build_system` and `language`, so a
+            # padded value of either stops the runner being host-rendered.
             consequence = (
-                "record_launch's line scan — which does strip — still reports the host as "
-                "the author and suppresses the leaf's write-pin, so src/Makefile ends up "
-                "authored by nobody"
-                if key == "build_system" else
-                "the node silently stops being an M3c node: its runner is no longer "
-                "host-rendered and its checks-module ABI no longer applies")
+                "src/Makefile ends up authored by nobody: record_launch's reader — which "
+                "does strip — still reports the host as the author and suppresses the "
+                "leaf's write-pin, and the node silently stops being an M3c node: its "
+                "runner is no longer host-rendered and its checks-module ABI no longer "
+                "applies")
             violations.append(
                 f"{derived_path}: impl_defaults.toolchain.{key} is {value!r} — it has "
                 "leading or trailing whitespace. The conductor compares this value with "

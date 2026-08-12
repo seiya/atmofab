@@ -8070,13 +8070,17 @@ end program shallow_water2d_runner
             ir_path = (repo_root / "workspace/ir/problem__shallow_water2d__0.3.0"
                        "/shallow-water2d_20260415_001/spec.ir.yaml")
             doc = json.loads(ir_path.read_text())
+            # `-c1` reaches the runner's argv as an option; `../../evil` escapes the run
+            # directory. Both are refused by the same grammar, at Compile.
             doc["case"] = {"test_case_set": [{"case_id": "c1", "inputs": {}},
+                                             {"case_id": "-c1", "inputs": {}},
                                              {"case_id": "../../evil", "inputs": {}}]}
             ir_path.write_text(json.dumps(doc))
             v = validate_compile_stage(
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(any("not safe tokens" in x and "raw/state_snapshots" in x for x in v), v)
+            self.assertTrue(any("'-c1'" in x for x in v), v)
 
     def test_validate_compile_stage_rejects_an_unsupported_toolchain(self) -> None:
         # Wiring test: `_validate_toolchain_backend_supported` must fire THROUGH the full
@@ -15187,16 +15191,18 @@ class ToolchainBackendGateTests(unittest.TestCase):
             # The remedy must quote the STRIPPED token; echoing the padded value back would
             # tell the author to write exactly what was just rejected.
             self.assertIn(f"Write the bare token ({tc[key].strip()!r})", v[0])
-        # Each key states ITS OWN measured consequence, not a shared story: a padded
-        # build_system orphans src/Makefile (conductor declines, the scanner strips and still
-        # names the host, so the leaf's pin is suppressed); a padded language is consistent
-        # about ownership but silently drops the node out of M3c.
+        # An untrimmed value has BOTH consequences for EITHER key: the conductor compares
+        # without stripping and declines to author while record_launch's reader strips and
+        # still names the host (so the leaf's pin is suppressed and nobody owns the file),
+        # and `_conductor_authors_runner` keys on both fields, so the runner stops being
+        # host-rendered either way. (Before the readers became structural, only
+        # build_system orphaned the file — the split this used to assert was measured on
+        # that older code.)
         bs_msg = self._run(toolchain={"build_system": "make "})[0]
         lang_msg = self._run(toolchain={"language": " fortran"})[0]
-        self.assertIn("authored by nobody", bs_msg)
-        self.assertNotIn("authored by nobody", lang_msg)
-        self.assertIn("stops being an M3c node", lang_msg)
-        self.assertNotIn("stops being an M3c node", bs_msg)
+        for msg in (bs_msg, lang_msg):
+            self.assertIn("authored by nobody", msg)
+            self.assertIn("stops being an M3c node", msg)
         # Both keys padded -> one violation each, and the pair check does not also fire
         # (its message would name a value nobody wrote).
         v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
@@ -15224,12 +15230,14 @@ class ToolchainBackendGateTests(unittest.TestCase):
                     f"explicit value ({'make' if key == 'build_system' else 'fortran'})",
                     v[0])
                 self.assertNotIn("{key}", v[0])
-        # The branch spans three measured outcomes, so the message cites the extremes rather
-        # than claiming one consequence for the value at hand — a per-value story has been
-        # wrong three times here. Both extremes must stay named.
+        # The message cites the harmful outcome rather than claiming one consequence for
+        # the value at hand — a per-value story has been wrong three times here. Since the
+        # readers became structural, `null` / bare / `""` agree on both sides and only a
+        # non-string SCALAR diverges, so that is what must stay named.
         msg = self._run(toolchain={"language": None})[0]
-        self.assertIn("double-owned", msg)
         self.assertIn("authored by nobody", msg)
+        self.assertIn("happen to agree", msg)
+        self.assertNotIn("double-owned", msg)
         # An ABSENT key is a different thing and stays legal.
         self.assertEqual(self._run(toolchain={}), [])
 

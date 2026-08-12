@@ -12419,6 +12419,46 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "make_error")
             self.assertTrue(meta["failure_source_refs"][0].endswith("/Makefile"))
 
+    def test_build_inproc_payload_survives_the_real_mcp_validators(self) -> None:
+        """The conductor's own compile payload must pass the server's orchestrated
+        argument rules — the make-variable allowlist, the absolute-path-inside-the-repo
+        value rule, and the project_dir / command_log_path containment.
+
+        The other Build tests replace `tool_compile_project` wholesale, so none of them
+        crosses the validation the workflow depends on; this one replaces `_run_command`
+        instead, leaving every check in the path."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+            def fake_run_command(**kwargs):
+                fake_run_command.seen = kwargs
+                return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
+                        "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server, "_maybe_enforce_orchestration_mcp_gate",
+                                   lambda **kw: None), \
+                    mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+                c._build_inproc(refs, "child-1", "captok")
+
+            # It reached the subprocess layer, i.e. no validator refused the payload.
+            argv = fake_run_command.seen["command"]
+            self.assertEqual(argv[0], "make")
+            self.assertTrue(any(a.startswith("OBJDIR=") for a in argv), argv)
+            self.assertTrue(any(a.startswith("BIN=") for a in argv), argv)
+
     def test_build_inproc_imposes_canonical_bin_override(self) -> None:
         # The binary name is imposed (not derived from the Makefile): Build passes
         # BIN=<spec_id>_runner on the make command line and produces the binary there.
@@ -12536,6 +12576,148 @@ class DeterministicBuildTest(unittest.TestCase):
                 env["SPEC"], str((repo / refs.ir_ref / "spec.ir.yaml").resolve()))
             self.assertEqual(env["CASES"], "c_alpha c_beta")  # read_case_ids is sorted
             self.assertEqual(env["BIN"], "spec_x_runner")
+
+    def test_gate_syntax_refuses_a_bad_source_name_as_content_not_transport(self) -> None:
+        """A staged source whose NAME the syntax tool refuses is the leaf's own output,
+        and the leaf can rename it. It must reach `generate.generate` as a content
+        failure rather than terminating the run the way this substep's other two
+        fail_closed causes (a broken `-std`, a dependency closure that will not compile)
+        do — those the leaf cannot repair."""
+        import sys
+        import tempfile
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore  # noqa: F401
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n",
+                encoding="utf-8")
+            src = repo / refs.source_dir() / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "ok.f90").write_text("program p\nend program p\n", encoding="utf-8")
+            # The leaf's write_root is the whole source tree, so it can author this name.
+            (src / "-o.f90").write_text("program q\nend program q\n", encoding="utf-8")
+
+            from unittest import mock
+            with mock.patch.object(build_runtime_server,
+                                   "_maybe_enforce_orchestration_mcp_gate",
+                                   lambda **kw: None):
+                section = c._gate_syntax_check(refs, "child-1", "captok")
+
+            self.assertEqual(section["status"], "fail")
+            self.assertEqual(section["failure_category"], "syntax_error")
+            self.assertIn("-o.f90", section["failure_excerpt"])
+            # No compiler ran, so the stage is `skipped` — the shape the evidence
+            # reader accepts without a command id — and the certificate is written,
+            # like the lint checker's on a content fail.
+            self.assertEqual(section["stages"][0]["status"], "skipped")
+            from tools.hooks.syntax_evidence import read_syntax_evidence
+            evidence = read_syntax_evidence(
+                pipeline_root=repo / refs.pipeline_ref, source_id=refs.source_id)
+            self.assertFalse(evidence["ok"])
+
+    def test_gate_syntax_keeps_a_conductor_side_refusal_fail_closed(self) -> None:
+        """Only a source NAME is the leaf's to fix. Every other refusal from the tool is
+        about an argument the conductor supplies, so it must still raise — blaming the
+        leaf for one would spend its retry budget on a message no regenerated source can
+        clear."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n",
+                encoding="utf-8")
+            src = repo / refs.source_dir() / "src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "ok.f90").write_text("program p\nend program p\n", encoding="utf-8")
+
+            def refuse(args):
+                raise ValueError("run_syntax_check project_dir must stay under the "
+                                 "repository root under an orchestration")
+
+            with mock.patch.object(build_runtime_server, "tool_run_syntax_check", refuse):
+                with self.assertRaises(ValueError):
+                    c._gate_syntax_check(refs, "child-1", "captok")
+
+    def test_execute_inproc_payload_survives_the_real_mcp_validators(self) -> None:
+        """Validate.execute is where the six-key `env` allowlist is actually used, and
+        its values are derived from the IR (`CASES` from the case ids, `BIN` from the
+        spec id, `SPEC` from the IR path) rather than written out here. Replace
+        `_run_command` rather than the tool functions, so the real payload crosses the
+        real value rules."""
+        import sys
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path("mcp_servers").resolve()))
+        import build_runtime_server  # type: ignore
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "impl_defaults:\n"
+                "  toolchain:\n    language: fortran\n    standard: f2008\n"
+                "    build_system: make\n"
+                "  target:\n    class: cpu\n    backend: openmp\n"
+                "case:\n  test_case_set:\n    - case_id: c_alpha\n    - case_id: c_beta\n",
+                encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            binary_bin = repo / refs.binary_dir() / "bin"
+            binary_bin.mkdir(parents=True, exist_ok=True)
+            (binary_bin / "spec_x_runner").write_text("binary\n", encoding="utf-8")
+
+            seen: list[dict] = []
+
+            def fake_run_command(**kwargs):
+                seen.append(kwargs)
+                return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
+                        "command_id": "cid"}
+
+            with mock.patch.object(build_runtime_server,
+                                   "_maybe_enforce_orchestration_mcp_gate",
+                                   lambda **kw: None), \
+                    mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+                try:
+                    c._execute_inproc(refs, "child-1", "captok")
+                except Exception:
+                    pass  # downstream promotion/gates are irrelevant here
+
+            # Both calls reached the subprocess layer, i.e. no validator refused them.
+            self.assertEqual(len(seen), 2, seen)
+            qc_env = seen[1]["env"]
+            self.assertEqual(qc_env["CASES"], "c_alpha c_beta")
+            self.assertEqual(qc_env["BIN"], "spec_x_runner")
+            self.assertEqual(seen[1]["command"], ["make", "test"])
 
     def test_execute_inproc_clears_stale_verdict_on_runtime_error(self) -> None:
         # R2 guard: a structural (runtime-error) execute failure must leave NO verdict.json, so a
