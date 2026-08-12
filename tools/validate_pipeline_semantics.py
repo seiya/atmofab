@@ -971,8 +971,12 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             # `import` and a bare accessibility statement (`public :: ncomp`) declare
             # nothing — they name an entity declared elsewhere. Treating them as
             # redeclarations stripped the exemption from any module that lists its
-            # constants in a separate `public ::` statement, which eight in-tree models
-            # do, one of them a `problem/`-domain file this gate reads. Skipping a
+            # constants in a separate `public ::` statement. RE-MEASURED (the earlier
+            # figure here, "eight in-tree models, one of them `problem/`-domain", counted
+            # distinct lost-name SETS and got the domain count wrong): removing this skip
+            # changes the exempt set of 33 of the 365 `*_model.f90`, eight distinct sets,
+            # SEVEN of them under a `problem/` pipeline — the files this gate reads. Names
+            # lost include `dp`, `ncomp` and `shallow_water2d__g_const`. Skipping a
             # statement KIND is not the forbidden operation: nothing is removed from the
             # disqualifying set, and a name genuinely declared elsewhere still reaches it
             # from its own declaration.
@@ -1153,12 +1157,16 @@ def _is_literal_like_expr(expr: str) -> bool:
     return bool(re.fullmatch(r"[0-9dDeE\.\+\-\*\/\(\)\s,_]+", lowered))
 
 
-# The `problem` model gates below match Fortran's KEYWORD STRUCTURE over raw source, so each
-# reduces its input with `_joined_masked_fortran_view` first. Without the mask half, the body
-# selection stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body,
-# every gate that reads the body goes silent, and a legal model passes — fail-open from a comment.
-# The mirror is a commented-out procedure minting a phantom match, which fails closed. Without the
-# join half, a wrapped `intent(out)` list or `call` actual list is read as fragments.
+# The `problem` model gates below match Fortran's KEYWORD STRUCTURE, so the text they read is
+# reduced by `_joined_masked_fortran_view` — inside `_fortran_subroutine_envelopes`, which is
+# where every one of them now gets its bodies from. (Two of the three called the view themselves
+# as well until review pointed out that the walk had made those calls no-ops, while the comments
+# beside them still called them load-bearing. The dependency-dataflow gate's own call stayed: it
+# feeds `_fortran_declared_names` directly.) Without the mask half, body selection stops at the
+# first TEXTUAL `end subroutine`: one comment naming it truncates the body, every gate that reads
+# the body goes silent, and a legal model passes — fail-open from a comment. The mirror is a
+# commented-out procedure minting a phantom match, which fails closed. Without the join half, a
+# wrapped `intent(out)` list or `call` actual list is read as fragments.
 #
 # `call` positions stay comparable with assignment positions because BOTH are offsets into the
 # same view, not because the view preserves the file's offsets — it does not (see the view's
@@ -1328,11 +1336,32 @@ def _fortran_statement_assigns_to_its_first_token(statement: str) -> bool:
 
 @dataclass(frozen=True)
 class _FortranSubroutineEnvelope:
-    """One `subroutine` definition, as the three `problem` model gates read it."""
+    """One `subroutine` definition, as the three `problem` model gates read it.
+
+    ``body`` is everything between the header and the terminator, CONTAINED PROCEDURES INCLUDED.
+    ``out_scope`` is the part of it before the subroutine's own `contains`, and is where a gate
+    must look for `intent(out)` declarations — a contained procedure's dummies are its own, not
+    its host's.
+
+    Splitting the two is what lets a gate answer the question it is actually asking. An earlier
+    draft CUT the body at `contains` instead, and that cut was wrong in both directions at once,
+    each reproduced against origin/main, which flags neither way because its flat span ran through
+    the contained procedure:
+
+    * a `call` inside a contained procedure, with the `intent(out)` in the host, landed in an
+      envelope with no `intent(out)` at all, so every gate returned at its empty out-set check —
+      fail-OPEN;
+    * a dependency result propagated to the host's `intent(out)` INSIDE a contained procedure, by
+      host association, was invisible to the host's envelope — a false violation.
+
+    Neither is reachable in this tree today (0 of the 365 `*_model.f90` define a contained
+    procedure), which is exactly why the tree differential could not see them.
+    """
 
     name: str
     dummy_args: str
     body: str
+    out_scope: str
 
 
 @dataclass
@@ -1386,10 +1415,9 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
 
     Two decisions bound what is emitted rather than how far it runs:
 
-    * A contained procedure is CUT from its host's body at the host's `contains`, and gets its own
-      envelope. Nothing goes unanalysed; what is prevented is the contained procedure's
-      `intent(out)` declarations being attributed to its host as well, which would manufacture
-      violations in gates that count them.
+    * A contained procedure is inside its host's `body` AND has an envelope of its own. What keeps
+      its `intent(out)` dummies from being attributed to its host is `out_scope`, not a cut — see
+      the envelope's own docstring for the two failures cutting caused.
     * A `function` body is NOT an envelope. Function frames are tracked — a bare `end` closing a
       sibling function must not be read as closing this subroutine — but a `problem` model that
       computes inside a module `function` is invisible to all three gates. That is pre-existing,
@@ -1397,21 +1425,22 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
       as its own item rather than folded in here.
 
     WHAT NO TEST PINS, stated because a reader will otherwise assume the mutation check covered
-    everything. One cluster survives being removed, in whole or in part: `_FORTRAN_FUNCTION_OPEN`,
-    `_FORTRAN_MODULE_PROCEDURE_OPEN`, and the `procedure` alternative of `_FORTRAN_UNIT_END_KIND`.
-    Only subroutine frames emit; a `function` or `procedure` frame never does; an END matching no
-    frame is ignored; and a host body is already cut at its `contains`. So on every LEGAL shape
-    tried — a contained function ended by a bare `end`, a module-level function between two
-    subroutines, a submodule separate body with its own contained procedure — the envelope list is
-    identical with them and without them. They are kept because they are what the language says
-    and because the direction a wrong pop fails in is a subroutine closing early, which is
-    fail-open; they are not kept because anything measured them. An earlier draft did remove a
-    guard on an argument of this shape and shipped a fail-open, so the bar for acting on one is a
-    legal input, not an argument. If a legal shape that distinguishes them is found, it belongs in
-    the tests above.
+    everything — and stated at the size review measured it, because an earlier version of this
+    list named five members of which two were wrong, and a list like that makes its honest entries
+    unreadable. Three survive removal: `_FORTRAN_FUNCTION_OPEN`, `_FORTRAN_MODULE_PROCEDURE_OPEN`,
+    and the `max(end, body_start)` clamp. Only subroutine frames emit, a `function` or `procedure`
+    frame never does, and an END matching no frame is ignored, so on every LEGAL shape tried — a
+    contained function ended by a bare `end`, a module-level function between two subroutines, a
+    submodule separate body with its own contained procedure — the envelope list is identical with
+    them and without them. They are kept because they are what the language says and because the
+    direction a wrong pop fails in is a subroutine closing early, which is fail-open; they are not
+    kept because anything measured them. An earlier draft removed a guard on an argument of this
+    shape and shipped a fail-open, so the bar for acting on one is a legal input, not an argument.
 
-    Two smaller survivors, same status: the `end module` force-close of an unterminated interface
-    span, and the `max(end, body_start)` clamp when a `contains` precedes its own body start.
+    (The two that were wrongly listed: dropping the `procedure` alternative of
+    `_FORTRAN_UNIT_END_KIND` is caught by the containment test over the two unit-end enumerations,
+    and removing the `end module` force-close of an unterminated interface span is caught by its
+    own test.)
     """
     view = _joined_masked_fortran_view(lowered)
     lines = view.split("\n")
@@ -1427,7 +1456,7 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     frames: list[_FortranUnitFrame] = []
     # (body_start, body_end, name, dummy_args). The bodies are sliced after the walk, once
     # `blanked` is complete — a frame closes before the text it does not cover has been read.
-    closed: list[tuple[int, int, str, str]] = []
+    closed: list[tuple[int, int, int, str, str]] = []
     # A DEPTH, not a flag: an interface body may declare a procedure whose own dummy is a
     # procedure, and that declaration is a nested `interface` block. `gfortran -fsyntax-only
     # -std=f2008` accepts it, and with a flag the inner `end interface` reopened the file — the
@@ -1440,8 +1469,16 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     def close(frame: _FortranUnitFrame, body_end: int) -> None:
         if frame.kind != "subroutine":
             return
-        end = body_end if frame.contains_at is None else min(frame.contains_at, body_end)
-        closed.append((frame.body_start, max(end, frame.body_start), frame.name, frame.dummy_args))
+        out_end = body_end if frame.contains_at is None else min(frame.contains_at, body_end)
+        closed.append(
+            (
+                frame.body_start,
+                max(body_end, frame.body_start),
+                max(out_end, frame.body_start),
+                frame.name,
+                frame.dummy_args,
+            )
+        )
 
     for index, line in enumerate(lines):
         # Normalised ONCE for every rule below: the view has already taken off a statement label,
@@ -1554,8 +1591,13 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
 
     blanked_view = "\n".join(blanked)
     return [
-        _FortranSubroutineEnvelope(name=name, dummy_args=dummy_args, body=blanked_view[start:end])
-        for start, end, name, dummy_args in sorted(closed)
+        _FortranSubroutineEnvelope(
+            name=name,
+            dummy_args=dummy_args,
+            body=blanked_view[start:end],
+            out_scope=blanked_view[start:out_end],
+        )
+        for start, end, out_end, name, dummy_args in sorted(closed)
     ]
 
 
@@ -1568,7 +1610,6 @@ def _validate_problem_model_literal_outputs(
     if not execution.node_key.startswith("problem/"):
         return
 
-    lowered = _joined_masked_fortran_view(lowered)
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
     for envelope in _fortran_subroutine_envelopes(lowered):
@@ -1577,7 +1618,9 @@ def _validate_problem_model_literal_outputs(
         body = envelope.body
 
         out_vars: set[str] = set()
-        for out_match in intent_out_pattern.finditer(body):
+        # `out_scope`, not `body`: a contained procedure's `intent(out)` dummies are its own, and
+        # it has an envelope of its own in which to be judged.
+        for out_match in intent_out_pattern.finditer(envelope.out_scope):
             out_vars.update(_split_fortran_names(out_match.group(1)))
         if not out_vars:
             continue
@@ -1725,9 +1768,11 @@ def _validate_problem_model_dependency_dataflow(
         return
 
     dep_prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
-    if not dep_prefixes:
-        return
 
+    # This gate keeps its own view, and it is the ONLY one of the three that still needs one:
+    # `_fortran_declared_names` below reads `lowered` directly. The other two gates called this
+    # too until review showed the calls had become no-ops — the walk reduces its own input and the
+    # view is a fixed point — while three separate comments still described them as load-bearing.
     lowered = _joined_masked_fortran_view(lowered)
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
@@ -1759,7 +1804,9 @@ def _validate_problem_model_dependency_dataflow(
         assignments = _assignment_records(body)
 
         out_vars: set[str] = set()
-        for out_match in intent_out_pattern.finditer(body):
+        # `out_scope`, not `body`: a contained procedure's `intent(out)` dummies are its own, and
+        # it has an envelope of its own in which to be judged.
+        for out_match in intent_out_pattern.finditer(envelope.out_scope):
             out_vars.update(_split_fortran_names(out_match.group(1)))
         if not out_vars:
             continue
@@ -1832,7 +1879,6 @@ def _validate_problem_metric_only_scalar_kernel(
         return
     spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
 
-    lowered = _joined_masked_fortran_view(lowered)
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
     intent_in_or_inout_array_pattern = re.compile(
         r"intent\s*\(\s*(?:in|inout)\s*\)\s*::\s*[^\n]*\([^)]+\)"
@@ -1844,7 +1890,9 @@ def _validate_problem_metric_only_scalar_kernel(
         sub_name = envelope.name
         body = envelope.body
         out_vars: set[str] = set()
-        for out_match in intent_out_pattern.finditer(body):
+        # `out_scope`, not `body`: a contained procedure's `intent(out)` dummies are its own, and
+        # it has an envelope of its own in which to be judged.
+        for out_match in intent_out_pattern.finditer(envelope.out_scope):
             out_vars.update(_split_fortran_names(out_match.group(1)))
         if len(out_vars) < 5:
             continue

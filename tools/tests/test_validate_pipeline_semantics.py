@@ -5604,14 +5604,14 @@ end module m
             "end subroutine host\n"
         )
         host = next(e for e in envelopes if e.name == "host")
-        self.assertNotIn("intent(out) :: z", host.body)
+        self.assertNotIn("intent(out) :: z", host.out_scope)
 
-    def test_a_type_definition_stops_suppressing_the_cut_when_it_ends(self) -> None:
+    def test_a_type_definition_stops_suppressing_the_out_scope_cut_when_it_ends(self) -> None:
         # The other half of the type tracking: if `end type` is not recognised the suppression
-        # never lifts, so the HOST's own `contains` — the one the cut exists for — stops cutting
-        # and the contained procedure's declarations are attributed to its host again. Fail-long
-        # rather than fail-open, and invisible to every other test here, which is why the closing
-        # keyword gets its own case rather than sharing the opener's.
+        # never lifts, so the HOST's own `contains` stops ending the out-scope and the contained
+        # procedure's dummies are attributed to its host again. Invisible to every other test
+        # here, which is why the closing keyword gets its own case rather than sharing the
+        # opener's.
         envelopes = vps._fortran_subroutine_envelopes(
             "subroutine host(x, y)\n"
             "  type :: holder\n"
@@ -5627,8 +5627,8 @@ end module m
             "end subroutine host\n"
         )
         host = next(e for e in envelopes if e.name == "host")
-        self.assertIn("y = host_marker", host.body)
-        self.assertNotIn("intent(out) :: z", host.body)
+        self.assertIn("y = host_marker", host.out_scope)
+        self.assertNotIn("intent(out) :: z", host.out_scope)
 
     def test_envelopes_come_back_in_source_order(self) -> None:
         # A contained procedure CLOSES before its host, so insertion order is not source order.
@@ -5912,10 +5912,11 @@ end module m
         self.assertIn("literal-only assignments for all intent(out) vars",
                       " ".join(self._literal_output_violations(source)))
 
-    def test_contained_procedure_is_analyzed_but_excluded_from_its_host(self) -> None:
-        # The host's body stops at its `contains`; the contained procedure is not lost, it gets
-        # its own envelope. Including it in both would attribute its `intent(out)` declarations to
-        # the host as well.
+    def test_a_contained_procedure_is_in_its_hosts_body_but_not_its_out_scope(self) -> None:
+        # The split that replaced cutting the host body at `contains`. The host's body RUNS THROUGH
+        # its contained procedures — a `call` in one of them, with the `intent(out)` in the host,
+        # is the host's business and used to be invisible to every gate — while its out-scope stops
+        # at the `contains`, because a contained procedure's dummies are its own.
         envelopes = vps._fortran_subroutine_envelopes(
             "subroutine host(x, y)\n"
             "  real, intent(in) :: x\n"
@@ -5932,8 +5933,47 @@ end module m
         host = next(e for e in envelopes if e.name == "host")
         inner = next(e for e in envelopes if e.name == "inner")
         self.assertIn("y = helper_marker", host.body)
-        self.assertNotIn("intent(out) :: z", host.body)
+        self.assertIn("z = 2.0", host.body)
+        self.assertIn("intent(out) :: y", host.out_scope)
+        self.assertNotIn("intent(out) :: z", host.out_scope)
         self.assertIn("z = 2.0", inner.body)
+        self.assertIn("intent(out) :: z", inner.out_scope)
+
+    def test_a_call_in_a_contained_procedure_is_judged_against_the_hosts_out(self) -> None:
+        # The fail-OPEN half of what cutting the body cost, reproduced against origin/main (which
+        # flags it, because its flat span ran straight through the contained procedure). The
+        # dependency result is discarded inside a contained procedure while the `intent(out)` is
+        # the host's; with the body cut, the call landed in an envelope with no `intent(out)` and
+        # every gate returned at its empty out-set check. `gfortran -fsyntax-only -std=f2008`
+        # accepts the source.
+        discarded = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call helper()
+  y = x
+contains
+  subroutine helper()
+    call dep__apply(x, scratch)
+  end subroutine helper
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(discarded)))
+        # And the fail-CLOSED half: the same shape with the result actually propagated to the
+        # host's `intent(out)` by host association must stay silent. Cutting made this a false
+        # violation; reading the whole body without splitting the out-scope would have made the
+        # case above silent again. Both halves are asserted here so neither fix can be undone
+        # alone.
+        propagated = discarded.replace(
+            "  subroutine helper()\n    call dep__apply(x, scratch)\n",
+            "  subroutine helper()\n    call dep__apply(x, scratch)\n    y = scratch\n",
+        )
+        self.assertEqual(self._dataflow_violations(propagated), [])
 
     def test_paren_less_subroutine_does_not_swallow_the_next_subroutine(self) -> None:
         # The old envelope required a parenthesised dummy list, so a paren-less `subroutine setup`
@@ -6102,9 +6142,12 @@ end module shallow_water2d_model
         self.assertTrue(any("missing dependency operation call" in v for v in violations), violations)
 
     def test_metric_only_kernel_gate_is_not_truncated_by_a_comment(self) -> None:
-        # The third gate that masks its input. Its two siblings are pinned above; without this,
-        # deleting its mask leaves the suite green while one trailing comment naming
-        # `end subroutine` truncates the envelope and silences it. Fail-open.
+        # BEHAVIOURAL: a trailing comment naming `end subroutine` must not truncate this gate's
+        # envelope. Its comment used to say it pinned this gate's OWN mask call, and review showed
+        # that had stopped being true — the envelope walk masks its own input, so the gate's call
+        # was a no-op and deleting it left the suite green. The call is gone; what pins the
+        # masking is `test_an_interface_span_is_blanked_in_place_not_deleted` and the walk's own
+        # tests. This case stays as the end-to-end regression it actually is.
         source = """module m
 contains
 subroutine metrics(a, e_tot, e_kin, e_pot, mass, enstrophy) ! end subroutine metrics
