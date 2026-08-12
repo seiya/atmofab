@@ -5498,15 +5498,15 @@ end module shallow_water2d_model
         # unrecognised, the body running past it, and no other test noticing — the same argument
         # the `_FORTRAN_BARE_DECLARATION` table below makes for its own alternatives.
         #
-        # `procedure` closes a subroutine frame because a SEPARATE MODULE SUBPROGRAM
-        # (`module procedure solve`) may end with `end procedure`; the other four keywords close
-        # the enclosing program unit, which closes the subroutine with it.
+        # `procedure` is deliberately absent: it closes only a `module procedure` frame, which
+        # never emits an envelope, so no row here can die to its removal. It is listed with the
+        # rest of that cluster in the helper's "WHAT NO TEST PINS" note rather than given a row
+        # that would look like a pin and not be one. The other keywords close the enclosing
+        # program unit, which closes the subroutine with it.
         for opener, terminator in (
             ("", "end subroutine"),
             ("", "endsubroutine"),
             ("", "end"),
-            ("module procedure solve_impl\n", "end procedure"),
-            ("module procedure solve_impl\n", "endprocedure"),
             ("module m\n", "end module"),
             ("module m\n", "endmodule"),
             ("submodule (parent) child\n", "end submodule"),
@@ -5541,16 +5541,63 @@ end module shallow_water2d_model
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(self._dataflow_violations(source)), construct_end)
 
-    def test_the_two_unit_end_enumerations_agree(self) -> None:
+    def test_this_walks_unit_end_set_contains_the_older_one(self) -> None:
         # `_FORTRAN_UNIT_END` (the FORMAT/label scope walker) and `_FORTRAN_UNIT_END_KIND` (this
-        # walk) answer the same question about the same text. A one-sided edit is this
-        # repository's most repeated failure mode, so the drift is asserted rather than hoped for.
+        # walk) answer the same question about the same text, and a one-sided edit is this
+        # repository's most repeated failure mode. They do NOT agree today, which is why this is a
+        # containment assertion and not the equality an earlier name claimed: `end procedure` and
+        # the spaced `end block data` are legal unit ends (verified with `gfortran -fsyntax-only
+        # -std=f2008`) that only this walk recognises, and widening the older pattern is a change
+        # to the FORMAT/label scoping rule that belongs with a measurement of its own.
         for keyword in ("subroutine", "function", "module", "submodule", "program"):
             for statement in (f"end {keyword}", f"end{keyword}"):
                 self.assertTrue(vps._FORTRAN_UNIT_END.match(statement), statement)
                 self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(statement), statement)
         self.assertTrue(vps._FORTRAN_UNIT_END.match("end"))
         self.assertTrue(vps._FORTRAN_BARE_END.match("end"))
+        for only_here in ("end procedure", "endprocedure", "end block data"):
+            self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(only_here), only_here)
+            self.assertFalse(vps._FORTRAN_UNIT_END.match(only_here), only_here)
+
+    def test_envelopes_come_back_in_source_order(self) -> None:
+        # A contained procedure CLOSES before its host, so insertion order is not source order.
+        # Every consumer reports `{model_file}: subroutine {name}` in the order it iterates, and a
+        # violation list that reorders itself between runs of the same file is a diff no reviewer
+        # can read.
+        envelopes = vps._fortran_subroutine_envelopes(
+            "subroutine host(x, y)\n  y = x\ncontains\n"
+            "  subroutine inner(z)\n    z = 2.0\n  end subroutine inner\n"
+            "end subroutine host\n"
+            "subroutine last(a)\n  a = 1.0\nend subroutine last\n"
+        )
+        self.assertEqual([e.name for e in envelopes], ["host", "inner", "last"])
+
+    def test_an_unclosed_interface_does_not_swallow_the_rest_of_the_file(self) -> None:
+        # Robustness, not legality: text this broken is rejected by `Generate.gate`'s syntax check
+        # before these gates run. What is asserted is the DIRECTION — an interface span nobody
+        # closed ends with its enclosing program unit, so the next subroutine is still read
+        # instead of being blanked to the end of the file.
+        source = """module m
+contains
+subroutine untouched(x, y)
+  real, intent(out) :: y
+  interface
+    subroutine other(a)
+    end subroutine other
+end module m
+module m2
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m2
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
 
     def test_prefixed_subroutine_headers_are_all_recognized(self) -> None:
         # The prefix words are deliberately NOT enumerated: F2008 has pure/impure/elemental/
@@ -6242,7 +6289,7 @@ end module shallow_water2d_model
     # `test_a_function_header_declares_its_result_name` — where one alternative is dropped at a
     # time.
     def test_no_procedure_shape_can_leak_a_constant_into_module_scope(self) -> None:
-        # Deriving "module scope" by blanking `_PROBLEM_SUBROUTINE_ENVELOPE` matches read the
+        # Deriving "module scope" by blanking procedure-envelope matches read the
         # SHAPE of a procedure instead of the structure, and two shapes escaped it — both accepted
         # by `gfortran -fsyntax-only -std=f2008`. In each, `ncomp` is a constant of the OTHER
         # procedure and a live discarded output in `advance`; the leak exempted it and the gate

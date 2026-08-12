@@ -1222,21 +1222,18 @@ _FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
 # of truncating it.
 _FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()(?!\s+is\b)")
 _FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
-# Which open frames an END statement of a given kind may close. A separate module subprogram is
-# the only reason these are sets rather than equality: F2008 lets `module procedure solve` end
-# with `end procedure`, `end subroutine` or `end function`. Nothing else is compatible — an
-# `end function` may not close a `subroutine` frame — and an END whose kind matches NO open frame
-# is IGNORED rather than popping something, because popping on mismatch would turn every
-# unrecognised opener into a silent gate, which is the defect this walk exists to remove.
-_FORTRAN_END_KIND_CLOSES = {
-    "subroutine": {"subroutine", "procedure"},
-    "function": {"function", "procedure"},
-    "procedure": {"procedure", "subroutine", "function"},
-    "module": {"module"},
-    "submodule": {"submodule"},
-    "program": {"program"},
-    "blockdata": {"blockdata"},
-}
+# An END closes the open frame of ITS OWN KIND, and nothing else. An earlier draft made the
+# kinds cross-compatible, claiming F2008 lets a `module procedure` body end with `end subroutine`
+# or `end function`; review refuted it and the compiler agrees — `gfortran -fsyntax-only
+# -std=f2008` answers "Expecting END PROCEDURE statement" to both, and "Expecting END SUBROUTINE
+# statement" to the mirror (`module subroutine` closed by `end procedure`). Only the bare `end`
+# closes any of them, and that is `_FORTRAN_BARE_END`'s job, not this one's. The cross-kind
+# members were also unkillable: no test could tell them from their absence, which is how a false
+# sentence stayed in the code.
+#
+# An END whose kind matches NO open frame is IGNORED rather than popping something. Popping on
+# mismatch would turn every unrecognised opener into a silent gate, which is the defect this walk
+# exists to remove.
 
 
 def _fortran_statement_assigns_to_its_first_token(statement: str) -> bool:
@@ -1352,14 +1349,21 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
       as its own item rather than folded in here.
 
     WHAT NO TEST PINS, stated because a reader will otherwise assume the mutation check covered
-    everything: the `function` frames and the `module procedure` frame above both survive being
-    removed. Only subroutine frames emit, an END matching no frame is ignored, and a host body is
-    already cut at its `contains` — so on every shape tried (a contained function ended by a bare
-    `end`, a module-level function between two subroutines, a submodule separate body with its own
-    contained procedure) the envelope list is identical either way. They are kept because the
-    direction a WRONG pop fails in is a subroutine frame closing early, which is fail-open, and
-    because they are what the language actually says; they are not kept because something measured
-    them. If a legal shape that distinguishes them is ever found, it belongs in the tests above.
+    everything. One cluster survives being removed, in whole or in part: `_FORTRAN_FUNCTION_OPEN`,
+    `_FORTRAN_MODULE_PROCEDURE_OPEN`, and the `procedure` alternative of `_FORTRAN_UNIT_END_KIND`.
+    Only subroutine frames emit; a `function` or `procedure` frame never does; an END matching no
+    frame is ignored; and a host body is already cut at its `contains`. So on every LEGAL shape
+    tried — a contained function ended by a bare `end`, a module-level function between two
+    subroutines, a submodule separate body with its own contained procedure — the envelope list is
+    identical with them and without them. They are kept because they are what the language says
+    and because the direction a wrong pop fails in is a subroutine closing early, which is
+    fail-open; they are not kept because anything measured them. An earlier draft did remove a
+    guard on an argument of this shape and shipped a fail-open, so the bar for acting on one is a
+    legal input, not an argument. If a legal shape that distinguishes them is found, it belongs in
+    the tests above.
+
+    Two smaller survivors, same status: the `end module` force-close of an unterminated interface
+    span, and the `max(end, body_start)` clamp when a `contains` precedes its own body start.
     """
     view = _joined_masked_fortran_view(lowered)
     lines = view.split("\n")
@@ -1409,9 +1413,8 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
         end_match = _FORTRAN_UNIT_END_KIND.match(statement)
         if end_match:
             kind = re.sub(r"\s+", "", end_match.group(1))
-            closes = _FORTRAN_END_KIND_CLOSES[kind]
             for depth in range(len(frames) - 1, -1, -1):
-                if frames[depth].kind in closes:
+                if frames[depth].kind == kind:
                     for frame in reversed(frames[depth:]):
                         close(frame, line_start)
                     del frames[depth:]
