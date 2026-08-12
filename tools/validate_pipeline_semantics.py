@@ -1211,12 +1211,14 @@ _FORTRAN_MODULE_PROCEDURE_OPEN = re.compile(r"^module\s+procedure\s+[a-z_][a-z0-
 _FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
     r"^(?:(module|program|block\s*data)\b(?!\s*[=(%])|(submodule)\s*\()"
 )
-# A derived-type DEFINITION, whose own `contains` introduces type-bound procedures rather than
-# contained ones. `type(t)` and `select type` / `type is` are excluded; a variable named `type`
-# is deliberately NOT, because a phantom type only suppresses a `contains` cut, which lengthens a
-# body rather than truncating it.
-_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()(?!\s+is\b)")
-_FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
+# A derived type's own `contains` introduces type-bound procedures rather than contained ones, so
+# an earlier draft tracked type definitions to keep that `contains` from cutting a body. It is not
+# tracked, because the cut is already conditioned on the innermost frame being a SUBROUTINE, and a
+# type definition can only be inside one if the type is local to it — which F2008 C464 forbids and
+# `gfortran -fsyntax-only -std=f2008` rejects (executed: "`show` must be a module procedure or an
+# external procedure with an explicit interface", with the identical type accepted at module
+# level). A type at module level meets the `contains` rule with a module frame innermost, where
+# the recorded position is never read.
 # Which open frames an END statement of a given kind may close. A separate module subprogram is
 # the only reason these are sets rather than equality: F2008 lets `module procedure solve` end
 # with `end procedure`, `end subroutine` or `end function`. Nothing else is compatible — an
@@ -1303,6 +1305,16 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
       computes inside a module `function` is invisible to all three gates. That is pre-existing,
       measured (92 of the 365 `*_model.f90` in this tree define one), and recorded in `TODO.md`
       as its own item rather than folded in here.
+
+    WHAT NO TEST PINS, stated because a reader will otherwise assume the mutation check covered
+    everything: the `function` frames and the `module procedure` frame above both survive being
+    removed. Only subroutine frames emit, an END matching no frame is ignored, and a host body is
+    already cut at its `contains` — so on every shape tried (a contained function ended by a bare
+    `end`, a module-level function between two subroutines, a submodule separate body with its own
+    contained procedure) the envelope list is identical either way. They are kept because the
+    direction a WRONG pop fails in is a subroutine frame closing early, which is fail-open, and
+    because they are what the language actually says; they are not kept because something measured
+    them. If a legal shape that distinguishes them is ever found, it belongs in the tests above.
     """
     view = _joined_masked_fortran_view(lowered)
     lines = view.split("\n")
@@ -1320,7 +1332,6 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     # `blanked` is complete — a frame closes before the text it does not cover has been read.
     closed: list[tuple[int, int, str, str]] = []
     in_interface = False
-    type_depth = 0
 
     def close(frame: _FortranUnitFrame, body_end: int) -> None:
         if frame.kind != "subroutine":
@@ -1362,13 +1373,9 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
                 close(frames.pop(), line_start)
             continue
 
-        if _FORTRAN_TYPE_DEFINITION_END.match(statement):
-            type_depth = max(type_depth - 1, 0)
-            continue
-
         if statement.startswith("end"):
             # Any other construct end (`end do` / `enddo` / `end if` / `end select` / `end block`
-            # / `end associate` / …). None of them closes a scoping unit.
+            # / `end associate` / `end type` / …). None of them closes a scoping unit.
             continue
 
         if _FORTRAN_INTERFACE_SPAN_OPEN.match(statement):
@@ -1376,14 +1383,9 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             blanked[-1] = " " * len(line)
             continue
 
-        if _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
-            type_depth += 1
-            continue
-
         if _FORTRAN_CONTAINS_STATEMENT.match(statement):
-            if type_depth == 0 and frames and frames[-1].kind == "subroutine":
-                if frames[-1].contains_at is None:
-                    frames[-1].contains_at = line_start
+            if frames and frames[-1].kind == "subroutine" and frames[-1].contains_at is None:
+                frames[-1].contains_at = line_start
             continue
 
         header = _FORTRAN_SUBROUTINE_HEADER.match(statement)

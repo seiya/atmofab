@@ -5577,11 +5577,37 @@ end module shallow_water2d_model
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(self._dataflow_violations(source)), assignment)
 
+    def test_every_interface_span_spelling_is_skipped(self) -> None:
+        # One row per alternative of `_FORTRAN_INTERFACE_SPAN_OPEN` / `_FORTRAN_INTERFACE_SPAN_END`
+        # — `abstract` and the one-word `endinterface` are each legal (verified with `gfortran
+        # -fsyntax-only -std=f2008`) and each was a live hole until its own row existed: dropping
+        # either alternative leaves the span unrecognised, its `end subroutine` closing the
+        # enclosing envelope, and the gate silent. The matrices above use only the plain spelling,
+        # so nothing else notices.
+        for opener, closer in (("interface", "end interface"),
+                               ("interface", "endinterface"),
+                               ("abstract interface", "end interface"),
+                               ("abstract interface", "endinterface")):
+            source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
+                      f"  real, intent(in) :: x\n  real, intent(out) :: y\n  real :: scratch\n"
+                      f"  {opener}\n"
+                      f"    subroutine other(a)\n      implicit none\n"
+                      f"      real, intent(in) :: a\n    end subroutine other\n"
+                      f"  {closer}\n"
+                      f"  call dep__apply(x, scratch)\n  y = x\n"
+                      f"end subroutine solve\nend module m\n")
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(self._dataflow_violations(source)), f"{opener} / {closer}")
+
     def test_a_type_bound_contains_does_not_truncate_a_body(self) -> None:
-        # A derived type's own `contains` introduces type-bound procedures, not contained ones.
-        # Cutting the host body there would drop everything after the type definition — the whole
-        # executable part in this shape. Fail-open, which is why the type-definition test is
-        # deliberately permissive: a phantom `type` open only SUPPRESSES a cut.
+        # BEHAVIOURAL REGRESSION, not a mechanism pin — read the group note above. A derived type's
+        # own `contains` introduces type-bound procedures, and cutting a body there would drop
+        # everything after the type definition (fail-open). An earlier draft tracked type
+        # definitions to prevent that and the mutation check found NO test could kill the tracking:
+        # the cut is already conditioned on the innermost frame being a subroutine, and F2008 C464
+        # keeps a type-bound `contains` out of a subroutine — `gfortran -fsyntax-only -std=f2008`
+        # rejects the shape, with the identical type accepted at module level. The tracking was
+        # removed rather than left as a defence nothing can exercise; this keeps the shape covered.
         source = """module m
 implicit none
 type :: holder
@@ -5722,21 +5748,34 @@ subroutine solve(x, y)
         #
         # Deletion is NOT unsafe for that comparison (it preserves the ORDER of what remains), so
         # a behavioural test cannot separate the two; this is the assertion that can.
-        source = ("subroutine solve(x, y)\n"
-                  "  interface\n"
-                  "    subroutine other(a)\n"
-                  "    end subroutine other\n"
-                  "  end interface\n"
-                  "  y = x\n"
-                  "end subroutine solve\n")
-        envelope = vps._fortran_subroutine_envelopes(source)[0]
-        view_lines = vps._joined_masked_fortran_view(source).split("\n")
-        # Every line between the header and the terminator, at its original width.
-        self.assertEqual(
-            envelope.body.split("\n"),
-            [" " * len(line) for line in view_lines[1:5]] + [view_lines[5], ""],
-        )
-        self.assertNotIn("other", envelope.body)
+        #
+        # Both alternatives of each span pattern are exercised here rather than at gate level,
+        # because a MISSED span opener does not always reach the gate: the interface body's own
+        # `subroutine`/`end subroutine` pair pushes and pops in balance, so the enclosing envelope
+        # survives and only a PHANTOM envelope for the interface body appears. The `abstract`
+        # spelling is invisible to every behavioural test for exactly that reason.
+        for opener, closer in (("interface", "end interface"),
+                               ("interface", "endinterface"),
+                               ("abstract interface", "end interface"),
+                               ("abstract interface", "endinterface")):
+            source = ("subroutine solve(x, y)\n"
+                      f"  {opener}\n"
+                      "    subroutine other(a)\n"
+                      "    end subroutine other\n"
+                      f"  {closer}\n"
+                      "  y = x\n"
+                      "end subroutine solve\n")
+            label = f"{opener} / {closer}"
+            envelopes = vps._fortran_subroutine_envelopes(source)
+            self.assertEqual([e.name for e in envelopes], ["solve"], label)
+            view_lines = vps._joined_masked_fortran_view(source).split("\n")
+            # Every line between the header and the terminator, at its original width.
+            self.assertEqual(
+                envelopes[0].body.split("\n"),
+                [" " * len(line) for line in view_lines[1:5]] + [view_lines[5], ""],
+                label,
+            )
+            self.assertNotIn("other", envelopes[0].body, label)
 
     def test_fortran_subroutine_envelopes_is_a_fixed_point_over_the_view(self) -> None:
         # The helper reduces its own input, which is what lets a gate that has already reduced its
