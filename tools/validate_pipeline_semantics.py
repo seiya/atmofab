@@ -852,12 +852,15 @@ def _split_fortran_names(raw: str) -> list[str]:
     The reproducers below are all at the dataflow gate, which is the one that reads `call`
     actuals and so sees the widest input.
 
-    Unlike this module's other splitter callers, `raw` arrives as RAW source text: the enclosing
-    regexes are `re.DOTALL` over the whole file, so a continued argument list reaches here with
-    its `&`, its newlines and its `!` comments intact. Comments and literal contents are therefore
-    blanked first, in place, by `fortran_lines.mask_code_lookalikes` — the shared masker, not a
-    private copy — and only then split by `fortran_lines.split_top_level_commas`. The mask
-    answers three defects:
+    Unlike this module's other splitter callers, `raw` may arrive as RAW source text: the
+    enclosing regexes are `re.DOTALL` over the whole file, so a continued argument list can reach
+    here with its `&`, its newlines and its `!` comments intact. It is therefore reduced first by
+    `_joined_masked_fortran_view` — the shared view, not a private copy — and only then split by
+    `fortran_lines.split_top_level_commas`. Applying the view here is redundant for the three
+    gates below, which now hand over fragments of a view they already built, and the view is a
+    fixed point so that costs nothing; it is kept because making this helper's correctness depend
+    on the caller having remembered is the exact coupling that produced this defect class. The
+    mask half of the view answers three defects:
 
     * **Comments (pre-existing).** A comma inside a comment manufactured a PHANTOM identifier:
       `call flux__apply(h_in, & ! set a, mid, b` yielded `mid`. The phantom lands in
@@ -875,15 +878,20 @@ def _split_fortran_names(raw: str) -> list[str]:
 
     All three are one root cause: raw multi-line text fed to a single-logical-line helper.
 
-    NOT fixed here, deliberately: `&` continuations. The mask blanks in place and does not join,
-    so the first name after each `&` still carries the marker and the newline, is not an
-    identifier, and is dropped — a wrapped argument list loses one name per continuation.
-    Joining first recovers those names and is the obviously correct parse, but it flips three
-    real models in this tree to a FALSE "does not propagate", because the candidate and
-    consumption rules below are over-approximations that the dropped names were masking. Closing
-    that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
-    `TODO.md`, not a parser change."""
-    parts = fortran_lines.split_top_level_commas(fortran_lines.mask_code_lookalikes(raw))
+    `&` continuations are the fourth instance of that same root cause, and the view closes them
+    too. A mask that blanks in place cannot: the first name after each `&` still carries the
+    marker and the newline, is not an identifier, and was dropped — a wrapped argument list lost
+    one name per continuation, from EVERY feed at once (a lost dummy wrongly became a
+    dependency-output candidate, a lost actual lost a real candidate, a lost `intent(out)` name
+    shrank the closure seed). Recovering them is the correct parse, and it was measured on every
+    `*_model.f90` in the tree before being taken: 29 violations before, 27 after. Two real models
+    move, the byte-identical `shallow_water2d` pair under `workspace_20260706`, where the drops
+    were two errors CANCELLING — a lost `u_np1` made an `intent(out)` dummy its own candidate, so
+    the disjoint test could not fire. Both are cleared by the named-constant clause of the
+    candidate rule below, which is what had to land in the same change. The remaining movement is
+    two `profile/`-domain files that no gate here reaches; see
+    `_validate_problem_model_dependency_dataflow`."""
+    parts = fortran_lines.split_top_level_commas(_joined_masked_fortran_view(raw))
 
     names: list[str] = []
     for token in parts:
@@ -906,11 +914,16 @@ def _is_literal_like_expr(expr: str) -> bool:
 
 
 # The `problem` model gates below match Fortran's KEYWORD STRUCTURE over raw source, so each
-# masks its input with `fortran_lines.mask_code_lookalikes` first. Without that mask this pattern
+# reduces its input with `_joined_masked_fortran_view` first. Without the mask half, this pattern
 # stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body, every
 # gate that reads the body goes silent, and a legal model passes — fail-open from a comment. The
-# mirror is a commented-out procedure minting a phantom match, which fails closed. Masking
-# preserves offsets, so `call` positions stay comparable with assignment positions.
+# mirror is a commented-out procedure minting a phantom match, which fails closed. Without the
+# join half, a wrapped `intent(out)` list or `call` actual list is read as fragments.
+#
+# `call` positions stay comparable with assignment positions because BOTH are offsets into the
+# same view, not because the view preserves the file's offsets — it does not (see the view's
+# docstring). Nothing here reports a line number; anything that ever does must take it from
+# `fortran_lines.fortran_logical_lines`' `start_lineno`.
 _PROBLEM_SUBROUTINE_ENVELOPE = re.compile(
     r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
     re.DOTALL,
@@ -926,7 +939,7 @@ def _validate_problem_model_literal_outputs(
     if not execution.node_key.startswith("problem/"):
         return
 
-    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    lowered = _joined_masked_fortran_view(lowered)
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
@@ -1022,7 +1035,30 @@ def _validate_problem_model_dependency_dataflow(
     an unrelated call, or fed to a call whose write is later overwritten). It is therefore left to
     ``Generate.verify`` G5, which reads ``controlled_spec.md`` and IS the semantic authority for
     "each intent(out) reaches the required_sources", backed by the runtime. Check 1 below (a
-    dependency RESULT reaching intent(out)) is assignment-only, sound, and kept."""
+    dependency RESULT reaching intent(out)) is assignment-only, sound, and kept.
+
+    The candidate rule has three clauses: an actual of a dependency `call` is a candidate OUTPUT
+    unless it is a dummy of the enclosing subroutine, OR was assigned earlier in the same view, OR
+    is a NAMED CONSTANT. The third clause is not a relaxation of a sound rule — it removes an
+    over-approximation the rule never intended. F2008 requires the actual associated with an
+    `intent(out)` / `intent(inout)` dummy to be definable, and a named constant is not, so a
+    `parameter` can never be a dependency-call output. Verified against the compiler rather than
+    inferred from the standard: `gfortran -fsyntax-only -std=f2008` rejects both spellings with
+    "Non-variable expression in variable definition context (actual argument to INTENT =
+    OUT/INOUT)". Its scope is module-level plus the enclosing subroutine's own declarations, never
+    the whole file — a name that is constant in one procedure and a live variable in another must
+    stay a candidate in the second, or the exclusion becomes a fail-open.
+
+    RESIDUE, reproduced and NOT fixed here. The candidate rule still over-approximates in a way no
+    flow-insensitive repair reaches: a variable written by an earlier `call` (not by an
+    assignment) is a candidate, and a consumption path that crosses a call is invisible to the
+    assignment-only closure. The measured instance is the
+    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, which yields
+    `candidates=['flux_ok', 'u_new', 'z_b']` where `u_new` is written by the preceding dependency
+    call. It is latent ONLY because of the `problem/` guard below — that model's node_key domain
+    is `profile/`, so this gate never reads it. Widening that guard makes the false positive real.
+    Closing it is the flow-sensitive, interface-aware pass recorded in `TODO.md`, and that item
+    carries this case as its named test."""
     if not execution.node_key.startswith("problem/"):
         return
     if not dep_spec_ids:
@@ -1032,15 +1068,27 @@ def _validate_problem_model_dependency_dataflow(
     if not dep_prefixes:
         return
 
-    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    lowered = _joined_masked_fortran_view(lowered)
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
+
+    # Named constants declared OUTSIDE any subroutine — the specification part of the module. The
+    # procedure bodies are blanked rather than removed so this stays a view of the same text, on
+    # the same discipline as the mask. A body's own constants are added per subroutine below;
+    # collecting over the whole file instead would let a constant in one procedure exempt a live
+    # variable of the same name in another.
+    module_scope = list(lowered)
+    for sub_match in subroutine_pattern.finditer(lowered):
+        for index in range(sub_match.start(), sub_match.end()):
+            module_scope[index] = " "
+    module_parameter_names = _fortran_parameter_names("".join(module_scope))
 
     for sub_match in subroutine_pattern.finditer(lowered):
         sub_name = sub_match.group(1)
         arg_names = set(_split_fortran_names(sub_match.group(2)))
         body = sub_match.group(3)
         assignments = _assignment_records(body)
+        parameter_names = module_parameter_names | _fortran_parameter_names(body)
 
         out_vars: set[str] = set()
         for out_match in intent_out_pattern.finditer(body):
@@ -1054,7 +1102,10 @@ def _validate_problem_model_dependency_dataflow(
                 continue
             call_vars = _split_fortran_names(args_raw)
             for var in call_vars:
-                if var in arg_names:
+                # A named constant cannot be an output: F2008 requires the actual associated with
+                # an `intent(out)`/`intent(inout)` dummy to be definable. See the docstring for
+                # the compiler diagnostic this rests on.
+                if var in arg_names or var in parameter_names:
                     continue
                 assigned_before_call = any(
                     lhs == var and pos < call_pos for lhs, _, pos in assignments
@@ -1113,7 +1164,7 @@ def _validate_problem_metric_only_scalar_kernel(
         return
     spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
 
-    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    lowered = _joined_masked_fortran_view(lowered)
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
     intent_in_or_inout_array_pattern = re.compile(
