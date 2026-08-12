@@ -5685,15 +5685,19 @@ end module shallow_water2d_model
             self._dataflow_violations(source),
         )
 
+    # `ncomp` is a module VARIABLE, and `advance` does not redeclare it. That is what makes these
+    # cases test the SCOPE READER: with a local `integer :: ncomp` in `advance` — the first shape
+    # of this fixture — the shadow subtraction produced the expected violation on its own, and
+    # every one of these tests passed with the entire scope analysis deleted.
     _SCOPE_LEAK_TEMPLATE = """module shallow_water2d_model
 use dep_model
 implicit none
+integer :: ncomp
 contains
 {leaking_procedure}subroutine advance(nx, u_np1, guard_pass)
   integer, intent(in) :: nx
   real, intent(out) :: u_np1(nx)
   logical, intent(out) :: guard_pass
-  integer :: ncomp
   call dep__advance( &
     ncomp, nx, u_np1, guard_pass)
 end subroutine advance
@@ -5757,16 +5761,177 @@ end module shallow_water2d_model
                 f"got: {self._dataflow_violations(source)}",
             )
 
+    def test_a_labelled_structural_statement_is_still_structural(self) -> None:
+        # A statement LABEL may precede any statement. Both structural statements here are
+        # labelled deliberately, and that is what makes the strip load-bearing: the specification
+        # part is bounded by the `contains` AND by the procedure header opening a child scope, so
+        # labelling only one leaves the other filter to catch the leak and the test proves
+        # nothing. `gfortran -fsyntax-only -std=f2008` accepts both labels.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+10 contains
+20 subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_an_assignment_cannot_reopen_the_specification_part(self) -> None:
+        # None of these words is reserved. An assignment to a variable named `module` matched the
+        # scope tracker's UNIT-OPEN pattern and started a brand-new host scope in the middle of a
+        # procedure — one with no `contains` of its own, so nothing else bounds it and only the
+        # neutralization can. (The `endmodule` spelling pops a scope instead, and the `contains`
+        # cut already covers that; pinning the pop alone proves nothing.) The designator has to
+        # admit every LHS shape: the first guard allowed one subscript, and a single `%` walked
+        # straight back through it.
+        for label, target, declaration in (
+            ("plain name", "module", "real :: module"),
+            ("component reference", "module%v", "type(holder) :: module"),
+            ("subscript then component", "module(1)%v", "type(holder) :: module(2)"),
+        ):
+            source = f"""module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+type :: holder
+  real :: v
+end type holder
+contains
+subroutine helper(out_val)
+  real, intent(out) :: out_val
+  {declaration}
+  {target} = 1.0
+  block
+    integer, parameter :: ncomp = 3
+    out_val = real(ncomp)
+  end block
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+            self.assertTrue(
+                any(
+                    "subroutine advance does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"{label}: got {self._dataflow_violations(source)}",
+            )
+
+    def test_a_submodule_separate_procedure_body_is_not_module_scope(self) -> None:
+        # `_assign_fortran_scopes` deliberately opens no scope for `module procedure`, which is
+        # right for the interface sense (`interface gen` / `module procedure a, b`) and wrong for
+        # a SUBMODULE separate body — whose whole body then sits at the submodule's own scope.
+        # Cutting each host scope at its `contains` catches it, because a separate body can only
+        # appear after one. Idiomatic F2008; no adversarial naming needed.
+        source = """submodule (problem_model) problem_impl
+use dep_model
+implicit none
+integer :: ncomp
+contains
+module procedure helper
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end procedure helper
+module subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end submodule problem_impl
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_declaration_without_the_double_colon_still_shadows(self) -> None:
+        # The `::` is optional when a declaration carries no attribute and no initializer.
+        # `integer ncomp` shadows a host constant exactly as `integer :: ncomp` does, and the
+        # shadow subtraction read only `::` statements — one spelling from the hole it closes.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_importing_a_host_constant_does_not_revoke_its_exemption(self) -> None:
+        # `import` declares nothing — it names an entity of the HOST so an interface body can see
+        # it. Counting it as a redeclaration made `import :: ncomp` subtract the very constant it
+        # imports, turning a correct silence into a false violation. Subtraction is only safe
+        # where a statement really shadows.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_in, u_np1, guard_pass)
+  real, intent(in) :: u_in(ncomp)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  interface
+    function scale_by(a) result(r)
+      import :: ncomp
+      real, intent(in) :: a(ncomp)
+      real :: r
+    end function scale_by
+  end interface
+  call dep__advance(ncomp, u_np1, guard_pass)
+  u_np1 = u_np1 * scale_by(u_in)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
     def test_a_constant_outside_every_host_unit_is_not_module_scope(self) -> None:
         # Two shapes that have no module specification part at all, yet were read as one because
         # the scan tracked "past `contains`" without ever asking "inside a unit?". Both are
         # accepted by `gfortran -fsyntax-only -std=f2008`: external procedures alongside a module,
         # and a file of external procedures with no module at all.
+        # No `implicit none` and no declaration of `ncomp`: it is implicitly typed, so nothing in
+        # `advance` can subtract it and only the scope reader decides whether the constant in
+        # `helper` reaches it.
         solve = """subroutine advance(u_np1, guard_pass)
   use dep_model
   real, intent(out) :: u_np1
   logical, intent(out) :: guard_pass
-  integer :: ncomp
   call dep__advance(ncomp, u_np1, guard_pass)
 end subroutine advance
 """

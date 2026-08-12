@@ -797,6 +797,16 @@ def _joined_masked_fortran_view(lowered: str) -> str:
     )
 
 
+# A declaration whose `::` is optional because it carries no attribute and no initializer, plus
+# the `::`-less `enumerator` list. The type-spec's own parenthesised selector (`character(len=3)`,
+# `type(t)`) is stepped over by `_extract_balanced_parens`, not by a regex, so a comma or `=`
+# inside it cannot be read as an entity separator.
+_FORTRAN_BARE_DECLARATION = re.compile(
+    r"^(integer|real|complex|logical|character|doubleprecision|double\s+precision"
+    r"|type|class|enumerator)\b"
+)
+
+
 # Only up to the OPENING paren: the group is delimited by `_extract_balanced_parens`, not by a
 # greedy `(.*)\)$` — see `_fortran_parameter_names`.
 _FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\(")
@@ -854,8 +864,15 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
     union-only scope rule exempted it — fail-open, and the mirror of the leak the module-scope
     reader was written to close.
 
-    ``enumerator :: red = 1`` counts as a constant for the same reason ``parameter`` does: an
-    enumerator is not definable, so it can never be an output argument."""
+    ``enumerator`` counts as a constant for the same reason ``parameter`` does: an enumerator is
+    not definable, so it can never be an output argument. Both of its spellings are read — the
+    entity list of an ``enumerator`` statement may omit the ``::``.
+
+    ``import`` is the one ``::`` statement deliberately kept OUT of both sets. It does not declare
+    anything: it names an entity of the HOST so an interface body can see it. Counting it as a
+    redeclaration made an `import :: ncomp` inside an interface body subtract the very host
+    constant it imports, turning a correct silence into a false violation. Subtraction is only
+    safe where a statement really does shadow — that is the whole content of the second set."""
     constants: set[str] = set()
     others: set[str] = set()
     for line in joined_masked.split("\n"):
@@ -867,10 +884,29 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             attribute_tokens = {
                 token.strip() for token in fortran_lines.split_top_level_commas(attributes)
             }
-            # `import ::`, `procedure(x) ::` and friends declare no local entity worth tracking,
-            # but treating them as `others` only ever SUBTRACTS, which is the safe direction.
+            if "import" in attribute_tokens:
+                continue
             target = constants if attribute_tokens & {"parameter", "enumerator"} else others
             for item in fortran_lines.split_top_level_commas(entities):
+                match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
+                if match is not None:
+                    target.add(match.group(0))
+            continue
+        # The `::` is optional when a declaration carries no attribute and no initializer, and
+        # `integer ncomp` shadows a host constant exactly as `integer :: ncomp` does — missing it
+        # left the subtraction one spelling away from the hole it exists to close. `enumerator
+        # red, green` is the same omission on the constant side.
+        entity_match = _FORTRAN_BARE_DECLARATION.match(statement)
+        if entity_match is not None:
+            target = constants if entity_match.group(1) == "enumerator" else others
+            tail = statement[entity_match.end() :]
+            if tail.startswith("("):
+                tail = tail[len(_extract_balanced_parens(tail, 0)) + 2 :]
+            # `integer function f(x)` is a procedure header, not a declaration of anything named
+            # here. It would otherwise contribute `function` to the shadow set.
+            if tail.lstrip().startswith("function"):
+                continue
+            for item in fortran_lines.split_top_level_commas(tail):
                 match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
                 if match is not None:
                     target.add(match.group(0))
@@ -880,9 +916,12 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             continue
         open_index = statement_match.end() - 1
         inner = _extract_balanced_parens(statement, open_index)
-        # Nothing may follow the closing paren, and every item must be an `=` initialization.
-        # Both tests are needed: `parameter(scratch) = u_in(1)` is an assignment, not a
-        # declaration, and only the first test rejects it on its own.
+        # Nothing may follow the closing paren, and every item must be an `=` initialization. The
+        # residue check is the one that rejects the reproduced case; the `=` requirement is a
+        # structural property of the form (every item of a PARAMETER statement initializes a name)
+        # and has no separate reproduction — stated that way rather than as a second defence,
+        # because `parameter(scratch) = u_in(1)`, the assignment this rejects, is already rejected
+        # by the residue check alone.
         if statement[open_index + len(inner) + 2 :].strip():
             continue
         items = fortran_lines.split_top_level_commas(inner)
@@ -904,9 +943,17 @@ _FORTRAN_HOST_UNIT_OPEN = re.compile(
 # An ASSIGNMENT never opens or closes a scope. Recognising one is what stops a leaf that names a
 # variable `endmodule` from re-opening the specification part mid-file: `endmodule = 3.0` matches
 # `_FORTRAN_UNIT_END`, and `gfortran -std=f2008` accepts it, because none of these words is
-# reserved. The optional subscript excludes `=`, so a real header such as
-# `character(len=10) function f(x)` is not mistaken for one.
-_FORTRAN_ASSIGNMENT_STATEMENT = re.compile(r"^[a-z_][a-z0-9_]*(?:\s*\([^=]*\))?\s*=(?!=)")
+# reserved. The designator must therefore admit every LHS shape, not just a bare name — the first
+# form of this pattern allowed one optional subscript, and adding a single `%` (`endmodule%v =
+# 1.0`) walked straight back through it. Subscripts, component references and coarray
+# co-subscripts all exclude `=`, so a real header such as `character(len=10) function f(x)` is
+# still not mistaken for an assignment.
+_FORTRAN_CONTAINS = re.compile(r"^contains\b")
+_FORTRAN_ASSIGNMENT_STATEMENT = re.compile(
+    r"^[a-z_][a-z0-9_]*"
+    r"(?:\s*\([^=]*\)|\s*\[[^=]*\]|\s*%\s*[a-z_][a-z0-9_]*)*"
+    r"\s*=(?!=)"
+)
 
 
 def _fortran_module_specification_text(joined_masked: str) -> str:
@@ -931,10 +978,19 @@ def _fortran_module_specification_text(joined_masked: str) -> str:
 
     All three were hand-rolled scans of Fortran structure — the same mistake three times, which is
     the signal to stop writing one. `_assign_fortran_scopes` already assigns a scope id per
-    logical line, already handles `function` headers, nesting and `module procedure`, and is
-    already tested. This reads its scope ids and keeps the lines whose scope was opened by a host
-    unit. The one thing it adds is neutralizing assignment statements first, because that
-    tracker's `end` pattern cannot tell `end module` from a write to a variable named `endmodule`.
+    logical line, already handles `function` headers and nesting, and is already tested. This
+    reads its scope ids and keeps the lines whose scope was opened by a host unit. Two things are
+    added on top, and each closed a leak the other does not:
+
+    * assignment statements are neutralized first, because that tracker's patterns cannot tell
+      `end module` from a write to a variable named `endmodule`, nor `module` the keyword from a
+      write to a variable named `module` — and the second spelling opens a NEW host scope in the
+      middle of a procedure, which nothing else bounds;
+    * each host scope is cut at its `contains`, because not every procedure body gets a scope.
+      `_assign_fortran_scopes` deliberately opens none for `module procedure`, which is right for
+      the interface sense (`interface gen` / `module procedure a, b`) and wrong for a SUBMODULE
+      separate body — whose entire body then sits at the submodule's own scope. A separate body
+      can only appear after a `contains`, so the cut catches it.
 
     A file with no host unit therefore contributes nothing, and so does a procedure this cannot
     attribute — under-collection, which costs a false violation rather than an exemption."""
@@ -951,7 +1007,24 @@ def _fortran_module_specification_text(joined_masked: str) -> str:
         for statement, scope in zip(structural, scopes)
         if _FORTRAN_HOST_UNIT_OPEN.match(statement)
     }
-    return "\n".join(line for line, scope in zip(lines, scopes) if scope in host_scopes)
+    # The scope filter alone is not enough, because not every procedure body gets a scope of its
+    # own: `_assign_fortran_scopes` deliberately refuses to open one for `module procedure`, which
+    # is right for the interface sense (`interface gen` / `module procedure a, b`) and wrong for a
+    # SUBMODULE separate body, whose whole body then sits at the submodule's own scope. Cutting
+    # each host scope at its `contains` catches that, because a separate body can only appear
+    # after one. The two filters are independent and both are needed: `contains` alone was the
+    # shape that never asked whether it was inside a unit at all.
+    ended: set[int] = set()
+    kept: list[str] = []
+    for line, statement, scope in zip(lines, structural, scopes):
+        if scope not in host_scopes:
+            continue
+        if _FORTRAN_CONTAINS.match(statement):
+            ended.add(scope)
+            continue
+        if scope not in ended:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _split_fortran_names(raw: str) -> list[str]:
