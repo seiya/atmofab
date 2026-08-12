@@ -836,8 +836,13 @@ _FORTRAN_CONSTRUCT_END = re.compile(r"^end\s*(?:block|associate|select|interface
 _FORTRAN_ATTRIBUTE_STATEMENT = re.compile(
     r"^(?:common|dimension|equivalence|data|namelist|pointer|target|save|allocatable|external"
     r"|intent|volatile|asynchronous|codimension|contiguous|protected|value|optional|intrinsic"
-    r"|bind|sequence|public|private|generic|procedure|entry)\b"
+    r"|bind|sequence|generic|procedure|entry)\b"
 )
+# `public` and `private` are deliberately absent from that list. They declare nothing — they set
+# the accessibility of an entity declared elsewhere — and F2008 R518 makes the `::` optional, so
+# leaving them in disqualified `public ncomp` while the `::` branch was skipping
+# `public :: ncomp`. The two spellings of one statement must agree, and they agree on the reading
+# that matches what the statement does.
 
 
 _FORTRAN_BARE_DECLARATION = re.compile(

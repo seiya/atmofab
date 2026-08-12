@@ -6449,15 +6449,21 @@ end module shallow_water2d_model
             self.assertEqual(vps._joined_masked_fortran_view(once), once, label)
 
     def test_an_accessibility_statement_does_not_revoke_the_exemption(self) -> None:
-        # `public :: ncomp` names an entity declared elsewhere; it declares nothing itself, the
-        # same argument that keeps `import` out of both sets. Counting it as a redeclaration
-        # stripped the exemption from every module that lists its constants that way — eight
-        # models in this tree do, one of them a `problem/`-domain file this gate reads.
-        source = """module shallow_water2d_model
+        # An accessibility statement names an entity declared elsewhere; it declares nothing
+        # itself, the same argument that keeps `import` out of both sets. Counting it as a
+        # redeclaration stripped the exemption from every module that lists its constants that
+        # way — eight models in this tree do, one of them a `problem/`-domain file this gate
+        # reads. BOTH spellings are exercised: F2008 R518 makes the `::` optional, and fixing
+        # only the `::` form left the two halves of one statement disagreeing.
+        for accessibility in ("public :: ncomp", "public ncomp", "private ncomp"):
+            self.assertEqual(self._dataflow_violations(self._ACCESS_TEMPLATE.format(
+                accessibility=accessibility)), [], accessibility)
+
+    _ACCESS_TEMPLATE = """module shallow_water2d_model
 use dep_model
 implicit none
 integer, parameter :: ncomp = 3
-public :: ncomp
+{accessibility}
 contains
 subroutine advance(u_np1, guard_pass)
   real, intent(out) :: u_np1
@@ -6466,7 +6472,6 @@ subroutine advance(u_np1, guard_pass)
 end subroutine advance
 end module shallow_water2d_model
 """
-        self.assertEqual(self._dataflow_violations(source), [])
 
     def test_every_attribute_statement_disqualifies_the_names_it_mentions(self) -> None:
         # The polarity that makes the file-wide rule safe: a statement this parser does not
