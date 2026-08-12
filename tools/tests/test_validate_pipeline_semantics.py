@@ -11666,6 +11666,66 @@ class FortranMakefileObjdirPrefixTest(unittest.TestCase):
             [], violations, f"in-source bare Makefile must stay valid; got: {violations}"
         )
 
+    def _run_without_makefile(self, sources: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            src_dir = Path(tmp)
+            for name, text in sources.items():
+                (src_dir / name).write_text(text, encoding="utf-8")
+            violations: list[str] = []
+            _validate_fortran_makefile_src_dir(src_dir, violations)
+            return violations
+
+    def test_a_wrapped_use_statement_still_requires_a_makefile(self) -> None:
+        # The fail-open this closes: `_fortran_source_module_deps` anchored `^\s*use` at a
+        # PHYSICAL line start, so a continuation between `use` and the module name matched
+        # nothing. With no edges, `required_object_deps` is empty and
+        # `_validate_fortran_makefile_src_dir` returns before requiring a Makefile at all — one
+        # wrapped `use` switched the module-dependency build contract off for the directory.
+        violations = self._run_without_makefile(
+            {
+                "swm_model.f90": self._MODEL,
+                "swm_runner.f90": (
+                    "program swm_runner\n"
+                    "use &\n"
+                    "  swm_model\n"
+                    "implicit none\n"
+                    "logical :: flag\n"
+                    "call solve(flag)\n"
+                    "write(*,*) flag\n"
+                    "end program swm_runner\n"
+                ),
+            }
+        )
+        self.assertTrue(
+            any("missing for fortran module dependency build" in v for v in violations),
+            f"a wrapped `use` must still create the dependency edge; got: {violations}",
+        )
+
+    def test_a_wrapped_module_statement_is_registered_as_the_provider(self) -> None:
+        # The other half of the same fail-open, one layer earlier: an unregistered provider
+        # deletes every edge INTO it, so the consumer's perfectly ordinary `use swm_model`
+        # resolves to nothing and the directory again escapes the Makefile requirement.
+        violations = self._run_without_makefile(
+            {
+                "swm_model.f90": (
+                    "module &\n"
+                    "  swm_model\n"
+                    "implicit none\n"
+                    "contains\n"
+                    "subroutine solve(flag)\n"
+                    "  logical, intent(out) :: flag\n"
+                    "  flag = .true.\n"
+                    "end subroutine solve\n"
+                    "end module swm_model\n"
+                ),
+                "swm_runner.f90": self._RUNNER,
+            }
+        )
+        self.assertTrue(
+            any("missing for fortran module dependency build" in v for v in violations),
+            f"a wrapped `module` must still register the provider; got: {violations}",
+        )
+
 
 class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
     """Build / Validate.execute run in-process (no leaf, no skill): their minimal

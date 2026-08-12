@@ -1649,10 +1649,20 @@ def _parse_makefile_rules_objdir_aware(
 
 
 def _local_fortran_module_map(src_files: list[Path]) -> dict[str, str]:
+    """Which source stem provides each locally-defined module.
+
+    Read through `_joined_masked_fortran_view`, like its consumer below, because a `module &` /
+    `name` wrap would otherwise leave the module unregistered — and an unregistered provider
+    silently deletes every dependency edge into it. Masking is not what closes that (the pattern
+    is `^`-anchored and comments are already gone by then); the reason to take the shared view
+    rather than call `fortran_logical_lines` here is that this defect class IS "N slightly
+    different Fortran views", and a fourth hand-rolled one is how it comes back."""
     module_map: dict[str, str] = {}
     pattern = re.compile(r"^\s*module\s+(?!procedure\b)([a-z_][a-z0-9_]*)\b", re.MULTILINE)
     for src_file in src_files:
-        text = src_file.read_text(encoding="utf-8", errors="ignore").lower()
+        text = _joined_masked_fortran_view(
+            src_file.read_text(encoding="utf-8", errors="ignore").lower()
+        )
         stem = src_file.stem.lower()
         for match in pattern.finditer(text):
             module_name = match.group(1)
@@ -1661,6 +1671,14 @@ def _local_fortran_module_map(src_files: list[Path]) -> dict[str, str]:
 
 
 def _fortran_source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
+    """The local module-dependency edges between ``src_files``, by source stem.
+
+    The `^\\s*use` pattern is anchored at a LOGICAL line start, so it must read
+    `_joined_masked_fortran_view`: a continuation placed between `use` and the module name
+    (`use &` / `dep_model`) matched nothing on physical lines, which emptied the caller's
+    `required_object_deps` — and `_validate_fortran_makefile_src_dir` returns before it can
+    require a Makefile at all when that mapping is empty. One wrapped `use` therefore switched
+    off the module-dependency build contract for the whole directory. Fail-open."""
     module_map = _local_fortran_module_map(src_files)
     use_pattern = re.compile(
         r"^\s*use(?:\s*,\s*(?:intrinsic|non_intrinsic)\s*::|\s*::|\s+)?\s*([a-z_][a-z0-9_]*)\b",
@@ -1668,7 +1686,9 @@ def _fortran_source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
     )
     deps_by_stem: dict[str, set[str]] = {}
     for src_file in src_files:
-        text = src_file.read_text(encoding="utf-8", errors="ignore").lower()
+        text = _joined_masked_fortran_view(
+            src_file.read_text(encoding="utf-8", errors="ignore").lower()
+        )
         stem = src_file.stem.lower()
         deps: set[str] = set()
         for match in use_pattern.finditer(text):
