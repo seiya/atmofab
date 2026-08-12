@@ -1235,11 +1235,20 @@ _FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
 # innermost, the body was cut at the type definition, and all three gates went silent on a
 # discarded dependency result — a fail-open regression against origin/main, found by review.
 #
-# Detection is deliberately PERMISSIVE: `type(t)` and `type is` are excluded, but a variable named
-# `type` is not, because a phantom type open only SUPPRESSES a cut, which lengthens a body instead
-# of truncating it.
-_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()(?!\s+is\b)")
+# Detection is deliberately PERMISSIVE: only the declaration form `type(t) :: x` is excluded by
+# shape. A variable named `type` is not, because a phantom type open merely SUPPRESSES a cut,
+# which lengthens a body instead of truncating it.
+#
+# `type is` is NOT excluded by keyword, though it reads like a SELECT TYPE guard. It is also a
+# derived type NAMED `is` — legal, and `gfortran -fsyntax-only -std=f2008` accepts one with a
+# type-bound `contains` inside a subroutine, where excluding it cut the body at the type and
+# silenced all three gates (found by Codex review). A parameterised one, `type is(k)`, is
+# character-for-character a guard, so no lookahead can separate them. What separates them is
+# CONTEXT: a guard only occurs inside a SELECT TYPE construct, which is tracked instead.
+_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()")
 _FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
+_FORTRAN_SELECT_TYPE_OPEN = re.compile(r"^select\s*type\b")
+_FORTRAN_SELECT_END = re.compile(r"^end\s*select\b")
 # An END closes the open frame of ITS OWN KIND, and nothing else. An earlier draft made the
 # kinds cross-compatible, claiming F2008 lets a `module procedure` body end with `end subroutine`
 # or `end function`; review refuted it and the compiler agrees — `gfortran -fsyntax-only
@@ -1267,35 +1276,53 @@ def _fortran_statement_assigns_to_its_first_token(statement: str) -> bool:
     Blanks being optional in the two-word keywords is what makes those names collide, and that is
     not a spelling this walk can give up: it is the whole point of the terminator fix.
 
-    The LHS may carry subscripts and component references (`endsubroutine(1)%c = …`), and the
-    operator may be either `=` or the pointer form `=>`. A `=` inside parentheses or brackets is
-    not one (`interface assignment(=)` is a real interface statement, `module(size(u, dim=1))` a
-    real assignment), and `==` / `/=` / `<=` / `>=` are comparisons.
+    Between that first token and the operator only a DESIGNATOR's own syntax may appear —
+    subscripts, a substring range, coarray brackets, component references
+    (`endsubroutine(1)%c = …`) — and the operator may be `=` or the pointer form `=>`. Anything
+    else means the first token is not the thing being assigned to: `if (flag) endmodule = 1` does
+    assign, but not to `if`, and answering True there would make the predicate's own name false
+    even though no structural rule matches a statement starting with `if` (Codex review). A `=`
+    inside parentheses or brackets is not the operator either — `interface assignment(=)` is a
+    real interface statement and `module(size(u, dim=1))` a real assignment — and `==` / `/=` /
+    `<=` / `>=` are comparisons.
     """
     first = re.match(r"^[a-z_][a-z0-9_]*", statement)
     if not first:
         return False
-    depth = 0
     index = first.end()
     while index < len(statement):
         char = statement[index]
+        # `isspace`, not `" "`: a TAB before the `=` is nonconforming free-form Fortran that
+        # `gfortran -fsyntax-only -std=f2008` accepts with a warning, and `Generate.gate`'s syntax
+        # check does not promote `-Wtabs`, so `endsubroutine\t= 1.0` reaches here.
+        if char.isspace():
+            index += 1
+            continue
         if char in "([":
-            depth += 1
-        elif char in ")]":
-            depth -= 1
-            if depth < 0:
+            depth = 0
+            while index < len(statement):
+                if statement[index] in "([":
+                    depth += 1
+                elif statement[index] in ")]":
+                    depth -= 1
+                    if depth == 0:
+                        index += 1
+                        break
+                index += 1
+            else:
                 return False
-        elif depth == 0:
-            if char == "=":
-                if statement[index + 1 : index + 2] == "=":
-                    return False
-                return statement[index - 1] not in "<>/="
-            # `isspace`, not `" "`: a TAB before the `=` is nonconforming free-form Fortran that
-            # `gfortran -fsyntax-only -std=f2008` accepts with a warning, and `Generate.gate`'s
-            # syntax check does not promote `-Wtabs`, so `endsubroutine\t= 1.0` reaches here.
-            if not (char.isalnum() or char.isspace() or char in "_%"):
+            continue
+        if char == "%":
+            component = re.match(r"%\s*[a-z_][a-z0-9_]*", statement[index:])
+            if not component:
                 return False
-        index += 1
+            index += component.end()
+            continue
+        if char == "=":
+            if statement[index + 1 : index + 2] == "=":
+                return False
+            return True
+        return False
     return False
 
 
@@ -1408,6 +1435,7 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     # subroutine at the interface. Fail-open, and precisely the hole the span was added to close.
     interface_depth = 0
     type_depth = 0
+    select_type_depth = 0
 
     def close(frame: _FortranUnitFrame, body_end: int) -> None:
         if frame.kind != "subroutine":
@@ -1463,9 +1491,13 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             type_depth = max(type_depth - 1, 0)
             continue
 
+        if _FORTRAN_SELECT_END.match(statement):
+            select_type_depth = max(select_type_depth - 1, 0)
+            continue
+
         if statement.startswith("end"):
-            # Any other construct end (`end do` / `enddo` / `end if` / `end select` / `end block`
-            # / `end associate` / …). None of them closes a scoping unit.
+            # Any other construct end (`end do` / `enddo` / `end if` / `end block` /
+            # `end associate` / …). None of them closes a scoping unit.
             continue
 
         if _FORTRAN_INTERFACE_SPAN_OPEN.match(statement):
@@ -1473,7 +1505,13 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             blanked[-1] = " " * len(line)
             continue
 
-        if _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
+        if _FORTRAN_SELECT_TYPE_OPEN.match(statement):
+            select_type_depth += 1
+            continue
+
+        # Inside a SELECT TYPE, `type is (…)` is a guard and opens nothing. Outside one, the same
+        # text is a derived type named `is`.
+        if not select_type_depth and _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
             type_depth += 1
             continue
 

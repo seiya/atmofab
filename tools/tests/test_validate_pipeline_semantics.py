@@ -5559,6 +5559,53 @@ end module shallow_water2d_model
             self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(only_here), only_here)
             self.assertFalse(vps._FORTRAN_UNIT_END.match(only_here), only_here)
 
+    def test_a_derived_type_named_is_is_a_definition_not_a_select_type_guard(self) -> None:
+        # `type is` reads like a SELECT TYPE guard and is also a derived type NAMED `is`, which is
+        # legal — `gfortran -fsyntax-only -std=f2008` accepts one with a type-bound `contains`
+        # inside a subroutine (executed). Excluding it by keyword, which is what stood here, made
+        # its `contains` cut the body at the type and silenced all three gates (Codex review).
+        #
+        # A PARAMETERISED one, `type is(k)`, is character-for-character a guard, so no lookahead
+        # can separate them; only context can, and the context is tracked instead. The two halves
+        # are asserted together because fixing one by breaking the other is the obvious wrong fix.
+        named_is = """module m
+contains
+subroutine solve(x, y)
+  use show_mod, only: show
+  type is
+  contains
+    procedure, nopass :: show
+  end type is
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(named_is)))
+        # And the guard is still a guard: inside SELECT TYPE it opens no type, so the HOST's own
+        # `contains` still cuts. If it opened one, the cut would be suppressed and the contained
+        # procedure's declarations would rejoin its host.
+        envelopes = vps._fortran_subroutine_envelopes(
+            "subroutine host(u, y)\n"
+            "  class(*), intent(in) :: u\n"
+            "  select type (u)\n"
+            "  type is (real)\n"
+            "    y = 1.0\n"
+            "  end select\n"
+            "contains\n"
+            "  subroutine inner(z)\n"
+            "    real, intent(out) :: z\n"
+            "    z = 2.0\n"
+            "  end subroutine inner\n"
+            "end subroutine host\n"
+        )
+        host = next(e for e in envelopes if e.name == "host")
+        self.assertNotIn("intent(out) :: z", host.body)
+
     def test_a_type_definition_stops_suppressing_the_cut_when_it_ends(self) -> None:
         # The other half of the type tracking: if `end type` is not recognised the suppression
         # never lifts, so the HOST's own `contains` — the one the cut exists for — stops cutting
@@ -5627,8 +5674,13 @@ end module m2
         # The prefix words are deliberately NOT enumerated: F2008 has pure/impure/elemental/
         # recursive/module and F2018 adds non_recursive, so the set is not closed across
         # standards. Replacing the open prefix with an F2008 list kills the `non_recursive` row.
+        # The three-word row is not decoration: restricting the prefix to at most two words passed
+        # the whole suite until it existed, while `module pure recursive subroutine solve(x)` — a
+        # legal separate module subprogram (`gfortran -fsyntax-only -std=f2008`) — lost its
+        # envelope entirely (Codex review).
         for prefix in ("", "pure ", "impure ", "elemental ", "recursive ", "non_recursive ",
-                       "module ", "pure elemental ", "recursive module "):
+                       "module ", "pure elemental ", "recursive module ",
+                       "module pure recursive ", "pure recursive elemental "):
             envelopes = vps._fortran_subroutine_envelopes(
                 f"{prefix}subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
             )
@@ -5755,9 +5807,13 @@ end module m
                           "endsubroutine[1] = 1.0", "interface[1] = 1.0"):
             self.assertTrue(
                 vps._fortran_statement_assigns_to_its_first_token(statement), statement)
-        # A comparison is not an assignment. No structural statement carries a top-level `==`, so
-        # nothing downstream distinguishes this today; it is the predicate's own contract.
-        for statement in ("x == 1", "endsubroutine == 1.0", "a /= b", "a <= b", "a >= b"):
+        # A comparison is not an assignment, and neither is an assignment to something OTHER than
+        # the first token: `if (flag) endmodule = 1` assigns, but not to `if`. Nothing downstream
+        # distinguishes these today — no structural rule matches a statement starting with `if` or
+        # `where`, and no structural statement carries a top-level `==` — so they are the
+        # predicate's own contract, which is the thing the rest of the walk is written against.
+        for statement in ("x == 1", "endsubroutine == 1.0", "a /= b", "a <= b", "a >= b",
+                          "if (flag) endmodule = 1", "where (mask) endsubroutine = 1.0"):
             self.assertFalse(
                 vps._fortran_statement_assigns_to_its_first_token(statement), statement)
 
