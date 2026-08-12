@@ -1181,10 +1181,10 @@ _FORTRAN_BARE_END = re.compile(r"^end\s*$")
 # An `interface` body declares procedures that are NOT definitions: its own `end subroutine`
 # closed the enclosing envelope early, truncating the real body before the `call` was reached —
 # and a body that COMPLIES with fortitude's C002 (`implicit none` inside the interface) is exactly
-# the reachable shape, so complying made the hole reachable rather than closing it. The lookahead
-# is the mirror: `interface` is not a reserved word, so `interface = 1.0` must not open a span
-# that never closes.
-_FORTRAN_INTERFACE_SPAN_OPEN = re.compile(r"^(?:abstract\s+)?interface\b(?!\s*[=(%])")
+# the reachable shape, so complying made the hole reachable rather than closing it. An assignment
+# to a variable named `interface` is NOT guarded here: that mirror is handled once for every rule
+# in this walk, by `_fortran_statement_assigns_to_its_first_token`.
+_FORTRAN_INTERFACE_SPAN_OPEN = re.compile(r"^(?:abstract\s+)?interface\b")
 _FORTRAN_INTERFACE_SPAN_END = re.compile(r"^end\s*interface\b")
 # CONTAINS is the whole statement (the view has already stripped any label).
 _FORTRAN_CONTAINS_STATEMENT = re.compile(r"^contains\s*$")
@@ -1202,14 +1202,10 @@ _FORTRAN_SUBROUTINE_HEADER = re.compile(
 # `end subroutine` or a bare `end` may close. Inside an interface block the same spelling means
 # something else entirely — that one is never seen here, because interface spans are skipped.
 _FORTRAN_MODULE_PROCEDURE_OPEN = re.compile(r"^module\s+procedure\s+[a-z_][a-z0-9_]*")
-# The lookahead keeps an assignment to a variable named after one of these keywords from opening
-# a frame — three spellings of exactly that (`module%v`, `module(1)%v`, `module(size(u, dim=1))`)
-# defeated the constant-exemption rule, and all three are accepted by `gfortran -std=f2008`,
-# because none of these words is reserved. `submodule` is written separately BECAUSE of that
-# lookahead: R1118 puts a parenthesised parent identifier right after the keyword, so the shape
-# the lookahead rejects is the real statement rather than the impostor.
+# `submodule` is written separately because a parenthesised parent identifier follows the keyword
+# directly, so it cannot share the others' word boundary shape.
 _FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
-    r"^(?:(module|program|block\s*data)\b(?!\s*[=(%])|(submodule)\s*\()"
+    r"^(?:(module|program|block\s*data)\b|(submodule)\s*\()"
 )
 # A derived type's own `contains` introduces TYPE-BOUND procedures, not contained ones, so it must
 # not cut a body. This tracking was removed once, on the argument that a type definition cannot be
@@ -1241,6 +1237,48 @@ _FORTRAN_END_KIND_CLOSES = {
     "program": {"program"},
     "blockdata": {"blockdata"},
 }
+
+
+def _fortran_statement_assigns_to_its_first_token(statement: str) -> bool:
+    """True when ``statement`` is an assignment to whatever its FIRST token names.
+
+    Such a statement is never structural, whatever that token is spelled like — and none of these
+    keywords is reserved, so every one of them is a legal variable name. This is ONE predicate
+    applied to every rule in the walk rather than a lookahead each rule has to remember to carry,
+    because carrying it per-rule is what failed: the OPENERS had it and the TERMINATOR did not, so
+    `real :: endsubroutine` / `endsubroutine = 1.0` in a body — accepted by `gfortran
+    -fsyntax-only -std=f2008` — closed the subroutine at that line and silenced all three gates.
+    `endprocedure` and `endmodule` did the same, the last by closing the module and cascading.
+    Blanks being optional in the two-word keywords is what makes those names collide, and that is
+    not a spelling this walk can give up: it is the whole point of the terminator fix.
+
+    The LHS may carry subscripts and component references (`endsubroutine(1)%c = …`), and the
+    operator may be either `=` or the pointer form `=>`. A `=` inside parentheses or brackets is
+    not one (`interface assignment(=)` is a real interface statement, `module(size(u, dim=1))` a
+    real assignment), and `==` / `/=` / `<=` / `>=` are comparisons.
+    """
+    first = re.match(r"^[a-z_][a-z0-9_]*", statement)
+    if not first:
+        return False
+    depth = 0
+    index = first.end()
+    while index < len(statement):
+        char = statement[index]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+            if depth < 0:
+                return False
+        elif depth == 0:
+            if char == "=":
+                if statement[index + 1 : index + 2] == "=":
+                    return False
+                return statement[index - 1] not in "<>/="
+            if not (char.isalnum() or char in " _%"):
+                return False
+        index += 1
+    return False
 
 
 @dataclass(frozen=True)
@@ -1363,6 +1401,10 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             in_interface = False
         else:
             blanked.append(line)
+
+        # Before any structural rule, and for all of them at once.
+        if _fortran_statement_assigns_to_its_first_token(statement):
+            continue
 
         end_match = _FORTRAN_UNIT_END_KIND.match(statement)
         if end_match:

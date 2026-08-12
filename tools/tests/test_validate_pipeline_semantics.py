@@ -5563,11 +5563,54 @@ end module shallow_water2d_model
             )
             self.assertEqual([e.name for e in envelopes], ["solve"], prefix)
 
+    def test_an_assignment_to_a_keyword_named_variable_is_not_structure(self) -> None:
+        # One row per keyword this walk matches on, as the target of an ordinary assignment. None
+        # of them is a reserved word, so every row is legal — `gfortran -fsyntax-only -std=f2008`
+        # accepts `real :: endsubroutine` / `endsubroutine = 1.0` (executed).
+        #
+        # This was a REAL fail-open in this branch, found by review: the openers each carried their
+        # own "not if followed by `=`" lookahead and the TERMINATOR carried none, so an assignment
+        # to `endsubroutine` (or `endprocedure`, or `endmodule`, which cascaded through the module
+        # frame) closed the subroutine at that line and silenced all three gates for the rest of
+        # it. The fix is one predicate applied to every rule rather than a lookahead per rule, so
+        # the row that matters is any row: dropping the predicate kills all of them at once, and
+        # that is the point — the per-rule form is what let one rule be forgotten.
+        for name in ("endsubroutine", "endprocedure", "endmodule", "endprogram", "endfunction",
+                     "endsubmodule", "endblockdata", "endinterface", "interface", "contains",
+                     "module", "submodule", "program", "type", "subroutine", "function"):
+            for declaration, assignment in ((f"real :: {name}", f"{name} = 1.0"),
+                                            (f"real :: {name}(3)", f"{name}(1) = 1.0"),
+                                            (f"type(holder) :: {name}", f"{name}%c = 1.0")):
+                source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
+                          f"  real, intent(in) :: x\n  real, intent(out) :: y\n  real :: scratch\n"
+                          f"  {declaration}\n  {assignment}\n"
+                          f"  call dep__apply(x, scratch)\n  y = x\n"
+                          f"end subroutine solve\nend module m\n")
+                self.assertIn("does not propagate dependency operation outputs",
+                              " ".join(self._dataflow_violations(source)), assignment)
+
+    def test_the_assignment_predicate_leaves_structural_statements_alone(self) -> None:
+        # The other half: over-classifying would make a real structural statement invisible, which
+        # fails LONG rather than open, but silently changes what every rule below sees. `=` inside
+        # parentheses is not a top-level assignment — `interface assignment(=)` is a real interface
+        # statement — and `==` / `/=` / `<=` / `>=` are comparisons.
+        for statement in ("subroutine solve(x)", "pure subroutine solve(x)", "end subroutine solve",
+                          "endsubroutine", "end", "module m", "submodule (parent) child",
+                          "program p", "block data bd", "module procedure solve", "contains",
+                          "interface", "abstract interface", "interface assignment(=)",
+                          "interface operator(==)", "end interface", "type :: holder",
+                          "type, extends(base) :: holder", "real function f(x) result(y)"):
+            self.assertFalse(
+                vps._fortran_statement_assigns_to_its_first_token(statement), statement)
+        for statement in ("endsubroutine = 1.0", "endsubroutine(1) = 1.0", "endsubroutine%c = 1.0",
+                          "interface = 1.0", "module(size(u, dim=1)) = 3.0", "p => target"):
+            self.assertTrue(
+                vps._fortran_statement_assigns_to_its_first_token(statement), statement)
+
     def test_a_name_that_looks_like_interface_does_not_open_a_span(self) -> None:
-        # The mirror of the interface fix. `interface` is not a reserved word, so a model that
-        # names a variable after it would otherwise open a span nothing closes — blanking the
-        # rest of the file and silencing the gate for it. Fail-open, reachable by naming one
-        # variable, which is exactly how the constant-exemption rule was defeated three times.
+        # The gate-level case of the row above, kept because it is the shape that was originally
+        # guarded here — an `interface` variable opens a span nothing closes, blanking the rest of
+        # the file. It no longer has its own guard; the predicate is what closes it.
         for assignment in ("interface = 1.0", "interface(3) = 1.0", "interface%x = 1.0"):
             source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
                       f"  real, intent(in) :: x\n  real, intent(out) :: y\n  real :: scratch\n"
