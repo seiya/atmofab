@@ -5559,6 +5559,30 @@ end module shallow_water2d_model
             self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(only_here), only_here)
             self.assertFalse(vps._FORTRAN_UNIT_END.match(only_here), only_here)
 
+    def test_a_type_definition_stops_suppressing_the_cut_when_it_ends(self) -> None:
+        # The other half of the type tracking: if `end type` is not recognised the suppression
+        # never lifts, so the HOST's own `contains` — the one the cut exists for — stops cutting
+        # and the contained procedure's declarations are attributed to its host again. Fail-long
+        # rather than fail-open, and invisible to every other test here, which is why the closing
+        # keyword gets its own case rather than sharing the opener's.
+        envelopes = vps._fortran_subroutine_envelopes(
+            "subroutine host(x, y)\n"
+            "  type :: holder\n"
+            "    real :: v\n"
+            "  end type holder\n"
+            "  type(holder) :: h\n"
+            "  y = host_marker\n"
+            "contains\n"
+            "  subroutine inner(z)\n"
+            "    real, intent(out) :: z\n"
+            "    z = 2.0\n"
+            "  end subroutine inner\n"
+            "end subroutine host\n"
+        )
+        host = next(e for e in envelopes if e.name == "host")
+        self.assertIn("y = host_marker", host.body)
+        self.assertNotIn("intent(out) :: z", host.body)
+
     def test_envelopes_come_back_in_source_order(self) -> None:
         # A contained procedure CLOSES before its host, so insertion order is not source order.
         # Every consumer reports `{model_file}: subroutine {name}` in the order it iterates, and a
@@ -5650,8 +5674,18 @@ end module m2
             self.assertFalse(
                 vps._fortran_statement_assigns_to_its_first_token(statement), statement)
         for statement in ("endsubroutine = 1.0", "endsubroutine(1) = 1.0", "endsubroutine%c = 1.0",
-                          "interface = 1.0", "module(size(u, dim=1)) = 3.0", "p => target"):
+                          "interface = 1.0", "module(size(u, dim=1)) = 3.0", "p => target",
+                          # A coarray reference. `Generate.gate`'s syntax check passes no
+                          # `-fcoarray`, so no source carrying one reaches these gates today —
+                          # which is a property of an argv elsewhere, not of this walk, so the
+                          # bracket is closed here rather than relied upon there.
+                          "endsubroutine[1] = 1.0", "interface[1] = 1.0"):
             self.assertTrue(
+                vps._fortran_statement_assigns_to_its_first_token(statement), statement)
+        # A comparison is not an assignment. No structural statement carries a top-level `==`, so
+        # nothing downstream distinguishes this today; it is the predicate's own contract.
+        for statement in ("x == 1", "endsubroutine == 1.0", "a /= b", "a <= b", "a >= b"):
+            self.assertFalse(
                 vps._fortran_statement_assigns_to_its_first_token(statement), statement)
 
     def test_a_name_that_looks_like_interface_does_not_open_a_span(self) -> None:
