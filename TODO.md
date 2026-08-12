@@ -1,6 +1,13 @@
 # TODO
 This document is the canonical source that aggregates incomplete tasks managed across the whole repository.
 
+**How a finished item is recorded.** Do not delete a completed item. Keep it in place and append a
+`- **DONE (<what closed it>, <date>).**` sub-bullet stating the evidence, so that the reasoning which
+closed it stays readable next to the problem it closed. A top-level item is removed only when it turns
+out never to have been a task (withdrawn or duplicated), not when it is finished. Measured over the
+file's history on 2026-08-13: of the 71 commits that touch it, 42 add a `**DONE` line and 6 remove a
+top-level item.
+
 ## TODO list
 
 - Once the Claude backend can obtain `session_id` or `agent_session_id` from the hook payload, abolish the `agent_run_id` resolution that depends on `active_child_agent_run_id.txt`, and unify it to the same session-identifier-based resolution as the Codex backend.
