@@ -1154,20 +1154,274 @@ def _is_literal_like_expr(expr: str) -> bool:
 
 
 # The `problem` model gates below match Fortran's KEYWORD STRUCTURE over raw source, so each
-# reduces its input with `_joined_masked_fortran_view` first. Without the mask half, this pattern
-# stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body, every
-# gate that reads the body goes silent, and a legal model passes — fail-open from a comment. The
-# mirror is a commented-out procedure minting a phantom match, which fails closed. Without the
+# reduces its input with `_joined_masked_fortran_view` first. Without the mask half, the body
+# selection stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body,
+# every gate that reads the body goes silent, and a legal model passes — fail-open from a comment.
+# The mirror is a commented-out procedure minting a phantom match, which fails closed. Without the
 # join half, a wrapped `intent(out)` list or `call` actual list is read as fragments.
 #
 # `call` positions stay comparable with assignment positions because BOTH are offsets into the
 # same view, not because the view preserves the file's offsets — it does not (see the view's
 # docstring). Nothing here reports a line number; anything that ever does must take it from
 # `fortran_lines.fortran_logical_lines`' `start_lineno`.
-_PROBLEM_SUBROUTINE_ENVELOPE = re.compile(
-    r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
-    re.DOTALL,
+
+# Every END statement F2008 gives a PROGRAM UNIT or a subprogram: R1103 end-program,
+# R1105 end-module, R1119 end-submodule, R1116 end-block-data, R1232 end-function,
+# R1237 end-subroutine, and end-mp-subprogram. That list is closed, and it is the whole of what
+# may close an envelope: every other `end X` closes an executable construct or a derived type.
+# `end\s*` (blank optional) is the spelling `_IFACE_PROC_END` and `_FORTRAN_CONSTRUCT_END` already
+# use, for the reason F2008 Table 3.1 gives — `endsubroutine` is one legal word.
+_FORTRAN_UNIT_END_KIND = re.compile(
+    r"^end\s*(subroutine|function|procedure|module|submodule|program|block\s*data)\b"
 )
+# The bare `end`. Only a program unit or a subprogram may be closed by one — every executable
+# construct requires its keyword — so it is unambiguous, and it is the terminator `gfortran
+# -std=f2008` accepts for a module subprogram while this module used to read straight past it.
+_FORTRAN_BARE_END = re.compile(r"^end\s*$")
+# An `interface` body declares procedures that are NOT definitions: its own `end subroutine`
+# closed the enclosing envelope early, truncating the real body before the `call` was reached —
+# and a body that COMPLIES with fortitude's C002 (`implicit none` inside the interface) is exactly
+# the reachable shape, so complying made the hole reachable rather than closing it. The lookahead
+# is the mirror: `interface` is not a reserved word, so `interface = 1.0` must not open a span
+# that never closes.
+_FORTRAN_INTERFACE_SPAN_OPEN = re.compile(r"^(?:abstract\s+)?interface\b(?!\s*[=(%])")
+_FORTRAN_INTERFACE_SPAN_END = re.compile(r"^end\s*interface\b")
+# CONTAINS is the whole statement (the view has already stripped any label).
+_FORTRAN_CONTAINS_STATEMENT = re.compile(r"^contains\s*$")
+# The prefix words before `subroutine` are deliberately NOT enumerated. F2008 has
+# `pure` / `impure` / `elemental` / `recursive` / `module`, F2018 adds `non_recursive`, so the set
+# is not closed ACROSS STANDARDS — `orchestration_runtime._FORTRAN_SUBROUTINE_RE` enumerates them
+# and this diverges on purpose. Over-matching is prevented structurally instead, by testing the
+# END rules before this one (`end subroutine s` matches this pattern with `end` as a prefix word).
+# The dummy-arg parens are OPTIONAL here: a paren-less `subroutine solve` was never matched at
+# all, so its terminator paired with a neighbour's.
+_FORTRAN_SUBROUTINE_HEADER = re.compile(
+    r"^(?:[a-z_][a-z0-9_]*\s+)*?subroutine\s+([a-z_][a-z0-9_]*)\s*(\()?"
+)
+# A separate module subprogram body (`module procedure solve`), which `end procedure`,
+# `end subroutine` or a bare `end` may close. Inside an interface block the same spelling means
+# something else entirely — that one is never seen here, because interface spans are skipped.
+_FORTRAN_MODULE_PROCEDURE_OPEN = re.compile(r"^module\s+procedure\s+[a-z_][a-z0-9_]*")
+# The lookahead keeps an assignment to a variable named after one of these keywords from opening
+# a frame — three spellings of exactly that (`module%v`, `module(1)%v`, `module(size(u, dim=1))`)
+# defeated the constant-exemption rule, and all three are accepted by `gfortran -std=f2008`,
+# because none of these words is reserved. `submodule` is written separately BECAUSE of that
+# lookahead: R1118 puts a parenthesised parent identifier right after the keyword, so the shape
+# the lookahead rejects is the real statement rather than the impostor.
+_FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
+    r"^(?:(module|program|block\s*data)\b(?!\s*[=(%])|(submodule)\s*\()"
+)
+# A derived-type DEFINITION, whose own `contains` introduces type-bound procedures rather than
+# contained ones. `type(t)` and `select type` / `type is` are excluded; a variable named `type`
+# is deliberately NOT, because a phantom type only suppresses a `contains` cut, which lengthens a
+# body rather than truncating it.
+_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()(?!\s+is\b)")
+_FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
+# Which open frames an END statement of a given kind may close. A separate module subprogram is
+# the only reason these are sets rather than equality: F2008 lets `module procedure solve` end
+# with `end procedure`, `end subroutine` or `end function`. Nothing else is compatible — an
+# `end function` may not close a `subroutine` frame — and an END whose kind matches NO open frame
+# is IGNORED rather than popping something, because popping on mismatch would turn every
+# unrecognised opener into a silent gate, which is the defect this walk exists to remove.
+_FORTRAN_END_KIND_CLOSES = {
+    "subroutine": {"subroutine", "procedure"},
+    "function": {"function", "procedure"},
+    "procedure": {"procedure", "subroutine", "function"},
+    "module": {"module"},
+    "submodule": {"submodule"},
+    "program": {"program"},
+    "blockdata": {"blockdata"},
+}
+
+
+@dataclass(frozen=True)
+class _FortranSubroutineEnvelope:
+    """One `subroutine` definition, as the three `problem` model gates read it."""
+
+    name: str
+    dummy_args: str
+    body: str
+
+
+@dataclass
+class _FortranUnitFrame:
+    kind: str
+    name: str
+    dummy_args: str
+    body_start: int
+    contains_at: int | None = None
+
+
+def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelope]:
+    """Every `subroutine` DEFINITION in ``lowered``, with the body each gate must read.
+
+    Replaces a single flat `re.DOTALL` span (`subroutine name(args) ... end subroutine`) whose
+    three defects each silenced ALL THREE `problem` gates for a WHOLE FILE, every one of them
+    accepted by `gfortran -fsyntax-only -std=f2008` and only one of them (the bare `end`, S061)
+    caught by `fortitude check`:
+
+    * the one-word `endsubroutine name`, because the terminator demanded a blank F2008 makes
+      optional;
+    * a bare `end`, because the terminator demanded the keyword at all;
+    * an `interface` block inside the body, because the interface body's own `end subroutine`
+      closed the envelope early and truncated the real body before the `call` was reached.
+
+    Each was fail-OPEN and none of them is a regression: origin/main was silent on all three.
+
+    The walk reads `_joined_masked_fortran_view` — applied here, not by the caller, because the
+    view is a fixed point, so a gate that has already reduced its text pays one idempotent pass
+    and a test may hand over raw source (the argument `_split_fortran_names` already makes).
+
+    THE ONE INVARIANT A REWRITE MUST NOT BREAK: `body` is ONE CONTIGUOUS SLICE of a
+    length-preserving transform of the view, so a position inside it is a position inside the
+    view. `_validate_problem_model_dependency_dataflow` decides "was this actual assigned BEFORE
+    the call" by comparing an `_assignment_records` position with an `_iter_fortran_calls`
+    position, both taken inside `body`, and `_joined_masked_fortran_view`'s own contract is that
+    offsets are comparable only when both come from the same view.
+
+    An interface span is therefore BLANKED IN PLACE rather than deleted. Note what that does NOT
+    buy, because an earlier draft of this note claimed it and the claim is false: deletion also
+    preserves the ORDER of what remains, so the before/after comparison above would survive it.
+    What blanking buys is that the body stays a slice — one `start:end` pair over a single string,
+    with no positions to re-derive — and that a rule which ever wants to relate a body position
+    back to the view can, which a delete-and-rejoin body could not.
+
+    Where the walk has to choose, it chooses the direction that reads a body TOO LONG. An END
+    statement matching no open frame is ignored; a subroutine still open at end of input is
+    emitted to the end of the view (rather than, as before, not emitted at all). A body read too
+    long can only mis-attribute or over-report — a body read too short is a silent gate, which is
+    the failure this walk exists to remove.
+
+    Two decisions bound what is emitted rather than how far it runs:
+
+    * A contained procedure is CUT from its host's body at the host's `contains`, and gets its own
+      envelope. Nothing goes unanalysed; what is prevented is the contained procedure's
+      `intent(out)` declarations being attributed to its host as well, which would manufacture
+      violations in gates that count them.
+    * A `function` body is NOT an envelope. Function frames are tracked — a bare `end` closing a
+      sibling function must not be read as closing this subroutine — but a `problem` model that
+      computes inside a module `function` is invisible to all three gates. That is pre-existing,
+      measured (92 of the 365 `*_model.f90` in this tree define one), and recorded in `TODO.md`
+      as its own item rather than folded in here.
+    """
+    view = _joined_masked_fortran_view(lowered)
+    lines = view.split("\n")
+
+    blanked: list[str] = []
+    starts: list[int] = []
+    offset = 0
+    for line in lines:
+        starts.append(offset)
+        offset += len(line) + 1
+    total = max(offset - 1, 0)
+
+    frames: list[_FortranUnitFrame] = []
+    # (body_start, body_end, name, dummy_args). The bodies are sliced after the walk, once
+    # `blanked` is complete — a frame closes before the text it does not cover has been read.
+    closed: list[tuple[int, int, str, str]] = []
+    in_interface = False
+    type_depth = 0
+
+    def close(frame: _FortranUnitFrame, body_end: int) -> None:
+        if frame.kind != "subroutine":
+            return
+        end = body_end if frame.contains_at is None else min(frame.contains_at, body_end)
+        closed.append((frame.body_start, max(end, frame.body_start), frame.name, frame.dummy_args))
+
+    for index, line in enumerate(lines):
+        statement = _fortran_statement_body(line)
+        line_start = starts[index]
+
+        if in_interface:
+            blanked.append(" " * len(line))
+            if _FORTRAN_INTERFACE_SPAN_END.match(statement):
+                in_interface = False
+                continue
+            # An interface nobody closed must not swallow the rest of the file: the END of the
+            # enclosing program unit ends it too, and falls through to be handled below.
+            if not re.match(r"^end\s*(?:module|submodule|program)\b", statement):
+                continue
+            in_interface = False
+        else:
+            blanked.append(line)
+
+        end_match = _FORTRAN_UNIT_END_KIND.match(statement)
+        if end_match:
+            kind = re.sub(r"\s+", "", end_match.group(1))
+            closes = _FORTRAN_END_KIND_CLOSES[kind]
+            for depth in range(len(frames) - 1, -1, -1):
+                if frames[depth].kind in closes:
+                    for frame in reversed(frames[depth:]):
+                        close(frame, line_start)
+                    del frames[depth:]
+                    break
+            continue
+
+        if _FORTRAN_BARE_END.match(statement):
+            if frames:
+                close(frames.pop(), line_start)
+            continue
+
+        if _FORTRAN_TYPE_DEFINITION_END.match(statement):
+            type_depth = max(type_depth - 1, 0)
+            continue
+
+        if statement.startswith("end"):
+            # Any other construct end (`end do` / `enddo` / `end if` / `end select` / `end block`
+            # / `end associate` / …). None of them closes a scoping unit.
+            continue
+
+        if _FORTRAN_INTERFACE_SPAN_OPEN.match(statement):
+            in_interface = True
+            blanked[-1] = " " * len(line)
+            continue
+
+        if _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
+            type_depth += 1
+            continue
+
+        if _FORTRAN_CONTAINS_STATEMENT.match(statement):
+            if type_depth == 0 and frames and frames[-1].kind == "subroutine":
+                if frames[-1].contains_at is None:
+                    frames[-1].contains_at = line_start
+            continue
+
+        header = _FORTRAN_SUBROUTINE_HEADER.match(statement)
+        if header:
+            dummy_args = ""
+            if header.group(2):
+                dummy_args = _extract_balanced_parens(statement, header.end(2) - 1)
+            frames.append(
+                _FortranUnitFrame(
+                    kind="subroutine",
+                    name=header.group(1),
+                    dummy_args=dummy_args,
+                    body_start=starts[index] + len(line) + 1,
+                )
+            )
+            continue
+
+        if _FORTRAN_MODULE_PROCEDURE_OPEN.match(statement):
+            frames.append(_FortranUnitFrame("procedure", "", "", starts[index] + len(line) + 1))
+            continue
+
+        if _FORTRAN_FUNCTION_OPEN.search(statement):
+            frames.append(_FortranUnitFrame("function", "", "", starts[index] + len(line) + 1))
+            continue
+
+        unit = _FORTRAN_PROGRAM_UNIT_OPEN.match(statement)
+        if unit:
+            kind = re.sub(r"\s+", "", unit.group(1) or unit.group(2))
+            frames.append(_FortranUnitFrame(kind, "", "", starts[index] + len(line) + 1))
+
+    for frame in reversed(frames):
+        close(frame, total)
+
+    blanked_view = "\n".join(blanked)
+    return [
+        _FortranSubroutineEnvelope(name=name, dummy_args=dummy_args, body=blanked_view[start:end])
+        for start, end, name, dummy_args in sorted(closed)
+    ]
 
 
 def _validate_problem_model_literal_outputs(
@@ -1180,13 +1434,12 @@ def _validate_problem_model_literal_outputs(
         return
 
     lowered = _joined_masked_fortran_view(lowered)
-    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
-    for match in subroutine_pattern.finditer(lowered):
-        sub_name = match.group(1)
-        arg_names = set(_split_fortran_names(match.group(2)))
-        body = match.group(3)
+    for envelope in _fortran_subroutine_envelopes(lowered):
+        sub_name = envelope.name
+        arg_names = set(_split_fortran_names(envelope.dummy_args))
+        body = envelope.body
 
         out_vars: set[str] = set()
         for out_match in intent_out_pattern.finditer(body):
@@ -1341,7 +1594,6 @@ def _validate_problem_model_dependency_dataflow(
         return
 
     lowered = _joined_masked_fortran_view(lowered)
-    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
     # Which names are named constants EVERYWHERE they appear in this file. Deliberately a
@@ -1358,13 +1610,17 @@ def _validate_problem_model_dependency_dataflow(
     # or bound by an `associate` — that is what made it definable at the call. What it costs is a
     # false violation when one file legitimately uses a name as a constant in one procedure and a
     # variable in another; that is the direction this repository accepts.
+    # Read from the view, NOT from the envelope walk's interface-blanked text. Names an interface
+    # body declares belong in `file_other_names`, where they can only SUBTRACT an exemption —
+    # fail-closed. Feeding this the blanked text would drop them and re-exempt the name, which is
+    # fail-OPEN at exactly the candidate rule below. The blanking stays inside the walk.
     file_constants, file_other_names = _fortran_declared_names(lowered)
     parameter_names = file_constants - file_other_names
 
-    for sub_match in subroutine_pattern.finditer(lowered):
-        sub_name = sub_match.group(1)
-        arg_names = set(_split_fortran_names(sub_match.group(2)))
-        body = sub_match.group(3)
+    for envelope in _fortran_subroutine_envelopes(lowered):
+        sub_name = envelope.name
+        arg_names = set(_split_fortran_names(envelope.dummy_args))
+        body = envelope.body
         assignments = _assignment_records(body)
 
         out_vars: set[str] = set()
@@ -1442,7 +1698,6 @@ def _validate_problem_metric_only_scalar_kernel(
     spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
 
     lowered = _joined_masked_fortran_view(lowered)
-    subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
     intent_in_or_inout_array_pattern = re.compile(
         r"intent\s*\(\s*(?:in|inout)\s*\)\s*::\s*[^\n]*\([^)]+\)"
@@ -1450,9 +1705,9 @@ def _validate_problem_metric_only_scalar_kernel(
     do_loop_pattern = re.compile(r"^\s*do\s+[a-z_][a-z0-9_]*\s*=", re.MULTILINE)
     forall_pattern = re.compile(r"^\s*forall\s*\(", re.MULTILINE)
 
-    for match in subroutine_pattern.finditer(lowered):
-        sub_name = match.group(1)
-        body = match.group(3)
+    for envelope in _fortran_subroutine_envelopes(lowered):
+        sub_name = envelope.name
+        body = envelope.body
         out_vars: set[str] = set()
         for out_match in intent_out_pattern.finditer(body):
             out_vars.update(_split_fortran_names(out_match.group(1)))

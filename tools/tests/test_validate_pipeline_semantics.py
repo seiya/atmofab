@@ -5361,6 +5361,397 @@ end module m
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(_dataflow(inserted)), f"violation lost for {inserted!r}")
 
+    # --- the envelope walk -------------------------------------------------------------------
+    #
+    # `_fortran_subroutine_envelopes` replaced a flat DOTALL span whose terminator was
+    # `end\s+subroutine`. Three shapes `gfortran -fsyntax-only -std=f2008` accepts silenced ALL
+    # THREE `problem` gates for the WHOLE FILE, and only the bare `end` was caught by anything
+    # else in the chain (fortitude S061): the one-word `endsubroutine`, the bare `end`, and an
+    # `interface` block inside the body whose own `end subroutine` closed the envelope early.
+    #
+    # WHAT THE TESTS BELOW ARE AND ARE NOT. The three matrices are behavioural: they assert the
+    # holes are closed at gate level, once per gate, because "the fix lands in one helper that all
+    # three read" is otherwise an argument rather than an assertion. The tables after them are the
+    # mechanism pins — each row dies to its own alternative of its own pattern. When a mutation
+    # kills a whole group at once, it is the tables that were meant to notice, not the matrices.
+
+    _TERMINATOR_SPELLINGS = (
+        "end subroutine solve",
+        "end subroutine",
+        "endsubroutine solve",
+        "endsubroutine",
+        "end",
+    )
+    # An interface body that COMPLIES with fortitude's C002 (`implicit none` inside it) — that is
+    # the shape which passes the whole `Generate.gate` chain clean, so complying made this hole
+    # reachable rather than closing it. Its own `end subroutine` is the terminator that used to
+    # close the enclosing envelope.
+    _INTERFACE_BLOCK = """  interface
+    subroutine other(a)
+      implicit none
+      real, intent(in) :: a
+    end subroutine other
+  end interface
+"""
+
+    def _envelope_matrix_sources(self, template: str) -> list[tuple[str, str]]:
+        return [
+            (f"{terminator!r}{' + interface' if interface else ''}",
+             template.format(terminator=terminator, interface=interface))
+            for terminator in self._TERMINATOR_SPELLINGS
+            for interface in ("", self._INTERFACE_BLOCK)
+        ]
+
+    _DISCARDED_DEP_TEMPLATE = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+{interface}  call dep__apply(x, scratch)
+  y = x
+{terminator}
+end module shallow_water2d_model
+"""
+
+    def test_every_terminator_spelling_closes_the_dependency_dataflow_envelope(self) -> None:
+        # The completion criterion of the TODO item, on the gate its reproduction used: a model
+        # whose ONLY defect is a discarded dependency result must be flagged under every
+        # terminator spelling and with an interface block present.
+        for label, source in self._envelope_matrix_sources(self._DISCARDED_DEP_TEMPLATE):
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(self._dataflow_violations(source)), label)
+
+    _LITERAL_ONLY_TEMPLATE = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+{interface}  y = 1.0
+{terminator}
+end module shallow_water2d_model
+"""
+
+    def test_every_terminator_spelling_closes_the_literal_outputs_envelope(self) -> None:
+        for label, source in self._envelope_matrix_sources(self._LITERAL_ONLY_TEMPLATE):
+            self.assertIn("literal-only assignments for all intent(out) vars",
+                          " ".join(self._literal_output_violations(source)), label)
+
+    _METRIC_ONLY_TEMPLATE = """module shallow_water2d_model
+implicit none
+contains
+subroutine metrics(a, e_tot, e_kin, e_pot, mass, enstrophy)
+  real, intent(in) :: a
+  real, intent(out) :: e_tot, e_kin, e_pot, mass, enstrophy
+{interface}  e_tot = a
+  e_kin = a
+  e_pot = a
+  mass = a
+  enstrophy = a
+{terminator}
+end module shallow_water2d_model
+"""
+
+    def test_every_terminator_spelling_closes_the_metric_only_kernel_envelope(self) -> None:
+        for label, source in self._envelope_matrix_sources(self._METRIC_ONLY_TEMPLATE):
+            self.assertIn("metric-only scalar kernel",
+                          " ".join(self._metric_kernel_violations(source)), label)
+
+    def _literal_output_violations(self, source: str) -> list[str]:
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_model_literal_outputs(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        return violations
+
+    def _metric_kernel_violations(self, source: str) -> list[str]:
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_metric_only_scalar_kernel(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        return violations
+
+    def test_every_program_unit_end_closes_an_envelope(self) -> None:
+        # One row per alternative of `_FORTRAN_UNIT_END_KIND`, in both spellings F2008 Table 3.1
+        # allows, plus the bare `end`. Dropping a single alternative leaves that terminator
+        # unrecognised, the body running past it, and no other test noticing — the same argument
+        # the `_FORTRAN_BARE_DECLARATION` table below makes for its own alternatives.
+        #
+        # `procedure` closes a subroutine frame because a SEPARATE MODULE SUBPROGRAM
+        # (`module procedure solve`) may end with `end procedure`; the other four keywords close
+        # the enclosing program unit, which closes the subroutine with it.
+        for opener, terminator in (
+            ("", "end subroutine"),
+            ("", "endsubroutine"),
+            ("", "end"),
+            ("module procedure solve_impl\n", "end procedure"),
+            ("module procedure solve_impl\n", "endprocedure"),
+            ("module m\n", "end module"),
+            ("module m\n", "endmodule"),
+            ("submodule (parent) child\n", "end submodule"),
+            ("submodule (parent) child\n", "endsubmodule"),
+            ("program p\n", "end program"),
+            ("program p\n", "endprogram"),
+            ("block data bd\n", "end block data"),
+            ("block data bd\n", "endblockdata"),
+        ):
+            label = f"{opener.strip()} … {terminator}"
+            envelopes = vps._fortran_subroutine_envelopes(
+                f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
+                "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
+            )
+            self.assertEqual([e.name for e in envelopes], ["solve", "second"], label)
+            self.assertNotIn("y = 1.0", envelopes[0].body, label)
+
+    def test_no_construct_end_closes_an_envelope(self) -> None:
+        # The opposite polarity, and the reason the unit-end list may stay an enumeration: every
+        # OTHER `end X` closes an executable construct or a derived type, never a scoping unit.
+        # Admitting one of these into `_FORTRAN_UNIT_END_KIND` truncates a body at it — fail-open,
+        # the defect class this walk exists to remove.
+        for construct_end in ("end do", "enddo", "end if", "endif", "end select", "endselect",
+                              "end where", "endwhere", "end block", "endblock",
+                              "end associate", "endassociate", "end forall",
+                              "end critical", "end enum", "end type", "endtype"):
+            source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
+                      f"  real, intent(in) :: x\n  real, intent(out) :: y\n  real :: scratch\n"
+                      f"  {construct_end}\n"
+                      f"  call dep__apply(x, scratch)\n  y = x\n"
+                      f"end subroutine solve\nend module m\n")
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(self._dataflow_violations(source)), construct_end)
+
+    def test_the_two_unit_end_enumerations_agree(self) -> None:
+        # `_FORTRAN_UNIT_END` (the FORMAT/label scope walker) and `_FORTRAN_UNIT_END_KIND` (this
+        # walk) answer the same question about the same text. A one-sided edit is this
+        # repository's most repeated failure mode, so the drift is asserted rather than hoped for.
+        for keyword in ("subroutine", "function", "module", "submodule", "program"):
+            for statement in (f"end {keyword}", f"end{keyword}"):
+                self.assertTrue(vps._FORTRAN_UNIT_END.match(statement), statement)
+                self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(statement), statement)
+        self.assertTrue(vps._FORTRAN_UNIT_END.match("end"))
+        self.assertTrue(vps._FORTRAN_BARE_END.match("end"))
+
+    def test_prefixed_subroutine_headers_are_all_recognized(self) -> None:
+        # The prefix words are deliberately NOT enumerated: F2008 has pure/impure/elemental/
+        # recursive/module and F2018 adds non_recursive, so the set is not closed across
+        # standards. Replacing the open prefix with an F2008 list kills the `non_recursive` row.
+        for prefix in ("", "pure ", "impure ", "elemental ", "recursive ", "non_recursive ",
+                       "module ", "pure elemental ", "recursive module "):
+            envelopes = vps._fortran_subroutine_envelopes(
+                f"{prefix}subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
+            )
+            self.assertEqual([e.name for e in envelopes], ["solve"], prefix)
+
+    def test_a_name_that_looks_like_interface_does_not_open_a_span(self) -> None:
+        # The mirror of the interface fix. `interface` is not a reserved word, so a model that
+        # names a variable after it would otherwise open a span nothing closes — blanking the
+        # rest of the file and silencing the gate for it. Fail-open, reachable by naming one
+        # variable, which is exactly how the constant-exemption rule was defeated three times.
+        for assignment in ("interface = 1.0", "interface(3) = 1.0", "interface%x = 1.0"):
+            source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
+                      f"  real, intent(in) :: x\n  real, intent(out) :: y\n  real :: scratch\n"
+                      f"  {assignment}\n"
+                      f"  call dep__apply(x, scratch)\n  y = x\n"
+                      f"end subroutine solve\nend module m\n")
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(self._dataflow_violations(source)), assignment)
+
+    def test_a_type_bound_contains_does_not_truncate_a_body(self) -> None:
+        # A derived type's own `contains` introduces type-bound procedures, not contained ones.
+        # Cutting the host body there would drop everything after the type definition — the whole
+        # executable part in this shape. Fail-open, which is why the type-definition test is
+        # deliberately permissive: a phantom `type` open only SUPPRESSES a cut.
+        source = """module m
+implicit none
+type :: holder
+  real :: v
+contains
+  procedure :: show
+end type holder
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
+    def test_interface_body_declarations_are_not_the_hosts_intent_out(self) -> None:
+        # Blanking the span also keeps its DECLARATIONS out of the host. If the interface body's
+        # `intent(out) :: z` leaked into `out_vars`, `z` would have no assignment, the gate would
+        # `continue`, and the literal-only model below would pass — the same silence by another
+        # route.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  interface
+    subroutine other(z)
+      implicit none
+      real, intent(out) :: z
+    end subroutine other
+  end interface
+  y = 1.0
+end subroutine solve
+end module m
+"""
+        self.assertIn("literal-only assignments for all intent(out) vars",
+                      " ".join(self._literal_output_violations(source)))
+
+    def test_contained_procedure_is_analyzed_but_excluded_from_its_host(self) -> None:
+        # The host's body stops at its `contains`; the contained procedure is not lost, it gets
+        # its own envelope. Including it in both would attribute its `intent(out)` declarations to
+        # the host as well.
+        envelopes = vps._fortran_subroutine_envelopes(
+            "subroutine host(x, y)\n"
+            "  real, intent(in) :: x\n"
+            "  real, intent(out) :: y\n"
+            "  y = helper_marker\n"
+            "contains\n"
+            "  subroutine inner(z)\n"
+            "    real, intent(out) :: z\n"
+            "    z = 2.0\n"
+            "  end subroutine inner\n"
+            "end subroutine host\n"
+        )
+        self.assertEqual(sorted(e.name for e in envelopes), ["host", "inner"])
+        host = next(e for e in envelopes if e.name == "host")
+        inner = next(e for e in envelopes if e.name == "inner")
+        self.assertIn("y = helper_marker", host.body)
+        self.assertNotIn("intent(out) :: z", host.body)
+        self.assertIn("z = 2.0", inner.body)
+
+    def test_paren_less_subroutine_does_not_swallow_the_next_subroutine(self) -> None:
+        # The old envelope required a parenthesised dummy list, so a paren-less `subroutine setup`
+        # was never matched — and its `end subroutine` then paired with the NEXT subroutine's
+        # header, shifting that envelope's body. Legal F2008 (verified with `gfortran
+        # -fsyntax-only -std=f2008`).
+        envelopes = vps._fortran_subroutine_envelopes(
+            "subroutine setup\n  call init_marker()\nend subroutine setup\n"
+            "subroutine solve(x, y)\n  real, intent(out) :: y\n  y = x\nend subroutine solve\n"
+        )
+        self.assertEqual([e.name for e in envelopes], ["setup", "solve"])
+        self.assertEqual(envelopes[0].dummy_args, "")
+        self.assertEqual(envelopes[1].dummy_args, "x, y")
+        self.assertNotIn("init_marker", envelopes[1].body)
+
+    def test_a_function_between_two_subroutines_does_not_shift_either_envelope(self) -> None:
+        # Function frames exist only so a function's terminator — including a bare `end` — is not
+        # read as closing the subroutine that precedes it. The function body itself is NOT an
+        # envelope, which is a known hole recorded in `TODO.md`, not an accident.
+        for function_end in ("end function scale_by", "endfunction", "end"):
+            envelopes = vps._fortran_subroutine_envelopes(
+                "module m\ncontains\n"
+                "subroutine first(x, y)\n  y = x\nend subroutine first\n"
+                f"real function scale_by(v)\n  scale_by = 2.0 * v\n{function_end}\n"
+                "subroutine second(a, b)\n  b = second_marker\nend subroutine second\n"
+                "end module m\n"
+            )
+            self.assertEqual([e.name for e in envelopes], ["first", "second"], function_end)
+            self.assertNotIn("scale_by", envelopes[0].body, function_end)
+            self.assertIn("second_marker", envelopes[1].body, function_end)
+
+    def test_an_unmatched_end_function_does_not_close_a_subroutine(self) -> None:
+        # The walk IGNORES an END whose kind matches no open frame rather than popping something.
+        # Popping on mismatch would turn every opener the walk does not recognise into a silent
+        # gate — the direction this change exists to remove — so the body runs LONG instead.
+        source = """module m
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  end function
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
+    def test_an_unterminated_subroutine_body_runs_to_end_of_file(self) -> None:
+        # Same direction at the other edge. The old span emitted NOTHING for an unterminated
+        # subroutine, so the gates saw no subroutine at all. Text this broken is rejected by
+        # `Generate.gate`'s syntax check before these gates run; what matters is which way the
+        # walk fails when it does happen.
+        source = """module m
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
+    def test_an_interface_span_is_blanked_in_place_not_deleted(self) -> None:
+        # `body` must stay ONE CONTIGUOUS SLICE of a length-preserving transform of the view, so a
+        # position inside it is a position inside the view — which is the contract the
+        # dependency-dataflow gate's assigned-before-call comparison is written against.
+        #
+        # Deletion is NOT unsafe for that comparison (it preserves the ORDER of what remains), so
+        # a behavioural test cannot separate the two; this is the assertion that can.
+        source = ("subroutine solve(x, y)\n"
+                  "  interface\n"
+                  "    subroutine other(a)\n"
+                  "    end subroutine other\n"
+                  "  end interface\n"
+                  "  y = x\n"
+                  "end subroutine solve\n")
+        envelope = vps._fortran_subroutine_envelopes(source)[0]
+        view_lines = vps._joined_masked_fortran_view(source).split("\n")
+        # Every line between the header and the terminator, at its original width.
+        self.assertEqual(
+            envelope.body.split("\n"),
+            [" " * len(line) for line in view_lines[1:5]] + [view_lines[5], ""],
+        )
+        self.assertNotIn("other", envelope.body)
+
+    def test_fortran_subroutine_envelopes_is_a_fixed_point_over_the_view(self) -> None:
+        # The helper reduces its own input, which is what lets a gate that has already reduced its
+        # text hand it over unchanged and a test hand over raw source — the argument
+        # `_split_fortran_names` already makes for itself.
+        source = ("module m\ncontains\n"
+                  "subroutine solve(x, &\n    y) ! wrapped\n"
+                  "  real, intent(out) :: y\n  y = x\nend subroutine solve\nend module m\n")
+        from_raw = vps._fortran_subroutine_envelopes(source)
+        from_view = vps._fortran_subroutine_envelopes(vps._joined_masked_fortran_view(source))
+        self.assertEqual(from_raw, from_view)
+        # The dummy list survives the wrap; the whitespace the join leaves behind is not the
+        # property under test, so it is read the way every caller reads it.
+        self.assertEqual(vps._split_fortran_names(from_raw[0].dummy_args), ["x", "y"])
+
     def test_dependency_presence_checks_ignore_comments_and_literals(self) -> None:
         # `_validate_dependency_operation_on_model_files` asks whether three KEYWORDS appear in
         # CODE. Unmasked, prose answered for them: a commented-out `use`/`call` satisfied the two
