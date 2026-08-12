@@ -1255,7 +1255,15 @@ _FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
 # CONTEXT: a guard only occurs inside a SELECT TYPE construct, which is tracked instead.
 _FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()")
 _FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
-_FORTRAN_SELECT_TYPE_OPEN = re.compile(r"^select\s*type\b")
+# EVERY select construct is tracked, not only SELECT TYPE, and as a STACK of kinds rather than a
+# counter. Two independent integers — one incremented by `select type`, one decremented by
+# `end select` — let a `select case` NESTED INSIDE a SELECT TYPE guard spend the outer construct's
+# decrement. Every `type is (…)` guard after that inner `end select` was then read as a derived
+# type definition, raising a depth that a guard never lowers (it has no `end type`), so the
+# `contains` rule stopped firing FOR THE REST OF THE FILE and every later subroutine's out-scope
+# silently became its whole body. Reproduced at gate level in both directions, with
+# `gfortran -fsyntax-only -std=f2008` accepting the source.
+_FORTRAN_SELECT_OPEN = re.compile(r"^select\s*(type|case)\b")
 _FORTRAN_SELECT_END = re.compile(r"^end\s*select\b")
 # An END closes the open frame of ITS OWN KIND, and nothing else. An earlier draft made the
 # kinds cross-compatible, claiming F2008 lets a `module procedure` body end with `end subroutine`
@@ -1464,7 +1472,7 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     # subroutine at the interface. Fail-open, and precisely the hole the span was added to close.
     interface_depth = 0
     type_depth = 0
-    select_type_depth = 0
+    select_kinds: list[str] = []
 
     def close(frame: _FortranUnitFrame, body_end: int) -> None:
         if frame.kind != "subroutine":
@@ -1529,7 +1537,8 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             continue
 
         if _FORTRAN_SELECT_END.match(statement):
-            select_type_depth = max(select_type_depth - 1, 0)
+            if select_kinds:
+                select_kinds.pop()
             continue
 
         if statement.startswith("end"):
@@ -1542,13 +1551,17 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             blanked[-1] = " " * len(line)
             continue
 
-        if _FORTRAN_SELECT_TYPE_OPEN.match(statement):
-            select_type_depth += 1
+        select_open = _FORTRAN_SELECT_OPEN.match(statement)
+        if select_open:
+            select_kinds.append(select_open.group(1))
             continue
 
         # Inside a SELECT TYPE, `type is (…)` is a guard and opens nothing. Outside one, the same
         # text is a derived type named `is`.
-        if not select_type_depth and _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
+        # A `type is (…)` guard belongs to the INNERMOST select, and only if that one is a
+        # SELECT TYPE. Anywhere else the same text is a derived type definition.
+        in_select_type = bool(select_kinds) and select_kinds[-1] == "type"
+        if not in_select_type and _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
             type_depth += 1
             continue
 

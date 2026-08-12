@@ -5641,11 +5641,64 @@ end module m
         self.assertIn("does not propagate dependency operation outputs",
                       " ".join(self._dataflow_violations(source)))
 
+    # The out-scope split has one case per GATE, and that is deliberate. A first attempt pinned it
+    # once, for the metric gate, and per-site mutation showed the other two call sites still
+    # unpinned — with a reachable fail-open behind each. One test per rule instance, not one per
+    # rule, is the standing lesson in this file.
+
+    def test_a_contained_procedures_intent_out_does_not_hide_a_literal_only_host(self) -> None:
+        # Literal-outputs gate. Reading `intent(out)` from the whole body would add the contained
+        # procedure's `z` — which is assigned from an input, not a literal — to the host's out-set,
+        # `all_literal` would go false, and the host's genuinely literal-only outputs would pass.
+        # Fail-open.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 1.0
+contains
+  subroutine helper(z)
+    real, intent(out) :: z
+    z = x * 2.0
+  end subroutine helper
+end subroutine solve
+end module m
+"""
+        self.assertIn("literal-only assignments for all intent(out) vars",
+                      " ".join(self._literal_output_violations(source)))
+
+    def test_a_contained_procedures_intent_out_does_not_hide_a_discarded_result(self) -> None:
+        # Dependency-dataflow gate. Reading `intent(out)` from the whole body would seed the
+        # backward closure with the contained procedure's `z`, which IS assigned from the
+        # discarded dependency output, so the disjointness test would stop firing while the host's
+        # own `intent(out)` still never receives it. Fail-open.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = 1.0
+contains
+  subroutine helper(z)
+    real, intent(out) :: z
+    z = scratch
+  end subroutine helper
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
     def test_a_contained_procedures_intent_out_does_not_count_toward_its_host(self) -> None:
-        # The gate-level half of the out-scope split, and the failure the cut was originally
-        # introduced to prevent: this host declares three scalar `intent(out)` metrics — under the
-        # floor of five — and its contained procedure declares two more. Counting the contained
-        # ones makes five and reports the host as a metric-only scalar kernel it is not.
+        # Metric-only kernel gate, and the failure the out-scope split exists for: this host
+        # declares three scalar `intent(out)` metrics — under the floor of five — and its contained
+        # procedure declares two more. Counting the contained ones makes five and reports the host
+        # as a metric-only scalar kernel it is not.
         source = """module m
 implicit none
 contains
