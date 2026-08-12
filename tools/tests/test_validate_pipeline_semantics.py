@@ -12714,8 +12714,23 @@ end program shallow_water2d_runner
         for rule in (
             "unsigned integer literal or an identifier",   # the shape_expr dim-token grammar
             "is NOT one of the provenance sources",        # algorithm.state_variables
+            # The write contract. Same reason as the two above — the ceiling is a MAXIMUM, so
+            # deleting this sentence passes every other test — plus one more: this SKILL is the
+            # only reader of the contract that no code path checks. Its previous instruction to
+            # author `algorithm.summary.md` contradicted `allowed_output_paths` for months and
+            # nothing failed. The positive rule is anchored here; the negative half (that the
+            # SKILL does not send the leaf after some other IR-root file) is below.
+            "deliverables are exactly `spec.ir.yaml` + `ir_meta.json`",
         ):
             self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
+        # The retired view-only companion must not come back as an instruction: the conductor
+        # does not declare it (workflow_conductor._build_request) and record-launch rejects it
+        # (orchestration_runtime._matches_phase_contract), so a leaf told to author one is told
+        # to take a hook block.
+        self.assertNotIn(
+            "algorithm.summary", skill,
+            "SKILL instructs an artifact the compile.generate write contract does not allow",
+        )
 
     def test_openmp_floor_rule_is_stated_in_both_docs(self) -> None:
         """Issue #22: the reflection rule failed because only the PUNISHING side stated it.
