@@ -743,6 +743,106 @@ def _agent_role(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _joined_masked_fortran_view(lowered: str) -> str:
+    """``lowered`` as ONE STATEMENT PER LINE, `&` continuations joined and code-lookalikes masked.
+
+    The view every rule in this module that matches Fortran's KEYWORD STRUCTURE over multi-line
+    source must read. `fortran_lines.mask_code_lookalikes` alone cannot serve them: it preserves
+    line structure by design, so a legally wrapped statement still reaches a `[^\\n]`-bounded or
+    `re.MULTILINE`-anchored pattern as fragments. `fortran_lines.fortran_logical_lines` joins, and
+    composing the two is what closes that whole class at once — the wrapped `intent(out)` entity
+    list, the wrapped `call` actual list, the wrapped `use` / `module` statement.
+
+    Two properties of the composition are load-bearing, and neither is free:
+
+    * **The `;` split is required, not cosmetic.** `fortran_logical_lines` deliberately does not
+      split on `;`, so joining ALONE would create a defect that does not exist on unjoined text:
+      `real :: tmp; tmp = 0.0` becomes one line, `_assignment_records`' `^\\s*` MULTILINE anchor
+      stops seeing `tmp = 0.0`, and its `([^\\n!]+)` right-hand side swallows a following
+      `; call dep__op(...)` into the identifier set — a phantom producer, fail-open at exactly the
+      `isdisjoint` test of the dependency-dataflow gate. Emitting one statement per line restores
+      the invariant all three consumers' patterns already assume.
+    * **Join first, mask second.** `fortran_logical_lines` does its own comment, quote and
+      continuation tracking over RAW text; masking first would only hand it text whose comments
+      are already blanked. Masking after the join is what makes every offset in the result
+      comparable, because the mask is length- and offset-preserving with respect to ITS input.
+
+    The result is a fixed point (``view(view(x)) == view(x)``), so a consumer that is handed an
+    already-joined fragment may re-apply it without penalty — which is what keeps
+    `_split_fortran_names` total with respect to both its raw and its joined callers.
+
+    INVARIANT, and the price of this view: offsets into the result no longer index the ORIGINAL
+    file. Comment-only and blank lines are gone and each `&` has collapsed. Offsets remain
+    comparable with EACH OTHER as long as both come from the same view — which is what the
+    dependency-dataflow gate's `call_pos` / assignment `pos` comparison relies on, and every gate
+    here reports `{model_file}: subroutine {name}` with no line number. Any future rule that wants
+    to REPORT a line must take it from `fortran_lines.fortran_logical_lines`' `start_lineno`, not
+    from an offset into this string."""
+    return fortran_lines.mask_code_lookalikes(
+        "\n".join(
+            statement
+            for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
+            for statement in fortran_lines.split_fortran_statements(line)
+        )
+    )
+
+
+_FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\((.*)\)$")
+
+
+def _fortran_parameter_names(joined_masked: str) -> set[str]:
+    """The names declared as NAMED CONSTANTS in ``joined_masked``.
+
+    ``joined_masked`` must be a `_joined_masked_fortran_view` — one statement per line. Reading
+    physical lines instead would miss a wrapped declaration, which is the defect class this helper
+    was written alongside.
+
+    Two forms are recognised:
+
+    * the attribute form, `integer, parameter, public :: ncomp = 3` — the left of the first `::`
+      is split on top-level commas and some token must be EXACTLY ``parameter``. An equality test,
+      not `\\bparameter\\b`: the word occurs inside `dimension(nparameter)` and inside an
+      initializer, and either would otherwise mint a constant that does not exist. The right side
+      is split the same way and each item contributes its leading identifier, which drops array
+      specs and initializer text.
+    * the statement form, `parameter (nlev = 4, mm = 2)` — each item contributes the identifier
+      before its `=`.
+
+    The unparenthesized F77 form (`PARAMETER x = 1`) is deliberately NOT recognised: it is a
+    `-std=legacy` gfortran extension, and `Generate.gate`'s syntax check runs `-std=f2008`, so no
+    source that reaches these gates can carry one.
+
+    The caller decides SCOPE. This helper reports what the text it is given declares, and a whole
+    file is the wrong text to give it: a name that is a constant in one procedure and a live
+    variable in another would be reported for both, and the dependency-dataflow gate would then
+    exempt a genuinely discarded output — fail-open."""
+    names: set[str] = set()
+    for line in joined_masked.split("\n"):
+        statement = line.strip().lower()
+        if not statement:
+            continue
+        if "::" in statement:
+            attributes, _, entities = statement.partition("::")
+            if not any(
+                token.strip() == "parameter"
+                for token in fortran_lines.split_top_level_commas(attributes)
+            ):
+                continue
+            for item in fortran_lines.split_top_level_commas(entities):
+                match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
+                if match is not None:
+                    names.add(match.group(0))
+            continue
+        statement_match = _FORTRAN_PARAMETER_STATEMENT_PATTERN.match(statement)
+        if statement_match is None:
+            continue
+        for item in fortran_lines.split_top_level_commas(statement_match.group(1)):
+            match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
+            if match is not None:
+                names.add(match.group(0))
+    return names
+
+
 def _split_fortran_names(raw: str) -> list[str]:
     """The bare identifiers of a comma-separated Fortran list (argument list, `intent(out)`
     entity list, call actuals) — non-identifier items are dropped, not reported.

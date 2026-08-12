@@ -5475,6 +5475,50 @@ end module m
         )
         self.assertEqual(violations, [])
 
+    def test_joined_masked_fortran_view_is_one_statement_per_line(self) -> None:
+        # The `;` split is the half of this view that is NOT obvious. Joining alone would put
+        # `real :: tmp; tmp = 0.0` on one line, where `_assignment_records`' `^\s*` MULTILINE
+        # anchor stops seeing the assignment and its `([^\n!]+)` RHS swallows whatever follows the
+        # `;` — a phantom producer, fail-open at the dataflow gate's isdisjoint test.
+        view = vps._joined_masked_fortran_view(
+            "subroutine f(a, &\n   b)\n"
+            "  real :: tmp; tmp = 0.0 ! note\n"
+            "  ! a comment-only line inside the body\n"
+            "  msg = 'x;y'\n"
+            "end subroutine f\n"
+        )
+        lines = view.split("\n")
+        self.assertEqual(lines[0], "subroutine f(a,  b)")
+        self.assertIn("real :: tmp", lines[1])
+        self.assertIn("tmp = 0.0", lines[2])
+        # The comment-only line leaves no entry, and a `;` INSIDE a literal is not a separator —
+        # the literal's contents are blanked, its delimiters and its length survive.
+        self.assertNotIn("!", view)
+        self.assertIn("msg = '   '", view)
+        # A fixed point, which is what lets `_split_fortran_names` re-apply it on input a gate has
+        # already joined.
+        self.assertEqual(vps._joined_masked_fortran_view(view), view)
+
+    def test_fortran_parameter_names_covers_the_declaration_forms(self) -> None:
+        # Feeding this the joined view is part of its contract: a wrapped declaration is exactly
+        # what a physical-line reader would miss.
+        source = (
+            "integer, parameter, public :: ncomp = 3\n"
+            "real, parameter :: c(2) = [1.0, 2.0], d = 4.\n"
+            "character(len=3), parameter :: s = 'a,b'\n"
+            "integer, parameter :: &\n    wrapped = 7\n"
+            "parameter (nlev = 4, mm = 2)\n"
+            # Negatives: `parameter` as a substring of a name, and as text inside a dimension
+            # spec — an equality test over the attribute list, not `\bparameter\b`, is what keeps
+            # these from minting constants that would then exempt a real discarded output.
+            "integer :: nparameter_x = 1\n"
+            "real, dimension(nparameter) :: field\n"
+        )
+        self.assertEqual(
+            vps._fortran_parameter_names(vps._joined_masked_fortran_view(source)),
+            {"ncomp", "c", "d", "s", "wrapped", "nlev", "mm"},
+        )
+
     def test_split_fortran_names_ignores_commas_inside_a_literal(self) -> None:
         # The helper-level half of the reproducer above.
         self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
