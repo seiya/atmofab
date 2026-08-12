@@ -903,6 +903,13 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
     rebinding, and a `use ..., only:` import, since use association overrides host association and
     the imported entity is whatever the other module says it is.
 
+    Known NARROWING, in the fail-closed direction: an accessibility statement (`public :: ncomp`)
+    has no `parameter` in its attribute list, so it lands in the second set and permanently
+    disqualifies the name. A module that lists its constants that way — rather than writing
+    `integer, parameter, public :: ncomp = 3` — never gets the exemption and earns a false
+    violation. Left as is deliberately: removing a name from the second set is the one operation
+    this rule must never perform, and every in-tree model uses the attribute form.
+
     Constants declared inside a `block` / `associate` / `select type` / `interface` construct go
     to the SECOND set, not the first: such a constant is not visible to the statements around the
     construct, and treating it as if it were exempted a name at a call that preceded it.
@@ -1286,7 +1293,10 @@ def _validate_problem_model_dependency_dataflow(
     RESIDUES, reproduced and NOT fixed. (a) A bare `use other_module` can import a VARIABLE whose
     name this file also declares as a constant; nothing in one file can see that. (b) An
     implicitly typed local is not declared at all, so it cannot disqualify a name — unreachable
-    through `Generate.gate`, which requires `implicit none` (fortitude C003). (c) The candidate
+    through `Generate.gate`, which requires `implicit none` (fortitude **C001**, verified by
+    running it; C003 is a different rule, the one `docs/workflow/phases/phase_02_generate.md`
+    instructs the leaf to SUPPRESS, so citing it would have pointed a future reader at a check
+    that is never enforced). (c) The candidate
     rule still treats a variable written by an earlier `call` as a candidate, and the consumption
     closure still cannot cross a call; the measured instance is the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
@@ -1893,9 +1903,11 @@ def _parse_makefile_rules_objdir_aware(
 def _fortran_source_views(src_files: list[Path]) -> dict[Path, str]:
     """Each source read once and reduced to its `_joined_masked_fortran_view`.
 
-    The two readers below both need the same view of the same files, and the view is the
-    expensive part — building it twice per file made a three-source directory 26x slower than
-    reading raw text. Read once, share."""
+    The two readers below need the same view of the same files, and the view is the expensive
+    part. Sharing it halves the cost rather than removing it: measured on a real three-source
+    directory, raw text 290us, one shared view 3.6ms, one view per reader 7.2ms — 12.5x and 24.8x
+    over raw. Across all 357 directories with `.f90` files that is 0.13s to 1.5s, which is why
+    this is a note and not a concern."""
     return {
         src_file: _joined_masked_fortran_view(
             src_file.read_text(encoding="utf-8", errors="ignore").lower()
