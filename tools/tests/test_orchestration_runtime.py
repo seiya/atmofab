@@ -2280,27 +2280,49 @@ shell_tool                       stable             true
         self.assertEqual(
             _allowed_output_paths_for_launch(request_payload=judge_ok, write_roots=[]), [sem])
 
-    def test_phase_contract_compile_generate_is_exactly_ir_and_meta(self) -> None:
-        """Compile.generate's write contract is exactly {spec.ir.yaml, ir_meta.json} — the same
-        two files `workflow_conductor` puts in its `allowed_output_paths`. The retired view-only
-        `algorithm.summary.md` (which the Compile.generate SKILL used to instruct the leaf to
-        author) must be REJECTED here: while this set still listed it, record-launch accepted a
-        declaration the conductor never makes and the file-tool hook blocks, so a leaf following
-        the SKILL took an `unauthorized_write_violation` instead of a contract error. Drives the
-        REAL _allowed_output_paths_for_launch, not the _FakeConductor stub."""
+    def test_phase_contract_compile_generate_admits_only_conductor_declaration(self) -> None:
+        """record-launch must admit exactly the compile.generate outputs the conductor declares,
+        and nothing else at the IR root. Driven by the CAPTURED PRODUCTION request
+        (tools/tests/data/conductor_launch_requests/compile_generate.request.json) through the
+        REAL `_allowed_output_paths_for_launch`, so the two readers of this contract — the
+        conductor that declares and the runtime that accepts — are asserted against each other
+        rather than each against a hand-written list.
+
+        WHAT THIS DOES NOT PIN, deliberately: that BOTH files are *required*. The runtime's
+        `compile_required` is a membership allowlist, so a request declaring only one of the two
+        is still accepted (reproduced on origin/main as well — it is not a regression of the
+        commit that added this test). Under-declaring costs the declarer write authority rather
+        than gaining any, so it is a liveness gap, not a bypass; it is tracked in TODO.md
+        together with the `agent_role` dimension. The rejection side below is a SAMPLE of
+        plausible IR-root names, including the underscore respelling of the retired summary —
+        it makes an accidental re-widening likely to be caught, but it is not a proof of set
+        equality, which this layer cannot express from outside."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
-        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
-        base = {"agent_role": "substep", "step": "compile", "substep": "generate",
-                "ir_ref": ir_ref, "node_key": "component/spec_x@0.1.0"}
-        good = [f"{ir_ref}/spec.ir.yaml", f"{ir_ref}/ir_meta.json"]
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "compile_generate.request.json"
+        )
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        declared = list(payload["allowed_output_paths"])
+        ir_ref = payload["ir_ref"]
         self.assertEqual(
-            _allowed_output_paths_for_launch(
-                request_payload=dict(base, allowed_output_paths=good), write_roots=[]),
-            good)
-        for extra in ("algorithm.summary.md", "dependency_graph.json",
-                      "compile_static_meta.json"):
-            forged = dict(base, allowed_output_paths=[*good, f"{ir_ref}/{extra}"])
+            sorted(declared),
+            sorted([f"{ir_ref}/spec.ir.yaml", f"{ir_ref}/ir_meta.json"]),
+            "conductor's captured compile.generate declaration changed; update both readers",
+        )
+        self.assertEqual(
+            _allowed_output_paths_for_launch(request_payload=payload, write_roots=[]),
+            declared,
+            "record-launch must accept the conductor's own declaration unchanged",
+        )
+        # Anything else at the IR root is outside the contract. `algorithm.summary.md` is the
+        # retired view-only companion the SKILL used to instruct; `algorithm_summary.md` is the
+        # respelling a re-introduction would plausibly take; `dependency_graph.json` and
+        # `compile_static_meta.json` are conductor-authored and must stay leaf-non-writable.
+        for extra in ("algorithm.summary.md", "algorithm_summary.md", "io_contract.yaml",
+                      "dependency_graph.json", "compile_static_meta.json", "notes.md"):
+            forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                 _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
 
