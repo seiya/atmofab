@@ -5525,6 +5525,46 @@ end module shallow_water2d_model
         )
         self.assertEqual(violations, [])
 
+    def test_a_wrapped_intent_out_list_cannot_duck_the_metric_only_kernel_gate(self) -> None:
+        # The third gate reading this view, and the one whose threshold makes the continuation
+        # loss directly exploitable: it fires only at five or more `intent(out)` dummies, and a
+        # wrapped list dropped one name per `&`. Five metrics written as `m1, m2, m3, &` / `m4,
+        # m5` counted as four and the gate went silent on exactly the shape it exists to catch —
+        # a 2d problem model deriving scalar metrics with no array input and no update loop.
+        source = """module shallow_water2d_model
+implicit none
+contains
+subroutine metrics_only(x, m1, m2, m3, &
+    m4, m5)
+  real, intent(in) :: x
+  real, intent(out) :: m1, m2, m3, &
+    m4, m5
+  m1 = x
+  m2 = x
+  m3 = x
+  m4 = x
+  m5 = x
+end subroutine metrics_only
+end module shallow_water2d_model
+"""
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_metric_only_scalar_kernel(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        self.assertTrue(
+            any("is metric-only scalar kernel for" in v for v in violations),
+            f"a wrapped intent(out) list must still reach the threshold; got: {violations}",
+        )
+
     def test_wrapped_dependency_call_actual_is_flagged_as_a_discarded_output(self) -> None:
         # The gate was BLIND here, not merely imprecise: `tmp` is the first name after the `&`, so
         # it never reached `dep_output_candidates` and a genuinely discarded dependency result
