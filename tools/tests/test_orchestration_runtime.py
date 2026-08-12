@@ -33468,5 +33468,225 @@ class JsonPayloadFileArgTests(unittest.TestCase):
             "json payload must be object")
 
 
+class AgentRoleFailClosedTests(unittest.TestCase):
+    """`agent_role` must be fail-closed at BOTH chokepoints (TODO.md, high).
+
+    WHAT IS PINNED (set identity, not a sample): every launch-side assertion is generated
+    by iterating `STEP_REQUIRED_CHILD_AGENT`, and every terminal-side assertion by
+    iterating `AGENT_RUN_ROLES` / `WRITE_AUDITED_AGENT_ROLES`. Adding a step or a role to
+    either definition therefore extends this suite automatically — which is the property
+    the earlier phase-contract tests could NOT express, because they sat outside the set
+    they were describing and could only sample names to reject.
+
+    WHAT IS SAMPLED: the specific out-of-vocabulary spellings (`"bogus"`, `"Substep "`,
+    …). Those are shape probes — an unknown word, a case/whitespace variant — not a proof
+    that no other string is accepted; the loop over the definition is what carries that.
+    """
+
+    def test_launch_requires_exactly_the_role_its_step_demands(self) -> None:
+        """Table-driven over every core step: the demanded role passes the role check and
+        every OTHER role in the vocabulary is rejected. Generated from the table, so a new
+        step cannot be added without landing here."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            STEP_REQUIRED_CHILD_AGENT,
+            _require_child_agent_role_for_step,
+        )
+
+        self.assertTrue(STEP_REQUIRED_CHILD_AGENT, "step table is empty; nothing pinned")
+        for step, required in STEP_REQUIRED_CHILD_AGENT.items():
+            with self.subTest(step=step, role=required):
+                self.assertEqual(
+                    _require_child_agent_role_for_step(
+                        required, step, label="t:", error_type=ValueError),
+                    required,
+                )
+            for other in sorted(AGENT_RUN_ROLES - {required}) + ["bogus", ""]:
+                with self.subTest(step=step, rejected=other):
+                    with self.assertRaisesRegex(
+                        ValueError, "does not satisfy required child agent kind"
+                    ):
+                        _require_child_agent_role_for_step(
+                            other, step, label="t:", error_type=ValueError)
+
+    def test_launch_role_normalization_closes_the_spelling_family(self) -> None:
+        """Case and surrounding whitespace must not select a different branch. A non-string
+        is rejected rather than coerced (`str(123)` would once have produced `'123'`)."""
+        from tools.orchestration_runtime import _require_child_agent_role_for_step
+
+        for spelling in ("substep", "SUBSTEP", " Substep ", "\tsubStep\n"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(
+                    _require_child_agent_role_for_step(
+                        spelling, "compile", label="t:", error_type=ValueError),
+                    "substep",
+                )
+        for junk in (None, 123, ["substep"], {"role": "substep"}):
+            with self.subTest(junk=junk):
+                with self.assertRaises(ValueError):
+                    _require_child_agent_role_for_step(
+                        junk, "compile", label="t:", error_type=ValueError)
+
+    def test_every_captured_production_payload_declares_the_demanded_role(self) -> None:
+        """The captured conductor requests must already satisfy the rule the runtime now
+        enforces. Driven through the REAL `_validate_launch_request_payload`, so this is
+        the production-payload-through-the-real-validator pin, not a re-read of the field.
+
+        The fixtures are tied back to the LIVE conductor by `test_workflow_conductor.py`'s
+        `test_reproduces_every_real_substep_payload`; on its own this test would not notice
+        the conductor changing. Four substeps have no captured payload
+        (`compile.static`, `generate.gate`, `validate.pre_judge`, `validate.post_judge`),
+        so this covers the seven that exist, not every substep the workflow launches."""
+        from tools.orchestration_runtime import (
+            _required_child_agent_kind,
+            _validate_launch_request_payload,
+        )
+
+        fixture_dir = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+        )
+        captured = sorted(fixture_dir.glob("*.request.json"))
+        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
+        for path in captured:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            with self.subTest(fixture=path.name):
+                self.assertEqual(
+                    payload.get("agent_role"),
+                    _required_child_agent_kind(payload["step"]),
+                )
+                _validate_launch_request_payload(payload)
+                # And the negation: the same payload with the other role is refused.
+                other = "step" if payload["agent_role"] == "substep" else "substep"
+                with self.assertRaisesRegex(
+                    ValueError, "does not satisfy required child agent kind"
+                ):
+                    _validate_launch_request_payload({**payload, "agent_role": other})
+                with self.assertRaisesRegex(ValueError, "non-empty agent_role"):
+                    _validate_launch_request_payload(
+                        {k: v for k, v in payload.items() if k != "agent_role"})
+
+    def test_capability_then_manifest_agree_on_the_role_record_launch_passes(self) -> None:
+        """Drive `build_capability_document` -> `_allowed_output_paths_for_launch` in the
+        order `record_launch` drives them. Testing either alone is what hid the original
+        divergence: the producer INFERRED a role the consumer then SKIPPED on."""
+        from tools.orchestration_runtime import (
+            _allowed_output_paths_for_launch,
+            build_capability_document,
+        )
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "compile_generate.request.json"
+        )
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        cap = build_capability_document(
+            agent_run_id=payload["agent_run_id"],
+            orchestration_id=payload["orchestration_id"],
+            request_payload=payload,
+        )
+        self.assertEqual(cap["agent_role"], payload["agent_role"])
+        allowed = _allowed_output_paths_for_launch(
+            request_payload=payload, write_roots=cap["write_roots"])
+        # The consumer applied the phase contract rather than echoing write_roots: the
+        # capability's write_root is the IR DIRECTORY (trailing slash), and what comes back
+        # is the two declared FILES. That difference is the whole signal — the skip branch
+        # returned the directory with its slash stripped, matching nothing downstream.
+        self.assertEqual(sorted(allowed), sorted(payload["allowed_output_paths"]))
+        self.assertTrue(any(r.endswith("/") for r in cap["write_roots"]))
+        self.assertNotIn(payload["ir_ref"], allowed)
+
+    def test_terminal_payload_rejects_a_role_outside_the_vocabulary(self) -> None:
+        """`record_agent_run` accepted ANY string before, and `_validate_actual_write_paths`
+        then returned early for it — recording a terminal status under a misspelled role
+        switched the unauthorized-write audit OFF instead of being refused. Iterates the
+        vocabulary so a new role must be added to the constant, not smuggled in."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            _validate_record_agent_run_fields,
+        )
+
+        def payload(role: str) -> dict[str, object]:
+            return {
+                "agent_run_id": "arid_x", "agent_backend": "claude", "status": "pass",
+                "node_key": "component/x@0.1.0", "agent_session_id": "sess_x",
+                "agent_role": role,
+            }
+
+        for role in sorted(AGENT_RUN_ROLES):
+            with self.subTest(accepted=role):
+                _validate_record_agent_run_fields(payload(role))
+        for role in ("bogus", "orchestrator", "substeps", "skipped", "SUBSTEP_"):
+            with self.subTest(rejected=role):
+                with self.assertRaisesRegex(ValueError, "must be one of"):
+                    _validate_record_agent_run_fields(payload(role))
+        # The field has three accepted spellings; closing one of them would close a
+        # spelling rather than the family.
+        for key in ("agent_role", "agent_type", "role"):
+            with self.subTest(alias=key):
+                p = payload("bogus")
+                del p["agent_role"]
+                p[key] = "bogus"
+                with self.assertRaisesRegex(ValueError, "must be one of"):
+                    _validate_record_agent_run_fields(p)
+
+    def test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary(self) -> None:
+        """`_validate_record_agent_run_fields` is only the CLI-dispatch check; the conductor
+        calls `record_agent_run` in-process, and that function carried its own role handling
+        which accepted any string. Pinned separately because a mutation check showed the
+        library-side rejection surviving while only the dispatch-side one was covered —
+        exactly the "helper pinned, handler unpinned" shape this repository keeps hitting."""
+        from tools.orchestration_runtime import record_agent_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_role_vocab")
+            with self.assertRaisesRegex(ValueError, "must be one of"):
+                record_agent_run(
+                    repo_root=repo_root,
+                    orchestration_id="orch_role_vocab",
+                    payload={
+                        "agent_run_id": "arid_bogus",
+                        "agent_role": "bogus",
+                        "agent_backend": "claude",
+                        "status": "pass",
+                    },
+                )
+            # The alias spellings reach the same rejection.
+            with self.assertRaisesRegex(ValueError, "must be one of"):
+                record_agent_run(
+                    repo_root=repo_root,
+                    orchestration_id="orch_role_vocab",
+                    payload={
+                        "agent_run_id": "arid_bogus2",
+                        "agent_type": "bogus",
+                        "agent_backend": "claude",
+                        "status": "pass",
+                    },
+                )
+
+    def test_the_unaudited_role_cannot_carry_a_terminal_status(self) -> None:
+        """`skipped_by_checkpoint` is in the vocabulary but NOT write-audited, which would be
+        an evasion if it could also be terminal. It cannot: it requires `status=skipped`,
+        and `skipped` is not a terminal status, so the audit's own status guard is what
+        stops it. Pinned as a relationship between the two definitions rather than as a
+        remembered fact about either."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            TERMINAL_STATUSES,
+            WRITE_AUDITED_AGENT_ROLES,
+            _validate_skipped_by_checkpoint_payload,
+        )
+
+        unaudited = AGENT_RUN_ROLES - WRITE_AUDITED_AGENT_ROLES
+        self.assertEqual(unaudited, {"skipped_by_checkpoint"})
+        with self.assertRaisesRegex(ValueError, "requires status=skipped"):
+            _validate_skipped_by_checkpoint_payload({
+                "node_key": "component/x@0.1.0", "step": "compile",
+                "skipped_step": "compile", "reason": "r",
+                "checkpoint_agent_run_id": "c", "status": "pass",
+            })
+        self.assertNotIn("skipped", {s.lower() for s in TERMINAL_STATUSES})
+
+
 if __name__ == "__main__":
     unittest.main()

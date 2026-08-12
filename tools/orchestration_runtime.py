@@ -4170,6 +4170,23 @@ STEP_REQUIRED_CHILD_AGENT: dict[str, str] = {
     "validate": "substep",
 }
 
+# The COMPLETE `agent_role` vocabulary of `agent_runs.jsonl`. Canonical prose:
+# docs/ORCHESTRATION.md (the capability table and §43), docs/CLI_REFERENCE.md
+# (record-agent-run), docs/GLOSSARY.md (`skipped_by_checkpoint`).
+#
+# Named once because the terminal write audit keys on membership: a role outside this
+# set made `_validate_actual_write_paths` — the FS-diff attribution docs/AGENT_CONTRACT.md
+# calls authoritative — return without validating, and `record_agent_run` accepted any
+# string at all, so a misspelling silently disabled it. See TODO.md.
+AGENT_RUN_ROLES: frozenset[str] = frozenset(
+    {"orchestration", "step", "substep", "skipped_by_checkpoint"}
+)
+
+# The subset that owns a filesystem write window and is therefore subject to the terminal
+# FS-diff audit. `skipped_by_checkpoint` is deliberately absent: it records a step that was
+# NEVER LAUNCHED, so it has no capability, no write_roots and no baseline to diff against.
+WRITE_AUDITED_AGENT_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"})
+
 FAIL_CLOSED_REASON_CODES = {
     "child_agent_forbidden_by_session_policy",
     "child_agent_unavailable_on_execution_platform",
@@ -9624,8 +9641,14 @@ def _validate_actual_write_paths(
     agent_run_id_obj = payload.get("agent_run_id")
     if not isinstance(role_obj, str) or not isinstance(agent_run_id_obj, str) or not agent_run_id_obj.strip():
         return
-    actor_role = role_obj.strip().lower()
-    if actor_role not in {"orchestration", "step", "substep"}:
+    actor_role = _normalized_agent_role(role_obj)
+    # Membership in the write-audited subset, from the one named definition. This early
+    # return is what an out-of-vocabulary role used to reach in order to switch the audit
+    # off; `record_agent_run` now rejects such a role before any caller gets here, so what
+    # survives is the intended skip for `skipped_by_checkpoint` (a step never launched, so
+    # there is no capability or baseline to diff). Kept rather than deleted: unreachable is
+    # a classification, and this is not the layer that should be relying on it.
+    if actor_role not in WRITE_AUDITED_AGENT_ROLES:
         return
     status_obj = payload.get("status")
     if not isinstance(status_obj, str) or status_obj.strip().lower() not in TERMINAL_STATUSES:
@@ -14652,8 +14675,11 @@ def _validate_terminal_run_payload(
     status = payload.get("status")
     if not isinstance(role, str):
         return
-    role_token = role.strip().lower()
-    if role_token not in {"orchestration", "step", "substep"}:
+    role_token = _normalized_agent_role(role)
+    # Same membership test, same single definition, as the check it guards
+    # (`_validate_actual_write_paths`). These two used to carry independent copies of the
+    # set literal, which is how one field ended up with two places to widen.
+    if role_token not in WRITE_AUDITED_AGENT_ROLES:
         return
     # H-FOURTH-1: forward caller_holds_lock so the orchestration-role
     # _load_run_records call within _validate_actual_write_paths surfaces
@@ -18437,9 +18463,20 @@ def record_agent_run(
     agent_run_id = agent_run_id.strip()
 
     role = payload.get("agent_role") or payload.get("agent_type") or payload.get("role")
-    role_token = role.strip().lower() if isinstance(role, str) and role.strip() else None
+    role_token = _normalized_agent_role(role) or None
     if role_token is None:
         raise ValueError("agent_role must be non-empty string")
+    # Fail closed on a role outside the vocabulary. Previously any string was accepted
+    # here and simply fell through both branches below — and then `_validate_actual_write_paths`
+    # (via `_validate_terminal_run_payload`) returned early for it, so recording a terminal
+    # status under a misspelled role SWITCHED OFF the unauthorized-write audit rather than
+    # being rejected. Measured on this checkout: with role="substep" a stray write outside
+    # write_roots raises `unauthorized write paths`; with role="bogus" the same tree
+    # validated clean.
+    if role_token not in AGENT_RUN_ROLES:
+        raise ValueError(
+            f"agent_role must be one of {sorted(AGENT_RUN_ROLES)}; got {role_token!r}"
+        )
     if role_token == "skipped_by_checkpoint":
         _validate_skipped_by_checkpoint_payload(payload)
     elif role_token in {"step", "substep"}:
@@ -20744,7 +20781,16 @@ def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None
     role_raw = payload.get("agent_role") or payload.get("agent_type") or payload.get("role")
     if not isinstance(role_raw, str) or not role_raw.strip():
         raise ValueError(f"{label}: required field 'agent_role' is missing or empty")
-    role_token = role_raw.strip().lower()
+    role_token = _normalized_agent_role(role_raw)
+    # Reject an out-of-vocabulary role at CLI dispatch too, not only inside
+    # `record_agent_run`. Both read the same three spellings of the field
+    # (`agent_role` / `agent_type` / `role`), so closing only one of them would close a
+    # spelling rather than the family.
+    if role_token not in AGENT_RUN_ROLES:
+        raise ValueError(
+            f"{label}: field 'agent_role' must be one of {sorted(AGENT_RUN_ROLES)}; "
+            f"got {role_token!r}"
+        )
     if role_token in {"step", "substep"}:
         for key in ("node_key", "agent_session_id"):
             value = payload.get(key)
