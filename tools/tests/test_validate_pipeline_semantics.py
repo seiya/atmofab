@@ -12746,11 +12746,13 @@ end program shallow_water2d_runner
         # the runtime-side pin (test_orchestration_runtime) already treats the underscore form as
         # the likely re-introduction spelling — the two halves of this contract must not carry
         # different denylists, which is exactly the gap review found here.
-        for spelling in ("algorithm.summary", "algorithm_summary"):
-            self.assertNotIn(
-                spelling, skill,
-                "SKILL instructs an artifact the compile.generate write contract does not allow",
-            )
+        # A FAMILY, not a list of spellings. Round 3 walked through a two-literal denylist with
+        # `algorithm-summary.md`; adding the hyphen would have invited a fourth round on the next
+        # separator. Any separator (or none) between the two words is refused.
+        self.assertIsNone(
+            re.search(r"algorithm[-._ ]?summary", skill, re.IGNORECASE),
+            "SKILL instructs an artifact the compile.generate write contract does not allow",
+        )
 
     def test_openmp_floor_rule_is_stated_in_both_docs(self) -> None:
         """Issue #22: the reflection rule failed because only the PUNISHING side stated it.

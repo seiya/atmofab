@@ -2284,9 +2284,11 @@ shell_tool                       stable             true
         """record-launch must admit exactly the compile.generate outputs the conductor declares,
         and nothing else at the IR root. Driven by the CAPTURED PRODUCTION request
         (tools/tests/data/conductor_launch_requests/compile_generate.request.json) through the
-        REAL `_allowed_output_paths_for_launch`, so the two readers of this contract — the
-        conductor that declares and the runtime that accepts — are asserted against each other
-        rather than each against a hand-written list.
+        REAL `_allowed_output_paths_for_launch`, so the runtime is asserted against what the
+        conductor actually produced rather than against a hand-written list. The fixture is tied
+        back to the live conductor by `test_workflow_conductor.py`'s
+        `test_reproduces_every_real_substep_payload`, which is what fails if the conductor's
+        declaration changes — this test would not notice that on its own.
 
         WHAT THIS DOES NOT PIN, deliberately: that BOTH files are *required*. The runtime's
         `compile_required` is a membership allowlist, so a request declaring only one of the two
