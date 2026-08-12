@@ -6022,6 +6022,28 @@ end module shallow_water2d_model
                 "integer, parameter :: scratch = 3",
                 "  use m_ext, only: scratch\n  call dep__op(u_in, scratch)",
             ),
+            # A rename needs no `only:`, and the module-nature prefix puts a comma right after
+            # `use`. Keying on the word `only` missed the first; a pattern that could not cross
+            # that comma missed the second, which then fell through to the declaration branch and
+            # was read as declaring `store_model` and `only`.
+            (
+                "use rename without only",
+                "integer, parameter :: scratch = 3",
+                "  use m_ext, scratch => slot\n  call dep__op(u_in, scratch)",
+            ),
+            (
+                "use with a module-nature prefix",
+                "integer, parameter :: scratch = 3",
+                "  use, non_intrinsic :: m_ext, only : scratch => slot\n"
+                "  call dep__op(u_in, scratch)",
+            ),
+            # `real function_tmp` is a declaration, not a procedure header. Testing the header by
+            # prefix discarded the whole statement, losing every other name declared on it.
+            (
+                "name beginning with `function`",
+                "real, parameter :: scratch = 0.0",
+                "  real function_scratch, scratch\n  call dep__op(u_in, scratch)",
+            ),
         ):
             source = f"""module shallow_water2d_model
 use dep_model
@@ -12375,6 +12397,32 @@ class FortranMakefileObjdirPrefixTest(unittest.TestCase):
             violations: list[str] = []
             _validate_fortran_makefile_src_dir(src_dir, violations)
             return violations
+
+    def test_a_labelled_use_statement_still_requires_a_makefile(self) -> None:
+        # The same fail-open as the wrapped `use` below, reached by a different spelling: a
+        # statement LABEL. `100 use dep_model` compiles clean under `-std=f2008`, and anchoring
+        # `^\s*use` at the start of the joined line missed it, emptying `required_object_deps` and
+        # switching the module-dependency build contract off for the directory. The label is now
+        # stripped in the shared view, so every reader of it is covered at once rather than this
+        # one being patched.
+        violations = self._run_without_makefile(
+            {
+                "swm_model.f90": self._MODEL,
+                "swm_runner.f90": (
+                    "program swm_runner\n"
+                    "100 use swm_model\n"
+                    "implicit none\n"
+                    "logical :: flag\n"
+                    "call solve(flag)\n"
+                    "write(*,*) flag\n"
+                    "end program swm_runner\n"
+                ),
+            }
+        )
+        self.assertTrue(
+            any("missing for fortran module dependency build" in v for v in violations),
+            f"a labelled `use` must still create the dependency edge; got: {violations}",
+        )
 
     def test_a_wrapped_use_statement_still_requires_a_makefile(self) -> None:
         # The fail-open this closes: `_fortran_source_module_deps` anchored `^\s*use` at a

@@ -787,7 +787,7 @@ def _joined_masked_fortran_view(lowered: str) -> str:
     from an offset into this string."""
     masked = fortran_lines.mask_code_lookalikes(
         "\n".join(
-            statement
+            _FORTRAN_STATEMENT_LABEL.sub("", statement.lstrip(), count=1)
             for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
             for statement in fortran_lines.split_fortran_statements(line)
         )
@@ -801,7 +801,14 @@ def _joined_masked_fortran_view(lowered: str) -> str:
 # the `::`-less `enumerator` list. The type-spec's own parenthesised selector (`character(len=3)`,
 # `type(t)`) is stepped over by `_extract_balanced_parens`, not by a regex, so a comma or `=`
 # inside it cannot be read as an entity separator.
-_FORTRAN_USE_ONLY = re.compile(r"^use\b[^,]*,\s*only\s*:")
+# Every `use` that NAMES a local entity — an `only:` list, a rename list, or both, with or
+# without the `, non_intrinsic ::` module-nature prefix. An earlier form keyed on the word
+# `only` and could not cross the comma that follows `use`, so a bare rename
+# (`use m, ncomp => slot`) and the prefixed spelling both went unseen.
+_FORTRAN_USE_LOCAL_NAMES = re.compile(
+    r"^use\b\s*(?:,\s*(?:non_)?intrinsic\s*)?(?:::)?\s*[a-z_][a-z0-9_]*\s*,\s*"
+    r"(?:only\s*:)?"
+)
 _FORTRAN_ASSOCIATE_OPEN = re.compile(
     r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:associate|select\s+type)\s*\("
 )
@@ -917,6 +924,16 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             # before the depth takes effect for the statements inside it.
             if not _FORTRAN_ASSOCIATE_OPEN.match(statement):
                 continue
+        only_match = _FORTRAN_USE_LOCAL_NAMES.match(statement)
+        if only_match is not None:
+            # Use association overrides host association, so a name imported here is whatever the
+            # other module says it is — not this file's constant. Naming it disqualifies it.
+            for item in fortran_lines.split_top_level_commas(statement[only_match.end() :]):
+                local, sep, _remote = item.partition("=>")
+                match = FORTRAN_IDENTIFIER_PATTERN.match(local.strip())
+                if match is not None:
+                    others.add(match.group(0))
+            continue
         if "::" in statement:
             attributes, _, entities = statement.partition("::")
             attribute_tokens = {
@@ -937,16 +954,6 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
         # `associate (c0 => scratch)` and `select type (c0 => x)` REBIND a name to a definable
         # variable for the length of the construct, so the name is shadowed exactly as a local
         # declaration shadows — and nothing declares it, so only this reaches it.
-        only_match = _FORTRAN_USE_ONLY.match(statement)
-        if only_match is not None:
-            # Use association overrides host association, so a name imported here is whatever the
-            # other module says it is — not this file's constant. Naming it disqualifies it.
-            for item in fortran_lines.split_top_level_commas(statement[only_match.end() :]):
-                local, sep, _remote = item.partition("=>")
-                match = FORTRAN_IDENTIFIER_PATTERN.match(local.strip())
-                if match is not None:
-                    others.add(match.group(0))
-            continue
         associate_match = _FORTRAN_ASSOCIATE_OPEN.match(statement)
         if associate_match is not None:
             inner = _extract_balanced_parens(statement, statement.index("(", associate_match.end() - 1))
@@ -986,8 +993,11 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
                     else tail[length.end() :]
                 )
             # `integer function f(x)` is a procedure header, not a declaration of anything named
-            # here. It would otherwise contribute `function` to the shadow set.
-            if tail.lstrip().startswith("function"):
+            # here. The test is `function` followed by SPACE: `real function_tmp` is an ordinary
+            # declaration, and matching it by prefix discarded the whole statement — losing every
+            # other name on it too, which is how an unrelated `ncomp` stopped disqualifying
+            # itself.
+            if re.match(r"function\s", tail):
                 continue
             for item in fortran_lines.split_top_level_commas(tail):
                 match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
@@ -1233,16 +1243,19 @@ def _validate_problem_model_dependency_dataflow(
     The clause is deliberately FILE-WIDE AND SCOPE-FREE: a name is exempt only if this file
     declares it as a constant and never declares it as anything else. That is not the precise
     rule — the precise rule is Fortran's own name resolution — and it is not an approximation of
-    it either; it is the strictly weaker question that can be answered here. Five rounds of review
-    established why. A scoped version was written four times and defeated thirteen times, by a
+    it either; it is the strictly weaker question that can be answered here. Six rounds of review
+    established why: a scoped version was written four times and defeated sixteen times — by a
     `parameter` inside a module `function`, a paren-less `subroutine`, an external procedure, a
     submodule separate body, a `block`, a named `associate`, a contained procedure, a second
     module in the same file, a derived type's own `contains`, a statement label, an obsolescent
-    `character*3` selector, `use` association, and three spellings of an assignment to a variable
-    named `module`. Every one of them was a way for a name to be constant SOMEWHERE and definable
-    HERE — and each miss produced a SILENT gate, because this set subtracts candidates. The set of
-    mechanisms that make a Fortran name visible is not closed at this level of parsing, so a rule
-    whose safety depends on enumerating them cannot be made safe by adding cases.
+    `character*3` selector, three spellings of an assignment to a variable named `module`, and
+    three spellings of `use` association (`only:`, a bare rename, and the `, non_intrinsic ::`
+    prefix). Every one was a way for a name to be constant SOMEWHERE and definable HERE, and each
+    miss produced a SILENT gate, because this set subtracts candidates. The set of mechanisms that
+    make a Fortran name visible is not closed at this level of parsing, so a rule whose safety
+    depends on enumerating them cannot be made safe by adding cases. Note that three of the
+    sixteen were found AFTER the switch to this rule, in the recognition of "declared otherwise" —
+    the rule moves the risk from an unbounded set to a bounded one, it does not remove it.
 
     Asking the file-wide question instead makes the failure direction structural rather than
     hoped-for: a name used both ways anywhere in the file is simply not exempt, which costs a
@@ -1258,16 +1271,10 @@ def _validate_problem_model_dependency_dataflow(
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
     `problem/` guard below. Closing (c) is the flow-sensitive pass recorded in `TODO.md`.
 
-    RESIDUE, reproduced and NOT fixed here. The candidate rule still over-approximates in a way no
-    flow-insensitive repair reaches: a variable written by an earlier `call` (not by an
-    assignment) is a candidate, and a consumption path that crosses a call is invisible to the
-    assignment-only closure. The measured instance is the
-    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, which yields
-    `candidates=['flux_ok', 'u_new', 'z_b']` where `u_new` is written by the preceding dependency
-    call. It is latent ONLY because of the `problem/` guard below — that model's node_key domain
-    is `profile/`, so this gate never reads it. Widening that guard makes the false positive real.
-    Closing it is the flow-sensitive, interface-aware pass recorded in `TODO.md`, and that item
-    carries this case as its named test."""
+    Residue (c) above is the one with a named instance: the
+    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
+    `candidates=['flux_ok', 'u_new', 'z_b']`, where `u_new` is written by the preceding dependency
+    call. `TODO.md` carries it as the named test case for the flow-sensitive pass."""
     if not execution.node_key.startswith("problem/"):
         return
     if not dep_spec_ids:
