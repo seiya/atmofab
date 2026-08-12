@@ -5073,6 +5073,45 @@ def _required_child_agent_kind(step: str) -> str:
     return required
 
 
+def _normalized_agent_role(value: Any) -> str:
+    """The canonical token for an `agent_role` value: stripped and lower-cased, else "".
+
+    Every reader of the field normalizes this way; keeping the normalization in one
+    place is what makes "close a family, not a spelling" true here — `" Substep"` and
+    `"SUBSTEP"` must not be able to take different branches in different readers.
+    """
+    return value.strip().lower() if isinstance(value, str) and value.strip() else ""
+
+
+def _require_child_agent_role_for_step(
+    role_value: Any,
+    step_key: str,
+    *,
+    label: str,
+    error_type: type[Exception],
+) -> str:
+    """Require `role_value` to be exactly the child agent kind that `step_key` demands.
+
+    ONE predicate with three callers — the MCP build-tool phase gate, the run-gate phase
+    gate, and the record-launch request validator. The first two read the CAPABILITY's
+    role; the third reads the LAUNCH REQUEST's, which is what mints that capability. The
+    launch-side call is the upstream one: without it an unrecognized role was inferred by
+    `build_capability_document` and skipped by four other readers (TODO.md).
+
+    `_required_child_agent_kind` is called first, so an unsupported step (`tune` /
+    `promote`) fails on the step rather than on the role — the pre-existing behavior at
+    both capability call sites.
+    """
+    required_child = _required_child_agent_kind(step_key)
+    role = _normalized_agent_role(role_value)
+    if role != required_child:
+        raise error_type(
+            f"{label} agent_role does not satisfy required child agent kind "
+            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
+        )
+    return role
+
+
 def _phase_write_requires_child_running(path: str) -> bool:
     p = _normalize_rel_posix(path)
     return any(p.startswith(prefix) for prefix in PHASE_ARTIFACT_GUARDED_PREFIXES)
@@ -5729,13 +5768,12 @@ def validate_mcp_build_tool_invocation(
         raise RuntimeError("MCP phase gate: capability.step missing")
     node_safe = _node_key_to_safe(node_raw.strip())
     step_key = step_raw.strip().lower()
-    required_child = _required_child_agent_kind(step_key)
-    role = str(cap.get("agent_role", "")).strip().lower()
-    if role != required_child:
-        raise RuntimeError(
-            "MCP phase gate: capability agent_role does not satisfy required child agent kind "
-            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
-        )
+    _require_child_agent_role_for_step(
+        cap.get("agent_role"),
+        step_key,
+        label="MCP phase gate: capability",
+        error_type=RuntimeError,
+    )
     ns = doc.get("node_states")
     if not isinstance(ns, dict):
         raise RuntimeError("MCP phase gate: phase_state.node_states missing")
@@ -6268,13 +6306,12 @@ def _validate_run_gate_permissions(
         raise RuntimeError("run-gate phase gate: capability.step missing")
     node_safe = _node_key_to_safe(node_raw.strip())
     step_key = step_raw.strip().lower()
-    required_child = _required_child_agent_kind(step_key)
-    role = str(cap.get("agent_role", "")).strip().lower()
-    if role != required_child:
-        raise RuntimeError(
-            "run-gate phase gate: capability agent_role does not satisfy required child agent kind "
-            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
-        )
+    _require_child_agent_role_for_step(
+        cap.get("agent_role"),
+        step_key,
+        label="run-gate phase gate: capability",
+        error_type=RuntimeError,
+    )
     ns = doc.get("node_states")
     if not isinstance(ns, dict):
         raise RuntimeError("run-gate phase gate: phase_state.node_states missing")
@@ -14331,6 +14368,34 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     agent_model = request_payload.get("agent_model")
     if not isinstance(agent_model, str) or not agent_model.strip():
         raise ValueError("launch request must include non-empty agent_model")
+    # THE agent_role chokepoint. Six downstream readers disagreed about an unrecognized
+    # role — one INFERRED it (`build_capability_document`), three SKIPPED their check
+    # (`_allowed_output_paths_for_launch`, `_validate_child_write_contract_preflight`,
+    # `_build_task_card`), and `record_launch` itself fell back to the step-derived kind or
+    # to the literal "unknown" for the session-run-index row. Requiring the field here, at
+    # the one place every launch passes through, is what makes all of them see one value.
+    #
+    # Two things about the placement are load-bearing, and one is not. Load-bearing:
+    # (1) `record_launch` calls this validator immediately BEFORE
+    # `_append_session_run_index_entry`, so a rejected role leaves no orphan `running` row
+    # (validating inside `build_capability_document` instead would fire after that row is
+    # durable); (2) it is upstream of the capability, so the capability that the MCP and
+    # run-gate phase gates re-check with this same predicate can no longer be minted from
+    # an inferred role at all. NOT load-bearing: the position WITHIN this function. It sits
+    # after the deterministic-flag and agent_model checks purely so their existing
+    # error-ordering tests keep reporting the error they were written to observe.
+    #
+    # Attribution: the launch request is assembled by the conductor
+    # (`workflow_conductor.build_launch_request`), never by a leaf, so a mismatch is a
+    # transport fault the leaf cannot repair — a raise here, never a content failure.
+    if not _normalized_agent_role(request_payload.get("agent_role")):
+        raise ValueError("launch request must include non-empty agent_role")
+    _require_child_agent_role_for_step(
+        request_payload.get("agent_role"),
+        step,
+        label="launch request:",
+        error_type=ValueError,
+    )
     if isinstance(node_key, str) and node_key.strip():
         node_safe = _node_key_to_safe(node_key.strip())
     else:

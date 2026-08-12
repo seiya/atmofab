@@ -174,8 +174,18 @@ _FULL_CAPTURE_LIMIT: int = 50_000_000
 
 
 def child_agent_role(step: str) -> str:
-    """The agent_role of the leaf child for a phase: build => step, else substep."""
-    return "step" if step == "build" else "substep"
+    """The agent_role of the leaf child for a phase: build => step, else substep.
+
+    Read from `STEP_REQUIRED_CHILD_AGENT`, the runtime's table, rather than restated as
+    `"step" if step == "build" else "substep"`. Those were two definitions of one fact,
+    and record-launch now REJECTS a request whose role disagrees with the table
+    (`_require_child_agent_role_for_step`), so a conductor that answered from its own copy
+    would fail its own launches the moment the two drifted. An unsupported step raises
+    there, as it already does everywhere else the table is consulted.
+    """
+    from tools.orchestration_runtime import _required_child_agent_kind
+
+    return _required_child_agent_kind(step)
 
 
 def phase_index(step: str) -> int:
