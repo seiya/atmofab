@@ -5767,21 +5767,25 @@ end module shallow_water2d_model
         # part is bounded by the `contains` AND by the procedure header opening a child scope, so
         # labelling only one leaves the other filter to catch the leak and the test proves
         # nothing. `gfortran -fsyntax-only -std=f2008` accepts both labels.
+        # `helper` comes AFTER `advance` deliberately. With it first, an unrecognized labelled
+        # header leaves its `end subroutine` unbalanced, which pops the module's own scope, and
+        # `advance` then loses its host attribution and fires for that reason instead — two
+        # errors cancelling, and a test that passes without pinning anything.
         source = """module shallow_water2d_model
 use dep_model
 implicit none
 integer :: ncomp
 10 contains
-20 subroutine helper(out_val)
-  real, intent(out) :: out_val
-  integer, parameter :: ncomp = 3
-  out_val = real(ncomp)
-end subroutine helper
 subroutine advance(u_np1, guard_pass)
   real, intent(out) :: u_np1
   logical, intent(out) :: guard_pass
   call dep__advance(ncomp, u_np1, guard_pass)
 end subroutine advance
+20 subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
 end module shallow_water2d_model
 """
         self.assertTrue(
@@ -5794,16 +5798,22 @@ end module shallow_water2d_model
 
     def test_an_assignment_cannot_reopen_the_specification_part(self) -> None:
         # None of these words is reserved. An assignment to a variable named `module` matched the
-        # scope tracker's UNIT-OPEN pattern and started a brand-new host scope in the middle of a
-        # procedure — one with no `contains` of its own, so nothing else bounds it and only the
-        # neutralization can. (The `endmodule` spelling pops a scope instead, and the `contains`
-        # cut already covers that; pinning the pop alone proves nothing.) The designator has to
-        # admit every LHS shape: the first guard allowed one subscript, and a single `%` walked
-        # straight back through it.
+        # host-unit pattern and started a brand-new host scope in the middle of a procedure — one
+        # with no `contains` of its own, so nothing else bounds it. (The `endmodule` spelling pops
+        # a scope instead, and the `contains` cut already covers that; pinning the pop alone
+        # proves nothing.) Three of these four shapes each defeated a successive attempt to
+        # enumerate what an assignment LOOKS like, which is why the pattern they now meet
+        # enumerates what a host-unit header IS. This is a behavioural regression test, not a pin
+        # on that pattern: per-host attribution blocks all four independently, so loosening the
+        # pattern alone does not fail here.
         for label, target, declaration in (
             ("plain name", "module", "real :: module"),
             ("component reference", "module%v", "type(holder) :: module"),
             ("subscript then component", "module(1)%v", "type(holder) :: module(2)"),
+            # A subscript may itself contain `=`, as a keyword argument. Enumerating LHS shapes
+            # lost to this one after two earlier rounds had already patched it twice, which is
+            # why the host-unit opener is now an allowlist over what a header IS.
+            ("subscript with a keyword argument", "module(min(1, 2))", "real :: module(2)"),
         ):
             source = f"""module shallow_water2d_model
 use dep_model
@@ -5836,6 +5846,141 @@ end module shallow_water2d_model
                 ),
                 f"{label}: got {self._dataflow_violations(source)}",
             )
+
+    def test_one_modules_constant_does_not_exempt_another_modules_variable(self) -> None:
+        # A file may hold several host units. Concatenating their specification parts into one
+        # text — which is what "module scope" meant before this — let a `parameter` in
+        # `const_model` exempt a same-named VARIABLE in `shallow_water2d_model`. The scoping claim
+        # in the docstring said per-host all along; the code did not implement it.
+        source = """module const_model
+implicit none
+integer, parameter :: ncomp = 3
+end module const_model
+module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_block_local_constant_does_not_exempt_the_enclosing_body(self) -> None:
+        # A `block` is a scope of its own. Its `parameter` is not visible to the statements around
+        # it — least of all to a call that precedes it — but a body-wide flatten collected it and
+        # exempted `ncomp`, which is an ordinary local integer at the call.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+  block
+    integer, parameter :: ncomp = 3
+    print *, ncomp
+  end block
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_type_bound_contains_does_not_end_the_specification_part(self) -> None:
+        # A derived-type definition has its own `contains`, introducing type-bound procedures.
+        # Reading it as the host unit's truncated the specification part at the first such type,
+        # dropping every module constant declared after it — a false violation against a model
+        # whose only offence is defining a type with a procedure binding.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+type :: holder
+contains
+  procedure, nopass :: touch
+end type holder
+integer, parameter :: ncomp = 3
+contains
+subroutine touch()
+  print *, ncomp
+end subroutine touch
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_type_selector_with_leading_space_still_declares(self) -> None:
+        # `integer (kind=4) ncomp` — a blank before the selector is legal, and skipping the
+        # selector without stripping it first left the declaration unparsed, so the local did not
+        # shadow the host constant and a real discarded output was exempted.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer (kind=4) ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_an_associate_construct_shadows_a_host_constant(self) -> None:
+        # `associate (ncomp => scratch)` rebinds the name to a definable variable for the length
+        # of the construct, so the actual passed under that name really can be a discarded
+        # output. Nothing DECLARES it, so the declaration-shaped subtraction could not see it.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: scratch
+  associate (ncomp => scratch)
+    call dep__advance(ncomp, u_np1, guard_pass)
+  end associate
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
 
     def test_a_submodule_separate_procedure_body_is_not_module_scope(self) -> None:
         # `_assign_fortran_scopes` deliberately opens no scope for `module procedure`, which is
