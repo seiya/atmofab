@@ -5728,6 +5728,23 @@ end module shallow_water2d_model
                 "  out_val = real(ncomp)\n"
                 "end subroutine helper\n"
             ),
+            # A variable named `endmodule` — none of these words is reserved — matched the scope
+            # tracker's `end` pattern and re-opened the specification part across everything that
+            # followed it. An assignment cannot change scope, so assignments are neutralized
+            # before the tracker sees them.
+            "procedure assigning a variable named endmodule": (
+                "subroutine marker(out_val)\n"
+                "  real, intent(out) :: out_val\n"
+                "  real :: endmodule\n"
+                "  endmodule = 3.0\n"
+                "  out_val = endmodule\n"
+                "end subroutine marker\n"
+                "subroutine helper(out_val)\n"
+                "  real, intent(out) :: out_val\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  out_val = real(ncomp)\n"
+                "end subroutine helper\n"
+            ),
         }
         for label, procedure in shapes.items():
             source = self._SCOPE_LEAK_TEMPLATE.format(leaking_procedure=procedure)
@@ -5739,6 +5756,115 @@ end module shallow_water2d_model
                 f"a constant inside a {label} must not reach module scope; "
                 f"got: {self._dataflow_violations(source)}",
             )
+
+    def test_a_constant_outside_every_host_unit_is_not_module_scope(self) -> None:
+        # Two shapes that have no module specification part at all, yet were read as one because
+        # the scan tracked "past `contains`" without ever asking "inside a unit?". Both are
+        # accepted by `gfortran -fsyntax-only -std=f2008`: external procedures alongside a module,
+        # and a file of external procedures with no module at all.
+        solve = """subroutine advance(u_np1, guard_pass)
+  use dep_model
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+"""
+        external_helper = """subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+"""
+        module_wrapper = (
+            "module shallow_water2d_model\nimplicit none\ncontains\n"
+            "subroutine noop(out_val)\n  real, intent(out) :: out_val\n  out_val = 0.0\n"
+            "end subroutine noop\nend module shallow_water2d_model\n"
+        )
+        for label, source in {
+            "external procedures beside a module": module_wrapper + external_helper + solve,
+            "no module anywhere": external_helper + solve,
+        }.items():
+            self.assertTrue(
+                any(
+                    "subroutine advance does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"{label}: nothing here is module scope; got: {self._dataflow_violations(source)}",
+            )
+
+    def test_a_labelled_contains_still_ends_the_specification_part(self) -> None:
+        # A statement LABEL may precede any statement. Anchoring on the bare keyword missed
+        # `10 contains`, leaving the specification part open across every procedure after it.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+10 contains
+subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_local_declaration_shadows_a_host_constant_of_the_same_name(self) -> None:
+        # Fortran scoping: the local `integer :: ncomp` shadows the module constant, so the actual
+        # IS a definable variable and CAN be a discarded dependency output. Unioning the two scopes
+        # exempted it — the mirror of the leak the module-scope reader exists to close, and the
+        # direction the sibling isolation test does not cover.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_an_enumerator_is_a_named_constant_too(self) -> None:
+        # An enumerator is not definable either, so it can never be a dependency-call output.
+        # Missing it was a false-violation class, not a hole.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+enum, bind(c)
+  enumerator :: ncomp = 3
+end enum
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
 
     def test_a_constant_declared_in_the_calling_subroutine_still_exempts(self) -> None:
         # The other half of the scope union, which no test watched: module specification part OR
@@ -5866,8 +5992,22 @@ end module shallow_water2d_model
         self.assertNotIn("!", view)
         self.assertIn("msg = '   '", view)
         # A fixed point, which is what lets `_split_fortran_names` re-apply it on input a gate has
-        # already joined.
+        # already joined. The well-formed input above does NOT pin this: reverting the right-strip
+        # and the empty-statement drop leaves it passing. These four do, and the first is ordinary
+        # legal Fortran — `x = 1;` emits an empty statement a second pass would drop. The other
+        # three are robustness against input the syntax gate rejects before this one runs: a
+        # lone-`&` line and text ending mid-continuation both leave the blank that preceded a
+        # consumed marker, and an unterminated literal leaves the blanks the mask wrote over its
+        # contents.
         self.assertEqual(vps._joined_masked_fortran_view(view), view)
+        for label, probe in {
+            "trailing semicolon": "x = 1;\n",
+            "lone ampersand line": "x = 1 &\n&\ny = 2\n",
+            "ends mid-continuation": "call f(a, &\n",
+            "unterminated literal": "x = 'abc\ny = 1\n",
+        }.items():
+            once = vps._joined_masked_fortran_view(probe)
+            self.assertEqual(vps._joined_masked_fortran_view(once), once, label)
 
     def test_fortran_parameter_names_covers_the_declaration_forms(self) -> None:
         # Feeding this the joined view is part of its contract: a wrapped declaration is exactly

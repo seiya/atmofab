@@ -29125,7 +29125,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # character literal resumes with a leading `&`. Inform-over-prohibit — the gate was
         # already going to reject the shape; without this the leaf learns it from a
         # `compile_error` and burns a regenerate cycle.
-        "skills/workflow-generate-generate/SKILL.md": 37600,
+        # Bumped 37600->37900: the dependency-dataflow candidate rule gains its third clause (a
+        # named constant is never a dependency result) plus the two limits of that clause a leaf
+        # can actually author around — it stops at the file, so a `use`-imported constant or one a
+        # local declaration shadows still counts. Inform-over-prohibit: without those two the leaf
+        # follows the stated rule, gets a violation it cannot fix by making the name more
+        # constant, and burns a regenerate cycle. The same edit RETIRED the stale clause claiming
+        # this gate also checks `required_sources` (removed long ago, owned by Generate.verify
+        # G5), so the net growth is smaller than the rule's.
+        "skills/workflow-generate-generate/SKILL.md": 37900,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare

@@ -770,11 +770,13 @@ def _joined_masked_fortran_view(lowered: str) -> str:
     Each emitted statement is right-stripped and empty statements are dropped. That is not
     cosmetic: without it the result is NOT a fixed point, and the fixed point is what lets a
     consumer re-apply the view to a fragment of a view — which is what keeps `_split_fortran_names`
-    total with respect to both its raw and its joined callers. Four legal inputs proved it, and
-    each has a test: a trailing `;` (`x = 1;`) emits an empty statement a second pass would drop; a
-    lone-`&` line, and text ending mid-continuation, both leave the blank that preceded the
-    consumed marker; and an unterminated literal leaves the blanks the mask wrote over its
-    contents. The claim is now true and pinned rather than asserted.
+    total with respect to both its raw and its joined callers. Four inputs proved it, and the
+    fixed-point test uses all four rather than a well-formed one, which does not distinguish them.
+    Only the first is legal Fortran: a trailing `;` (`x = 1;`) emits an empty statement a second
+    pass would drop. The other three are robustness against text the `Generate.gate` syntax check
+    rejects before this one runs — a lone-`&` line and text ending mid-continuation each leave the
+    blank that preceded the consumed marker, and an unterminated literal leaves the blanks the
+    mask wrote over its contents.
 
     INVARIANT, and the price of this view: offsets into the result no longer index the ORIGINAL
     file. Comment-only and blank lines are gone and each `&` has collapsed. Offsets remain
@@ -798,6 +800,14 @@ def _joined_masked_fortran_view(lowered: str) -> str:
 # Only up to the OPENING paren: the group is delimited by `_extract_balanced_parens`, not by a
 # greedy `(.*)\)$` — see `_fortran_parameter_names`.
 _FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\(")
+# A statement LABEL may precede any statement, including a structural one. Every rule below
+# anchors on the keyword, so the label has to come off first — a labelled `10 contains` that went
+# unrecognized left the module specification part open across every procedure that followed it.
+_FORTRAN_STATEMENT_LABEL = re.compile(r"^\d+\s+")
+
+
+def _fortran_statement_body(line: str) -> str:
+    return _FORTRAN_STATEMENT_LABEL.sub("", line.strip().lower(), count=1)
 
 
 def _fortran_parameter_names(joined_masked: str) -> set[str]:
@@ -831,22 +841,39 @@ def _fortran_parameter_names(joined_masked: str) -> set[str]:
     file is the wrong text to give it: a name that is a constant in one procedure and a live
     variable in another would be reported for both, and the dependency-dataflow gate would then
     exempt a genuinely discarded output — fail-open."""
-    names: set[str] = set()
+    return _fortran_declared_names(joined_masked)[0]
+
+
+def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
+    """``(named constants, every other declared entity)`` of ``joined_masked``.
+
+    One parser, two answers, because the dependency-dataflow gate needs both and they must agree
+    on what a declaration IS. The second set is what lets a procedure-local declaration SUBTRACT a
+    host constant of the same name: Fortran scoping says the local shadows the constant, so the
+    actual really is a definable variable and really can be a discarded dependency output. A
+    union-only scope rule exempted it — fail-open, and the mirror of the leak the module-scope
+    reader was written to close.
+
+    ``enumerator :: red = 1`` counts as a constant for the same reason ``parameter`` does: an
+    enumerator is not definable, so it can never be an output argument."""
+    constants: set[str] = set()
+    others: set[str] = set()
     for line in joined_masked.split("\n"):
-        statement = line.strip().lower()
+        statement = _fortran_statement_body(line)
         if not statement:
             continue
         if "::" in statement:
             attributes, _, entities = statement.partition("::")
-            if not any(
-                token.strip() == "parameter"
-                for token in fortran_lines.split_top_level_commas(attributes)
-            ):
-                continue
+            attribute_tokens = {
+                token.strip() for token in fortran_lines.split_top_level_commas(attributes)
+            }
+            # `import ::`, `procedure(x) ::` and friends declare no local entity worth tracking,
+            # but treating them as `others` only ever SUBTRACTS, which is the safe direction.
+            target = constants if attribute_tokens & {"parameter", "enumerator"} else others
             for item in fortran_lines.split_top_level_commas(entities):
                 match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
                 if match is not None:
-                    names.add(match.group(0))
+                    target.add(match.group(0))
             continue
         statement_match = _FORTRAN_PARAMETER_STATEMENT_PATTERN.match(statement)
         if statement_match is None:
@@ -864,69 +891,67 @@ def _fortran_parameter_names(joined_masked: str) -> set[str]:
         for item in items:
             match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
             if match is not None:
-                names.add(match.group(0))
-    return names
+                constants.add(match.group(0))
+    return constants, others
 
 
-# A module's SPECIFICATION PART ends at its `contains`; a `contains` inside a derived-type
-# definition or an interface block is a different construct and does not.
-_FORTRAN_MODULE_SCOPE_END = re.compile(r"^end\s*(?:module|submodule)\b")
-_FORTRAN_CONTAINS = re.compile(r"^contains\b")
-_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()")
-_FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
-_FORTRAN_INTERFACE_OPEN = re.compile(r"^(?:abstract\s+)?interface\b")
-_FORTRAN_INTERFACE_END = re.compile(r"^end\s*interface\b")
+# Only `module` / `submodule` / `program` open a HOST unit whose specification part can hold the
+# constants this exemption is about. `_FORTRAN_UNIT_OPEN` (defined below, with the scope tracker)
+# also matches `subroutine`, which is the opposite of what is wanted here.
+_FORTRAN_HOST_UNIT_OPEN = re.compile(
+    r"^(?:module|submodule|program)\b(?!\s*(?:procedure|function|subroutine)\b)"
+)
+# An ASSIGNMENT never opens or closes a scope. Recognising one is what stops a leaf that names a
+# variable `endmodule` from re-opening the specification part mid-file: `endmodule = 3.0` matches
+# `_FORTRAN_UNIT_END`, and `gfortran -std=f2008` accepts it, because none of these words is
+# reserved. The optional subscript excludes `=`, so a real header such as
+# `character(len=10) function f(x)` is not mistaken for one.
+_FORTRAN_ASSIGNMENT_STATEMENT = re.compile(r"^[a-z_][a-z0-9_]*(?:\s*\([^=]*\))?\s*=(?!=)")
 
 
 def _fortran_module_specification_text(joined_masked: str) -> str:
-    """The statements of ``joined_masked`` that are in a module's SPECIFICATION PART.
+    """The statements of ``joined_masked`` that sit in a HOST unit's specification part.
 
-    That is: outside every procedure body, outside every derived-type definition, and outside
-    every interface block. It is what "module scope" has to mean for
-    `_validate_problem_model_dependency_dataflow`'s named-constant exemption, and deriving it by
-    BLANKING `_PROBLEM_SUBROUTINE_ENVELOPE` matches — the first shape of this code — was wrong in
-    two ways that `gfortran -fsyntax-only -std=f2008` accepts and that no test caught:
+    That is: at the scope of a `module` / `submodule` / `program`, and therefore outside every
+    procedure body, every interface body and every external procedure. It is what "module scope"
+    has to mean for `_validate_problem_model_dependency_dataflow`'s named-constant exemption, and
+    it is the FOURTH shape of this code. The three before it were each defeated by source
+    `gfortran -fsyntax-only -std=f2008` accepts, and the progression is the reason this one is
+    written differently:
 
-    * that envelope matches `subroutine name(...)` only, so every module-level `function` body
-      counted as specification part. A `parameter` declared inside a function then exempted a live
-      variable of the same name in another procedure — the exact fail-open the exemption's own
-      isolation test was written to prevent, defeated by writing the other procedure as a
-      function;
-    * the envelope also requires a dummy-argument list, so a paren-less `subroutine noargs` leaked
-      the same way.
+    * blanking `_PROBLEM_SUBROUTINE_ENVELOPE` matches read the SHAPE of one keyword. That envelope
+      matches `subroutine name(...)` only, so a `parameter` inside a module `function`, or inside
+      a paren-less `subroutine noargs`, was collected as module scope;
+    * tracking "am I past `contains`" never asked "am I inside a unit at all", so every EXTERNAL
+      procedure body — and every statement of a file with no module at all — was specification
+      part;
+    * anchoring on a bare keyword missed a statement LABEL (`10 contains`), and mistook the
+      assignment `endmodule = 3.0` for a unit end; each re-opened the specification part across
+      every procedure that followed.
 
-    This reads the structure instead of the shape: everything up to the module's own `contains`.
-    The failure direction is deliberately UNDER-collection — a segment this cannot attribute is
-    dropped, which costs a false violation (fail-closed, a regenerate) rather than an exemption
-    (fail-open). Concretely, a second module in the same file after an unterminated first one, or
-    a file with no `contains` at all, contributes nothing."""
-    kept: list[str] = []
-    in_type = False
-    in_interface = False
-    past_contains = False
-    for line in joined_masked.split("\n"):
-        statement = line.strip().lower()
-        if _FORTRAN_MODULE_SCOPE_END.match(statement):
-            in_type = False
-            in_interface = False
-            past_contains = False
-            continue
-        if _FORTRAN_TYPE_DEFINITION_END.match(statement):
-            in_type = False
-            continue
-        if _FORTRAN_INTERFACE_END.match(statement):
-            in_interface = False
-            continue
-        if _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
-            in_type = True
-        elif _FORTRAN_INTERFACE_OPEN.match(statement):
-            in_interface = True
-        elif not in_type and not in_interface and _FORTRAN_CONTAINS.match(statement):
-            past_contains = True
-            continue
-        if not past_contains and not in_type and not in_interface:
-            kept.append(line)
-    return "\n".join(kept)
+    All three were hand-rolled scans of Fortran structure — the same mistake three times, which is
+    the signal to stop writing one. `_assign_fortran_scopes` already assigns a scope id per
+    logical line, already handles `function` headers, nesting and `module procedure`, and is
+    already tested. This reads its scope ids and keeps the lines whose scope was opened by a host
+    unit. The one thing it adds is neutralizing assignment statements first, because that
+    tracker's `end` pattern cannot tell `end module` from a write to a variable named `endmodule`.
+
+    A file with no host unit therefore contributes nothing, and so does a procedure this cannot
+    attribute — under-collection, which costs a false violation rather than an exemption."""
+    lines = joined_masked.split("\n")
+    structural = [
+        "continue"
+        if _FORTRAN_ASSIGNMENT_STATEMENT.match(_fortran_statement_body(line))
+        else _fortran_statement_body(line)
+        for line in lines
+    ]
+    scopes, _parents = _assign_fortran_scopes(list(enumerate(structural, 1)))
+    host_scopes = {
+        scope
+        for statement, scope in zip(structural, scopes)
+        if _FORTRAN_HOST_UNIT_OPEN.match(statement)
+    }
+    return "\n".join(line for line, scope in zip(lines, scopes) if scope in host_scopes)
 
 
 def _split_fortran_names(raw: str) -> list[str]:
@@ -1133,9 +1158,17 @@ def _validate_problem_model_dependency_dataflow(
     `parameter` can never be a dependency-call output. Verified against the compiler rather than
     inferred from the standard: `gfortran -fsyntax-only -std=f2008` rejects both spellings with
     "Non-variable expression in variable definition context (actual argument to INTENT =
-    OUT/INOUT)". Its scope is module-level plus the enclosing subroutine's own declarations, never
-    the whole file — a name that is constant in one procedure and a live variable in another must
-    stay a candidate in the second, or the exclusion becomes a fail-open.
+    OUT/INOUT)". Its scope is the host unit's specification part plus the enclosing subroutine's
+    own declarations, minus whatever that subroutine redeclares — a name that is constant in one
+    procedure and a live variable in another must stay a candidate in the second, or the exclusion
+    becomes a fail-open.
+
+    The scope is also this FILE. A constant reached by `use` from another module is not visible
+    here and stays a candidate, so a model that passes an imported constant to a dependency call
+    gets a violation it cannot act on by making the name more constant. That direction is
+    fail-closed and pre-dates the exemption — the remedy the authoring rule already gives is to
+    assign every actual before the call — but the documents that state the rule to the leaf say so
+    explicitly rather than promising an exemption that stops at the file boundary.
 
     RESIDUE, reproduced and NOT fixed here. The candidate rule still over-approximates in a way no
     flow-insensitive repair reaches: a variable written by an earlier `call` (not by an
@@ -1173,7 +1206,13 @@ def _validate_problem_model_dependency_dataflow(
         arg_names = set(_split_fortran_names(sub_match.group(2)))
         body = sub_match.group(3)
         assignments = _assignment_records(body)
-        parameter_names = module_parameter_names | _fortran_parameter_names(body)
+        # Host constants MINUS what this body redeclares, plus this body's own constants. The
+        # subtraction is not symmetry for its own sake: a local `integer :: ncomp` shadows a
+        # module `integer, parameter :: ncomp`, so the actual really is a definable variable and
+        # really can be a discarded dependency output. Union-only exempted it — fail-open, and the
+        # mirror of the leak the module-scope reader exists to close.
+        body_constants, body_redeclared = _fortran_declared_names(body)
+        parameter_names = (module_parameter_names - body_redeclared) | body_constants
 
         out_vars: set[str] = set()
         for out_match in intent_out_pattern.finditer(body):
