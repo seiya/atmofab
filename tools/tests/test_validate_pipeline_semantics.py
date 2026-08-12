@@ -5493,8 +5493,8 @@ end module shallow_water2d_model
         return violations
 
     def test_every_program_unit_end_closes_an_envelope(self) -> None:
-        # One row per alternative of `_FORTRAN_UNIT_END_KIND`, in both spellings F2008 Table 3.1
-        # allows, plus the bare `end`. Dropping a single alternative leaves that terminator
+        # One row per alternative of `_FORTRAN_UNIT_END_KIND`, in both the spaced and the one-word
+        # spelling F2008 allows (verified with `gfortran -fsyntax-only -std=f2008`), plus `end`. Dropping a single alternative leaves that terminator
         # unrecognised, the body running past it, and no other test noticing — the same argument
         # the `_FORTRAN_BARE_DECLARATION` table below makes for its own alternatives.
         #
@@ -6605,7 +6605,9 @@ end module shallow_water2d_model
             # parsing each one's grammar is the losing move this rule exists to stop making, so
             # any statement opening with one of those keywords disqualifies every identifier it
             # mentions. Two representatives; the helper-level test covers the list.
-            # F2008 Table 3.1 makes the blank optional, so `selecttype` is ONE token and a
+            # F2008 makes the blank optional (the list is NOT Table 3.1, which is the
+            # special-characters table — a miscitation this file carried in two places), so
+            # `selecttype` is ONE token and a
             # pattern requiring `select\s+type` sees no rebinding at all. `fortitude check`
             # passes it too.
             (

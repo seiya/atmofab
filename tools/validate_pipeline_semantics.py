@@ -1165,12 +1165,16 @@ def _is_literal_like_expr(expr: str) -> bool:
 # docstring). Nothing here reports a line number; anything that ever does must take it from
 # `fortran_lines.fortran_logical_lines`' `start_lineno`.
 
-# Every END statement F2008 gives a PROGRAM UNIT or a subprogram: R1103 end-program,
-# R1105 end-module, R1119 end-submodule, R1116 end-block-data, R1232 end-function,
-# R1237 end-subroutine, and end-mp-subprogram. That list is closed, and it is the whole of what
-# may close an envelope: every other `end X` closes an executable construct or a derived type.
+# Every END statement F2008 gives a PROGRAM UNIT or a subprogram: program, module, submodule,
+# block data, function, subroutine, and the separate module subprogram. That list is closed, and
+# it is the whole of what may close an envelope: every other `end X` closes an executable
+# construct or a derived type. (`end file` is an I/O statement and closes nothing; it falls
+# through with the construct ends.) The rule numbers an earlier draft cited here were wrong in
+# three of six cases, so they are gone: what this rests on is the compiler, which accepts each
+# spelling below and rejects the cross-kind ones — see `_FORTRAN_END_KIND_CLOSES`' successor note.
 # `end\s*` (blank optional) is the spelling `_IFACE_PROC_END` and `_FORTRAN_CONSTRUCT_END` already
-# use, for the reason F2008 Table 3.1 gives — `endsubroutine` is one legal word.
+# use: `endsubroutine` is one legal word, verified with `gfortran -fsyntax-only -std=f2008`. That
+# too was miscited — as F2008 Table 3.1, which is the special-characters table.
 _FORTRAN_UNIT_END_KIND = re.compile(
     r"^end\s*(subroutine|function|procedure|module|submodule|program|block\s*data)\b"
 )
