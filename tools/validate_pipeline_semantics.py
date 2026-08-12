@@ -3951,9 +3951,16 @@ def _validate_generate_outputs(
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         lowered = text.lower()
+        # The metric scans below are the same shape as the `problem` model gates — a regex over
+        # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
+        # the physical newline, so a wrapped `metrics(1) = &` / `1.0` captured only the `&`, which
+        # carries no digit and so never counted as literal-like: the literal-metric floor was
+        # escapable by wrapping the assignments. The gates below re-derive this view themselves
+        # (it is a fixed point) and are left reading `lowered` so their own contract stays whole.
+        joined = _joined_masked_fortran_view(lowered)
 
-        if re.search(r"index\s*\(\s*case_id", lowered) and re.search(
-            r"metrics\s*\(\s*\d+\s*\)", lowered
+        if re.search(r"index\s*\(\s*case_id", joined) and re.search(
+            r"metrics\s*\(\s*\d+\s*\)", joined
         ):
             violations.append(
                 f"{model_file}: hardcoded case_id -> metrics assignment pattern detected"
@@ -3961,7 +3968,7 @@ def _validate_generate_outputs(
 
         assignments = re.findall(
             r"metrics\s*\(\s*\d+\s*\)\s*=\s*([^\n!]+)",
-            lowered,
+            joined,
             flags=re.MULTILINE,
         )
         literal_like = 0
@@ -4350,9 +4357,16 @@ def _validate_generate_outputs_for_generation(
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         lowered = text.lower()
+        # The metric scans below are the same shape as the `problem` model gates — a regex over
+        # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
+        # the physical newline, so a wrapped `metrics(1) = &` / `1.0` captured only the `&`, which
+        # carries no digit and so never counted as literal-like: the literal-metric floor was
+        # escapable by wrapping the assignments. The gates below re-derive this view themselves
+        # (it is a fixed point) and are left reading `lowered` so their own contract stays whole.
+        joined = _joined_masked_fortran_view(lowered)
 
-        if re.search(r"index\s*\(\s*case_id", lowered) and re.search(
-            r"metrics\s*\(\s*\d+\s*\)", lowered
+        if re.search(r"index\s*\(\s*case_id", joined) and re.search(
+            r"metrics\s*\(\s*\d+\s*\)", joined
         ):
             violations.append(
                 f"{model_file}: hardcoded case_id -> metrics assignment pattern detected"
@@ -4360,7 +4374,7 @@ def _validate_generate_outputs_for_generation(
 
         assignments = re.findall(
             r"metrics\s*\(\s*\d+\s*\)\s*=\s*([^\n!]+)",
-            lowered,
+            joined,
             flags=re.MULTILINE,
         )
         literal_like = 0

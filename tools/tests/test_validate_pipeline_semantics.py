@@ -11727,6 +11727,74 @@ class FortranMakefileObjdirPrefixTest(unittest.TestCase):
         )
 
 
+class WrappedLiteralMetricAssignmentTest(unittest.TestCase):
+    """The literal-metric floor was escapable by wrapping the assignments.
+
+    `metrics(1) = &` / `1.0` reached the scan's `([^\\n!]+)` right-hand side as the bare `&`,
+    which carries no digit and so never counted as literal-like. The count then fell under the
+    floor of six and a model that hardcodes every metric passed `Generate.static`.
+
+    The scan is DUPLICATED — `_validate_generate_outputs` and
+    `_validate_generate_outputs_for_generation` carry near-identical copies — so both are asserted
+    here. Fixing one and missing its twin is a repeat failure mode in this repository.
+    """
+
+    _MODEL = (
+        "module mymodel_model\n"
+        "implicit none\n"
+        "contains\n"
+        "subroutine emit(metrics)\n"
+        "  real, intent(out) :: metrics(6)\n"
+        "  metrics(1) = &\n    1.0\n"
+        "  metrics(2) = &\n    2.0\n"
+        "  metrics(3) = &\n    3.0\n"
+        "  metrics(4) = &\n    4.0\n"
+        "  metrics(5) = &\n    5.0\n"
+        "  metrics(6) = &\n    6.0\n"
+        "end subroutine emit\n"
+        "end module mymodel_model\n"
+    )
+
+    def test_both_copies_of_the_scan_count_a_wrapped_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pipeline_dir = repo_root / "pipeline"
+            source_id = "src_001"
+            src_dir = pipeline_dir / "source" / source_id / "src"
+            src_dir.mkdir(parents=True)
+            (src_dir / "mymodel_model.f90").write_text(self._MODEL, encoding="utf-8")
+            execution = NodeExecution(
+                node_key="problem/mymodel@0.1.0",
+                node_dir=repo_root / "node",
+                exec_dir=repo_root / "exec",
+                pipeline_dir=pipeline_dir,
+            )
+
+            direct: list[str] = []
+            vps._validate_generate_outputs(
+                repo_root=repo_root,
+                execution=execution,
+                src_dir=src_dir,
+                violations=direct,
+            )
+            for_generation: list[str] = []
+            vps._validate_generate_outputs_for_generation(
+                repo_root=repo_root,
+                execution=execution,
+                source_id=source_id,
+                violations=for_generation,
+            )
+
+        for label, violations in (
+            ("_validate_generate_outputs", direct),
+            ("_validate_generate_outputs_for_generation", for_generation),
+        ):
+            self.assertTrue(
+                any("many literal metric assignments detected (6/6)" in v for v in violations),
+                f"{label} must count wrapped literal metric assignments; got: {violations}",
+            )
+
+
 class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
     """Build / Validate.execute run in-process (no leaf, no skill): their minimal
     deterministic launch prompt satisfies a reduced marker set (no skill markers)."""
