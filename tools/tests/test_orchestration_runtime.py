@@ -2320,9 +2320,37 @@ shell_tool                       stable             true
         # retired view-only companion the SKILL used to instruct; `algorithm_summary.md` is the
         # respelling a re-introduction would plausibly take; `dependency_graph.json` and
         # `compile_static_meta.json` are conductor-authored and must stay leaf-non-writable.
+        # The last three are NOT a denylist of names anyone would write: they are the shapes a
+        # widening takes. A name no rule could plausibly enumerate catches a rule relaxed to a
+        # prefix or a suffix test; the nested paths catch a subtree escape (the `generate` branch
+        # grants a directory this way, so the shape is live in this same function).
         for extra in ("algorithm.summary.md", "algorithm_summary.md", "io_contract.yaml",
-                      "dependency_graph.json", "compile_static_meta.json", "notes.md"):
+                      "dependency_graph.json", "compile_static_meta.json", "notes.md",
+                      "zz9_unlisted_artifact.xyz", "views/summary.md", "src/main.f90"):
             forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
+            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+
+    def test_phase_contract_compile_static_is_the_meta_alone(self) -> None:
+        """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`,
+        which is what keeps a compile.generate / compile.verify leaf from listing a verdict as
+        its own output. Review found the widening of that `==` to a `startswith` on the IR root
+        was invisible to the whole suite: nothing pinned this branch. It is pinned here, next to
+        the generate contract, because the two are the same rule read at two substeps."""
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
+        base = {"agent_role": "substep", "step": "compile", "substep": "static",
+                "ir_ref": ir_ref, "node_key": "component/spec_x@0.1.0"}
+        meta = [f"{ir_ref}/compile_static_meta.json"]
+        self.assertEqual(
+            _allowed_output_paths_for_launch(
+                request_payload=dict(base, allowed_output_paths=meta), write_roots=[]),
+            meta)
+        # Not even the IR the gate reads, and not a sibling meta: static writes its verdict only.
+        for extra in ("spec.ir.yaml", "ir_meta.json", "compile_static_meta.json.bak",
+                      "zz9_unlisted_artifact.xyz"):
+            forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                 _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
 
