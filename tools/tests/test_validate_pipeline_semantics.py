@@ -5904,8 +5904,9 @@ end module shallow_water2d_model
         # dropped, because a mask that blanks IN PLACE leaves the marker and the newline attached
         # to that token. The second `h_in` below is that recovered name. Recovering it is safe
         # only together with the candidate rule's named-constant clause — measured on every
-        # `*_model.f90` in the tree, the pair moves 29 violations to 27 with no `problem/` file
-        # changing verdict.
+        # `*_model.f90` in the tree, the pair moves the violation count down by two with no
+        # `problem/` file changing verdict. (The absolute pair depends on how `dep_spec_ids` is
+        # derived for that sweep; TODO.md records the harness. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
             self.assertEqual(vps._split_fortran_names(raw), ["h_in", "h_in", "tmp"], raw)

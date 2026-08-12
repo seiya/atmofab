@@ -970,7 +970,9 @@ def _split_fortran_names(raw: str) -> list[str]:
     one name per continuation, from EVERY feed at once (a lost dummy wrongly became a
     dependency-output candidate, a lost actual lost a real candidate, a lost `intent(out)` name
     shrank the closure seed). Recovering them is the correct parse, and it was measured on every
-    `*_model.f90` in the tree before being taken: 29 violations before, 27 after. Two real models
+    `*_model.f90` in the tree before being taken — dependency ids read from each file's own
+    `use <spec_id>_model` lines and `node_key` forced to `problem/`, without which the absolute
+    figures are not reproducible: 29 violations before, 27 after. Two real models
     move, the byte-identical `shallow_water2d` pair under `workspace_20260706`, where the drops
     were two errors CANCELLING — a lost `u_np1` made an `intent(out)` dummy its own candidate, so
     the disjoint test could not fire. Both are cleared by the named-constant clause of the
