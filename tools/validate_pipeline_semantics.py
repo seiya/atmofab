@@ -753,7 +753,7 @@ def _joined_masked_fortran_view(lowered: str) -> str:
     composing the two is what closes that whole class at once — the wrapped `intent(out)` entity
     list, the wrapped `call` actual list, the wrapped `use` / `module` statement.
 
-    Two properties of the composition are load-bearing, and neither is free:
+    One property of the composition is load-bearing and one is merely conventional:
 
     * **The `;` split is required, not cosmetic.** `fortran_logical_lines` deliberately does not
       split on `;`, so joining ALONE would create a defect that does not exist on unjoined text:
@@ -762,10 +762,13 @@ def _joined_masked_fortran_view(lowered: str) -> str:
       `; call dep__op(...)` into the identifier set — a phantom producer, fail-open at exactly the
       `isdisjoint` test of the dependency-dataflow gate. Emitting one statement per line restores
       the invariant all three consumers' patterns already assume.
-    * **Join first, mask second.** `fortran_logical_lines` does its own comment, quote and
-      continuation tracking over RAW text; masking first would only hand it text whose comments
-      are already blanked. Masking after the join is what makes every offset in the result
-      comparable, because the mask is length- and offset-preserving with respect to ITS input.
+    * **Join first, mask second** — for the reason, not the effect. `fortran_logical_lines` does
+      its own comment, quote and continuation tracking over RAW text, and the mask is
+      length-preserving, so the two in fact COMMUTE: a reviewer brute-forced 2940 inputs
+      (comments, unterminated literals, `;`/`&`/quotes inside comments, labels) and found no
+      input where the orders differ. An earlier draft of this note called the ordering
+      load-bearing; it is not, and it is kept only because masking last is the order in which the
+      result's offsets are obviously comparable.
 
     Each emitted statement is right-stripped and empty statements are dropped. That is not
     cosmetic: without it the result is NOT a fixed point, and the fixed point is what lets a
@@ -861,6 +864,9 @@ _FORTRAN_STATEMENT_LABEL = re.compile(r"^\d+\s+")
 
 
 def _fortran_statement_body(line: str) -> str:
+    # The strip is still applied here, not only in the view: this is also reached with RAW
+    # fragments (`_fortran_declared_names` is called on a subroutine body carved out by regex,
+    # and on single statements by tests), where no view has run.
     return _FORTRAN_STATEMENT_LABEL.sub("", line.strip().lower(), count=1)
 
 
@@ -1026,12 +1032,19 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
                     if length.group(0) == "("
                     else tail[length.end() :]
                 )
-            # `integer function f(x)` is a procedure header, not a declaration of anything named
-            # here. The test is `function` followed by SPACE: `real function_tmp` is an ordinary
-            # declaration, and matching it by prefix discarded the whole statement — losing every
-            # other name on it too, which is how an unrelated `ncomp` stopped disqualifying
-            # itself.
+            # `integer function f(x)` IS a declaration — of the function result, which is
+            # definable inside the function. Skipping the statement let a file that declares
+            # `parameter :: ncomp` in one place and `integer function ncomp(x)` in another exempt
+            # a definable name; gfortran accepts that, the two being different scoping units.
+            # The result name is taken from the header, and from a `result(...)` clause when one
+            # renames it. (The test is `function` followed by a SPACE: `real function_tmp` is an
+            # ordinary declaration, and matching by prefix discarded the whole statement — losing
+            # every other name on it too.)
             if re.match(r"function\s", tail):
+                for pattern in (r"function\s+([a-z_][a-z0-9_]*)", r"result\s*\(\s*([a-z_][a-z0-9_]*)"):
+                    header_match = re.search(pattern, tail)
+                    if header_match is not None:
+                        others.add(header_match.group(1))
                 continue
             for item in fortran_lines.split_top_level_commas(tail):
                 match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
@@ -1916,12 +1929,13 @@ def _fortran_source_views(src_files: list[Path]) -> dict[Path, str]:
     """Each source read once and reduced to its `_joined_masked_fortran_view`.
 
     The two readers below need the same view of the same files, and the view is the expensive
-    part. Sharing it HALVES the cost; it does not remove it. Measured on a real three-source
-    directory: raw read-and-lower 81us, one shared view 3.3ms, one view per reader 6.6ms — 41x
-    and 82x over raw, not the 12.5x/24.8x an earlier draft of this note claimed (its raw baseline
-    was measured wrong by a factor of three). Whole tree, 357 directories: 1.9s. The multiplier is
-    large and the absolute is small, which is why this is a note rather than a concern — but the
-    multiplier is the number to check first if that ever stops being true."""
+    part. Sharing it HALVES the cost; it does not remove it. The multiplier over a raw
+    read-and-lower is 43x-86x per shared view across six real three-source directories (so
+    86x-172x if both readers built their own) — quoted as a RANGE because two earlier drafts of
+    this note each gave a single directory's figure and neither reproduced for the other reader.
+    The number that does not move is the absolute: 1.9s for the whole tree of 357 directories,
+    against 0.02s of raw reads. Large multiplier, small absolute — a note rather than a concern,
+    and the multiplier is what to check first if that stops being true."""
     return {
         src_file: _joined_masked_fortran_view(
             src_file.read_text(encoding="utf-8", errors="ignore").lower()

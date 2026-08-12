@@ -5688,10 +5688,14 @@ end module shallow_water2d_model
         )
 
     def test_a_constant_of_one_procedure_does_not_exempt_a_variable_of_another(self) -> None:
-        # Why the collection is module scope plus the OWN body, never the whole file: `ncomp` is a
-        # named constant in `helper` and a live discarded output in `advance`. A file-wide set
-        # would exempt it in both — fail-open, and silently, because the two procedures need never
-        # be read together.
+        # `ncomp` is a named constant in `helper` and a live discarded output in `advance`. Under
+        # the file-wide rule the two procedures do not need to be told apart: `advance`'s own
+        # `integer :: ncomp` is a declaration of the name as something other than a constant, so
+        # the name is not exempt anywhere in the file.
+        #
+        # This test dates from a scope-reading design that was replaced. It is kept as a
+        # behavioural regression for the shape, NOT as a pin on any particular machinery — see the
+        # note on `_ACCESS_TEMPLATE`'s neighbours below.
         source = """module shallow_water2d_model
 use dep_model
 implicit none
@@ -5738,6 +5742,25 @@ end subroutine advance
 end module shallow_water2d_model
 """
 
+    # NOTE on the group of tests below, and on their names.
+    #
+    # Each is named for a Fortran SHAPE that once defeated a scope-reading version of the
+    # named-constant exemption: a module `function`, a paren-less `subroutine`, an external
+    # procedure, a submodule separate body, a labelled `contains`, a second module in the file,
+    # an assignment to a variable named `module`, and so on. That design was replaced by the
+    # file-wide rule — exempt a name only if the file declares it a constant and never declares
+    # it otherwise — and none of that machinery exists any more.
+    #
+    # So these do NOT pin distinct mechanisms, and a mutation run will show each of them dying to
+    # the same generic mutation ("`::` declarations stop disqualifying") rather than to anything
+    # named in its own title. They are behavioural regressions: each asserts that its shape is
+    # still handled, which under the current rule is true for one shared reason. Read them that
+    # way. The tests that DO isolate specific machinery are the helper-level ones —
+    # `test_every_type_keyword_disqualifies_a_bare_declaration`,
+    # `test_every_attribute_statement_disqualifies_the_names_it_mentions`,
+    # `test_every_shape_that_makes_a_name_definable_disqualifies_it`,
+    # `test_a_function_header_declares_its_result_name` — where one alternative is dropped at a
+    # time.
     def test_no_procedure_shape_can_leak_a_constant_into_module_scope(self) -> None:
         # Deriving "module scope" by blanking `_PROBLEM_SUBROUTINE_ENVELOPE` matches read the
         # SHAPE of a procedure instead of the structure, and two shapes escaped it — both accepted
@@ -6472,6 +6495,44 @@ subroutine advance(u_np1, guard_pass)
 end subroutine advance
 end module shallow_water2d_model
 """
+
+    def test_a_function_header_declares_its_result_name(self) -> None:
+        # A function result is definable inside the function, so the header IS a declaration.
+        # Skipping the statement let a file declare `parameter :: ncomp` in one scoping unit and
+        # `integer function ncomp(x)` in another — accepted by gfortran — and exempt a name that
+        # is assigned to.
+        for header, expected in (
+            ("integer function ncomp(x)", {"ncomp"}),
+            ("real function f(x) result(ncomp)", {"f", "ncomp"}),
+        ):
+            constants, others = vps._fortran_declared_names(header)
+            self.assertEqual(constants, set(), header)
+            self.assertTrue(expected <= others, f"{header} -> {others}")
+
+    def test_every_type_keyword_disqualifies_a_bare_declaration(self) -> None:
+        # One case per alternative of `_FORTRAN_BARE_DECLARATION`. Without this, dropping a single
+        # alternative — `logical`, say — silently exempts every `logical flux_ok` in the tree, and
+        # no other test notices. The alternatives are the enumerated half of a rule whose whole
+        # safety is enumeration, so each one is pinned individually.
+        for declaration in (
+            "integer ncomp",
+            "real ncomp",
+            "complex ncomp",
+            "logical ncomp",
+            "character ncomp",
+            "character*3 ncomp",
+            "doubleprecision ncomp",
+            "double precision ncomp",
+            "type(holder) ncomp",
+            "class(holder) ncomp",
+        ):
+            constants, others = vps._fortran_declared_names(declaration)
+            self.assertEqual(constants, set(), declaration)
+            self.assertIn("ncomp", others, declaration)
+        # `enumerator` is the one alternative that lands in the CONSTANT set, in both spellings.
+        for enumerated in ("enumerator ncomp", "enumerator :: ncomp"):
+            constants, _others = vps._fortran_declared_names(enumerated)
+            self.assertIn("ncomp", constants, enumerated)
 
     def test_every_attribute_statement_disqualifies_the_names_it_mentions(self) -> None:
         # The polarity that makes the file-wide rule safe: a statement this parser does not
