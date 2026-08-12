@@ -5914,6 +5914,12 @@ end module shallow_water2d_model
         # A `block` is a scope of its own. Its `parameter` is not visible to the statements around
         # it — least of all to a call that precedes it — but a body-wide flatten collected it and
         # exempted `ncomp`, which is an ordinary local integer at the call.
+        #
+        # Under the file-wide rule the local `integer :: ncomp` below ALSO disqualifies the name,
+        # so this asserts the outcome rather than isolating the construct-depth guard. That guard
+        # is observable only on implicitly typed source, i.e. only through a residue `implicit
+        # none` makes unreachable — it is defensive, and this comment says so rather than
+        # implying a pin it does not provide.
         source = """module shallow_water2d_model
 use dep_model
 implicit none
@@ -6049,6 +6055,15 @@ end module shallow_water2d_model
             # parsing each one's grammar is the losing move this rule exists to stop making, so
             # any statement opening with one of those keywords disqualifies every identifier it
             # mentions. Two representatives; the helper-level test covers the list.
+            # F2008 Table 3.1 makes the blank optional, so `selecttype` is ONE token and a
+            # pattern requiring `select\s+type` sees no rebinding at all. `fortitude check`
+            # passes it too.
+            (
+                "one-word selecttype",
+                "real, parameter :: scratch = 0.0",
+                "  real :: local\n  nm: selecttype (scratch => local)\n  type is (real)\n"
+                "    call dep__op(u_in, scratch)\n  end select nm",
+            ),
             (
                 "dimension statement",
                 "real, parameter :: scratch = 0.0",
@@ -6199,7 +6214,7 @@ end module shallow_water2d_model
         # this, because neither procedure says `implicit none`.
         #
         # It is unreachable through `Generate.gate`: the authoring rules require `implicit none`
-        # in every generated model, and fortitude's C003 fires without it, so an undeclared name
+        # in every generated model, and fortitude's C001 fires without it (C003 is a different rule — the one the phase doc tells the leaf to suppress), so an undeclared name
         # is a compile error long before this gate runs. The test asserts the CURRENT behaviour so
         # that a future change to the rule shows up here rather than being discovered as a
         # surprise, and names the reason it is tolerable.
@@ -6433,6 +6448,26 @@ end module shallow_water2d_model
             once = vps._joined_masked_fortran_view(probe)
             self.assertEqual(vps._joined_masked_fortran_view(once), once, label)
 
+    def test_an_accessibility_statement_does_not_revoke_the_exemption(self) -> None:
+        # `public :: ncomp` names an entity declared elsewhere; it declares nothing itself, the
+        # same argument that keeps `import` out of both sets. Counting it as a redeclaration
+        # stripped the exemption from every module that lists its constants that way — eight
+        # models in this tree do, one of them a `problem/`-domain file this gate reads.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+public :: ncomp
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
     def test_every_attribute_statement_disqualifies_the_names_it_mentions(self) -> None:
         # The polarity that makes the file-wide rule safe: a statement this parser does not
         # understand must still take names OUT of the exempt set. All eighteen `::`-less
@@ -6471,6 +6506,11 @@ end module shallow_water2d_model
             "character(len=3), parameter :: s = 'a,b'\n"
             "integer, parameter :: &\n    wrapped = 7\n"
             "parameter (nlev = 4, mm = 2)\n"
+            # Negative for the statement form's residue check: an ASSIGNMENT into an array a
+            # leaf named `parameter`. Without it this mints `scratch`. The gate-level test cannot
+            # pin it — the file-wide rule disqualifies `scratch` from its own declaration either
+            # way — so the discrimination lives here.
+            "parameter(scratch) = u_in(1)\n"
             # Negatives: `parameter` as a substring of a name, and as text inside a dimension
             # spec — an equality test over the attribute list, not `\bparameter\b`, is what keeps
             # these from minting constants that would then exempt a real discarded output.

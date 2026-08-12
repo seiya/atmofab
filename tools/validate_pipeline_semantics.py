@@ -810,7 +810,7 @@ _FORTRAN_USE_LOCAL_NAMES = re.compile(
     r"(?:only\s*:)?"
 )
 _FORTRAN_ASSOCIATE_OPEN = re.compile(
-    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:associate|select\s+type)\s*\("
+    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:associate|select\s*type)\s*\("
 )
 # A `block` / `associate` / `select type` / `interface` body is a scope of its own. A named
 # constant declared inside one is NOT visible to the statements around it, and treating it as if
@@ -818,7 +818,7 @@ _FORTRAN_ASSOCIATE_OPEN = re.compile(
 # construct declares still land in the "other" set, where they can only SUBTRACT — the direction
 # that costs a false violation rather than an exemption.
 _FORTRAN_CONSTRUCT_OPEN = re.compile(
-    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:block\b|associate\s*\(|select\s+type\s*\(|select\s+case\s*\()"
+    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:block\b|associate\s*\(|select\s*type\s*\(|select\s*case\s*\()"
     r"|^(?:abstract\s+)?interface\b"
 )
 _FORTRAN_CONSTRUCT_END = re.compile(r"^end\s*(?:block|associate|select|interface)\b")
@@ -903,13 +903,6 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
     rebinding, and a `use ..., only:` import, since use association overrides host association and
     the imported entity is whatever the other module says it is.
 
-    Known NARROWING, in the fail-closed direction: an accessibility statement (`public :: ncomp`)
-    has no `parameter` in its attribute list, so it lands in the second set and permanently
-    disqualifies the name. A module that lists its constants that way — rather than writing
-    `integer, parameter, public :: ncomp = 3` — never gets the exemption and earns a false
-    violation. Left as is deliberately: removing a name from the second set is the one operation
-    this rule must never perform, and every in-tree model uses the attribute form.
-
     Constants declared inside a `block` / `associate` / `select type` / `interface` construct go
     to the SECOND set, not the first: such a constant is not visible to the statements around the
     construct, and treating it as if it were exempted a name at a call that preceded it.
@@ -964,7 +957,15 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             attribute_tokens = {
                 token.strip() for token in fortran_lines.split_top_level_commas(attributes)
             }
-            if "import" in attribute_tokens:
+            # `import` and a bare accessibility statement (`public :: ncomp`) declare
+            # nothing — they name an entity declared elsewhere. Treating them as
+            # redeclarations stripped the exemption from any module that lists its
+            # constants in a separate `public ::` statement, which eight in-tree models
+            # do, one of them a `problem/`-domain file this gate reads. Skipping a
+            # statement KIND is not the forbidden operation: nothing is removed from the
+            # disqualifying set, and a name genuinely declared elsewhere still reaches it
+            # from its own declaration.
+            if "import" in attribute_tokens or attribute_tokens <= {"public", "private"}:
                 continue
             target = (
                 constants
@@ -1037,16 +1038,16 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             continue
         open_index = statement_match.end() - 1
         inner = _extract_balanced_parens(statement, open_index)
-        # Nothing may follow the closing paren, and every item must be an `=` initialization. The
-        # residue check is the one that rejects the reproduced case; the `=` requirement is a
-        # structural property of the form (every item of a PARAMETER statement initializes a name)
-        # and has no separate reproduction — stated that way rather than as a second defence,
-        # because `parameter(scratch) = u_in(1)`, the assignment this rejects, is already rejected
-        # by the residue check alone.
+        # Nothing may follow the closing paren — which is what rejects `parameter(scratch) =
+        # u_in(1)`, an assignment into an array a leaf named `parameter`, since `parameter` is not
+        # reserved. A second requirement stood here (every item must carry an `=`); it was removed
+        # once a mutation run showed EITHER check alone rejects that case and no legal Fortran
+        # exists that only the second catches. Two guards where one suffices is a defence that
+        # cannot fail, which is indistinguishable from a defence that does not work.
         if statement[open_index + len(inner) + 2 :].strip():
             continue
         items = fortran_lines.split_top_level_commas(inner)
-        if not items or not all("=" in item for item in items):
+        if not items:
             continue
         for item in items:
             match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
@@ -1272,13 +1273,14 @@ def _validate_problem_model_dependency_dataflow(
     declares it as a constant and never declares it as anything else. That is not the precise
     rule — the precise rule is Fortran's own name resolution — and it is not an approximation of
     it either; it is the strictly weaker question that can be answered here. Six rounds of review
-    established why: a scoped version was written four times and defeated sixteen times — by a
+    established why: a scoped version was written four times and defeated by every one of these — a
     `parameter` inside a module `function`, a paren-less `subroutine`, an external procedure, a
     submodule separate body, a `block`, a named `associate`, a contained procedure, a second
     module in the same file, a derived type's own `contains`, a statement label, an obsolescent
-    `character*3` selector, three spellings of an assignment to a variable named `module`, and
-    three spellings of `use` association (`only:`, a bare rename, and the `, non_intrinsic ::`
-    prefix). Every one was a way for a name to be constant SOMEWHERE and definable HERE, and each
+    `character*3` selector, three spellings of an assignment to a variable named `module`, three
+    spellings of `use` association (`only:`, a bare rename, and the `, non_intrinsic ::` prefix),
+    and the one-word `selecttype` whose blank F2008 makes optional. Every one was a way for a name
+    to be constant SOMEWHERE and definable HERE, and each
     miss produced a SILENT gate, because this set subtracts candidates. The set of mechanisms that
     make a Fortran name visible is not closed at this level of parsing, so a rule whose safety
     depends on enumerating them cannot be made safe by adding cases. Note that three of the
@@ -1304,8 +1306,13 @@ def _validate_problem_model_dependency_dataflow(
 
     Residue (c) above is the one with a named instance: the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
-    `candidates=['flux_ok', 'u_new', 'z_b']`, where `u_new` is written by the preceding dependency
-    call. `TODO.md` carries it as the named test case for the flow-sensitive pass."""
+    `candidates=['flux_ok', 'u_new', 'z_b']`. The three are NOT the same defect, and an earlier
+    draft of this note misattributed all of them to the producer side: `z_b` and `flux_ok` are the
+    producer-side residue (written by an earlier `call`, which the candidate rule does not count
+    as a producer), while `u_new` is written by the dependency call itself — a correct candidate
+    whose flag is consumption-side, because `u = u_new` then crosses a `call` the assignment-only
+    closure cannot follow. Whoever builds the flow-sensitive pass needs both halves, so `TODO.md`
+    carries the case with that split."""
     if not execution.node_key.startswith("problem/"):
         return
     if not dep_spec_ids:
@@ -1904,10 +1911,12 @@ def _fortran_source_views(src_files: list[Path]) -> dict[Path, str]:
     """Each source read once and reduced to its `_joined_masked_fortran_view`.
 
     The two readers below need the same view of the same files, and the view is the expensive
-    part. Sharing it halves the cost rather than removing it: measured on a real three-source
-    directory, raw text 290us, one shared view 3.6ms, one view per reader 7.2ms — 12.5x and 24.8x
-    over raw. Across all 357 directories with `.f90` files that is 0.13s to 1.5s, which is why
-    this is a note and not a concern."""
+    part. Sharing it HALVES the cost; it does not remove it. Measured on a real three-source
+    directory: raw read-and-lower 81us, one shared view 3.3ms, one view per reader 6.6ms — 41x
+    and 82x over raw, not the 12.5x/24.8x an earlier draft of this note claimed (its raw baseline
+    was measured wrong by a factor of three). Whole tree, 357 directories: 1.9s. The multiplier is
+    large and the absolute is small, which is why this is a note rather than a concern — but the
+    multiplier is the number to check first if that ever stops being true."""
     return {
         src_file: _joined_masked_fortran_view(
             src_file.read_text(encoding="utf-8", errors="ignore").lower()
