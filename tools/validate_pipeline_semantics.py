@@ -974,9 +974,13 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             # constants in a separate `public ::` statement. RE-MEASURED (the earlier
             # figure here, "eight in-tree models, one of them `problem/`-domain", counted
             # distinct lost-name SETS and got the domain count wrong): removing this skip
-            # changes the exempt set of 33 of the 365 `*_model.f90`, eight distinct sets,
-            # SEVEN of them under a `problem/` pipeline — the files this gate reads. Names
-            # lost include `dp`, `ncomp` and `shallow_water2d__g_const`. Skipping a
+            # changes the exempt set of 33 of the 365 `*_model.f90` — SEVEN of those FILES
+            # under a `problem/` pipeline, the ones this gate reads — falling into eight
+            # distinct lost-name sets, three of which include a `problem/` file. (The first
+            # correction wrote "eight distinct sets, seven of them problem/-domain", which
+            # attaches a file count to sets; per set the figure is three. Re-measured both
+            # ways rather than re-worded.) Names lost include `dp`, `ncomp` and
+            # `shallow_water2d__g_const`. Skipping a
             # statement KIND is not the forbidden operation: nothing is removed from the
             # disqualifying set, and a name genuinely declared elsewhere still reaches it
             # from its own declaration.
@@ -1224,9 +1228,12 @@ _FORTRAN_CONSTRUCT_NAME_PREFIX = re.compile(r"^[a-z_][a-z0-9_]*\s*:(?!:)\s*")
 _FORTRAN_SUBROUTINE_HEADER = re.compile(
     r"^(?:[a-z_][a-z0-9_]*\s+)*?subroutine\s+([a-z_][a-z0-9_]*)\s*(\()?"
 )
-# A separate module subprogram body (`module procedure solve`), which `end procedure`,
-# `end subroutine` or a bare `end` may close. Inside an interface block the same spelling means
-# something else entirely — that one is never seen here, because interface spans are skipped.
+# A separate module subprogram body (`module procedure solve`), which `end procedure` or a bare
+# `end` may close — NOT `end subroutine`, which `gfortran -fsyntax-only -std=f2008` answers with
+# "Expecting END PROCEDURE statement". That false alternative was deleted from
+# `_FORTRAN_END_KIND_CLOSES` when review refuted it and survived here, two lines away, for another
+# round. Inside an interface block the same spelling means something else entirely — that one is
+# never seen here, because interface spans are skipped.
 _FORTRAN_MODULE_PROCEDURE_OPEN = re.compile(r"^module\s+procedure\s+[a-z_][a-z0-9_]*")
 # `submodule` is written separately because a parenthesised parent identifier follows the keyword
 # directly, so it cannot share the others' word boundary shape.
