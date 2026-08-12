@@ -743,6 +743,339 @@ def _agent_role(item: dict[str, Any]) -> str | None:
     return None
 
 
+def _joined_masked_fortran_view(lowered: str) -> str:
+    """``lowered`` as ONE STATEMENT PER LINE, `&` continuations joined and code-lookalikes masked.
+
+    The view every rule in this module that matches Fortran's KEYWORD STRUCTURE over multi-line
+    source must read. `fortran_lines.mask_code_lookalikes` alone cannot serve them: it preserves
+    line structure by design, so a legally wrapped statement still reaches a `[^\\n]`-bounded or
+    `re.MULTILINE`-anchored pattern as fragments. `fortran_lines.fortran_logical_lines` joins, and
+    composing the two is what closes that whole class at once — the wrapped `intent(out)` entity
+    list, the wrapped `call` actual list, the wrapped `use` / `module` statement.
+
+    One property of the composition is load-bearing and one is merely conventional:
+
+    * **The `;` split is required, not cosmetic.** `fortran_logical_lines` deliberately does not
+      split on `;`, so joining ALONE would create a defect that does not exist on unjoined text:
+      `real :: tmp; tmp = 0.0` becomes one line, `_assignment_records`' `^\\s*` MULTILINE anchor
+      stops seeing `tmp = 0.0`, and its `([^\\n!]+)` right-hand side swallows a following
+      `; call dep__op(...)` into the identifier set — a phantom producer, fail-open at exactly the
+      `isdisjoint` test of the dependency-dataflow gate. Emitting one statement per line restores
+      the invariant all three consumers' patterns already assume.
+    * **Join first, mask second** — for the reason, not the effect. `fortran_logical_lines` does
+      its own comment, quote and continuation tracking over RAW text, and the mask is
+      length-preserving, so the two in fact COMMUTE: a reviewer brute-forced 2940 inputs
+      (comments, unterminated literals, `;`/`&`/quotes inside comments, labels) and found no
+      input where the orders differ. An earlier draft of this note called the ordering
+      load-bearing; it is not, and it is kept only because masking last is the order in which the
+      result's offsets are obviously comparable.
+
+    Each emitted statement is right-stripped and empty statements are dropped. That is not
+    cosmetic: without it the result is NOT a fixed point, and the fixed point is what lets a
+    consumer re-apply the view to a fragment of a view — which is what keeps `_split_fortran_names`
+    total with respect to both its raw and its joined callers. Four inputs proved it, and the
+    fixed-point test uses all four rather than a well-formed one, which does not distinguish them.
+    Only the first is legal Fortran: a trailing `;` (`x = 1;`) emits an empty statement a second
+    pass would drop. The other three are robustness against text the `Generate.gate` syntax check
+    rejects before this one runs — a lone-`&` line and text ending mid-continuation each leave the
+    blank that preceded the consumed marker, and an unterminated literal leaves the blanks the
+    mask wrote over its contents.
+
+    INVARIANT, and the price of this view: offsets into the result no longer index the ORIGINAL
+    file. Comment-only and blank lines are gone and each `&` has collapsed. Offsets remain
+    comparable with EACH OTHER as long as both come from the same view — which is what the
+    dependency-dataflow gate's `call_pos` / assignment `pos` comparison relies on, and every gate
+    here reports `{model_file}: subroutine {name}` with no line number. Any future rule that wants
+    to REPORT a line must take it from `fortran_lines.fortran_logical_lines`' `start_lineno`, not
+    from an offset into this string."""
+    masked = fortran_lines.mask_code_lookalikes(
+        "\n".join(
+            _FORTRAN_STATEMENT_LABEL.sub("", statement.lstrip(), count=1)
+            for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
+            for statement in fortran_lines.split_fortran_statements(line)
+        )
+    )
+    return "\n".join(
+        stripped for stripped in (line.rstrip() for line in masked.split("\n")) if stripped
+    )
+
+
+# A declaration whose `::` is optional because it carries no attribute and no initializer, plus
+# the `::`-less `enumerator` list. The type-spec's own parenthesised selector (`character(len=3)`,
+# `type(t)`) is stepped over by `_extract_balanced_parens`, not by a regex, so a comma or `=`
+# inside it cannot be read as an entity separator.
+# Every `use` that NAMES a local entity — an `only:` list, a rename list, or both, with or
+# without the `, non_intrinsic ::` module-nature prefix. An earlier form keyed on the word
+# `only` and could not cross the comma that follows `use`, so a bare rename
+# (`use m, ncomp => slot`) and the prefixed spelling both went unseen.
+_FORTRAN_USE_LOCAL_NAMES = re.compile(
+    r"^use\b\s*(?:,\s*(?:non_)?intrinsic\s*)?(?:::)?\s*[a-z_][a-z0-9_]*\s*,\s*"
+    r"(?:only\s*:)?"
+)
+_FORTRAN_ASSOCIATE_OPEN = re.compile(
+    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:associate|select\s*type)\s*\("
+)
+# A `block` / `associate` / `select type` / `interface` body is a scope of its own. A named
+# constant declared inside one is NOT visible to the statements around it, and treating it as if
+# it were exempted an actual passed at an earlier call in the enclosing body. Names such a
+# construct declares still land in the "other" set, where they can only SUBTRACT — the direction
+# that costs a false violation rather than an exemption.
+_FORTRAN_CONSTRUCT_OPEN = re.compile(
+    r"^(?:[a-z_][a-z0-9_]*\s*:\s*)?(?:block\b|associate\s*\(|select\s*type\s*\(|select\s*case\s*\()"
+    r"|^(?:abstract\s+)?interface\b"
+)
+_FORTRAN_CONSTRUCT_END = re.compile(r"^end\s*(?:block|associate|select|interface)\b")
+# Every statement that ATTACHES something to a name. The list of keywords is closed in F2008 and
+# short; the SYNTAX behind each of them is neither, so this does not parse them — any statement
+# opening with one of these contributes every identifier it mentions to the disqualifying set.
+#
+# That inversion is the point. Eighteen `::`-less specification statements (`common /blk/ x`,
+# `dimension x(3)`, `equivalence (x, y)`, `data x /3/`, `namelist /nl/ x`, `pointer`, `target`,
+# `save`, `allocatable`, `external`, `intent`, `volatile`, `asynchronous`, `codimension`,
+# `protected`, `value`, `optional`, and the bare `common x`) were each invisible, and each was a
+# name made definable while still looking like a pure constant. Enumerating their eighteen
+# grammars is the same losing move this rule was adopted to stop making; over-collecting from
+# them costs a false violation, which is the direction that may be wrong.
+_FORTRAN_ATTRIBUTE_STATEMENT = re.compile(
+    r"^(?:common|dimension|equivalence|data|namelist|pointer|target|save|allocatable|external"
+    r"|intent|volatile|asynchronous|codimension|contiguous|protected|value|optional|intrinsic"
+    r"|bind|sequence|generic|procedure|entry)\b"
+)
+# `public` and `private` are deliberately absent from that list. They declare nothing — they set
+# the accessibility of an entity declared elsewhere — and F2008 R518 makes the `::` optional, so
+# leaving them in disqualified `public ncomp` while the `::` branch was skipping
+# `public :: ncomp`. The two spellings of one statement must agree, and they agree on the reading
+# that matches what the statement does.
+
+
+_FORTRAN_BARE_DECLARATION = re.compile(
+    r"^(integer|real|complex|logical|character|doubleprecision|double\s+precision"
+    r"|type|class|enumerator)\b"
+)
+
+
+# Only up to the OPENING paren: the group is delimited by `_extract_balanced_parens`, not by a
+# greedy `(.*)\)$` — see `_fortran_parameter_names`.
+_FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\(")
+# A statement LABEL may precede any statement, including a structural one. Every rule below
+# anchors on the keyword, so the label has to come off first — a labelled `10 contains` that went
+# unrecognized left the module specification part open across every procedure that followed it.
+_FORTRAN_STATEMENT_LABEL = re.compile(r"^\d+\s+")
+
+
+def _fortran_statement_body(line: str) -> str:
+    # The strip is still applied here, not only in the view: this is also reached with RAW
+    # fragments (`_fortran_declared_names` is called on a subroutine body carved out by regex,
+    # and on single statements by tests), where no view has run.
+    return _FORTRAN_STATEMENT_LABEL.sub("", line.strip().lower(), count=1)
+
+
+def _fortran_parameter_names(joined_masked: str) -> set[str]:
+    """The names declared as NAMED CONSTANTS in ``joined_masked``.
+
+    ``joined_masked`` must be a `_joined_masked_fortran_view` — one statement per line. Reading
+    physical lines instead would miss a wrapped declaration, which is the defect class this helper
+    was written alongside.
+
+    Two forms are recognised:
+
+    * the attribute form, `integer, parameter, public :: ncomp = 3` — the left of the first `::`
+      is split on top-level commas and some token must be EXACTLY ``parameter``. An equality test,
+      not `\\bparameter\\b`: the word occurs inside `dimension(nparameter)` and inside an
+      initializer, and either would otherwise mint a constant that does not exist. The right side
+      is split the same way and each item contributes its leading identifier, which drops array
+      specs and initializer text.
+    * the statement form, `parameter (nlev = 4, mm = 2)` — the parenthesis group is matched by
+      `_extract_balanced_parens` and NOTHING may follow its close, and every item must carry a
+      top-level `=`. A greedy `^parameter\\s*\\((.*)\\)$` was not enough: `parameter` is not a
+      reserved word, so `parameter(scratch) = u_in(1)` — an ordinary assignment into an array a
+      leaf happened to name `parameter`, which `gfortran -std=f2008` accepts — matched with the
+      group `scratch) = u_in(1`, and `scratch` was minted as a constant. That exempted a real
+      discarded dependency output. Fail-open, and reachable by naming one array.
+
+    The unparenthesized F77 form (`PARAMETER x = 1`) is deliberately NOT recognised: it is a
+    `-std=legacy` gfortran extension, and `Generate.gate`'s syntax check runs `-std=f2008`, so no
+    source that reaches these gates can carry one.
+
+    The caller decides SCOPE. This helper reports what the text it is given declares, and a whole
+    file is the wrong text to give it: a name that is a constant in one procedure and a live
+    variable in another would be reported for both, and the dependency-dataflow gate would then
+    exempt a genuinely discarded output — fail-open."""
+    return _fortran_declared_names(joined_masked)[0]
+
+
+def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
+    """``(named constants, every other declared entity)`` of ``joined_masked``.
+
+    One parser, two answers, because the dependency-dataflow gate needs both and they must agree
+    on what a declaration IS. The gate exempts `constants - others` over the WHOLE FILE, so the
+    second set carries all of the safety: anything that makes a name definable somewhere must land
+    in it. That includes shapes that are not declarations at all — an `associate` / `select type`
+    rebinding, and a `use ..., only:` import, since use association overrides host association and
+    the imported entity is whatever the other module says it is.
+
+    Constants declared inside a `block` / `associate` / `select type` / `interface` construct go
+    to the SECOND set, not the first: such a constant is not visible to the statements around the
+    construct, and treating it as if it were exempted a name at a call that preceded it.
+
+    Nothing is ever REMOVED from the second set, and that monotonicity is load-bearing rather than
+    tidy. It was briefly broken to pair `integer :: nlev` with a following `parameter (nlev = 4)`
+    — one declaration in two statements — and the pairing had no way to be per-declaration in a
+    file-wide rule, so it globally re-exempted any name that was a constant in one procedure and
+    an ordinary variable in another. That is the very shape this rule exists to refuse, and it
+    reappeared within one commit of the redesign. The consequence of not pairing them is that the
+    F77 statement form never yields an exemption at all — under the `implicit none` these models
+    must declare, `parameter (x = 1)` always follows a type declaration of `x`, which disqualifies
+    it. A false violation, and the direction that is allowed to be wrong.
+
+    ``enumerator`` counts as a constant for the same reason ``parameter`` does: an enumerator is
+    not definable, so it can never be an output argument. Both of its spellings are read — the
+    entity list of an ``enumerator`` statement may omit the ``::``.
+
+    ``import`` is the one ``::`` statement deliberately kept OUT of both sets. It does not declare
+    anything: it names an entity of the HOST so an interface body can see it. Counting it as a
+    redeclaration made an `import :: ncomp` inside an interface body subtract the very host
+    constant it imports, turning a correct silence into a false violation. Subtraction is only
+    safe where a statement really does shadow — that is the whole content of the second set."""
+    constants: set[str] = set()
+    others: set[str] = set()
+    construct_depth = 0
+    for line in joined_masked.split("\n"):
+        statement = _fortran_statement_body(line)
+        if not statement:
+            continue
+        if _FORTRAN_CONSTRUCT_END.match(statement):
+            construct_depth = max(0, construct_depth - 1)
+            continue
+        if _FORTRAN_CONSTRUCT_OPEN.match(statement):
+            construct_depth += 1
+            # An `associate` header is also a construct opening, and its rebinding is read below
+            # before the depth takes effect for the statements inside it.
+            if not _FORTRAN_ASSOCIATE_OPEN.match(statement):
+                continue
+        only_match = _FORTRAN_USE_LOCAL_NAMES.match(statement)
+        if only_match is not None:
+            # Use association overrides host association, so a name imported here is whatever the
+            # other module says it is — not this file's constant. Naming it disqualifies it.
+            for item in fortran_lines.split_top_level_commas(statement[only_match.end() :]):
+                local, sep, _remote = item.partition("=>")
+                match = FORTRAN_IDENTIFIER_PATTERN.match(local.strip())
+                if match is not None:
+                    others.add(match.group(0))
+            continue
+        if "::" in statement:
+            attributes, _, entities = statement.partition("::")
+            attribute_tokens = {
+                token.strip() for token in fortran_lines.split_top_level_commas(attributes)
+            }
+            # `import` and a bare accessibility statement (`public :: ncomp`) declare
+            # nothing — they name an entity declared elsewhere. Treating them as
+            # redeclarations stripped the exemption from any module that lists its
+            # constants in a separate `public ::` statement, which eight in-tree models
+            # do, one of them a `problem/`-domain file this gate reads. Skipping a
+            # statement KIND is not the forbidden operation: nothing is removed from the
+            # disqualifying set, and a name genuinely declared elsewhere still reaches it
+            # from its own declaration.
+            if "import" in attribute_tokens or attribute_tokens <= {"public", "private"}:
+                continue
+            target = (
+                constants
+                if attribute_tokens & {"parameter", "enumerator"} and not construct_depth
+                else others
+            )
+            for item in fortran_lines.split_top_level_commas(entities):
+                match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
+                if match is not None:
+                    target.add(match.group(0))
+            continue
+        if _FORTRAN_ATTRIBUTE_STATEMENT.match(statement):
+            others.update(_extract_identifiers(statement))
+            continue
+        # `associate (c0 => scratch)` and `select type (c0 => x)` REBIND a name to a definable
+        # variable for the length of the construct, so the name is shadowed exactly as a local
+        # declaration shadows — and nothing declares it, so only this reaches it.
+        associate_match = _FORTRAN_ASSOCIATE_OPEN.match(statement)
+        if associate_match is not None:
+            inner = _extract_balanced_parens(statement, statement.index("(", associate_match.end() - 1))
+            for item in fortran_lines.split_top_level_commas(inner):
+                name, sep, _target = item.partition("=>")
+                if not sep:
+                    continue
+                match = FORTRAN_IDENTIFIER_PATTERN.match(name.strip())
+                if match is not None:
+                    others.add(match.group(0))
+            continue
+        # The `::` is optional when a declaration carries no attribute and no initializer, and
+        # `integer ncomp` shadows a host constant exactly as `integer :: ncomp` does — missing it
+        # left the subtraction one spelling away from the hole it exists to close. `enumerator
+        # red, green` is the same omission on the constant side.
+        entity_match = _FORTRAN_BARE_DECLARATION.match(statement)
+        if entity_match is not None:
+            target = (
+                constants
+                if entity_match.group(1) == "enumerator" and not construct_depth
+                else others
+            )
+            tail = statement[entity_match.end() :].lstrip()
+            if tail.startswith("("):
+                tail = tail[len(_extract_balanced_parens(tail, 0)) + 2 :]
+            elif tail.startswith("*"):
+                # `character*3 tag` — the obsolescent length selector. `-std=f2008` rejects
+                # `integer*4` but accepts this one, and leaving it unparsed meant the declaration
+                # did not disqualify the name.
+                tail = tail[1:].lstrip()
+                length = re.match(r"\(|\d+", tail)
+                if length is None:
+                    continue
+                tail = (
+                    tail[len(_extract_balanced_parens(tail, 0)) + 2 :]
+                    if length.group(0) == "("
+                    else tail[length.end() :]
+                )
+            # `integer function f(x)` IS a declaration — of the function result, which is
+            # definable inside the function. Skipping the statement let a file that declares
+            # `parameter :: ncomp` in one place and `integer function ncomp(x)` in another exempt
+            # a definable name; gfortran accepts that, the two being different scoping units.
+            # The result name is taken from the header, and from a `result(...)` clause when one
+            # renames it. (The test is `function` followed by a SPACE: `real function_tmp` is an
+            # ordinary declaration, and matching by prefix discarded the whole statement — losing
+            # every other name on it too.)
+            if re.match(r"function\s", tail):
+                for pattern in (r"function\s+([a-z_][a-z0-9_]*)", r"result\s*\(\s*([a-z_][a-z0-9_]*)"):
+                    header_match = re.search(pattern, tail)
+                    if header_match is not None:
+                        others.add(header_match.group(1))
+                continue
+            for item in fortran_lines.split_top_level_commas(tail):
+                match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
+                if match is not None:
+                    target.add(match.group(0))
+            continue
+        statement_match = _FORTRAN_PARAMETER_STATEMENT_PATTERN.match(statement)
+        if statement_match is None:
+            continue
+        open_index = statement_match.end() - 1
+        inner = _extract_balanced_parens(statement, open_index)
+        # Nothing may follow the closing paren — which is what rejects `parameter(scratch) =
+        # u_in(1)`, an assignment into an array a leaf named `parameter`, since `parameter` is not
+        # reserved. A second requirement stood here (every item must carry an `=`); it was removed
+        # once a mutation run showed EITHER check alone rejects that case and no legal Fortran
+        # exists that only the second catches. Two guards where one suffices is a defence that
+        # cannot fail, which is indistinguishable from a defence that does not work.
+        if statement[open_index + len(inner) + 2 :].strip():
+            continue
+        items = fortran_lines.split_top_level_commas(inner)
+        if not items:
+            continue
+        for item in items:
+            match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
+            if match is not None:
+                constants.add(match.group(0))
+    return constants, others
+
+
+
+
 def _split_fortran_names(raw: str) -> list[str]:
     """The bare identifiers of a comma-separated Fortran list (argument list, `intent(out)`
     entity list, call actuals) — non-identifier items are dropped, not reported.
@@ -752,12 +1085,15 @@ def _split_fortran_names(raw: str) -> list[str]:
     The reproducers below are all at the dataflow gate, which is the one that reads `call`
     actuals and so sees the widest input.
 
-    Unlike this module's other splitter callers, `raw` arrives as RAW source text: the enclosing
-    regexes are `re.DOTALL` over the whole file, so a continued argument list reaches here with
-    its `&`, its newlines and its `!` comments intact. Comments and literal contents are therefore
-    blanked first, in place, by `fortran_lines.mask_code_lookalikes` — the shared masker, not a
-    private copy — and only then split by `fortran_lines.split_top_level_commas`. The mask
-    answers three defects:
+    Unlike this module's other splitter callers, `raw` may arrive as RAW source text: the
+    enclosing regexes are `re.DOTALL` over the whole file, so a continued argument list can reach
+    here with its `&`, its newlines and its `!` comments intact. It is therefore reduced first by
+    `_joined_masked_fortran_view` — the shared view, not a private copy — and only then split by
+    `fortran_lines.split_top_level_commas`. Applying the view here is redundant for the three
+    gates below, which now hand over fragments of a view they already built, and the view is a
+    fixed point so that costs nothing; it is kept because making this helper's correctness depend
+    on the caller having remembered is the exact coupling that produced this defect class. The
+    mask half of the view answers three defects:
 
     * **Comments (pre-existing).** A comma inside a comment manufactured a PHANTOM identifier:
       `call flux__apply(h_in, & ! set a, mid, b` yielded `mid`. The phantom lands in
@@ -775,15 +1111,27 @@ def _split_fortran_names(raw: str) -> list[str]:
 
     All three are one root cause: raw multi-line text fed to a single-logical-line helper.
 
-    NOT fixed here, deliberately: `&` continuations. The mask blanks in place and does not join,
-    so the first name after each `&` still carries the marker and the newline, is not an
-    identifier, and is dropped — a wrapped argument list loses one name per continuation.
-    Joining first recovers those names and is the obviously correct parse, but it flips three
-    real models in this tree to a FALSE "does not propagate", because the candidate and
-    consumption rules below are over-approximations that the dropped names were masking. Closing
-    that needs the flow-sensitive, interface-aware dataflow pass recorded as its own item in
-    `TODO.md`, not a parser change."""
-    parts = fortran_lines.split_top_level_commas(fortran_lines.mask_code_lookalikes(raw))
+    `&` continuations are the fourth instance of that same root cause, and the view closes them
+    too. A mask that blanks in place cannot: the first name after each `&` still carries the
+    marker and the newline, is not an identifier, and was dropped — a wrapped argument list lost
+    one name per continuation, from EVERY feed at once (a lost dummy wrongly became a
+    dependency-output candidate, a lost actual lost a real candidate, a lost `intent(out)` name
+    shrank the closure seed). Recovering them is the correct parse, and it was measured on every
+    `*_model.f90` in the tree before being taken — dependency ids read from each file's own
+    `use <spec_id>_model` lines and `node_key` forced to `problem/`, without which the absolute
+    figures are not reproducible: 29 violations before, 27 after. Recovering the names is
+    safe only together with the candidate rule's named-constant clause, which had to land in the
+    same change: joined WITHOUT that clause the count goes to 31, because the byte-identical
+    `shallow_water2d` pair under `workspace_20260706` was passing on two errors CANCELLING — a
+    lost `u_np1` made an `intent(out)` dummy its own candidate, so the disjoint test could not
+    fire, while a lost `ncomp` hid the constant that now clears it.
+
+    The end-to-end movement, before to after, is elsewhere and `TODO.md` lists it: two
+    `workspace_20260319` artifacts lose a FALSE `initialize_state` violation whose only candidate
+    is a module `parameter`; one 20260712 model keeps firing with two names recovered from behind
+    a `&`; and two `profile/`-domain files move in opposite directions, neither of which any gate
+    here reaches."""
+    parts = fortran_lines.split_top_level_commas(_joined_masked_fortran_view(raw))
 
     names: list[str] = []
     for token in parts:
@@ -806,11 +1154,16 @@ def _is_literal_like_expr(expr: str) -> bool:
 
 
 # The `problem` model gates below match Fortran's KEYWORD STRUCTURE over raw source, so each
-# masks its input with `fortran_lines.mask_code_lookalikes` first. Without that mask this pattern
+# reduces its input with `_joined_masked_fortran_view` first. Without the mask half, this pattern
 # stops at the first TEXTUAL `end subroutine`: one comment naming it truncates the body, every
 # gate that reads the body goes silent, and a legal model passes — fail-open from a comment. The
-# mirror is a commented-out procedure minting a phantom match, which fails closed. Masking
-# preserves offsets, so `call` positions stay comparable with assignment positions.
+# mirror is a commented-out procedure minting a phantom match, which fails closed. Without the
+# join half, a wrapped `intent(out)` list or `call` actual list is read as fragments.
+#
+# `call` positions stay comparable with assignment positions because BOTH are offsets into the
+# same view, not because the view preserves the file's offsets — it does not (see the view's
+# docstring). Nothing here reports a line number; anything that ever does must take it from
+# `fortran_lines.fortran_logical_lines`' `start_lineno`.
 _PROBLEM_SUBROUTINE_ENVELOPE = re.compile(
     r"subroutine\s+([a-z_][a-z0-9_]*)\s*\((.*?)\)(.*?)end\s+subroutine",
     re.DOTALL,
@@ -826,7 +1179,7 @@ def _validate_problem_model_literal_outputs(
     if not execution.node_key.startswith("problem/"):
         return
 
-    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    lowered = _joined_masked_fortran_view(lowered)
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
@@ -922,7 +1275,62 @@ def _validate_problem_model_dependency_dataflow(
     an unrelated call, or fed to a call whose write is later overwritten). It is therefore left to
     ``Generate.verify`` G5, which reads ``controlled_spec.md`` and IS the semantic authority for
     "each intent(out) reaches the required_sources", backed by the runtime. Check 1 below (a
-    dependency RESULT reaching intent(out)) is assignment-only, sound, and kept."""
+    dependency RESULT reaching intent(out)) is assignment-only, sound, and kept.
+
+    The candidate rule has three clauses: an actual of a dependency `call` is a candidate OUTPUT
+    unless it is a dummy of the enclosing subroutine, OR was assigned earlier in the same view, OR
+    is a NAMED CONSTANT. The third clause is not a relaxation of a sound rule — it removes an
+    over-approximation the rule never intended. F2008 requires the actual associated with an
+    `intent(out)` / `intent(inout)` dummy to be definable, and a named constant is not, so a
+    `parameter` can never be a dependency-call output. Verified against the compiler rather than
+    inferred from the standard: `gfortran -fsyntax-only -std=f2008` rejects both spellings with
+    "Non-variable expression in variable definition context (actual argument to INTENT =
+    OUT/INOUT)".
+
+    The clause is deliberately FILE-WIDE AND SCOPE-FREE: a name is exempt only if this file
+    declares it as a constant and never declares it as anything else. That is not the precise
+    rule — the precise rule is Fortran's own name resolution — and it is not an approximation of
+    it either; it is the strictly weaker question that can be answered here. Six rounds of review
+    established why: a scoped version was written four times and defeated by every one of these — a
+    `parameter` inside a module `function`, a paren-less `subroutine`, an external procedure, a
+    submodule separate body, a `block`, a named `associate`, a contained procedure, a second
+    module in the same file, a derived type's own `contains`, a statement label, an obsolescent
+    `character*3` selector, three spellings of an assignment to a variable named `module`, three
+    spellings of `use` association (`only:`, a bare rename, and the `, non_intrinsic ::` prefix),
+    and the one-word `selecttype` whose blank F2008 makes optional. Every one was a way for a name
+    to be constant SOMEWHERE and definable HERE, and each
+    miss produced a SILENT gate, because this set subtracts candidates. The set of mechanisms that
+    make a Fortran name visible is not closed at this level of parsing, so a rule whose safety
+    depends on enumerating them cannot be made safe by adding cases. Note that three of the
+    sixteen were found AFTER the switch to this rule, in the recognition of "declared otherwise" —
+    the rule moves the risk from an unbounded set to a bounded one, it does not remove it.
+
+    Asking the file-wide question instead makes the failure direction structural rather than
+    hoped-for: a name used both ways anywhere in the file is simply not exempt, which costs a
+    false violation. Every one of the thirteen reproductions is still caught, because in each the
+    name is also declared as a variable, imported, or `associate`-bound somewhere.
+
+    RESIDUES, reproduced and NOT fixed. (a) A bare `use other_module` can import a VARIABLE whose
+    name this file also declares as a constant; nothing in one file can see that. (b) An
+    implicitly typed local is not declared at all, so it cannot disqualify a name — unreachable
+    through `Generate.gate`, which requires `implicit none` (fortitude **C001**, verified by
+    running it; C003 is a different rule, the one `docs/workflow/phases/phase_02_generate.md`
+    instructs the leaf to SUPPRESS, so citing it would have pointed a future reader at a check
+    that is never enforced). (c) The candidate
+    rule still treats a variable written by an earlier `call` as a candidate, and the consumption
+    closure still cannot cross a call; the measured instance is the
+    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
+    `problem/` guard below. Closing (c) is the flow-sensitive pass recorded in `TODO.md`.
+
+    Residue (c) above is the one with a named instance: the
+    `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
+    `candidates=['flux_ok', 'u_new', 'z_b']`. The three are NOT the same defect, and an earlier
+    draft of this note misattributed all of them to the producer side: `z_b` and `flux_ok` are the
+    producer-side residue (written by an earlier `call`, which the candidate rule does not count
+    as a producer), while `u_new` is written by the dependency call itself — a correct candidate
+    whose flag is consumption-side, because `u = u_new` then crosses a `call` the assignment-only
+    closure cannot follow. Whoever builds the flow-sensitive pass needs both halves, so `TODO.md`
+    carries the case with that split."""
     if not execution.node_key.startswith("problem/"):
         return
     if not dep_spec_ids:
@@ -932,9 +1340,26 @@ def _validate_problem_model_dependency_dataflow(
     if not dep_prefixes:
         return
 
-    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    lowered = _joined_masked_fortran_view(lowered)
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
+
+    # Which names are named constants EVERYWHERE they appear in this file. Deliberately a
+    # whole-file question rather than a scoped one: four rounds of review found thirteen ways to
+    # get Fortran's scoping wrong at this level — a `parameter` inside a module `function`, a
+    # paren-less `subroutine`, an external procedure, a submodule separate body, a `block`, an
+    # `associate` rebinding, a second module in the same file, a derived type's own `contains`,
+    # a statement label, and three spellings of an assignment to a variable named `module`. Every
+    # one of them was a way for a name to be constant SOMEWHERE and definable HERE.
+    #
+    # This asks the question that has no scope in it: a name is exempt only if the file declares
+    # it as a constant and NEVER declares it as anything else. Each of those thirteen
+    # reproductions is still caught, because in every one the name is also declared as a variable
+    # or bound by an `associate` — that is what made it definable at the call. What it costs is a
+    # false violation when one file legitimately uses a name as a constant in one procedure and a
+    # variable in another; that is the direction this repository accepts.
+    file_constants, file_other_names = _fortran_declared_names(lowered)
+    parameter_names = file_constants - file_other_names
 
     for sub_match in subroutine_pattern.finditer(lowered):
         sub_name = sub_match.group(1)
@@ -954,7 +1379,10 @@ def _validate_problem_model_dependency_dataflow(
                 continue
             call_vars = _split_fortran_names(args_raw)
             for var in call_vars:
-                if var in arg_names:
+                # A named constant cannot be an output: F2008 requires the actual associated with
+                # an `intent(out)`/`intent(inout)` dummy to be definable. See the docstring for
+                # the compiler diagnostic this rests on.
+                if var in arg_names or var in parameter_names:
                     continue
                 assigned_before_call = any(
                     lhs == var and pos < call_pos for lhs, _, pos in assignments
@@ -1013,7 +1441,7 @@ def _validate_problem_metric_only_scalar_kernel(
         return
     spec_id = _spec_id_from_node_key(execution.node_key) or execution.node_key
 
-    lowered = fortran_lines.mask_code_lookalikes(lowered)
+    lowered = _joined_masked_fortran_view(lowered)
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
     intent_in_or_inout_array_pattern = re.compile(
@@ -1497,11 +1925,37 @@ def _parse_makefile_rules_objdir_aware(
     return target_has_objdir, prereqs_diraware
 
 
-def _local_fortran_module_map(src_files: list[Path]) -> dict[str, str]:
+def _fortran_source_views(src_files: list[Path]) -> dict[Path, str]:
+    """Each source read once and reduced to its `_joined_masked_fortran_view`.
+
+    The two readers below need the same view of the same files, and the view is the expensive
+    part. Sharing it HALVES the cost; it does not remove it. The multiplier over a raw
+    read-and-lower is 43x-86x per shared view across six real three-source directories (so
+    86x-172x if both readers built their own) — quoted as a RANGE because two earlier drafts of
+    this note each gave a single directory's figure and neither reproduced for the other reader.
+    The number that does not move is the absolute: 1.9s for the whole tree of 357 directories,
+    against 0.02s of raw reads. Large multiplier, small absolute — a note rather than a concern,
+    and the multiplier is what to check first if that stops being true."""
+    return {
+        src_file: _joined_masked_fortran_view(
+            src_file.read_text(encoding="utf-8", errors="ignore").lower()
+        )
+        for src_file in src_files
+    }
+
+
+def _local_fortran_module_map(src_views: dict[Path, str]) -> dict[str, str]:
+    """Which source stem provides each locally-defined module.
+
+    Reads `_joined_masked_fortran_view`s, like its consumer below, because a `module &` / `name`
+    wrap would otherwise leave the module unregistered — and an unregistered provider silently
+    deletes every dependency edge into it. Masking is not what closes that (the pattern is
+    `^`-anchored and comments are already gone by then); the reason to take the shared view rather
+    than call `fortran_logical_lines` here is that this defect class IS "N slightly different
+    Fortran views", and a fourth hand-rolled one is how it comes back."""
     module_map: dict[str, str] = {}
     pattern = re.compile(r"^\s*module\s+(?!procedure\b)([a-z_][a-z0-9_]*)\b", re.MULTILINE)
-    for src_file in src_files:
-        text = src_file.read_text(encoding="utf-8", errors="ignore").lower()
+    for src_file, text in src_views.items():
         stem = src_file.stem.lower()
         for match in pattern.finditer(text):
             module_name = match.group(1)
@@ -1510,14 +1964,22 @@ def _local_fortran_module_map(src_files: list[Path]) -> dict[str, str]:
 
 
 def _fortran_source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
-    module_map = _local_fortran_module_map(src_files)
+    """The local module-dependency edges between ``src_files``, by source stem.
+
+    The `^\\s*use` pattern is anchored at a LOGICAL line start, so it must read
+    `_joined_masked_fortran_view`: a continuation placed between `use` and the module name
+    (`use &` / `dep_model`) matched nothing on physical lines, which emptied the caller's
+    `required_object_deps` — and `_validate_fortran_makefile_src_dir` returns before it can
+    require a Makefile at all when that mapping is empty. One wrapped `use` therefore switched
+    off the module-dependency build contract for the whole directory. Fail-open."""
+    src_views = _fortran_source_views(src_files)
+    module_map = _local_fortran_module_map(src_views)
     use_pattern = re.compile(
         r"^\s*use(?:\s*,\s*(?:intrinsic|non_intrinsic)\s*::|\s*::|\s+)?\s*([a-z_][a-z0-9_]*)\b",
         re.MULTILINE,
     )
     deps_by_stem: dict[str, set[str]] = {}
-    for src_file in src_files:
-        text = src_file.read_text(encoding="utf-8", errors="ignore").lower()
+    for src_file, text in src_views.items():
         stem = src_file.stem.lower()
         deps: set[str] = set()
         for match in use_pattern.finditer(text):
@@ -3780,9 +4242,16 @@ def _validate_generate_outputs(
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         lowered = text.lower()
+        # The metric scans below are the same shape as the `problem` model gates — a regex over
+        # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
+        # the physical newline, so a wrapped `metrics(1) = &` / `1.0` captured only the `&`, which
+        # carries no digit and so never counted as literal-like: the literal-metric floor was
+        # escapable by wrapping the assignments. The gates below re-derive this view themselves
+        # (it is a fixed point) and are left reading `lowered` so their own contract stays whole.
+        joined = _joined_masked_fortran_view(lowered)
 
-        if re.search(r"index\s*\(\s*case_id", lowered) and re.search(
-            r"metrics\s*\(\s*\d+\s*\)", lowered
+        if re.search(r"index\s*\(\s*case_id", joined) and re.search(
+            r"metrics\s*\(\s*\d+\s*\)", joined
         ):
             violations.append(
                 f"{model_file}: hardcoded case_id -> metrics assignment pattern detected"
@@ -3790,7 +4259,7 @@ def _validate_generate_outputs(
 
         assignments = re.findall(
             r"metrics\s*\(\s*\d+\s*\)\s*=\s*([^\n!]+)",
-            lowered,
+            joined,
             flags=re.MULTILINE,
         )
         literal_like = 0
@@ -4179,9 +4648,16 @@ def _validate_generate_outputs_for_generation(
     for model_file in model_files:
         text = model_file.read_text(encoding="utf-8", errors="ignore")
         lowered = text.lower()
+        # The metric scans below are the same shape as the `problem` model gates — a regex over
+        # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
+        # the physical newline, so a wrapped `metrics(1) = &` / `1.0` captured only the `&`, which
+        # carries no digit and so never counted as literal-like: the literal-metric floor was
+        # escapable by wrapping the assignments. The gates below re-derive this view themselves
+        # (it is a fixed point) and are left reading `lowered` so their own contract stays whole.
+        joined = _joined_masked_fortran_view(lowered)
 
-        if re.search(r"index\s*\(\s*case_id", lowered) and re.search(
-            r"metrics\s*\(\s*\d+\s*\)", lowered
+        if re.search(r"index\s*\(\s*case_id", joined) and re.search(
+            r"metrics\s*\(\s*\d+\s*\)", joined
         ):
             violations.append(
                 f"{model_file}: hardcoded case_id -> metrics assignment pattern detected"
@@ -4189,7 +4665,7 @@ def _validate_generate_outputs_for_generation(
 
         assignments = re.findall(
             r"metrics\s*\(\s*\d+\s*\)\s*=\s*([^\n!]+)",
-            lowered,
+            joined,
             flags=re.MULTILINE,
         )
         literal_like = 0

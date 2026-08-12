@@ -5475,24 +5475,1140 @@ end module m
         )
         self.assertEqual(violations, [])
 
+    def _dataflow_violations(self, source: str) -> list[str]:
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        _validate_problem_model_dependency_dataflow(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            dep_spec_ids=["dep"],
+            violations=violations,
+        )
+        return violations
+
+    def test_wrapped_intent_out_list_is_not_read_as_literal_only(self) -> None:
+        # `intent_out_pattern`'s `[^\n!]+` stopped at the PHYSICAL newline, so a wrapped entity
+        # list lost every name after the `&`. Here `b` was lost, leaving `out_vars == {a}` — whose
+        # only assignment is a literal — and the gate emitted a false "literal-only assignments
+        # for all intent(out) vars" against a model that plainly derives `b` from its input.
+        source = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(scale, a, &
+    b)
+  real, intent(in) :: scale
+  real, intent(out) :: a, &
+    b
+  a = 1.0
+  b = 2.0 * scale
+end subroutine solve
+end module shallow_water2d_model
+"""
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_model_literal_outputs(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        self.assertEqual(violations, [])
+
+    def test_a_wrapped_intent_out_list_cannot_duck_the_metric_only_kernel_gate(self) -> None:
+        # The third gate reading this view, and the one whose threshold makes the continuation
+        # loss directly exploitable: it fires only at five or more `intent(out)` dummies, and a
+        # wrapped list dropped one name per `&`. Five metrics written as `m1, m2, m3, &` / `m4,
+        # m5` counted as four and the gate went silent on exactly the shape it exists to catch —
+        # a 2d problem model deriving scalar metrics with no array input and no update loop.
+        source = """module shallow_water2d_model
+implicit none
+contains
+subroutine metrics_only(x, m1, m2, m3, &
+    m4, m5)
+  real, intent(in) :: x
+  real, intent(out) :: m1, m2, m3, &
+    m4, m5
+  m1 = x
+  m2 = x
+  m3 = x
+  m4 = x
+  m5 = x
+end subroutine metrics_only
+end module shallow_water2d_model
+"""
+        execution = NodeExecution(
+            node_key="problem/shallow_water2d@0.4.0",
+            node_dir=Path("/nonexistent/node"),
+            exec_dir=Path("/nonexistent/exec"),
+            pipeline_dir=Path("/nonexistent/pipeline"),
+        )
+        violations: list[str] = []
+        vps._validate_problem_metric_only_scalar_kernel(
+            execution=execution,
+            model_file=Path("shallow_water2d_model.f90"),
+            lowered=source.lower(),
+            violations=violations,
+        )
+        self.assertTrue(
+            any("is metric-only scalar kernel for" in v for v in violations),
+            f"a wrapped intent(out) list must still reach the threshold; got: {violations}",
+        )
+
+    def test_wrapped_dependency_call_actual_is_flagged_as_a_discarded_output(self) -> None:
+        # The gate was BLIND here, not merely imprecise: `tmp` is the first name after the `&`, so
+        # it never reached `dep_output_candidates` and a genuinely discarded dependency result
+        # passed. Wrapping a long call is the normal way to write one, so this fail-open was
+        # reachable by conformant-looking code.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(scale, flag)
+  real, intent(in) :: scale
+  logical, intent(out) :: flag
+  real :: h_in, tmp
+  h_in = scale
+  call dep__op(h_in, &
+    tmp)
+  flag = scale > 0.0
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_named_constant_actual_is_not_a_dependency_output_candidate(self) -> None:
+        # The real shape from `workspace_20260706`'s `shallow_water2d`: a module-level constant
+        # passed as the leading actual of a wrapped dependency call. Before the join it was
+        # invisible; after the join it is the ONLY candidate, and flagging it would be a false
+        # "does not propagate" — F2008 forbids associating a named constant with an
+        # `intent(out)`/`intent(inout)` dummy, so it can never be that call's output.
+        #
+        # The constant is declared OUTSIDE the subroutine, which is why the collection cannot read
+        # the body alone. All three declaration forms are exercised.
+        # The F77 statement form is deliberately absent. Under the `implicit none` these models
+        # must declare, `parameter (ncomp = 3)` always follows a type declaration of `ncomp`,
+        # which disqualifies the name — so that spelling never earns an exemption. Pairing the two
+        # statements was tried and reverted: a file-wide rule cannot make the pairing
+        # per-declaration, so it re-exempted any name that is a constant in one procedure and a
+        # variable in another. See `test_a_paired_parameter_statement_is_not_exempted`.
+        for declaration in (
+            "  integer, parameter, public :: ncomp = 3",
+            "  integer, parameter :: sizes(2) = [3, 4], ncomp = 3",
+            "  integer, parameter :: &\n    ncomp = 3",
+        ):
+            source = f"""module shallow_water2d_model
+use dep_model
+implicit none
+{declaration}
+contains
+subroutine advance(nx, u_n, &
+    u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(in) :: u_n(nx)
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  call dep__advance( &
+    ncomp, nx, u_n, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+            self.assertEqual(self._dataflow_violations(source), [], declaration)
+
+    def test_a_paired_parameter_statement_is_not_exempted(self) -> None:
+        # `integer :: ncomp` / `parameter (ncomp = 3)` is one declaration in two statements, and
+        # the type-declaration half disqualifies the name. That is a FALSE violation, asserted
+        # here on purpose: the alternative — cancelling the disqualification when a `parameter`
+        # statement names the same identifier — cannot be made per-declaration in a file-wide
+        # rule, and globally it re-exempts a name that is a constant in one procedure and an
+        # ordinary variable in another. Nothing is ever removed from the disqualifying set.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+parameter (ncomp = 3)
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_the_constant_exclusion_does_not_hide_a_variable_of_the_same_shape(self) -> None:
+        # The mirror of the test above, and the guard against widening the clause later: the ONLY
+        # thing that exempts `ncomp` is being a named constant. Declared as a plain variable it is
+        # a candidate again, it reaches no intent(out), and the gate must still fire.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine advance(nx, u_n, &
+    u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(in) :: u_n(nx)
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance( &
+    ncomp, nx, u_n, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_constant_of_one_procedure_does_not_exempt_a_variable_of_another(self) -> None:
+        # `ncomp` is a named constant in `helper` and a live discarded output in `advance`. Under
+        # the file-wide rule the two procedures do not need to be told apart: `advance`'s own
+        # `integer :: ncomp` is a declaration of the name as something other than a constant, so
+        # the name is not exempt anywhere in the file.
+        #
+        # This test dates from a scope-reading design that was replaced. It is kept as a
+        # behavioural regression for the shape, NOT as a pin on any particular machinery — see the
+        # note on `_ACCESS_TEMPLATE`'s neighbours below.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+subroutine advance(nx, u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance( &
+    ncomp, nx, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    # `ncomp` is a module VARIABLE, and `advance` does not redeclare it. That is what makes these
+    # cases test the SCOPE READER: with a local `integer :: ncomp` in `advance` — the first shape
+    # of this fixture — the shadow subtraction produced the expected violation on its own, and
+    # every one of these tests passed with the entire scope analysis deleted.
+    _SCOPE_LEAK_TEMPLATE = """module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+contains
+{leaking_procedure}subroutine advance(nx, u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  call dep__advance( &
+    ncomp, nx, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+
+    # NOTE on the group of tests below, and on their names.
+    #
+    # Each is named for a Fortran SHAPE that once defeated a scope-reading version of the
+    # named-constant exemption: a module `function`, a paren-less `subroutine`, an external
+    # procedure, a submodule separate body, a labelled `contains`, a second module in the file,
+    # an assignment to a variable named `module`, and so on. That design was replaced by the
+    # file-wide rule — exempt a name only if the file declares it a constant and never declares
+    # it otherwise — and none of that machinery exists any more.
+    #
+    # So these do NOT pin distinct mechanisms, and a mutation run will show each of them dying to
+    # the same generic mutation ("`::` declarations stop disqualifying") rather than to anything
+    # named in its own title. They are behavioural regressions: each asserts that its shape is
+    # still handled, which under the current rule is true for one shared reason. Read them that
+    # way. The tests that DO isolate specific machinery are the helper-level ones —
+    # `test_every_type_keyword_disqualifies_a_bare_declaration`,
+    # `test_every_attribute_statement_disqualifies_the_names_it_mentions`,
+    # `test_every_shape_that_makes_a_name_definable_disqualifies_it`,
+    # `test_a_function_header_declares_its_result_name` — where one alternative is dropped at a
+    # time.
+    def test_no_procedure_shape_can_leak_a_constant_into_module_scope(self) -> None:
+        # Deriving "module scope" by blanking `_PROBLEM_SUBROUTINE_ENVELOPE` matches read the
+        # SHAPE of a procedure instead of the structure, and two shapes escaped it — both accepted
+        # by `gfortran -fsyntax-only -std=f2008`. In each, `ncomp` is a constant of the OTHER
+        # procedure and a live discarded output in `advance`; the leak exempted it and the gate
+        # went silent. That is the exact fail-open the exemption's isolation rule exists to
+        # prevent, so each shape is pinned by name rather than by one combined case.
+        shapes = {
+            "module function": (
+                "real function scale(z)\n"
+                "  real, intent(in) :: z\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  scale = z * real(ncomp)\n"
+                "end function scale\n"
+            ),
+            "paren-less subroutine": (
+                "subroutine noargs\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  print *, ncomp\n"
+                "end subroutine noargs\n"
+            ),
+            "ordinary subroutine": (
+                "subroutine helper(out_val)\n"
+                "  real, intent(out) :: out_val\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  out_val = real(ncomp)\n"
+                "end subroutine helper\n"
+            ),
+            # A variable named `endmodule` — none of these words is reserved — matched the scope
+            # tracker's `end` pattern and re-opened the specification part across everything that
+            # followed it. An assignment cannot change scope, so assignments are neutralized
+            # before the tracker sees them.
+            "procedure assigning a variable named endmodule": (
+                "subroutine marker(out_val)\n"
+                "  real, intent(out) :: out_val\n"
+                "  real :: endmodule\n"
+                "  endmodule = 3.0\n"
+                "  out_val = endmodule\n"
+                "end subroutine marker\n"
+                "subroutine helper(out_val)\n"
+                "  real, intent(out) :: out_val\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  out_val = real(ncomp)\n"
+                "end subroutine helper\n"
+            ),
+        }
+        for label, procedure in shapes.items():
+            source = self._SCOPE_LEAK_TEMPLATE.format(leaking_procedure=procedure)
+            self.assertTrue(
+                any(
+                    "subroutine advance does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"a constant inside a {label} must not reach module scope; "
+                f"got: {self._dataflow_violations(source)}",
+            )
+
+    def test_a_labelled_structural_statement_is_still_structural(self) -> None:
+        # A statement LABEL may precede any statement. Both structural statements here are
+        # labelled deliberately, and that is what makes the strip load-bearing: the specification
+        # part is bounded by the `contains` AND by the procedure header opening a child scope, so
+        # labelling only one leaves the other filter to catch the leak and the test proves
+        # nothing. `gfortran -fsyntax-only -std=f2008` accepts both labels.
+        # `helper` comes AFTER `advance` deliberately. With it first, an unrecognized labelled
+        # header leaves its `end subroutine` unbalanced, which pops the module's own scope, and
+        # `advance` then loses its host attribution and fires for that reason instead — two
+        # errors cancelling, and a test that passes without pinning anything.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+10 contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+20 subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_an_assignment_cannot_reopen_the_specification_part(self) -> None:
+        # None of these words is reserved. An assignment to a variable named `module` matched the
+        # host-unit pattern and started a brand-new host scope in the middle of a procedure — one
+        # with no `contains` of its own, so nothing else bounds it. (The `endmodule` spelling pops
+        # a scope instead, and the `contains` cut already covers that; pinning the pop alone
+        # proves nothing.) Three of these four shapes each defeated a successive attempt to
+        # enumerate what an assignment LOOKS like, which is why the pattern they now meet
+        # enumerates what a host-unit header IS. This is a behavioural regression test, not a pin
+        # on that pattern: per-host attribution blocks all four independently, so loosening the
+        # pattern alone does not fail here.
+        for label, target, declaration in (
+            ("plain name", "module", "real :: module"),
+            ("component reference", "module%v", "type(holder) :: module"),
+            ("subscript then component", "module(1)%v", "type(holder) :: module(2)"),
+            # A subscript may itself contain `=`, as a keyword argument. Enumerating LHS shapes
+            # lost to this one after two earlier rounds had already patched it twice, which is
+            # why the host-unit opener is now an allowlist over what a header IS.
+            ("subscript with a keyword argument", "module(min(1, 2))", "real :: module(2)"),
+        ):
+            source = f"""module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+type :: holder
+  real :: v
+end type holder
+contains
+subroutine helper(out_val)
+  real, intent(out) :: out_val
+  {declaration}
+  {target} = 1.0
+  block
+    integer, parameter :: ncomp = 3
+    out_val = real(ncomp)
+  end block
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+            self.assertTrue(
+                any(
+                    "subroutine advance does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"{label}: got {self._dataflow_violations(source)}",
+            )
+
+    def test_one_modules_constant_does_not_exempt_another_modules_variable(self) -> None:
+        # A file may hold several host units. Concatenating their specification parts into one
+        # text — which is what "module scope" meant before this — let a `parameter` in
+        # `const_model` exempt a same-named VARIABLE in `shallow_water2d_model`. The scoping claim
+        # in the docstring said per-host all along; the code did not implement it.
+        source = """module const_model
+implicit none
+integer, parameter :: ncomp = 3
+end module const_model
+module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_block_local_constant_does_not_exempt_the_enclosing_body(self) -> None:
+        # A `block` is a scope of its own. Its `parameter` is not visible to the statements around
+        # it — least of all to a call that precedes it — but a body-wide flatten collected it and
+        # exempted `ncomp`, which is an ordinary local integer at the call.
+        #
+        # Under the file-wide rule the local `integer :: ncomp` below ALSO disqualifies the name,
+        # so this asserts the outcome rather than isolating the construct-depth guard. That guard
+        # is observable only on implicitly typed source, i.e. only through a residue `implicit
+        # none` makes unreachable — it is defensive, and this comment says so rather than
+        # implying a pin it does not provide.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+  block
+    integer, parameter :: ncomp = 3
+    print *, ncomp
+  end block
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_type_bound_contains_does_not_end_the_specification_part(self) -> None:
+        # A derived-type definition has its own `contains`, introducing type-bound procedures.
+        # Reading it as the host unit's truncated the specification part at the first such type,
+        # dropping every module constant declared after it — a false violation against a model
+        # whose only offence is defining a type with a procedure binding.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+type :: holder
+contains
+  procedure, nopass :: touch
+end type holder
+integer, parameter :: ncomp = 3
+contains
+subroutine touch()
+  print *, ncomp
+end subroutine touch
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_type_selector_with_leading_space_still_declares(self) -> None:
+        # `integer (kind=4) ncomp` — a blank before the selector is legal, and skipping the
+        # selector without stripping it first left the declaration unparsed, so the local did not
+        # shadow the host constant and a real discarded output was exempted.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer (kind=4) ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_every_shape_that_makes_a_name_definable_disqualifies_it(self) -> None:
+        # The file-wide rule exempts a name only if the file declares it constant and NEVER
+        # declares it otherwise, so the whole burden sits on recognising "otherwise". Each shape
+        # here was a reproduced fail-open: a NAMED `associate` construct (the optional label
+        # slipped past the unnamed-only pattern), a constant belonging to a CONTAINED procedure,
+        # the obsolescent `character*3` length selector, and `use ..., only:` — use association
+        # overrides host association, so the imported entity is whatever the other module says.
+        # All four are accepted by `gfortran -fsyntax-only -std=f2008`.
+        for label, spec, body in (
+            (
+                "named associate",
+                "real, parameter :: scratch = 0.0",
+                "  real :: local\n  blk: associate (scratch => local)\n"
+                "    call dep__op(u_in, scratch)\n  end associate blk",
+            ),
+            (
+                "contained procedure constant",
+                "real :: scratch",
+                "  call dep__op(u_in, scratch)\n"
+                "  return\ncontains\n  subroutine inner()\n"
+                "    integer, parameter :: scratch = 3\n    print *, scratch\n"
+                "  end subroutine inner",
+            ),
+            (
+                "character*3 length selector",
+                "character(len=3), parameter :: scratch = 'abc'",
+                "  character*3 scratch\n  call dep__op(u_in, scratch)",
+            ),
+            (
+                "use-only import",
+                "integer, parameter :: scratch = 3",
+                "  use m_ext, only: scratch\n  call dep__op(u_in, scratch)",
+            ),
+            # A rename needs no `only:`, and the module-nature prefix puts a comma right after
+            # `use`. Keying on the word `only` missed the first; a pattern that could not cross
+            # that comma missed the second, which then fell through to the declaration branch and
+            # was read as declaring `store_model` and `only`.
+            (
+                "use rename without only",
+                "integer, parameter :: scratch = 3",
+                "  use m_ext, scratch => slot\n  call dep__op(u_in, scratch)",
+            ),
+            (
+                "use with a module-nature prefix",
+                "integer, parameter :: scratch = 3",
+                "  use, non_intrinsic :: m_ext, only : scratch => slot\n"
+                "  call dep__op(u_in, scratch)",
+            ),
+            # `real function_tmp` is a declaration, not a procedure header. Testing the header by
+            # prefix discarded the whole statement, losing every other name declared on it.
+            (
+                "name beginning with `function`",
+                "real, parameter :: scratch = 0.0",
+                "  real function_scratch, scratch\n  call dep__op(u_in, scratch)",
+            ),
+            # A `::`-less specification statement attaches an attribute to a name without
+            # declaring it in any shape this parser reads. There are eighteen such statements and
+            # parsing each one's grammar is the losing move this rule exists to stop making, so
+            # any statement opening with one of those keywords disqualifies every identifier it
+            # mentions. Two representatives; the helper-level test covers the list.
+            # F2008 Table 3.1 makes the blank optional, so `selecttype` is ONE token and a
+            # pattern requiring `select\s+type` sees no rebinding at all. `fortitude check`
+            # passes it too.
+            (
+                "one-word selecttype",
+                "real, parameter :: scratch = 0.0",
+                "  real :: local\n  nm: selecttype (scratch => local)\n  type is (real)\n"
+                "    call dep__op(u_in, scratch)\n  end select nm",
+            ),
+            (
+                "dimension statement",
+                "real, parameter :: scratch = 0.0",
+                "  real scratch\n  dimension scratch(2)\n  call dep__op(u_in, scratch(1))",
+            ),
+            (
+                "common block",
+                "real, parameter :: scratch = 0.0",
+                "  real scratch\n  common /blk/ scratch\n  call dep__op(u_in, scratch)",
+            ),
+        ):
+            source = f"""module shallow_water2d_model
+use dep_model
+implicit none
+{spec}
+contains
+subroutine solve(u_in, u_out)
+  real, intent(in) :: u_in
+  real, intent(out) :: u_out
+{body}
+  u_out = u_in
+end subroutine solve
+end module shallow_water2d_model
+"""
+            self.assertTrue(
+                any(
+                    "does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"{label}: got {self._dataflow_violations(source)}",
+            )
+
+    def test_an_associate_construct_shadows_a_host_constant(self) -> None:
+        # `associate (ncomp => scratch)` rebinds the name to a definable variable for the length
+        # of the construct, so the actual passed under that name really can be a discarded
+        # output. Nothing DECLARES it, so the declaration-shaped subtraction could not see it.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: scratch
+  associate (ncomp => scratch)
+    call dep__advance(ncomp, u_np1, guard_pass)
+  end associate
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_submodule_separate_procedure_body_is_not_module_scope(self) -> None:
+        # `_assign_fortran_scopes` deliberately opens no scope for `module procedure`, which is
+        # right for the interface sense (`interface gen` / `module procedure a, b`) and wrong for
+        # a SUBMODULE separate body — whose whole body then sits at the submodule's own scope.
+        # Cutting each host scope at its `contains` catches it, because a separate body can only
+        # appear after one. Idiomatic F2008; no adversarial naming needed.
+        source = """submodule (problem_model) problem_impl
+use dep_model
+implicit none
+integer :: ncomp
+contains
+module procedure helper
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end procedure helper
+module subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end submodule problem_impl
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_declaration_without_the_double_colon_still_shadows(self) -> None:
+        # The `::` is optional when a declaration carries no attribute and no initializer.
+        # `integer ncomp` shadows a host constant exactly as `integer :: ncomp` does, and the
+        # shadow subtraction read only `::` statements — one spelling from the hole it closes.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_importing_a_host_constant_does_not_revoke_its_exemption(self) -> None:
+        # `import` declares nothing — it names an entity of the HOST so an interface body can see
+        # it. Counting it as a redeclaration made `import :: ncomp` subtract the very constant it
+        # imports, turning a correct silence into a false violation. Subtraction is only safe
+        # where a statement really shadows.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_in, u_np1, guard_pass)
+  real, intent(in) :: u_in(ncomp)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  interface
+    function scale_by(a) result(r)
+      import :: ncomp
+      real, intent(in) :: a(ncomp)
+      real :: r
+    end function scale_by
+  end interface
+  call dep__advance(ncomp, u_np1, guard_pass)
+  u_np1 = u_np1 * scale_by(u_in)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_an_implicitly_typed_local_is_the_rules_known_blind_spot(self) -> None:
+        # Recorded as a KNOWN residue, not as a passing property. Under the file-wide rule a name
+        # is exempt when the file declares it constant and never declares it otherwise — and an
+        # implicitly typed local is not declared at all, so `advance`'s own `ncomp` is invisible
+        # and the constant in `helper` exempts it. `gfortran -fsyntax-only -std=f2008` accepts
+        # this, because neither procedure says `implicit none`.
+        #
+        # It is unreachable through `Generate.gate`: the authoring rules require `implicit none`
+        # in every generated model, and fortitude's C001 fires without it (C003 is a different rule — the one the phase doc tells the leaf to suppress), so an undeclared name
+        # is a compile error long before this gate runs. The test asserts the CURRENT behaviour so
+        # that a future change to the rule shows up here rather than being discovered as a
+        # surprise, and names the reason it is tolerable.
+        source = """subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
+  use dep_model
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_labelled_contains_still_ends_the_specification_part(self) -> None:
+        # A statement LABEL may precede any statement. Anchoring on the bare keyword missed
+        # `10 contains`, leaving the specification part open across every procedure after it.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+10 contains
+subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "subroutine advance does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_a_local_declaration_shadows_a_host_constant_of_the_same_name(self) -> None:
+        # Fortran scoping: the local `integer :: ncomp` shadows the module constant, so the actual
+        # IS a definable variable and CAN be a discarded dependency output. Unioning the two scopes
+        # exempted it — the mirror of the leak the module-scope reader exists to close, and the
+        # direction the sibling isolation test does not cover.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_an_enumerator_is_a_named_constant_too(self) -> None:
+        # An enumerator is not definable either, so it can never be a dependency-call output.
+        # Missing it was a false-violation class, not a hole.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+enum, bind(c)
+  enumerator :: ncomp = 3
+end enum
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_constant_declared_in_the_calling_subroutine_still_exempts(self) -> None:
+        # The other half of the scope union, which no test watched: module specification part OR
+        # the subroutine's OWN declarations. Deleting the per-body half leaves the whole suite
+        # green while making this source a false violation, because the module-scope reader
+        # deliberately stops at `contains` and never sees a body-local constant.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine advance(nx, u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  integer, parameter :: ncomp = 3
+  call dep__advance( &
+    ncomp, nx, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_an_array_named_parameter_does_not_mint_a_constant(self) -> None:
+        # `parameter` is not a reserved word. A greedy `^parameter\s*\((.*)\)$` matched the
+        # ASSIGNMENT `parameter(scratch) = u_in(1)` with the group `scratch) = u_in(1`, minting
+        # `scratch` as a named constant and exempting a real discarded dependency output. Naming
+        # one array was the whole exploit; `gfortran -fsyntax-only -std=f2008` accepts it.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(u_in, u_out)
+  real, intent(in) :: u_in(3)
+  real, intent(out) :: u_out(3)
+  integer :: scratch
+  real :: parameter(3)
+  call dep__flux(u_in, scratch)
+  parameter(scratch) = u_in(1)
+  u_out = u_in
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_the_dataflow_gates_own_view_seeds_the_closure(self) -> None:
+        # `test_wrapped_dependency_call_actual_is_flagged_as_a_discarded_output` pins the
+        # end-to-end recovery, but it survives reverting EITHER the gate's view or
+        # `_split_fortran_names`' — only both together break it, so neither hunk is isolated.
+        #
+        # This one isolates the GATE's. Everything is on one physical line except the
+        # `intent(out)` entity list, so `_split_fortran_names` is irrelevant: only the gate's own
+        # view can put `extra` into `out_vars`. And `extra` is the seed that reaches `tmp`
+        # (`extra = tmp`), so losing it does not merely shrink a message — it turns a correct
+        # silence into a FALSE violation against a model that consumes the dependency result.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(scale, flag, extra)
+  real, intent(in) :: scale
+  logical, intent(out) :: flag
+  real, intent(out) :: &
+    extra
+  real :: h_in, tmp
+  h_in = scale
+  call dep__op(h_in, tmp)
+  flag = scale > 0.0
+  extra = tmp
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_semicolon_packed_statement_cannot_manufacture_a_producer(self) -> None:
+        # The hazard the JOIN introduces, closed by splitting statements inside the view. On one
+        # physical line `flag = .true.; call dep__op(h_in, tmp)`, `_assignment_records`' RHS
+        # pattern `([^\n!]+)` runs past the `;` and pulls `tmp` into `flag`'s sources. `tmp` is a
+        # discarded dependency result, so the backward closure would reach it and the violation
+        # would be suppressed — fail-open, manufactured by a semicolon.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(scale, flag)
+  real, intent(in) :: scale
+  logical, intent(out) :: flag
+  real :: h_in, tmp
+  h_in = scale
+  flag = .true.; call dep__op(h_in, tmp)
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_joined_masked_fortran_view_is_one_statement_per_line(self) -> None:
+        # The `;` split is the half of this view that is NOT obvious. Joining alone would put
+        # `real :: tmp; tmp = 0.0` on one line, where `_assignment_records`' `^\s*` MULTILINE
+        # anchor stops seeing the assignment and its `([^\n!]+)` RHS swallows whatever follows the
+        # `;` — a phantom producer, fail-open at the dataflow gate's isdisjoint test.
+        view = vps._joined_masked_fortran_view(
+            "subroutine f(a, &\n   b)\n"
+            "  real :: tmp; tmp = 0.0 ! note\n"
+            "  ! a comment-only line inside the body\n"
+            "  msg = 'x;y'\n"
+            "end subroutine f\n"
+        )
+        lines = view.split("\n")
+        self.assertEqual(lines[0], "subroutine f(a,  b)")
+        self.assertIn("real :: tmp", lines[1])
+        self.assertIn("tmp = 0.0", lines[2])
+        # The comment-only line leaves no entry, and a `;` INSIDE a literal is not a separator —
+        # the literal's contents are blanked, its delimiters and its length survive.
+        self.assertNotIn("!", view)
+        self.assertIn("msg = '   '", view)
+        # A fixed point, which is what lets `_split_fortran_names` re-apply it on input a gate has
+        # already joined. The well-formed input above does NOT pin this: reverting the right-strip
+        # and the empty-statement drop leaves it passing. These four do, and the first is ordinary
+        # legal Fortran — `x = 1;` emits an empty statement a second pass would drop. The other
+        # three are robustness against input the syntax gate rejects before this one runs: a
+        # lone-`&` line and text ending mid-continuation both leave the blank that preceded a
+        # consumed marker, and an unterminated literal leaves the blanks the mask wrote over its
+        # contents.
+        self.assertEqual(vps._joined_masked_fortran_view(view), view)
+        for label, probe in {
+            "trailing semicolon": "x = 1;\n",
+            "lone ampersand line": "x = 1 &\n&\ny = 2\n",
+            "ends mid-continuation": "call f(a, &\n",
+            "unterminated literal": "x = 'abc\ny = 1\n",
+        }.items():
+            once = vps._joined_masked_fortran_view(probe)
+            self.assertEqual(vps._joined_masked_fortran_view(once), once, label)
+
+    def test_an_accessibility_statement_does_not_revoke_the_exemption(self) -> None:
+        # An accessibility statement names an entity declared elsewhere; it declares nothing
+        # itself, the same argument that keeps `import` out of both sets. Counting it as a
+        # redeclaration stripped the exemption from every module that lists its constants that
+        # way — eight models in this tree do, one of them a `problem/`-domain file this gate
+        # reads. BOTH spellings are exercised: F2008 R518 makes the `::` optional, and fixing
+        # only the `::` form left the two halves of one statement disagreeing.
+        for accessibility in ("public :: ncomp", "public ncomp", "private ncomp"):
+            self.assertEqual(self._dataflow_violations(self._ACCESS_TEMPLATE.format(
+                accessibility=accessibility)), [], accessibility)
+
+    _ACCESS_TEMPLATE = """module shallow_water2d_model
+use dep_model
+implicit none
+integer, parameter :: ncomp = 3
+{accessibility}
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+
+    def test_a_function_header_declares_its_result_name(self) -> None:
+        # A function result is definable inside the function, so the header IS a declaration.
+        # Skipping the statement let a file declare `parameter :: ncomp` in one scoping unit and
+        # `integer function ncomp(x)` in another — accepted by gfortran — and exempt a name that
+        # is assigned to.
+        for header, expected in (
+            ("integer function ncomp(x)", {"ncomp"}),
+            ("real function f(x) result(ncomp)", {"f", "ncomp"}),
+        ):
+            constants, others = vps._fortran_declared_names(header)
+            self.assertEqual(constants, set(), header)
+            self.assertTrue(expected <= others, f"{header} -> {others}")
+
+    def test_every_type_keyword_disqualifies_a_bare_declaration(self) -> None:
+        # One case per alternative of `_FORTRAN_BARE_DECLARATION`. Without this, dropping a single
+        # alternative — `logical`, say — silently exempts every `logical flux_ok` in the tree, and
+        # no other test notices. The alternatives are the enumerated half of a rule whose whole
+        # safety is enumeration, so each one is pinned individually.
+        for declaration in (
+            "integer ncomp",
+            "real ncomp",
+            "complex ncomp",
+            "logical ncomp",
+            "character ncomp",
+            "character*3 ncomp",
+            "doubleprecision ncomp",
+            "double precision ncomp",
+            "type(holder) ncomp",
+            "class(holder) ncomp",
+        ):
+            constants, others = vps._fortran_declared_names(declaration)
+            self.assertEqual(constants, set(), declaration)
+            self.assertIn("ncomp", others, declaration)
+        # `enumerator` is the one alternative that lands in the CONSTANT set, in both spellings.
+        for enumerated in ("enumerator ncomp", "enumerator :: ncomp"):
+            constants, _others = vps._fortran_declared_names(enumerated)
+            self.assertIn("ncomp", constants, enumerated)
+
+    def test_every_attribute_statement_disqualifies_the_names_it_mentions(self) -> None:
+        # The polarity that makes the file-wide rule safe: a statement this parser does not
+        # understand must still take names OUT of the exempt set. All eighteen `::`-less
+        # specification statements were silently invisible, each one a way to make a name
+        # definable while it still looked like a pure constant.
+        for statement in (
+            "common /blk/ ncomp",
+            "common ncomp",
+            "dimension ncomp(3)",
+            "equivalence (ncomp, other)",
+            "data ncomp /3/",
+            "namelist /nl/ ncomp",
+            "pointer ncomp",
+            "target ncomp",
+            "save ncomp",
+            "allocatable ncomp",
+            "external ncomp",
+            "intent(out) ncomp",
+            "volatile ncomp",
+            "asynchronous ncomp",
+            "codimension ncomp[*]",
+            "protected ncomp",
+            "value ncomp",
+            "optional ncomp",
+        ):
+            constants, others = vps._fortran_declared_names(statement)
+            self.assertEqual(constants, set(), statement)
+            self.assertIn("ncomp", others, statement)
+
+    def test_fortran_parameter_names_covers_the_declaration_forms(self) -> None:
+        # Feeding this the joined view is part of its contract: a wrapped declaration is exactly
+        # what a physical-line reader would miss.
+        source = (
+            "integer, parameter, public :: ncomp = 3\n"
+            "real, parameter :: c(2) = [1.0, 2.0], d = 4.\n"
+            "character(len=3), parameter :: s = 'a,b'\n"
+            "integer, parameter :: &\n    wrapped = 7\n"
+            "parameter (nlev = 4, mm = 2)\n"
+            # Negative for the statement form's residue check: an ASSIGNMENT into an array a
+            # leaf named `parameter`. Without it this mints `scratch`. The gate-level test cannot
+            # pin it — the file-wide rule disqualifies `scratch` from its own declaration either
+            # way — so the discrimination lives here.
+            "parameter(scratch) = u_in(1)\n"
+            # Negatives: `parameter` as a substring of a name, and as text inside a dimension
+            # spec — an equality test over the attribute list, not `\bparameter\b`, is what keeps
+            # these from minting constants that would then exempt a real discarded output.
+            "integer :: nparameter_x = 1\n"
+            "real, dimension(nparameter) :: field\n"
+        )
+        self.assertEqual(
+            vps._fortran_parameter_names(vps._joined_masked_fortran_view(source)),
+            {"ncomp", "c", "d", "s", "wrapped", "nlev", "mm"},
+        )
+
     def test_split_fortran_names_ignores_commas_inside_a_literal(self) -> None:
         # The helper-level half of the reproducer above.
         self.assertEqual(vps._split_fortran_names("u, 'msg, done, ok', v"), ["u", "v"])
 
-    def test_split_fortran_names_masks_comments_in_a_continued_list(self) -> None:
-        # `_split_fortran_names` receives RAW source text (the enclosing regexes are re.DOTALL),
+    def test_split_fortran_names_joins_continuations_and_masks_comments(self) -> None:
+        # `_split_fortran_names` may receive RAW source text (the enclosing regexes are re.DOTALL),
         # so a continued list arrives with its `&`, newlines and `!` comments. Two defects, both
         # fail-open at the dataflow gate: a comma in a comment manufactured a phantom identifier
         # (`mid`), and — once the split became quote-aware — an apostrophe in a comment opened a
         # literal no newline closed, swallowing every later item (`tmp` lost).
         #
-        # The name immediately after the `&` is still dropped, as on origin/main: recovering it
-        # would be the correct parse but flips three real models in this tree to a false "does
-        # not propagate", because the gate's candidate rule is an over-approximation those
-        # dropped names were masking. That is a separate, recorded task.
+        # The third defect of the same shape was the `&` itself: the name immediately after it was
+        # dropped, because a mask that blanks IN PLACE leaves the marker and the newline attached
+        # to that token. The second `h_in` below is that recovered name. Recovering it is safe
+        # only together with the candidate rule's named-constant clause — measured on every
+        # `*_model.f90` in the tree, the pair moves the violation count down by two with no
+        # `problem/` file changing verdict. (The absolute pair depends on how `dep_spec_ids` is
+        # derived for that sweep; TODO.md records the harness. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
-            self.assertEqual(vps._split_fortran_names(raw), ["h_in", "tmp"], raw)
+            self.assertEqual(vps._split_fortran_names(raw), ["h_in", "h_in", "tmp"], raw)
 
     def test_paren_in_a_call_string_literal_does_not_suppress_the_violation(self) -> None:
         # `_iter_fortran_calls` used to hand-roll a quote-BLIND balanced-paren scan, the other
@@ -11422,6 +12538,160 @@ class FortranMakefileObjdirPrefixTest(unittest.TestCase):
         self.assertEqual(
             [], violations, f"in-source bare Makefile must stay valid; got: {violations}"
         )
+
+    def _run_without_makefile(self, sources: dict[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            src_dir = Path(tmp)
+            for name, text in sources.items():
+                (src_dir / name).write_text(text, encoding="utf-8")
+            violations: list[str] = []
+            _validate_fortran_makefile_src_dir(src_dir, violations)
+            return violations
+
+    def test_a_labelled_use_statement_still_requires_a_makefile(self) -> None:
+        # The same fail-open as the wrapped `use` below, reached by a different spelling: a
+        # statement LABEL. `100 use dep_model` compiles clean under `-std=f2008`, and anchoring
+        # `^\s*use` at the start of the joined line missed it, emptying `required_object_deps` and
+        # switching the module-dependency build contract off for the directory. The label is now
+        # stripped in the shared view, so every reader of it is covered at once rather than this
+        # one being patched.
+        violations = self._run_without_makefile(
+            {
+                "swm_model.f90": self._MODEL,
+                "swm_runner.f90": (
+                    "program swm_runner\n"
+                    "100 use swm_model\n"
+                    "implicit none\n"
+                    "logical :: flag\n"
+                    "call solve(flag)\n"
+                    "write(*,*) flag\n"
+                    "end program swm_runner\n"
+                ),
+            }
+        )
+        self.assertTrue(
+            any("missing for fortran module dependency build" in v for v in violations),
+            f"a labelled `use` must still create the dependency edge; got: {violations}",
+        )
+
+    def test_a_wrapped_use_statement_still_requires_a_makefile(self) -> None:
+        # The fail-open this closes: `_fortran_source_module_deps` anchored `^\s*use` at a
+        # PHYSICAL line start, so a continuation between `use` and the module name matched
+        # nothing. With no edges, `required_object_deps` is empty and
+        # `_validate_fortran_makefile_src_dir` returns before requiring a Makefile at all — one
+        # wrapped `use` switched the module-dependency build contract off for the directory.
+        violations = self._run_without_makefile(
+            {
+                "swm_model.f90": self._MODEL,
+                "swm_runner.f90": (
+                    "program swm_runner\n"
+                    "use &\n"
+                    "  swm_model\n"
+                    "implicit none\n"
+                    "logical :: flag\n"
+                    "call solve(flag)\n"
+                    "write(*,*) flag\n"
+                    "end program swm_runner\n"
+                ),
+            }
+        )
+        self.assertTrue(
+            any("missing for fortran module dependency build" in v for v in violations),
+            f"a wrapped `use` must still create the dependency edge; got: {violations}",
+        )
+
+    def test_a_wrapped_module_statement_is_registered_as_the_provider(self) -> None:
+        # The other half of the same fail-open, one layer earlier: an unregistered provider
+        # deletes every edge INTO it, so the consumer's perfectly ordinary `use swm_model`
+        # resolves to nothing and the directory again escapes the Makefile requirement.
+        violations = self._run_without_makefile(
+            {
+                "swm_model.f90": (
+                    "module &\n"
+                    "  swm_model\n"
+                    "implicit none\n"
+                    "contains\n"
+                    "subroutine solve(flag)\n"
+                    "  logical, intent(out) :: flag\n"
+                    "  flag = .true.\n"
+                    "end subroutine solve\n"
+                    "end module swm_model\n"
+                ),
+                "swm_runner.f90": self._RUNNER,
+            }
+        )
+        self.assertTrue(
+            any("missing for fortran module dependency build" in v for v in violations),
+            f"a wrapped `module` must still register the provider; got: {violations}",
+        )
+
+
+class WrappedLiteralMetricAssignmentTest(unittest.TestCase):
+    """The literal-metric floor was escapable by wrapping the assignments.
+
+    `metrics(1) = &` / `1.0` reached the scan's `([^\\n!]+)` right-hand side as the bare `&`,
+    which carries no digit and so never counted as literal-like. The count then fell under the
+    floor of six and a model that hardcodes every metric passed `Generate.static`.
+
+    The scan is DUPLICATED — `_validate_generate_outputs` and
+    `_validate_generate_outputs_for_generation` carry near-identical copies — so both are asserted
+    here. Fixing one and missing its twin is a repeat failure mode in this repository.
+    """
+
+    _MODEL = (
+        "module mymodel_model\n"
+        "implicit none\n"
+        "contains\n"
+        "subroutine emit(metrics)\n"
+        "  real, intent(out) :: metrics(6)\n"
+        "  metrics(1) = &\n    1.0\n"
+        "  metrics(2) = &\n    2.0\n"
+        "  metrics(3) = &\n    3.0\n"
+        "  metrics(4) = &\n    4.0\n"
+        "  metrics(5) = &\n    5.0\n"
+        "  metrics(6) = &\n    6.0\n"
+        "end subroutine emit\n"
+        "end module mymodel_model\n"
+    )
+
+    def test_both_copies_of_the_scan_count_a_wrapped_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            pipeline_dir = repo_root / "pipeline"
+            source_id = "src_001"
+            src_dir = pipeline_dir / "source" / source_id / "src"
+            src_dir.mkdir(parents=True)
+            (src_dir / "mymodel_model.f90").write_text(self._MODEL, encoding="utf-8")
+            execution = NodeExecution(
+                node_key="problem/mymodel@0.1.0",
+                node_dir=repo_root / "node",
+                exec_dir=repo_root / "exec",
+                pipeline_dir=pipeline_dir,
+            )
+
+            direct: list[str] = []
+            vps._validate_generate_outputs(
+                repo_root=repo_root,
+                execution=execution,
+                src_dir=src_dir,
+                violations=direct,
+            )
+            for_generation: list[str] = []
+            vps._validate_generate_outputs_for_generation(
+                repo_root=repo_root,
+                execution=execution,
+                source_id=source_id,
+                violations=for_generation,
+            )
+
+        for label, violations in (
+            ("_validate_generate_outputs", direct),
+            ("_validate_generate_outputs_for_generation", for_generation),
+        ):
+            self.assertTrue(
+                any("many literal metric assignments detected (6/6)" in v for v in violations),
+                f"{label} must count wrapped literal metric assignments; got: {violations}",
+            )
 
 
 class DeterministicLaunchPromptMarkerTest(unittest.TestCase):
