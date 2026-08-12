@@ -767,9 +767,14 @@ def _joined_masked_fortran_view(lowered: str) -> str:
       are already blanked. Masking after the join is what makes every offset in the result
       comparable, because the mask is length- and offset-preserving with respect to ITS input.
 
-    The result is a fixed point (``view(view(x)) == view(x)``), so a consumer that is handed an
-    already-joined fragment may re-apply it without penalty — which is what keeps
-    `_split_fortran_names` total with respect to both its raw and its joined callers.
+    Each emitted statement is right-stripped and empty statements are dropped. That is not
+    cosmetic: without it the result is NOT a fixed point, and the fixed point is what lets a
+    consumer re-apply the view to a fragment of a view — which is what keeps `_split_fortran_names`
+    total with respect to both its raw and its joined callers. Four legal inputs proved it, and
+    each has a test: a trailing `;` (`x = 1;`) emits an empty statement a second pass would drop; a
+    lone-`&` line, and text ending mid-continuation, both leave the blank that preceded the
+    consumed marker; and an unterminated literal leaves the blanks the mask wrote over its
+    contents. The claim is now true and pinned rather than asserted.
 
     INVARIANT, and the price of this view: offsets into the result no longer index the ORIGINAL
     file. Comment-only and blank lines are gone and each `&` has collapsed. Offsets remain
@@ -778,16 +783,21 @@ def _joined_masked_fortran_view(lowered: str) -> str:
     here reports `{model_file}: subroutine {name}` with no line number. Any future rule that wants
     to REPORT a line must take it from `fortran_lines.fortran_logical_lines`' `start_lineno`, not
     from an offset into this string."""
-    return fortran_lines.mask_code_lookalikes(
+    masked = fortran_lines.mask_code_lookalikes(
         "\n".join(
             statement
             for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
             for statement in fortran_lines.split_fortran_statements(line)
         )
     )
+    return "\n".join(
+        stripped for stripped in (line.rstrip() for line in masked.split("\n")) if stripped
+    )
 
 
-_FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\((.*)\)$")
+# Only up to the OPENING paren: the group is delimited by `_extract_balanced_parens`, not by a
+# greedy `(.*)\)$` — see `_fortran_parameter_names`.
+_FORTRAN_PARAMETER_STATEMENT_PATTERN = re.compile(r"^parameter\s*\(")
 
 
 def _fortran_parameter_names(joined_masked: str) -> set[str]:
@@ -805,8 +815,13 @@ def _fortran_parameter_names(joined_masked: str) -> set[str]:
       initializer, and either would otherwise mint a constant that does not exist. The right side
       is split the same way and each item contributes its leading identifier, which drops array
       specs and initializer text.
-    * the statement form, `parameter (nlev = 4, mm = 2)` — each item contributes the identifier
-      before its `=`.
+    * the statement form, `parameter (nlev = 4, mm = 2)` — the parenthesis group is matched by
+      `_extract_balanced_parens` and NOTHING may follow its close, and every item must carry a
+      top-level `=`. A greedy `^parameter\\s*\\((.*)\\)$` was not enough: `parameter` is not a
+      reserved word, so `parameter(scratch) = u_in(1)` — an ordinary assignment into an array a
+      leaf happened to name `parameter`, which `gfortran -std=f2008` accepts — matched with the
+      group `scratch) = u_in(1`, and `scratch` was minted as a constant. That exempted a real
+      discarded dependency output. Fail-open, and reachable by naming one array.
 
     The unparenthesized F77 form (`PARAMETER x = 1`) is deliberately NOT recognised: it is a
     `-std=legacy` gfortran extension, and `Generate.gate`'s syntax check runs `-std=f2008`, so no
@@ -836,11 +851,82 @@ def _fortran_parameter_names(joined_masked: str) -> set[str]:
         statement_match = _FORTRAN_PARAMETER_STATEMENT_PATTERN.match(statement)
         if statement_match is None:
             continue
-        for item in fortran_lines.split_top_level_commas(statement_match.group(1)):
+        open_index = statement_match.end() - 1
+        inner = _extract_balanced_parens(statement, open_index)
+        # Nothing may follow the closing paren, and every item must be an `=` initialization.
+        # Both tests are needed: `parameter(scratch) = u_in(1)` is an assignment, not a
+        # declaration, and only the first test rejects it on its own.
+        if statement[open_index + len(inner) + 2 :].strip():
+            continue
+        items = fortran_lines.split_top_level_commas(inner)
+        if not items or not all("=" in item for item in items):
+            continue
+        for item in items:
             match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
             if match is not None:
                 names.add(match.group(0))
     return names
+
+
+# A module's SPECIFICATION PART ends at its `contains`; a `contains` inside a derived-type
+# definition or an interface block is a different construct and does not.
+_FORTRAN_MODULE_SCOPE_END = re.compile(r"^end\s*(?:module|submodule)\b")
+_FORTRAN_CONTAINS = re.compile(r"^contains\b")
+_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()")
+_FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
+_FORTRAN_INTERFACE_OPEN = re.compile(r"^(?:abstract\s+)?interface\b")
+_FORTRAN_INTERFACE_END = re.compile(r"^end\s*interface\b")
+
+
+def _fortran_module_specification_text(joined_masked: str) -> str:
+    """The statements of ``joined_masked`` that are in a module's SPECIFICATION PART.
+
+    That is: outside every procedure body, outside every derived-type definition, and outside
+    every interface block. It is what "module scope" has to mean for
+    `_validate_problem_model_dependency_dataflow`'s named-constant exemption, and deriving it by
+    BLANKING `_PROBLEM_SUBROUTINE_ENVELOPE` matches — the first shape of this code — was wrong in
+    two ways that `gfortran -fsyntax-only -std=f2008` accepts and that no test caught:
+
+    * that envelope matches `subroutine name(...)` only, so every module-level `function` body
+      counted as specification part. A `parameter` declared inside a function then exempted a live
+      variable of the same name in another procedure — the exact fail-open the exemption's own
+      isolation test was written to prevent, defeated by writing the other procedure as a
+      function;
+    * the envelope also requires a dummy-argument list, so a paren-less `subroutine noargs` leaked
+      the same way.
+
+    This reads the structure instead of the shape: everything up to the module's own `contains`.
+    The failure direction is deliberately UNDER-collection — a segment this cannot attribute is
+    dropped, which costs a false violation (fail-closed, a regenerate) rather than an exemption
+    (fail-open). Concretely, a second module in the same file after an unterminated first one, or
+    a file with no `contains` at all, contributes nothing."""
+    kept: list[str] = []
+    in_type = False
+    in_interface = False
+    past_contains = False
+    for line in joined_masked.split("\n"):
+        statement = line.strip().lower()
+        if _FORTRAN_MODULE_SCOPE_END.match(statement):
+            in_type = False
+            in_interface = False
+            past_contains = False
+            continue
+        if _FORTRAN_TYPE_DEFINITION_END.match(statement):
+            in_type = False
+            continue
+        if _FORTRAN_INTERFACE_END.match(statement):
+            in_interface = False
+            continue
+        if _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
+            in_type = True
+        elif _FORTRAN_INTERFACE_OPEN.match(statement):
+            in_interface = True
+        elif not in_type and not in_interface and _FORTRAN_CONTAINS.match(statement):
+            past_contains = True
+            continue
+        if not past_contains and not in_type and not in_interface:
+            kept.append(line)
+    return "\n".join(kept)
 
 
 def _split_fortran_names(raw: str) -> list[str]:
@@ -1072,16 +1158,13 @@ def _validate_problem_model_dependency_dataflow(
     subroutine_pattern = _PROBLEM_SUBROUTINE_ENVELOPE
     intent_out_pattern = re.compile(r"intent\s*\(\s*out\s*\)\s*::\s*([^\n!]+)")
 
-    # Named constants declared OUTSIDE any subroutine — the specification part of the module. The
-    # procedure bodies are blanked rather than removed so this stays a view of the same text, on
-    # the same discipline as the mask. A body's own constants are added per subroutine below;
-    # collecting over the whole file instead would let a constant in one procedure exempt a live
-    # variable of the same name in another.
-    module_scope = list(lowered)
-    for sub_match in subroutine_pattern.finditer(lowered):
-        for index in range(sub_match.start(), sub_match.end()):
-            module_scope[index] = " "
-    module_parameter_names = _fortran_parameter_names("".join(module_scope))
+    # Named constants of the module SPECIFICATION PART. Deriving that by blanking the subroutine
+    # envelopes read the shape rather than the structure and leaked every `function` body and
+    # every paren-less `subroutine` into it; `_fortran_module_specification_text` carries the
+    # reproductions. A subroutine's own constants are added per subroutine below.
+    module_parameter_names = _fortran_parameter_names(
+        _fortran_module_specification_text(lowered)
+    )
 
     for sub_match in subroutine_pattern.finditer(lowered):
         sub_name = sub_match.group(1)
@@ -1648,21 +1731,32 @@ def _parse_makefile_rules_objdir_aware(
     return target_has_objdir, prereqs_diraware
 
 
-def _local_fortran_module_map(src_files: list[Path]) -> dict[str, str]:
-    """Which source stem provides each locally-defined module.
+def _fortran_source_views(src_files: list[Path]) -> dict[Path, str]:
+    """Each source read once and reduced to its `_joined_masked_fortran_view`.
 
-    Read through `_joined_masked_fortran_view`, like its consumer below, because a `module &` /
-    `name` wrap would otherwise leave the module unregistered — and an unregistered provider
-    silently deletes every dependency edge into it. Masking is not what closes that (the pattern
-    is `^`-anchored and comments are already gone by then); the reason to take the shared view
-    rather than call `fortran_logical_lines` here is that this defect class IS "N slightly
-    different Fortran views", and a fourth hand-rolled one is how it comes back."""
-    module_map: dict[str, str] = {}
-    pattern = re.compile(r"^\s*module\s+(?!procedure\b)([a-z_][a-z0-9_]*)\b", re.MULTILINE)
-    for src_file in src_files:
-        text = _joined_masked_fortran_view(
+    The two readers below both need the same view of the same files, and the view is the
+    expensive part — building it twice per file made a three-source directory 26x slower than
+    reading raw text. Read once, share."""
+    return {
+        src_file: _joined_masked_fortran_view(
             src_file.read_text(encoding="utf-8", errors="ignore").lower()
         )
+        for src_file in src_files
+    }
+
+
+def _local_fortran_module_map(src_views: dict[Path, str]) -> dict[str, str]:
+    """Which source stem provides each locally-defined module.
+
+    Reads `_joined_masked_fortran_view`s, like its consumer below, because a `module &` / `name`
+    wrap would otherwise leave the module unregistered — and an unregistered provider silently
+    deletes every dependency edge into it. Masking is not what closes that (the pattern is
+    `^`-anchored and comments are already gone by then); the reason to take the shared view rather
+    than call `fortran_logical_lines` here is that this defect class IS "N slightly different
+    Fortran views", and a fourth hand-rolled one is how it comes back."""
+    module_map: dict[str, str] = {}
+    pattern = re.compile(r"^\s*module\s+(?!procedure\b)([a-z_][a-z0-9_]*)\b", re.MULTILINE)
+    for src_file, text in src_views.items():
         stem = src_file.stem.lower()
         for match in pattern.finditer(text):
             module_name = match.group(1)
@@ -1679,16 +1773,14 @@ def _fortran_source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
     `required_object_deps` — and `_validate_fortran_makefile_src_dir` returns before it can
     require a Makefile at all when that mapping is empty. One wrapped `use` therefore switched
     off the module-dependency build contract for the whole directory. Fail-open."""
-    module_map = _local_fortran_module_map(src_files)
+    src_views = _fortran_source_views(src_files)
+    module_map = _local_fortran_module_map(src_views)
     use_pattern = re.compile(
         r"^\s*use(?:\s*,\s*(?:intrinsic|non_intrinsic)\s*::|\s*::|\s+)?\s*([a-z_][a-z0-9_]*)\b",
         re.MULTILINE,
     )
     deps_by_stem: dict[str, set[str]] = {}
-    for src_file in src_files:
-        text = _joined_masked_fortran_view(
-            src_file.read_text(encoding="utf-8", errors="ignore").lower()
-        )
+    for src_file, text in src_views.items():
         stem = src_file.stem.lower()
         deps: set[str] = set()
         for match in use_pattern.finditer(text):

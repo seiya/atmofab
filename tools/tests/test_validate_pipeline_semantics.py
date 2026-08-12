@@ -5685,6 +5685,139 @@ end module shallow_water2d_model
             self._dataflow_violations(source),
         )
 
+    _SCOPE_LEAK_TEMPLATE = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+{leaking_procedure}subroutine advance(nx, u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  integer :: ncomp
+  call dep__advance( &
+    ncomp, nx, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+
+    def test_no_procedure_shape_can_leak_a_constant_into_module_scope(self) -> None:
+        # Deriving "module scope" by blanking `_PROBLEM_SUBROUTINE_ENVELOPE` matches read the
+        # SHAPE of a procedure instead of the structure, and two shapes escaped it — both accepted
+        # by `gfortran -fsyntax-only -std=f2008`. In each, `ncomp` is a constant of the OTHER
+        # procedure and a live discarded output in `advance`; the leak exempted it and the gate
+        # went silent. That is the exact fail-open the exemption's isolation rule exists to
+        # prevent, so each shape is pinned by name rather than by one combined case.
+        shapes = {
+            "module function": (
+                "real function scale(z)\n"
+                "  real, intent(in) :: z\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  scale = z * real(ncomp)\n"
+                "end function scale\n"
+            ),
+            "paren-less subroutine": (
+                "subroutine noargs\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  print *, ncomp\n"
+                "end subroutine noargs\n"
+            ),
+            "ordinary subroutine": (
+                "subroutine helper(out_val)\n"
+                "  real, intent(out) :: out_val\n"
+                "  integer, parameter :: ncomp = 3\n"
+                "  out_val = real(ncomp)\n"
+                "end subroutine helper\n"
+            ),
+        }
+        for label, procedure in shapes.items():
+            source = self._SCOPE_LEAK_TEMPLATE.format(leaking_procedure=procedure)
+            self.assertTrue(
+                any(
+                    "subroutine advance does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"a constant inside a {label} must not reach module scope; "
+                f"got: {self._dataflow_violations(source)}",
+            )
+
+    def test_a_constant_declared_in_the_calling_subroutine_still_exempts(self) -> None:
+        # The other half of the scope union, which no test watched: module specification part OR
+        # the subroutine's OWN declarations. Deleting the per-body half leaves the whole suite
+        # green while making this source a false violation, because the module-scope reader
+        # deliberately stops at `contains` and never sees a body-local constant.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine advance(nx, u_np1, guard_pass)
+  integer, intent(in) :: nx
+  real, intent(out) :: u_np1(nx)
+  logical, intent(out) :: guard_pass
+  integer, parameter :: ncomp = 3
+  call dep__advance( &
+    ncomp, nx, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_an_array_named_parameter_does_not_mint_a_constant(self) -> None:
+        # `parameter` is not a reserved word. A greedy `^parameter\s*\((.*)\)$` matched the
+        # ASSIGNMENT `parameter(scratch) = u_in(1)` with the group `scratch) = u_in(1`, minting
+        # `scratch` as a named constant and exempting a real discarded dependency output. Naming
+        # one array was the whole exploit; `gfortran -fsyntax-only -std=f2008` accepts it.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(u_in, u_out)
+  real, intent(in) :: u_in(3)
+  real, intent(out) :: u_out(3)
+  integer :: scratch
+  real :: parameter(3)
+  call dep__flux(u_in, scratch)
+  parameter(scratch) = u_in(1)
+  u_out = u_in
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
+
+    def test_the_dataflow_gates_own_view_seeds_the_closure(self) -> None:
+        # `test_wrapped_dependency_call_actual_is_flagged_as_a_discarded_output` pins the
+        # end-to-end recovery, but it survives reverting EITHER the gate's view or
+        # `_split_fortran_names`' — only both together break it, so neither hunk is isolated.
+        #
+        # This one isolates the GATE's. Everything is on one physical line except the
+        # `intent(out)` entity list, so `_split_fortran_names` is irrelevant: only the gate's own
+        # view can put `extra` into `out_vars`. And `extra` is the seed that reaches `tmp`
+        # (`extra = tmp`), so losing it does not merely shrink a message — it turns a correct
+        # silence into a FALSE violation against a model that consumes the dependency result.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(scale, flag, extra)
+  real, intent(in) :: scale
+  logical, intent(out) :: flag
+  real, intent(out) :: &
+    extra
+  real :: h_in, tmp
+  h_in = scale
+  call dep__op(h_in, tmp)
+  flag = scale > 0.0
+  extra = tmp
+end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
     def test_a_semicolon_packed_statement_cannot_manufacture_a_producer(self) -> None:
         # The hazard the JOIN introduces, closed by splitting statements inside the view. On one
         # physical line `flag = .true.; call dep__op(h_in, tmp)`, `_assignment_records`' RHS
