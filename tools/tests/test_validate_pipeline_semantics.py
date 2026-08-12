@@ -5602,10 +5602,16 @@ end module shallow_water2d_model
         #
         # The constant is declared OUTSIDE the subroutine, which is why the collection cannot read
         # the body alone. All three declaration forms are exercised.
+        # The F77 statement form is deliberately absent. Under the `implicit none` these models
+        # must declare, `parameter (ncomp = 3)` always follows a type declaration of `ncomp`,
+        # which disqualifies the name — so that spelling never earns an exemption. Pairing the two
+        # statements was tried and reverted: a file-wide rule cannot make the pairing
+        # per-declaration, so it re-exempted any name that is a constant in one procedure and a
+        # variable in another. See `test_a_paired_parameter_statement_is_not_exempted`.
         for declaration in (
             "  integer, parameter, public :: ncomp = 3",
-            "  integer :: ncomp\n  parameter (ncomp = 3)",
             "  integer, parameter :: sizes(2) = [3, 4], ncomp = 3",
+            "  integer, parameter :: &\n    ncomp = 3",
         ):
             source = f"""module shallow_water2d_model
 use dep_model
@@ -5624,6 +5630,34 @@ end subroutine advance
 end module shallow_water2d_model
 """
             self.assertEqual(self._dataflow_violations(source), [], declaration)
+
+    def test_a_paired_parameter_statement_is_not_exempted(self) -> None:
+        # `integer :: ncomp` / `parameter (ncomp = 3)` is one declaration in two statements, and
+        # the type-declaration half disqualifies the name. That is a FALSE violation, asserted
+        # here on purpose: the alternative — cancelling the disqualification when a `parameter`
+        # statement names the same identifier — cannot be made per-declaration in a file-wide
+        # rule, and globally it re-exempts a name that is a constant in one procedure and an
+        # ordinary variable in another. Nothing is ever removed from the disqualifying set.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+integer :: ncomp
+parameter (ncomp = 3)
+contains
+subroutine advance(u_np1, guard_pass)
+  real, intent(out) :: u_np1
+  logical, intent(out) :: guard_pass
+  call dep__advance(ncomp, u_np1, guard_pass)
+end subroutine advance
+end module shallow_water2d_model
+"""
+        self.assertTrue(
+            any(
+                "does not propagate dependency operation outputs" in v
+                for v in self._dataflow_violations(source)
+            ),
+            self._dataflow_violations(source),
+        )
 
     def test_the_constant_exclusion_does_not_hide_a_variable_of_the_same_shape(self) -> None:
         # The mirror of the test above, and the guard against widening the clause later: the ONLY

@@ -882,6 +882,16 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
     to the SECOND set, not the first: such a constant is not visible to the statements around the
     construct, and treating it as if it were exempted a name at a call that preceded it.
 
+    Nothing is ever REMOVED from the second set, and that monotonicity is load-bearing rather than
+    tidy. It was briefly broken to pair `integer :: nlev` with a following `parameter (nlev = 4)`
+    — one declaration in two statements — and the pairing had no way to be per-declaration in a
+    file-wide rule, so it globally re-exempted any name that was a constant in one procedure and
+    an ordinary variable in another. That is the very shape this rule exists to refuse, and it
+    reappeared within one commit of the redesign. The consequence of not pairing them is that the
+    F77 statement form never yields an exemption at all — under the `implicit none` these models
+    must declare, `parameter (x = 1)` always follows a type declaration of `x`, which disqualifies
+    it. A false violation, and the direction that is allowed to be wrong.
+
     ``enumerator`` counts as a constant for the same reason ``parameter`` does: an enumerator is
     not definable, so it can never be an output argument. Both of its spellings are read — the
     entity list of an ``enumerator`` statement may omit the ``::``.
@@ -893,10 +903,6 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
     safe where a statement really does shadow — that is the whole content of the second set."""
     constants: set[str] = set()
     others: set[str] = set()
-    # `integer :: nlev` followed by `parameter (nlev = 4)` is one declaration in two statements:
-    # the type declaration names the entity, the PARAMETER statement makes it constant. Without
-    # this the first half disqualifies what the second half establishes.
-    parameter_statement_names: set[str] = set()
     construct_depth = 0
     for line in joined_masked.split("\n"):
         statement = _fortran_statement_body(line)
@@ -1008,8 +1014,7 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
             match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
             if match is not None:
                 constants.add(match.group(0))
-                parameter_statement_names.add(match.group(0))
-    return constants, others - parameter_statement_names
+    return constants, others
 
 
 
