@@ -2330,13 +2330,33 @@ shell_tool                       stable             true
             forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                 _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+        # DIRECTORY-form entries (trailing slash) take a SEPARATE branch of the contract, which
+        # grants the whole subtree when it returns True — that is how `generate` authorizes its
+        # source dir. Compile has no directory deliverable, and a probe list made only of file
+        # paths cannot see that branch at all: review demonstrated a one-line grant of `<ir_ref>/`
+        # to compile that left every assertion above green while handing the leaf the entire IR
+        # run directory. Probe the branch, not just the names it would admit.
+        for extra in ("", "views/", "src/"):
+            forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
+            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
 
     def test_phase_contract_compile_static_is_the_meta_alone(self) -> None:
-        """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`,
-        which is what keeps a compile.generate / compile.verify leaf from listing a verdict as
-        its own output. Review found the widening of that `==` to a `startswith` on the IR root
-        was invisible to the whole suite: nothing pinned this branch. It is pinned here, next to
-        the generate contract, because the two are the same rule read at two substeps."""
+        """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`.
+        Review found that widening that `==` to a `startswith` on the IR root was invisible to
+        the whole suite — nothing pinned this branch — so a deterministic substep could have
+        declared write authority over the IR it is supposed to validate read-only. Pinned here
+        next to the generate contract because the two are one rule read at two substeps.
+
+        (Keeping a compile.generate / compile.verify leaf from listing the verdict as ITS output
+        is a different mechanism — `compile_required` membership — already pinned by
+        `test_compile_non_static_launch_rejects_compile_static_meta_json`. An earlier draft of
+        this docstring credited that job to this branch.)
+
+        Unlike the generate contract, this payload is hand-written: `compile.static` has no
+        captured request under tools/tests/data/conductor_launch_requests/, so a conductor-side
+        widening of the static declaration is NOT caught here the way the generate side is by
+        test_reproduces_every_real_substep_payload."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
         ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
@@ -2348,8 +2368,10 @@ shell_tool                       stable             true
                 request_payload=dict(base, allowed_output_paths=meta), write_roots=[]),
             meta)
         # Not even the IR the gate reads, and not a sibling meta: static writes its verdict only.
+        # The trailing-slash entries probe the directory branch, which no file-shaped probe
+        # reaches — see the note in the generate test above.
         for extra in ("spec.ir.yaml", "ir_meta.json", "compile_static_meta.json.bak",
-                      "zz9_unlisted_artifact.xyz"):
+                      "zz9_unlisted_artifact.xyz", "", "views/"):
             forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
             with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
                 _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])

@@ -6625,8 +6625,9 @@ def _allowed_output_paths_for_launch(
             # rejected, not silently accepted via the compile_required fall-through).
             # NOTE: the dependency-graph sidecar <ir_ref>/dependency_graph.json is
             # conductor-authored (workflow_conductor._write_dependency_graph) and NOT a leaf
-            # deliverable — it is absent from compile_required (the exact-set
-            # {spec.ir.yaml, ir_meta.json}), so a compile.generate /
+            # deliverable — it is absent from compile_required ({spec.ir.yaml,
+            # ir_meta.json}; a membership allowlist, NOT a required set — an
+            # under-declaring request is accepted, see TODO.md), so a compile.generate /
             # compile.verify leaf declaring it as an output is rejected here.
             # The retired view-only companion `algorithm.summary.md` is likewise absent:
             # the conductor's compile.generate allowed_output_paths never listed it, so a
