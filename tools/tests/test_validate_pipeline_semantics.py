@@ -5599,31 +5599,38 @@ end module shallow_water2d_model
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(self._dataflow_violations(source)), f"{opener} / {closer}")
 
-    def test_a_type_bound_contains_does_not_truncate_a_body(self) -> None:
-        # BEHAVIOURAL REGRESSION, not a mechanism pin — read the group note above. A derived type's
-        # own `contains` introduces type-bound procedures, and cutting a body there would drop
-        # everything after the type definition (fail-open). An earlier draft tracked type
-        # definitions to prevent that and the mutation check found NO test could kill the tracking:
-        # the cut is already conditioned on the innermost frame being a subroutine, and F2008 C464
-        # keeps a type-bound `contains` out of a subroutine — `gfortran -fsyntax-only -std=f2008`
-        # rejects the shape, with the identical type accepted at module level. The tracking was
-        # removed rather than left as a defence nothing can exercise; this keeps the shape covered.
-        source = """module m
+    def test_a_type_bound_contains_inside_a_subroutine_does_not_truncate_the_body(self) -> None:
+        # A derived type's own `contains` introduces TYPE-BOUND procedures. Cutting the body there
+        # drops everything after the type definition — here the `call` and the assignment — and all
+        # three gates go silent. Fail-open.
+        #
+        # The type is INSIDE the subroutine, and that placement is the whole point: an earlier
+        # commit on this branch removed the tracking that prevents the cut, arguing the placement
+        # was impossible, and shipped this exact silence. It is possible. `gfortran -fsyntax-only
+        # -std=f2008` rejects a binding to a HOST-associated procedure (the only probe that
+        # argument rested on) and ACCEPTS a `nopass` binding to a USE-associated one. A fixture
+        # with the type at MODULE level — which is what stood here — cannot notice any of this:
+        # the cut needs a subroutine frame innermost, so that shape passes however the walk is
+        # broken.
+        source = """module shallow_water2d_model
 implicit none
-type :: holder
-  real :: v
-contains
-  procedure :: show
-end type holder
 contains
 subroutine solve(x, y)
+  use show_mod, only: show
   real, intent(in) :: x
   real, intent(out) :: y
   real :: scratch
+  type :: holder
+    real :: v
+  contains
+    procedure, nopass :: show
+  end type holder
+  type(holder) :: h
+  h%v = x
   call dep__apply(x, scratch)
   y = x
 end subroutine solve
-end module m
+end module shallow_water2d_model
 """
         self.assertIn("does not propagate dependency operation outputs",
                       " ".join(self._dataflow_violations(source)))

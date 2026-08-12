@@ -1211,14 +1211,21 @@ _FORTRAN_MODULE_PROCEDURE_OPEN = re.compile(r"^module\s+procedure\s+[a-z_][a-z0-
 _FORTRAN_PROGRAM_UNIT_OPEN = re.compile(
     r"^(?:(module|program|block\s*data)\b(?!\s*[=(%])|(submodule)\s*\()"
 )
-# A derived type's own `contains` introduces type-bound procedures rather than contained ones, so
-# an earlier draft tracked type definitions to keep that `contains` from cutting a body. It is not
-# tracked, because the cut is already conditioned on the innermost frame being a SUBROUTINE, and a
-# type definition can only be inside one if the type is local to it — which F2008 C464 forbids and
-# `gfortran -fsyntax-only -std=f2008` rejects (executed: "`show` must be a module procedure or an
-# external procedure with an explicit interface", with the identical type accepted at module
-# level). A type at module level meets the `contains` rule with a module frame innermost, where
-# the recorded position is never read.
+# A derived type's own `contains` introduces TYPE-BOUND procedures, not contained ones, so it must
+# not cut a body. This tracking was removed once, on the argument that a type definition cannot be
+# inside a subroutine — and that argument was wrong in the way this repository keeps being wrong:
+# it generalised from ONE probe. `gfortran -fsyntax-only -std=f2008` does reject a type-bound
+# binding to a HOST-associated procedure, which is what that probe used; it ACCEPTS the same type,
+# inside a subroutine, when the binding is `nopass` to a USE-associated module procedure
+# (executed). With the tracking gone, the type's `contains` was seen with the subroutine frame
+# innermost, the body was cut at the type definition, and all three gates went silent on a
+# discarded dependency result — a fail-open regression against origin/main, found by review.
+#
+# Detection is deliberately PERMISSIVE: `type(t)` and `type is` are excluded, but a variable named
+# `type` is not, because a phantom type open only SUPPRESSES a cut, which lengthens a body instead
+# of truncating it.
+_FORTRAN_TYPE_DEFINITION_OPEN = re.compile(r"^type\b(?!\s*\()(?!\s+is\b)")
+_FORTRAN_TYPE_DEFINITION_END = re.compile(r"^end\s*type\b")
 # Which open frames an END statement of a given kind may close. A separate module subprogram is
 # the only reason these are sets rather than equality: F2008 lets `module procedure solve` end
 # with `end procedure`, `end subroutine` or `end function`. Nothing else is compatible — an
@@ -1332,6 +1339,7 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     # `blanked` is complete — a frame closes before the text it does not cover has been read.
     closed: list[tuple[int, int, str, str]] = []
     in_interface = False
+    type_depth = 0
 
     def close(frame: _FortranUnitFrame, body_end: int) -> None:
         if frame.kind != "subroutine":
@@ -1373,9 +1381,13 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
                 close(frames.pop(), line_start)
             continue
 
+        if _FORTRAN_TYPE_DEFINITION_END.match(statement):
+            type_depth = max(type_depth - 1, 0)
+            continue
+
         if statement.startswith("end"):
             # Any other construct end (`end do` / `enddo` / `end if` / `end select` / `end block`
-            # / `end associate` / `end type` / …). None of them closes a scoping unit.
+            # / `end associate` / …). None of them closes a scoping unit.
             continue
 
         if _FORTRAN_INTERFACE_SPAN_OPEN.match(statement):
@@ -1383,9 +1395,14 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
             blanked[-1] = " " * len(line)
             continue
 
+        if _FORTRAN_TYPE_DEFINITION_OPEN.match(statement):
+            type_depth += 1
+            continue
+
         if _FORTRAN_CONTAINS_STATEMENT.match(statement):
-            if frames and frames[-1].kind == "subroutine" and frames[-1].contains_at is None:
-                frames[-1].contains_at = line_start
+            if type_depth == 0 and frames and frames[-1].kind == "subroutine":
+                if frames[-1].contains_at is None:
+                    frames[-1].contains_at = line_start
             continue
 
         header = _FORTRAN_SUBROUTINE_HEADER.match(statement)
