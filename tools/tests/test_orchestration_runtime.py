@@ -2280,6 +2280,30 @@ shell_tool                       stable             true
         self.assertEqual(
             _allowed_output_paths_for_launch(request_payload=judge_ok, write_roots=[]), [sem])
 
+    def test_phase_contract_compile_generate_is_exactly_ir_and_meta(self) -> None:
+        """Compile.generate's write contract is exactly {spec.ir.yaml, ir_meta.json} — the same
+        two files `workflow_conductor` puts in its `allowed_output_paths`. The retired view-only
+        `algorithm.summary.md` (which the Compile.generate SKILL used to instruct the leaf to
+        author) must be REJECTED here: while this set still listed it, record-launch accepted a
+        declaration the conductor never makes and the file-tool hook blocks, so a leaf following
+        the SKILL took an `unauthorized_write_violation` instead of a contract error. Drives the
+        REAL _allowed_output_paths_for_launch, not the _FakeConductor stub."""
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
+        base = {"agent_role": "substep", "step": "compile", "substep": "generate",
+                "ir_ref": ir_ref, "node_key": "component/spec_x@0.1.0"}
+        good = [f"{ir_ref}/spec.ir.yaml", f"{ir_ref}/ir_meta.json"]
+        self.assertEqual(
+            _allowed_output_paths_for_launch(
+                request_payload=dict(base, allowed_output_paths=good), write_roots=[]),
+            good)
+        for extra in ("algorithm.summary.md", "dependency_graph.json",
+                      "compile_static_meta.json"):
+            forged = dict(base, allowed_output_paths=[*good, f"{ir_ref}/{extra}"])
+            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+
     def test_writes_orchestration_artifacts_in_canonical_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -16717,7 +16741,7 @@ class DirectWritePathExtensionPolicyTests(unittest.TestCase):
         allowed_output_paths = [
             "workspace/ir/p/spec.ir.yaml",
             "workspace/ir/p/io_contract.yaml",
-            "workspace/ir/p/algorithm.summary.md",
+            "workspace/ir/p/notes.md",
             "workspace/ir/p/case_summary.yaml",
             "workspace/ir/p/ir_meta.json",
             "workspace/pipelines/p/source/g/src/main.f90",

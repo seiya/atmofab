@@ -190,10 +190,6 @@ This document is the canonical source that aggregates incomplete tasks managed a
   - Completion criterion: one definition of the scan-and-gate sequence remains; the existing tests of both entry points stay green without being duplicated further.
   - Deliberately NOT done with the gate fixes that exposed it: a structural refactor riding on an enforcement change widens the review surface, which is the trade this repository has repeatedly decided against.
 
-- **Reconcile the Compile.generate SKILL's `algorithm.summary.md` step with the write contract** (2026-08-10 audit, high). `skills/workflow-compile-generate/SKILL.md` instructs the leaf to save `algorithm.summary.md` under the IR run directory, but the conductor's `allowed_output_paths` for `compile.generate` (`tools/workflow_conductor.py`) lists only `spec.ir.yaml` and `ir_meta.json` — a compliant leaf triggers a hook block by following the SKILL.
-  - Fix direction: either add `algorithm.summary.md` to the allowed outputs (and the FS-diff expectations) or delete the step from the SKILL; keep SKILL, conductor, and `docs/workflow/phases/phase_01_compile.md` in agreement.
-  - Completion criterion: the SKILL instruction and `allowed_output_paths` agree, covered by a test or doc-sync check.
-
 - **Define a workspace retention policy and restore the real-IR calibration test** (2026-08-10 audit, high). ~14 GB of `workspace_*` run artifacts (95% of the checkout) carry no retention rule, and the loss of a pinned run directory has already converted `test_real_full_fidelity_predicate_set_is_not_degenerate` (`tools/tests/test_validate_pipeline_semantics.py`) into a permanent silent skip — the suite's standing "1 skipped" — losing the real-shape calibration line the test's own docstring declares as its purpose.
   - Fix direction: state a retention rule in `docs/RUNBOOK.md` (what may be deleted when; what must be captured into `tools/tests/data/` first); re-pin the calibration test to a committed capture of a real full-fidelity IR so a fresh clone runs it.
   - Completion criterion: the calibration test runs (not skipped) on a fresh clone, and the retention rule is documented.
