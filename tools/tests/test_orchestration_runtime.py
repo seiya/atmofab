@@ -2280,6 +2280,104 @@ shell_tool                       stable             true
         self.assertEqual(
             _allowed_output_paths_for_launch(request_payload=judge_ok, write_roots=[]), [sem])
 
+    def test_phase_contract_compile_generate_admits_only_conductor_declaration(self) -> None:
+        """record-launch must admit exactly the compile.generate outputs the conductor declares,
+        and nothing else at the IR root. Driven by the CAPTURED PRODUCTION request
+        (tools/tests/data/conductor_launch_requests/compile_generate.request.json) through the
+        REAL `_allowed_output_paths_for_launch`, so the runtime is asserted against what the
+        conductor actually produced rather than against a hand-written list. The fixture is tied
+        back to the live conductor by `test_workflow_conductor.py`'s
+        `test_reproduces_every_real_substep_payload`, which is what fails if the conductor's
+        declaration changes — this test would not notice that on its own.
+
+        WHAT THIS DOES NOT PIN, deliberately: that BOTH files are *required*. The runtime's
+        `compile_required` is a membership allowlist, so a request declaring only one of the two
+        is still accepted (reproduced on origin/main as well — it is not a regression of the
+        commit that added this test). Under-declaring costs the declarer write authority rather
+        than gaining any, so it is a liveness gap, not a bypass; it is tracked in TODO.md
+        together with the `agent_role` dimension. The rejection side below is a SAMPLE of
+        plausible IR-root names, including the underscore respelling of the retired summary —
+        it makes an accidental re-widening likely to be caught, but it is not a proof of set
+        equality, which this layer cannot express from outside."""
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "compile_generate.request.json"
+        )
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        declared = list(payload["allowed_output_paths"])
+        ir_ref = payload["ir_ref"]
+        self.assertEqual(
+            sorted(declared),
+            sorted([f"{ir_ref}/spec.ir.yaml", f"{ir_ref}/ir_meta.json"]),
+            "conductor's captured compile.generate declaration changed; update both readers",
+        )
+        self.assertEqual(
+            _allowed_output_paths_for_launch(request_payload=payload, write_roots=[]),
+            declared,
+            "record-launch must accept the conductor's own declaration unchanged",
+        )
+        # Anything else at the IR root is outside the contract. `algorithm.summary.md` is the
+        # retired view-only companion the SKILL used to instruct; `algorithm_summary.md` is the
+        # respelling a re-introduction would plausibly take; `dependency_graph.json` and
+        # `compile_static_meta.json` are conductor-authored and must stay leaf-non-writable.
+        # The last three are NOT a denylist of names anyone would write: they are the shapes a
+        # widening takes. A name no rule could plausibly enumerate catches a rule relaxed to a
+        # prefix or a suffix test; the nested paths catch a subtree escape (the `generate` branch
+        # grants a directory this way, so the shape is live in this same function).
+        for extra in ("algorithm.summary.md", "algorithm_summary.md", "io_contract.yaml",
+                      "dependency_graph.json", "compile_static_meta.json", "notes.md",
+                      "zz9_unlisted_artifact.xyz", "views/summary.md", "src/main.f90"):
+            forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
+            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+        # DIRECTORY-form entries (trailing slash) take a SEPARATE branch of the contract, which
+        # grants the whole subtree when it returns True — that is how `generate` authorizes its
+        # source dir. Compile has no directory deliverable, and a probe list made only of file
+        # paths cannot see that branch at all: review demonstrated a one-line grant of `<ir_ref>/`
+        # to compile that left every assertion above green while handing the leaf the entire IR
+        # run directory. Probe the branch, not just the names it would admit.
+        for extra in ("", "views/", "src/"):
+            forged = dict(payload, allowed_output_paths=[*declared, f"{ir_ref}/{extra}"])
+            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+
+    def test_phase_contract_compile_static_is_the_meta_alone(self) -> None:
+        """The `compile.static` branch pins its ONE conductor-authored deliverable with `==`.
+        Review found that widening that `==` to a `startswith` on the IR root was invisible to
+        the whole suite — nothing pinned this branch — so a deterministic substep could have
+        declared write authority over the IR it is supposed to validate read-only. Pinned here
+        next to the generate contract because the two are one rule read at two substeps.
+
+        (Keeping a compile.generate / compile.verify leaf from listing the verdict as ITS output
+        is a different mechanism — `compile_required` membership — already pinned by
+        `test_compile_non_static_launch_rejects_compile_static_meta_json`. An earlier draft of
+        this docstring credited that job to this branch.)
+
+        Unlike the generate contract, this payload is hand-written: `compile.static` has no
+        captured request under tools/tests/data/conductor_launch_requests/, so a conductor-side
+        widening of the static declaration is NOT caught here the way the generate side is by
+        test_reproduces_every_real_substep_payload."""
+        from tools.orchestration_runtime import _allowed_output_paths_for_launch
+
+        ir_ref = "workspace/ir/component__spec_x__0.1.0/spec-x_20260101_001"
+        base = {"agent_role": "substep", "step": "compile", "substep": "static",
+                "ir_ref": ir_ref, "node_key": "component/spec_x@0.1.0"}
+        meta = [f"{ir_ref}/compile_static_meta.json"]
+        self.assertEqual(
+            _allowed_output_paths_for_launch(
+                request_payload=dict(base, allowed_output_paths=meta), write_roots=[]),
+            meta)
+        # Not even the IR the gate reads, and not a sibling meta: static writes its verdict only.
+        # The trailing-slash entries probe the directory branch, which no file-shaped probe
+        # reaches — see the note in the generate test above.
+        for extra in ("spec.ir.yaml", "ir_meta.json", "compile_static_meta.json.bak",
+                      "zz9_unlisted_artifact.xyz", "", "views/"):
+            forged = dict(base, allowed_output_paths=[*meta, f"{ir_ref}/{extra}"])
+            with self.assertRaisesRegex(ValueError, "outside phase contract outputs"):
+                _allowed_output_paths_for_launch(request_payload=forged, write_roots=[])
+
     def test_writes_orchestration_artifacts_in_canonical_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -16717,7 +16815,7 @@ class DirectWritePathExtensionPolicyTests(unittest.TestCase):
         allowed_output_paths = [
             "workspace/ir/p/spec.ir.yaml",
             "workspace/ir/p/io_contract.yaml",
-            "workspace/ir/p/algorithm.summary.md",
+            "workspace/ir/p/notes.md",
             "workspace/ir/p/case_summary.yaml",
             "workspace/ir/p/ir_meta.json",
             "workspace/pipelines/p/source/g/src/main.f90",

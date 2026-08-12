@@ -6591,7 +6591,6 @@ def _allowed_output_paths_for_launch(
     node_safe = _node_key_to_safe(node_key) if node_key else ""
     compile_required = {
         f"{ir_ref}/spec.ir.yaml",
-        f"{ir_ref}/algorithm.summary.md",
         f"{ir_ref}/ir_meta.json",
     } if ir_ref else set()
     generate_prefix = f"{pipeline_ref}/source/" if pipeline_ref else ""
@@ -6626,9 +6625,14 @@ def _allowed_output_paths_for_launch(
             # rejected, not silently accepted via the compile_required fall-through).
             # NOTE: the dependency-graph sidecar <ir_ref>/dependency_graph.json is
             # conductor-authored (workflow_conductor._write_dependency_graph) and NOT a leaf
-            # deliverable — it is absent from compile_required (the exact-set
-            # {spec.ir.yaml, algorithm.summary.md, ir_meta.json}), so a compile.generate /
+            # deliverable — it is absent from compile_required ({spec.ir.yaml,
+            # ir_meta.json}; a membership allowlist, NOT a required set — an
+            # under-declaring request is accepted, see TODO.md), so a compile.generate /
             # compile.verify leaf declaring it as an output is rejected here.
+            # The retired view-only companion `algorithm.summary.md` is likewise absent:
+            # the conductor's compile.generate allowed_output_paths never listed it, so a
+            # leaf that authored one was blocked at the hook while this set silently
+            # permitted it at record-launch. Both sides now name the same two files.
             if substep_token == "static":
                 return bool(ir_ref) and path == f"{ir_ref}/compile_static_meta.json"
             # Compile.verify authors NOTHING in spec.ir.yaml — generate authors all 5 sections

@@ -2738,7 +2738,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             repo_root = Path(tmp)
             orch = "orch_ext_hooks_003"
             run_id = "step_run_ext_hooks_003"
-            md_path = "workspace/ir/p/algorithm.summary.md"
+            md_path = "workspace/ir/p/notes.md"
             self._setup_orchestration_for_write(
                 repo_root,
                 orch=orch,

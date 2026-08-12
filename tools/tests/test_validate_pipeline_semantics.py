@@ -12716,6 +12716,43 @@ end program shallow_water2d_runner
             "is NOT one of the provenance sources",        # algorithm.state_variables
         ):
             self.assertIn(rule, skill, f"SKILL no longer states the rule {rule!r}")
+        # The write contract. Same reason as the two rules above — the ceiling is a MAXIMUM, so
+        # deleting the sentence passes every other test — plus one more: this SKILL is the only
+        # reader of the contract that no code path checks, and its previous instruction to author
+        # `algorithm.summary.md` contradicted `allowed_output_paths` for months while everything
+        # stayed green.
+        #
+        # Pinned as a WHOLE LINE, not a substring, and this is deliberate. A substring anchor was
+        # tried first and review broke it three ways while green: delete the prohibition and keep
+        # the fragment; append "Also author `io_contract.yaml`"; or re-label the fragment as
+        # historical and invert it ("was the OLD rule; now write whatever you need"). A rule whose
+        # anchor survives its own negation is not anchored. The cost is that any reword of this
+        # line fails here — the same brittleness the two rules above already carry, and the reason
+        # the SKILL text is the canonical string rather than a paraphrase of it.
+        # Membership of the LINE LIST, not `in skill`: a substring test still matches when the
+        # rule is left intact and a contradicting clause is appended to the same bullet, which is
+        # one of the three breaks review demonstrated.
+        self.assertIn(
+            "- **The deliverables are exactly `spec.ir.yaml` + `ir_meta.json`.** Any other file"
+            " under `workspace/ir/<node_key_safe>/<ir_id>/` is outside `allowed_output_paths`,"
+            " so `output_manifest_write_guard` blocks the write.",
+            skill.splitlines(),
+            "SKILL no longer carries the compile.generate write-contract rule verbatim",
+        )
+        # The retired view-only companion must not come back as an instruction under EITHER
+        # spelling: the conductor does not declare it (workflow_conductor.build_launch_request)
+        # and record-launch rejects it (orchestration_runtime._matches_phase_contract), so a leaf
+        # told to author one is told to take a hook block. `algorithm_summary` is checked because
+        # the runtime-side pin (test_orchestration_runtime) already treats the underscore form as
+        # the likely re-introduction spelling — the two halves of this contract must not carry
+        # different denylists, which is exactly the gap review found here.
+        # A FAMILY, not a list of spellings. Round 3 walked through a two-literal denylist with
+        # `algorithm-summary.md`; adding the hyphen would have invited a fourth round on the next
+        # separator. Any separator (or none) between the two words is refused.
+        self.assertIsNone(
+            re.search(r"algorithm[-._ ]?summary", skill, re.IGNORECASE),
+            "SKILL instructs an artifact the compile.generate write contract does not allow",
+        )
 
     def test_openmp_floor_rule_is_stated_in_both_docs(self) -> None:
         """Issue #22: the reflection rule failed because only the PUNISHING side stated it.
