@@ -6044,6 +6044,21 @@ end module shallow_water2d_model
                 "real, parameter :: scratch = 0.0",
                 "  real function_scratch, scratch\n  call dep__op(u_in, scratch)",
             ),
+            # A `::`-less specification statement attaches an attribute to a name without
+            # declaring it in any shape this parser reads. There are eighteen such statements and
+            # parsing each one's grammar is the losing move this rule exists to stop making, so
+            # any statement opening with one of those keywords disqualifies every identifier it
+            # mentions. Two representatives; the helper-level test covers the list.
+            (
+                "dimension statement",
+                "real, parameter :: scratch = 0.0",
+                "  real scratch\n  dimension scratch(2)\n  call dep__op(u_in, scratch(1))",
+            ),
+            (
+                "common block",
+                "real, parameter :: scratch = 0.0",
+                "  real scratch\n  common /blk/ scratch\n  call dep__op(u_in, scratch)",
+            ),
         ):
             source = f"""module shallow_water2d_model
 use dep_model
@@ -6417,6 +6432,35 @@ end module shallow_water2d_model
         }.items():
             once = vps._joined_masked_fortran_view(probe)
             self.assertEqual(vps._joined_masked_fortran_view(once), once, label)
+
+    def test_every_attribute_statement_disqualifies_the_names_it_mentions(self) -> None:
+        # The polarity that makes the file-wide rule safe: a statement this parser does not
+        # understand must still take names OUT of the exempt set. All eighteen `::`-less
+        # specification statements were silently invisible, each one a way to make a name
+        # definable while it still looked like a pure constant.
+        for statement in (
+            "common /blk/ ncomp",
+            "common ncomp",
+            "dimension ncomp(3)",
+            "equivalence (ncomp, other)",
+            "data ncomp /3/",
+            "namelist /nl/ ncomp",
+            "pointer ncomp",
+            "target ncomp",
+            "save ncomp",
+            "allocatable ncomp",
+            "external ncomp",
+            "intent(out) ncomp",
+            "volatile ncomp",
+            "asynchronous ncomp",
+            "codimension ncomp[*]",
+            "protected ncomp",
+            "value ncomp",
+            "optional ncomp",
+        ):
+            constants, others = vps._fortran_declared_names(statement)
+            self.assertEqual(constants, set(), statement)
+            self.assertIn("ncomp", others, statement)
 
     def test_fortran_parameter_names_covers_the_declaration_forms(self) -> None:
         # Feeding this the joined view is part of its contract: a wrapped declaration is exactly

@@ -822,6 +822,24 @@ _FORTRAN_CONSTRUCT_OPEN = re.compile(
     r"|^(?:abstract\s+)?interface\b"
 )
 _FORTRAN_CONSTRUCT_END = re.compile(r"^end\s*(?:block|associate|select|interface)\b")
+# Every statement that ATTACHES something to a name. The list of keywords is closed in F2008 and
+# short; the SYNTAX behind each of them is neither, so this does not parse them — any statement
+# opening with one of these contributes every identifier it mentions to the disqualifying set.
+#
+# That inversion is the point. Eighteen `::`-less specification statements (`common /blk/ x`,
+# `dimension x(3)`, `equivalence (x, y)`, `data x /3/`, `namelist /nl/ x`, `pointer`, `target`,
+# `save`, `allocatable`, `external`, `intent`, `volatile`, `asynchronous`, `codimension`,
+# `protected`, `value`, `optional`, and the bare `common x`) were each invisible, and each was a
+# name made definable while still looking like a pure constant. Enumerating their eighteen
+# grammars is the same losing move this rule was adopted to stop making; over-collecting from
+# them costs a false violation, which is the direction that may be wrong.
+_FORTRAN_ATTRIBUTE_STATEMENT = re.compile(
+    r"^(?:common|dimension|equivalence|data|namelist|pointer|target|save|allocatable|external"
+    r"|intent|volatile|asynchronous|codimension|contiguous|protected|value|optional|intrinsic"
+    r"|bind|sequence|public|private|generic|procedure|entry)\b"
+)
+
+
 _FORTRAN_BARE_DECLARATION = re.compile(
     r"^(integer|real|complex|logical|character|doubleprecision|double\s+precision"
     r"|type|class|enumerator)\b"
@@ -950,6 +968,9 @@ def _fortran_declared_names(joined_masked: str) -> tuple[set[str], set[str]]:
                 match = FORTRAN_IDENTIFIER_PATTERN.match(item.strip())
                 if match is not None:
                     target.add(match.group(0))
+            continue
+        if _FORTRAN_ATTRIBUTE_STATEMENT.match(statement):
+            others.update(_extract_identifiers(statement))
             continue
         # `associate (c0 => scratch)` and `select type (c0 => x)` REBIND a name to a definable
         # variable for the length of the construct, so the name is shadowed exactly as a local
