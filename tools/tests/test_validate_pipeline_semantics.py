@@ -5955,6 +5955,61 @@ end module shallow_water2d_model
             self._dataflow_violations(source),
         )
 
+    def test_every_shape_that_makes_a_name_definable_disqualifies_it(self) -> None:
+        # The file-wide rule exempts a name only if the file declares it constant and NEVER
+        # declares it otherwise, so the whole burden sits on recognising "otherwise". Each shape
+        # here was a reproduced fail-open: a NAMED `associate` construct (the optional label
+        # slipped past the unnamed-only pattern), a constant belonging to a CONTAINED procedure,
+        # the obsolescent `character*3` length selector, and `use ..., only:` — use association
+        # overrides host association, so the imported entity is whatever the other module says.
+        # All four are accepted by `gfortran -fsyntax-only -std=f2008`.
+        for label, spec, body in (
+            (
+                "named associate",
+                "real, parameter :: scratch = 0.0",
+                "  real :: local\n  blk: associate (scratch => local)\n"
+                "    call dep__op(u_in, scratch)\n  end associate blk",
+            ),
+            (
+                "contained procedure constant",
+                "real :: scratch",
+                "  call dep__op(u_in, scratch)\n"
+                "  return\ncontains\n  subroutine inner()\n"
+                "    integer, parameter :: scratch = 3\n    print *, scratch\n"
+                "  end subroutine inner",
+            ),
+            (
+                "character*3 length selector",
+                "character(len=3), parameter :: scratch = 'abc'",
+                "  character*3 scratch\n  call dep__op(u_in, scratch)",
+            ),
+            (
+                "use-only import",
+                "integer, parameter :: scratch = 3",
+                "  use m_ext, only: scratch\n  call dep__op(u_in, scratch)",
+            ),
+        ):
+            source = f"""module shallow_water2d_model
+use dep_model
+implicit none
+{spec}
+contains
+subroutine solve(u_in, u_out)
+  real, intent(in) :: u_in
+  real, intent(out) :: u_out
+{body}
+  u_out = u_in
+end subroutine solve
+end module shallow_water2d_model
+"""
+            self.assertTrue(
+                any(
+                    "does not propagate dependency operation outputs" in v
+                    for v in self._dataflow_violations(source)
+                ),
+                f"{label}: got {self._dataflow_violations(source)}",
+            )
+
     def test_an_associate_construct_shadows_a_host_constant(self) -> None:
         # `associate (ncomp => scratch)` rebinds the name to a definable variable for the length
         # of the construct, so the actual passed under that name really can be a discarded
@@ -6065,43 +6120,31 @@ end module shallow_water2d_model
 """
         self.assertEqual(self._dataflow_violations(source), [])
 
-    def test_a_constant_outside_every_host_unit_is_not_module_scope(self) -> None:
-        # Two shapes that have no module specification part at all, yet were read as one because
-        # the scan tracked "past `contains`" without ever asking "inside a unit?". Both are
-        # accepted by `gfortran -fsyntax-only -std=f2008`: external procedures alongside a module,
-        # and a file of external procedures with no module at all.
-        # No `implicit none` and no declaration of `ncomp`: it is implicitly typed, so nothing in
-        # `advance` can subtract it and only the scope reader decides whether the constant in
-        # `helper` reaches it.
-        solve = """subroutine advance(u_np1, guard_pass)
+    def test_an_implicitly_typed_local_is_the_rules_known_blind_spot(self) -> None:
+        # Recorded as a KNOWN residue, not as a passing property. Under the file-wide rule a name
+        # is exempt when the file declares it constant and never declares it otherwise — and an
+        # implicitly typed local is not declared at all, so `advance`'s own `ncomp` is invisible
+        # and the constant in `helper` exempts it. `gfortran -fsyntax-only -std=f2008` accepts
+        # this, because neither procedure says `implicit none`.
+        #
+        # It is unreachable through `Generate.gate`: the authoring rules require `implicit none`
+        # in every generated model, and fortitude's C003 fires without it, so an undeclared name
+        # is a compile error long before this gate runs. The test asserts the CURRENT behaviour so
+        # that a future change to the rule shows up here rather than being discovered as a
+        # surprise, and names the reason it is tolerable.
+        source = """subroutine helper(out_val)
+  real, intent(out) :: out_val
+  integer, parameter :: ncomp = 3
+  out_val = real(ncomp)
+end subroutine helper
+subroutine advance(u_np1, guard_pass)
   use dep_model
   real, intent(out) :: u_np1
   logical, intent(out) :: guard_pass
   call dep__advance(ncomp, u_np1, guard_pass)
 end subroutine advance
 """
-        external_helper = """subroutine helper(out_val)
-  real, intent(out) :: out_val
-  integer, parameter :: ncomp = 3
-  out_val = real(ncomp)
-end subroutine helper
-"""
-        module_wrapper = (
-            "module shallow_water2d_model\nimplicit none\ncontains\n"
-            "subroutine noop(out_val)\n  real, intent(out) :: out_val\n  out_val = 0.0\n"
-            "end subroutine noop\nend module shallow_water2d_model\n"
-        )
-        for label, source in {
-            "external procedures beside a module": module_wrapper + external_helper + solve,
-            "no module anywhere": external_helper + solve,
-        }.items():
-            self.assertTrue(
-                any(
-                    "subroutine advance does not propagate dependency operation outputs" in v
-                    for v in self._dataflow_violations(source)
-                ),
-                f"{label}: nothing here is module scope; got: {self._dataflow_violations(source)}",
-            )
+        self.assertEqual(self._dataflow_violations(source), [])
 
     def test_a_labelled_contains_still_ends_the_specification_part(self) -> None:
         # A statement LABEL may precede any statement. Anchoring on the bare keyword missed
