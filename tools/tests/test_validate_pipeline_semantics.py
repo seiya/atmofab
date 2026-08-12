@@ -5606,6 +5606,67 @@ end module m
         host = next(e for e in envelopes if e.name == "host")
         self.assertNotIn("intent(out) :: z", host.out_scope)
 
+    def test_a_select_type_construct_does_not_leak_into_the_next_procedure(self) -> None:
+        # The walk's counters live for the whole FILE, so a construct left open in one procedure
+        # changes how the next one is read. Without `end select` decrementing, the SELECT TYPE in
+        # `classify` leaves every later `type` statement looking like a guard, so the derived type
+        # in `solve` opens nothing, its type-bound `contains` ends the out-scope early, and the
+        # `intent(out)` declared after it is never seen — the gate goes silent. Reproduced, and
+        # `gfortran -fsyntax-only -std=f2008` accepts the source.
+        source = """module m
+implicit none
+contains
+subroutine classify(u)
+  class(*), intent(in) :: u
+  select type (u)
+  type is (real)
+    continue
+  end select
+end subroutine classify
+subroutine solve(x, y)
+  use show_mod, only: show
+  type :: holder
+    real :: v
+  contains
+    procedure, nopass :: show
+  end type holder
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
+    def test_a_contained_procedures_intent_out_does_not_count_toward_its_host(self) -> None:
+        # The gate-level half of the out-scope split, and the failure the cut was originally
+        # introduced to prevent: this host declares three scalar `intent(out)` metrics — under the
+        # floor of five — and its contained procedure declares two more. Counting the contained
+        # ones makes five and reports the host as a metric-only scalar kernel it is not.
+        source = """module m
+implicit none
+contains
+subroutine metrics(a, e_tot, e_kin, e_pot)
+  real, intent(in) :: a
+  real, intent(out) :: e_tot, e_kin, e_pot
+  e_tot = a
+  e_kin = a
+  e_pot = a
+  call extra(e_tot, e_kin)
+contains
+  subroutine extra(mass, enstrophy)
+    real, intent(out) :: mass, enstrophy
+    mass = 1.0
+    enstrophy = 2.0
+  end subroutine extra
+end subroutine metrics
+end module m
+"""
+        self.assertEqual(self._metric_kernel_violations(source), [])
+
     def test_a_type_definition_stops_suppressing_the_out_scope_cut_when_it_ends(self) -> None:
         # The other half of the type tracking: if `end type` is not recognised the suppression
         # never lifts, so the HOST's own `contains` stops ending the out-scope and the contained
