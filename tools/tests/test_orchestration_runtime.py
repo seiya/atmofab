@@ -29377,7 +29377,15 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # constant, and burns a regenerate cycle. The same edit RETIRED the stale clause claiming
         # this gate also checks `required_sources` (removed long ago, owned by Generate.verify
         # G5), so the net growth is smaller than the rule's.
-        "skills/workflow-generate-generate/SKILL.md": 37900,
+        # Bumped 37900->38400: the dependency-dataflow rule now covers a `function` (its result
+        # variable is a definable output, so a discarded dependency result is flagged there too —
+        # 92 of the 365 in-tree models define a function and every gate was blind to all of them),
+        # and the abbreviated `module procedure s` form gains an authoring rule because it is now
+        # refused. Both are rules a leaf is failed on, so they have to be in the leaf's own doc;
+        # the long-form rationale stays in phase_02_generate.md, which is NOT leaf-read. Measured
+        # 38181, so the ceiling keeps ~220 B of headroom rather than the tripwire margins this
+        # table has had to correct twice.
+        "skills/workflow-generate-generate/SKILL.md": 38400,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
         # match run_program's argv) after a validate.execute failure where a bare
@@ -29419,7 +29427,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # which told the reviewer to stop checking for directives on the node kinds and source
         # shapes where the floor never runs — turning a caught defect into a fail-open. Scoping it
         # correctly costs words, and a shorter sentence that is wrong is not a saving.
-        "skills/workflow-generate-verify/SKILL.md": 28200,
+        # Bumped 28200->28500: the metric-only-kernel item now names a `function` and its result
+        # variable, because the deterministic gate reads one — leaving the reviewer's checklist
+        # saying "subroutine" would tell it to skip the procedures the gate just started covering,
+        # which is the same fail-open shape as the bump above. Measured 28270.
+        "skills/workflow-generate-verify/SKILL.md": 28500,
         # Bumped 10000->10400: documented the verdict.json#per_test entry schema
         # (field name `status`/`outcome` + the pass/fail/xfail/skipped enum, with `blocked`
         # called out as conductor-derived not judge-written) so the judge leaf no longer

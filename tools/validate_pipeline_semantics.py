@@ -1168,7 +1168,7 @@ def _is_literal_like_expr(expr: str) -> bool:
 
 
 # The `problem` model gates below match Fortran's KEYWORD STRUCTURE, so the text they read is
-# reduced by `_joined_masked_fortran_view` — inside `_fortran_subroutine_envelopes`, which is
+# reduced by `_joined_masked_fortran_view` — inside `_fortran_procedure_envelopes`, which is
 # where every one of them now gets its bodies from. (Two of the three called the view themselves
 # as well until review pointed out that the walk had made those calls no-ops, while the comments
 # beside them still called them load-bearing. The dependency-dataflow gate's own call stayed: it
@@ -1205,8 +1205,8 @@ class _FortranSourceStructureError(Exception):
 
 
 @dataclass(frozen=True)
-class _FortranSubroutineEnvelope:
-    """One `subroutine` definition, as the three `problem` model gates read it.
+class _FortranProcedureEnvelope:
+    """One procedure definition, as the three `problem` model gates read it.
 
     ``body`` is everything between the header and the terminator, CONTAINED PROCEDURES INCLUDED.
     ``out_scope`` is the part of it before the subroutine's own `contains`, and is where
@@ -1226,17 +1226,38 @@ class _FortranSubroutineEnvelope:
 
     Neither is reachable in this tree today (0 of the 365 `*_model.f90` define a contained
     procedure), which is exactly why the tree differential could not see them.
+
+    ``out_vars`` IS THE DEFINABLE-OUTPUT SET, and what belongs in it depends on ``kind``:
+
+    * a `subroutine`'s outputs are its `intent(out)` dummies, and nothing else;
+    * a `function`'s outputs are those PLUS its result variable — `result(y)` names it `y`, and
+      without a `result(...)` it is the function's own name. That is Fortran's rule and it was
+      re-checked against the compiler rather than the standard: with `result(y)` present,
+      `gfortran -fsyntax-only -std=f2008` rejects an assignment to the function name with "'f' at
+      (1) is not a variable", and accepts one to `y`; with no `result(...)` it accepts the
+      assignment to the function name (both executed).
+
+    Every gate keys on this ONE set rather than re-deriving "what counts as an output" three
+    times, which is how a function stayed invisible to all three of them for as long as it did.
+
+    ``intent_out_vars`` is the `intent(out)` dummies ALONE — the same set minus the result
+    variable. One gate needs the distinction and it is not a nicety: see
+    `_validate_problem_model_literal_outputs`, where treating a result variable as enough to open
+    the gate produced ten false violations against this tree and caught nothing.
     """
 
+    kind: str
     name: str
     dummy_args: str
     body: str
     out_scope: str
+    result_name: str | None
+    intent_out_vars: frozenset[str]
     out_vars: frozenset[str]
 
 
-def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelope]:
-    """Every `subroutine` DEFINITION in ``lowered``, with the body each gate must read.
+def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
+    """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
     The structure comes from `tools/fortran_structure.parse_view` (tree-sitter-fortran), NOT from
     a hand-rolled scan of Fortran's keyword structure. The scan this replaces was rewritten four
@@ -1268,9 +1289,21 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
     365/365 files and all 894 envelopes; over the 58 inline test fixtures `gfortran -fsyntax-only
     -std=f2008` accepts, 1 carries an ERROR node and 0 disagree.
 
-    A `function` and an abbreviated `module procedure` body are parsed but NOT emitted here: this
-    function's contract is unchanged (subroutine envelopes), and widening the three gates to a
-    function's result is a change to what they VERDICT, kept in its own change.
+    A `function` IS emitted, with its result variable in `out_vars` — 92 of the 365 in-tree
+    `*_model.f90` define one, and every gate was blind to all of them for the whole procedure.
+
+    An abbreviated `module procedure solve` is emitted too, and is ALWAYS refused by the caller
+    rather than analysed. The reason is not that its body is hard to find — the parser reports it
+    exactly — but that F2008 forbids such a body from redeclaring its dummies (`gfortran
+    -fsyntax-only -std=f2008`: "is a redefinition of the declaration in the corresponding
+    interface"), so no `intent(out)` ever appears in it and every gate would return at its empty
+    out-set check. Emitting it and letting it through would be a SILENT gate; refusing it asks
+    the leaf for the full form (`module subroutine s(u, v)` / `module function f(x) result(y)`),
+    which every gate reads. The alternative — resolving the dummies across the
+    interface/implementation boundary via the gfortran dump — was measured and dropped: the three
+    dump markers that are stable across compiler versions carry neither the result name nor the
+    function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
+    of which this tree has none. See `TODO.md`.
     """
     view = _joined_masked_fortran_view(lowered)
     tree = fortran_structure.parse_view(view)
@@ -1278,10 +1311,8 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
         raise _FortranSourceStructureError(tree.errors)
 
     blanked = fortran_structure.blank_interface_spans(view, tree.interface_spans)
-    envelopes: list[_FortranSubroutineEnvelope] = []
+    envelopes: list[_FortranProcedureEnvelope] = []
     for procedure in tree.procedures:
-        if procedure.kind != "subroutine":
-            continue
         body_end = procedure.body_end
         out_end = body_end if procedure.contains_at is None else min(
             procedure.contains_at, body_end
@@ -1290,12 +1321,20 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
         out_vars: set[str] = set()
         for match in _FORTRAN_INTENT_OUT_PATTERN.finditer(out_scope):
             out_vars.update(_split_fortran_names(match.group(1)))
+        # The result variable is definable and is the whole point of a function, so it joins the
+        # out-set — see the envelope's docstring for the compiler check that says WHICH name it is.
+        intent_out_vars = frozenset(out_vars)
+        if procedure.kind == "function" and procedure.result_name:
+            out_vars.add(procedure.result_name)
         envelopes.append(
-            _FortranSubroutineEnvelope(
+            _FortranProcedureEnvelope(
+                kind=procedure.kind,
                 name=procedure.name,
                 dummy_args=procedure.dummy_args_text,
                 body=blanked[procedure.body_start : body_end],
                 out_scope=out_scope,
+                result_name=procedure.result_name,
+                intent_out_vars=intent_out_vars,
                 out_vars=frozenset(out_vars),
             )
         )
@@ -1305,7 +1344,7 @@ def _fortran_subroutine_envelopes(lowered: str) -> list[_FortranSubroutineEnvelo
 def _validate_problem_model_literal_outputs(
     execution: NodeExecution,
     model_file: Path,
-    envelopes: list[_FortranSubroutineEnvelope],
+    envelopes: list[_FortranProcedureEnvelope],
     violations: list[str],
 ) -> None:
     if not execution.node_key.startswith("problem/"):
@@ -1315,6 +1354,22 @@ def _validate_problem_model_literal_outputs(
         sub_name = envelope.name
         arg_names = set(_split_fortran_names(envelope.dummy_args))
         body = envelope.body
+
+        # A RESULT VARIABLE DOES NOT OPEN THIS GATE, and that is a measurement, not a taste.
+        # This gate asks whether a procedure fabricates its OUTPUT ARGUMENTS — "all of them are
+        # literals and none depends on an input" is evidence of that for a subroutine. For a
+        # function it is the normal shape of two legitimate things: a constant accessor
+        # (`ghost_width() result(ng); ng = 1`) and a predicate whose input dependence lives in its
+        # BRANCH CONDITIONS rather than in the assigned expression (`res = .false.` … `if (lhs(k)
+        # < rhs(k)) res = .true.`), which this gate's flow-insensitive `input_dependent` test
+        # cannot see. Opening the gate on the result alone was executed against all 365 in-tree
+        # models: **10 functions flagged, 10 of them legitimate, 0 defects found** — every one a
+        # predicate or an accessor. So the result stays in `out_vars` (it must be literal too for
+        # the procedure to be flagged, which only ever EXEMPTS) while the gate itself still
+        # requires an `intent(out)` dummy. A function that has one is now checked, which is the
+        # widening this change does deliver.
+        if not envelope.intent_out_vars:
+            continue
 
         out_vars = set(envelope.out_vars)
         if not out_vars:
@@ -1347,8 +1402,16 @@ def _validate_problem_model_literal_outputs(
                         input_dependent = True
 
         if all_literal and not input_dependent:
+            # The subroutine wording is UNCHANGED, deliberately: it is what the 365-file
+            # differential compares against, so every line that moves when functions become
+            # visible is a NEW line about a function and attributable as one.
             violations.append(
-                f"{model_file}: subroutine {sub_name} has literal-only assignments for all intent(out) vars"
+                f"{model_file}: {envelope.kind} {sub_name} has literal-only assignments for "
+                f"all intent(out) vars"
+                if envelope.kind == "subroutine"
+                else f"{model_file}: function {sub_name} has literal-only assignments for all "
+                f"definable outputs (its intent(out) dummies and its result variable "
+                f"{envelope.result_name})"
             )
 
 
@@ -1381,7 +1444,7 @@ def _validate_problem_model_dependency_dataflow(
     execution: NodeExecution,
     model_file: Path,
     lowered: str,
-    envelopes: list[_FortranSubroutineEnvelope],
+    envelopes: list[_FortranProcedureEnvelope],
     dep_spec_ids: list[str],
     violations: list[str],
 ) -> None:
@@ -1495,9 +1558,17 @@ def _validate_problem_model_dependency_dataflow(
     for envelope in envelopes:
         sub_name = envelope.name
         arg_names = set(_split_fortran_names(envelope.dummy_args))
+        # A function's result variable belongs on the same side as its dummies for the candidate
+        # rule: it is this procedure's OWN output face, not a local scratch that a dependency call
+        # might have written. Without this, `f = ...` shaped code makes the result name a
+        # candidate output of every dependency call it is passed to — a false violation.
+        if envelope.kind == "function" and envelope.result_name:
+            arg_names.add(envelope.result_name)
         body = envelope.body
         assignments = _assignment_records(body)
 
+        # The closure below is SEEDED with this set, so a function's result seeds it too — which
+        # is what makes "the dependency result reaches the output" answerable for a function.
         out_vars = set(envelope.out_vars)
         if not out_vars:
             continue
@@ -1541,8 +1612,10 @@ def _validate_problem_model_dependency_dataflow(
 
         if dep_output_candidates.isdisjoint(dependency_sources):
             violations.append(
-                f"{model_file}: subroutine {sub_name} does not propagate dependency operation outputs "
-                f"to intent(out) dataflow (candidates={sorted(dep_output_candidates)})"
+                f"{model_file}: {envelope.kind} {sub_name} does not propagate dependency "
+                f"operation outputs to "
+                f"{'intent(out)' if envelope.kind == 'subroutine' else 'definable-output'} "
+                f"dataflow (candidates={sorted(dep_output_candidates)})"
             )
 
 
@@ -1563,7 +1636,7 @@ def _is_multidim_problem_node(execution: NodeExecution) -> bool:
 def _validate_problem_metric_only_scalar_kernel(
     execution: NodeExecution,
     model_file: Path,
-    envelopes: list[_FortranSubroutineEnvelope],
+    envelopes: list[_FortranProcedureEnvelope],
     violations: list[str],
 ) -> None:
     if not _is_multidim_problem_node(execution):
@@ -1588,7 +1661,8 @@ def _validate_problem_metric_only_scalar_kernel(
             continue
 
         violations.append(
-            f"{model_file}: subroutine {sub_name} is metric-only scalar kernel for {spec_id}; "
+            f"{model_file}: {envelope.kind} {sub_name} is metric-only scalar kernel for "
+            f"{spec_id}; "
             "2d/3d problem model must not derive many intent(out) metrics without array inputs or update loops"
         )
 
@@ -4414,12 +4488,12 @@ def _validate_generate_outputs(
             )
 
         # ONE parse per model file, for all three `problem` gates. They each used to call
-        # `_fortran_subroutine_envelopes` themselves, which parsed the same text three times and
+        # `_fortran_procedure_envelopes` themselves, which parsed the same text three times and
         # gave a refusal three chances to be reported (or, worse, to be reported differently).
         # Both failure directions are answered HERE, once, and both stop the three gates for this
         # file rather than letting them run on a structure nothing resolved.
         try:
-            envelopes = _fortran_subroutine_envelopes(lowered)
+            envelopes = _fortran_procedure_envelopes(lowered)
         except fortran_structure.FortranStructureUnavailableError as exc:
             # NOT a content failure: no edit to this source can fix a missing package, so this
             # carries the marker `workflow_conductor._gate_static_check` scans for and the run is
@@ -4440,6 +4514,35 @@ def _validate_generate_outputs(
                     f"(e.g. `end_subroutine_flag`) and the source is accepted."
                 )
             continue
+
+        # An abbreviated separate module subprogram is REFUSED, always, and this is the only
+        # place that decides it. F2008 forbids such a body from redeclaring its dummies —
+        # `gfortran -fsyntax-only -std=f2008` answers "is a redefinition of the declaration in the
+        # corresponding interface" — so no `intent(out)` can appear in it and all three gates
+        # would return at their empty out-set check while looking like they had run. That is a
+        # silent gate, which is the exact defect class this whole area exists to remove, so the
+        # leaf is asked for the full form instead. 0 of the 365 in-tree models use the short form
+        # today, so this refuses nothing that exists; it closes the shape before it appears.
+        abbreviated = [e.name for e in envelopes if e.kind == "module_procedure"]
+        if abbreviated:
+            for name in abbreviated:
+                violations.append(
+                    f"{model_file}: `module procedure {name}` (the abbreviated separate module "
+                    f"subprogram) cannot be checked: F2008 forbids its body from redeclaring its "
+                    f"dummies, so the intent(out) declarations the `problem` model gates read "
+                    f"never appear in it and every gate would pass it in silence. Write the full "
+                    f"form instead — `module subroutine {name}(...)` with its "
+                    f"`intent(in)`/`intent(out)` declarations, or `module function {name}(...) "
+                    f"result(...)` — which is checked normally."
+                )
+        # ... and then the gates run ANYWAY, on the procedures in this file that ARE readable.
+        # An earlier version stopped here, on the parse-error case's symmetry; the two are not
+        # symmetric. A parse error leaves no usable envelope at all, while an abbreviated
+        # `module procedure` leaves every OTHER procedure in the file perfectly readable, so
+        # stopping here silenced their real violations and handed the leaf one instruction where
+        # it needed two. The abbreviated envelope itself carries an empty out-set, so every gate
+        # skips it — which is the silence being refused on its behalf above, not a second chance
+        # for it to pass.
 
         _validate_problem_model_literal_outputs(
             execution=execution,

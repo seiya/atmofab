@@ -273,5 +273,37 @@ class FrontEndUnavailableTests(unittest.TestCase):
             any(fs.FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in v for v in violations), violations)
 
 
+class ImportBootstrapTests(unittest.TestCase):
+    def test_the_cli_import_fallback_carries_the_same_names_as_the_package_import(self) -> None:
+        # `validate_pipeline_semantics` imports its siblings twice: once as `from tools import …`
+        # and once, under `except ModuleNotFoundError`, after putting the repo root on `sys.path`.
+        # The SECOND branch is the one the conductor actually takes: `_gate_static_check` runs
+        # `python3 tools/validate_pipeline_semantics.py`, which puts `tools/` on `sys.path[0]` and
+        # NOT the repo root, so `from tools import …` raises and the fallback runs (executed).
+        # A name added to the first branch and forgotten in the second therefore fails in
+        # production and nowhere else — no test imports the module that way, which is why this
+        # pins the two branches against each other rather than trying to reproduce the failure.
+        import ast
+
+        source = (REPO_ROOT / "tools" / "validate_pipeline_semantics.py").read_text()
+        tree = ast.parse(source)
+        branches = [node for node in ast.walk(tree)
+                    if isinstance(node, ast.Try) and node.handlers
+                    and isinstance(node.handlers[0].type, ast.Name)
+                    and node.handlers[0].type.id == "ModuleNotFoundError"]
+        self.assertEqual(1, len(branches), "the import bootstrap is no longer one try/except")
+        bootstrap = branches[0]
+
+        def imported(body) -> set[str]:
+            names: set[str] = set()
+            for node in ast.walk(ast.Module(body=list(body), type_ignores=[])):
+                if isinstance(node, ast.ImportFrom):
+                    names.update(f"{node.module}.{alias.name}" for alias in node.names)
+            return names
+
+        self.assertEqual(imported(bootstrap.body), imported(bootstrap.handlers[0].body))
+        self.assertIn("tools.fortran_structure", imported(bootstrap.body))
+
+
 if __name__ == "__main__":
     unittest.main()

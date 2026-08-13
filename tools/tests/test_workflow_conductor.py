@@ -531,6 +531,14 @@ class DecisionTableTest(unittest.TestCase):
         d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
         self.assertEqual(d.action, "fail_closed")
         self.assertIn("static_frontend_unavailable", wc.GATE_FAILURE_TERMINAL)
+        # It must also be a KNOWN category, not merely a terminal one: an unknown category keeps
+        # its first-seen position after the known ones and reaches the escalate path, so leaving
+        # it out of the canonical order makes the route reason non-deterministic in a union.
+        # (Found by mutation: nothing noticed when it was dropped from the order tuple.)
+        self.assertIn("static_frontend_unavailable", wc._GATE_CATEGORY_CANON_ORDER)
+        self.assertEqual(
+            ["lint_findings", "static_frontend_unavailable"],
+            wc._gate_categories_canonical(["static_frontend_unavailable", "lint_findings"]))
         # An unknown category escalates; an empty list escalates with the no-category reason.
         self.assertEqual(wc.classify_gate_failure(["mystery"]).action, "escalate")
         self.assertEqual(wc.classify_gate_failure([]).reason, "gate_fail_no_category")

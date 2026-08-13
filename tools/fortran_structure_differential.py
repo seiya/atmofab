@@ -43,7 +43,7 @@ if str(REPO_ROOT) not in sys.path:
 from tools import fortran_structure  # noqa: E402
 from tools.validate_pipeline_semantics import (  # noqa: E402
     NodeExecution,
-    _fortran_subroutine_envelopes,
+    _fortran_procedure_envelopes,
     _FortranSourceStructureError,
     _validate_problem_metric_only_scalar_kernel,
     _validate_problem_model_dependency_dataflow,
@@ -93,7 +93,7 @@ def gate_violations(path: Path, lowered: str) -> list[str]:
         pipeline_dir=path.parent,
     )
     violations: list[str] = []
-    envelopes = _fortran_subroutine_envelopes(lowered)
+    envelopes = _fortran_procedure_envelopes(lowered)
     _validate_problem_model_literal_outputs(
         execution=execution, model_file=path, envelopes=envelopes, violations=violations)
     _validate_problem_model_dependency_dataflow(
@@ -114,7 +114,7 @@ def run_tree() -> int:
         relative = path.relative_to(REPO_ROOT)
         lowered = path.read_text(encoding="utf-8", errors="replace").lower()
         try:
-            envelopes = _fortran_subroutine_envelopes(lowered)
+            envelopes = _fortran_procedure_envelopes(lowered)
         except _FortranSourceStructureError as exc:
             refused.append(path)
             for error in exc.errors:
@@ -175,22 +175,49 @@ def flang_unparse(binary: str, source: str, workdir: Path) -> str | None:
 # `(?!END\b)`: flang writes the terminator as `END SUBROUTINE name`, and `END` is otherwise
 # indistinguishable from the prefix words (`PURE`, `ELEMENTAL`, `MODULE`, …) this allows before
 # the keyword. Without it every definition was counted twice and all 360 files "disagreed".
-_FLANG_SUBROUTINE = re.compile(r"^\s*(?!END\b)(?:[A-Z_]+ )*SUBROUTINE ([A-Za-z_][A-Za-z0-9_]*)")
-_FLANG_FUNCTION = re.compile(r"^\s*(?!END\b)(?:[A-Z_]+ )*FUNCTION ([A-Za-z_][A-Za-z0-9_]*)")
+# A prefix token may carry a parenthesised part — flang writes a typed function header as
+# `REAL(KIND=8) FUNCTION compute_mass(...)`, and a `[A-Z_]+ `-only prefix silently missed four
+# such functions per file, which read as a front-end disagreement until the header was looked at.
+_FLANG_PREFIX = r"(?:[A-Z_]+(?:\([^)]*\))? )*"
+_FLANG_SUBROUTINE = re.compile(rf"^\s*(?!END\b){_FLANG_PREFIX}SUBROUTINE ([A-Za-z_][A-Za-z0-9_]*)")
+_FLANG_FUNCTION = re.compile(rf"^\s*(?!END\b){_FLANG_PREFIX}FUNCTION ([A-Za-z_][A-Za-z0-9_]*)")
 _FLANG_INTERFACE_OPEN = re.compile(r"^\s*(?:ABSTRACT )?INTERFACE\b", re.MULTILINE)
 _FLANG_INTERFACE_END = re.compile(r"^\s*END INTERFACE\b", re.MULTILINE)
 
 
-def flang_subroutine_names(unparsed: str) -> list[str]:
-    """The subroutine DEFINITION names flang's canonical output shows, interface bodies excluded.
+def _join_flang_continuations(unparsed: str) -> str:
+    """Undo flang's line wrapping before reading its output line by line.
+
+    flang's canonical output wraps at ~72 columns with `&` at the end of a line and `&` at the
+    start of the next, and it will wrap in the MIDDLE OF AN IDENTIFIER: a long procedure name
+    comes back as `..._periodic_copy_&\n &guard`. Reading that line-wise truncates the name, which
+    surfaced as six "disagreements" that were entirely this harness's own doing — a reminder that
+    an oracle needs checking before its verdict is believed over the thing it is checking.
+    """
+    joined: list[str] = []
+    for line in unparsed.splitlines():
+        stripped = line.rstrip()
+        if joined and joined[-1].endswith("&"):
+            joined[-1] = joined[-1][:-1] + stripped.lstrip().lstrip("&")
+            continue
+        joined.append(stripped)
+    return "\n".join(joined)
+
+
+def flang_procedure_names(unparsed: str) -> list[tuple[str, str]]:
+    """The (kind, name) procedure DEFINITIONS flang's canonical output shows, interfaces excluded.
 
     Deliberately naive — it is an ORACLE, not a second implementation of the gate: flang has
     already done the hard half (deciding what is a keyword), so a line-oriented reading of its
     output is sound in a way the same reading of raw source is not.
+
+    Both kinds are read, not just subroutines. Comparing a subroutine-only oracle against a front
+    end that also reports functions would "disagree" on every file that defines one and would say
+    nothing about whether either side is right.
     """
-    names: list[str] = []
+    found: list[tuple[str, str]] = []
     depth = 0
-    for line in unparsed.splitlines():
+    for line in _join_flang_continuations(unparsed).splitlines():
         if _FLANG_INTERFACE_END.match(line):
             depth = max(depth - 1, 0)
             continue
@@ -201,8 +228,12 @@ def flang_subroutine_names(unparsed: str) -> list[str]:
             continue
         match = _FLANG_SUBROUTINE.match(line)
         if match:
-            names.append(match.group(1).lower())
-    return names
+            found.append(("subroutine", match.group(1).lower()))
+            continue
+        match = _FLANG_FUNCTION.match(line)
+        if match:
+            found.append(("function", match.group(1).lower()))
+    return found
 
 
 def run_flang() -> int:
@@ -222,13 +253,13 @@ def run_flang() -> int:
                 print(f"FLANG-REFUSED {path.relative_to(REPO_ROOT)}")
                 continue
             try:
-                envelopes = _fortran_subroutine_envelopes(source.lower())
+                envelopes = _fortran_procedure_envelopes(source.lower())
             except _FortranSourceStructureError:
                 refused += 1
                 print(f"TREE-REFUSED {path.relative_to(REPO_ROOT)}")
                 continue
-            ours = sorted(envelope.name for envelope in envelopes)
-            theirs = sorted(flang_subroutine_names(unparsed))
+            ours = sorted((envelope.kind, envelope.name) for envelope in envelopes)
+            theirs = sorted(flang_procedure_names(unparsed))
             if ours == theirs:
                 agreed += 1
             else:

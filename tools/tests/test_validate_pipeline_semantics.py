@@ -5205,7 +5205,7 @@ end program shallow_water2d_runner
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=[
                 "dynamics_shallow_water_boundary_2d_periodic_copy",
                 "dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -5243,7 +5243,7 @@ end module shallow_water2d_model
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=["dynamics_shallow_water_flux_2d_rusanov_p0"],
             violations=violations,
         )
@@ -5282,7 +5282,7 @@ end module shallow_water2d_model
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=["dynamics_shallow_water_time_update_2d_ssprk2"],
             violations=violations,
         )
@@ -5325,7 +5325,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
-                envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+                envelopes=vps._fortran_procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -5367,7 +5367,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
-                envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+                envelopes=vps._fortran_procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -5381,7 +5381,7 @@ end module m
 
     # --- the envelope walk -------------------------------------------------------------------
     #
-    # `_fortran_subroutine_envelopes` replaced a flat DOTALL span whose terminator was
+    # `_fortran_procedure_envelopes` replaced a flat DOTALL span whose terminator was
     # `end\s+subroutine`. Three shapes `gfortran -fsyntax-only -std=f2008` accepts silenced ALL
     # THREE `problem` gates for the WHOLE FILE, and only the bare `end` was caught by anything
     # else in the chain (fortitude S061): the one-word `endsubroutine`, the bare `end`, and an
@@ -5433,6 +5433,251 @@ subroutine solve(x, y)
 {terminator}
 end module shallow_water2d_model
 """
+
+    # The FUNCTION forms of the same three defect templates. This is the TODO item's own
+    # reproduction: the identical body reports a violation as `subroutine solve(x, y)` and used to
+    # report NOTHING as `function solve(x) result(y)`, for the whole procedure, in every gate.
+    _FUNCTION_TERMINATOR_SPELLINGS = (
+        "end function solve",
+        "end function",
+        "endfunction solve",
+        "endfunction",
+        "end",
+    )
+
+    _DISCARDED_DEP_FUNCTION_TEMPLATE = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+function solve(x) result(y)
+  real, intent(in) :: x
+  real :: y
+  real :: scratch
+{interface}  call dep__apply(x, scratch)
+  y = x
+{terminator}
+end module shallow_water2d_model
+"""
+
+    def test_a_discarded_dependency_result_is_flagged_in_a_function_too(self) -> None:
+        # The completion criterion of the TODO item, on the gate its reproduction used, in the
+        # form that used to be invisible. Every terminator spelling and the interface variant,
+        # because a function's terminators are their own set and nothing else covers them.
+        for terminator in self._FUNCTION_TERMINATOR_SPELLINGS:
+            for interface in ("", self._INTERFACE_BLOCK):
+                label = f"{terminator!r}{' + interface' if interface else ''}"
+                source = self._DISCARDED_DEP_FUNCTION_TEMPLATE.format(
+                    terminator=terminator, interface=interface)
+                violations = " ".join(self._dataflow_violations(source))
+                self.assertIn("does not propagate dependency operation outputs", violations, label)
+                # The message names the KIND, so a reader is not sent looking for a subroutine.
+                self.assertIn("function solve", violations, label)
+
+    def test_the_same_body_is_flagged_as_a_subroutine_and_as_a_function(self) -> None:
+        # The reproduction stated as the comparison it actually is: one body, two spellings, one
+        # verdict. Written as a pair rather than two tests so a change that silences ONE of them
+        # cannot look like a passing suite.
+        subroutine_form = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module shallow_water2d_model
+"""
+        function_form = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+function solve(x) result(y)
+  real, intent(in) :: x
+  real :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end function solve
+end module shallow_water2d_model
+"""
+        for label, source in (("subroutine", subroutine_form), ("function", function_form)):
+            violations = " ".join(self._dataflow_violations(source))
+            self.assertIn("does not propagate dependency operation outputs", violations, label)
+            self.assertIn("candidates=['scratch']", violations, label)
+
+    def test_a_functions_definable_output_is_its_result_however_it_is_named(self) -> None:
+        # WHICH name is the output was re-checked against the compiler, not the standard: with
+        # `result(y)` present `gfortran -fsyntax-only -std=f2008` rejects an assignment to the
+        # function name ("'f' at (1) is not a variable") and accepts one to `y`; with no
+        # `result(...)` it accepts the assignment to the function name (both executed). Getting
+        # this backwards makes the closure seed a name nothing assigns, which silences the gate.
+        for header, terminator, expected in (
+            ("function solve(x) result(y)", "end function solve", "y"),
+            ("function solve(x) result( y )", "end function solve", "y"),
+            ("real function solve(x)", "end function solve", "solve"),
+            ("pure function solve(x) result(y)", "endfunction", "y"),
+            ("module function solve(x) result(y)", "end function", "y"),
+        ):
+            envelopes = vps._fortran_procedure_envelopes(
+                f"module m\ncontains\n{header}\n  real :: x\n  {expected} = x\n"
+                f"{terminator}\nend module m\n")
+            self.assertEqual(1, len(envelopes), header)
+            self.assertEqual(expected, envelopes[0].result_name, header)
+            self.assertIn(expected, envelopes[0].out_vars, header)
+
+    def test_a_functions_result_does_not_by_itself_open_the_literal_outputs_gate(self) -> None:
+        # The measured design decision, pinned in both directions. A predicate returning literals
+        # from its branches, and a constant accessor, are the normal shape of a legitimate helper:
+        # opening this gate on the result alone flagged 10 such functions across the 365 in-tree
+        # models and found 0 defects. A function WITH an `intent(out)` dummy is still checked,
+        # which is the widening this change does deliver.
+        accessor = """module shallow_water2d_model
+implicit none
+contains
+function ghost_width() result(ng)
+  integer :: ng
+  ng = 1
+end function ghost_width
+end module shallow_water2d_model
+"""
+        self.assertEqual([], self._literal_output_violations(accessor))
+        predicate = """module shallow_water2d_model
+implicit none
+contains
+function is_small(v) result(res)
+  real, intent(in) :: v
+  logical :: res
+  res = .false.
+  if (v < 1.0) then
+    res = .true.
+  end if
+end function is_small
+end module shallow_water2d_model
+"""
+        self.assertEqual([], self._literal_output_violations(predicate))
+        with_intent_out = """module shallow_water2d_model
+implicit none
+contains
+function solve(x, y) result(ok)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  logical :: ok
+  y = 1.0
+  ok = .true.
+end function solve
+end module shallow_water2d_model
+"""
+        violations = " ".join(self._literal_output_violations(with_intent_out))
+        self.assertIn("literal-only assignments", violations)
+        self.assertIn("function solve", violations)
+
+    def test_an_abbreviated_module_procedure_is_refused_and_the_full_form_is_checked(self) -> None:
+        # The second spelling of this item's gap, and the one that cannot be closed by emitting an
+        # envelope: F2008 forbids a separate module subprogram's body from redeclaring its dummies
+        # (`gfortran -fsyntax-only -std=f2008`: "is a redefinition of the declaration in the
+        # corresponding interface"), so no `intent(out)` appears in it and every gate would return
+        # at its empty out-set check while appearing to have run. It is refused at the single
+        # gate entry point, with a message naming the full form; the full form is analysed as any
+        # other procedure. The contrast is the test: a refusal that also refused the replacement
+        # would be a dead end for the leaf.
+        import tempfile
+        abbreviated = """submodule (shallow_water2d_model) shallow_water2d_impl
+implicit none
+contains
+module procedure solve
+  y = 1.0
+end procedure solve
+end submodule shallow_water2d_impl
+"""
+        full_form = """submodule (shallow_water2d_model) shallow_water2d_impl
+implicit none
+contains
+module subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 1.0
+end subroutine solve
+end submodule shallow_water2d_impl
+"""
+        def gate(source: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                src = root / "src"
+                src.mkdir()
+                (src / "shallow_water2d_model.f90").write_text(source)
+                execution = NodeExecution(node_key="problem/shallow_water2d@0.4.0", node_dir=root,
+                                          exec_dir=root, pipeline_dir=root)
+                violations: list[str] = []
+                vps._validate_generate_outputs(root, execution, src, violations)
+                return violations
+
+        refusal = " ".join(gate(abbreviated))
+        self.assertIn("module procedure solve", refusal)
+        self.assertIn("cannot be checked", refusal)
+        self.assertIn("module subroutine solve(...)", refusal)
+        # ... and the form it asks for is analysed, literal-only body and all.
+        self.assertIn("literal-only assignments", " ".join(gate(full_form)))
+
+    def test_the_module_procedure_refusal_does_not_silence_the_rest_of_the_file(self) -> None:
+        # The refusal is ABOUT one procedure, so it must not stop the gates from reading the
+        # others. An earlier version stopped the whole file at the refusal, out of symmetry with
+        # the parse-error case — where there genuinely is nothing left to read — and thereby hid a
+        # real literal-only violation in a sibling subroutine behind an unrelated instruction.
+        import tempfile
+        source = """submodule (shallow_water2d_model) shallow_water2d_impl
+implicit none
+contains
+module procedure solve
+  y = 1.0
+end procedure solve
+module subroutine sibling(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 1.0
+end subroutine sibling
+end submodule shallow_water2d_impl
+"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / "src"
+            src.mkdir()
+            (src / "shallow_water2d_model.f90").write_text(source)
+            execution = NodeExecution(node_key="problem/shallow_water2d@0.4.0", node_dir=root,
+                                      exec_dir=root, pipeline_dir=root)
+            violations: list[str] = []
+            vps._validate_generate_outputs(root, execution, src, violations)
+        joined = " ".join(violations)
+        self.assertIn("cannot be checked", joined)
+        self.assertIn("subroutine sibling has literal-only assignments", joined)
+
+    def test_a_functions_result_is_never_a_dependency_output_candidate(self) -> None:
+        # The result variable is this procedure's OWN output face, so it is excluded from the
+        # candidate set exactly as a dummy is. The exclusion looks redundant — the result is in
+        # `out_vars`, which SEEDS the closure, so a candidate equal to it always intersects — and
+        # that is precisely why it matters: an intersecting candidate makes the whole isdisjoint
+        # test false and SUPPRESSES the violation the discarded `scratch` earns. Without the
+        # exclusion this source passes, which is fail-open. (Found by mutation: the first version
+        # of this change had the exclusion and nothing pinned it.)
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+function solve(x) result(y)
+  real, intent(in) :: x
+  real :: y
+  real :: scratch
+  call dep__apply(x, y)
+  call dep__apply(x, scratch)
+  y = x
+end function solve
+end module shallow_water2d_model
+"""
+        violations = " ".join(self._dataflow_violations(source))
+        self.assertIn("does not propagate dependency operation outputs", violations)
+        self.assertIn("candidates=['scratch']", violations)
 
     def test_every_terminator_spelling_closes_the_dependency_dataflow_envelope(self) -> None:
         # The completion criterion of the TODO item, on the gate its reproduction used: a model
@@ -5489,7 +5734,7 @@ end module shallow_water2d_model
         vps._validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         return violations
@@ -5505,7 +5750,7 @@ end module shallow_water2d_model
         vps._validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         return violations
@@ -5525,7 +5770,7 @@ end module shallow_water2d_model
             ("", "endsubroutine"),
             ("", "end"),
         ):
-            envelopes = vps._fortran_subroutine_envelopes(
+            envelopes = vps._fortran_procedure_envelopes(
                 f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
                 "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
             )
@@ -5543,7 +5788,7 @@ end module shallow_water2d_model
         ):
             with self.assertRaises(vps._FortranSourceStructureError,
                                    msg=f"{opener.strip()} … {terminator}"):
-                vps._fortran_subroutine_envelopes(
+                vps._fortran_procedure_envelopes(
                     f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
                     "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
                 )
@@ -5567,7 +5812,7 @@ end module shallow_water2d_model
                       f"  call dep__apply(x, scratch)\n  y = x\n"
                       f"end subroutine solve\nend module m\n")
             with self.assertRaises(vps._FortranSourceStructureError, msg=construct_end):
-                vps._fortran_subroutine_envelopes(source)
+                vps._fortran_procedure_envelopes(source)
 
     def test_a_properly_opened_construct_does_not_truncate_the_body(self) -> None:
         # The legal half of the row above: the `call` sits AFTER a closed construct, so a body
@@ -5628,7 +5873,7 @@ end module m
         # And the guard is still a guard: inside SELECT TYPE it opens no type, so the HOST's own
         # `contains` still cuts. If it opened one, the cut would be suppressed and the contained
         # procedure's declarations would rejoin its host.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(u, y)\n"
             "  class(*), intent(in) :: u\n"
             "  select type (u)\n"
@@ -5765,7 +6010,7 @@ end module m
         # procedure's dummies are attributed to its host again. Invisible to every other test
         # here, which is why the closing keyword gets its own case rather than sharing the
         # opener's.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(x, y)\n"
             "  type :: holder\n"
             "    real :: v\n"
@@ -5788,7 +6033,7 @@ end module m
         # Every consumer reports `{model_file}: subroutine {name}` in the order it iterates, and a
         # violation list that reorders itself between runs of the same file is a diff no reviewer
         # can read.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(x, y)\n  y = x\ncontains\n"
             "  subroutine inner(z)\n    z = 2.0\n  end subroutine inner\n"
             "end subroutine host\n"
@@ -5823,7 +6068,7 @@ end subroutine solve
 end module m2
 """
         with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_subroutine_envelopes(source.lower())
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_prefixed_subroutine_headers_are_all_recognized(self) -> None:
         # The prefix words are deliberately NOT enumerated: F2008 has pure/impure/elemental/
@@ -5836,7 +6081,7 @@ end module m2
         for prefix in ("", "pure ", "impure ", "elemental ", "recursive ",
                        "module ", "pure elemental ", "recursive module ",
                        "module pure recursive ", "pure recursive elemental "):
-            envelopes = vps._fortran_subroutine_envelopes(
+            envelopes = vps._fortran_procedure_envelopes(
                 f"{prefix}subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
             )
             self.assertEqual([e.name for e in envelopes], ["solve"], prefix)
@@ -5847,7 +6092,7 @@ end module m2
         # BEFORE the static check. Pinned so the day this toolchain moves to F2018 the row fails
         # here rather than turning into a refused Generate in a billed run.
         with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_subroutine_envelopes(
+            vps._fortran_procedure_envelopes(
                 "non_recursive subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
             )
 
@@ -5876,7 +6121,7 @@ end module m2
                           f"  call dep__apply(x, scratch)\n  y = x\n"
                           f"end subroutine solve\nend module m\n")
                 try:
-                    vps._fortran_subroutine_envelopes(source)
+                    vps._fortran_procedure_envelopes(source)
                 except vps._FortranSourceStructureError:
                     refused.add((name, assignment))
                     continue
@@ -5933,7 +6178,7 @@ end module m2
                           f"  call dep__apply(x, scratch)\n  y = x\n"
                           f"end subroutine solve\nend module m\n")
                 try:
-                    vps._fortran_subroutine_envelopes(source)
+                    vps._fortran_procedure_envelopes(source)
                 except vps._FortranSourceStructureError:
                     refused.add(name)
                     continue
@@ -5993,7 +6238,7 @@ end module m
                       "  call dep__apply(x, scratch)\n  y = x + endsubroutine\n"
                       "end subroutine solve\nend module m\n")
             with self.assertRaises(vps._FortranSourceStructureError, msg=operator):
-                vps._fortran_subroutine_envelopes(source)
+                vps._fortran_procedure_envelopes(source)
 
     def test_a_name_that_looks_like_interface_is_refused_not_read_as_a_span(self) -> None:
         # The shape this file has guarded three different ways: a variable named `interface`. The
@@ -6008,7 +6253,7 @@ end module m
                       f"  call dep__apply(x, scratch)\n  y = x\n"
                       f"end subroutine solve\nend module m\n")
             with self.assertRaises(vps._FortranSourceStructureError, msg=assignment):
-                vps._fortran_subroutine_envelopes(source)
+                vps._fortran_procedure_envelopes(source)
 
     def test_every_interface_span_spelling_is_skipped(self) -> None:
         # `abstract` and the one-word `endinterface` are each legal (verified with `gfortran
@@ -6097,7 +6342,7 @@ end module m
         # its contained procedures — a `call` in one of them, with the `intent(out)` in the host,
         # is the host's business and used to be invisible to every gate — while its out-scope stops
         # at the `contains`, because a contained procedure's dummies are its own.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(x, y)\n"
             "  real, intent(in) :: x\n"
             "  real, intent(out) :: y\n"
@@ -6160,7 +6405,7 @@ end module shallow_water2d_model
         # was never matched — and its `end subroutine` then paired with the NEXT subroutine's
         # header, shifting that envelope's body. Legal F2008 (verified with `gfortran
         # -fsyntax-only -std=f2008`).
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine setup\n  call init_marker()\nend subroutine setup\n"
             "subroutine solve(x, y)\n  real, intent(out) :: y\n  y = x\nend subroutine solve\n"
         )
@@ -6169,21 +6414,29 @@ end module shallow_water2d_model
         self.assertEqual(envelopes[1].dummy_args, "x, y")
         self.assertNotIn("init_marker", envelopes[1].body)
 
-    def test_a_function_between_two_subroutines_does_not_shift_either_envelope(self) -> None:
-        # Function frames exist only so a function's terminator — including a bare `end` — is not
-        # read as closing the subroutine that precedes it. The function body itself is NOT an
-        # envelope, which is a known hole recorded in `TODO.md`, not an accident.
+    def test_a_function_between_two_subroutines_is_its_own_envelope(self) -> None:
+        # This test used to assert the HOLE: a function's terminator was tracked only so it would
+        # not be read as closing the subroutine before it, and the function body itself was
+        # invisible to all three gates — 92 of the 365 in-tree models define one. The hole is
+        # closed, so what is asserted flips: the function is an envelope of its own, its result
+        # variable is its definable output, and the neighbouring subroutines are unchanged (the
+        # regression this test was originally written to catch).
         for function_end in ("end function scale_by", "endfunction", "end"):
-            envelopes = vps._fortran_subroutine_envelopes(
+            envelopes = vps._fortran_procedure_envelopes(
                 "module m\ncontains\n"
                 "subroutine first(x, y)\n  y = x\nend subroutine first\n"
                 f"real function scale_by(v)\n  scale_by = 2.0 * v\n{function_end}\n"
                 "subroutine second(a, b)\n  b = second_marker\nend subroutine second\n"
                 "end module m\n"
             )
-            self.assertEqual([e.name for e in envelopes], ["first", "second"], function_end)
+            self.assertEqual([(e.kind, e.name) for e in envelopes],
+                             [("subroutine", "first"), ("function", "scale_by"),
+                              ("subroutine", "second")], function_end)
             self.assertNotIn("scale_by", envelopes[0].body, function_end)
-            self.assertIn("second_marker", envelopes[1].body, function_end)
+            self.assertIn("second_marker", envelopes[2].body, function_end)
+            # No `result(...)`, so the definable output is the function's own name.
+            self.assertEqual("scale_by", envelopes[1].result_name, function_end)
+            self.assertEqual({"scale_by"}, set(envelopes[1].out_vars), function_end)
 
     def test_an_unmatched_end_function_is_refused(self) -> None:
         # The old walk ignored an END whose kind matched no open frame, so the body ran LONG.
@@ -6203,7 +6456,7 @@ end subroutine solve
 end module m
 """
         with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_subroutine_envelopes(source.lower())
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_an_unterminated_subroutine_body_is_refused(self) -> None:
         # Same edge, third reading. The ORIGINAL flat span emitted nothing at all here (a silent
@@ -6220,7 +6473,7 @@ subroutine solve(x, y)
   y = x
 """
         with self.assertRaises(vps._FortranSourceStructureError):
-            vps._fortran_subroutine_envelopes(source.lower())
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_an_interface_span_is_blanked_in_place_not_deleted(self) -> None:
         # `body` must stay ONE CONTIGUOUS SLICE of a length-preserving transform of the view, so a
@@ -6247,7 +6500,7 @@ subroutine solve(x, y)
                       "  y = x\n"
                       "end subroutine solve\n")
             label = f"{opener} / {closer}"
-            envelopes = vps._fortran_subroutine_envelopes(source)
+            envelopes = vps._fortran_procedure_envelopes(source)
             self.assertEqual([e.name for e in envelopes], ["solve"], label)
             view_lines = vps._joined_masked_fortran_view(source).split("\n")
             # Every line between the header and the terminator, at its original width.
@@ -6258,15 +6511,15 @@ subroutine solve(x, y)
             )
             self.assertNotIn("other", envelopes[0].body, label)
 
-    def test_fortran_subroutine_envelopes_is_a_fixed_point_over_the_view(self) -> None:
+    def test_fortran_procedure_envelopes_is_a_fixed_point_over_the_view(self) -> None:
         # The helper reduces its own input, which is what lets a gate that has already reduced its
         # text hand it over unchanged and a test hand over raw source — the argument
         # `_split_fortran_names` already makes for itself.
         source = ("module m\ncontains\n"
                   "subroutine solve(x, &\n    y) ! wrapped\n"
                   "  real, intent(out) :: y\n  y = x\nend subroutine solve\nend module m\n")
-        from_raw = vps._fortran_subroutine_envelopes(source)
-        from_view = vps._fortran_subroutine_envelopes(vps._joined_masked_fortran_view(source))
+        from_raw = vps._fortran_procedure_envelopes(source)
+        from_view = vps._fortran_procedure_envelopes(vps._joined_masked_fortran_view(source))
         self.assertEqual(from_raw, from_view)
         # The dummy list survives the wrap; the whitespace the join leaves behind is not the
         # property under test, so it is read the way every caller reads it.
@@ -6352,7 +6605,7 @@ end module m
         vps._validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertTrue(any("metric-only scalar kernel" in v for v in violations), violations)
@@ -6384,7 +6637,7 @@ end module m
         vps._validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertEqual(violations, [])
@@ -6401,7 +6654,7 @@ end module m
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=["dep"],
             violations=violations,
         )
@@ -6435,7 +6688,7 @@ end module shallow_water2d_model
         vps._validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertEqual(violations, [])
@@ -6472,7 +6725,7 @@ end module shallow_water2d_model
         vps._validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertTrue(
@@ -7566,7 +7819,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
-                envelopes=vps._fortran_subroutine_envelopes(source.lower()),
+                envelopes=vps._fortran_procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
