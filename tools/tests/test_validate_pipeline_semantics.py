@@ -10523,18 +10523,20 @@ end program shallow_water2d_runner
             self.assertTrue(any("degenerate pass-test set" in x for x in v), v)
 
     def test_real_full_fidelity_predicate_set_is_not_degenerate(self) -> None:
-        # Calibration against the real full-fidelity IR (shallow-water2d_20260718_003): 6 pass blocks
-        # (per-case threshold maps, `case:`-scoped conditions, metric addresses) + 1 verdict-only
-        # xfail. The degenerate gate must NOT fire — the pass set carries real metric/checks
-        # conditions and the xfail is exempt. Driven through `_validate_test_predicates` on the exact
-        # on-disk IR so a false positive here is caught against production shape.
+        # The degenerate gate must not fire on a real full-fidelity IR. That is the whole
+        # assertion, and it is one bit: the pass set carries at least one non-`verdict.*`
+        # condition somewhere, and the verdict-only xfail is exempt. The fixture happens to have
+        # 6 pass predicates and 1 xfail, with per-case threshold maps and metric addresses, but
+        # none of that census is asserted here — trimming the fixture to a single conforming pass
+        # predicate still passes. Said plainly rather than described richly, because a comment
+        # that counts the fixture's contents is a claim the test does not stand behind.
         #
         # The input is a TRACKED fixture, not a live run directory. This test used to read
         # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
         # operator's execution workspace and is gitignored, so that made the calibration a
         # permanent silent skip (the suite's standing "1 skipped") on every fresh clone. A missing
         # fixture is now repository corruption, not an environment difference — so it fails.
-        # `test_no_test_reads_untracked_paths` keeps any test from pinning that space again.
+        # `test_skip_reasons_are_declared` keeps the skip from coming back by any route.
         #
         # `repo_root` is the temp dir, not the real one, deliberately: it leaves
         # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the IR's
