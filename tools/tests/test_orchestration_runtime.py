@@ -33536,27 +33536,30 @@ class JsonPayloadFileArgTests(unittest.TestCase):
 class AgentRoleFailClosedTests(unittest.TestCase):
     """`agent_role` must be fail-closed at BOTH chokepoints (TODO.md, high).
 
-    WHAT IS PINNED (set identity, not a sample) — and it is FIVE of the seven tests, not
+    WHAT IS PINNED (set identity, not a sample) — and it is FOUR of the eight tests, not
     all of them. `test_launch_requires_exactly_the_role_its_step_demands` iterates
     `STEP_REQUIRED_CHILD_AGENT` x `AGENT_RUN_ROLES`;
-    `test_every_captured_production_payload_declares_the_demanded_role` iterates the
-    captured payloads and asserts their count;
     `test_terminal_payload_rejects_a_role_outside_the_vocabulary` and
     `test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary` iterate
     `AGENT_RUN_ROLES` on the accept side; and
     `test_the_unaudited_role_cannot_carry_a_terminal_status` pins
     `AGENT_RUN_ROLES - WRITE_AUDITED_AGENT_ROLES`. Adding a step or a role to either
-    definition therefore extends those five automatically — the property the earlier
+    definition therefore extends those four automatically — the property the earlier
     phase-contract tests could NOT express, because they sat outside the set they
     described and could only sample names to reject.
 
-    WHAT IS NOT: `test_launch_role_normalization_closes_the_spelling_family` samples
-    spellings by construction. `test_capability_then_manifest_agree_on_the_role_...`
-    drives ONE captured fixture (`compile_generate.request.json`) and iterates nothing —
-    it exists to pin the producer->consumer ORDER, not the role vocabulary, so a new step
-    or substep does not land in it. An earlier version of this docstring claimed all seven
-    iterate; review measured otherwise, and the claim was narrowed rather than the tests
-    stretched to fit it.
+    WHAT IS NOT, and this list has been wrong twice — narrowed once by review, then
+    narrowed AGAIN when a second reviewer measured the remaining claim:
+    `test_launch_role_normalization_closes_the_spelling_family` samples spellings by
+    construction. `test_capability_then_manifest_agree_on_the_role_...` drives ONE
+    captured fixture and pins the producer->consumer ORDER, not the vocabulary.
+    `test_launch_validation_canonicalizes_the_role_in_the_payload` likewise drives one
+    fixture. And `test_every_captured_production_payload_declares_the_demanded_role` is a
+    FIXTURE-CORPUS TRIPWIRE, not a definition pin: it globs the captured requests and
+    hard-asserts there are 7, so adding a step or a role does not extend it — verified by
+    mutating both definitions and watching it pass. It was listed among the pins until
+    that mutation was actually run, which is the point: a test's category is something to
+    measure, not to assert from its shape.
 
     WHAT IS SAMPLED: the specific out-of-vocabulary spellings (`"bogus"`, `"Substep "`,
     …). Those are shape probes — an unknown word, a case/whitespace variant — not a proof
@@ -33606,6 +33609,35 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _require_child_agent_role_for_step(
                         junk, "compile", label="t:", error_type=ValueError)
+
+    def test_launch_validation_canonicalizes_the_role_in_the_payload(self) -> None:
+        """Validating is not enough — the chokepoint must WRITE THE NORMALIZED TOKEN BACK.
+
+        Two downstream readers do not lower-case what they read: `_build_task_card`
+        (`str(...).strip()`, no `.lower()`) and `_write_allowed_output_manifest`. So a
+        payload saying `"SUBSTEP"` passed validation and then produced an EMPTY Task Card,
+        shipping the leaf without its conductor-resolved orientation — silently, because
+        `_validate_launch_prompt_text` has no non-empty requirement for the card. This is
+        the system-level half of what `_normalized_agent_role`'s docstring claims; the
+        helper-in-isolation test above cannot see it."""
+        from tools.orchestration_runtime import (
+            _build_task_card,
+            _validate_launch_request_payload,
+        )
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "generate_generate.request.json"
+        )
+        base = json.loads(fixture.read_text(encoding="utf-8"))
+        canonical_card = _build_task_card(base)
+        self.assertTrue(canonical_card, "fixture must produce a card to compare against")
+        for spelling in ("SUBSTEP", " Substep ", "substep"):
+            with self.subTest(spelling=spelling):
+                payload = {**base, "agent_role": spelling}
+                _validate_launch_request_payload(payload)
+                self.assertEqual(payload["agent_role"], "substep")
+                self.assertEqual(_build_task_card(payload), canonical_card)
 
     def test_every_captured_production_payload_declares_the_demanded_role(self) -> None:
         """The captured conductor requests must already satisfy the rule the runtime now

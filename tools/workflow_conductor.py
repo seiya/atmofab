@@ -4443,10 +4443,12 @@ class Conductor:
         # Read the role that record-launch already validated and persisted; do NOT default
         # it. This was the last reader answering the question from its own fallback
         # (`or "substep"`), and it writes straight through to the session run index, whose
-        # upsert applies no vocabulary test of its own. The request file is host-written
-        # by record-launch AFTER `_validate_launch_request_payload`, so a missing or
-        # unknown role here means the file is absent or corrupt — a transport fault to
-        # surface, not a value to guess.
+        # upsert applies no vocabulary test of its own. The request file is host-written by
+        # record-launch AFTER `_validate_launch_request_payload`, so a role that is absent
+        # or outside the vocabulary means the file's CONTENT is wrong — a transport fault
+        # to surface, not a value to guess. (An absent FILE does not arrive here at all:
+        # `_read_json` raises `FileNotFoundError` first, and the `or {}` above covers only
+        # a JSON null / empty body.)
         role = _normalized_agent_role(request.get("agent_role"))
         if role not in AGENT_RUN_ROLES:
             raise RuntimeError(

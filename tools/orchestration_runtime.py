@@ -14422,7 +14422,14 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # transport fault the leaf cannot repair — a raise here, never a content failure.
     if not _normalized_agent_role(request_payload.get("agent_role")):
         raise ValueError("launch request must include non-empty agent_role")
-    _require_child_agent_role_for_step(
+    # CANONICALIZE, do not merely validate. Two downstream readers do not lower-case what
+    # they read — `_build_task_card` (`str(...).strip()`, no `.lower()`) and
+    # `_write_allowed_output_manifest` — so validating `"SUBSTEP"` and leaving it in the
+    # payload was accepted here and then silently produced an EMPTY Task Card, shipping the
+    # leaf without its conductor-resolved orientation. Writing the normalized token back is
+    # what makes "one field, one value in every reader" actually true; `record_agent_run`
+    # already does the same for the terminal payload.
+    request_payload["agent_role"] = _require_child_agent_role_for_step(
         request_payload.get("agent_role"),
         step,
         label="launch request:",
