@@ -36,11 +36,20 @@ last is the fixed defect with one word changed. They are out of reach here becau
 skips; catching them needs a different instrument (observing what the runner actually executed),
 and pretending otherwise in this docstring is how the previous version of it came to be false.
 
-Two deliberate trades in the other direction. A module defining its own `skipTest` opts out of
-the attribute-name match, since there the name no longer means the inherited method. And
-`X.skipTest(...)` on any other receiver IS matched, so an unrelated object with a method of that
-name would be reported — accepted knowingly, because the alternative is missing every helper
-that takes the case as an argument, and the fix for the false positive is visible and local.
+Two deliberate trades in the other direction. A class defining its own `skipTest` opts out of the
+attribute-name match inside that class, since there the name no longer means the inherited
+method — scoped to the class, because an earlier version applied it per module and one test
+double with a `skipTest` silenced every real skip in the file. And `X.skipTest(...)` on any other
+receiver IS matched, so an unrelated object with a method of that name would be reported —
+accepted knowingly, because the alternative is missing every helper that takes the case as an
+argument, and the fix for the false positive is visible and local.
+
+Name resolution here is flow-insensitive: one map per module, built from its imports, with no
+statement ordering. Rebinding a bound name therefore gives a wrong answer in both directions —
+`def helper(unittest): unittest.skip(...)` is reported though the parameter shadows the import,
+and `import unittest as api` followed later by `import pytest as api` hides a real skip. Getting
+these right means implementing Python's scope and ordering rules, which is a bigger instrument
+than the problem justifies; they are written down here instead. The corpus contains neither.
 
 Adding a genuinely new environment capability means adding it to `_DECLARED_ENVIRONMENT_SKIPS`
 below, in the same commit as the skip, with a note saying what about the host it depends on.
@@ -129,7 +138,15 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
             module = node.module or ""
             if module.split(".")[0] in _SKIP_ROOTS:
                 for a in node.names:
-                    out[a.asname or a.name] = f"{module}.{a.name}"
+                    if a.name == "*":
+                        # A star import binds the API's own leaf name, so `@skip(...)` after
+                        # `from unittest import *` is the API by a shorter spelling.
+                        root = module.split(".")[0]
+                        for api in _SKIP_APIS:
+                            if api.startswith(f"{root}."):
+                                out.setdefault(api.rsplit(".", 1)[1], api)
+                    else:
+                        out[a.asname or a.name] = f"{module}.{a.name}"
     return out
 
 
@@ -167,13 +184,21 @@ def _literal_args(node: ast.Call) -> tuple[list[ast.AST], dict[str, ast.AST]]:
                 args.extend(a.value.elts)
         else:
             args.append(a)
+
+    def expand(mapping: ast.Dict) -> None:
+        # `{"a": 1, **{"reason": "..."}}` nests, and Python flattens it before the call sees it.
+        # Reading only the outer level reports a declared reason as unreadable.
+        for k, v in zip(mapping.keys, mapping.values):
+            if k is None and isinstance(v, ast.Dict):
+                expand(v)
+            elif isinstance(k, ast.Constant) and isinstance(k.value, str):
+                kwargs[k.value] = v
+
     for kw in node.keywords:
         if kw.arg is not None:
             kwargs[kw.arg] = kw.value
         elif isinstance(kw.value, ast.Dict):
-            for k, v in zip(kw.value.keys, kw.value.values):
-                if isinstance(k, ast.Constant) and isinstance(k.value, str):
-                    kwargs[k.value] = v
+            expand(kw.value)
     return args, kwargs
 
 
@@ -186,33 +211,52 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
     """
     tree = ast.parse(module.read_text(encoding="utf-8"))
     aliases = _alias_map(tree)
-    own_skiptest = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                       and n.name == "skipTest" for n in ast.walk(tree))
+
+    # The `skipTest` opt-out belongs to the class that overrides it, not to the file. An earlier
+    # version set it module-wide, so one `def skipTest` on an unrelated test double silenced
+    # every real skip in the module — reviewers walked the retired calibration reason through it.
+    opted_out: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and any(
+                isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) and b.name == "skipTest"
+                for b in node.body):
+            opted_out.update(id(inner) for inner in ast.walk(node))
     found: list[tuple[int, str, str | None]] = []
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            api = _canonical(node.func, aliases, own_skiptest)
+            api = _canonical(node.func, aliases, id(node) in opted_out)
             if api is None:
                 continue
             args, kwargs = _literal_args(node)
+            run = kwargs.get("run")
+            if api == "pytest.mark.xfail" and not (
+                    isinstance(run, ast.Constant) and run.value is False):
+                continue  # xfail still runs the test; only `run=False` stops it from running
             reason = kwargs.get("reason")
             index = _SKIP_APIS[api]
             if reason is None and index is not None and len(args) > index:
                 reason = args[index]
+            if (api == "unittest.TestCase.skipTest"
+                    and not isinstance(reason, ast.Constant) and len(args) > 1):
+                # The unbound spelling `type(self).skipTest(self, reason)` puts the case first.
+                reason = args[1]
             if isinstance(reason, ast.Constant) and isinstance(reason.value, str):
                 found.append((node.lineno, api, reason.value))
             else:
                 found.append((node.lineno, api, None))
-        elif isinstance(node, ast.Assign):
-            # `__unittest_skip__` is the flag `TestCase.run` actually reads, and it is set both
-            # as `test_x.__unittest_skip__ = True` after the definition and as a bare
-            # `__unittest_skip__ = True` in a class body — review skipped a test past an earlier
-            # version of this file through the second, which matched only the attribute form.
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            # `__unittest_skip__` is the flag `TestCase.run` actually reads, set as
+            # `test_x.__unittest_skip__ = True` after the definition, as a bare
+            # `__unittest_skip__ = True` in a class body, and with an annotation on either.
+            # Review walked a skip past earlier versions through the second and third spellings.
             # `__unittest_skip_why__` on its own skips nothing, and `= False` un-skips, so
             # neither is a violation: flagging them would report a test that does run.
+            if node.value is None:
+                continue  # a bare annotation binds nothing
             truthy = not (isinstance(node.value, ast.Constant) and not node.value.value)
-            for t in node.targets:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for t in targets:
                 name = t.attr if isinstance(t, ast.Attribute) else \
                     t.id if isinstance(t, ast.Name) else None
                 if name == "__unittest_skip__" and truthy:
@@ -230,7 +274,7 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
         elif isinstance(node, ast.Raise) and node.exc is not None:
             bare = [node.exc]
         for ref in bare:
-            api = _canonical(ref, aliases, own_skiptest)
+            api = _canonical(ref, aliases, id(ref) in opted_out)
             if api is not None:
                 found.append((getattr(ref, "lineno", node.lineno), api, None))
     return sorted(found)
@@ -402,6 +446,12 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 '    __unittest_skip__ = True\n'
                 '    __unittest_skip_why__ = "undeclared"\n'
                 '    def test_x(self): pass\n',
+            "hand-set unittest metadata, annotated":
+                'import unittest\n'
+                'def test_x(): pass\n'
+                'test_x.__unittest_skip__: bool = True\n',
+            "xfail that does not run the test":
+                'import pytest\n@pytest.mark.xfail(run=False)\ndef test_x(): pass\n',
             "bare decorator on an async def":
                 'import unittest\n@unittest.skip\nasync def test_x(): pass\n',
             "called with no arguments at all":
@@ -440,9 +490,24 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'def test_x():\n'
                 '    import unittest\n'
                 f'    raise unittest.SkipTest({_UNDECLARED!r})\n',
+            "star import":
+                'from unittest import *\n'
+                f'@skip({_UNDECLARED!r})\ndef test_x(): pass\n',
             "case passed to a helper":
                 'def _need(tc):\n'
                 f'    tc.skipTest({_UNDECLARED!r})\n',
+            "unbound call with the case as first argument":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    def test_x(self):\n'
+                f'        type(self).skipTest(self, {_UNDECLARED!r})\n',
+            "an unrelated class overriding skipTest does not silence this one":
+                'import unittest\n'
+                'class _Double:\n'
+                '    def skipTest(self, reason):\n        return None\n'
+                'class T(unittest.TestCase):\n'
+                '    def test_x(self):\n'
+                f'        self.skipTest({_UNDECLARED!r})\n',
         }.items():
             violations = _probe(src)
             self.assertEqual(len(violations), 1, f"{label}: {violations}")
@@ -477,8 +542,21 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'class T(unittest.TestCase):\n'
                 '    __unittest_skip_why__ = "explanatory, not a skip"\n'
                 '    def test_x(self): pass\n',
+            "xfail that still runs the test":
+                'import pytest\n'
+                '@pytest.mark.xfail(reason="expected to fail, but it does run")\n'
+                'def test_x(): pass\n',
         }.items():
             self.assertEqual(_probe(src), [], label)
+
+    def test_a_declared_reason_reaches_the_table_through_nested_unpacking(self) -> None:
+        # Python flattens `{**{...}}` before the call sees it; reading only the outer level
+        # reports a declared reason as unreadable, which rejects a legitimate skip.
+        declared = next(iter(_DECLARED_ENVIRONMENT_SKIPS))
+        self.assertEqual(_probe(
+            'import unittest\n'
+            f'@unittest.skipIf(**{{"condition": True, **{{"reason": {declared!r}}}}})\n'
+            'def test_x(): pass\n'), [])
 
     def test_a_declared_reason_survives_literal_argument_unpacking(self) -> None:
         # Recovering these as "not a literal" would reject a valid skip, which teaches people to
