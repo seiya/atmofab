@@ -5574,6 +5574,40 @@ end module shallow_water2d_model
         self.assertIn("literal-only assignments", violations)
         self.assertIn("function solve", violations)
 
+    def test_a_functions_result_cannot_exempt_a_fabricated_intent_out(self) -> None:
+        # The other direction of the same decision, and the one review had to point out. This
+        # gate's test is a conjunction over the output set, so an extra output that IS
+        # input-dependent exempts the procedure — and a result variable is an extra output every
+        # function has for free. Reading `out_vars` here therefore made the function form a
+        # LAUNDERING route for a defect the subroutine form is flagged for. Both spellings below
+        # are accepted by `gfortran -fsyntax-only -std=f2008` (executed), and the pair is asserted
+        # together so that silencing one cannot look like a passing suite.
+        subroutine_form = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(u, v)
+  real, intent(in) :: u(:)
+  real, intent(out) :: v(:)
+  v = 1.0
+end subroutine solve
+end module shallow_water2d_model
+"""
+        function_form = """module shallow_water2d_model
+implicit none
+contains
+function solve(u, v) result(r)
+  real, intent(in) :: u(:)
+  real, intent(out) :: v(:)
+  real :: r
+  v = 1.0
+  r = u(1)
+end function solve
+end module shallow_water2d_model
+"""
+        for label, source in (("subroutine", subroutine_form), ("function", function_form)):
+            self.assertIn("literal-only assignments for all intent(out) vars",
+                          " ".join(self._literal_output_violations(source)), label)
+
     def test_an_abbreviated_module_procedure_is_refused_and_the_full_form_is_checked(self) -> None:
         # The second spelling of this item's gap, and the one that cannot be closed by emitting an
         # envelope: F2008 forbids a separate module subprogram's body from redeclaring its dummies

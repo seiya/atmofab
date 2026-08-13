@@ -1241,9 +1241,19 @@ class _FortranProcedureEnvelope:
     times, which is how a function stayed invisible to all three of them for as long as it did.
 
     ``intent_out_vars`` is the `intent(out)` dummies ALONE — the same set minus the result
-    variable. One gate needs the distinction and it is not a nicety: see
-    `_validate_problem_model_literal_outputs`, where treating a result variable as enough to open
-    the gate produced ten false violations against this tree and caught nothing.
+    variable. The distinction is not a nicety: `_validate_problem_model_literal_outputs` reads
+    ONLY this set, because a result variable in its conjunction is wrong in both directions — as
+    a trigger it produced ten false violations against this tree and caught nothing, and as a
+    member it EXEMPTED any function whose result happened to be input-dependent, which turned
+    rewriting a subroutine as a function into a way to launder a fabricated `intent(out)`.
+
+    HOW FAR THE FUNCTION WIDENING ACTUALLY REACHES IN THIS TREE, measured rather than implied:
+    of the 422 function envelopes in the 365 in-tree `*_model.f90`, **0 declare an `intent(out)`
+    dummy** and none carries five outputs, so the literal-outputs gate and the metric-only-kernel
+    gate (which needs `len(out_vars) >= 5`) are both inert for every function that exists here
+    today. The gate that is live for functions is the dependency-dataflow one — which is the gate
+    this item's reproduction used, and the reason the widening was worth doing. A function that
+    does declare an `intent(out)` dummy is checked by all three.
     """
 
     kind: str
@@ -1355,23 +1365,27 @@ def _validate_problem_model_literal_outputs(
         arg_names = set(_split_fortran_names(envelope.dummy_args))
         body = envelope.body
 
-        # A RESULT VARIABLE DOES NOT OPEN THIS GATE, and that is a measurement, not a taste.
-        # This gate asks whether a procedure fabricates its OUTPUT ARGUMENTS — "all of them are
-        # literals and none depends on an input" is evidence of that for a subroutine. For a
-        # function it is the normal shape of two legitimate things: a constant accessor
-        # (`ghost_width() result(ng); ng = 1`) and a predicate whose input dependence lives in its
-        # BRANCH CONDITIONS rather than in the assigned expression (`res = .false.` … `if (lhs(k)
-        # < rhs(k)) res = .true.`), which this gate's flow-insensitive `input_dependent` test
-        # cannot see. Opening the gate on the result alone was executed against all 365 in-tree
-        # models: **10 functions flagged, 10 of them legitimate, 0 defects found** — every one a
-        # predicate or an accessor. So the result stays in `out_vars` (it must be literal too for
-        # the procedure to be flagged, which only ever EXEMPTS) while the gate itself still
-        # requires an `intent(out)` dummy. A function that has one is now checked, which is the
-        # widening this change does deliver.
-        if not envelope.intent_out_vars:
-            continue
-
-        out_vars = set(envelope.out_vars)
+        # THIS GATE READS THE `intent(out)` DUMMIES AND NOTHING ELSE — not `out_vars`, which for
+        # a function also holds its result variable. Both halves of that are measurements.
+        #
+        # It must not FIRE on a result: "every output is a literal and none depends on an input"
+        # is evidence of fabrication for a subroutine, but for a function it is the normal shape
+        # of a constant accessor (`ghost_width() result(ng); ng = 1`) and of a predicate whose
+        # input dependence lives in its BRANCH CONDITIONS rather than in the assigned expression
+        # (`res = .false.` … `if (lhs(k) < rhs(k)) res = .true.`), which this gate's
+        # flow-insensitive `input_dependent` test cannot see. Executed against all 365 in-tree
+        # models: opening the gate on the result alone flags 10 functions, 10 of them legitimate,
+        # 0 defects.
+        #
+        # It must not be EXEMPTED by one either, which is the half review had to point out. The
+        # test is a conjunction over the whole output set, so an extra output that IS
+        # input-dependent exempts the procedure — and a function's result is an extra output every
+        # function has for free. That made rewriting a flagged subroutine as a function a way to
+        # launder it: `v = 1.0` with `intent(out) :: v` is flagged as a subroutine, and adding
+        # `r = u(1)` to the function form silenced it (both accepted by `gfortran -fsyntax-only
+        # -std=f2008`, both executed). A subroutine has to DECLARE an extra `intent(out)` to buy
+        # that exemption; a function was getting it by existing.
+        out_vars = set(envelope.intent_out_vars)
         if not out_vars:
             continue
 
@@ -1405,13 +1419,12 @@ def _validate_problem_model_literal_outputs(
             # The subroutine wording is UNCHANGED, deliberately: it is what the 365-file
             # differential compares against, so every line that moves when functions become
             # visible is a NEW line about a function and attributable as one.
+            # One wording for both kinds, and it names `intent(out)` because that is now exactly
+            # what was judged. The subroutine text is unchanged byte for byte: it is what the
+            # 365-file differential compares against.
             violations.append(
                 f"{model_file}: {envelope.kind} {sub_name} has literal-only assignments for "
                 f"all intent(out) vars"
-                if envelope.kind == "subroutine"
-                else f"{model_file}: function {sub_name} has literal-only assignments for all "
-                f"definable outputs (its intent(out) dummies and its result variable "
-                f"{envelope.result_name})"
             )
 
 
