@@ -7078,6 +7078,47 @@ end module shallow_water2d_model
                 f"got: {self._dataflow_violations(source)}",
             )
 
+    def test_an_obsolescent_labelled_do_is_analysed_not_refused(self) -> None:
+        # The view strips a leading statement label so every rule can anchor on the statement's
+        # own keyword. That is right for the rules and wrong for a PARSER: in the obsolescent
+        # labelled `DO`, the label IS the loop's terminator, so stripping it leaves `do 100 …`
+        # with nothing closing it and the parse ERRORs. `gfortran -fsyntax-only -std=f2008 -Wall`
+        # accepts this source with no diagnostic at all and `origin/main` analysed it correctly,
+        # so refusing it was a regression — found by review, and invisible to the differential
+        # because 0 of the 365 in-tree models carry a statement label of any kind.
+        #
+        # The fix keeps a label only when some `do` NAMES it, which is why the row below and the
+        # labelled-header rows in the next test have to pass together: keeping every label makes
+        # this one work and breaks those (the parser ERRORs on `10 contains` and
+        # `20 subroutine helper(v)`, both of which gfortran accepts — executed).
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(u, v, n)
+  integer, intent(in) :: n
+  real, intent(in) :: u(n)
+  real, intent(out) :: v(n)
+  real :: scratch(4)
+  integer :: i
+  call dep__op(scratch)
+  do 100 i = 1, 4
+    v(i) = u(i)
+100 continue
+end subroutine solve
+end module shallow_water2d_model
+"""
+        envelopes = vps._fortran_procedure_envelopes(source.lower())
+        self.assertEqual([("subroutine", "solve")], [(e.kind, e.name) for e in envelopes])
+        # ... and the body really is the body: the gate still sees the discarded dependency call.
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+        # The label on the terminator is what is kept; a labelled statement no `do` refers to is
+        # still stripped, which the next test pins from the other side.
+        for spelling in ("100 continue", "100 v(i) = u(i)"):
+            body = source.replace("    v(i) = u(i)\n100 continue", f"    v(i) = u(i)\n{spelling}")
+            self.assertEqual(1, len(vps._fortran_procedure_envelopes(body.lower())), spelling)
+
     def test_a_labelled_structural_statement_is_still_structural(self) -> None:
         # A statement LABEL may precede any statement. Both structural statements here are
         # labelled deliberately, and that is what makes the strip load-bearing: the specification

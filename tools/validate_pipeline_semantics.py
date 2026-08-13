@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import re
@@ -1266,6 +1267,80 @@ class _FortranProcedureEnvelope:
     out_vars: frozenset[str]
 
 
+#: The obsolescent labelled `DO`, whose loop is closed by the STATEMENT CARRYING THAT LABEL
+#: rather than by an `end do`. This is the whole reason a label can be load-bearing to a parser.
+_FORTRAN_LABELLED_DO_OPEN = re.compile(r"^do\s+(\d+)\b")
+#: `_FORTRAN_STATEMENT_LABEL` with the label captured. Separate rather than a group added to it,
+#: because that one is used with `.sub()` in several places where adding a group changes nothing
+#: but reads as if it might.
+_FORTRAN_STATEMENT_LABEL_VALUE = re.compile(r"^(\d+)\s+")
+
+
+def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
+    """The gate view and a LABEL-PRESERVING twin of it, line for line.
+
+    `_joined_masked_fortran_view` strips a leading statement label, because every rule that reads
+    the view anchors on the statement's own keyword and a label sitting in front of it would have
+    to be guarded for in each rule. That is right for the RULES and wrong for a PARSER: in F2008's
+    obsolescent labelled `DO`, the label IS the loop's terminator, so stripping it leaves
+    `do 100 i = 1, 4` with nothing closing it. tree-sitter then reports ERROR and the source is
+    refused — a source `gfortran -fsyntax-only -std=f2008 -Wall` accepts with no diagnostic at
+    all, and one `origin/main`'s regex walk analysed correctly. Found by review; 0 of the 365
+    in-tree `*_model.f90` carry a statement label of any kind, which is why no differential could
+    see it.
+
+    Both strings are built from ONE pass over the same statements, so line i of one is line i of
+    the other by construction rather than by a length coincidence. Every offset this module hands
+    a gate is a LINE START, so the parse offsets are translated by line index and stay exact.
+    """
+    raw_statements = [
+        statement.lstrip()
+        for _lineno, line in fortran_lines.fortran_logical_lines(lowered)
+        for statement in fortran_lines.split_fortran_statements(line)
+    ]
+    stripped_lines = [
+        _FORTRAN_STATEMENT_LABEL.sub("", statement, count=1) for statement in raw_statements
+    ]
+    # ONLY a label that some `do` names as its terminator is kept. Keeping every label is the
+    # obvious move and it is wrong in the other direction: a label may precede ANY statement, and
+    # `gfortran -fsyntax-only -std=f2008` accepts `10 contains` and `20 subroutine helper(v)`
+    # (executed) while tree-sitter reports ERROR on both — so a blanket keep trades the labelled
+    # `DO` refusal for a labelled-header one, which two tests in this file already pin as
+    # analysable. What makes the difference is not the label but what REFERS to it.
+    terminator_labels = {
+        match.group(1)
+        for match in (_FORTRAN_LABELLED_DO_OPEN.match(line) for line in stripped_lines)
+        if match
+    }
+    labelled_lines = [
+        raw if (label := _FORTRAN_STATEMENT_LABEL_VALUE.match(raw)) and label.group(1) in
+        terminator_labels else stripped
+        for raw, stripped in zip(raw_statements, stripped_lines)
+    ]
+
+    def finish(lines: list[str], keep: list[bool] | None) -> tuple[str, list[bool]]:
+        masked = fortran_lines.mask_code_lookalikes("\n".join(lines)).split("\n")
+        rstripped = [line.rstrip() for line in masked]
+        if keep is None:
+            keep = [bool(line) for line in rstripped]
+        return "\n".join(line for line, wanted in zip(rstripped, keep) if wanted), keep
+
+    # The KEEP decision is the stripped view's, applied to both: dropping a line from one and not
+    # the other is the only way this pairing can come apart, and a label-only "statement" (which
+    # is not legal Fortran anyway) is exactly the input that would do it.
+    view, keep = finish(stripped_lines, None)
+    labelled_view, _ = finish(labelled_lines, keep)
+    return view, labelled_view, _line_starts(view), _line_starts(labelled_view)
+
+
+def _line_starts(text: str) -> list[int]:
+    starts = [0]
+    for index, character in enumerate(text):
+        if character == "\n":
+            starts.append(index + 1)
+    return starts
+
+
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
@@ -1315,19 +1390,31 @@ def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope
     function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
     of which this tree has none. See `TODO.md`.
     """
-    view = _joined_masked_fortran_view(lowered)
-    tree = fortran_structure.parse_view(view)
+    # The PARSER reads the label-preserving twin and the GATES read the view; see
+    # `_fortran_view_pair` for why the two cannot be one string. Offsets come back indexing the
+    # twin and are translated by line index, which is exact because every one of them is a line
+    # start.
+    view, labelled_view, view_starts, labelled_starts = _fortran_view_pair(lowered)
+    tree = fortran_structure.parse_view(labelled_view)
     if tree.errors:
         raise _FortranSourceStructureError(tree.errors)
 
-    blanked = fortran_structure.blank_interface_spans(view, tree.interface_spans)
+    def to_view(offset: int) -> int:
+        index = bisect.bisect_right(labelled_starts, offset) - 1
+        if index >= len(view_starts):
+            return len(view)
+        return view_starts[index]
+
+    spans = tuple((to_view(start), to_view(end)) for start, end in tree.interface_spans)
+    blanked = fortran_structure.blank_interface_spans(view, spans)
     envelopes: list[_FortranProcedureEnvelope] = []
     for procedure in tree.procedures:
-        body_end = procedure.body_end
+        body_end = to_view(procedure.body_end)
+        body_start = to_view(procedure.body_start)
         out_end = body_end if procedure.contains_at is None else min(
-            procedure.contains_at, body_end
+            to_view(procedure.contains_at), body_end
         )
-        out_scope = blanked[procedure.body_start : max(out_end, procedure.body_start)]
+        out_scope = blanked[body_start : max(out_end, body_start)]
         out_vars: set[str] = set()
         for match in _FORTRAN_INTENT_OUT_PATTERN.finditer(out_scope):
             out_vars.update(_split_fortran_names(match.group(1)))
@@ -1341,7 +1428,7 @@ def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope
                 kind=procedure.kind,
                 name=procedure.name,
                 dummy_args=procedure.dummy_args_text,
-                body=blanked[procedure.body_start : body_end],
+                body=blanked[body_start:body_end],
                 out_scope=out_scope,
                 result_name=procedure.result_name,
                 intent_out_vars=intent_out_vars,
