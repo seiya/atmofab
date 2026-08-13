@@ -10541,7 +10541,10 @@ end program shallow_water2d_runner
         # operator's execution workspace and is gitignored, so that made the calibration a
         # permanent silent skip (the suite's standing "1 skipped") on every fresh clone. A missing
         # fixture is now repository corruption, not an environment difference — so it fails.
-        # `test_skip_reasons_are_declared` keeps the skip from coming back by any route.
+        # `test_skip_reasons_are_declared` stops that skip being re-declared; it cannot stop a
+        # future edit from simply returning early instead, which is the same defect without a
+        # skip in it. Nothing in the suite watches for that, and saying so beats implying
+        # otherwise — an earlier version of this comment claimed "any route" and was wrong.
         #
         # `repo_root` is the temp dir, not the real one, deliberately: it leaves
         # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the IR's
@@ -10559,7 +10562,8 @@ end program shallow_water2d_runner
                 return violations
 
         captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
-        self.assertFalse(any("degenerate" in v for v in drive(captured)), drive(captured))
+        clean = drive(captured)
+        self.assertFalse(any("degenerate" in v for v in clean), clean)
 
         # Parsed and shape-checked before mutating, so a fixture the gate cannot read fails on a
         # sentence naming what is wrong. Reviewers overwrote it with `{}` and with broken YAML;

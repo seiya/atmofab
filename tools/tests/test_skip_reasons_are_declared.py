@@ -22,13 +22,25 @@ bare `@unittest.skip` decorator, `raise SkipTest` with no argument, `pytest.impo
 `reason=`, a computed message — is a violation, so the check fails closed rather than falling
 through to "not recognised, therefore fine".
 
-What is still out of reach, and is not claimed otherwise: `__unittest_skip__` set by hand is
-caught and a helper inside the corpus that takes the case as an argument is caught, but a helper
-living outside `tools/tests/` that raises `SkipTest` on the caller's behalf is not, and neither
-is anything assembled at runtime — an API fetched with `getattr`, or a reason built at import
-time. Those are deliberate concealment rather than ordinary style, which is the line this guard
-draws. One deliberate blind spot: a module that defines its own `skipTest` opts out of the
-attribute-name match, because there the name no longer means the inherited method.
+**Scope, stated precisely, because an earlier version of this sentence claimed more than the
+code does.** What is checked is *declared skips*: the APIs in `_SKIP_APIS`, by any spelling that
+names them, plus `__unittest_skip__` set by hand in either the attribute or the class-body form.
+A helper inside the corpus that takes the case as an argument is covered; one living outside
+`tools/tests/` that raises `SkipTest` on the caller's behalf is not, and neither is anything
+assembled at runtime — an API fetched with `getattr`, or a reason built at import time.
+
+What is NOT covered, and cannot be by reading skip syntax: the other ways a test can fail to run
+without declaring anything. `__test__ = False`, defining the test under an `if`, `del test_f`,
+and an early `return` where the old code called `skipTest` — review demonstrated all four. The
+last is the fixed defect with one word changed. They are out of reach here because they are not
+skips; catching them needs a different instrument (observing what the runner actually executed),
+and pretending otherwise in this docstring is how the previous version of it came to be false.
+
+Two deliberate trades in the other direction. A module defining its own `skipTest` opts out of
+the attribute-name match, since there the name no longer means the inherited method. And
+`X.skipTest(...)` on any other receiver IS matched, so an unrelated object with a method of that
+name would be reported — accepted knowingly, because the alternative is missing every helper
+that takes the case as an argument, and the fix for the false positive is visible and local.
 
 Adding a genuinely new environment capability means adding it to `_DECLARED_ENVIRONMENT_SKIPS`
 below, in the same commit as the skip, with a note saying what about the host it depends on.
@@ -89,6 +101,7 @@ _SKIP_APIS = {
     "pytest.xfail": 0,
     "pytest.mark.skip": 0,
     "pytest.mark.skipif": 1,
+    "pytest.mark.xfail": None,
     "pytest.importorskip": None,
 }
 _SKIP_ROOTS = ("unittest", "pytest")
@@ -192,8 +205,17 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
             else:
                 found.append((node.lineno, api, None))
         elif isinstance(node, ast.Assign):
+            # `__unittest_skip__` is the flag `TestCase.run` actually reads, and it is set both
+            # as `test_x.__unittest_skip__ = True` after the definition and as a bare
+            # `__unittest_skip__ = True` in a class body — review skipped a test past an earlier
+            # version of this file through the second, which matched only the attribute form.
+            # `__unittest_skip_why__` on its own skips nothing, and `= False` un-skips, so
+            # neither is a violation: flagging them would report a test that does run.
+            truthy = not (isinstance(node.value, ast.Constant) and not node.value.value)
             for t in node.targets:
-                if isinstance(t, ast.Attribute) and t.attr.startswith("__unittest_skip"):
+                name = t.attr if isinstance(t, ast.Attribute) else \
+                    t.id if isinstance(t, ast.Name) else None
+                if name == "__unittest_skip__" and truthy:
                     found.append((node.lineno, "__unittest_skip__ metadata", None))
 
     # Bare references: a decorator or a `raise` that names a skip API without calling it stops a
@@ -214,11 +236,16 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
     return sorted(found)
 
 
-def _tracked_test_modules() -> list[Path]:
-    """Every Python module git tracks under `tools/tests/`, as the definition of the corpus."""
-    out = subprocess.run(["git", "ls-files", "-z", "--", "tools/tests"], cwd=REPO_ROOT,
+def _tracked_test_modules(root: Path = REPO_ROOT, subdir: str = "tools/tests") -> list[Path]:
+    """Every Python module git tracks under `subdir`, as the definition of the corpus.
+
+    `root`/`subdir` exist so this can be driven against a scratch repository. Without that, the
+    scan test compares two sets it derives the same way, and swapping this whole body for a glob
+    makes the comparison tautological while an untracked module slips into the sweep.
+    """
+    out = subprocess.run(["git", "ls-files", "-z", "--", subdir], cwd=root,
                          check=True, capture_output=True, text=True).stdout
-    return sorted(REPO_ROOT / p for p in out.split("\0") if p.endswith(".py"))
+    return sorted(root / p for p in out.split("\0") if p.endswith(".py"))
 
 
 def _violations(modules: list[Path]) -> list[str]:
@@ -267,7 +294,9 @@ _USAGES = {
     "pytest.mark.skip":
         "import pytest\n@pytest.mark.skip({r})\ndef test_x(): pass\n",
     "pytest.mark.skipif":
-        "import pytest\n@pytest.mark.skipif(True, reason={r})\ndef test_x(): pass\n",
+        "import pytest\n@pytest.mark.skipif(True, {r})\ndef test_x(): pass\n",
+    "pytest.mark.xfail":
+        "import pytest\n@pytest.mark.xfail(run=False, reason={r})\ndef test_x(): pass\n",
     "pytest.importorskip":
         "import pytest\ndef test_x():\n    pytest.importorskip('mod', reason={r})\n",
 }
@@ -363,10 +392,24 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'import unittest\n'
                 'class T(unittest.TestCase):\n'
                 '    def test_x(self):\n        self.skipTest(404)\n',
-            "hand-set unittest metadata":
+            "hand-set unittest metadata, attribute form":
                 'import unittest\n'
                 'def test_x(): pass\n'
                 'test_x.__unittest_skip__ = True\n',
+            "hand-set unittest metadata, class-body form":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    __unittest_skip__ = True\n'
+                '    __unittest_skip_why__ = "undeclared"\n'
+                '    def test_x(self): pass\n',
+            "bare decorator on an async def":
+                'import unittest\n@unittest.skip\nasync def test_x(): pass\n',
+            "called with no arguments at all":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    def test_x(self):\n        self.skipTest()\n',
+            "called with the condition but no reason":
+                'import unittest\n@unittest.skipIf(True)\ndef test_x(): pass\n',
         }
         for name, src in routes.items():
             violations = _probe(src)
@@ -390,6 +433,13 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
             "imported from the defining module":
                 'from unittest.case import SkipTest\n'
                 f'def test_x():\n    raise SkipTest({_UNDECLARED!r})\n',
+            "submodule imported directly":
+                'import unittest.case\n'
+                f'def test_x():\n    raise unittest.case.SkipTest({_UNDECLARED!r})\n',
+            "imported inside the function that skips":
+                'def test_x():\n'
+                '    import unittest\n'
+                f'    raise unittest.SkipTest({_UNDECLARED!r})\n',
             "case passed to a helper":
                 'def _need(tc):\n'
                 f'    tc.skipTest({_UNDECLARED!r})\n',
@@ -418,6 +468,15 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'class T(unittest.TestCase):\n'
                 '    def skipTest(self, reason):\n        return None\n'
                 '    def test_x(self):\n        self.skipTest("not the inherited one")\n',
+            "metadata that un-skips":
+                'import unittest\n'
+                'def test_x(): pass\n'
+                'test_x.__unittest_skip__ = False\n',
+            "only the why, which skips nothing on its own":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    __unittest_skip_why__ = "explanatory, not a skip"\n'
+                '    def test_x(self): pass\n',
         }.items():
             self.assertEqual(_probe(src), [], label)
 
@@ -425,12 +484,28 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
         # Recovering these as "not a literal" would reject a valid skip, which teaches people to
         # route around the guard rather than to declare their capability.
         declared = next(iter(_DECLARED_ENVIRONMENT_SKIPS))
-        self.assertEqual(_probe('import unittest\n'
-                                f'@unittest.skipIf(*[True, {declared!r}])\n'
-                                'def test_x(): pass\n'), [])
-        self.assertEqual(_probe('import unittest\n'
-                                f'@unittest.skipIf(True, **{{"reason": {declared!r}}})\n'
-                                'def test_x(): pass\n'), [])
+        for spelling in (f'*[True, {declared!r}]',
+                         f'*(True, {declared!r})',
+                         f'True, **{{"reason": {declared!r}}}'):
+            self.assertEqual(_probe('import unittest\n'
+                                    f'@unittest.skipIf({spelling})\n'
+                                    'def test_x(): pass\n'), [], spelling)
+
+    def test_the_corpus_comes_from_git_and_not_from_the_filesystem(self) -> None:
+        # Driven against a scratch repository, because the scan test derives both of its sets
+        # from this function: replacing the whole body with a glob makes that comparison
+        # tautological, and an untracked module then joins the sweep unnoticed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tools" / "tests").mkdir(parents=True)
+            (root / "tools" / "tests" / "test_tracked.py").write_text("", encoding="utf-8")
+            (root / "tools" / "tests" / "test_untracked.py").write_text("", encoding="utf-8")
+            (root / "elsewhere.py").write_text("", encoding="utf-8")
+            for cmd in (["git", "init", "-q"],
+                        ["git", "add", "tools/tests/test_tracked.py", "elsewhere.py"]):
+                subprocess.run(cmd, cwd=root, check=True, capture_output=True)
+            found = _tracked_test_modules(root)
+        self.assertEqual([p.name for p in found], ["test_tracked.py"])
 
     def test_no_declared_reason_is_unused(self) -> None:
         # A permission table that only grows is a table that stops meaning anything. Every entry
