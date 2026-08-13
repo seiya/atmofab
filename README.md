@@ -2,7 +2,7 @@
 
 `met-dsl` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
 
-`controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which launches each judgment-bearing `substep` as one isolated `LLM` leaf under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the capability-gated MCP build/runtime server.
+`controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the capability-gated MCP build/runtime server.
 
 ## Scope
 
@@ -23,7 +23,7 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 | 3 | Build | source → binary (deterministic) | `binary/<binary_id>/bin/` |
 | 4 | Validate | execution and pass/fail judgment | `verdict.json` / `aggregate_verdict.json` |
 
-`Tune` (implementation-variant exploration) and `Promote` (publication to `releases/`) are optional flows outside the core workflow.
+`Tune` (implementation-variant exploration) and `Promote` (publication to `releases/`) are optional flows outside the core workflow. Neither is implemented: their contracts are deferred (`docs/WORKFLOW.md` §Optional flows), and no `spec` in this tree carries an official release.
 
 From `Generate` onward, `spec.ir.yaml` is the sole generation and verification contract; reading `controlled_spec.md` is forbidden except at `Generate.verify`, which reads it as a secondary requirement-fidelity cross-check.
 
@@ -40,28 +40,33 @@ The deterministic `Compile.static` and `Generate.gate` substeps route a violatio
 
 ## Running a workflow
 
-Required CLI: `python3`, `jq`, `git`. Their absence stops the run at startup. A workflow run additionally requires the sandbox runtime `bwrap`, the toolchain the target `spec` declares (`gfortran` and `make` for the Fortran nodes in this tree), and the linters the `Generate` gate invokes (`fortitude` for Fortran).
+Required CLI: `python3`, `jq`, `git`. Their absence stops the run at startup with `missing_required_cli_tools`. A run additionally requires PyYAML (imported by the workflow runtime; the repository declares no dependency manifest), the sandbox runtime `bwrap`, the CLI or API credentials of every provider the leaf-`LLM` configuration names, the toolchain the target `spec` declares (`gfortran` and `make` for the Fortran nodes in this tree), and the `static lint` tool for its language (`fortitude` for Fortran).
 
-Create the leaf-`LLM` configuration once. It selects the provider, model, and reasoning effort of each `LLM` leaf, is gitignored, and has no command-line override.
+Create the leaf-`LLM` configuration once. It selects the provider, model, and reasoning effort of each `LLM` leaf, and is the only thing that says what a leaf launches: no flag overrides its contents, and `--llm-config` only selects which file is read. It is gitignored.
 
 ```bash
 cp docs/examples/llm_claude.example.yaml llm.yaml
 ```
 
+Every `LLM` leaf is a billed provider call. One node spends at least five of them per full `Compile` → `Validate` pass — more when a phase re-rolls — a `--with-deps` closure spends them per node, and a leaf that dies on a provider quota terminalizes the run unless `--wait-usage-reset` is passed.
+
 Start a run:
 
 ```bash
 python3 tools/run_workflow.py <spec_ref> <until_phase> [--llm-config <path>]
+
+# the dependency closure of one problem node, then the node itself
+python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1d_linear validate --with-deps
 ```
 
-`<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. Frequently used options:
+`<spec_ref>` is the `spec` directory of the target node and `<until_phase>` is one of `compile` / `generate` / `build` / `validate`. `--llm-config` defaults to `./llm.yaml`; a missing default stops the run with `llm_config_default_missing` rather than being filled in. `python3 tools/run_workflow.py --help` is canonical for the full option set (`docs/CLI_REFERENCE.md` §Information-acquisition policy); the options a first run needs are:
 
 | option | effect |
 |---|---|
 | `--with-deps` | resolve the transitive dependency closure and run each not-yet-ready dependency node bottom-up before the target |
 | `--resume` | continue the latest (or `--orchestration-id`) orchestration from its checkpoint, recovering `spec_ref` / `until_phase` / the launched configuration |
-| `--mode` | `dev` (default) or `prod` |
-| `--no-run-conductor` | prepare the orchestration artifacts without running the conductor |
+| `--mode` | `dev` (default): a `major` / `critical` verify finding terminalizes the run. `prod`: it is routed to the diagnostician, which decides how far back to recover |
+| `--wait-usage-reset` | sleep out a provider usage limit in place and re-launch the dead substep, instead of terminalizing (bounded; opt-in per invocation) |
 
 `docs/RUNBOOK.md` is the canonical operational procedure: preflight requirements per backend, the minimal loop, the failure-to-phase routing table, and the recovery procedures. On the Claude backend, preflight requires `build-runtime` to be enabled in the committed `.claude/settings.json` and permission-granted to the child agent session (`docs/RUNBOOK.md` §0-2).
 
@@ -71,18 +76,18 @@ python3 tools/run_workflow.py <spec_ref> <until_phase> [--llm-config <path>]
 
 | tool | purpose |
 |---|---|
-| `compile_project` | build through a standard build tool that handles dependencies (`make` by default) |
+| `compile_project` | build through a standard build tool that handles dependencies (`make` by default for the `fortran` / `c` families) |
 | `run_program` | run the built `runner` |
 | `run_quality_checks` | run a quality-check `preset` |
-| `run_linter` | run the `Generate` static lint `preset` (`fortitude` / `cppcheck` / `ruff`) |
+| `run_linter` | run the `Generate` `static lint` `preset` (`fortitude` / `cppcheck` / `ruff` / `mixed`) |
 | `run_syntax_check` | run a compiler front end in syntax-only mode, producing no build artifacts |
-| `detect_build_system` | report which build-system marker files exist (standalone use only) |
+| `detect_build_system` | recommend a build system from the marker files present (standalone use only) |
 
 Under the workflow, `compile_project` / `run_program` / `run_quality_checks` / `run_linter` / `run_syntax_check` require `orchestration_id`, `agent_run_id`, and `capability_token`, and a call that omits them is refused; `detect_build_system` holds no capability and is refused outright. Outside a run the server works without them. `mcp_servers/README.md` is canonical for the argument allowlists and the operational rules; `mcp_servers/mcp_servers.example.json` holds client configuration examples.
 
 ## Artifacts
 
-Trial artifacts are confined to `workspace/`, and a write outside it fails the phase.
+Trial artifacts are confined to `workspace/`, and a write outside it fails the phase. `docs/GLOSSARY.md` defines the identifiers below (`node_key_safe`, `ir_id`, `pipeline_id`, `source_id`, `binary_id`, `run_id`).
 
 ```text
 workspace/ir/<node_key_safe>/<ir_id>/                   spec.ir.yaml, ir_meta.json, dependency_graph.json
@@ -95,6 +100,8 @@ workspace/orchestrations/<orchestration_id>/            orchestration_meta.json,
 
 `Validate` emits `diagnostics.json`, `perf.json`, `verdict.json`, `aggregate_verdict.json`, `summary.json`, and `semantic_review.json` per `run_id`. Promoted official-version artifacts live under `releases/<spec_kind>/<domain>/<family>/<spec_id>/<target_architecture>/<toolchain_language>/<release_id>/`. `docs/WORKSPACE_LAYOUT.md` is the canonical layout source.
 
+The driver prints the run's event stream on stdout (`--stdout-format human`, or `jsonl` for a caller that parses it) and mirrors it to `workspace/orchestrations/<orchestration_id>/run_logs/`. A run's terminal state is `orchestration_meta.json#status`; the node's physics judgment, including its dependencies, is `aggregate_verdict.json`.
+
 ## Repository layout
 
 ```text
@@ -103,7 +110,7 @@ spec/         source specs (problem / component / profile / infrastructure) and 
 skills/       per-phase execution procedures (SKILL.md) for the agentic leaves
 tools/        workflow driver, conductor, orchestration runtime, gates, validators, tests
 mcp_servers/  MCP build/runtime server and client configuration examples
-releases/     promoted official artifacts and the component registry
+releases/     the component registry, and the promoted official artifacts of the Promote flow (none yet)
 workspace/    trial artifacts
 ```
 
@@ -117,6 +124,12 @@ workspace/    trial artifacts
 | `infrastructure` | `harness_fortran_cpu` |
 
 `spec/registry/spec_catalog.yaml` is the registry of record for placement and state.
+
+## Tests
+
+```bash
+python3 -m pytest tools/tests/ -q -p no:randomly
+```
 
 ## Documentation entry points
 
