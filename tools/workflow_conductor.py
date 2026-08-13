@@ -233,8 +233,15 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # futile. `stale_dependency_ir` — a certified dependency IR predating a carrier contract (e.g. the
 # harness's public_api.module_parameters) reached Generate.gate on a resume that skipped Compile;
 # the fix is a re-certification (a version bump makes dependency freshness re-run it), not a re-author.
+# `static_frontend_unavailable` — the Fortran structure front end (`tools/fortran_structure.py`,
+# tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
+# have nothing to read; no source the leaf can author changes that, and a warm retry would spend
+# the leaf's budget on a machine problem. The fix is `pip install tree-sitter tree-sitter-fortran`
+# on the host, then a resume.
 # A terminal category dominates any co-occurring warm-retry category in classify_gate_failure.
-GATE_FAILURE_TERMINAL: frozenset[str] = frozenset({"stale_dependency_ir"})
+GATE_FAILURE_TERMINAL: frozenset[str] = frozenset(
+    {"stale_dependency_ir", "static_frontend_unavailable"}
+)
 
 # Canonical ordering of gate failure categories in the route reason and the composed excerpt
 # sections: syntax_error -> lint_findings -> static-family categories. `_gate_inproc` records
@@ -247,6 +254,7 @@ _GATE_CATEGORY_CANON_ORDER: tuple[str, ...] = (
     "workspace_root_violation",
     "post_generate_violation",
     "stale_dependency_ir",
+    "static_frontend_unavailable",
 )
 
 
@@ -8286,14 +8294,26 @@ clean:
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
             if pg.returncode != 0:
+                from tools.fortran_structure import FORTRAN_STRUCTURE_UNAVAILABLE_MARKER
                 from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
                 status = "fail"
-                # A stale-dependency-IR violation is TERMINAL, not a warm Generate retry (the leaf
-                # cannot repair a certified dependency IR); classify_gate_failure fail_closes any
-                # union verdict that carries this category (GATE_FAILURE_TERMINAL).
-                failure_category = ("stale_dependency_ir"
-                                    if STALE_DEPENDENCY_IR_MARKER in (pg.stdout + pg.stderr)
-                                    else "post_generate_violation")
+                # Two markers, both TERMINAL rather than a warm Generate retry, for the same
+                # reason: the leaf cannot repair either by re-authoring its source.
+                # `stale_dependency_ir` is a certified dependency IR the leaf does not own;
+                # `static_frontend_unavailable` is an absent parser on the machine running the
+                # gate — the Fortran gates read NOTHING without it, so failing closed here is what
+                # keeps an uninstalled front end from reading as a clean source.
+                # classify_gate_failure fail_closes any union verdict carrying either
+                # (GATE_FAILURE_TERMINAL). The markers are IMPORTED, never spelled here: a
+                # copy-pasted marker that drifts turns this scan into a silent
+                # `post_generate_violation` and puts the leaf back into a futile retry loop.
+                gate_output = pg.stdout + pg.stderr
+                if FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in gate_output:
+                    failure_category = "static_frontend_unavailable"
+                elif STALE_DEPENDENCY_IR_MARKER in gate_output:
+                    failure_category = "stale_dependency_ir"
+                else:
+                    failure_category = "post_generate_violation"
                 failure_excerpt = "\n".join((pg.stdout + pg.stderr).splitlines()[-50:])
                 stderr = "[post_generate gate fail]\n" + pg.stdout + pg.stderr
 

@@ -523,6 +523,14 @@ class DecisionTableTest(unittest.TestCase):
         d = wc.classify_gate_failure(["lint_findings", "stale_dependency_ir"])
         self.assertEqual(d.action, "fail_closed")
         self.assertIn("stale_dependency_ir", wc.GATE_FAILURE_TERMINAL)
+        # An absent Fortran structure front end is terminal for the same reason and a different
+        # owner: the machine running the gate lacks `tree-sitter` / `tree-sitter-fortran`, so no
+        # source the leaf can author makes the three `problem` gates readable again.
+        d = wc.classify_gate_failure(["static_frontend_unavailable"])
+        self.assertEqual(d.action, "fail_closed")
+        d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
+        self.assertEqual(d.action, "fail_closed")
+        self.assertIn("static_frontend_unavailable", wc.GATE_FAILURE_TERMINAL)
         # An unknown category escalates; an empty list escalates with the no-category reason.
         self.assertEqual(wc.classify_gate_failure(["mystery"]).action, "escalate")
         self.assertEqual(wc.classify_gate_failure([]).reason, "gate_fail_no_category")
@@ -14178,6 +14186,39 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "post_generate_violation")
             self.assertIn("pg-out", meta["failure_excerpt"])
+
+    def test_gate_static_check_maps_the_frontend_marker_to_a_terminal_category(self) -> None:
+        # The marker is IMPORTED from the module that emits it, never spelled here: a copy that
+        # drifts turns this scan into a plain `post_generate_violation`, which warm-retries the
+        # leaf forever against a machine problem it cannot fix. The category it maps to must also
+        # BE terminal, which is asserted where GATE_FAILURE_TERMINAL is (routing test above) —
+        # this row asserts the mapping, that one asserts the routing, and neither implies the
+        # other.
+        import tempfile
+        from tools.fortran_structure import FORTRAN_STRUCTURE_UNAVAILABLE_MARKER
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    return wc.subprocess.CompletedProcess(
+                        cmd, 1,
+                        f"pipeline semantic validation: FAIL\n- src/m_model.f90: "
+                        f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the Fortran structure front end "
+                        f"is not available on this machine", "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "static_frontend_unavailable")
+        self.assertIn(FORTRAN_STRUCTURE_UNAVAILABLE_MARKER, out["failure_excerpt"])
 
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile
