@@ -4437,6 +4437,113 @@ def _execution_in_scope_src_dir(
     return src_dir
 
 
+def _run_problem_model_gates(
+    execution: NodeExecution,
+    model_file: Path,
+    lowered: str,
+    dep_spec_ids: list[str],
+    violations: list[str],
+) -> None:
+    """Read one model source once and run the three `problem` model gates over it.
+
+    ONE parse per file, for all three. They each used to call `_fortran_procedure_envelopes`
+    themselves, which parsed the same text three times and gave a refusal three chances to be
+    reported — or, worse, to be reported differently. Both failure directions are answered here,
+    once, and both stop the gates for this file rather than letting them run on a structure
+    nothing resolved.
+
+    A FUNCTION, not a block inside the caller's loop, so that every early return below stops the
+    GATES and nothing else. Written as a `continue` first, which would have skipped any check a
+    later change appends after the gates in that loop — the silent-skip shape this file keeps
+    having to remove.
+
+    Scoped to `problem/`, which is where each of the three gates returns early anyway. Hoisting
+    the parse out of the gates quietly widened who it applies to: a `component` or
+    `infrastructure` node has no gate reading its Fortran, so refusing its source bought nothing
+    and cost a legal F2008 form (measured against origin/main: a component model carrying
+    `real :: endsubroutine` / `endsubroutine = 1.0` went from 0 violations to 4). The refusal's
+    own justification — that every gate would otherwise pass the file in silence — is vacuous
+    where no gate runs. Found in review; 0 of the 365 in-tree models are affected either way.
+    """
+    if not execution.node_key.startswith("problem/"):
+        return
+
+    try:
+        envelopes = _fortran_procedure_envelopes(lowered)
+    except fortran_structure.FortranStructureUnavailableError as exc:
+        # NOT a content failure: no edit to this source can fix a missing package, so this
+        # carries the marker `workflow_conductor._gate_static_check` scans for and the run is
+        # terminalized (`static_frontend_unavailable`) instead of burning the leaf's retries.
+        violations.append(f"{model_file}: {exc}")
+        return
+    except _FortranSourceStructureError as exc:
+        for structure_error in exc.errors:
+            violations.append(
+                f"{model_file}: the Fortran structure front end could not resolve this "
+                f"source at statement {structure_error.line} of its joined view "
+                f"({'missing token' if structure_error.missing else 'parse error'}): "
+                f"{structure_error.snippet!r}. The `problem` model gates cannot read a "
+                f"source whose procedure structure is ambiguous, so this is a Generate "
+                f"failure. The measured cause is a VARIABLE or construct NAMED after a "
+                f"keyword — `endsubroutine`, `endmodule`, `endprocedure` and friends are "
+                f"legal names and are read here as the END statements they spell; rename it "
+                f"(e.g. `end_subroutine_flag`) and the source is accepted."
+            )
+        return
+
+    # An abbreviated separate module subprogram is REFUSED, always, and this is the only
+    # place that decides it. F2008 forbids such a body from redeclaring its dummies —
+    # `gfortran -fsyntax-only -std=f2008` answers "is a redefinition of the declaration in the
+    # corresponding interface" — so no `intent(out)` can appear in it and all three gates
+    # would return at their empty out-set check while looking like they had run. That is a
+    # silent gate, which is the exact defect class this whole area exists to remove, so the
+    # leaf is asked for the full form instead. 0 of the 365 in-tree models use the short form
+    # today, so this refuses nothing that exists; it closes the shape before it appears.
+    abbreviated = [e.name for e in envelopes if e.kind == "module_procedure"]
+    if abbreviated:
+        for name in abbreviated:
+            violations.append(
+                f"{model_file}: `module procedure {name}` (the abbreviated separate module "
+                f"subprogram) cannot be checked: F2008 forbids its body from redeclaring its "
+                f"dummies, so the intent(out) declarations the `problem` model gates read "
+                f"never appear in it and every gate would pass it in silence. Write the full "
+                f"form instead — `module subroutine {name}(...)` with its "
+                f"`intent(in)`/`intent(out)` declarations, or `module function {name}(...) "
+                f"result(...)` — which is checked normally."
+            )
+    # ... and then the gates run ANYWAY, on the procedures in this file that ARE readable.
+    # An earlier version stopped here, on the parse-error case's symmetry; the two are not
+    # symmetric. A parse error leaves no usable envelope at all, while an abbreviated
+    # `module procedure` leaves every OTHER procedure in the file perfectly readable, so
+    # stopping here silenced their real violations and handed the leaf one instruction where
+    # it needed two. The abbreviated envelope itself carries an empty out-set, so every gate
+    # skips it — which is the silence being refused on its behalf above, not a second chance
+    # for it to pass.
+
+    _validate_problem_model_literal_outputs(
+        execution=execution,
+        model_file=model_file,
+        envelopes=envelopes,
+        violations=violations,
+    )
+
+    _validate_problem_model_dependency_dataflow(
+        execution=execution,
+        model_file=model_file,
+        lowered=lowered,
+        envelopes=envelopes,
+        dep_spec_ids=dep_spec_ids,
+        violations=violations,
+    )
+    _validate_problem_metric_only_scalar_kernel(
+        execution=execution,
+        model_file=model_file,
+        envelopes=envelopes,
+        violations=violations,
+    )
+
+
+
 def _validate_generate_outputs(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str]
 ) -> tuple[list[Path], list[str]] | None:
@@ -4500,82 +4607,11 @@ def _validate_generate_outputs(
                 f"{model_file}: many literal metric assignments detected ({literal_like}/{len(assignments)})"
             )
 
-        # ONE parse per model file, for all three `problem` gates. They each used to call
-        # `_fortran_procedure_envelopes` themselves, which parsed the same text three times and
-        # gave a refusal three chances to be reported (or, worse, to be reported differently).
-        # Both failure directions are answered HERE, once, and both stop the three gates for this
-        # file rather than letting them run on a structure nothing resolved.
-        try:
-            envelopes = _fortran_procedure_envelopes(lowered)
-        except fortran_structure.FortranStructureUnavailableError as exc:
-            # NOT a content failure: no edit to this source can fix a missing package, so this
-            # carries the marker `workflow_conductor._gate_static_check` scans for and the run is
-            # terminalized (`static_frontend_unavailable`) instead of burning the leaf's retries.
-            violations.append(f"{model_file}: {exc}")
-            continue
-        except _FortranSourceStructureError as exc:
-            for structure_error in exc.errors:
-                violations.append(
-                    f"{model_file}: the Fortran structure front end could not resolve this "
-                    f"source at statement {structure_error.line} of its joined view "
-                    f"({'missing token' if structure_error.missing else 'parse error'}): "
-                    f"{structure_error.snippet!r}. The `problem` model gates cannot read a "
-                    f"source whose procedure structure is ambiguous, so this is a Generate "
-                    f"failure. The measured cause is a VARIABLE or construct NAMED after a "
-                    f"keyword — `endsubroutine`, `endmodule`, `endprocedure` and friends are "
-                    f"legal names and are read here as the END statements they spell; rename it "
-                    f"(e.g. `end_subroutine_flag`) and the source is accepted."
-                )
-            continue
-
-        # An abbreviated separate module subprogram is REFUSED, always, and this is the only
-        # place that decides it. F2008 forbids such a body from redeclaring its dummies —
-        # `gfortran -fsyntax-only -std=f2008` answers "is a redefinition of the declaration in the
-        # corresponding interface" — so no `intent(out)` can appear in it and all three gates
-        # would return at their empty out-set check while looking like they had run. That is a
-        # silent gate, which is the exact defect class this whole area exists to remove, so the
-        # leaf is asked for the full form instead. 0 of the 365 in-tree models use the short form
-        # today, so this refuses nothing that exists; it closes the shape before it appears.
-        abbreviated = [e.name for e in envelopes if e.kind == "module_procedure"]
-        if abbreviated:
-            for name in abbreviated:
-                violations.append(
-                    f"{model_file}: `module procedure {name}` (the abbreviated separate module "
-                    f"subprogram) cannot be checked: F2008 forbids its body from redeclaring its "
-                    f"dummies, so the intent(out) declarations the `problem` model gates read "
-                    f"never appear in it and every gate would pass it in silence. Write the full "
-                    f"form instead — `module subroutine {name}(...)` with its "
-                    f"`intent(in)`/`intent(out)` declarations, or `module function {name}(...) "
-                    f"result(...)` — which is checked normally."
-                )
-        # ... and then the gates run ANYWAY, on the procedures in this file that ARE readable.
-        # An earlier version stopped here, on the parse-error case's symmetry; the two are not
-        # symmetric. A parse error leaves no usable envelope at all, while an abbreviated
-        # `module procedure` leaves every OTHER procedure in the file perfectly readable, so
-        # stopping here silenced their real violations and handed the leaf one instruction where
-        # it needed two. The abbreviated envelope itself carries an empty out-set, so every gate
-        # skips it — which is the silence being refused on its behalf above, not a second chance
-        # for it to pass.
-
-        _validate_problem_model_literal_outputs(
-            execution=execution,
-            model_file=model_file,
-            envelopes=envelopes,
-            violations=violations,
-        )
-
-        _validate_problem_model_dependency_dataflow(
+        _run_problem_model_gates(
             execution=execution,
             model_file=model_file,
             lowered=lowered,
-            envelopes=envelopes,
             dep_spec_ids=dep_spec_ids,
-            violations=violations,
-        )
-        _validate_problem_metric_only_scalar_kernel(
-            execution=execution,
-            model_file=model_file,
-            envelopes=envelopes,
             violations=violations,
         )
 

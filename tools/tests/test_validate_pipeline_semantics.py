@@ -5655,6 +5655,55 @@ end submodule shallow_water2d_impl
         # ... and the form it asks for is analysed, literal-only body and all.
         self.assertIn("literal-only assignments", " ".join(gate(full_form)))
 
+    def test_only_a_problem_node_is_parsed_and_refused_at_all(self) -> None:
+        # Hoisting the parse out of the three gates quietly widened WHO it applies to. Each gate
+        # returns early for a non-`problem` node, so at origin/main a `component` or
+        # `infrastructure` model was never read; with the parse in the caller, its source was
+        # refused for a keyword-named variable or an abbreviated `module procedure` even though no
+        # gate would ever have read it. The refusal's own justification — that every gate would
+        # otherwise pass the file in silence — is vacuous where no gate runs. Both node kinds are
+        # asserted, and the `problem` row is the control that says the refusal still works.
+        import tempfile
+        keyword_named = """module comp_model
+implicit none
+contains
+subroutine comp__apply(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: endsubroutine
+  endsubroutine = 1.0
+  y = x + endsubroutine
+end subroutine comp__apply
+end module comp_model
+"""
+        abbreviated = """submodule (comp_model) comp_impl
+implicit none
+contains
+module procedure solve
+  y = 1.0
+end procedure solve
+end submodule comp_impl
+"""
+
+        def gate(node_key: str, spec_id: str, source: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                src = root / "src"
+                src.mkdir()
+                (src / f"{spec_id}_model.f90").write_text(source)
+                execution = NodeExecution(node_key=node_key, node_dir=root,
+                                          exec_dir=root, pipeline_dir=root)
+                violations: list[str] = []
+                vps._validate_generate_outputs(root, execution, src, violations)
+                return violations
+
+        for node_key in ("component/comp@0.1.0", "infrastructure/comp@0.1.0"):
+            for label, source in (("keyword-named", keyword_named), ("abbreviated", abbreviated)):
+                self.assertEqual([], gate(node_key, "comp", source), f"{node_key} {label}")
+        # The control: the same two sources under a `problem` node ARE refused.
+        self.assertTrue(gate("problem/comp@0.1.0", "comp", keyword_named))
+        self.assertTrue(gate("problem/comp@0.1.0", "comp", abbreviated))
+
     def test_the_module_procedure_refusal_does_not_silence_the_rest_of_the_file(self) -> None:
         # The refusal is ABOUT one procedure, so it must not stop the gates from reading the
         # others. An earlier version stopped the whole file at the refusal, out of symmetry with
