@@ -4696,6 +4696,11 @@ def _validate_generate_outputs(
     an already-resolved ``src_dir`` (see ``_execution_in_scope_src_dir``), and
     ``_validate_generate_outputs_for_generation`` resolves its own from a ``source_id``.
 
+    Scoped claim: "single definition" covers the model scans and the ``problem`` gates. The
+    Makefile trio at the end is ALSO invoked independently by ``_validate_post_build_stage_impl``
+    for the ``post_build`` stage, on a ``src_dir`` it resolves itself — a Makefile rule change has
+    to be made in both places, or ``post_build`` keeps enforcing the old one.
+
     Returns the scanned ``(model_files, dep_spec_ids)`` for a caller that continues with further
     checks over the same source (the post_generate sibling list does), or ``None`` when the model
     source was absent/mis-named — already reported here via
