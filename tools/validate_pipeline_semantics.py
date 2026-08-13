@@ -4474,7 +4474,10 @@ def _run_problem_model_gates(
         # NOT a content failure: no edit to this source can fix a missing package, so this
         # carries the marker `workflow_conductor._gate_static_check` scans for and the run is
         # terminalized (`static_frontend_unavailable`) instead of burning the leaf's retries.
-        violations.append(f"{model_file}: {exc}")
+        # The marker leads the VIOLATION, ahead of any path: `_gate_static_check` classifies on
+        # it, and it anchors the match to the start of the line for exactly that reason — see the
+        # note there. A path interpolated first would let a leaf-chosen filename carry the marker.
+        violations.append(f"{exc} (reading {model_file})")
         return
     except _FortranSourceStructureError as exc:
         for structure_error in exc.errors:

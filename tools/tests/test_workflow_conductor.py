@@ -14217,9 +14217,9 @@ class DeterministicStaticTest(unittest.TestCase):
                 if script.endswith("validate_pipeline_semantics.py"):
                     return wc.subprocess.CompletedProcess(
                         cmd, 1,
-                        f"pipeline semantic validation: FAIL\n- src/m_model.f90: "
-                        f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the Fortran structure front end "
-                        f"is not available on this machine", "")
+                        f"pipeline semantic validation: FAIL\n"
+                        f"- {FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the Fortran structure front "
+                        f"end is not available on this machine (reading src/m_model.f90)", "")
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):
@@ -14227,6 +14227,40 @@ class DeterministicStaticTest(unittest.TestCase):
         self.assertEqual(out["status"], "fail")
         self.assertEqual(out["failure_category"], "static_frontend_unavailable")
         self.assertIn(FORTRAN_STRUCTURE_UNAVAILABLE_MARKER, out["failure_excerpt"])
+
+    def test_a_leaf_chosen_filename_cannot_forge_the_frontend_marker(self) -> None:
+        # The classification is anchored to the start of a violation line because most violations
+        # interpolate a path the LEAF chose. Reproduced in review: a model source named
+        # `[fortran-structure-unavailable]_model.f90` puts the marker into the ordinary
+        # "present but must be named" violation, and an unanchored substring test then reports
+        # the operator's machine as broken and TERMINALIZES the run — spending nothing on the warm
+        # retry that would have fixed the name. Direction is fail-closed, so this is
+        # misattribution and a lost retry budget rather than a bypass.
+        import tempfile
+        from tools.fortran_structure import FORTRAN_STRUCTURE_UNAVAILABLE_MARKER
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    return wc.subprocess.CompletedProcess(
+                        cmd, 1,
+                        f"pipeline semantic validation: FAIL\n"
+                        f"- src: model source {FORTRAN_STRUCTURE_UNAVAILABLE_MARKER}_model.f90 "
+                        f"present but must be named spec_x_model.f90", "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "post_generate_violation")
+        self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action)
 
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile
