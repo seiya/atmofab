@@ -5102,9 +5102,13 @@ def _required_child_agent_kind(step: str) -> str:
 def _normalized_agent_role(value: Any) -> str:
     """The canonical token for an `agent_role` value: stripped and lower-cased, else "".
 
-    Every reader of the field normalizes this way; keeping the normalization in one
-    place is what makes "close a family, not a spelling" true here — `" Substep"` and
-    `"SUBSTEP"` must not be able to take different branches in different readers.
+    Every reader that DECIDES on the field normalizes this way, and the two chokepoints
+    canonicalize the payload itself so the rest cannot disagree. Not every reader does it
+    for itself, and an earlier version of this docstring wrongly claimed they all did:
+    `_build_task_card` and `_write_allowed_output_manifest` use `.strip()` with no
+    `.lower()`, and `init_orchestration` / `_rewrite_orchestration_run_row` compare
+    `.strip()`-only against `"orchestration"`. That is exactly why canonicalizing at the
+    chokepoints — rather than trusting each reader — is what closes the family.
     """
     return value.strip().lower() if isinstance(value, str) and value.strip() else ""
 
@@ -11835,6 +11839,18 @@ def render_launch_prompt_text(request_payload: dict[str, Any]) -> str:
 
 def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     payload = dict(request_payload)
+    # Canonicalize agent_role FIRST — before anything below renders the launch prompt.
+    # This function force-renders `launch_prompt_full`, and that render embeds
+    # `_build_task_card`, which reads the role with `.strip()` and NO `.lower()`. Doing the
+    # canonicalization only in `_validate_launch_request_payload` (which record_launch
+    # calls AFTER this function) fixed nothing: the prompt had already been rendered from
+    # `"SUBSTEP"` and shipped without its Task Card, while the persisted request recorded
+    # `"substep"` — leaving the durable record positively disagreeing with the prompt it
+    # accompanies. Normalization only: an unknown or absent role is left exactly as it is
+    # for the validator to REJECT, so this can never turn a bad role into an accepted one.
+    _role_raw = payload.get("agent_role")
+    if isinstance(_role_raw, str) and _role_raw.strip():
+        payload["agent_role"] = _role_raw.strip().lower()
     # Deterministic (in-process Build / Validate.execute) requests carry no skill: no
     # leaf runs them, and their SKILL.md files do not exist. Leave skill_name/skill_ref
     # stripped and skill_must_read_refs empty (mirror build_launch_request) so the
@@ -14400,12 +14416,15 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     agent_model = request_payload.get("agent_model")
     if not isinstance(agent_model, str) or not agent_model.strip():
         raise ValueError("launch request must include non-empty agent_model")
-    # THE agent_role chokepoint. Six downstream readers disagreed about an unrecognized
-    # role — one INFERRED it (`build_capability_document`), three SKIPPED their check
-    # (`_allowed_output_paths_for_launch`, `_validate_child_write_contract_preflight`,
-    # `_build_task_card`), and `record_launch` itself fell back to the step-derived kind or
-    # to the literal "unknown" for the session-run-index row. Requiring the field here, at
-    # the one place every launch passes through, is what makes all of them see one value.
+    # THE agent_role chokepoint. SIX readers disagreed about an unrecognized role, named
+    # here in full because an earlier version of this comment said "six" and then listed
+    # five: (1) `build_capability_document` INFERRED it; (2) `_allowed_output_paths_for_launch`,
+    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` SKIPPED
+    # their work; (5) `record_launch` itself fell back to the step-derived kind, or to the
+    # literal "unknown" for the session-run-index row; and (6) `workflow_conductor.
+    # _register_codex_thread` defaulted to "substep" when re-reading the persisted request.
+    # Requiring the field here, at the one place every launch passes through, is what makes
+    # all of them see one value.
     #
     # Two things about the placement are load-bearing, and one is not. Load-bearing:
     # (1) `record_launch` calls this validator immediately BEFORE
@@ -14422,13 +14441,14 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # transport fault the leaf cannot repair — a raise here, never a content failure.
     if not _normalized_agent_role(request_payload.get("agent_role")):
         raise ValueError("launch request must include non-empty agent_role")
-    # CANONICALIZE, do not merely validate. Two downstream readers do not lower-case what
-    # they read — `_build_task_card` (`str(...).strip()`, no `.lower()`) and
-    # `_write_allowed_output_manifest` — so validating `"SUBSTEP"` and leaving it in the
-    # payload was accepted here and then silently produced an EMPTY Task Card, shipping the
-    # leaf without its conductor-resolved orientation. Writing the normalized token back is
-    # what makes "one field, one value in every reader" actually true; `record_agent_run`
-    # already does the same for the terminal payload.
+    # Canonicalize as well as validate, as a BACKSTOP for a caller that skips
+    # `prepare_launch_request_payload` (which does the same normalization, and must, because
+    # it renders the prompt — see the comment there; doing it only here fixed nothing).
+    # `record_agent_run` likewise writes its normalized token back into the terminal payload.
+    # NOTE: an earlier version of this comment also named `_write_allowed_output_manifest` as
+    # a reader harmed by an unlowered role. That is FALSE and was measured so: record-launch
+    # calls it without an `agent_role` at all, and its three other call sites pass the
+    # literal `"orchestration"`. The launch payload's role never reaches it.
     request_payload["agent_role"] = _require_child_agent_role_for_step(
         request_payload.get("agent_role"),
         step,

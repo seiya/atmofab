@@ -480,7 +480,11 @@ class PhaseStructureTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     wc.child_agent_role(unsupported)
         # The old literal was case-sensitive and answered "substep" for "Build"; the table
-        # lookup normalizes, so the two disagree here too.
+        # lookup normalizes, so the two disagree here too. NOTE this is an INCIDENTAL
+        # property, not a contract: all three production callers pass a `PHASE_ORDER`
+        # member, so nothing sends a capitalized step today. It is asserted only because it
+        # is a second observable difference between the two spellings — do not read it as a
+        # promise that callers may pass arbitrary casing.
         self.assertEqual(wc.child_agent_role("Build"), "step")
 
     def test_phases_through(self) -> None:

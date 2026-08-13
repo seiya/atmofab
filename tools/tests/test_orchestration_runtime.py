@@ -33610,19 +33610,29 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                     _require_child_agent_role_for_step(
                         junk, "compile", label="t:", error_type=ValueError)
 
-    def test_launch_validation_canonicalizes_the_role_in_the_payload(self) -> None:
-        """Validating is not enough — the chokepoint must WRITE THE NORMALIZED TOKEN BACK.
+    def test_the_prompt_actually_shipped_carries_the_task_card(self) -> None:
+        """The role must be canonicalized BEFORE the prompt is rendered, and this test has
+        to drive that ORDER or it proves nothing.
 
-        Two downstream readers do not lower-case what they read: `_build_task_card`
-        (`str(...).strip()`, no `.lower()`) and `_write_allowed_output_manifest`. So a
-        payload saying `"SUBSTEP"` passed validation and then produced an EMPTY Task Card,
-        shipping the leaf without its conductor-resolved orientation — silently, because
-        `_validate_launch_prompt_text` has no non-empty requirement for the card. This is
-        the system-level half of what `_normalized_agent_role`'s docstring claims; the
-        helper-in-isolation test above cannot see it."""
+        `_build_task_card` reads the role with `.strip()` and no `.lower()`, so `"SUBSTEP"`
+        yields an EMPTY card and the leaf ships with no conductor-resolved orientation —
+        silently, since `_validate_launch_prompt_text` has no non-empty requirement for it.
+        The first attempt at this fix canonicalized inside `_validate_launch_request_payload`,
+        which `record_launch` calls AFTER `prepare_launch_request_payload` has already
+        rendered `launch_prompt_full`. It fixed nothing, and made the record WORSE: the
+        persisted request said `substep` while the prompt beside it was rendered from
+        `SUBSTEP` and had no card, so recomputing the card from the request produced one
+        that was never sent.
+
+        The first version of THIS test missed all of that, because it called
+        `_build_task_card(payload)` itself after mutating the payload instead of reading
+        the prompt `record_launch` would actually persist. It now asserts on the RENDERED
+        TEXT, in `record_launch`'s own order: prepare -> validate -> extract."""
         from tools.orchestration_runtime import (
             _build_task_card,
+            _extract_launch_prompt_text,
             _validate_launch_request_payload,
+            prepare_launch_request_payload,
         )
 
         fixture = (
@@ -33630,14 +33640,22 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             / "generate_generate.request.json"
         )
         base = json.loads(fixture.read_text(encoding="utf-8"))
-        canonical_card = _build_task_card(base)
-        self.assertTrue(canonical_card, "fixture must produce a card to compare against")
-        for spelling in ("SUBSTEP", " Substep ", "substep"):
+        # The conductor does NOT send launch_prompt_full; record_launch renders it.
+        base.pop("launch_prompt_full", None)
+        card_marker = _build_task_card(base).splitlines()[0]
+        self.assertTrue(card_marker, "fixture must produce a card to look for")
+        for spelling in ("SUBSTEP", " Substep ", "SubStep", "substep"):
             with self.subTest(spelling=spelling):
-                payload = {**base, "agent_role": spelling}
-                _validate_launch_request_payload(payload)
-                self.assertEqual(payload["agent_role"], "substep")
-                self.assertEqual(_build_task_card(payload), canonical_card)
+                prepared = prepare_launch_request_payload(
+                    {**base, "agent_role": spelling})
+                _validate_launch_request_payload(prepared)
+                self.assertEqual(prepared["agent_role"], "substep")
+                shipped = _extract_launch_prompt_text(prepared)
+                self.assertIn(card_marker, shipped)
+        # Normalization must not launder a role the validator would reject.
+        with self.assertRaisesRegex(ValueError, "does not satisfy required child agent kind"):
+            _validate_launch_request_payload(
+                prepare_launch_request_payload({**base, "agent_role": "BOGUS"}))
 
     def test_every_captured_production_payload_declares_the_demanded_role(self) -> None:
         """The captured conductor requests must already satisfy the rule the runtime now
@@ -33799,6 +33817,38 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                         )
                     except Exception as exc:  # noqa: BLE001 - the message is the assertion
                         self.assertNotIn("must be one of", str(exc))
+
+    def test_the_write_audit_use_site_reads_the_narrower_set(self) -> None:
+        """Pinning the DEFINITIONAL difference between the two constants is not the same as
+        pinning that the audit's use site reads the narrower one. A reviewer's mutation
+        swapped `WRITE_AUDITED_AGENT_ROLES` for `AGENT_RUN_ROLES` inside
+        `_validate_actual_write_paths` and the whole suite stayed green — the sets differ,
+        but nothing observed which one that early return consulted.
+
+        Asserted behaviourally, not by reading the source: a `skipped_by_checkpoint`
+        payload must take the early return (no capability, no write baseline, so the audit
+        would raise if it proceeded), while a `substep` payload with the same missing state
+        must NOT."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_audit_use_site"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            payload = {
+                "agent_run_id": "arid_audit",
+                "status": "pass",
+                "output_refs": [],
+            }
+            # In the write-audited set: the audit runs and fails closed on the absent
+            # capability / baseline.
+            with self.assertRaises(ValueError):
+                _validate_actual_write_paths(
+                    repo_root, orch, {**payload, "agent_role": "substep"})
+            # Outside it: the early return, and therefore no raise. If the use site read
+            # AGENT_RUN_ROLES this would raise like the case above.
+            _validate_actual_write_paths(
+                repo_root, orch, {**payload, "agent_role": "skipped_by_checkpoint"})
 
     def test_the_unaudited_role_cannot_carry_a_terminal_status(self) -> None:
         """`skipped_by_checkpoint` is in the vocabulary but NOT write-audited, which would be
