@@ -8,18 +8,23 @@ the operator's discretion, absent from every fresh clone — and called
 silently for weeks while its own comment declared it the real-shape calibration line. Nothing
 watched, because a skip reads as "not applicable here" whether or not it is.
 
-A test that quietly stops running is the class; that one was the instance. The rule is therefore
-not about where inputs live — the first version of this guard tried to answer "which repository
-path does this source construct", and three independent reviewers produced roughly twenty
-spellings that evade an AST reading of path expressions (`.parent.parent.parent`, `.joinpath`,
-f-strings, `os.path.join`, string concatenation, `glob`, an alias assigned on its own line), two
-of them already in use in this tree. That question has no bounded answer at this level.
+A test that quietly stops running is the class; that one was the instance. The rule is not about
+where inputs live — the first version of this guard tried to answer "which repository path does
+this source construct", and reviewers produced roughly twenty spellings that evade an AST reading
+of path expressions, two already in use here. That question has no bounded answer at this level.
 
-The question asked here instead is bounded: a skip's reason is a string literal, the set of them
-is finite and enumerable, and every legitimate one names something about the host — a missing
-binary, an unavailable kernel feature, a filesystem that cannot do symlinks, a privilege level.
-A skip that names anything else is either a test that has stopped running or a capability nobody
-declared, and both should be a failure rather than a line in the summary that no one reads.
+Two things make this one bounded. The set of APIs that can stop a test is closed and small
+(`_SKIP_APIS`), and it is reachable only by naming one of them, so an alias is resolved through
+the module's own imports rather than guessed from spelling. And a reason is a string literal, so
+the set of them is finite and enumerable. Anything that names a skip API without handing over a
+declared literal reason — a bare `@unittest.skip` decorator, `raise SkipTest` with no argument,
+`pytest.importorskip` without `reason=`, a computed message — is a violation, so the check fails
+closed rather than falling through to "not recognised, therefore fine".
+
+What is still out of reach, and is not claimed otherwise: a decorator that sets
+`__unittest_skip__` by hand is caught, but a helper living outside `tools/tests/` that raises
+`SkipTest` on the caller's behalf is not, and neither is anything assembled at runtime. Those are
+deliberate concealment rather than ordinary style, which is the line this guard draws.
 
 Adding a genuinely new environment capability means adding it to `_DECLARED_ENVIRONMENT_SKIPS`
 below, in the same commit as the skip, with a note saying what about the host it depends on.
@@ -67,11 +72,127 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "the platform has no SIGTERM",
 }
 
-# `skipUnless(condition, reason)` and `skipIf(condition, reason)` carry the reason second;
-# every other form carries it first. `SkipTest` is the raised form of the same thing.
-_REASON_INDEX = {
-    "skipTest": 0, "skip": 0, "SkipTest": 0, "skipUnless": 1, "skipIf": 1, "skipif": 1,
+# Canonical name -> index of the reason among the positional arguments. `skipUnless`/`skipIf`
+# carry the condition first; everything else leads with the reason. `importorskip` takes the
+# module name first and accepts a reason only by keyword, so it has no positional slot.
+_SKIP_APIS = {
+    "unittest.TestCase.skipTest": 0,
+    "unittest.skip": 0,
+    "unittest.SkipTest": 0,
+    "unittest.skipIf": 1,
+    "unittest.skipUnless": 1,
+    "pytest.skip": 0,
+    "pytest.xfail": 0,
+    "pytest.mark.skipif": 1,
+    "pytest.importorskip": None,
 }
+_SKIP_ROOTS = ("unittest", "pytest")
+
+
+def _alias_map(tree: ast.AST) -> dict[str, str]:
+    """Local name -> canonical dotted name, from this module's own imports.
+
+    Resolving through the imports rather than matching the last name component is what makes
+    `from unittest import skipIf as omit_if` visible and a local `def skip(...)` invisible. The
+    previous version keyed on `ast.unparse(func).split(".")[-1]`, which got both backwards.
+    """
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.split(".")[0] in _SKIP_ROOTS:
+                    out[a.asname or a.name.split(".")[0]] = a.name if a.asname else \
+                        a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.split(".")[0] in _SKIP_ROOTS:
+                for a in node.names:
+                    out[a.asname or a.name] = f"{module}.{a.name}"
+    return out
+
+
+def _canonical(node: ast.AST, aliases: dict[str, str]) -> str | None:
+    """The skip API a Name/Attribute refers to, or None."""
+    if not isinstance(node, (ast.Name, ast.Attribute)):
+        return None
+    parts = ast.unparse(node).split(".")
+    if parts[0] in ("self", "cls") and parts[1:] == ["skipTest"]:
+        return "unittest.TestCase.skipTest"
+    head = aliases.get(parts[0])
+    if head is None:
+        return None
+    name = ".".join([head] + parts[1:])
+    return name if name in _SKIP_APIS else None
+
+
+def _literal_args(node: ast.Call) -> tuple[list[ast.AST], dict[str, ast.AST]]:
+    """Positional and keyword arguments, expanding literal `*[...]` / `**{...}` unpacking."""
+    args: list[ast.AST] = []
+    kwargs: dict[str, ast.AST] = {}
+    for a in node.args:
+        if isinstance(a, ast.Starred):
+            if isinstance(a.value, (ast.List, ast.Tuple)):
+                args.extend(a.value.elts)
+        else:
+            args.append(a)
+    for kw in node.keywords:
+        if kw.arg is not None:
+            kwargs[kw.arg] = kw.value
+        elif isinstance(kw.value, ast.Dict):
+            for k, v in zip(kw.value.keys, kw.value.values):
+                if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                    kwargs[k.value] = v
+    return args, kwargs
+
+
+def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
+    """(line, api, reason) for every place this module can stop a test.
+
+    `reason` is None when the site hands over no auditable literal — a bare decorator, a bare
+    `raise`, a missing `reason=`, or a message assembled at runtime. Those are violations rather
+    than omissions: a skip whose reason cannot be read is exactly what this guard exists to catch.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+    aliases = _alias_map(tree)
+    found: list[tuple[int, str, str | None]] = []
+    called: set[int] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            api = _canonical(node.func, aliases)
+            if api is None:
+                continue
+            called.add(id(node.func))
+            args, kwargs = _literal_args(node)
+            reason = kwargs.get("reason") or kwargs.get("msg")
+            index = _SKIP_APIS[api]
+            if reason is None and index is not None and len(args) > index:
+                reason = args[index]
+            if isinstance(reason, ast.Constant) and isinstance(reason.value, str):
+                found.append((node.lineno, api, reason.value))
+            else:
+                found.append((node.lineno, api, None))
+        elif isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Attribute) and t.attr.startswith("__unittest_skip"):
+                    found.append((node.lineno, "__unittest_skip__ metadata", None))
+
+    # Bare references: a decorator or a `raise` that names a skip API without calling it stops a
+    # test just as effectively and carries no reason at all. Only these two positions count — a
+    # mention in an `except` clause or an `assertRaises` argument is not a skip site.
+    for node in ast.walk(tree):
+        bare: list[ast.AST] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bare = list(node.decorator_list)
+        elif isinstance(node, ast.Raise) and node.exc is not None:
+            bare = [node.exc]
+        for ref in bare:
+            if id(ref) in called:
+                continue
+            api = _canonical(ref, aliases)
+            if api is not None:
+                found.append((getattr(ref, "lineno", node.lineno), api, None))
+    return sorted(found)
 
 
 def _tracked_test_modules() -> list[Path]:
@@ -81,47 +202,27 @@ def _tracked_test_modules() -> list[Path]:
     return sorted(REPO_ROOT / p for p in out.split("\0") if p.endswith(".py"))
 
 
-def _skip_declarations(module: Path) -> list[tuple[int, str, str | None]]:
-    """(line, form, reason) for every skip in one module. `reason` is None if not a literal.
-
-    A non-literal reason is reported rather than ignored: a reason assembled at runtime cannot be
-    audited against the table, so it is exactly the shape a silent skip would hide behind.
-    """
-    found: list[tuple[int, str, str | None]] = []
-
-    def record(node: ast.Call, name: str) -> None:
-        reason: ast.AST | None = None
-        for kw in node.keywords:
-            if kw.arg == "reason":
-                reason = kw.value
-        if reason is None:
-            index = _REASON_INDEX[name]
-            if len(node.args) > index:
-                reason = node.args[index]
-        if isinstance(reason, ast.Constant) and isinstance(reason.value, str):
-            found.append((node.lineno, name, reason.value))
-        else:
-            found.append((node.lineno, name, None))
-
-    for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Call):
-            name = ast.unparse(node.func).split(".")[-1]
-            if name in _REASON_INDEX:
-                record(node, name)
-    return found
-
-
 def _violations(modules: list[Path]) -> list[str]:
     out: list[str] = []
     for module in modules:
-        for line, form, reason in _skip_declarations(module):
+        if not module.is_file():
+            out.append(f"{module.name}: tracked but not present in the checkout")
+            continue
+        for line, api, reason in _skip_sites(module):
             if reason is None:
-                out.append(f"{module.name}:{line}: {form}() reason is not a string literal, "
-                           "so it cannot be checked against the declared table")
+                out.append(f"{module.name}:{line}: {api} stops a test without a literal reason "
+                           "this table can check")
             elif reason not in _DECLARED_ENVIRONMENT_SKIPS:
-                out.append(f"{module.name}:{line}: {form}({reason!r}) is not a declared "
+                out.append(f"{module.name}:{line}: {api}({reason!r}) is not a declared "
                            "environment capability")
     return out
+
+
+def _probe(src: str) -> list[str]:
+    with tempfile.TemporaryDirectory() as tmp:
+        module = Path(tmp) / "test_probe.py"
+        module.write_text(src, encoding="utf-8")
+        return _violations([module])
 
 
 class SkipReasonsAreDeclaredTests(unittest.TestCase):
@@ -139,7 +240,7 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
         # not a quietly smaller sweep — the first version of this file had a `rglob` that could
         # be replaced with a single module while every test stayed green.
         modules = _tracked_test_modules()
-        on_disk = {p for p in TESTS_DIR.rglob("*.py")}
+        on_disk = set(TESTS_DIR.rglob("*.py"))
         tracked = set(modules)
         self.assertEqual(tracked - on_disk, set(), "tracked module missing from the checkout")
         self.assertEqual(on_disk - tracked, set(), (
@@ -154,62 +255,95 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
         # reason string the calibration test used to carry. Without this nothing in the suite
         # exercises rejection: every module in the tree is compliant, so the scan passes whether
         # the comparison works or is stubbed out.
-        src = ('import unittest\n'
-               'class T(unittest.TestCase):\n'
-               '    def test_x(self):\n'
-               '        self.skipTest("real IR artifact not present in this checkout")\n')
-        with tempfile.TemporaryDirectory() as tmp:
-            module = Path(tmp) / "test_probe.py"
-            module.write_text(src, encoding="utf-8")
-            violations = _violations([module])
+        violations = _probe('import unittest\n'
+                            'class T(unittest.TestCase):\n'
+                            '    def test_x(self):\n'
+                            '        self.skipTest("real IR artifact not present in this '
+                            'checkout")\n')
         self.assertEqual(len(violations), 1, violations)
         self.assertIn("real IR artifact not present in this checkout", violations[0])
         self.assertIn("not a declared environment capability", violations[0])
 
-    def test_a_declared_reason_passes_and_a_computed_one_does_not(self) -> None:
-        declared = next(iter(_DECLARED_ENVIRONMENT_SKIPS))
-        src = ('import unittest\n'
-               'class T(unittest.TestCase):\n'
-               f'    @unittest.skipUnless(HAVE, {declared!r})\n'
-               '    def test_ok(self):\n'
-               '        pass\n'
-               '    def test_computed(self):\n'
-               '        self.skipTest(f"missing {thing}")\n')
-        with tempfile.TemporaryDirectory() as tmp:
-            module = Path(tmp) / "test_probe.py"
-            module.write_text(src, encoding="utf-8")
-            violations = _violations([module])
-        self.assertEqual(len(violations), 1, violations)
-        self.assertIn("not a string literal", violations[0])
-
-    def test_every_skip_form_is_recognised(self) -> None:
-        # One assertion per form, generated from the forms themselves: a form the extractor does
-        # not know is a skip it cannot see, and checking them as one blob hides a single gap.
-        forms = {
-            "skipTest": '        self.skipTest({r})\n',
-            "skip": '        unittest.skip({r})(lambda: None)\n',
-            "skipUnless": '        unittest.skipUnless(False, {r})(lambda: None)\n',
-            "skipIf": '        unittest.skipIf(True, {r})(lambda: None)\n',
-            "skipif": '        pytest.mark.skipif(True, reason={r})\n',
-            "SkipTest": '        raise unittest.SkipTest({r})\n',
+    def test_each_way_of_stopping_a_test_is_seen(self) -> None:
+        # One case per route, generated from a table rather than checked as one blob: a route the
+        # extractor cannot see is a skip that passes, and a single combined assertion hides which
+        # one is missing. Every entry here was a live evasion of an earlier version of this file.
+        undeclared = "undeclared reason for this route"
+        routes = {
+            "self.skipTest":
+                f'    def test_x(self):\n        self.skipTest({undeclared!r})\n',
+            "decorator, called":
+                f'    @unittest.skipUnless(False, {undeclared!r})\n'
+                '    def test_x(self): pass\n',
+            "decorator, bare (no reason at all)":
+                '    @unittest.skip\n'
+                '    def test_x(self): pass\n',
+            "raise, called":
+                f'    def test_x(self):\n        raise unittest.SkipTest({undeclared!r})\n',
+            "raise, bare (no reason at all)":
+                '    def test_x(self):\n        raise unittest.SkipTest\n',
+            "computed reason":
+                '    def test_x(self):\n        self.skipTest(f"missing {thing}")\n',
+            "hand-set unittest metadata":
+                '    def test_x(self): pass\n'
+                '    test_x.__unittest_skip__ = True\n',
         }
-        reason = "undeclared reason for this form"
-        for name, body in forms.items():
-            src = ('import unittest, pytest\n'
-                   'def f():\n' + body.format(r=repr(reason)))
-            with tempfile.TemporaryDirectory() as tmp:
-                module = Path(tmp) / "test_probe.py"
-                module.write_text(src, encoding="utf-8")
-                decls = _skip_declarations(module)
-                violations = _violations([module])
-            self.assertEqual([d[2] for d in decls], [reason], f"{name}: {decls}")
+        for name, body in routes.items():
+            violations = _probe('import unittest\n'
+                                'class T(unittest.TestCase):\n' + body)
             self.assertEqual(len(violations), 1, f"{name}: {violations}")
+
+    def test_an_alias_does_not_hide_a_skip_and_a_local_name_is_not_one(self) -> None:
+        # Resolution goes through the module's imports. Aliasing the API must not conceal a skip,
+        # and an unrelated local function that happens to be called `skip` must not invent one.
+        aliased = _probe('from unittest import skipIf as omit_if\n'
+                         '@omit_if(True, "aliased undeclared reason")\n'
+                         'def test_x(): pass\n')
+        self.assertEqual(len(aliased), 1, aliased)
+        self.assertIn("unittest.skipIf", aliased[0])
+
+        renamed_module = _probe('import unittest as u\n'
+                                'class T(u.TestCase):\n'
+                                '    def test_x(self):\n'
+                                '        raise u.SkipTest("renamed module undeclared")\n')
+        self.assertEqual(len(renamed_module), 1, renamed_module)
+
+        local = _probe('def skip(reason):\n    return reason\n'
+                       'def helper():\n    return skip("not a skip at all")\n')
+        self.assertEqual(local, [])
+
+        mention = _probe('import unittest\n'
+                         'def helper():\n'
+                         '    try:\n        pass\n'
+                         '    except unittest.SkipTest:\n        pass\n'
+                         '    return unittest.SkipTest\n')
+        self.assertEqual(mention, [])
+
+    def test_pytest_routes_and_argument_unpacking(self) -> None:
+        # pytest is not imported anywhere in this suite today; these pin the routes before the
+        # first one appears, when adding them would be someone else's problem to notice.
+        self.assertEqual(len(_probe('import pytest\n'
+                                    'pytest.importorskip("missing_package")\n')), 1)
+        self.assertEqual(len(_probe('import pytest\n'
+                                    'pytest.skip("undeclared pytest reason")\n')), 1)
+        self.assertEqual(len(_probe('import pytest\n'
+                                    '@pytest.mark.skipif(True, reason="undeclared marker")\n'
+                                    'def test_x(): pass\n')), 1)
+        # A declared reason delivered by literal unpacking is still a declared reason: recovering
+        # it as "not a literal" would reject a valid skip and teach people to route around this.
+        declared = next(iter(_DECLARED_ENVIRONMENT_SKIPS))
+        self.assertEqual(_probe('import unittest\n'
+                                f'@unittest.skipIf(*[True, {declared!r}])\n'
+                                'def test_x(): pass\n'), [])
+        self.assertEqual(_probe('import unittest\n'
+                                f'@unittest.skipIf(True, **{{"reason": {declared!r}}})\n'
+                                'def test_x(): pass\n'), [])
 
     def test_no_declared_reason_is_unused(self) -> None:
         # A permission table that only grows is a table that stops meaning anything. Every entry
         # must correspond to a skip that exists; a removed skip takes its entry with it.
-        used = {reason for module in _tracked_test_modules()
-                for _, _, reason in _skip_declarations(module) if reason is not None}
+        used = {reason for module in _tracked_test_modules() if module.is_file()
+                for _, _, reason in _skip_sites(module) if reason is not None}
         unused = sorted(set(_DECLARED_ENVIRONMENT_SKIPS) - used)
         self.assertEqual(unused, [], (
             f"declared environment capabilities no test skips on any more: {unused}"))

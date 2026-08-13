@@ -10523,13 +10523,18 @@ end program shallow_water2d_runner
             self.assertTrue(any("degenerate pass-test set" in x for x in v), v)
 
     def test_real_full_fidelity_predicate_set_is_not_degenerate(self) -> None:
-        # The degenerate gate must not fire on a real full-fidelity IR. That is the whole
-        # assertion, and it is one bit: the pass set carries at least one non-`verdict.*`
-        # condition somewhere, and the verdict-only xfail is exempt. The fixture happens to have
-        # 6 pass predicates and 1 xfail, with per-case threshold maps and metric addresses, but
-        # none of that census is asserted here — trimming the fixture to a single conforming pass
-        # predicate still passes. Said plainly rather than described richly, because a comment
-        # that counts the fixture's contents is a claim the test does not stand behind.
+        # The degenerate gate must not fire on a real full-fidelity IR. The assertion is one bit
+        # — the pass set carries at least one non-`verdict.*` condition somewhere, and the
+        # verdict-only xfail is exempt — so the fixture's census (6 pass predicates, 1 xfail,
+        # per-case threshold maps, metric addresses) is not claimed here: trimming it to a single
+        # conforming predicate still passes.
+        #
+        # A clean run is not evidence on its own, because "no violation" is also what an empty or
+        # unparseable IR produces: review overwrote the fixture with `{}` and this test still
+        # passed. So the same fixture is driven twice — as captured, and with every pass predicate
+        # rewritten to `verdict.overall` — and the second drive must fire. That is what shows the
+        # gate reached real predicates rather than falling out early on a document it could not
+        # read. It is the mutation the reviewer had to apply by hand, kept where it cannot rot.
         #
         # The input is a TRACKED fixture, not a live run directory. This test used to read
         # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
@@ -10544,15 +10549,30 @@ end program shallow_water2d_runner
         # tests.md set-equality path, mixing drift unrelated to the degenerate gate into this
         # calibration. This preserves the semantics the test had before the fixture move: only the
         # input's provenance changed.
-        real_ir = _REAL_IR_FIXTURE
-        with tempfile.TemporaryDirectory() as tmp:
-            ir_dir = Path(tmp) / "ir"
-            ir_dir.mkdir()
-            (ir_dir / "spec.ir.yaml").write_text(real_ir.read_text(encoding="utf-8"),
-                                                 encoding="utf-8")
-            violations: list[str] = []
-            vps._validate_test_predicates(Path(tmp), ir_dir, violations)
-            self.assertFalse(any("degenerate" in v for v in violations), violations)
+        def drive(document: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp) / "ir"
+                ir_dir.mkdir()
+                (ir_dir / "spec.ir.yaml").write_text(document, encoding="utf-8")
+                violations: list[str] = []
+                vps._validate_test_predicates(Path(tmp), ir_dir, violations)
+                return violations
+
+        captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
+        self.assertFalse(any("degenerate" in v for v in drive(captured)), drive(captured))
+
+        degenerate = yaml.safe_load(captured)
+        rewritten = 0
+        for predicate in degenerate["io_contract"]["test_predicates"]:
+            if predicate.get("expected_outcome") == "pass":
+                predicate["pass_when"] = {"all": [
+                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}
+                rewritten += 1
+        self.assertGreater(rewritten, 0, "fixture carries no pass predicate to calibrate against")
+        self.assertTrue(
+            any("degenerate" in v for v in drive(yaml.safe_dump(degenerate, sort_keys=False))),
+            "the gate did not reach this fixture's predicates, so the clean run above proves "
+            "nothing about it")
 
     def test_validate_compile_stage_rejects_non_plans_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
