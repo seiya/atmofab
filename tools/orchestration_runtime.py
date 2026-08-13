@@ -11849,8 +11849,10 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # accompanies. Normalization only: an unknown or absent role is left exactly as it is
     # for the validator to REJECT, so this can never turn a bad role into an accepted one.
     _role_raw = payload.get("agent_role")
+    _role_respelled = False
     if isinstance(_role_raw, str) and _role_raw.strip():
         payload["agent_role"] = _role_raw.strip().lower()
+        _role_respelled = payload["agent_role"] != _role_raw
     # Deterministic (in-process Build / Validate.execute) requests carry no skill: no
     # leaf runs them, and their SKILL.md files do not exist. Leave skill_name/skill_ref
     # stripped and skill_must_read_refs empty (mirror build_launch_request) so the
@@ -11911,6 +11913,22 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # legacy path, keep the existing behavior (render only when no explicit prompt is supplied).
     if pure or not explicit_prompt_present:
         payload["launch_prompt_full"] = render_launch_prompt_text(payload)
+    elif _role_respelled:
+        # The other half of the same defect. On the render branch above, canonicalizing the
+        # role before the render is what puts the Task Card in the prompt. On THIS branch
+        # nothing is re-rendered, so a caller-supplied prompt built from `"SUBSTEP"` ships
+        # unchanged while the persisted request records `"substep"` — the durable record
+        # disagreeing with the prompt beside it, which is precisely the harm the render-side
+        # fix was written to stop. Refuse the pair instead of silently shipping it. Narrow by
+        # construction: it fires ONLY when the caller both supplies its own prompt AND spells
+        # the role non-canonically, so no conductor launch can reach it
+        # (`workflow_conductor.build_launch_request` supplies no prompt and a canonical role).
+        raise ValueError(
+            "launch request supplies its own prompt while spelling agent_role "
+            f"{_role_raw!r}, which normalizes to {payload['agent_role']!r}; the persisted "
+            "request would disagree with the prompt it accompanies. Send the canonical "
+            "spelling, or omit the prompt and let record-launch render it."
+        )
     return payload
 
 
@@ -14447,8 +14465,10 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # `record_agent_run` likewise writes its normalized token back into the terminal payload.
     # NOTE: an earlier version of this comment also named `_write_allowed_output_manifest` as
     # a reader harmed by an unlowered role. That is FALSE and was measured so: record-launch
-    # calls it without an `agent_role` at all, and its three other call sites pass the
-    # literal `"orchestration"`. The launch payload's role never reaches it.
+    # calls it without an `agent_role` at all, and its ONE other production call site
+    # (`init_orchestration`) passes the literal `"orchestration"`. The launch payload's
+    # role never reaches it. (An earlier version of this correction said "three other
+    # call sites" — wrong again, in the very sentence fixing a wrong claim.)
     request_payload["agent_role"] = _require_child_agent_role_for_step(
         request_payload.get("agent_role"),
         step,

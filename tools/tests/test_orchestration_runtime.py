@@ -33536,35 +33536,63 @@ class JsonPayloadFileArgTests(unittest.TestCase):
 class AgentRoleFailClosedTests(unittest.TestCase):
     """`agent_role` must be fail-closed at BOTH chokepoints (TODO.md, high).
 
-    WHAT IS PINNED (set identity, not a sample) — and it is FOUR of the eight tests, not
-    all of them. `test_launch_requires_exactly_the_role_its_step_demands` iterates
-    `STEP_REQUIRED_CHILD_AGENT` x `AGENT_RUN_ROLES`;
-    `test_terminal_payload_rejects_a_role_outside_the_vocabulary` and
-    `test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary` iterate
-    `AGENT_RUN_ROLES` on the accept side; and
-    `test_the_unaudited_role_cannot_carry_a_terminal_status` pins
-    `AGENT_RUN_ROLES - WRITE_AUDITED_AGENT_ROLES`. Adding a step or a role to either
-    definition therefore extends those four automatically — the property the earlier
-    phase-contract tests could NOT express, because they sat outside the set they
-    described and could only sample names to reject.
+    WHAT IS PINNED vs WHAT IS SAMPLED is declared in `_DEFINITION_DRIVEN` /
+    `_SAMPLE_DRIVEN` below and CHECKED BY A TEST
+    (`test_this_class_census_is_accurate`), not asserted in this prose.
 
-    WHAT IS NOT, and this list has been wrong twice — narrowed once by review, then
-    narrowed AGAIN when a second reviewer measured the remaining claim:
-    `test_launch_role_normalization_closes_the_spelling_family` samples spellings by
-    construction. `test_capability_then_manifest_agree_on_the_role_...` drives ONE
-    captured fixture and pins the producer->consumer ORDER, not the vocabulary.
-    `test_launch_validation_canonicalizes_the_role_in_the_payload` likewise drives one
-    fixture. And `test_every_captured_production_payload_declares_the_demanded_role` is a
-    FIXTURE-CORPUS TRIPWIRE, not a definition pin: it globs the captured requests and
-    hard-asserts there are 7, so adding a step or a role does not extend it — verified by
-    mutating both definitions and watching it pass. It was listed among the pins until
-    that mutation was actually run, which is the point: a test's category is something to
-    measure, not to assert from its shape.
+    That indirection is the whole point. This census was written in prose three times and
+    was wrong all three: it claimed all seven tests iterate a definition (five did), then
+    named a test that a rename had already deleted, then said "eight tests" when there
+    were nine. A prose census goes stale silently the moment a test is added or renamed;
+    a machine-checked one cannot. So the categories live in data, the data is asserted
+    against the class's actual methods, and adding a test without classifying it FAILS.
 
-    WHAT IS SAMPLED: the specific out-of-vocabulary spellings (`"bogus"`, `"Substep "`,
-    …). Those are shape probes — an unknown word, a case/whitespace variant — not a proof
-    that no other string is accepted; the loops over the definitions carry that.
+    The distinction being tracked: a DEFINITION-DRIVEN test generates its assertions by
+    iterating `STEP_REQUIRED_CHILD_AGENT` / `AGENT_RUN_ROLES` / `WRITE_AUDITED_AGENT_ROLES`,
+    so adding a step or a role extends it automatically — the property the phase-contract
+    tests could not express, sitting outside the set they described. A SAMPLE-DRIVEN test
+    probes chosen shapes (an unknown word, a case variant, one captured fixture); it can
+    demonstrate a rejection but never set identity. Both are legitimate; conflating them
+    is what let three review rounds each break the previous round's "pin".
     """
+
+    # The census. Every test method of this class must appear in exactly one of these.
+    _DEFINITION_DRIVEN = frozenset({
+        "test_launch_requires_exactly_the_role_its_step_demands",
+        "test_terminal_payload_rejects_a_role_outside_the_vocabulary",
+        "test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary",
+        "test_the_unaudited_role_cannot_carry_a_terminal_status",
+    })
+    _SAMPLE_DRIVEN = frozenset({
+        "test_launch_role_normalization_closes_the_spelling_family",
+        "test_the_prompt_actually_shipped_carries_the_task_card",
+        "test_every_captured_production_payload_declares_the_demanded_role",
+        "test_capability_then_manifest_agree_on_the_role_record_launch_passes",
+        "test_the_validator_backstop_canonicalizes_without_prepare",
+        "test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role",
+        "test_the_write_audit_use_site_reads_the_narrower_set",
+    })
+
+    def test_this_class_census_is_accurate(self) -> None:
+        """The census above must partition this class's ACTUAL test methods.
+
+        Renaming, adding or deleting a test without classifying it fails here — which is
+        exactly what silently happened three times while the census lived in prose.
+        `test_every_captured_production_payload_declares_the_demanded_role` is classified
+        SAMPLE-driven deliberately: it globs the fixture corpus and hard-asserts 7, so
+        mutating either definition leaves it passing (measured, not assumed)."""
+        actual = {
+            name for name in dir(type(self))
+            if name.startswith("test_") and callable(getattr(type(self), name))
+        }
+        declared = self._DEFINITION_DRIVEN | self._SAMPLE_DRIVEN | {
+            "test_this_class_census_is_accurate"}
+        self.assertEqual(
+            actual, declared,
+            "a test was added, renamed or removed without updating the census; classify "
+            "it as definition-driven (it iterates a definition) or sample-driven",
+        )
+        self.assertFalse(self._DEFINITION_DRIVEN & self._SAMPLE_DRIVEN)
 
     def test_launch_requires_exactly_the_role_its_step_demands(self) -> None:
         """Table-driven over every core step: the demanded role passes the role check and
@@ -33817,6 +33845,64 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                         )
                     except Exception as exc:  # noqa: BLE001 - the message is the assertion
                         self.assertNotIn("must be one of", str(exc))
+
+    def test_the_validator_backstop_canonicalizes_without_prepare(self) -> None:
+        """The write-back inside `_validate_launch_request_payload` is kept as a BACKSTOP
+        for a caller that skips `prepare_launch_request_payload`. Round 3 deleted the only
+        test that drove the validator on its own, so the backstop became invisible:
+        neutering the assignment to a bare call left the whole suite green. Keeping a
+        mechanism while deleting its witness is the same class as this branch's other
+        findings, one layer up — so the witness is restored here, deliberately NOT going
+        through prepare."""
+        from tools.orchestration_runtime import _validate_launch_request_payload
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "compile_generate.request.json"
+        )
+        base = json.loads(fixture.read_text(encoding="utf-8"))
+        for spelling in ("SUBSTEP", " Substep ", "substep"):
+            with self.subTest(spelling=spelling):
+                payload = {**base, "agent_role": spelling}
+                _validate_launch_request_payload(payload)   # no prepare, by design
+                self.assertEqual(payload["agent_role"], "substep")
+
+    def test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role(self) -> None:
+        """The other half of the round-3 defect. Canonicalizing before the render puts the
+        Task Card in the prompt — but `prepare_launch_request_payload` does NOT re-render
+        when the caller supplies its own prompt, so there the persisted request would say
+        `substep` while the supplied prompt was built from `SUBSTEP` and carries no card:
+        the durable record disagreeing with the prompt beside it. Refused rather than
+        shipped.
+
+        The refusal is narrow by construction — it needs BOTH a caller-supplied prompt AND
+        a non-canonical spelling — so the conductor cannot reach it: it supplies no prompt
+        and a canonical role. Both of those are asserted here."""
+        from tools.orchestration_runtime import (
+            prepare_launch_request_payload,
+            render_launch_prompt_text,
+        )
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "generate_generate.request.json"
+        )
+        base = json.loads(fixture.read_text(encoding="utf-8"))
+        base.pop("launch_prompt_full", None)
+        respelled = {**base, "agent_role": "SUBSTEP"}
+        with self.assertRaisesRegex(ValueError, "supplies its own prompt while spelling"):
+            prepare_launch_request_payload(
+                {**respelled, "launch_prompt_full": render_launch_prompt_text(respelled)})
+        # A canonical role with a caller-supplied prompt is untouched...
+        canonical = {**base, "agent_role": "substep"}
+        mine = render_launch_prompt_text(canonical) + "\nCALLER SUFFIX\n"
+        prepared = prepare_launch_request_payload(
+            {**canonical, "launch_prompt_full": mine})
+        self.assertEqual(prepared["launch_prompt_full"], mine)
+        # ...and a respelled role with NO supplied prompt is rendered, not refused.
+        self.assertIn(
+            "Task Card",
+            prepare_launch_request_payload(dict(respelled))["launch_prompt_full"])
 
     def test_the_write_audit_use_site_reads_the_narrower_set(self) -> None:
         """Pinning the DEFINITIONAL difference between the two constants is not the same as
