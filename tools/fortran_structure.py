@@ -27,10 +27,17 @@ FAIL-CLOSED, IN TWO DIRECTIONS:
   parser could not resolve is exactly the input a silent gate is made of. Measured over the
   corpora this repository has (2026-08-13, tree-sitter 0.26.0 / tree-sitter-fortran 0.6.0): of
   the 365 in-tree `*_model.f90`, 0 carry an ERROR node over their view and the procedure set
-  agrees with the walk on 365/365; of the 58 inline test fixtures `gfortran -fsyntax-only
-  -std=f2008` accepts, 1 carries an ERROR node and 0 disagree with the walk — so "silently wrong"
-  was 0 of 58. The one ERROR carrier is a variable NAMED `endsubroutine`, which the parser lexes
-  as `end subroutine`; it is a legal program and it is refused, with a message naming the rename.
+  agrees with the walk on 365/365. What it refuses is measured by the two matrices in
+  `test_validate_pipeline_semantics.py`, which are re-runnable and pinned as sets: of 48 rows
+  assigning to a variable named after a keyword, 10 are refused, and of 35 rows naming a CONSTRUCT
+  after one, 15 are. The refused names are `endsubroutine`, `interface` and `contains` (and
+  `real :: type(3)`, where an array declaration of a variable named `type` is character-for-
+  character a derived-type declaration) — every one a legal program that the parser lexes as the
+  END statement or block opener the name spells, and every one repairable by a rename, which the
+  violation message asks for. An earlier version of this note claimed a single ERROR carrier
+  (`endsubroutine`) measured over "58 inline fixtures"; that corpus was an ad-hoc extraction that
+  no longer exists, and the claim was refuted by this module's own pins — `interface` and
+  `contains` are equally carriers. Cite the matrices, which can be re-run.
 
 DEPENDENCIES. Two packages this repository does not otherwise declare:
 
@@ -59,6 +66,12 @@ _PROCEDURE_KINDS = {
     "function": "function",
     "module_procedure": "module_procedure",
 }
+
+
+#: Node types this module matches on beyond `_PROCEDURE_KINDS`. Listed so `_load_parser` can ask
+#: the grammar whether it still defines them — see the check there for why a rename is otherwise
+#: silent rather than loud.
+_REQUIRED_NODE_TYPES = ("interface", "internal_procedures", "contains_statement")
 
 
 class FortranStructureUnavailableError(RuntimeError):
@@ -123,13 +136,39 @@ def _load_parser():
             f"pip install tree-sitter tree-sitter-fortran"
         ) from exc
     try:
-        return Parser(Language(tree_sitter_fortran.language()))
+        language = Language(tree_sitter_fortran.language())
+        parser = Parser(language)
     except Exception as exc:
         raise FortranStructureUnavailableError(
             f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the Fortran structure front end failed to "
             f"initialise ({exc}). Check that tree-sitter and tree-sitter-fortran are ABI "
             f"compatible: pip install -U tree-sitter tree-sitter-fortran"
         ) from exc
+    # THE GRAMMAR MUST STILL SPEAK THE NODE NAMES THIS MODULE MATCHES ON. Everything below keys
+    # on node TYPE STRINGS, so a grammar that renames one reports no procedures and no errors —
+    # and every gate then returns at its empty-envelope loop with nothing to say. Silent, which
+    # is the one outcome this module exists to prevent, and invisible to a version pin in a
+    # docstring that nothing enforces (this repository declares no dependency manifest, so a
+    # fresh install resolves whatever is newest). Asking the grammar directly costs one call and
+    # converts that whole class into the unavailable error.
+    #
+    # Reachability is currently zero and was measured, not assumed: tree-sitter-fortran 0.2.0,
+    # 0.3.0, 0.4.0, 0.5.1 and 0.6.0 all use these names and all produce byte-identical violations
+    # over the 365-model corpus (executed in review). This guards the next version, not any
+    # published one.
+    unknown = sorted(
+        node_type for node_type in (*_PROCEDURE_KINDS, *_REQUIRED_NODE_TYPES)
+        if language.id_for_node_kind(node_type, True) is None
+    )
+    if unknown:
+        raise FortranStructureUnavailableError(
+            f"{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER} the installed tree-sitter-fortran grammar "
+            f"does not define the node types this front end reads ({', '.join(unknown)}), so it "
+            f"cannot report procedures at all. This module is written against "
+            f"tree-sitter-fortran 0.6.0; pin that version, and re-run "
+            f"tools/fortran_structure_differential.py (both halves) before accepting a newer one."
+        )
+    return parser
 
 
 def _line_start(view: str, position: int) -> int:

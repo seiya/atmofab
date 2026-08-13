@@ -5846,8 +5846,12 @@ end module shallow_water2d_model
         # unit over it, which gfortran rejects (executed: rc=1, "Unexpected CALL statement in
         # MODULE") — the old walk read those bodies deliberately long, and a parser refuses them
         # instead. That is the direction this change trades in, and the refusal is not reachable
-        # in a real run: `Generate.gate` runs its syntax check FIRST and only runs the static
-        # check when lint AND syntax passed, so no source that gfortran rejects gets here.
+        # in a real run FOR A FORTRAN NODE: `Generate.gate` runs its syntax check first and only
+        # runs the static check when lint AND syntax passed, so no source gfortran rejects gets
+        # here. The qualifier is load-bearing and was missing until review: `_gate_syntax_check`
+        # returns `status=pass` with a `skipped_reason` for any other language
+        # (`tools/workflow_conductor.py:7974`), so a non-fortran node reaches the static check
+        # with no compiler having run. No such node exists in this tree today.
         for opener, terminator in (
             ("", "end subroutine"),
             ("", "endsubroutine"),
@@ -6215,9 +6219,12 @@ end module m2
         # than be discovered as a refused Generate in a billed run. Every row below is a legal
         # program (`gfortran -fsyntax-only -std=f2008` accepts each, executed) that the parser
         # lexes as the END statement the name spells, and every one is repairable by the leaf
-        # renaming the variable — which is what the violation message asks for. 44 of the 48 rows
-        # are still analysed and still flagged, which is the answer to "does a parser cost more
-        # than it buys here".
+        # renaming the variable — which is what the violation message asks for. 38 of the 48
+        # rows are still analysed and still flagged (the refused set below has TEN members, not
+        # four: three names x three shapes, plus one `type` row). An earlier version of this
+        # comment said 44, derived by subtracting NAMES from ROWS instead of counting the set two
+        # lines below it — a number written rather than measured, which is the failure this file
+        # keeps having to correct.
         self.assertEqual(refused, {
             ("endsubroutine", "endsubroutine = 1.0"),
             ("endsubroutine", "endsubroutine(1) = 1.0"),
@@ -6545,7 +6552,9 @@ end module m
         # Same edge, third reading. The ORIGINAL flat span emitted nothing at all here (a silent
         # gate); the walk emitted a body running to end of input; the parser refuses. Only the
         # first of those three is fail-open. `gfortran -fsyntax-only -std=f2008` rejects the text
-        # ("Unexpected end of file", executed) and the syntax check precedes the static one.
+        # ("Unexpected end of file", executed) and, for a fortran node, the syntax check
+        # precedes the static one (see the qualifier above — it does not hold for other
+        # languages, of which this tree has none).
         source = """module m
 contains
 subroutine solve(x, y)

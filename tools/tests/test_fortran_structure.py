@@ -273,6 +273,47 @@ class FrontEndUnavailableTests(unittest.TestCase):
             any(fs.FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in v for v in violations), violations)
 
 
+class GrammarContractTests(unittest.TestCase):
+    def test_every_node_type_this_module_matches_on_exists_in_the_grammar(self) -> None:
+        # The whole module keys on node TYPE STRINGS. A grammar that renames one reports no
+        # procedures AND no errors, so every gate returns at its empty-envelope loop with nothing
+        # to say — silent, which is the one outcome this module exists to prevent. `_load_parser`
+        # asks the grammar directly and converts that into the unavailable error; this pins that
+        # the list it asks about is the list the code actually reads, which a docstring version
+        # pin cannot do (the repository declares no dependency manifest).
+        import tree_sitter_fortran
+        from tree_sitter import Language
+
+        language = Language(tree_sitter_fortran.language())
+        for node_type in (*fs._PROCEDURE_KINDS, *fs._REQUIRED_NODE_TYPES):
+            self.assertIsNotNone(language.id_for_node_kind(node_type, True), node_type)
+        # The list is not decorative: every name in it is matched somewhere in the module.
+        source = (REPO_ROOT / "tools" / "fortran_structure.py").read_text()
+        for node_type in fs._REQUIRED_NODE_TYPES:
+            self.assertIn(f'"{node_type}"', source, node_type)
+
+    def test_an_unknown_node_type_makes_the_front_end_unavailable_not_silent(self) -> None:
+        # The failure direction, exercised by asking about a name no grammar defines. Without the
+        # check, this configuration returns an empty procedure list and a clean parse.
+        import tree_sitter_fortran
+        from tree_sitter import Language
+
+        language = Language(tree_sitter_fortran.language())
+        self.assertIsNone(language.id_for_node_kind("subroutine_renamed_by_a_grammar_bump", True))
+        original = fs._REQUIRED_NODE_TYPES
+        try:
+            fs._REQUIRED_NODE_TYPES = original + ("subroutine_renamed_by_a_grammar_bump",)
+            with self.assertRaises(fs.FortranStructureUnavailableError) as caught:
+                fs.parse_view("subroutine s\nend subroutine s\n")
+        finally:
+            fs._REQUIRED_NODE_TYPES = original
+        self.assertIn(fs.FORTRAN_STRUCTURE_UNAVAILABLE_MARKER, str(caught.exception))
+        self.assertIn("subroutine_renamed_by_a_grammar_bump", str(caught.exception))
+        # ... and the module still works once it is restored, so the test cannot pass by leaving
+        # the module broken.
+        self.assertEqual(1, len(fs.parse_view("subroutine s\nend subroutine s\n").procedures))
+
+
 class ImportBootstrapTests(unittest.TestCase):
     def test_the_cli_import_fallback_carries_the_same_names_as_the_package_import(self) -> None:
         # `validate_pipeline_semantics` imports its siblings twice: once as `from tools import …`
