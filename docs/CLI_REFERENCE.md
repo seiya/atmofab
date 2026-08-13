@@ -98,7 +98,7 @@ In Claude Code, call it **before launching the `Agent` tool** (because the child
 
 | field | required | content |
 |---|---|---|
-| `agent_role` | yes | `step` or `substep` |
+| `agent_role` | yes | `step` or `substep`, and it must be **exactly the one the `step` demands** — `build` => `step`, every other core phase => `substep`. A disagreement is rejected (`agent_role does not satisfy required child agent kind`), as is an absent or empty value; record-launch no longer infers the role from the presence of `substep` |
 | `node_key` | yes | `<spec_kind>/<spec_id>@<spec_version>` |
 | `step` | yes | `compile` / `generate` / `build` / `validate` (core 5-phase). Tune / Promote are optional flows with a separate entrypoint |
 | `substep` | yes for a substep agent | Compile: `generate` / `static` / `verify` (`static` is conductor-run deterministic). Generate: `generate` / `gate` / `verify` (`gate` is conductor-run deterministic — it unions the lint / syntax / static checks). Validate: `pre_judge` / `execute` / `judge` / `post_judge` (`pre_judge`, `execute` and `post_judge` are conductor-run deterministic). |
@@ -190,7 +190,7 @@ Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.r
 | field | required | content |
 |---|---|---|
 | `agent_run_id` | yes | UUID |
-| `agent_role` | yes | `orchestration` / `step` / `substep` |
+| `agent_role` | yes | `orchestration` / `step` / `substep` / `skipped_by_checkpoint` — the complete vocabulary, and a value outside it is rejected. `skipped_by_checkpoint` additionally requires `status=skipped` and a `skipped_step` matching `step`. The first three are the roles subject to the terminal filesystem-diff write audit; a role this list does not name used to skip that audit silently |
 | `agent_backend` | yes | `claude` / `codex` |
 | `status` | yes | `running` / `pass` / `fail` / `blocked` / `timeout` / `cancel` |
 | `started_at` | yes | ISO 8601 |
