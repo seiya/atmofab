@@ -55,6 +55,19 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 MOCK_SPEC_DIR = "spec/problem/mock_domain/mock_family/mock_spec"
 MOCK_TESTS_REF = f"{MOCK_SPEC_DIR}/tests.md"
 
+# A tracked, byte-for-byte copy of a real full-fidelity IR: `node_key`
+# `problem/shallow_water2d@0.4.0`, captured 2026-08-13 from the run directory
+# `workspace_20260719/ir/problem__shallow_water2d__0.4.0/shallow-water2d_20260718_003/`, whose
+# sibling `ir_meta.json` — not part of this fixture — records `verification_status=pass` and
+# `debug_mode=false`. Only `node_key` can be checked against the file here. Committed under test
+# data because `workspace*` is the operator's execution workspace — gitignored, freely pruned, and
+# absent from any fresh clone — so a test that reads it there cannot run. Same precedent as
+# `tools/tests/data/conductor_launch_requests/` (see tools/tests/test_workflow_conductor.py).
+# Not hand-trimmed: the point of a real-shape calibration is the shape the real writer produced.
+_REAL_IR_FIXTURE = (Path(__file__).resolve().parents[2]
+                    / "tools/tests/data/real_ir"
+                    / "shallow_water2d_20260718_003.spec.ir.yaml")
+
 
 def _structured_section51_from_fortran(fortran_block: str) -> str:
     """Keep readable Fortran fixtures as truth while publishing §5.1 as structured YAML."""
@@ -10512,24 +10525,74 @@ end program shallow_water2d_runner
             self.assertTrue(any("degenerate pass-test set" in x for x in v), v)
 
     def test_real_full_fidelity_predicate_set_is_not_degenerate(self) -> None:
-        # Calibration against the real full-fidelity IR (shallow-water2d_20260718_003): 6 pass blocks
-        # (per-case threshold maps, `case:`-scoped conditions, metric addresses) + 1 verdict-only
-        # xfail. The degenerate gate must NOT fire — the pass set carries real metric/checks
-        # conditions and the xfail is exempt. Driven through `_validate_test_predicates` on the exact
-        # on-disk IR so a false positive here is caught against production shape.
-        real_ir = (Path(__file__).resolve().parents[2]
-                   / "workspace/ir/problem__shallow_water2d__0.4.0"
-                   / "shallow-water2d_20260718_003/spec.ir.yaml")
-        if not real_ir.is_file():
-            self.skipTest("real IR artifact not present in this checkout")
-        with tempfile.TemporaryDirectory() as tmp:
-            ir_dir = Path(tmp) / "ir"
-            ir_dir.mkdir()
-            (ir_dir / "spec.ir.yaml").write_text(real_ir.read_text(encoding="utf-8"),
-                                                 encoding="utf-8")
-            violations: list[str] = []
-            vps._validate_test_predicates(Path(tmp), ir_dir, violations)
-            self.assertFalse(any("degenerate" in v for v in violations), violations)
+        # The degenerate gate must not fire on a real full-fidelity IR. The assertion is one bit
+        # — the pass set carries at least one non-`verdict.*` condition somewhere, and the
+        # verdict-only xfail is exempt — so the fixture's census (6 pass predicates, 1 xfail,
+        # per-case threshold maps, metric addresses) is not claimed here: trimming it to a single
+        # conforming predicate still passes.
+        #
+        # A clean run is not evidence on its own, because no *degenerate* violation is also what
+        # a document the gate cannot read produces: an unparseable or empty IR returns nothing at
+        # all, and `{}` returns a different complaint entirely, none of which this assertion
+        # inspects. Review overwrote the fixture and this test still passed. So the same fixture
+        # is driven twice — as captured, and with every pass predicate
+        # rewritten to `verdict.overall` — and the second drive must fire. That is what shows the
+        # gate reached real predicates rather than falling out early on a document it could not
+        # read. It is the mutation the reviewer had to apply by hand, kept where it cannot rot.
+        #
+        # The input is a TRACKED fixture, not a live run directory. This test used to read
+        # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
+        # operator's execution workspace and is gitignored, so that made the calibration a
+        # permanent silent skip (the suite's standing "1 skipped") on every fresh clone. A missing
+        # fixture is now repository corruption, not an environment difference — so it fails.
+        # `test_skip_reasons_are_declared` stops that skip being re-declared; it cannot stop a
+        # future edit from simply returning early instead, which is the same defect without a
+        # skip in it. Nothing in the suite watches for that, and saying so beats implying
+        # otherwise — an earlier version of this comment claimed "any route" and was wrong.
+        #
+        # `repo_root` is the temp dir, not the real one, deliberately: it leaves
+        # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the IR's
+        # own `test_evidence_requirements`. Passing the real root would additionally drive the
+        # tests.md set-equality path, mixing drift unrelated to the degenerate gate into this
+        # calibration. This preserves the semantics the test had before the fixture move: only the
+        # input's provenance changed.
+        def drive(document: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp) / "ir"
+                ir_dir.mkdir()
+                (ir_dir / "spec.ir.yaml").write_text(document, encoding="utf-8")
+                violations: list[str] = []
+                vps._validate_test_predicates(Path(tmp), ir_dir, violations)
+                return violations
+
+        captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
+        clean = drive(captured)
+        self.assertFalse(any("degenerate" in v for v in clean), clean)
+
+        # Parsed and shape-checked before mutating, so a fixture the gate cannot read fails on a
+        # sentence naming what is wrong. Reviewers overwrote it with `{}` and with broken YAML;
+        # both did fail, but on a raw KeyError/ParserError from building the mutant below — the
+        # right outcome reached by a mechanism neither the test nor its comment named.
+        try:
+            degenerate = yaml.safe_load(captured)
+        except yaml.YAMLError as exc:
+            self.fail(f"the calibration fixture no longer parses, so the clean drive above "
+                      f"asserted nothing: {exc}")
+        self.assertIsInstance(degenerate, dict, "calibration fixture is not a mapping")
+        predicates = degenerate.get("io_contract", {}).get("test_predicates")
+        self.assertTrue(predicates, "calibration fixture carries no io_contract.test_predicates, "
+                                    "so the gate has nothing to read and a clean run is vacuous")
+        rewritten = 0
+        for predicate in predicates:
+            if predicate.get("expected_outcome") == "pass":
+                predicate["pass_when"] = {"all": [
+                    {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}
+                rewritten += 1
+        self.assertGreater(rewritten, 0, "fixture carries no pass predicate to calibrate against")
+        self.assertTrue(
+            any("degenerate" in v for v in drive(yaml.safe_dump(degenerate, sort_keys=False))),
+            "the gate did not reach this fixture's predicates, so the clean run above proves "
+            "nothing about it")
 
     def test_validate_compile_stage_rejects_non_plans_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
