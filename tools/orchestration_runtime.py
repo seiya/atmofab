@@ -4170,6 +4170,32 @@ STEP_REQUIRED_CHILD_AGENT: dict[str, str] = {
     "validate": "substep",
 }
 
+# The COMPLETE `agent_role` vocabulary of `agent_runs.jsonl`. Canonical prose:
+# docs/ORCHESTRATION.md (the capability table and §43), docs/CLI_REFERENCE.md
+# (record-agent-run), docs/GLOSSARY.md (`skipped_by_checkpoint`).
+#
+# Named once because the terminal write audit keys on membership: a role outside this
+# set made `_validate_actual_write_paths` — the FS-diff attribution docs/AGENT_CONTRACT.md
+# calls authoritative — return without validating, and `record_agent_run` accepted any
+# string at all, so a misspelling silently disabled it. See TODO.md.
+AGENT_RUN_ROLES: frozenset[str] = frozenset(
+    {"orchestration", "step", "substep", "skipped_by_checkpoint"}
+)
+
+# The subset that owns a filesystem write window and is therefore subject to the terminal
+# FS-diff audit. `skipped_by_checkpoint` is deliberately absent: it records a step that was
+# NEVER LAUNCHED, so it has no capability, no write_roots and no baseline to diff against.
+WRITE_AUDITED_AGENT_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"})
+
+# THREE set literals with these same three members are deliberately NOT folded into the
+# constant above, because they answer a DIFFERENT question and folding them would make a
+# later change to one silently change the others:
+#   - `build_capability_document` (x2): "which roles may a CAPABILITY document name".
+#   - the `repair_legacy_agent_runs` backfill: "which rows represent an agent that ran".
+# They coincide with the write-audited set today; they are not defined by it. An earlier
+# commit message claimed every copy of the literal had been folded in — it had not, and
+# this note exists so the next reader does not have to re-derive that.
+
 FAIL_CLOSED_REASON_CODES = {
     "child_agent_forbidden_by_session_policy",
     "child_agent_unavailable_on_execution_platform",
@@ -5073,6 +5099,49 @@ def _required_child_agent_kind(step: str) -> str:
     return required
 
 
+def _normalized_agent_role(value: Any) -> str:
+    """The canonical token for an `agent_role` value: stripped and lower-cased, else "".
+
+    Every reader that DECIDES on the field normalizes this way, and the two chokepoints
+    canonicalize the payload itself so the rest cannot disagree. Not every reader does it
+    for itself, and an earlier version of this docstring wrongly claimed they all did:
+    `_build_task_card` and `_write_allowed_output_manifest` use `.strip()` with no
+    `.lower()`, and `init_orchestration` / `_rewrite_orchestration_run_row` compare
+    `.strip()`-only against `"orchestration"`. That is exactly why canonicalizing at the
+    chokepoints — rather than trusting each reader — is what closes the family.
+    """
+    return value.strip().lower() if isinstance(value, str) and value.strip() else ""
+
+
+def _require_child_agent_role_for_step(
+    role_value: Any,
+    step_key: str,
+    *,
+    label: str,
+    error_type: type[Exception],
+) -> str:
+    """Require `role_value` to be exactly the child agent kind that `step_key` demands.
+
+    ONE predicate with three callers — the MCP build-tool phase gate, the run-gate phase
+    gate, and the record-launch request validator. The first two read the CAPABILITY's
+    role; the third reads the LAUNCH REQUEST's, which is what mints that capability. The
+    launch-side call is the upstream one: without it an unrecognized role was inferred by
+    `build_capability_document` and skipped by four other readers (TODO.md).
+
+    `_required_child_agent_kind` is called first, so an unsupported step (`tune` /
+    `promote`) fails on the step rather than on the role — the pre-existing behavior at
+    both capability call sites.
+    """
+    required_child = _required_child_agent_kind(step_key)
+    role = _normalized_agent_role(role_value)
+    if role != required_child:
+        raise error_type(
+            f"{label} agent_role does not satisfy required child agent kind "
+            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
+        )
+    return role
+
+
 def _phase_write_requires_child_running(path: str) -> bool:
     p = _normalize_rel_posix(path)
     return any(p.startswith(prefix) for prefix in PHASE_ARTIFACT_GUARDED_PREFIXES)
@@ -5729,13 +5798,12 @@ def validate_mcp_build_tool_invocation(
         raise RuntimeError("MCP phase gate: capability.step missing")
     node_safe = _node_key_to_safe(node_raw.strip())
     step_key = step_raw.strip().lower()
-    required_child = _required_child_agent_kind(step_key)
-    role = str(cap.get("agent_role", "")).strip().lower()
-    if role != required_child:
-        raise RuntimeError(
-            "MCP phase gate: capability agent_role does not satisfy required child agent kind "
-            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
-        )
+    _require_child_agent_role_for_step(
+        cap.get("agent_role"),
+        step_key,
+        label="MCP phase gate: capability",
+        error_type=RuntimeError,
+    )
     ns = doc.get("node_states")
     if not isinstance(ns, dict):
         raise RuntimeError("MCP phase gate: phase_state.node_states missing")
@@ -6268,13 +6336,12 @@ def _validate_run_gate_permissions(
         raise RuntimeError("run-gate phase gate: capability.step missing")
     node_safe = _node_key_to_safe(node_raw.strip())
     step_key = step_raw.strip().lower()
-    required_child = _required_child_agent_kind(step_key)
-    role = str(cap.get("agent_role", "")).strip().lower()
-    if role != required_child:
-        raise RuntimeError(
-            "run-gate phase gate: capability agent_role does not satisfy required child agent kind "
-            f"(step={step_key!r}, required={required_child!r}, actual={role!r})"
-        )
+    _require_child_agent_role_for_step(
+        cap.get("agent_role"),
+        step_key,
+        label="run-gate phase gate: capability",
+        error_type=RuntimeError,
+    )
     ns = doc.get("node_states")
     if not isinstance(ns, dict):
         raise RuntimeError("run-gate phase gate: phase_state.node_states missing")
@@ -9587,8 +9654,14 @@ def _validate_actual_write_paths(
     agent_run_id_obj = payload.get("agent_run_id")
     if not isinstance(role_obj, str) or not isinstance(agent_run_id_obj, str) or not agent_run_id_obj.strip():
         return
-    actor_role = role_obj.strip().lower()
-    if actor_role not in {"orchestration", "step", "substep"}:
+    actor_role = _normalized_agent_role(role_obj)
+    # Membership in the write-audited subset, from the one named definition. This early
+    # return is what an out-of-vocabulary role used to reach in order to switch the audit
+    # off; `record_agent_run` now rejects such a role before any caller gets here, so what
+    # survives is the intended skip for `skipped_by_checkpoint` (a step never launched, so
+    # there is no capability or baseline to diff). Kept rather than deleted: unreachable is
+    # a classification, and this is not the layer that should be relying on it.
+    if actor_role not in WRITE_AUDITED_AGENT_ROLES:
         return
     status_obj = payload.get("status")
     if not isinstance(status_obj, str) or status_obj.strip().lower() not in TERMINAL_STATUSES:
@@ -11766,6 +11839,20 @@ def render_launch_prompt_text(request_payload: dict[str, Any]) -> str:
 
 def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str, Any]:
     payload = dict(request_payload)
+    # Canonicalize agent_role FIRST — before anything below renders the launch prompt.
+    # This function force-renders `launch_prompt_full`, and that render embeds
+    # `_build_task_card`, which reads the role with `.strip()` and NO `.lower()`. Doing the
+    # canonicalization only in `_validate_launch_request_payload` (which record_launch
+    # calls AFTER this function) fixed nothing: the prompt had already been rendered from
+    # `"SUBSTEP"` and shipped without its Task Card, while the persisted request recorded
+    # `"substep"` — leaving the durable record positively disagreeing with the prompt it
+    # accompanies. Normalization only: an unknown or absent role is left exactly as it is
+    # for the validator to REJECT, so this can never turn a bad role into an accepted one.
+    _role_raw = payload.get("agent_role")
+    _role_respelled = False
+    if isinstance(_role_raw, str) and _role_raw.strip():
+        payload["agent_role"] = _role_raw.strip().lower()
+        _role_respelled = payload["agent_role"] != _role_raw
     # Deterministic (in-process Build / Validate.execute) requests carry no skill: no
     # leaf runs them, and their SKILL.md files do not exist. Leave skill_name/skill_ref
     # stripped and skill_must_read_refs empty (mirror build_launch_request) so the
@@ -11826,6 +11913,22 @@ def prepare_launch_request_payload(request_payload: dict[str, Any]) -> dict[str,
     # legacy path, keep the existing behavior (render only when no explicit prompt is supplied).
     if pure or not explicit_prompt_present:
         payload["launch_prompt_full"] = render_launch_prompt_text(payload)
+    elif _role_respelled:
+        # The other half of the same defect. On the render branch above, canonicalizing the
+        # role before the render is what puts the Task Card in the prompt. On THIS branch
+        # nothing is re-rendered, so a caller-supplied prompt built from `"SUBSTEP"` ships
+        # unchanged while the persisted request records `"substep"` — the durable record
+        # disagreeing with the prompt beside it, which is precisely the harm the render-side
+        # fix was written to stop. Refuse the pair instead of silently shipping it. Narrow by
+        # construction: it fires ONLY when the caller both supplies its own prompt AND spells
+        # the role non-canonically, so no conductor launch can reach it
+        # (`workflow_conductor.build_launch_request` supplies no prompt and a canonical role).
+        raise ValueError(
+            "launch request supplies its own prompt while spelling agent_role "
+            f"{_role_raw!r}, which normalizes to {payload['agent_role']!r}; the persisted "
+            "request would disagree with the prompt it accompanies. Send the canonical "
+            "spelling, or omit the prompt and let record-launch render it."
+        )
     return payload
 
 
@@ -14331,6 +14434,47 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     agent_model = request_payload.get("agent_model")
     if not isinstance(agent_model, str) or not agent_model.strip():
         raise ValueError("launch request must include non-empty agent_model")
+    # THE agent_role chokepoint. SIX readers disagreed about an unrecognized role, named
+    # here in full because an earlier version of this comment said "six" and then listed
+    # five: (1) `build_capability_document` INFERRED it; (2) `_allowed_output_paths_for_launch`,
+    # (3) `_validate_child_write_contract_preflight` and (4) `_build_task_card` SKIPPED
+    # their work; (5) `record_launch` itself fell back to the step-derived kind, or to the
+    # literal "unknown" for the session-run-index row; and (6) `workflow_conductor.
+    # _register_codex_thread` defaulted to "substep" when re-reading the persisted request.
+    # Requiring the field here, at the one place every launch passes through, is what makes
+    # all of them see one value.
+    #
+    # Two things about the placement are load-bearing, and one is not. Load-bearing:
+    # (1) `record_launch` calls this validator immediately BEFORE
+    # `_append_session_run_index_entry`, so a rejected role leaves no orphan `running` row
+    # (validating inside `build_capability_document` instead would fire after that row is
+    # durable); (2) it is upstream of the capability, so the capability that the MCP and
+    # run-gate phase gates re-check with this same predicate can no longer be minted from
+    # an inferred role at all. NOT load-bearing: the position WITHIN this function. It sits
+    # after the deterministic-flag and agent_model checks purely so their existing
+    # error-ordering tests keep reporting the error they were written to observe.
+    #
+    # Attribution: the launch request is assembled by the conductor
+    # (`workflow_conductor.build_launch_request`), never by a leaf, so a mismatch is a
+    # transport fault the leaf cannot repair — a raise here, never a content failure.
+    if not _normalized_agent_role(request_payload.get("agent_role")):
+        raise ValueError("launch request must include non-empty agent_role")
+    # Canonicalize as well as validate, as a BACKSTOP for a caller that skips
+    # `prepare_launch_request_payload` (which does the same normalization, and must, because
+    # it renders the prompt — see the comment there; doing it only here fixed nothing).
+    # `record_agent_run` likewise writes its normalized token back into the terminal payload.
+    # NOTE: an earlier version of this comment also named `_write_allowed_output_manifest` as
+    # a reader harmed by an unlowered role. That is FALSE and was measured so: record-launch
+    # calls it without an `agent_role` at all, and its ONE other production call site
+    # (`init_orchestration`) passes the literal `"orchestration"`. The launch payload's
+    # role never reaches it. (An earlier version of this correction said "three other
+    # call sites" — wrong again, in the very sentence fixing a wrong claim.)
+    request_payload["agent_role"] = _require_child_agent_role_for_step(
+        request_payload.get("agent_role"),
+        step,
+        label="launch request:",
+        error_type=ValueError,
+    )
     if isinstance(node_key, str) and node_key.strip():
         node_safe = _node_key_to_safe(node_key.strip())
     else:
@@ -14587,8 +14731,11 @@ def _validate_terminal_run_payload(
     status = payload.get("status")
     if not isinstance(role, str):
         return
-    role_token = role.strip().lower()
-    if role_token not in {"orchestration", "step", "substep"}:
+    role_token = _normalized_agent_role(role)
+    # Same membership test, same single definition, as the check it guards
+    # (`_validate_actual_write_paths`). These two used to carry independent copies of the
+    # set literal, which is how one field ended up with two places to widen.
+    if role_token not in WRITE_AUDITED_AGENT_ROLES:
         return
     # H-FOURTH-1: forward caller_holds_lock so the orchestration-role
     # _load_run_records call within _validate_actual_write_paths surfaces
@@ -18372,9 +18519,20 @@ def record_agent_run(
     agent_run_id = agent_run_id.strip()
 
     role = payload.get("agent_role") or payload.get("agent_type") or payload.get("role")
-    role_token = role.strip().lower() if isinstance(role, str) and role.strip() else None
+    role_token = _normalized_agent_role(role) or None
     if role_token is None:
         raise ValueError("agent_role must be non-empty string")
+    # Fail closed on a role outside the vocabulary. Previously any string was accepted
+    # here and simply fell through both branches below — and then `_validate_actual_write_paths`
+    # (via `_validate_terminal_run_payload`) returned early for it, so recording a terminal
+    # status under a misspelled role SWITCHED OFF the unauthorized-write audit rather than
+    # being rejected. Measured on this checkout: with role="substep" a stray write outside
+    # write_roots raises `unauthorized write paths`; with role="bogus" the same tree
+    # validated clean.
+    if role_token not in AGENT_RUN_ROLES:
+        raise ValueError(
+            f"agent_role must be one of {sorted(AGENT_RUN_ROLES)}; got {role_token!r}"
+        )
     if role_token == "skipped_by_checkpoint":
         _validate_skipped_by_checkpoint_payload(payload)
     elif role_token in {"step", "substep"}:
@@ -20679,7 +20837,16 @@ def _validate_record_agent_run_fields(payload: dict[str, Any], label: str | None
     role_raw = payload.get("agent_role") or payload.get("agent_type") or payload.get("role")
     if not isinstance(role_raw, str) or not role_raw.strip():
         raise ValueError(f"{label}: required field 'agent_role' is missing or empty")
-    role_token = role_raw.strip().lower()
+    role_token = _normalized_agent_role(role_raw)
+    # Reject an out-of-vocabulary role at CLI dispatch too, not only inside
+    # `record_agent_run`. Both read the same three spellings of the field
+    # (`agent_role` / `agent_type` / `role`), so closing only one of them would close a
+    # spelling rather than the family.
+    if role_token not in AGENT_RUN_ROLES:
+        raise ValueError(
+            f"{label}: field 'agent_role' must be one of {sorted(AGENT_RUN_ROLES)}; "
+            f"got {role_token!r}"
+        )
     if role_token in {"step", "substep"}:
         for key in ("node_key", "agent_session_id"):
             value = payload.get(key)

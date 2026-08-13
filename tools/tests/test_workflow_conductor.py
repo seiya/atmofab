@@ -456,6 +456,37 @@ class PhaseStructureTest(unittest.TestCase):
         self.assertEqual(wc.child_agent_role("build"), "step")
         self.assertEqual(wc.child_agent_role("compile"), "substep")
 
+    def test_child_agent_role_reads_the_runtime_table_rather_than_restating_it(self) -> None:
+        """`child_agent_role` used to restate `"step" if step == "build" else "substep"`,
+        a second definition of a fact the runtime owns in `STEP_REQUIRED_CHILD_AGENT`.
+        record-launch now REJECTS a request whose role disagrees with that table, so a
+        conductor answering from its own copy would fail its own launches the moment the
+        two drifted.
+
+        The two spellings agree on all four `PHASE_ORDER` steps, so equality alone cannot
+        tell them apart — a mutation restoring the literal survived a full-suite run. What
+        distinguishes them is the behaviour OUTSIDE the table: the literal silently
+        answered `"substep"` for any unknown step (including `tune` / `promote` / `""` /
+        a capitalized `"Build"`), where reading the table raises. That is what is pinned
+        here."""
+        from tools.orchestration_runtime import STEP_REQUIRED_CHILD_AGENT
+
+        for step, expected in STEP_REQUIRED_CHILD_AGENT.items():
+            with self.subTest(step=step):
+                self.assertEqual(wc.child_agent_role(step), expected)
+        # Outside the table: raise, never a silent default.
+        for unsupported in ("tune", "promote", "plan", ""):
+            with self.subTest(unsupported=unsupported):
+                with self.assertRaises(ValueError):
+                    wc.child_agent_role(unsupported)
+        # The old literal was case-sensitive and answered "substep" for "Build"; the table
+        # lookup normalizes, so the two disagree here too. NOTE this is an INCIDENTAL
+        # property, not a contract: all three production callers pass a `PHASE_ORDER`
+        # member, so nothing sends a capitalized step today. It is asserted only because it
+        # is a second observable difference between the two spellings — do not read it as a
+        # promise that callers may pass arbitrary casing.
+        self.assertEqual(wc.child_agent_role("Build"), "step")
+
     def test_phases_through(self) -> None:
         self.assertEqual(wc.phases_through("generate"), ("compile", "generate"))
         self.assertEqual(wc.phases_through("validate"), wc.PHASE_ORDER)
@@ -6794,6 +6825,55 @@ class LeafSpawnTest(unittest.TestCase):
             self.assertEqual(launch_response["agent_session_id"], "thread-1")
             self.assertEqual(launch_response["session_id"], "thread-1")
             self.assertEqual(session_index["entries"][0]["agent_session_id"], "thread-1")
+
+    def test_codex_thread_registration_refuses_to_guess_a_missing_or_unknown_role(self) -> None:
+        """`_register_codex_thread` was the last reader of `agent_role` that answered from
+        its own default (`or "substep"`), and it writes through to the session run index,
+        whose upsert applies no vocabulary test. record-launch validates and persists the
+        role before this ever runs, so an absent or out-of-vocabulary value means the
+        request file is missing or corrupt — surfaced, not guessed.
+
+        PINNED: that each of the three shapes raises, and that the session run index is not
+        written. SAMPLED: the particular junk role.
+
+        THE FIXTURE MUST BE FULLY BUILT — both response mirrors included, exactly like
+        `test_codex_thread_registration_updates_both_response_mirrors` above. An earlier
+        version of this test omitted them, and review measured the consequence: with the
+        production guard reverted, `_write_json_transaction` died on the missing
+        `A.response.json` BEFORE reaching the session index, so `assertFalse(...exists())`
+        was true no matter what the code under test did, and the mutant was killed only
+        because `FileNotFoundError` does not match `assertRaisesRegex(RuntimeError, ...)`.
+        Passing for the wrong reason. With the mirrors present the reverted code really
+        does durably record `agent_role: "bogus"`, which is the fail-open this pins."""
+        provisional_response = {
+            "agent_session_id": "A", "session_id": "A", "backend": "codex",
+        }
+        for label, request in (
+            ("absent", {"context_id": "ctx"}),
+            ("empty", {"agent_role": "", "context_id": "ctx"}),
+            ("out-of-vocabulary", {"agent_role": "bogus", "context_id": "ctx"}),
+        ):
+            with self.subTest(role=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+                launch_dir = orchestration_dir / "launches"
+                dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
+                launch_dir.mkdir(parents=True)
+                dialogs_dir.mkdir(parents=True)
+                (launch_dir / "A.request.json").write_text(
+                    json.dumps(request), encoding="utf-8")
+                (launch_dir / "A.response.json").write_text(
+                    json.dumps(provisional_response), encoding="utf-8")
+                (dialogs_dir / "child.response.json").write_text(
+                    json.dumps(provisional_response), encoding="utf-8")
+                c = self._c(
+                    repo_root=repo, orchestration_id="o", backend="codex",
+                    agent_model="gpt-5.6-sol")
+                with self.assertRaisesRegex(RuntimeError, "refusing to guess it"):
+                    c._register_codex_thread("A", "thread-1")
+                # Now load-bearing: this fixture CAN reach the session index, so its
+                # absence is the guard's doing rather than the fixture's.
+                self.assertFalse((orchestration_dir / "session_run_index.json").exists())
 
     def test_concurrent_codex_registrations_preserve_both_session_index_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

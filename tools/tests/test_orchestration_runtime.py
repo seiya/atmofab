@@ -3031,6 +3031,11 @@ shell_tool                       stable             true
                 parent_agent_run_id="orch_run_001",
                 child_agent_run_id="substep_run_plan_generate_001",
                 request_payload={
+                    "agent_role": "substep",
+                    "allowed_output_paths": [
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                    ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
@@ -3082,6 +3087,11 @@ shell_tool                       stable             true
                 parent_agent_run_id="orch_run_001",
                 child_agent_run_id="substep_run_plan_generate_001",
                 request_payload={
+                    "agent_role": "substep",
+                    "allowed_output_paths": [
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                    ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
@@ -3154,6 +3164,11 @@ shell_tool                       stable             true
                 parent_agent_run_id="orch_run_001",
                 child_agent_run_id="substep_run_plan_generate_001",
                 request_payload={
+                    "agent_role": "substep",
+                    "allowed_output_paths": [
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                    ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
@@ -3221,6 +3236,8 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="step_run_build_001",
                     request_payload={
+                        "agent_role": "step",
+                        "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "build",
@@ -3266,6 +3283,7 @@ shell_tool                       stable             true
                 parent_agent_run_id="orch_run_001",
                 child_agent_run_id="substep_run_generate_verify_001",
                 request_payload={
+                    "agent_role": "substep",
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "Generate",
@@ -3277,6 +3295,10 @@ shell_tool                       stable             true
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                     "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
                     "source_id": "src_20260415_001",
+                    "allowed_output_paths": [
+                        "workspace/pipelines/problem__shallow_water2d__0.3.0"
+                        "/shallow-water2d_20260415_001/source/src_20260415_001/source_meta.json",
+                    ],
                     "skill_name": "workflow-generate-verify",
                     "skill_ref": "skills/workflow-generate-verify/SKILL.md",
                     "skill_must_read_refs": "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/source/src_001/source_meta.json",
@@ -3304,7 +3326,20 @@ shell_tool                       stable             true
             )
 
     def test_record_launch_succeeds_with_generate_directory_allowed_output_path(self) -> None:
-        """record_launch for step=generate with a directory allowed_output_path must not raise."""
+        """record_launch for step=generate with a directory allowed_output_path must not raise.
+
+        KNOWN FIXTURE-SHAPE RESIDUAL (this test and two siblings — the multi-generation
+        rejection tests and the noncanonical-MCP-log test): the payload carries
+        `agent_role="substep"` with NO `substep` key and the STEP-level skill/prompt
+        fields, a combination `workflow_conductor.build_launch_request` never emits — it
+        always names a generate substep. Before the agent_role migration these fixtures
+        were self-consistent but declared `agent_role="step"`, which the table does not
+        allow for `generate`; the migration fixed the role and left the rest. Converting
+        them fully would mean swapping the skill_name, skill_ref, must-read helper and
+        prompt renderer to their substep variants, which changes WHICH prompt-validation
+        path runs — a real risk to the directory-path assertions these tests exist for, in
+        exchange for cosmetic fidelity. Deliberately not done; recorded so the next reader
+        does not mistake the shape for something production emits."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
@@ -3339,7 +3374,7 @@ shell_tool                       stable             true
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "generate",
-                    "agent_role": "step",
+                    "agent_role": "substep",
                     "agent_run_id": "step_run_gen_dir_001",
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
@@ -3409,7 +3444,7 @@ shell_tool                       stable             true
                 "agent_model": "claude-opus-4-8",
                 "node_key": "problem/shallow_water2d@0.3.0",
                 "step": "generate",
-                "agent_role": "step",
+                "agent_role": "substep",
                 "agent_run_id": child_agent_run_id,
                 "orchestration_id": orchestration_id,
                 "parent_agent_run_id": "orch_run_001",
@@ -5581,6 +5616,7 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="substep_run_plan_generate_001",
                     request_payload={
+                        "agent_role": "substep",
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "compile",
@@ -5629,6 +5665,11 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="substep_run_plan_generate_001",
                     request_payload={
+                        "agent_role": "substep",
+                        "allowed_output_paths": [
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                        ],
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "compile",
@@ -5676,6 +5717,11 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="substep_run_plan_generate_001",
                     request_payload={
+                        "agent_role": "substep",
+                        "allowed_output_paths": [
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                        ],
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "compile",
@@ -5728,6 +5774,7 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="substep_bad_pipeline_001",
                     request_payload={
+                        "agent_role": "substep",
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "generate",
@@ -5771,6 +5818,7 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="substep_gen_verify_no_gid",
                     request_payload={
+                        "agent_role": "substep",
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "generate",
@@ -5813,6 +5861,10 @@ shell_tool                       stable             true
                 parent_agent_run_id="orch_run_001",
                 child_agent_run_id="substep_run_plan_verify_001",
                 request_payload={
+                    "agent_role": "substep",
+                    "allowed_output_paths": [
+                        "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                    ],
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "compile",
@@ -5860,6 +5912,8 @@ shell_tool                       stable             true
             base = {
                 "node_key": "problem/shallow_water2d@0.3.0",
                 "step": "compile",
+                "agent_role": "substep",
+                "allowed_output_paths": [f"{_FIX_IR_REF}/ir_meta.json"],
                 "agent_model": "claude-opus-4-8",
                 "substep": "verify",
                 "orchestration_id": "orch_001",
@@ -5914,6 +5968,8 @@ shell_tool                       stable             true
                 {
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "build",
+                    "agent_role": "step",
+                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                     "agent_model": "claude-opus-4-8",
                     "orchestration_id": "orch_001",
                     "agent_run_id": "step_run_build_001",
@@ -5967,6 +6023,8 @@ shell_tool                       stable             true
                 {
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "build",
+                    "agent_role": "step",
+                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                     "agent_model": "claude-opus-4-8",
                     "orchestration_id": "orch_001",
                     "agent_run_id": "step_run_build_001",
@@ -6020,6 +6078,8 @@ shell_tool                       stable             true
                 {
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "build",
+                    "agent_role": "step",
+                    "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                     "agent_model": "claude-opus-4-8",
                     "orchestration_id": "orch_001",
                     "agent_run_id": "step_run_build_001",
@@ -6055,6 +6115,8 @@ shell_tool                       stable             true
             {
                 "node_key": "problem/shallow_water2d@0.3.0",
                 "step": "build",
+                "agent_role": "step",
+                "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                 "orchestration_id": "orch_001",
                 "agent_run_id": "step_run_build_001",
                 "parent_agent_run_id": "orch_run_001",
@@ -6674,7 +6736,7 @@ shell_tool                       stable             true
                     "agent_model": "claude-opus-4-8",
                     "node_key": "problem/shallow_water2d@0.3.0",
                     "step": "generate",
-                    "agent_role": "step",
+                    "agent_role": "substep",
                     "orchestration_id": "orch_001",
                     "agent_run_id": "step_run_noncanon",
                     "parent_agent_run_id": "orch_run_001",
@@ -8240,6 +8302,8 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="step_run_build_001",
                     request_payload={
+                        "agent_role": "step",
+                        "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "build",
@@ -9253,7 +9317,7 @@ shell_tool                       stable             true
                     orchestration_id="orch_001",
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="step_run_plan_001",
-                    request_payload={"step": "compile"},
+                    request_payload={"step": "compile", "agent_role": "substep"},
                     response_payload=_spawn_response_payload("sess_step_plan_001"),
                 )
             meta = json.loads(
@@ -9491,6 +9555,11 @@ shell_tool                       stable             true
                     parent_agent_run_id="orch_run_001",
                     child_agent_run_id="substep_run_plan_generate_001",
                     request_payload={
+                        "agent_role": "substep",
+                        "allowed_output_paths": [
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                            "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                        ],
                         "agent_model": "claude-opus-4-8",
                         "node_key": "problem/shallow_water2d@0.3.0",
                         "step": "compile",
@@ -11691,6 +11760,14 @@ shell_tool                       stable             true
             "parent_agent_run_id": "orch_run_001",
             "node_key": "problem/shallow_water2d@0.3.0",
             "step": "build",
+            # `build` demands agent_role="step" (STEP_REQUIRED_CHILD_AGENT). This fixture
+            # used to omit the field: `build_capability_document` inferred it, and
+            # `_allowed_output_paths_for_launch` took its skip-on-unknown-role branch, so
+            # the payload never had to declare an output either. Both are stated now.
+            "agent_role": "step",
+            "allowed_output_paths": [
+                f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json",
+            ],
             "agent_model": "claude-opus-4-8",
             "ir_ref": _FIX_IR_REF,
             "pipeline_ref": _FIX_PIPE_REF,
@@ -13870,6 +13947,11 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                         parent_agent_run_id="orch_run_001",
                         child_agent_run_id="substep_run_plan_generate_001",
                         request_payload={
+                            "agent_role": "substep",
+                            "allowed_output_paths": [
+                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                            ],
                             "agent_model": "claude-opus-4-8",
                             "node_key": "problem/shallow_water2d@0.3.0",
                             "step": "compile",
@@ -13903,6 +13985,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                         parent_agent_run_id="orch_run_001",
                         child_agent_run_id="step_run_build_001",
                         request_payload={
+                            "agent_role": "step",
+                            "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                             "agent_model": "claude-opus-4-8",
                             "node_key": "problem/shallow_water2d@0.3.0",
                             "step": "build",
@@ -13951,6 +14035,11 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                         parent_agent_run_id="orch_run_001",
                         child_agent_run_id="substep_run_plan_generate_001",
                         request_payload={
+                            "agent_role": "substep",
+                            "allowed_output_paths": [
+                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
+                                "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/ir_meta.json",
+                            ],
                             "agent_model": "claude-opus-4-8",
                             "node_key": "problem/shallow_water2d@0.3.0",
                             "step": "compile",
@@ -13987,6 +14076,8 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                         parent_agent_run_id="orch_run_001",
                         child_agent_run_id="step_run_build_001",
                         request_payload={
+                            "agent_role": "step",
+                            "allowed_output_paths": [f"{_FIX_PIPE_REF}/binary/bin_20260101_001/binary_meta.json"],
                             "agent_model": "claude-opus-4-8",
                             "node_key": "problem/shallow_water2d@0.3.0",
                             "step": "build",
@@ -15203,6 +15294,58 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             parent=f"orch_{orchestration_id}", child="build_child", req=req,
         )
 
+    def test_capability_role_must_match_its_step_at_both_gate_call_sites(self) -> None:
+        """The MCP build-tool gate and the run-gate both demand
+        `capability.agent_role == _required_child_agent_kind(capability.step)`. Neither
+        had ANY test: a branch-wide mutation check showed both call sites surviving, and
+        the only assertions on this message were the launch-side ones. Since the two are
+        mirrors of one predicate, they are pinned together here rather than left to
+        diverge — the same reason the id-token check above pins both.
+
+        PINNED: that a role disagreeing with the capability's own `step` is rejected at
+        BOTH call sites, for every role in the vocabulary other than the demanded one
+        (iterated from `AGENT_RUN_ROLES`). SAMPLED: nothing — the accept side is covered
+        by the other tests in this class, which all drive a truthful capability."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            _required_child_agent_kind,
+            _validate_run_gate_permissions,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm_role")
+            token = str(cap["capability_token"])
+            cap_path = (repo_root / "workspace/orchestrations/vperm_role/capabilities"
+                        / "build_child.json")
+            doc = json.loads(cap_path.read_text(encoding="utf-8"))
+            demanded = _required_child_agent_kind(doc["step"])
+            self.assertEqual(doc["agent_role"], demanded)
+            for role in sorted(AGENT_RUN_ROLES - {demanded}) + ["bogus"]:
+                with self.subTest(role=role):
+                    cap_path.write_text(
+                        json.dumps({**doc, "agent_role": role}), encoding="utf-8")
+                    with self.assertRaises(RuntimeError) as ctx_mcp:
+                        validate_mcp_build_tool_invocation(
+                            repo_root,
+                            orchestration_id="vperm_role",
+                            agent_run_id="build_child",
+                            capability_token=token,
+                            tool_name="compile_project",
+                        )
+                    self.assertIn(
+                        "does not satisfy required child agent kind", str(ctx_mcp.exception))
+                    with self.assertRaises(RuntimeError) as ctx_gate:
+                        _validate_run_gate_permissions(
+                            repo_root,
+                            orchestration_id="vperm_role",
+                            agent_run_id="build_child",
+                            gate_name="orchestration_read",
+                            capability_token=token,
+                        )
+                    self.assertIn(
+                        "does not satisfy required child agent kind", str(ctx_gate.exception))
+
     def test_an_unresolvable_ir_ref_does_not_exempt_the_make_contract(self) -> None:
         """Every absence on the way to the make-only contract means make. An ir_ref the
         launch request does not carry used to skip the block outright, so a `ctest`
@@ -15995,7 +16138,10 @@ class TestPhase3RunGate(unittest.TestCase):
             )
             bad_req = {
                 "agent_run_id": "execute_bad_001",
-                "agent_role": "step",
+                # `validate` demands `substep`; this fixture said `step`, which every
+                # launch-side reader used to tolerate. The path under test is the phase
+                # contract, so the role has to be the real one to reach it.
+                "agent_role": "substep",
                 "node_key": "problem/shallow_water2d@0.3.0",
                 "step": "validate", "substep": "execute",
                 "agent_model": "claude-opus-4-8",
@@ -33385,6 +33531,433 @@ class JsonPayloadFileArgTests(unittest.TestCase):
         self._expect_argparse_error(
             self._finalize_argv("--reply-text", "x", "--agent-run-json-file", path),
             "json payload must be object")
+
+
+class AgentRoleFailClosedTests(unittest.TestCase):
+    """`agent_role` must be fail-closed at BOTH chokepoints (TODO.md, high).
+
+    WHAT IS PINNED vs WHAT IS SAMPLED is declared in `_DEFINITION_DRIVEN` /
+    `_SAMPLE_DRIVEN` below and CHECKED BY A TEST
+    (`test_this_class_census_is_accurate`), not asserted in this prose.
+
+    That indirection is the whole point. This census was written in prose three times and
+    was wrong all three: it claimed all seven tests iterate a definition (five did), then
+    named a test that a rename had already deleted, then said "eight tests" when there
+    were nine. A prose census goes stale silently the moment a test is added or renamed;
+    a machine-checked one cannot. So the categories live in data, the data is asserted
+    against the class's actual methods, and adding a test without classifying it FAILS.
+
+    The distinction being tracked: a DEFINITION-DRIVEN test generates its assertions by
+    iterating `STEP_REQUIRED_CHILD_AGENT` / `AGENT_RUN_ROLES` / `WRITE_AUDITED_AGENT_ROLES`,
+    so adding a step or a role extends it automatically — the property the phase-contract
+    tests could not express, sitting outside the set they described. A SAMPLE-DRIVEN test
+    probes chosen shapes (an unknown word, a case variant, one captured fixture); it can
+    demonstrate a rejection but never set identity. Both are legitimate; conflating them
+    is what let three review rounds each break the previous round's "pin".
+    """
+
+    # The census. Every test method of this class must appear in exactly one of these.
+    _DEFINITION_DRIVEN = frozenset({
+        "test_launch_requires_exactly_the_role_its_step_demands",
+        "test_terminal_payload_rejects_a_role_outside_the_vocabulary",
+        "test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary",
+        "test_the_unaudited_role_cannot_carry_a_terminal_status",
+    })
+    _SAMPLE_DRIVEN = frozenset({
+        "test_launch_role_normalization_closes_the_spelling_family",
+        "test_the_prompt_actually_shipped_carries_the_task_card",
+        "test_every_captured_production_payload_declares_the_demanded_role",
+        "test_capability_then_manifest_agree_on_the_role_record_launch_passes",
+        "test_the_validator_backstop_canonicalizes_without_prepare",
+        "test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role",
+        "test_the_write_audit_use_site_reads_the_narrower_set",
+    })
+
+    def test_this_class_census_is_accurate(self) -> None:
+        """The census above must partition this class's ACTUAL test methods.
+
+        Renaming, adding or deleting a test without classifying it fails here — which is
+        exactly what silently happened three times while the census lived in prose.
+        `test_every_captured_production_payload_declares_the_demanded_role` is classified
+        SAMPLE-driven deliberately: it globs the fixture corpus and hard-asserts 7, so
+        mutating either definition leaves it passing (measured, not assumed)."""
+        actual = {
+            name for name in dir(type(self))
+            if name.startswith("test_") and callable(getattr(type(self), name))
+        }
+        declared = self._DEFINITION_DRIVEN | self._SAMPLE_DRIVEN | {
+            "test_this_class_census_is_accurate"}
+        self.assertEqual(
+            actual, declared,
+            "a test was added, renamed or removed without updating the census; classify "
+            "it as definition-driven (it iterates a definition) or sample-driven",
+        )
+        self.assertFalse(self._DEFINITION_DRIVEN & self._SAMPLE_DRIVEN)
+
+    def test_launch_requires_exactly_the_role_its_step_demands(self) -> None:
+        """Table-driven over every core step: the demanded role passes the role check and
+        every OTHER role in the vocabulary is rejected. Generated from the table, so a new
+        step cannot be added without landing here."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            STEP_REQUIRED_CHILD_AGENT,
+            _require_child_agent_role_for_step,
+        )
+
+        self.assertTrue(STEP_REQUIRED_CHILD_AGENT, "step table is empty; nothing pinned")
+        for step, required in STEP_REQUIRED_CHILD_AGENT.items():
+            with self.subTest(step=step, role=required):
+                self.assertEqual(
+                    _require_child_agent_role_for_step(
+                        required, step, label="t:", error_type=ValueError),
+                    required,
+                )
+            for other in sorted(AGENT_RUN_ROLES - {required}) + ["bogus", ""]:
+                with self.subTest(step=step, rejected=other):
+                    with self.assertRaisesRegex(
+                        ValueError, "does not satisfy required child agent kind"
+                    ):
+                        _require_child_agent_role_for_step(
+                            other, step, label="t:", error_type=ValueError)
+
+    def test_launch_role_normalization_closes_the_spelling_family(self) -> None:
+        """Case and surrounding whitespace must not select a different branch. A non-string
+        is rejected rather than coerced (`str(123)` would once have produced `'123'`)."""
+        from tools.orchestration_runtime import _require_child_agent_role_for_step
+
+        for spelling in ("substep", "SUBSTEP", " Substep ", "\tsubStep\n"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(
+                    _require_child_agent_role_for_step(
+                        spelling, "compile", label="t:", error_type=ValueError),
+                    "substep",
+                )
+        for junk in (None, 123, ["substep"], {"role": "substep"}):
+            with self.subTest(junk=junk):
+                with self.assertRaises(ValueError):
+                    _require_child_agent_role_for_step(
+                        junk, "compile", label="t:", error_type=ValueError)
+
+    def test_the_prompt_actually_shipped_carries_the_task_card(self) -> None:
+        """The role must be canonicalized BEFORE the prompt is rendered, and this test has
+        to drive that ORDER or it proves nothing.
+
+        `_build_task_card` reads the role with `.strip()` and no `.lower()`, so `"SUBSTEP"`
+        yields an EMPTY card and the leaf ships with no conductor-resolved orientation —
+        silently, since `_validate_launch_prompt_text` has no non-empty requirement for it.
+        The first attempt at this fix canonicalized inside `_validate_launch_request_payload`,
+        which `record_launch` calls AFTER `prepare_launch_request_payload` has already
+        rendered `launch_prompt_full`. It fixed nothing, and made the record WORSE: the
+        persisted request said `substep` while the prompt beside it was rendered from
+        `SUBSTEP` and had no card, so recomputing the card from the request produced one
+        that was never sent.
+
+        The first version of THIS test missed all of that, because it called
+        `_build_task_card(payload)` itself after mutating the payload instead of reading
+        the prompt `record_launch` would actually persist. It now asserts on the RENDERED
+        TEXT, in `record_launch`'s own order: prepare -> validate -> extract."""
+        from tools.orchestration_runtime import (
+            _build_task_card,
+            _extract_launch_prompt_text,
+            _validate_launch_request_payload,
+            prepare_launch_request_payload,
+        )
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "generate_generate.request.json"
+        )
+        base = json.loads(fixture.read_text(encoding="utf-8"))
+        # The conductor does NOT send launch_prompt_full; record_launch renders it.
+        base.pop("launch_prompt_full", None)
+        card_marker = _build_task_card(base).splitlines()[0]
+        self.assertTrue(card_marker, "fixture must produce a card to look for")
+        for spelling in ("SUBSTEP", " Substep ", "SubStep", "substep"):
+            with self.subTest(spelling=spelling):
+                prepared = prepare_launch_request_payload(
+                    {**base, "agent_role": spelling})
+                _validate_launch_request_payload(prepared)
+                self.assertEqual(prepared["agent_role"], "substep")
+                shipped = _extract_launch_prompt_text(prepared)
+                self.assertIn(card_marker, shipped)
+        # Normalization must not launder a role the validator would reject.
+        with self.assertRaisesRegex(ValueError, "does not satisfy required child agent kind"):
+            _validate_launch_request_payload(
+                prepare_launch_request_payload({**base, "agent_role": "BOGUS"}))
+
+    def test_every_captured_production_payload_declares_the_demanded_role(self) -> None:
+        """The captured conductor requests must already satisfy the rule the runtime now
+        enforces. Driven through the REAL `_validate_launch_request_payload`, so this is
+        the production-payload-through-the-real-validator pin, not a re-read of the field.
+
+        The fixtures are tied back to the LIVE conductor by `test_workflow_conductor.py`'s
+        `test_reproduces_every_real_substep_payload`; on its own this test would not notice
+        the conductor changing. Four substeps have no captured payload
+        (`compile.static`, `generate.gate`, `validate.pre_judge`, `validate.post_judge`),
+        so this covers the seven that exist, not every substep the workflow launches."""
+        from tools.orchestration_runtime import (
+            _required_child_agent_kind,
+            _validate_launch_request_payload,
+        )
+
+        fixture_dir = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+        )
+        captured = sorted(fixture_dir.glob("*.request.json"))
+        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
+        for path in captured:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            with self.subTest(fixture=path.name):
+                self.assertEqual(
+                    payload.get("agent_role"),
+                    _required_child_agent_kind(payload["step"]),
+                )
+                _validate_launch_request_payload(payload)
+                # And the negation: the same payload with the other role is refused.
+                other = "step" if payload["agent_role"] == "substep" else "substep"
+                with self.assertRaisesRegex(
+                    ValueError, "does not satisfy required child agent kind"
+                ):
+                    _validate_launch_request_payload({**payload, "agent_role": other})
+                with self.assertRaisesRegex(ValueError, "non-empty agent_role"):
+                    _validate_launch_request_payload(
+                        {k: v for k, v in payload.items() if k != "agent_role"})
+
+    def test_capability_then_manifest_agree_on_the_role_record_launch_passes(self) -> None:
+        """Drive `build_capability_document` -> `_allowed_output_paths_for_launch` in the
+        order `record_launch` drives them. Testing either alone is what hid the original
+        divergence: the producer INFERRED a role the consumer then SKIPPED on."""
+        from tools.orchestration_runtime import (
+            _allowed_output_paths_for_launch,
+            build_capability_document,
+        )
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "compile_generate.request.json"
+        )
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        cap = build_capability_document(
+            agent_run_id=payload["agent_run_id"],
+            orchestration_id=payload["orchestration_id"],
+            request_payload=payload,
+        )
+        self.assertEqual(cap["agent_role"], payload["agent_role"])
+        allowed = _allowed_output_paths_for_launch(
+            request_payload=payload, write_roots=cap["write_roots"])
+        # The consumer applied the phase contract rather than echoing write_roots: the
+        # capability's write_root is the IR DIRECTORY (trailing slash), and what comes back
+        # is the two declared FILES. That difference is the whole signal — the skip branch
+        # returned the directory with its slash stripped, matching nothing downstream.
+        self.assertEqual(sorted(allowed), sorted(payload["allowed_output_paths"]))
+        self.assertTrue(any(r.endswith("/") for r in cap["write_roots"]))
+        self.assertNotIn(payload["ir_ref"], allowed)
+
+    def test_terminal_payload_rejects_a_role_outside_the_vocabulary(self) -> None:
+        """`record_agent_run` accepted ANY string before, and `_validate_actual_write_paths`
+        then returned early for it — recording a terminal status under a misspelled role
+        switched the unauthorized-write audit OFF instead of being refused. Iterates the
+        vocabulary so a new role must be added to the constant, not smuggled in."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            _validate_record_agent_run_fields,
+        )
+
+        def payload(role: str) -> dict[str, object]:
+            return {
+                "agent_run_id": "arid_x", "agent_backend": "claude", "status": "pass",
+                "node_key": "component/x@0.1.0", "agent_session_id": "sess_x",
+                "agent_role": role,
+            }
+
+        for role in sorted(AGENT_RUN_ROLES):
+            with self.subTest(accepted=role):
+                _validate_record_agent_run_fields(payload(role))
+        for role in ("bogus", "orchestrator", "substeps", "skipped", "SUBSTEP_"):
+            with self.subTest(rejected=role):
+                with self.assertRaisesRegex(ValueError, "must be one of"):
+                    _validate_record_agent_run_fields(payload(role))
+        # The field has three accepted spellings; closing one of them would close a
+        # spelling rather than the family.
+        for key in ("agent_role", "agent_type", "role"):
+            with self.subTest(alias=key):
+                p = payload("bogus")
+                del p["agent_role"]
+                p[key] = "bogus"
+                with self.assertRaisesRegex(ValueError, "must be one of"):
+                    _validate_record_agent_run_fields(p)
+
+    def test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary(self) -> None:
+        """`_validate_record_agent_run_fields` is only the CLI-dispatch check; the conductor
+        calls `record_agent_run` in-process, and that function carried its own role handling
+        which accepted any string. Pinned separately because a mutation check showed the
+        library-side rejection surviving while only the dispatch-side one was covered —
+        exactly the "helper pinned, handler unpinned" shape this repository keeps hitting.
+
+        PINNED: the accept side iterates `AGENT_RUN_ROLES`. SAMPLED: the junk spelling."""
+        from tools.orchestration_runtime import AGENT_RUN_ROLES, record_agent_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id="orch_role_vocab")
+            with self.assertRaisesRegex(ValueError, "must be one of"):
+                record_agent_run(
+                    repo_root=repo_root,
+                    orchestration_id="orch_role_vocab",
+                    payload={
+                        "agent_run_id": "arid_bogus",
+                        "agent_role": "bogus",
+                        "agent_backend": "claude",
+                        "status": "pass",
+                    },
+                )
+            # The alias spellings reach the same rejection.
+            for alias in ("agent_type", "role"):
+                with self.subTest(alias=alias):
+                    with self.assertRaisesRegex(ValueError, "must be one of"):
+                        record_agent_run(
+                            repo_root=repo_root,
+                            orchestration_id="orch_role_vocab",
+                            payload={
+                                "agent_run_id": f"arid_bogus_{alias}",
+                                alias: "bogus",
+                                "agent_backend": "claude",
+                                "status": "pass",
+                            },
+                        )
+            # Accept side, iterated from the definition: every member of the vocabulary
+            # must get PAST the role check. Each then fails for its own downstream reason
+            # (preflight, or the skipped_by_checkpoint payload rules) — what is asserted
+            # here is only that the failure is never the vocabulary one, so widening or
+            # narrowing AGENT_RUN_ROLES lands in this test.
+            for role in sorted(AGENT_RUN_ROLES):
+                with self.subTest(accepted=role):
+                    try:
+                        record_agent_run(
+                            repo_root=repo_root,
+                            orchestration_id="orch_role_vocab",
+                            payload={
+                                "agent_run_id": f"arid_ok_{role}",
+                                "agent_role": role,
+                                "agent_backend": "claude",
+                                "status": "pass",
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the message is the assertion
+                        self.assertNotIn("must be one of", str(exc))
+
+    def test_the_validator_backstop_canonicalizes_without_prepare(self) -> None:
+        """The write-back inside `_validate_launch_request_payload` is kept as a BACKSTOP
+        for a caller that skips `prepare_launch_request_payload`. Round 3 deleted the only
+        test that drove the validator on its own, so the backstop became invisible:
+        neutering the assignment to a bare call left the whole suite green. Keeping a
+        mechanism while deleting its witness is the same class as this branch's other
+        findings, one layer up — so the witness is restored here, deliberately NOT going
+        through prepare."""
+        from tools.orchestration_runtime import _validate_launch_request_payload
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "compile_generate.request.json"
+        )
+        base = json.loads(fixture.read_text(encoding="utf-8"))
+        for spelling in ("SUBSTEP", " Substep ", "substep"):
+            with self.subTest(spelling=spelling):
+                payload = {**base, "agent_role": spelling}
+                _validate_launch_request_payload(payload)   # no prepare, by design
+                self.assertEqual(payload["agent_role"], "substep")
+
+    def test_a_caller_supplied_prompt_may_not_pair_with_a_respelled_role(self) -> None:
+        """The other half of the round-3 defect. Canonicalizing before the render puts the
+        Task Card in the prompt — but `prepare_launch_request_payload` does NOT re-render
+        when the caller supplies its own prompt, so there the persisted request would say
+        `substep` while the supplied prompt was built from `SUBSTEP` and carries no card:
+        the durable record disagreeing with the prompt beside it. Refused rather than
+        shipped.
+
+        The refusal is narrow by construction — it needs BOTH a caller-supplied prompt AND
+        a non-canonical spelling — so the conductor cannot reach it: it supplies no prompt
+        and a canonical role. Both of those are asserted here."""
+        from tools.orchestration_runtime import (
+            prepare_launch_request_payload,
+            render_launch_prompt_text,
+        )
+
+        fixture = (
+            Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
+            / "generate_generate.request.json"
+        )
+        base = json.loads(fixture.read_text(encoding="utf-8"))
+        base.pop("launch_prompt_full", None)
+        respelled = {**base, "agent_role": "SUBSTEP"}
+        with self.assertRaisesRegex(ValueError, "supplies its own prompt while spelling"):
+            prepare_launch_request_payload(
+                {**respelled, "launch_prompt_full": render_launch_prompt_text(respelled)})
+        # A canonical role with a caller-supplied prompt is untouched...
+        canonical = {**base, "agent_role": "substep"}
+        mine = render_launch_prompt_text(canonical) + "\nCALLER SUFFIX\n"
+        prepared = prepare_launch_request_payload(
+            {**canonical, "launch_prompt_full": mine})
+        self.assertEqual(prepared["launch_prompt_full"], mine)
+        # ...and a respelled role with NO supplied prompt is rendered, not refused.
+        self.assertIn(
+            "Task Card",
+            prepare_launch_request_payload(dict(respelled))["launch_prompt_full"])
+
+    def test_the_write_audit_use_site_reads_the_narrower_set(self) -> None:
+        """Pinning the DEFINITIONAL difference between the two constants is not the same as
+        pinning that the audit's use site reads the narrower one. A reviewer's mutation
+        swapped `WRITE_AUDITED_AGENT_ROLES` for `AGENT_RUN_ROLES` inside
+        `_validate_actual_write_paths` and the whole suite stayed green — the sets differ,
+        but nothing observed which one that early return consulted.
+
+        Asserted behaviourally, not by reading the source: a `skipped_by_checkpoint`
+        payload must take the early return (no capability, no write baseline, so the audit
+        would raise if it proceeded), while a `substep` payload with the same missing state
+        must NOT."""
+        from tools.orchestration_runtime import _validate_actual_write_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_audit_use_site"
+            init_orchestration(repo_root=repo_root, orchestration_id=orch)
+            payload = {
+                "agent_run_id": "arid_audit",
+                "status": "pass",
+                "output_refs": [],
+            }
+            # In the write-audited set: the audit runs and fails closed on the absent
+            # capability / baseline.
+            with self.assertRaises(ValueError):
+                _validate_actual_write_paths(
+                    repo_root, orch, {**payload, "agent_role": "substep"})
+            # Outside it: the early return, and therefore no raise. If the use site read
+            # AGENT_RUN_ROLES this would raise like the case above.
+            _validate_actual_write_paths(
+                repo_root, orch, {**payload, "agent_role": "skipped_by_checkpoint"})
+
+    def test_the_unaudited_role_cannot_carry_a_terminal_status(self) -> None:
+        """`skipped_by_checkpoint` is in the vocabulary but NOT write-audited, which would be
+        an evasion if it could also be terminal. It cannot: it requires `status=skipped`,
+        and `skipped` is not a terminal status, so the audit's own status guard is what
+        stops it. Pinned as a relationship between the two definitions rather than as a
+        remembered fact about either."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            TERMINAL_STATUSES,
+            WRITE_AUDITED_AGENT_ROLES,
+            _validate_skipped_by_checkpoint_payload,
+        )
+
+        unaudited = AGENT_RUN_ROLES - WRITE_AUDITED_AGENT_ROLES
+        self.assertEqual(unaudited, {"skipped_by_checkpoint"})
+        with self.assertRaisesRegex(ValueError, "requires status=skipped"):
+            _validate_skipped_by_checkpoint_payload({
+                "node_key": "component/x@0.1.0", "step": "compile",
+                "skipped_step": "compile", "reason": "r",
+                "checkpoint_agent_run_id": "c", "status": "pass",
+            })
+        self.assertNotIn("skipped", {s.lower() for s in TERMINAL_STATUSES})
 
 
 if __name__ == "__main__":
