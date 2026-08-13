@@ -3326,7 +3326,20 @@ shell_tool                       stable             true
             )
 
     def test_record_launch_succeeds_with_generate_directory_allowed_output_path(self) -> None:
-        """record_launch for step=generate with a directory allowed_output_path must not raise."""
+        """record_launch for step=generate with a directory allowed_output_path must not raise.
+
+        KNOWN FIXTURE-SHAPE RESIDUAL (this test and two siblings — the multi-generation
+        rejection tests and the noncanonical-MCP-log test): the payload carries
+        `agent_role="substep"` with NO `substep` key and the STEP-level skill/prompt
+        fields, a combination `workflow_conductor.build_launch_request` never emits — it
+        always names a generate substep. Before the agent_role migration these fixtures
+        were self-consistent but declared `agent_role="step"`, which the table does not
+        allow for `generate`; the migration fixed the role and left the rest. Converting
+        them fully would mean swapping the skill_name, skill_ref, must-read helper and
+        prompt renderer to their substep variants, which changes WHICH prompt-validation
+        path runs — a real risk to the directory-path assertions these tests exist for, in
+        exchange for cosmetic fidelity. Deliberately not done; recorded so the next reader
+        does not mistake the shape for something production emits."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
@@ -15280,6 +15293,58 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             repo_root, orchestration_id=orchestration_id,
             parent=f"orch_{orchestration_id}", child="build_child", req=req,
         )
+
+    def test_capability_role_must_match_its_step_at_both_gate_call_sites(self) -> None:
+        """The MCP build-tool gate and the run-gate both demand
+        `capability.agent_role == _required_child_agent_kind(capability.step)`. Neither
+        had ANY test: a branch-wide mutation check showed both call sites surviving, and
+        the only assertions on this message were the launch-side ones. Since the two are
+        mirrors of one predicate, they are pinned together here rather than left to
+        diverge — the same reason the id-token check above pins both.
+
+        PINNED: that a role disagreeing with the capability's own `step` is rejected at
+        BOTH call sites, for every role in the vocabulary other than the demanded one
+        (iterated from `AGENT_RUN_ROLES`). SAMPLED: nothing — the accept side is covered
+        by the other tests in this class, which all drive a truthful capability."""
+        from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            _required_child_agent_kind,
+            _validate_run_gate_permissions,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            cap = self._build_child_capability(repo_root, "vperm_role")
+            token = str(cap["capability_token"])
+            cap_path = (repo_root / "workspace/orchestrations/vperm_role/capabilities"
+                        / "build_child.json")
+            doc = json.loads(cap_path.read_text(encoding="utf-8"))
+            demanded = _required_child_agent_kind(doc["step"])
+            self.assertEqual(doc["agent_role"], demanded)
+            for role in sorted(AGENT_RUN_ROLES - {demanded}) + ["bogus"]:
+                with self.subTest(role=role):
+                    cap_path.write_text(
+                        json.dumps({**doc, "agent_role": role}), encoding="utf-8")
+                    with self.assertRaises(RuntimeError) as ctx_mcp:
+                        validate_mcp_build_tool_invocation(
+                            repo_root,
+                            orchestration_id="vperm_role",
+                            agent_run_id="build_child",
+                            capability_token=token,
+                            tool_name="compile_project",
+                        )
+                    self.assertIn(
+                        "does not satisfy required child agent kind", str(ctx_mcp.exception))
+                    with self.assertRaises(RuntimeError) as ctx_gate:
+                        _validate_run_gate_permissions(
+                            repo_root,
+                            orchestration_id="vperm_role",
+                            agent_run_id="build_child",
+                            gate_name="orchestration_read",
+                            capability_token=token,
+                        )
+                    self.assertIn(
+                        "does not satisfy required child agent kind", str(ctx_gate.exception))
 
     def test_an_unresolvable_ir_ref_does_not_exempt_the_make_contract(self) -> None:
         """Every absence on the way to the make-only contract means make. An ir_ref the
@@ -33471,16 +33536,31 @@ class JsonPayloadFileArgTests(unittest.TestCase):
 class AgentRoleFailClosedTests(unittest.TestCase):
     """`agent_role` must be fail-closed at BOTH chokepoints (TODO.md, high).
 
-    WHAT IS PINNED (set identity, not a sample): every launch-side assertion is generated
-    by iterating `STEP_REQUIRED_CHILD_AGENT`, and every terminal-side assertion by
-    iterating `AGENT_RUN_ROLES` / `WRITE_AUDITED_AGENT_ROLES`. Adding a step or a role to
-    either definition therefore extends this suite automatically — which is the property
-    the earlier phase-contract tests could NOT express, because they sat outside the set
-    they were describing and could only sample names to reject.
+    WHAT IS PINNED (set identity, not a sample) — and it is FIVE of the seven tests, not
+    all of them. `test_launch_requires_exactly_the_role_its_step_demands` iterates
+    `STEP_REQUIRED_CHILD_AGENT` x `AGENT_RUN_ROLES`;
+    `test_every_captured_production_payload_declares_the_demanded_role` iterates the
+    captured payloads and asserts their count;
+    `test_terminal_payload_rejects_a_role_outside_the_vocabulary` and
+    `test_record_agent_run_itself_rejects_a_role_outside_the_vocabulary` iterate
+    `AGENT_RUN_ROLES` on the accept side; and
+    `test_the_unaudited_role_cannot_carry_a_terminal_status` pins
+    `AGENT_RUN_ROLES - WRITE_AUDITED_AGENT_ROLES`. Adding a step or a role to either
+    definition therefore extends those five automatically — the property the earlier
+    phase-contract tests could NOT express, because they sat outside the set they
+    described and could only sample names to reject.
+
+    WHAT IS NOT: `test_launch_role_normalization_closes_the_spelling_family` samples
+    spellings by construction. `test_capability_then_manifest_agree_on_the_role_...`
+    drives ONE captured fixture (`compile_generate.request.json`) and iterates nothing —
+    it exists to pin the producer->consumer ORDER, not the role vocabulary, so a new step
+    or substep does not land in it. An earlier version of this docstring claimed all seven
+    iterate; review measured otherwise, and the claim was narrowed rather than the tests
+    stretched to fit it.
 
     WHAT IS SAMPLED: the specific out-of-vocabulary spellings (`"bogus"`, `"Substep "`,
     …). Those are shape probes — an unknown word, a case/whitespace variant — not a proof
-    that no other string is accepted; the loop over the definition is what carries that.
+    that no other string is accepted; the loops over the definitions carry that.
     """
 
     def test_launch_requires_exactly_the_role_its_step_demands(self) -> None:
@@ -33634,8 +33714,10 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         calls `record_agent_run` in-process, and that function carried its own role handling
         which accepted any string. Pinned separately because a mutation check showed the
         library-side rejection surviving while only the dispatch-side one was covered —
-        exactly the "helper pinned, handler unpinned" shape this repository keeps hitting."""
-        from tools.orchestration_runtime import record_agent_run
+        exactly the "helper pinned, handler unpinned" shape this repository keeps hitting.
+
+        PINNED: the accept side iterates `AGENT_RUN_ROLES`. SAMPLED: the junk spelling."""
+        from tools.orchestration_runtime import AGENT_RUN_ROLES, record_agent_run
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -33652,17 +33734,39 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                     },
                 )
             # The alias spellings reach the same rejection.
-            with self.assertRaisesRegex(ValueError, "must be one of"):
-                record_agent_run(
-                    repo_root=repo_root,
-                    orchestration_id="orch_role_vocab",
-                    payload={
-                        "agent_run_id": "arid_bogus2",
-                        "agent_type": "bogus",
-                        "agent_backend": "claude",
-                        "status": "pass",
-                    },
-                )
+            for alias in ("agent_type", "role"):
+                with self.subTest(alias=alias):
+                    with self.assertRaisesRegex(ValueError, "must be one of"):
+                        record_agent_run(
+                            repo_root=repo_root,
+                            orchestration_id="orch_role_vocab",
+                            payload={
+                                "agent_run_id": f"arid_bogus_{alias}",
+                                alias: "bogus",
+                                "agent_backend": "claude",
+                                "status": "pass",
+                            },
+                        )
+            # Accept side, iterated from the definition: every member of the vocabulary
+            # must get PAST the role check. Each then fails for its own downstream reason
+            # (preflight, or the skipped_by_checkpoint payload rules) — what is asserted
+            # here is only that the failure is never the vocabulary one, so widening or
+            # narrowing AGENT_RUN_ROLES lands in this test.
+            for role in sorted(AGENT_RUN_ROLES):
+                with self.subTest(accepted=role):
+                    try:
+                        record_agent_run(
+                            repo_root=repo_root,
+                            orchestration_id="orch_role_vocab",
+                            payload={
+                                "agent_run_id": f"arid_ok_{role}",
+                                "agent_role": role,
+                                "agent_backend": "claude",
+                                "status": "pass",
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 - the message is the assertion
+                        self.assertNotIn("must be one of", str(exc))
 
     def test_the_unaudited_role_cannot_carry_a_terminal_status(self) -> None:
         """`skipped_by_checkpoint` is in the vocabulary but NOT write-audited, which would be

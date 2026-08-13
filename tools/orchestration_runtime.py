@@ -4187,6 +4187,15 @@ AGENT_RUN_ROLES: frozenset[str] = frozenset(
 # NEVER LAUNCHED, so it has no capability, no write_roots and no baseline to diff against.
 WRITE_AUDITED_AGENT_ROLES: frozenset[str] = frozenset({"orchestration", "step", "substep"})
 
+# THREE set literals with these same three members are deliberately NOT folded into the
+# constant above, because they answer a DIFFERENT question and folding them would make a
+# later change to one silently change the others:
+#   - `build_capability_document` (x2): "which roles may a CAPABILITY document name".
+#   - the `repair_legacy_agent_runs` backfill: "which rows represent an agent that ran".
+# They coincide with the write-audited set today; they are not defined by it. An earlier
+# commit message claimed every copy of the literal had been folded in — it had not, and
+# this note exists so the next reader does not have to re-derive that.
+
 FAIL_CLOSED_REASON_CODES = {
     "child_agent_forbidden_by_session_policy",
     "child_agent_unavailable_on_execution_platform",

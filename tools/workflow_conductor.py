@@ -4430,6 +4430,8 @@ class Conductor:
     def _register_codex_thread(self, child_arid: str, thread_id: str) -> None:
         """Transactionally replace the provisional Codex identity in all host records."""
         from tools.orchestration_runtime import (
+            AGENT_RUN_ROLES,
+            _normalized_agent_role,
             _read_json,
             _write_json_transaction,
         )
@@ -4438,7 +4440,20 @@ class Conductor:
         )
         launch_dir = orchestration_dir / "launches"
         request = _read_json(launch_dir / f"{child_arid}.request.json") or {}
-        role = str(request.get("agent_role") or "substep").strip().lower()
+        # Read the role that record-launch already validated and persisted; do NOT default
+        # it. This was the last reader answering the question from its own fallback
+        # (`or "substep"`), and it writes straight through to the session run index, whose
+        # upsert applies no vocabulary test of its own. The request file is host-written
+        # by record-launch AFTER `_validate_launch_request_payload`, so a missing or
+        # unknown role here means the file is absent or corrupt — a transport fault to
+        # surface, not a value to guess.
+        role = _normalized_agent_role(request.get("agent_role"))
+        if role not in AGENT_RUN_ROLES:
+            raise RuntimeError(
+                f"codex thread registration: launch request for {child_arid} carries "
+                f"agent_role={request.get('agent_role')!r}, which record-launch would not "
+                f"have accepted; refusing to guess it"
+            )
         context = request.get("context_id")
         _write_json_transaction(
             transaction_dir=orchestration_dir,
