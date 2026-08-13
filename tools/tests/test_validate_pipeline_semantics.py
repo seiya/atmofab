@@ -55,9 +55,11 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 MOCK_SPEC_DIR = "spec/problem/mock_domain/mock_family/mock_spec"
 MOCK_TESTS_REF = f"{MOCK_SPEC_DIR}/tests.md"
 
-# A tracked, byte-for-byte copy of a real full-fidelity IR: `problem/shallow_water2d@0.4.0`,
-# ir_id `shallow-water2d_20260718_003`, `verification_status=pass`, `debug_mode=false`, captured
-# 2026-08-13 from `workspace_20260719/ir/problem__shallow_water2d__0.4.0/`. Committed under test
+# A tracked, byte-for-byte copy of a real full-fidelity IR: `node_key`
+# `problem/shallow_water2d@0.4.0`, captured 2026-08-13 from the run directory
+# `workspace_20260719/ir/problem__shallow_water2d__0.4.0/shallow-water2d_20260718_003/`, whose
+# sibling `ir_meta.json` — not part of this fixture — records `verification_status=pass` and
+# `debug_mode=false`. Only `node_key` can be checked against the file here. Committed under test
 # data because `workspace*` is the operator's execution workspace — gitignored, freely pruned, and
 # absent from any fresh clone — so a test that reads it there cannot run. Same precedent as
 # `tools/tests/data/conductor_launch_requests/` (see tools/tests/test_workflow_conductor.py).
@@ -10529,9 +10531,11 @@ end program shallow_water2d_runner
         # per-case threshold maps, metric addresses) is not claimed here: trimming it to a single
         # conforming predicate still passes.
         #
-        # A clean run is not evidence on its own, because "no violation" is also what an empty or
-        # unparseable IR produces: review overwrote the fixture with `{}` and this test still
-        # passed. So the same fixture is driven twice — as captured, and with every pass predicate
+        # A clean run is not evidence on its own, because no *degenerate* violation is also what
+        # a document the gate cannot read produces: an unparseable or empty IR returns nothing at
+        # all, and `{}` returns a different complaint entirely, none of which this assertion
+        # inspects. Review overwrote the fixture and this test still passed. So the same fixture
+        # is driven twice — as captured, and with every pass predicate
         # rewritten to `verdict.overall` — and the second drive must fire. That is what shows the
         # gate reached real predicates rather than falling out early on a document it could not
         # read. It is the mutation the reviewer had to apply by hand, kept where it cannot rot.

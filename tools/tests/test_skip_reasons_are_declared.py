@@ -15,8 +15,11 @@ of path expressions, two already in use here. That question has no bounded answe
 
 Two things make this one bounded. The set of APIs that can stop a test is closed and small
 (`_SKIP_APIS`), and membership in it — not the spelling of the call — is what decides, so an
-unrelated local `def skip(...)` is not a skip while `from unittest import skipIf as omit_if` and
-`unittest.case.SkipTest` both are. And a reason is a string literal, so the set of them is finite
+unrelated local `def skip(...)` is not a skip while `from unittest import skipIf as omit_if`,
+`unittest.case.SkipTest` and `from _pytest.outcomes import skip` all are. The last two are the
+modules the APIs are really defined in, and that mapping is asked of the objects at import time
+rather than listed, because listing it by hand is how the second of them got missed after the
+first had been fixed. And a reason is a string literal, so the set of them is finite
 and enumerable. Anything that names a skip API without handing over a declared literal reason — a
 bare `@unittest.skip` decorator, `raise SkipTest` with no argument, `pytest.importorskip` without
 `reason=`, a computed message — is a violation, so the check fails closed rather than falling
@@ -38,18 +41,21 @@ and pretending otherwise in this docstring is how the previous version of it cam
 
 Two deliberate trades in the other direction. A class defining its own `skipTest` opts out of the
 attribute-name match inside that class, since there the name no longer means the inherited
-method — scoped to the class, because an earlier version applied it per module and one test
-double with a `skipTest` silenced every real skip in the file. And `X.skipTest(...)` on any other
+method — scoped to exactly that class body, because the radius was wrong twice: first per module,
+where one test double with a `skipTest` silenced every real skip in the file, then per class but
+descending into nested ones, which carried the opt-out into a real `TestCase` defined inside a
+class that had the override. A nested class decides for itself. And `X.skipTest(...)` on any other
 receiver IS matched, so an unrelated object with a method of that name would be reported —
 accepted knowingly, because the alternative is missing every helper that takes the case as an
 argument, and the fix for the false positive is visible and local.
 
-Name resolution here is flow-insensitive: one map per module, built from its imports, with no
-statement ordering. Rebinding a bound name therefore gives a wrong answer in both directions —
-`def helper(unittest): unittest.skip(...)` is reported though the parameter shadows the import,
-and `import unittest as api` followed later by `import pytest as api` hides a real skip. Getting
-these right means implementing Python's scope and ordering rules, which is a bigger instrument
-than the problem justifies; they are written down here instead. The corpus contains neither.
+Name resolution here is flow-insensitive: one map per module, built from its imports and from
+assignments whose right-hand side resolves to an API, with no statement ordering. Rebinding a
+bound name therefore gives a wrong answer in both directions — `def helper(unittest):
+unittest.skip(...)` is reported though the parameter shadows the import, and `import unittest as
+api` followed later by `import pytest as api` hides a real skip. Getting these right means
+implementing Python's scope and ordering rules, which is a bigger instrument than the problem
+justifies; they are written down here instead. The corpus contains neither.
 
 Adding a genuinely new environment capability means adding it to `_DECLARED_ENVIRONMENT_SKIPS`
 below, in the same commit as the skip, with a note saying what about the host it depends on.
@@ -59,6 +65,7 @@ That is the intended friction: it is one table, and it is the only place that gr
 from __future__ import annotations
 
 import ast
+import importlib
 import subprocess
 import tempfile
 import unittest
@@ -113,11 +120,35 @@ _SKIP_APIS = {
     "pytest.mark.xfail": None,
     "pytest.importorskip": None,
 }
-_SKIP_ROOTS = ("unittest", "pytest")
-# `unittest.case` is where these actually live, so `unittest.case.SkipTest` and
-# `from unittest.case import SkipTest` reach the same objects by a longer name. Review got a
-# skip past an earlier version of this file through exactly that spelling.
-_MODULE_ALIASES = {"unittest.case.": "unittest."}
+_SKIP_ROOTS = ("unittest", "pytest", "_pytest")
+
+
+def _alternative_names() -> dict[str, str]:
+    """Other dotted names for the same objects, asked of the objects rather than guessed.
+
+    `unittest.skip` really lives in `unittest.case`, and `pytest.skip` in `_pytest.outcomes`, so
+    `from unittest.case import SkipTest` and `from _pytest.outcomes import skip` name the very
+    same functions. Review walked a skip past two earlier versions of this file through those
+    two spellings, the second after the first had been hand-patched — which is the argument for
+    deriving this from `__module__` instead of listing the ones someone happened to think of.
+    """
+    out: dict[str, str] = {}
+    for canonical in _SKIP_APIS:
+        root, _, rest = canonical.partition(".")
+        if not rest or canonical.startswith("unittest.TestCase"):
+            continue
+        try:
+            obj: object = importlib.import_module(root)
+        except ImportError:  # pragma: no cover - pytest is present wherever this runs
+            continue
+        for part in rest.split("."):
+            obj = getattr(obj, part, None)
+            if obj is None:
+                break
+        defining = getattr(obj, "__module__", None)
+        if defining and defining != root:
+            out[f"{defining}.{rest.rsplit('.', 1)[-1]}"] = canonical
+    return out
 
 
 def _alias_map(tree: ast.AST) -> dict[str, str]:
@@ -147,6 +178,21 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
                                 out.setdefault(api.rsplit(".", 1)[1], api)
                     else:
                         out[a.asname or a.name] = f"{module}.{a.name}"
+
+    # A second pass for names bound by assignment (`_omit = unittest.skip`), which reach the same
+    # object without an import of their own. Run after the imports so the right-hand side can be
+    # resolved, and repeated until nothing new appears so a chain of them resolves too.
+    for _ in range(len(_SKIP_APIS)):
+        grew = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Name, ast.Attribute)):
+                api = _canonical(node.value, out)
+                for t in node.targets:
+                    if api is not None and isinstance(t, ast.Name) and out.get(t.id) != api:
+                        out[t.id] = api
+                        grew = True
+        if not grew:
+            break
     return out
 
 
@@ -163,14 +209,13 @@ def _canonical(node: ast.AST, aliases: dict[str, str], own_skiptest: bool = Fals
         return None
     parts = ast.unparse(node).split(".")
     if len(parts) > 1 and parts[-1] == "skipTest" and not own_skiptest:
-        return "unittest.TestCase.skipTest"
+        name = "unittest.TestCase.skipTest"
+        return name if name in _SKIP_APIS else None
     head = aliases.get(parts[0])
     if head is None:
         return None
     name = ".".join([head] + parts[1:])
-    for spelling, canonical in _MODULE_ALIASES.items():
-        if name.startswith(spelling):
-            name = canonical + name[len(spelling):]
+    name = _ALTERNATIVE_NAMES.get(name, name)
     return name if name in _SKIP_APIS else None
 
 
@@ -202,6 +247,9 @@ def _literal_args(node: ast.Call) -> tuple[list[ast.AST], dict[str, ast.AST]]:
     return args, kwargs
 
 
+_ALTERNATIVE_NAMES = _alternative_names()
+
+
 def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
     """(line, api, reason) for every place this module can stop a test.
 
@@ -212,15 +260,29 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
     tree = ast.parse(module.read_text(encoding="utf-8"))
     aliases = _alias_map(tree)
 
-    # The `skipTest` opt-out belongs to the class that overrides it, not to the file. An earlier
-    # version set it module-wide, so one `def skipTest` on an unrelated test double silenced
-    # every real skip in the module — reviewers walked the retired calibration reason through it.
+    # The `skipTest` opt-out belongs to the class that overrides it, not to the file and not to
+    # whatever that class happens to contain. Two earlier versions got the radius wrong: first
+    # module-wide, so one `def skipTest` on an unrelated test double silenced every real skip in
+    # the file; then class-wide via `ast.walk`, which descends into nested classes and so carried
+    # the opt-out into a real `TestCase` defined inside one. Reviewers walked the retired
+    # calibration reason through both. The descent stops at each class boundary and each class
+    # decides for itself.
     opted_out: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and any(
-                isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)) and b.name == "skipTest"
-                for b in node.body):
-            opted_out.update(id(inner) for inner in ast.walk(node))
+
+    def mark(scope: ast.AST, inherited: bool) -> None:
+        own = inherited
+        if isinstance(scope, ast.ClassDef):
+            own = any(isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
+                      and b.name == "skipTest" for b in scope.body)
+        for child in ast.iter_child_nodes(scope):
+            if isinstance(child, ast.ClassDef):
+                mark(child, False)
+            else:
+                if own:
+                    opted_out.add(id(child))
+                mark(child, own)
+
+    mark(tree, False)
     found: list[tuple[int, str, str | None]] = []
 
     for node in ast.walk(tree):
@@ -275,19 +337,21 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
             bare = [node.exc]
         for ref in bare:
             api = _canonical(ref, aliases, id(ref) in opted_out)
+            if api == "pytest.mark.xfail":
+                continue  # bare `@pytest.mark.xfail` runs the test; only `run=False` stops it
             if api is not None:
                 found.append((getattr(ref, "lineno", node.lineno), api, None))
     return sorted(found)
 
 
-def _tracked_test_modules(root: Path = REPO_ROOT, subdir: str = "tools/tests") -> list[Path]:
-    """Every Python module git tracks under `subdir`, as the definition of the corpus.
+def _tracked_test_modules(root: Path = REPO_ROOT) -> list[Path]:
+    """Every Python module git tracks under `tools/tests`, as the definition of the corpus.
 
-    `root`/`subdir` exist so this can be driven against a scratch repository. Without that, the
+    `root` exists so this can be driven against a scratch repository. Without that, the
     scan test compares two sets it derives the same way, and swapping this whole body for a glob
     makes the comparison tautological while an untracked module slips into the sweep.
     """
-    out = subprocess.run(["git", "ls-files", "-z", "--", subdir], cwd=root,
+    out = subprocess.run(["git", "ls-files", "-z", "--", "tools/tests"], cwd=root,
                          check=True, capture_output=True, text=True).stdout
     return sorted(root / p for p in out.split("\0") if p.endswith(".py"))
 
@@ -493,6 +557,20 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
             "star import":
                 'from unittest import *\n'
                 f'@skip({_UNDECLARED!r})\ndef test_x(): pass\n',
+            "the module the API is really defined in":
+                'from _pytest.outcomes import skip\n'
+                f'def test_x():\n    skip({_UNDECLARED!r})\n',
+            "alias bound by assignment":
+                'import unittest\n'
+                '_omit = unittest.skip\n'
+                f'@_omit({_UNDECLARED!r})\ndef test_x(): pass\n',
+            "a TestCase nested inside a class that overrides skipTest":
+                'import unittest\n'
+                'class _Outer:\n'
+                '    def skipTest(self, reason):\n        return None\n'
+                '    class Inner(unittest.TestCase):\n'
+                '        def test_x(self):\n'
+                f'            self.skipTest({_UNDECLARED!r})\n',
             "case passed to a helper":
                 'def _need(tc):\n'
                 f'    tc.skipTest({_UNDECLARED!r})\n',
@@ -546,8 +624,33 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'import pytest\n'
                 '@pytest.mark.xfail(reason="expected to fail, but it does run")\n'
                 'def test_x(): pass\n',
+            "bare xfail, which also still runs the test":
+                'import pytest\n@pytest.mark.xfail\ndef test_x(): assert False\n',
+            "a bare name that happens to be skipTest":
+                f'def test_x():\n    skipTest({_UNDECLARED!r})\n',
+            "an async override of skipTest opts its class out":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    async def skipTest(self, reason):\n        return None\n'
+                '    def test_x(self):\n        self.skipTest("not the inherited one")\n',
+            "an annotation that binds nothing":
+                'import unittest\n'
+                'def test_x(): pass\n'
+                'test_x.__unittest_skip__: bool\n',
         }.items():
             self.assertEqual(_probe(src), [], label)
+
+    def test_a_skipTest_nested_in_a_method_does_not_opt_its_class_out(self) -> None:
+        # The opt-out is a class overriding the method, not the name appearing somewhere inside
+        # it. A local helper called `skipTest` defined in one test must not disarm the next.
+        violations = _probe('import unittest\n'
+                            'class T(unittest.TestCase):\n'
+                            '    def test_helper(self):\n'
+                            '        def skipTest(reason):\n            return None\n'
+                            '    def test_x(self):\n'
+                            f'        self.skipTest({_UNDECLARED!r})\n')
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn(_NOT_DECLARED, violations[0])
 
     def test_a_declared_reason_reaches_the_table_through_nested_unpacking(self) -> None:
         # Python flattens `{**{...}}` before the call sees it; reading only the outer level
