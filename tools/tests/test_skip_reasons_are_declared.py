@@ -14,17 +14,21 @@ this source construct", and reviewers produced roughly twenty spellings that eva
 of path expressions, two already in use here. That question has no bounded answer at this level.
 
 Two things make this one bounded. The set of APIs that can stop a test is closed and small
-(`_SKIP_APIS`), and it is reachable only by naming one of them, so an alias is resolved through
-the module's own imports rather than guessed from spelling. And a reason is a string literal, so
-the set of them is finite and enumerable. Anything that names a skip API without handing over a
-declared literal reason — a bare `@unittest.skip` decorator, `raise SkipTest` with no argument,
-`pytest.importorskip` without `reason=`, a computed message — is a violation, so the check fails
-closed rather than falling through to "not recognised, therefore fine".
+(`_SKIP_APIS`), and membership in it — not the spelling of the call — is what decides, so an
+unrelated local `def skip(...)` is not a skip while `from unittest import skipIf as omit_if` and
+`unittest.case.SkipTest` both are. And a reason is a string literal, so the set of them is finite
+and enumerable. Anything that names a skip API without handing over a declared literal reason — a
+bare `@unittest.skip` decorator, `raise SkipTest` with no argument, `pytest.importorskip` without
+`reason=`, a computed message — is a violation, so the check fails closed rather than falling
+through to "not recognised, therefore fine".
 
-What is still out of reach, and is not claimed otherwise: a decorator that sets
-`__unittest_skip__` by hand is caught, but a helper living outside `tools/tests/` that raises
-`SkipTest` on the caller's behalf is not, and neither is anything assembled at runtime. Those are
-deliberate concealment rather than ordinary style, which is the line this guard draws.
+What is still out of reach, and is not claimed otherwise: `__unittest_skip__` set by hand is
+caught and a helper inside the corpus that takes the case as an argument is caught, but a helper
+living outside `tools/tests/` that raises `SkipTest` on the caller's behalf is not, and neither
+is anything assembled at runtime — an API fetched with `getattr`, or a reason built at import
+time. Those are deliberate concealment rather than ordinary style, which is the line this guard
+draws. One deliberate blind spot: a module that defines its own `skipTest` opts out of the
+attribute-name match, because there the name no longer means the inherited method.
 
 Adding a genuinely new environment capability means adding it to `_DECLARED_ENVIRONMENT_SKIPS`
 below, in the same commit as the skip, with a note saying what about the host it depends on.
@@ -83,10 +87,15 @@ _SKIP_APIS = {
     "unittest.skipUnless": 1,
     "pytest.skip": 0,
     "pytest.xfail": 0,
+    "pytest.mark.skip": 0,
     "pytest.mark.skipif": 1,
     "pytest.importorskip": None,
 }
 _SKIP_ROOTS = ("unittest", "pytest")
+# `unittest.case` is where these actually live, so `unittest.case.SkipTest` and
+# `from unittest.case import SkipTest` reach the same objects by a longer name. Review got a
+# skip past an earlier version of this file through exactly that spelling.
+_MODULE_ALIASES = {"unittest.case.": "unittest."}
 
 
 def _alias_map(tree: ast.AST) -> dict[str, str]:
@@ -111,17 +120,27 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
     return out
 
 
-def _canonical(node: ast.AST, aliases: dict[str, str]) -> str | None:
-    """The skip API a Name/Attribute refers to, or None."""
+def _canonical(node: ast.AST, aliases: dict[str, str], own_skiptest: bool = False) -> str | None:
+    """The skip API a Name/Attribute refers to, or None.
+
+    `skipTest` is matched on any receiver, not just `self`/`cls`: it is an inherited method, and
+    a helper that takes the case as an argument (`def _need(tc): tc.skipTest(...)`) stops the
+    test just as surely. `own_skiptest` turns that off for a module that defines its own
+    `skipTest`, where the name no longer means the inherited one — the one construct where
+    matching by attribute name would invent a skip that is not there.
+    """
     if not isinstance(node, (ast.Name, ast.Attribute)):
         return None
     parts = ast.unparse(node).split(".")
-    if parts[0] in ("self", "cls") and parts[1:] == ["skipTest"]:
+    if len(parts) > 1 and parts[-1] == "skipTest" and not own_skiptest:
         return "unittest.TestCase.skipTest"
     head = aliases.get(parts[0])
     if head is None:
         return None
     name = ".".join([head] + parts[1:])
+    for spelling, canonical in _MODULE_ALIASES.items():
+        if name.startswith(spelling):
+            name = canonical + name[len(spelling):]
     return name if name in _SKIP_APIS else None
 
 
@@ -154,17 +173,17 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
     """
     tree = ast.parse(module.read_text(encoding="utf-8"))
     aliases = _alias_map(tree)
+    own_skiptest = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                       and n.name == "skipTest" for n in ast.walk(tree))
     found: list[tuple[int, str, str | None]] = []
-    called: set[int] = set()
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
-            api = _canonical(node.func, aliases)
+            api = _canonical(node.func, aliases, own_skiptest)
             if api is None:
                 continue
-            called.add(id(node.func))
             args, kwargs = _literal_args(node)
-            reason = kwargs.get("reason") or kwargs.get("msg")
+            reason = kwargs.get("reason")
             index = _SKIP_APIS[api]
             if reason is None and index is not None and len(args) > index:
                 reason = args[index]
@@ -179,7 +198,9 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
 
     # Bare references: a decorator or a `raise` that names a skip API without calling it stops a
     # test just as effectively and carries no reason at all. Only these two positions count — a
-    # mention in an `except` clause or an `assertRaises` argument is not a skip site.
+    # mention in an `except` clause or an `assertRaises` argument is not a skip site. A called
+    # form arrives here as an `ast.Call`, which `_canonical` declines, so the two loops cannot
+    # double-count and no bookkeeping between them is needed.
     for node in ast.walk(tree):
         bare: list[ast.AST] = []
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -187,9 +208,7 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
         elif isinstance(node, ast.Raise) and node.exc is not None:
             bare = [node.exc]
         for ref in bare:
-            if id(ref) in called:
-                continue
-            api = _canonical(ref, aliases)
+            api = _canonical(ref, aliases, own_skiptest)
             if api is not None:
                 found.append((getattr(ref, "lineno", node.lineno), api, None))
     return sorted(found)
@@ -216,6 +235,42 @@ def _violations(modules: list[Path]) -> list[str]:
                 out.append(f"{module.name}:{line}: {api}({reason!r}) is not a declared "
                            "environment capability")
     return out
+
+
+_UNDECLARED = "not a capability of any host"
+_NO_LITERAL = "without a literal reason"
+_NOT_DECLARED = "not a declared environment capability"
+
+# One usage per API, with `{r}` where the reason goes, so the same source can be run twice: once
+# with a declared reason, which must be accepted, and once with an undeclared one, which must be
+# rejected *for that reason*. Both halves matter. Without the accept half, a wrong reason index
+# is invisible — ten single-site mutations of `_SKIP_APIS` and the argument handling survived a
+# version of this file that only counted violations, and one of them would have started
+# rejecting legitimate declared skips. `test_every_api_has_a_usage` keeps the table honest.
+_USAGES = {
+    "unittest.TestCase.skipTest":
+        "import unittest\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_x(self):\n        self.skipTest({r})\n",
+    "unittest.skip":
+        "import unittest\n@unittest.skip({r})\ndef test_x(): pass\n",
+    "unittest.SkipTest":
+        "import unittest\ndef test_x():\n    raise unittest.SkipTest({r})\n",
+    "unittest.skipIf":
+        "import unittest\n@unittest.skipIf(True, {r})\ndef test_x(): pass\n",
+    "unittest.skipUnless":
+        "import unittest\n@unittest.skipUnless(False, {r})\ndef test_x(): pass\n",
+    "pytest.skip":
+        "import pytest\ndef test_x():\n    pytest.skip({r})\n",
+    "pytest.xfail":
+        "import pytest\ndef test_x():\n    pytest.xfail({r})\n",
+    "pytest.mark.skip":
+        "import pytest\n@pytest.mark.skip({r})\ndef test_x(): pass\n",
+    "pytest.mark.skipif":
+        "import pytest\n@pytest.mark.skipif(True, reason={r})\ndef test_x(): pass\n",
+    "pytest.importorskip":
+        "import pytest\ndef test_x():\n    pytest.importorskip('mod', reason={r})\n",
+}
 
 
 def _probe(src: str) -> list[str]:
@@ -264,73 +319,111 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
         self.assertIn("real IR artifact not present in this checkout", violations[0])
         self.assertIn("not a declared environment capability", violations[0])
 
-    def test_each_way_of_stopping_a_test_is_seen(self) -> None:
-        # One case per route, generated from a table rather than checked as one blob: a route the
-        # extractor cannot see is a skip that passes, and a single combined assertion hides which
-        # one is missing. Every entry here was a live evasion of an earlier version of this file.
-        undeclared = "undeclared reason for this route"
+    def test_every_api_has_a_usage(self) -> None:
+        self.assertEqual(sorted(_USAGES), sorted(_SKIP_APIS),
+                         "every skip API needs a usage, or the two tests below skip it silently")
+
+    def test_a_declared_reason_is_accepted_through_every_api(self) -> None:
+        # The half that pins WHERE the reason is read from. A wrong argument index, a dropped
+        # keyword, or a `None` where a position belongs makes the reason unreadable, and without
+        # this the result is a guard that quietly starts rejecting legitimate declared skips.
+        declared = next(iter(_DECLARED_ENVIRONMENT_SKIPS))
+        for api, template in _USAGES.items():
+            self.assertEqual(_probe(template.format(r=repr(declared))), [], api)
+
+    def test_an_undeclared_reason_is_rejected_through_every_api(self) -> None:
+        # The other half. Asserting the message, not just the count: both rejection causes yield
+        # exactly one violation, so counting alone cannot tell "undeclared" from "unreadable" —
+        # and a mutation that turns one into the other then survives.
+        for api, template in _USAGES.items():
+            violations = _probe(template.format(r=repr(_UNDECLARED)))
+            self.assertEqual(len(violations), 1, f"{api}: {violations}")
+            self.assertIn(api, violations[0])
+            self.assertIn(_UNDECLARED, violations[0])
+            self.assertIn(_NOT_DECLARED, violations[0])
+
+    def test_a_route_that_carries_no_readable_reason_is_rejected_as_such(self) -> None:
+        # Distinct from the above: these stop a test while handing over nothing to check. Each
+        # was a live evasion of an earlier version of this file, so they are listed one per line
+        # rather than checked as a blob — a route that stops being seen must name itself.
         routes = {
-            "self.skipTest":
-                f'    def test_x(self):\n        self.skipTest({undeclared!r})\n',
-            "decorator, called":
-                f'    @unittest.skipUnless(False, {undeclared!r})\n'
-                '    def test_x(self): pass\n',
-            "decorator, bare (no reason at all)":
-                '    @unittest.skip\n'
-                '    def test_x(self): pass\n',
-            "raise, called":
-                f'    def test_x(self):\n        raise unittest.SkipTest({undeclared!r})\n',
-            "raise, bare (no reason at all)":
-                '    def test_x(self):\n        raise unittest.SkipTest\n',
-            "computed reason":
+            "bare decorator":
+                'import unittest\n@unittest.skip\ndef test_x(): pass\n',
+            "bare decorator on a class":
+                'import unittest\n@unittest.skip\nclass T(unittest.TestCase): pass\n',
+            "bare raise":
+                'import unittest\ndef test_x():\n    raise unittest.SkipTest\n',
+            "importorskip without a reason":
+                'import pytest\ndef test_x():\n    pytest.importorskip("missing_package")\n',
+            "reason computed at runtime":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
                 '    def test_x(self):\n        self.skipTest(f"missing {thing}")\n',
+            "reason that is not a string":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    def test_x(self):\n        self.skipTest(404)\n',
             "hand-set unittest metadata":
-                '    def test_x(self): pass\n'
-                '    test_x.__unittest_skip__ = True\n',
+                'import unittest\n'
+                'def test_x(): pass\n'
+                'test_x.__unittest_skip__ = True\n',
         }
-        for name, body in routes.items():
-            violations = _probe('import unittest\n'
-                                'class T(unittest.TestCase):\n' + body)
+        for name, src in routes.items():
+            violations = _probe(src)
             self.assertEqual(len(violations), 1, f"{name}: {violations}")
+            self.assertIn(_NO_LITERAL, violations[0], name)
 
-    def test_an_alias_does_not_hide_a_skip_and_a_local_name_is_not_one(self) -> None:
-        # Resolution goes through the module's imports. Aliasing the API must not conceal a skip,
-        # and an unrelated local function that happens to be called `skip` must not invent one.
-        aliased = _probe('from unittest import skipIf as omit_if\n'
-                         '@omit_if(True, "aliased undeclared reason")\n'
-                         'def test_x(): pass\n')
-        self.assertEqual(len(aliased), 1, aliased)
-        self.assertIn("unittest.skipIf", aliased[0])
+    def test_the_api_is_recognised_by_identity_not_by_spelling(self) -> None:
+        # Longer and shorter names for the same objects. `unittest.case` is where these are
+        # defined, and review walked a skip past this file through that spelling with the
+        # retired calibration reason — the same class of miss that killed the previous guard.
+        for label, src in {
+            "aliased import":
+                'from unittest import skipIf as omit_if\n'
+                f'@omit_if(True, {_UNDECLARED!r})\ndef test_x(): pass\n',
+            "renamed module":
+                'import unittest as u\n'
+                f'def test_x():\n    raise u.SkipTest({_UNDECLARED!r})\n',
+            "defining module named explicitly":
+                'import unittest\n'
+                f'def test_x():\n    raise unittest.case.SkipTest({_UNDECLARED!r})\n',
+            "imported from the defining module":
+                'from unittest.case import SkipTest\n'
+                f'def test_x():\n    raise SkipTest({_UNDECLARED!r})\n',
+            "case passed to a helper":
+                'def _need(tc):\n'
+                f'    tc.skipTest({_UNDECLARED!r})\n',
+        }.items():
+            violations = _probe(src)
+            self.assertEqual(len(violations), 1, f"{label}: {violations}")
+            self.assertIn(_NOT_DECLARED, violations[0], label)
 
-        renamed_module = _probe('import unittest as u\n'
-                                'class T(u.TestCase):\n'
-                                '    def test_x(self):\n'
-                                '        raise u.SkipTest("renamed module undeclared")\n')
-        self.assertEqual(len(renamed_module), 1, renamed_module)
+    def test_things_that_are_not_skips_are_not_reported(self) -> None:
+        # The cost of a false positive is the guard being switched off, so the other direction
+        # needs pinning too. An unrelated local `skip`, a mention in an `except` clause or as a
+        # value, and a class that defines its own `skipTest` — for which the inherited meaning
+        # no longer holds — must all stay silent.
+        for label, src in {
+            "unrelated local function":
+                'def skip(reason):\n    return reason\n'
+                'def helper():\n    return skip("not a skip at all")\n',
+            "mentioned, not raised":
+                'import unittest\n'
+                'def helper():\n'
+                '    try:\n        pass\n'
+                '    except unittest.SkipTest:\n        pass\n'
+                '    return unittest.SkipTest\n',
+            "module defines its own skipTest":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    def skipTest(self, reason):\n        return None\n'
+                '    def test_x(self):\n        self.skipTest("not the inherited one")\n',
+        }.items():
+            self.assertEqual(_probe(src), [], label)
 
-        local = _probe('def skip(reason):\n    return reason\n'
-                       'def helper():\n    return skip("not a skip at all")\n')
-        self.assertEqual(local, [])
-
-        mention = _probe('import unittest\n'
-                         'def helper():\n'
-                         '    try:\n        pass\n'
-                         '    except unittest.SkipTest:\n        pass\n'
-                         '    return unittest.SkipTest\n')
-        self.assertEqual(mention, [])
-
-    def test_pytest_routes_and_argument_unpacking(self) -> None:
-        # pytest is not imported anywhere in this suite today; these pin the routes before the
-        # first one appears, when adding them would be someone else's problem to notice.
-        self.assertEqual(len(_probe('import pytest\n'
-                                    'pytest.importorskip("missing_package")\n')), 1)
-        self.assertEqual(len(_probe('import pytest\n'
-                                    'pytest.skip("undeclared pytest reason")\n')), 1)
-        self.assertEqual(len(_probe('import pytest\n'
-                                    '@pytest.mark.skipif(True, reason="undeclared marker")\n'
-                                    'def test_x(): pass\n')), 1)
-        # A declared reason delivered by literal unpacking is still a declared reason: recovering
-        # it as "not a literal" would reject a valid skip and teach people to route around this.
+    def test_a_declared_reason_survives_literal_argument_unpacking(self) -> None:
+        # Recovering these as "not a literal" would reject a valid skip, which teaches people to
+        # route around the guard rather than to declare their capability.
         declared = next(iter(_DECLARED_ENVIRONMENT_SKIPS))
         self.assertEqual(_probe('import unittest\n'
                                 f'@unittest.skipIf(*[True, {declared!r}])\n'

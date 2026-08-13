@@ -10561,9 +10561,21 @@ end program shallow_water2d_runner
         captured = _REAL_IR_FIXTURE.read_text(encoding="utf-8")
         self.assertFalse(any("degenerate" in v for v in drive(captured)), drive(captured))
 
-        degenerate = yaml.safe_load(captured)
+        # Parsed and shape-checked before mutating, so a fixture the gate cannot read fails on a
+        # sentence naming what is wrong. Reviewers overwrote it with `{}` and with broken YAML;
+        # both did fail, but on a raw KeyError/ParserError from building the mutant below — the
+        # right outcome reached by a mechanism neither the test nor its comment named.
+        try:
+            degenerate = yaml.safe_load(captured)
+        except yaml.YAMLError as exc:
+            self.fail(f"the calibration fixture no longer parses, so the clean drive above "
+                      f"asserted nothing: {exc}")
+        self.assertIsInstance(degenerate, dict, "calibration fixture is not a mapping")
+        predicates = degenerate.get("io_contract", {}).get("test_predicates")
+        self.assertTrue(predicates, "calibration fixture carries no io_contract.test_predicates, "
+                                    "so the gate has nothing to read and a clean run is vacuous")
         rewritten = 0
-        for predicate in degenerate["io_contract"]["test_predicates"]:
+        for predicate in predicates:
             if predicate.get("expected_outcome") == "pass":
                 predicate["pass_when"] = {"all": [
                     {"ref": "verdict.overall", "op": "eq", "value": "pass"}]}
