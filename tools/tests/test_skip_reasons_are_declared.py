@@ -60,6 +60,14 @@ justifies; they are written down here instead. The corpus contains neither.
 Adding a genuinely new environment capability means adding it to `_DECLARED_ENVIRONMENT_SKIPS`
 below, in the same commit as the skip, with a note saying what about the host it depends on.
 That is the intended friction: it is one table, and it is the only place that grants permission.
+
+**What this is worth.** Seven review rounds each produced another Python binding form the
+resolution here did not model, with no sign of the tail ending — so read this as regression
+prevention against ordinary spellings, not as enforcement against someone routing around it.
+Everything the corpus actually uses is caught, and so is the defect it was written for. The
+instrument that would justify a stronger claim is a runtime skip inventory: run the suite and
+compare what the runner reported against the table below. That needs no Python semantics at all
+and closes every evasion found here, but it cannot live inside the suite it has to run.
 """
 
 from __future__ import annotations
@@ -171,11 +179,16 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
                 for a in node.names:
                     if a.name == "*":
                         # A star import binds the API's own leaf name, so `@skip(...)` after
-                        # `from unittest import *` is the API by a shorter spelling.
-                        root = module.split(".")[0]
-                        for api in _SKIP_APIS:
-                            if api.startswith(f"{root}."):
-                                out.setdefault(api.rsplit(".", 1)[1], api)
+                        # `from unittest import *` is the API by a shorter spelling. Which leaf
+                        # names a given module actually exports is read off the resolved names
+                        # rather than guessed from the root: guessing bound nothing at all for
+                        # `from _pytest.outcomes import *`, and bound a `skipTest` that
+                        # `from unittest import *` does not export, turning an unrelated bare
+                        # call of that name into a violation.
+                        for full, canonical in _EXPORTED_NAMES.items():
+                            owner, _, leaf = full.rpartition(".")
+                            if owner == module:
+                                out.setdefault(leaf, canonical)
                     else:
                         out[a.asname or a.name] = f"{module}.{a.name}"
 
@@ -247,7 +260,26 @@ def _literal_args(node: ast.Call) -> tuple[list[ast.AST], dict[str, ast.AST]]:
     return args, kwargs
 
 
+def _bound_pairs(targets: list[ast.AST], value: ast.AST) -> list[tuple[ast.AST, ast.AST]]:
+    """Flatten `(a, b) = (1, 2)` into the pairs Python actually binds.
+
+    Reading only the top level misses `(__unittest_skip__, why) = (True, "…")`, which skips the
+    class exactly as the single-target form does.
+    """
+    out: list[tuple[ast.AST, ast.AST]] = []
+    for target in targets:
+        if isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List)):
+            for inner_target, inner_value in zip(target.elts, value.elts):
+                out.extend(_bound_pairs([inner_target], inner_value))
+        else:
+            out.append((target, value))
+    return out
+
+
 _ALTERNATIVE_NAMES = _alternative_names()
+# Every dotted name that names a skip API, keyed by the module that exports it. `TestCase` owns
+# `skipTest`, so it is not a name any module exports and never enters a star import.
+_EXPORTED_NAMES = {**{k: k for k in _SKIP_APIS}, **_ALTERNATIVE_NAMES}
 
 
 def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
@@ -269,11 +301,23 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
     # decides for itself.
     opted_out: set[int] = set()
 
+    def binds_skiptest(stmt: ast.AST) -> bool:
+        # An override is any class-body binding of the name, not only a `def`: `skipTest =
+        # lambda self, reason: None` replaces the method just as thoroughly, and treating it as
+        # inherited reports a call that does not skip.
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return stmt.name == "skipTest"
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else \
+            [stmt.target] if isinstance(stmt, ast.AnnAssign) else []
+        return any(isinstance(t, ast.Name) and t.id == "skipTest" for t in targets)
+
+    class_body: set[int] = set()
+
     def mark(scope: ast.AST, inherited: bool) -> None:
         own = inherited
         if isinstance(scope, ast.ClassDef):
-            own = any(isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef))
-                      and b.name == "skipTest" for b in scope.body)
+            own = any(binds_skiptest(b) for b in scope.body)
+            class_body.update(id(b) for b in scope.body)
         for child in ast.iter_child_nodes(scope):
             if isinstance(child, ast.ClassDef):
                 mark(child, False)
@@ -308,21 +352,34 @@ def _skip_sites(module: Path) -> list[tuple[int, str, str | None]]:
             else:
                 found.append((node.lineno, api, None))
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            # `__unittest_skip__` is the flag `TestCase.run` actually reads, set as
-            # `test_x.__unittest_skip__ = True` after the definition, as a bare
-            # `__unittest_skip__ = True` in a class body, and with an annotation on either.
-            # Review walked a skip past earlier versions through the second and third spellings.
-            # `__unittest_skip_why__` on its own skips nothing, and `= False` un-skips, so
-            # neither is a violation: flagging them would report a test that does run.
+            # `__unittest_skip__` is the flag `TestCase.run` actually reads: as
+            # `test_x.__unittest_skip__ = True` after the definition, and as a bare
+            # `__unittest_skip__ = True` directly in a class body — the bare name only there,
+            # since the same statement inside a function is a local that skips nothing, and
+            # reporting it blocked a module that does run. `__unittest_skip_why__` alone skips
+            # nothing either, and `= False` un-skips, so neither is a violation.
             if node.value is None:
                 continue  # a bare annotation binds nothing
-            truthy = not (isinstance(node.value, ast.Constant) and not node.value.value)
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for t in targets:
-                name = t.attr if isinstance(t, ast.Attribute) else \
-                    t.id if isinstance(t, ast.Name) else None
-                if name == "__unittest_skip__" and truthy:
+            for target, value in _bound_pairs(targets, node.value):
+                name = target.attr if isinstance(target, ast.Attribute) else \
+                    target.id if isinstance(target, ast.Name) else None
+                if name != "__unittest_skip__" or isinstance(target, ast.Name) \
+                        and id(node) not in class_body:
+                    continue
+                if not (isinstance(value, ast.Constant) and not value.value):
                     found.append((node.lineno, "__unittest_skip__ metadata", None))
+            for target in targets:
+                # `pytestmark = pytest.mark.skip` applies the marker to the whole module or
+                # class without calling it, so the bare-reference scan below — which only looks
+                # at decorators and `raise` — never sees it.
+                if isinstance(target, ast.Name) and target.id == "pytestmark":
+                    values = node.value.elts if isinstance(node.value, (ast.List, ast.Tuple)) \
+                        else [node.value]
+                    for value in values:
+                        api = _canonical(value, aliases)
+                        if api is not None and api != "pytest.mark.xfail":
+                            found.append((node.lineno, api, None))
 
     # Bare references: a decorator or a `raise` that names a skip API without calling it stops a
     # test just as effectively and carries no reason at all. Only these two positions count — a
@@ -514,6 +571,15 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'import unittest\n'
                 'def test_x(): pass\n'
                 'test_x.__unittest_skip__: bool = True\n',
+            "hand-set unittest metadata, bound by tuple unpacking":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    (__unittest_skip__, __unittest_skip_why__) = (True, "undeclared")\n'
+                '    def test_x(self): pass\n',
+            "a marker applied through pytestmark without calling it":
+                'import pytest\n'
+                'pytestmark = pytest.mark.skip\n'
+                'def test_x(): assert False\n',
             "xfail that does not run the test":
                 'import pytest\n@pytest.mark.xfail(run=False)\ndef test_x(): pass\n',
             "bare decorator on an async def":
@@ -559,6 +625,9 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 f'@skip({_UNDECLARED!r})\ndef test_x(): pass\n',
             "the module the API is really defined in":
                 'from _pytest.outcomes import skip\n'
+                f'def test_x():\n    skip({_UNDECLARED!r})\n',
+            "star import from the module the API is really defined in":
+                'from _pytest.outcomes import *\n'
                 f'def test_x():\n    skip({_UNDECLARED!r})\n',
             "alias bound by assignment":
                 'import unittest\n'
@@ -628,6 +697,25 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
                 'import pytest\n@pytest.mark.xfail\ndef test_x(): assert False\n',
             "a bare name that happens to be skipTest":
                 f'def test_x():\n    skipTest({_UNDECLARED!r})\n',
+            "…still not one when the module star-imports unittest":
+                # `from unittest import *` does not export `skipTest`; it is a method on
+                # TestCase. Binding it from the leaf of `unittest.TestCase.skipTest` turned an
+                # unrelated bare call of that name into a violation.
+                'from unittest import *\n'
+                f'def test_x():\n    skipTest({_UNDECLARED!r})\n',
+            "skipTest replaced by an assignment rather than a def":
+                'import unittest\n'
+                'class T(unittest.TestCase):\n'
+                '    skipTest = lambda self, reason: None\n'
+                '    def test_x(self):\n        self.skipTest("not the inherited one")\n',
+            "the metadata name as a local variable inside a function":
+                'def helper():\n'
+                '    __unittest_skip__ = True\n'
+                '    return __unittest_skip__\n',
+            "an alias bound to a marker that is not pytestmark":
+                'import pytest\n'
+                '_marker = pytest.mark.skip\n'
+                'def test_x(): pass\n',
             "an async override of skipTest opts its class out":
                 'import unittest\n'
                 'class T(unittest.TestCase):\n'
