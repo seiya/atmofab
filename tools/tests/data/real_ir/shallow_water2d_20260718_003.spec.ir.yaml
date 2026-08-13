@@ -1,0 +1,582 @@
+schema_version: "1.0"
+
+meta:
+  node_key: "problem/shallow_water2d@0.4.0"
+  spec_kind: "problem"
+  spec_id: "shallow_water2d"
+  spec_version: "0.4.0"
+  source_refs:
+    controlled_spec: "spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md"
+    tests: "spec/problem/dynamics/shallow_water/shallow_water2d/tests.md"
+    deps: "spec/problem/dynamics/shallow_water/shallow_water2d/deps.yaml"
+
+case:
+  test_case_set:
+    - case_id: "swe2d_ref_n032_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 32, ny: 32, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "williamson_tc5_cone", x_c_frac: 0.75, y_c_frac: 0.6666666666666666, r_0_frac: 0.16666666666666666, h_s_frac: 0.2}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_ref_n064_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "williamson_tc5_cone", x_c_frac: 0.75, y_c_frac: 0.6666666666666666, r_0_frac: 0.16666666666666666, h_s_frac: 0.2}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_ref_n128_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 128, ny: 128, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "williamson_tc5_cone", x_c_frac: 0.75, y_c_frac: 0.6666666666666666, r_0_frac: 0.16666666666666666, h_s_frac: 0.2}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_lake_n064_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "lake_at_rest", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "williamson_tc5_cone", x_c_frac: 0.75, y_c_frac: 0.6666666666666666, r_0_frac: 0.16666666666666666, h_s_frac: 0.2}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_resp_n064_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "oblique_mode", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "williamson_tc5_cone", x_c_frac: 0.75, y_c_frac: 0.6666666666666666, r_0_frac: 0.16666666666666666, h_s_frac: 0.2}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_flat_ref_n032_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 32, ny: 32, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "flat"}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_flat_ref_n064_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "flat"}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_flat_ref_n128_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 128, ny: 128, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "flat"}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_flat_sym_n064_sx000_sy000_dts100"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "oblique_mode", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "flat"}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_guard_n032_sx000_sy000_dts240"
+      inputs:
+        grid: {nx: 32, ny: 32, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 2.4, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "flat"}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+    - case_id: "swe2d_ref_n064_sx000_sy000_dts100_tend500"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 5.0, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "linear_wave_x", shift_x_fraction: 0.0, shift_y_fraction: 0.0, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "williamson_tc5_cone", x_c_frac: 0.75, y_c_frac: 0.6666666666666666, r_0_frac: 0.16666666666666666, h_s_frac: 0.2}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+        base_case_id: "swe2d_ref_n064_sx000_sy000_dts100"
+    - case_id: "swe2d_flat_sym_n064_sx025_sy012_dts100"
+      inputs:
+        grid: {nx: 64, ny: 64, L_x: 1.0, L_y: 1.0}
+        time: {t_start: 0.0, t_end: 0.2, cfl_target: 0.45, dt_scale: 1.0, output_schedule: [0.0, 0.05, 0.1, 0.15, 0.2]}
+        initial: {initial_profile: "oblique_mode", shift_x_fraction: 0.25, shift_y_fraction: 0.125, eta0: 1.0e-3, H_0: 1.0}
+        topography: {topography_profile: "flat"}
+        boundary: {type: "periodic"}
+        physical: {g: 9.81}
+        profile_selection: {profile_id: "dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2", profile_version: "0.1.0"}
+        test_profile_id: "shallow_water2d_baseline"
+        test_profile_version: "0.2.0"
+        base_case_id: "swe2d_flat_sym_n064_sx000_sy000_dts100"
+  sweeps:
+    nx_refinement:
+      families: ["swe2d_ref", "swe2d_flat_ref"]
+      parameter: "nx"
+      values: [32, 64, 128]
+      note: "nx=ny is swept together per tests.md 4-1"
+  refinements:
+    swe2d_ref:
+      nx: [32, 64, 128]
+      ny: [32, 64, 128]
+    swe2d_flat_ref:
+      nx: [32, 64, 128]
+      ny: [32, 64, 128]
+
+algorithm:
+  algorithm_id: "shallow_water_wellbalanced_rusanov_p0_ssprk2"
+  execution_mode: "sequence"
+  steps:
+    - step_id: "step_00_topography_setup"
+      step_kind: "pointwise_process"
+      operation_ref: "topography_setup_williamson_tc5"
+      inputs: ["nx", "ny", "dx", "dy"]
+      outputs: ["z_b"]
+    - step_id: "step_01_boundary_apply"
+      step_kind: "boundary_apply"
+      operation_ref: "dynamics_shallow_water_boundary_2d_periodic_copy__apply"
+      inputs: ["h", "hu", "hv", "nx", "ny", "ng"]
+      outputs: ["h", "hu", "hv"]
+    - step_id: "step_02_hydrostatic_reconstruct"
+      step_kind: "reconstruct"
+      operation_ref: "hydrostatic_reconstruct_audusse_p0"
+      inputs: ["h", "hu", "hv", "z_b", "u", "v"]
+      outputs: ["U_star_L", "U_star_R", "U_star_B", "U_star_T", "h_star_L", "h_star_R", "h_star_B", "h_star_T"]
+    - step_id: "step_03_flux_compute"
+      step_kind: "flux_compute"
+      operation_ref: "dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux"
+      inputs: ["U_star_L", "U_star_R", "U_star_B", "U_star_T", "g"]
+      outputs: ["F_star", "G_star"]
+    - step_id: "step_04_flux_divergence"
+      step_kind: "pointwise_process"
+      operation_ref: "interface_flux_divergence_assembly"
+      inputs: ["F_star", "G_star", "dx", "dy"]
+      outputs: ["L_flux"]
+    - step_id: "step_05_source_term"
+      step_kind: "source_term"
+      operation_ref: "bottom_topography_source_wellbalanced_p0"
+      inputs: ["h_star_L", "h_star_R", "h_star_B", "h_star_T", "g", "dx", "dy"]
+      outputs: ["S_b"]
+    - step_id: "step_06_time_integrate"
+      step_kind: "time_integrate"
+      operation_ref: "dynamics_shallow_water_time_update_2d_ssprk2__advance"
+      inputs: ["h", "hu", "hv", "L_flux", "S_b", "dt", "dx", "dy", "z_b"]
+      outputs: ["h", "hu", "hv"]
+  ordering:
+    - "step_00_topography_setup"
+    - "step_01_boundary_apply"
+    - "step_02_hydrostatic_reconstruct"
+    - "step_03_flux_compute"
+    - "step_04_flux_divergence"
+    - "step_05_source_term"
+    - "step_06_time_integrate"
+  control_condition: ""
+  iteration_contract: {}
+  update_semantics:
+    target_variables: ["h", "hu", "hv"]
+    update_order: "sequential"
+  temporaries:
+    - name: z_b
+      shape_expr: "[nx, ny]"
+    - name: U_star_L
+      shape_expr: "[3, nx, ny]"
+    - name: U_star_R
+      shape_expr: "[3, nx, ny]"
+    - name: U_star_B
+      shape_expr: "[3, nx, ny]"
+    - name: U_star_T
+      shape_expr: "[3, nx, ny]"
+    - name: h_star_L
+      shape_expr: "[nx, ny]"
+    - name: h_star_R
+      shape_expr: "[nx, ny]"
+    - name: h_star_B
+      shape_expr: "[nx, ny]"
+    - name: h_star_T
+      shape_expr: "[nx, ny]"
+    - name: F_star
+      shape_expr: "[3, nx, ny]"
+    - name: G_star
+      shape_expr: "[3, nx, ny]"
+    - name: L_flux
+      shape_expr: "[3, nx, ny]"
+    - name: S_b
+      shape_expr: "[3, nx, ny]"
+  derived_field_rules:
+    - name: nx
+      rule: "number of cells along x, from case grid.nx"
+    - name: ny
+      rule: "number of cells along y, from case grid.ny"
+    - name: ng
+      rule: "number of ghost cells for the periodic halo; fixed to 1 for the p0 first-order reconstruction"
+    - name: dx
+      rule: "cell size along x, dx = L_x / nx"
+    - name: dy
+      rule: "cell size along y, dy = L_y / ny"
+    - name: dt
+      rule: "time step from the tests.md dt_rule: dt_raw = dt_scale * cfl_target / lambda0, n_step = ceil((t_end-t_start)/dt_raw), dt = (t_end-t_start)/n_step"
+    - name: g
+      rule: "gravitational acceleration, fixed physical constant g = 9.81"
+    - name: u
+      rule: "x velocity, u = hu / h"
+    - name: v
+      rule: "y velocity, v = hv / h"
+    - name: c
+      rule: "gravity-wave speed, c = sqrt(g * h)"
+    - name: eta
+      rule: "free-surface elevation, eta = h + z_b"
+  invariants:
+    - "Wet domain: the reconstructed interface depth h_star > 0 at every interface at every step (non-drying regime); an h_star <= 0 is a runtime error before it reaches the flux component."
+    - "Well-balanced (lake at rest): when eta = h + z_b is uniform and u = v = 0, the two reconstructed depths at each interface are equal and the interface-flux difference cancels S_b; h, hu, hv are unchanged up to round-off."
+    - "Flat reduction: when topography_profile = flat, h_star = h and S_b = 0, and the discretization reduces to the plain p0 scheme."
+    - "Mass conservation: the mass component of S_b is zero and the interface mass flux is single-valued, so sum(h) is conserved up to round-off under periodic boundaries."
+  splitting_policy:
+    kind: "none"
+  state_variables:
+    - name: h
+      shape_expr: "[nx, ny]"
+    - name: hu
+      shape_expr: "[nx, ny]"
+    - name: hv
+      shape_expr: "[nx, ny]"
+  required_update_paths: ["h", "hu", "hv"]
+  diagnostics_from_state: true
+  fallback_policy: "fail_closed"
+
+impl_defaults:
+  target:
+    class: "cpu"
+    backend: "openmp"
+    architecture: "x86_64"
+  toolchain:
+    language: "fortran"
+    standard: "f2008"
+    build_system: "make"
+  selected:
+    backend_key: "cpu_openmp"
+  abstract:
+    parallelization:
+      method: "openmp"
+      scope: "parallelizable_loops"
+    loop_schedule: "static"
+    memory_layout: "column_major"
+    fusion: "none"
+    tiling: "none"
+  backend_overrides:
+    cpu_openmp:
+      threads: 4
+      vector_width: 8
+
+io_contract:
+  inputs:
+    - name: "h"
+      shape_expr: "[nx, ny]"
+      evidence_ref: "raw/state_snapshots"
+    - name: "hu"
+      shape_expr: "[nx, ny]"
+      evidence_ref: "raw/state_snapshots"
+    - name: "hv"
+      shape_expr: "[nx, ny]"
+      evidence_ref: "raw/state_snapshots"
+  outputs:
+    - name: "h"
+      shape_expr: "[nx, ny]"
+      evidence_ref: "raw/state_snapshots"
+      raw_variables: ["h"]
+    - name: "hu"
+      shape_expr: "[nx, ny]"
+      evidence_ref: "raw/state_snapshots"
+      raw_variables: ["hu"]
+    - name: "hv"
+      shape_expr: "[nx, ny]"
+      evidence_ref: "raw/state_snapshots"
+      raw_variables: ["hv"]
+  raw_requirements:
+    required_evidence:
+      - artifact: "state_snapshots"
+        required: true
+        min_samples: 1
+        schema:
+          variables:
+            - name: "h"
+              shape_expr: "[nx, ny]"
+            - name: "hu"
+              shape_expr: "[nx, ny]"
+            - name: "hv"
+              shape_expr: "[nx, ny]"
+            - name: "z_b"
+              shape_expr: "[nx, ny]"
+          time_variable: "t"
+          time_shape_expr: "scalar"
+      - artifact: "metrics_basis.json"
+        required: true
+        min_samples: 1
+  test_evidence_requirements:
+    - test_id: "l1_refinement_mass_and_positivity"
+      required_raw_variables: ["h", "hu", "hv"]
+    - test_id: "l1_refinement_linear_wave"
+      required_raw_variables: ["h", "hu", "hv"]
+    - test_id: "l2_lake_at_rest_invariance"
+      required_raw_variables: ["h", "hu", "hv", "z_b"]
+    - test_id: "l2_long_run_mass_conservation"
+      required_raw_variables: ["h", "hu", "hv"]
+    - test_id: "l3_topography_forced_response_stability"
+      required_raw_variables: ["h", "hu", "hv"]
+    - test_id: "l3_translation_equivariance"
+      required_raw_variables: ["h", "hu", "hv"]
+    - test_id: "l0_cfl_guard_xfail"
+      required_raw_variables: ["h", "hu", "hv"]
+  diagnostics_contract:
+    checks:
+      - id: "cfl"
+      - id: "depth_positivity"
+      - id: "mass_conservation"
+      - id: "momentum_conservation"
+      - id: "analytic_comparison"
+      - id: "translation_equivariance"
+      - id: "lake_at_rest_invariance"
+    verdict:
+      required: true
+      fields: ["overall", "failed_checks"]
+    metrics:
+      - "cfl.max"
+      - "extrema.h.min"
+      - "metrics.mass_drift_rel"
+      - "metrics.momx_drift_rel"
+      - "metrics.momy_drift_rel"
+      - "errors.analytic_h.l2_rel_tend"
+      - "convergence.n032_to_n064.analytic_h_order"
+      - "convergence.n064_to_n128.analytic_h_order"
+      - "errors.symmetry_h_l2_rel"
+      - "invariants.lake_rest.max_velocity"
+      - "invariants.lake_rest.max_surface_deviation"
+  semantic_dependency:
+    required_sources: ["h", "hu", "hv", "z_b", "g"]
+  test_predicates:
+    - test_id: "l1_refinement_mass_and_positivity"
+      expected_outcome: "pass"
+      target_cases:
+        - "swe2d_ref_n032_sx000_sy000_dts100"
+        - "swe2d_ref_n064_sx000_sy000_dts100"
+        - "swe2d_ref_n128_sx000_sy000_dts100"
+      pass_when:
+        all:
+          - ref: "cfl.max"
+            op: "le"
+            value: 1.0
+            per_case: true
+          - ref: "extrema.h.min"
+            op: "ge"
+            value: 5.0e-2
+            per_case: true
+          - ref: "metrics.mass_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+    - test_id: "l1_refinement_linear_wave"
+      expected_outcome: "pass"
+      target_cases:
+        - "swe2d_flat_ref_n032_sx000_sy000_dts100"
+        - "swe2d_flat_ref_n064_sx000_sy000_dts100"
+        - "swe2d_flat_ref_n128_sx000_sy000_dts100"
+      pass_when:
+        all:
+          - ref: "cfl.max"
+            op: "le"
+            value: 1.0
+            per_case: true
+          - ref: "extrema.h.min"
+            op: "ge"
+            value: 5.0e-2
+            per_case: true
+          - ref: "metrics.mass_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "metrics.momx_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "metrics.momy_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "errors.analytic_h.l2_rel_tend"
+            op: "le"
+            value:
+              per_case:
+                swe2d_flat_ref_n032_sx000_sy000_dts100: 2.2e-1
+                swe2d_flat_ref_n064_sx000_sy000_dts100: 1.2e-1
+                swe2d_flat_ref_n128_sx000_sy000_dts100: 6.5e-2
+            per_case: true
+          - ref: "convergence.n032_to_n064.analytic_h_order"
+            op: "ge"
+            value: 0.8
+            case: "swe2d_flat_ref_n064_sx000_sy000_dts100"
+          - ref: "convergence.n064_to_n128.analytic_h_order"
+            op: "ge"
+            value: 0.8
+            case: "swe2d_flat_ref_n128_sx000_sy000_dts100"
+    - test_id: "l2_lake_at_rest_invariance"
+      expected_outcome: "pass"
+      target_cases:
+        - "swe2d_lake_n064_sx000_sy000_dts100"
+      pass_when:
+        all:
+          - ref: "cfl.max"
+            op: "le"
+            value: 1.0
+            per_case: true
+          - ref: "extrema.h.min"
+            op: "ge"
+            value: 5.0e-2
+            per_case: true
+          - ref: "metrics.mass_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "invariants.lake_rest.max_velocity"
+            op: "le"
+            value: 1.0e-12
+            per_case: true
+          - ref: "invariants.lake_rest.max_surface_deviation"
+            op: "le"
+            value: 1.0e-12
+            per_case: true
+    - test_id: "l2_long_run_mass_conservation"
+      expected_outcome: "pass"
+      target_cases:
+        - "swe2d_ref_n064_sx000_sy000_dts100_tend500"
+      pass_when:
+        all:
+          - ref: "cfl.max"
+            op: "le"
+            value: 1.0
+            per_case: true
+          - ref: "extrema.h.min"
+            op: "ge"
+            value: 5.0e-2
+            per_case: true
+          - ref: "metrics.mass_drift_rel"
+            op: "le"
+            value: 5.0e-10
+            per_case: true
+    - test_id: "l3_topography_forced_response_stability"
+      expected_outcome: "pass"
+      target_cases:
+        - "swe2d_resp_n064_sx000_sy000_dts100"
+      pass_when:
+        all:
+          - ref: "cfl.max"
+            op: "le"
+            value: 1.0
+            per_case: true
+          - ref: "extrema.h.min"
+            op: "ge"
+            value: 5.0e-2
+            per_case: true
+          - ref: "metrics.mass_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+    - test_id: "l3_translation_equivariance"
+      expected_outcome: "pass"
+      target_cases:
+        - "swe2d_flat_sym_n064_sx000_sy000_dts100"
+        - "swe2d_flat_sym_n064_sx025_sy012_dts100"
+      pass_when:
+        all:
+          - ref: "cfl.max"
+            op: "le"
+            value: 1.0
+            per_case: true
+          - ref: "extrema.h.min"
+            op: "ge"
+            value: 5.0e-2
+            per_case: true
+          - ref: "metrics.mass_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "metrics.momx_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "metrics.momy_drift_rel"
+            op: "le"
+            value: 1.0e-10
+            per_case: true
+          - ref: "errors.symmetry_h_l2_rel"
+            op: "le"
+            value: 2.0e-11
+            case: "swe2d_flat_sym_n064_sx025_sy012_dts100"
+    - test_id: "l0_cfl_guard_xfail"
+      expected_outcome: "xfail"
+      target_cases:
+        - "swe2d_guard_n032_sx000_sy000_dts240"
+      pass_when:
+        all:
+          - ref: "verdict.overall"
+            op: "eq"
+            value: "fail"
+            per_case: true
+          - ref: "verdict.failed_checks"
+            op: "includes"
+            value: "cfl"
+            per_case: true
+
+dependency:
+  node_key: "problem/shallow_water2d@0.4.0"
+  direct_deps:
+    - node_key: "component/dynamics_shallow_water_boundary_2d_periodic_copy@0.1.0"
+      kind: "component"
+      operations: ["dynamics_shallow_water_boundary_2d_periodic_copy__apply"]
+    - node_key: "component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0"
+      kind: "component"
+      operations: ["dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux"]
+    - node_key: "component/dynamics_shallow_water_time_update_2d_ssprk2@0.3.0"
+      kind: "component"
+      operations: ["dynamics_shallow_water_time_update_2d_ssprk2__advance"]
+    - node_key: "profile/dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2@0.1.0"
+      kind: "profile"
+      operations: []
+    - node_key: "infrastructure/harness_fortran_cpu@0.3.0"
+      kind: "infrastructure"
+      operations: []

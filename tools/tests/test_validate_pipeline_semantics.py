@@ -55,6 +55,17 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 MOCK_SPEC_DIR = "spec/problem/mock_domain/mock_family/mock_spec"
 MOCK_TESTS_REF = f"{MOCK_SPEC_DIR}/tests.md"
 
+# A tracked, byte-for-byte copy of a real full-fidelity IR: `problem/shallow_water2d@0.4.0`,
+# ir_id `shallow-water2d_20260718_003`, `verification_status=pass`, `debug_mode=false`, captured
+# 2026-08-13 from `workspace_20260719/ir/problem__shallow_water2d__0.4.0/`. Committed under test
+# data because `workspace*` is the operator's execution workspace — gitignored, freely pruned, and
+# absent from any fresh clone — so a test that reads it there cannot run. Same precedent as
+# `tools/tests/data/conductor_launch_requests/` (see tools/tests/test_workflow_conductor.py).
+# Not hand-trimmed: the point of a real-shape calibration is the shape the real writer produced.
+_REAL_IR_FIXTURE = (Path(__file__).resolve().parents[2]
+                    / "tools/tests/data/real_ir"
+                    / "shallow_water2d_20260718_003.spec.ir.yaml")
+
 
 def _structured_section51_from_fortran(fortran_block: str) -> str:
     """Keep readable Fortran fixtures as truth while publishing §5.1 as structured YAML."""
@@ -10517,11 +10528,21 @@ end program shallow_water2d_runner
         # xfail. The degenerate gate must NOT fire — the pass set carries real metric/checks
         # conditions and the xfail is exempt. Driven through `_validate_test_predicates` on the exact
         # on-disk IR so a false positive here is caught against production shape.
-        real_ir = (Path(__file__).resolve().parents[2]
-                   / "workspace/ir/problem__shallow_water2d__0.4.0"
-                   / "shallow-water2d_20260718_003/spec.ir.yaml")
-        if not real_ir.is_file():
-            self.skipTest("real IR artifact not present in this checkout")
+        #
+        # The input is a TRACKED fixture, not a live run directory. This test used to read
+        # `workspace/ir/.../spec.ir.yaml` and skipTest when it was absent; `workspace*` is the
+        # operator's execution workspace and is gitignored, so that made the calibration a
+        # permanent silent skip (the suite's standing "1 skipped") on every fresh clone. A missing
+        # fixture is now repository corruption, not an environment difference — so it fails.
+        # `test_no_test_reads_untracked_paths` keeps any test from pinning that space again.
+        #
+        # `repo_root` is the temp dir, not the real one, deliberately: it leaves
+        # `meta.source_refs.tests` unresolvable so the canonical test-id set falls back to the IR's
+        # own `test_evidence_requirements`. Passing the real root would additionally drive the
+        # tests.md set-equality path, mixing drift unrelated to the degenerate gate into this
+        # calibration. This preserves the semantics the test had before the fixture move: only the
+        # input's provenance changed.
+        real_ir = _REAL_IR_FIXTURE
         with tempfile.TemporaryDirectory() as tmp:
             ir_dir = Path(tmp) / "ir"
             ir_dir.mkdir()
