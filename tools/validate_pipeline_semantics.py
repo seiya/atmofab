@@ -4687,7 +4687,21 @@ def _execution_in_scope_src_dir(
 
 def _validate_generate_outputs(
     repo_root: Path, execution: NodeExecution, src_dir: Path, violations: list[str]
-) -> None:
+) -> tuple[list[Path], list[str]] | None:
+    """Run the structural source gates over one ``src/`` directory.
+
+    The single definition of the scan-and-gate sequence: the model-file lookup, the
+    ``index(case_id)`` / literal-metric floors, the three ``problem`` model gates, and the
+    Makefile checks. Both entry points reach the gates through here — this one is called with
+    an already-resolved ``src_dir`` (see ``_execution_in_scope_src_dir``), and
+    ``_validate_generate_outputs_for_generation`` resolves its own from a ``source_id``.
+
+    Returns the scanned ``(model_files, dep_spec_ids)`` for a caller that continues with further
+    checks over the same source (the post_generate sibling list does), or ``None`` when the model
+    source was absent/mis-named — already reported here via
+    ``_model_source_not_found_violation``, so such a caller stops rather than proceeding with
+    nothing to scan. Callers with nothing further to do ignore the return.
+    """
     model_files, expected_model_name = _model_files_in_src_dir(src_dir, execution)
     if not model_files:
         violations.append(
@@ -4760,6 +4774,7 @@ def _validate_generate_outputs(
     _validate_makefile_test_invokes_cases(
         src_dir, violations, build_system=_build_system, language=_language
     )
+    return model_files, dep_spec_ids
 
 
 # Fortran 2008 (and the earlier standards the generated code targets) limit a
@@ -5094,78 +5109,11 @@ def _validate_generate_outputs_for_generation(
         violations.append(f"{src_dir}: missing src directory")
         return
 
-    model_files, expected_model_name = _model_files_in_src_dir(src_dir, execution)
-    if not model_files:
-        violations.append(
-            _model_source_not_found_violation(src_dir, expected_model_name)
-        )
+    scanned = _validate_generate_outputs(repo_root, execution, src_dir, violations)
+    if scanned is None:
         return
+    model_files, dep_spec_ids = scanned
 
-    dep_spec_ids = _component_dep_spec_ids(repo_root, execution)
-
-    for model_file in model_files:
-        text = model_file.read_text(encoding="utf-8", errors="ignore")
-        lowered = text.lower()
-        # The metric scans below are the same shape as the `problem` model gates — a regex over
-        # multi-line source — and need the same view. Their `([^\n!]+)` right-hand side stopped at
-        # the physical newline, so a wrapped `metrics(1) = &` / `1.0` captured only the `&`, which
-        # carries no digit and so never counted as literal-like: the literal-metric floor was
-        # escapable by wrapping the assignments. The gates below re-derive this view themselves
-        # (it is a fixed point) and are left reading `lowered` so their own contract stays whole.
-        joined = _joined_masked_fortran_view(lowered)
-
-        if re.search(r"index\s*\(\s*case_id", joined) and re.search(
-            r"metrics\s*\(\s*\d+\s*\)", joined
-        ):
-            violations.append(
-                f"{model_file}: hardcoded case_id -> metrics assignment pattern detected"
-            )
-
-        assignments = re.findall(
-            r"metrics\s*\(\s*\d+\s*\)\s*=\s*([^\n!]+)",
-            joined,
-            flags=re.MULTILINE,
-        )
-        literal_like = 0
-        for rhs in assignments:
-            if re.search(r"[-+]?\d+(?:\.\d+)?(?:d|e)?[-+]?\d*", rhs):
-                literal_like += 1
-        if len(assignments) >= 6 and literal_like >= 6:
-            violations.append(
-                f"{model_file}: many literal metric assignments detected ({literal_like}/{len(assignments)})"
-            )
-
-        _validate_problem_model_literal_outputs(
-            execution=execution,
-            model_file=model_file,
-            lowered=lowered,
-            violations=violations,
-        )
-
-        _validate_problem_model_dependency_dataflow(
-            execution=execution,
-            model_file=model_file,
-            lowered=lowered,
-            dep_spec_ids=dep_spec_ids,
-            violations=violations,
-        )
-        _validate_problem_metric_only_scalar_kernel(
-            execution=execution,
-            model_file=model_file,
-            lowered=lowered,
-            violations=violations,
-        )
-
-    _validate_fortran_makefile_src_dir(src_dir, violations)
-    _build_system, _language = _impl_toolchain_from_pipeline_dir(
-        repo_root, execution.pipeline_dir
-    )
-    _validate_makefile_test_no_relink(
-        src_dir, violations, build_system=_build_system, language=_language
-    )
-    _validate_makefile_test_invokes_cases(
-        src_dir, violations, build_system=_build_system, language=_language
-    )
     # The cheap deterministic runner backstops (name / forbidden-output / json-serialization
     # / snapshot-filename) run against every runner — leaf-authored (the `infrastructure`
     # harness self-test) or host-rendered (M3c). (The two LLM-fabrication heuristics —

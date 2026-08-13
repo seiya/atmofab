@@ -13582,9 +13582,11 @@ class WrappedLiteralMetricAssignmentTest(unittest.TestCase):
     which carries no digit and so never counted as literal-like. The count then fell under the
     floor of six and a model that hardcodes every metric passed `Generate.static`.
 
-    The scan is DUPLICATED — `_validate_generate_outputs` and
-    `_validate_generate_outputs_for_generation` carry near-identical copies — so both are asserted
-    here. Fixing one and missing its twin is a repeat failure mode in this repository.
+    The scan now has ONE definition, in `_validate_generate_outputs`, which
+    `_validate_generate_outputs_for_generation` calls. Both entry points are still asserted here,
+    because what this pins is that each one REACHES the scan — the duplication was only why a fix
+    could be applied to one and missed on its twin, and losing a call is the same failure with the
+    copies gone.
     """
 
     _MODEL = (
