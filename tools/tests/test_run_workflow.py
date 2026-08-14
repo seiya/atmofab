@@ -3973,6 +3973,56 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertFalse(observed_calls)
 
+    def test_main_fails_fast_when_a_required_python_package_is_missing(self) -> None:
+        """The same guarantee as the CLI-tool check below, for the packages the runtime imports
+        MID-RUN. Without this the run does not fail at launch: it fails at the first `Generate`
+        node's gate, after lint and syntax have passed, in a billed run, and terminalizes —
+        because an absent Fortran structure front end is fail-closed by design. The failure is
+        correct and the timing is not. Nothing in this repository installs these packages, so a
+        machine that satisfies the RUNBOOK today does not have them (Codex review).
+
+        The message must carry the DISTRIBUTION names, since `tree_sitter_fortran` is not what an
+        operator types into pip."""
+        import importlib.util as importlib_util
+
+        real_find_spec = importlib_util.find_spec
+
+        def fake_find_spec(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if name == "tree_sitter_fortran":
+                return None
+            return real_find_spec(name, *args, **kwargs)
+
+        observed_calls: list[list[str]] = []
+
+        def fake_runtime(repo_root, env, args):  # type: ignore[no-untyped-def]
+            observed_calls.append(list(args))
+            raise AssertionError("orchestration_runtime must not be invoked")
+
+        original_runtime = run_workflow._runtime_command
+        importlib_util.find_spec = fake_find_spec  # type: ignore[assignment]
+        run_workflow._runtime_command = fake_runtime  # type: ignore[assignment]
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = run_workflow.main([
+                    "spec/problem/dummy.md",
+                    "Compile",
+                    "--stdout-format",
+                    "jsonl",
+                ])
+        finally:
+            importlib_util.find_spec = real_find_spec  # type: ignore[assignment]
+            run_workflow._runtime_command = original_runtime  # type: ignore[assignment]
+
+        self.assertEqual(code, 2)
+        self.assertFalse(observed_calls)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("status"), "fail")
+        self.assertEqual(payload.get("reason"), "missing_required_python_modules")
+        self.assertEqual(payload.get("missing"), ["tree-sitter-fortran"])
+        self.assertIn("tree-sitter", payload.get("required", []))
+        self.assertIn("pip install tree-sitter-fortran", payload.get("detail", ""))
+
     def test_main_fails_fast_when_required_cli_tool_missing(self) -> None:
         """If jq (or any REQUIRED_CLI_TOOLS entry) is not on PATH, main() must
         return 2 with status=fail/reason=missing_required_cli_tools BEFORE
@@ -6198,7 +6248,10 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # EXACT, not a lower bound: a lower bound is silently satisfied while a site is
         # rerouted to some other emitter (verified — swapping one site passed `>= 14`),
         # and a site that stops emitting is exactly how a rejection becomes silent.
-        self.assertEqual(len(helper_calls), 17)
+        # 17 -> 18: the missing-Python-package startup rejection (the Fortran structure front
+        # end's packages, checked at launch so their absence is not discovered part-way into a
+        # billed run).
+        self.assertEqual(len(helper_calls), 18)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:

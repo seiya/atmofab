@@ -5205,6 +5205,7 @@ end program shallow_water2d_runner
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=[
                 "dynamics_shallow_water_boundary_2d_periodic_copy",
                 "dynamics_shallow_water_flux_2d_rusanov_p0",
@@ -5242,6 +5243,7 @@ end module shallow_water2d_model
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=["dynamics_shallow_water_flux_2d_rusanov_p0"],
             violations=violations,
         )
@@ -5280,6 +5282,7 @@ end module shallow_water2d_model
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=["dynamics_shallow_water_time_update_2d_ssprk2"],
             violations=violations,
         )
@@ -5322,6 +5325,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
+                envelopes=vps._fortran_procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -5363,6 +5367,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
+                envelopes=vps._fortran_procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -5376,7 +5381,7 @@ end module m
 
     # --- the envelope walk -------------------------------------------------------------------
     #
-    # `_fortran_subroutine_envelopes` replaced a flat DOTALL span whose terminator was
+    # `_fortran_procedure_envelopes` replaced a flat DOTALL span whose terminator was
     # `end\s+subroutine`. Three shapes `gfortran -fsyntax-only -std=f2008` accepts silenced ALL
     # THREE `problem` gates for the WHOLE FILE, and only the bare `end` was caught by anything
     # else in the chain (fortitude S061): the one-word `endsubroutine`, the bare `end`, and an
@@ -5428,6 +5433,369 @@ subroutine solve(x, y)
 {terminator}
 end module shallow_water2d_model
 """
+
+    # The FUNCTION forms of the same three defect templates. This is the TODO item's own
+    # reproduction: the identical body reports a violation as `subroutine solve(x, y)` and used to
+    # report NOTHING as `function solve(x) result(y)`, for the whole procedure, in every gate.
+    _FUNCTION_TERMINATOR_SPELLINGS = (
+        "end function solve",
+        "end function",
+        "endfunction solve",
+        "endfunction",
+        "end",
+    )
+
+    _DISCARDED_DEP_FUNCTION_TEMPLATE = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+function solve(x) result(y)
+  real, intent(in) :: x
+  real :: y
+  real :: scratch
+{interface}  call dep__apply(x, scratch)
+  y = x
+{terminator}
+end module shallow_water2d_model
+"""
+
+    def test_a_discarded_dependency_result_is_flagged_in_a_function_too(self) -> None:
+        # The completion criterion of the TODO item, on the gate its reproduction used, in the
+        # form that used to be invisible. Every terminator spelling and the interface variant,
+        # because a function's terminators are their own set and nothing else covers them.
+        for terminator in self._FUNCTION_TERMINATOR_SPELLINGS:
+            for interface in ("", self._INTERFACE_BLOCK):
+                label = f"{terminator!r}{' + interface' if interface else ''}"
+                source = self._DISCARDED_DEP_FUNCTION_TEMPLATE.format(
+                    terminator=terminator, interface=interface)
+                violations = " ".join(self._dataflow_violations(source))
+                self.assertIn("does not propagate dependency operation outputs", violations, label)
+                # The message names the KIND, so a reader is not sent looking for a subroutine.
+                self.assertIn("function solve", violations, label)
+
+    def test_the_same_body_is_flagged_as_a_subroutine_and_as_a_function(self) -> None:
+        # The reproduction stated as the comparison it actually is: one body, two spellings, one
+        # verdict. Written as a pair rather than two tests so a change that silences ONE of them
+        # cannot look like a passing suite.
+        subroutine_form = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end subroutine solve
+end module shallow_water2d_model
+"""
+        function_form = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+function solve(x) result(y)
+  real, intent(in) :: x
+  real :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+end function solve
+end module shallow_water2d_model
+"""
+        for label, source in (("subroutine", subroutine_form), ("function", function_form)):
+            violations = " ".join(self._dataflow_violations(source))
+            self.assertIn("does not propagate dependency operation outputs", violations, label)
+            self.assertIn("candidates=['scratch']", violations, label)
+
+    def test_a_functions_definable_output_is_its_result_however_it_is_named(self) -> None:
+        # WHICH name is the output was re-checked against the compiler, not the standard: with
+        # `result(y)` present `gfortran -fsyntax-only -std=f2008` rejects an assignment to the
+        # function name ("'f' at (1) is not a variable") and accepts one to `y`; with no
+        # `result(...)` it accepts the assignment to the function name (both executed). Getting
+        # this backwards makes the closure seed a name nothing assigns, which silences the gate.
+        for header, terminator, expected in (
+            ("function solve(x) result(y)", "end function solve", "y"),
+            ("function solve(x) result( y )", "end function solve", "y"),
+            ("real function solve(x)", "end function solve", "solve"),
+            ("pure function solve(x) result(y)", "endfunction", "y"),
+            ("module function solve(x) result(y)", "end function", "y"),
+        ):
+            envelopes = vps._fortran_procedure_envelopes(
+                f"module m\ncontains\n{header}\n  real :: x\n  {expected} = x\n"
+                f"{terminator}\nend module m\n")
+            self.assertEqual(1, len(envelopes), header)
+            self.assertEqual(expected, envelopes[0].result_name, header)
+            self.assertIn(expected, envelopes[0].out_vars, header)
+
+    def test_a_functions_result_does_not_by_itself_open_the_literal_outputs_gate(self) -> None:
+        # The measured design decision, pinned in both directions. A predicate returning literals
+        # from its branches, and a constant accessor, are the normal shape of a legitimate helper:
+        # opening this gate on the result alone flagged 10 such functions across the 365 in-tree
+        # models and found 0 defects. A function WITH an `intent(out)` dummy is still checked,
+        # which is the widening this change does deliver.
+        accessor = """module shallow_water2d_model
+implicit none
+contains
+function ghost_width() result(ng)
+  integer :: ng
+  ng = 1
+end function ghost_width
+end module shallow_water2d_model
+"""
+        self.assertEqual([], self._literal_output_violations(accessor))
+        predicate = """module shallow_water2d_model
+implicit none
+contains
+function is_small(v) result(res)
+  real, intent(in) :: v
+  logical :: res
+  res = .false.
+  if (v < 1.0) then
+    res = .true.
+  end if
+end function is_small
+end module shallow_water2d_model
+"""
+        self.assertEqual([], self._literal_output_violations(predicate))
+        with_intent_out = """module shallow_water2d_model
+implicit none
+contains
+function solve(x, y) result(ok)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  logical :: ok
+  y = 1.0
+  ok = .true.
+end function solve
+end module shallow_water2d_model
+"""
+        violations = " ".join(self._literal_output_violations(with_intent_out))
+        self.assertIn("literal-only assignments", violations)
+        self.assertIn("function solve", violations)
+
+    def test_a_functions_result_cannot_exempt_a_fabricated_intent_out(self) -> None:
+        # The other direction of the same decision, and the one review had to point out. This
+        # gate's test is a conjunction over the output set, so an extra output that IS
+        # input-dependent exempts the procedure — and a result variable is an extra output every
+        # function has for free. Reading `out_vars` here therefore made the function form a
+        # LAUNDERING route for a defect the subroutine form is flagged for. Both spellings below
+        # are accepted by `gfortran -fsyntax-only -std=f2008` (executed), and the pair is asserted
+        # together so that silencing one cannot look like a passing suite.
+        subroutine_form = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(u, v)
+  real, intent(in) :: u(:)
+  real, intent(out) :: v(:)
+  v = 1.0
+end subroutine solve
+end module shallow_water2d_model
+"""
+        function_form = """module shallow_water2d_model
+implicit none
+contains
+function solve(u, v) result(r)
+  real, intent(in) :: u(:)
+  real, intent(out) :: v(:)
+  real :: r
+  v = 1.0
+  r = u(1)
+end function solve
+end module shallow_water2d_model
+"""
+        for label, source in (("subroutine", subroutine_form), ("function", function_form)):
+            self.assertIn("literal-only assignments for all intent(out) vars",
+                          " ".join(self._literal_output_violations(source)), label)
+
+    def test_a_functions_result_counts_toward_the_metric_only_floor(self) -> None:
+        # The metric-only gate fires at five definable outputs, and for a function that count
+        # INCLUDES its result — a decision that was unpinned until the mutation check found it:
+        # no function in the 365-model corpus reaches the floor (max outputs = 1), so nothing
+        # exercised either the count or the kind-aware message. Four `intent(out)` metrics plus
+        # the result is the smallest shape that does. `gfortran -fsyntax-only -std=f2008` accepts
+        # both spellings below (executed).
+        function_form = """module shallow_water2d_model
+implicit none
+contains
+function metrics(a, e_kin, e_pot, mass, enstrophy) result(e_tot)
+  real, intent(in) :: a
+  real, intent(out) :: e_kin, e_pot, mass, enstrophy
+  real :: e_tot
+  e_kin = a
+  e_pot = a
+  mass = a
+  enstrophy = a
+  e_tot = a
+end function metrics
+end module shallow_water2d_model
+"""
+        violations = " ".join(self._metric_kernel_violations(function_form))
+        self.assertIn("is metric-only scalar kernel", violations)
+        self.assertIn("function metrics", violations)
+        # The message says what was counted, so a reader is not sent looking for five
+        # `intent(out)` declarations that are not there.
+        self.assertIn("its result", violations)
+        # One fewer output is below the floor, which pins that the result is what carries it over
+        # rather than the gate having stopped counting.
+        below = function_form.replace("  real, intent(out) :: e_kin, e_pot, mass, enstrophy\n",
+                                      "  real, intent(out) :: e_kin, e_pot, mass\n")
+        below = below.replace("  enstrophy = a\n", "")
+        self.assertEqual([], self._metric_kernel_violations(below))
+
+    def test_an_abbreviated_module_procedure_is_refused_and_the_full_form_is_checked(self) -> None:
+        # The second spelling of this item's gap, and the one that cannot be closed by emitting an
+        # envelope: F2008 forbids a separate module subprogram's body from redeclaring its dummies
+        # (`gfortran -fsyntax-only -std=f2008`: "is a redefinition of the declaration in the
+        # corresponding interface"), so no `intent(out)` appears in it and every gate would return
+        # at its empty out-set check while appearing to have run. It is refused at the single
+        # gate entry point, with a message naming the full form; the full form is analysed as any
+        # other procedure. The contrast is the test: a refusal that also refused the replacement
+        # would be a dead end for the leaf.
+        import tempfile
+        abbreviated = """submodule (shallow_water2d_model) shallow_water2d_impl
+implicit none
+contains
+module procedure solve
+  y = 1.0
+end procedure solve
+end submodule shallow_water2d_impl
+"""
+        full_form = """submodule (shallow_water2d_model) shallow_water2d_impl
+implicit none
+contains
+module subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 1.0
+end subroutine solve
+end submodule shallow_water2d_impl
+"""
+        def gate(source: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                src = root / "src"
+                src.mkdir()
+                (src / "shallow_water2d_model.f90").write_text(source)
+                execution = NodeExecution(node_key="problem/shallow_water2d@0.4.0", node_dir=root,
+                                          exec_dir=root, pipeline_dir=root)
+                violations: list[str] = []
+                vps._validate_generate_outputs(root, execution, src, violations)
+                return violations
+
+        refusal = " ".join(gate(abbreviated))
+        self.assertIn("module procedure solve", refusal)
+        self.assertIn("cannot be checked", refusal)
+        self.assertIn("module subroutine solve(...)", refusal)
+        # ... and the form it asks for is analysed, literal-only body and all.
+        self.assertIn("literal-only assignments", " ".join(gate(full_form)))
+
+    def test_only_a_problem_node_is_parsed_and_refused_at_all(self) -> None:
+        # Hoisting the parse out of the three gates quietly widened WHO it applies to. Each gate
+        # returns early for a non-`problem` node, so at origin/main a `component` or
+        # `infrastructure` model was never read; with the parse in the caller, its source was
+        # refused for a keyword-named variable or an abbreviated `module procedure` even though no
+        # gate would ever have read it. The refusal's own justification — that every gate would
+        # otherwise pass the file in silence — is vacuous where no gate runs. Both node kinds are
+        # asserted, and the `problem` row is the control that says the refusal still works.
+        import tempfile
+        keyword_named = """module comp_model
+implicit none
+contains
+subroutine comp__apply(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: endsubroutine
+  endsubroutine = 1.0
+  y = x + endsubroutine
+end subroutine comp__apply
+end module comp_model
+"""
+        abbreviated = """submodule (comp_model) comp_impl
+implicit none
+contains
+module procedure solve
+  y = 1.0
+end procedure solve
+end submodule comp_impl
+"""
+
+        def gate(node_key: str, spec_id: str, source: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                src = root / "src"
+                src.mkdir()
+                (src / f"{spec_id}_model.f90").write_text(source)
+                execution = NodeExecution(node_key=node_key, node_dir=root,
+                                          exec_dir=root, pipeline_dir=root)
+                violations: list[str] = []
+                vps._validate_generate_outputs(root, execution, src, violations)
+                return violations
+
+        for node_key in ("component/comp@0.1.0", "infrastructure/comp@0.1.0"):
+            for label, source in (("keyword-named", keyword_named), ("abbreviated", abbreviated)):
+                self.assertEqual([], gate(node_key, "comp", source), f"{node_key} {label}")
+        # The control: the same two sources under a `problem` node ARE refused.
+        self.assertTrue(gate("problem/comp@0.1.0", "comp", keyword_named))
+        self.assertTrue(gate("problem/comp@0.1.0", "comp", abbreviated))
+
+    def test_the_module_procedure_refusal_does_not_silence_the_rest_of_the_file(self) -> None:
+        # The refusal is ABOUT one procedure, so it must not stop the gates from reading the
+        # others. An earlier version stopped the whole file at the refusal, out of symmetry with
+        # the parse-error case — where there genuinely is nothing left to read — and thereby hid a
+        # real literal-only violation in a sibling subroutine behind an unrelated instruction.
+        import tempfile
+        source = """submodule (shallow_water2d_model) shallow_water2d_impl
+implicit none
+contains
+module procedure solve
+  y = 1.0
+end procedure solve
+module subroutine sibling(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 1.0
+end subroutine sibling
+end submodule shallow_water2d_impl
+"""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / "src"
+            src.mkdir()
+            (src / "shallow_water2d_model.f90").write_text(source)
+            execution = NodeExecution(node_key="problem/shallow_water2d@0.4.0", node_dir=root,
+                                      exec_dir=root, pipeline_dir=root)
+            violations: list[str] = []
+            vps._validate_generate_outputs(root, execution, src, violations)
+        joined = " ".join(violations)
+        self.assertIn("cannot be checked", joined)
+        self.assertIn("subroutine sibling has literal-only assignments", joined)
+
+    def test_a_functions_result_is_never_a_dependency_output_candidate(self) -> None:
+        # The result variable is this procedure's OWN output face, so it is excluded from the
+        # candidate set exactly as a dummy is. The exclusion looks redundant — the result is in
+        # `out_vars`, which SEEDS the closure, so a candidate equal to it always intersects — and
+        # that is precisely why it matters: an intersecting candidate makes the whole isdisjoint
+        # test false and SUPPRESSES the violation the discarded `scratch` earns. Without the
+        # exclusion this source passes, which is fail-open. (Found by mutation: the first version
+        # of this change had the exclusion and nothing pinned it.)
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+function solve(x) result(y)
+  real, intent(in) :: x
+  real :: y
+  real :: scratch
+  call dep__apply(x, y)
+  call dep__apply(x, scratch)
+  y = x
+end function solve
+end module shallow_water2d_model
+"""
+        violations = " ".join(self._dataflow_violations(source))
+        self.assertIn("does not propagate dependency operation outputs", violations)
+        self.assertIn("candidates=['scratch']", violations)
 
     def test_every_terminator_spelling_closes_the_dependency_dataflow_envelope(self) -> None:
         # The completion criterion of the TODO item, on the gate its reproduction used: a model
@@ -5484,7 +5852,7 @@ end module shallow_water2d_model
         vps._validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         return violations
@@ -5500,26 +5868,37 @@ end module shallow_water2d_model
         vps._validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         return violations
 
-    def test_every_program_unit_end_closes_an_envelope(self) -> None:
-        # One row per alternative of `_FORTRAN_UNIT_END_KIND`, in both the spaced and the one-word
-        # spelling F2008 allows (verified with `gfortran -fsyntax-only -std=f2008`), plus `end`. Dropping a single alternative leaves that terminator
-        # unrecognised, the body running past it, and no other test noticing — the same argument
-        # the `_FORTRAN_BARE_DECLARATION` table below makes for its own alternatives.
-        #
-        # `procedure` is deliberately absent: it closes only a `module procedure` frame, which
-        # never emits an envelope, so no row here can die to its removal. It is listed with the
-        # rest of that cluster in the helper's "WHAT NO TEST PINS" note rather than given a row
-        # that would look like a pin and not be one. The other keywords close the enclosing
-        # program unit, which closes the subroutine with it.
+    def test_every_subroutine_terminator_spelling_closes_its_own_envelope(self) -> None:
+        # What survives of the old unit-end enumeration once the structure comes from a parser.
+        # The first three rows are LEGAL (`gfortran -fsyntax-only -std=f2008` accepts each,
+        # executed) and must still produce two envelopes with the first body not running into the
+        # second subroutine. The remaining rows leave `solve` UNTERMINATED and close a program
+        # unit over it, which gfortran rejects (executed: rc=1, "Unexpected CALL statement in
+        # MODULE") — the old walk read those bodies deliberately long, and a parser refuses them
+        # instead. That is the direction this change trades in, and the refusal is not reachable
+        # in a real run FOR A FORTRAN NODE: `Generate.gate` runs its syntax check first and only
+        # runs the static check when lint AND syntax passed, so no source gfortran rejects gets
+        # here. The qualifier is load-bearing and was missing until review: `_gate_syntax_check`
+        # returns `status=pass` with a `skipped_reason` for any other language
+        # (`tools/workflow_conductor.py:7974`), so a non-fortran node reaches the static check
+        # with no compiler having run. No such node exists in this tree today.
         for opener, terminator in (
             ("", "end subroutine"),
             ("", "endsubroutine"),
             ("", "end"),
+        ):
+            envelopes = vps._fortran_procedure_envelopes(
+                f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
+                "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
+            )
+            self.assertEqual([e.name for e in envelopes], ["solve", "second"], terminator)
+            self.assertNotIn("y = 1.0", envelopes[0].body, terminator)
+        for opener, terminator in (
             ("module m\n", "end module"),
             ("module m\n", "endmodule"),
             ("submodule (parent) child\n", "end submodule"),
@@ -5529,19 +5908,22 @@ end module shallow_water2d_model
             ("block data bd\n", "end block data"),
             ("block data bd\n", "endblockdata"),
         ):
-            label = f"{opener.strip()} … {terminator}"
-            envelopes = vps._fortran_subroutine_envelopes(
-                f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
-                "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
-            )
-            self.assertEqual([e.name for e in envelopes], ["solve", "second"], label)
-            self.assertNotIn("y = 1.0", envelopes[0].body, label)
+            with self.assertRaises(vps._FortranSourceStructureError,
+                                   msg=f"{opener.strip()} … {terminator}"):
+                vps._fortran_procedure_envelopes(
+                    f"{opener}subroutine solve(x)\n  call dep__apply(x)\n{terminator}\n"
+                    "subroutine second(y)\n  y = 1.0\nend subroutine second\n"
+                )
 
-    def test_no_construct_end_closes_an_envelope(self) -> None:
-        # The opposite polarity, and the reason the unit-end list may stay an enumeration: every
-        # OTHER `end X` closes an executable construct or a derived type, never a scoping unit.
-        # Admitting one of these into `_FORTRAN_UNIT_END_KIND` truncates a body at it — fail-open,
-        # the defect class this walk exists to remove.
+    def test_a_construct_end_closing_nothing_is_refused_not_read_past(self) -> None:
+        # The old walk IGNORED a construct end that closed nothing, so the body ran past it. Each
+        # of these rows is illegal Fortran — `gfortran -fsyntax-only -std=f2008` answers
+        # "Expecting END SUBROUTINE statement" (executed, rc=1 on all 17) — and a parser refuses
+        # rather than guessing. Refusing is the fail-CLOSED direction of the same choice, and
+        # unreachable in a run for the reason the row above states.
+        #
+        # The property those rows were protecting — a construct end must not truncate a body — is
+        # pinned by the LEGAL shape below, where the construct is properly opened.
         for construct_end in ("end do", "enddo", "end if", "endif", "end select", "endselect",
                               "end where", "endwhere", "end block", "endblock",
                               "end associate", "endassociate", "end forall",
@@ -5551,26 +5933,37 @@ end module shallow_water2d_model
                       f"  {construct_end}\n"
                       f"  call dep__apply(x, scratch)\n  y = x\n"
                       f"end subroutine solve\nend module m\n")
-            self.assertIn("does not propagate dependency operation outputs",
-                          " ".join(self._dataflow_violations(source)), construct_end)
+            with self.assertRaises(vps._FortranSourceStructureError, msg=construct_end):
+                vps._fortran_procedure_envelopes(source)
 
-    def test_this_walks_unit_end_set_contains_the_older_one(self) -> None:
-        # `_FORTRAN_UNIT_END` (the FORMAT/label scope walker) and `_FORTRAN_UNIT_END_KIND` (this
-        # walk) answer the same question about the same text, and a one-sided edit is this
-        # repository's most repeated failure mode. They do NOT agree today, which is why this is a
-        # containment assertion and not the equality an earlier name claimed: `end procedure` and
-        # the spaced `end block data` are legal unit ends (verified with `gfortran -fsyntax-only
-        # -std=f2008`) that only this walk recognises, and widening the older pattern is a change
-        # to the FORMAT/label scoping rule that belongs with a measurement of its own.
+    def test_a_properly_opened_construct_does_not_truncate_the_body(self) -> None:
+        # The legal half of the row above: the `call` sits AFTER a closed construct, so a body
+        # truncated at the construct's end would silence the gate. Every row is accepted by
+        # `gfortran -fsyntax-only -std=f2008` (executed).
+        for opener, closer in (("do i = 1, 3", "end do"), ("do i = 1, 3", "enddo"),
+                               ("if (x > 0.0) then", "end if"), ("if (x > 0.0) then", "endif"),
+                               ("block", "end block"), ("associate (w => x)", "end associate"),
+                               ("select case (i)\n  case default", "end select")):
+            source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
+                      f"  real, intent(in) :: x\n  real, intent(out) :: y\n"
+                      f"  real :: scratch\n  integer :: i\n"
+                      f"  {opener}\n    y = x\n  {closer}\n"
+                      f"  call dep__apply(x, scratch)\n  y = x\n"
+                      f"end subroutine solve\nend module m\n")
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(self._dataflow_violations(source)), opener)
+
+    def test_the_older_unit_end_pattern_is_untouched_by_the_front_end_swap(self) -> None:
+        # `_FORTRAN_UNIT_END` (the FORMAT/label scope walker) used to have a twin in this module —
+        # the envelope walk's own unit-end enumeration — and the pair was pinned for containment
+        # because a one-sided edit is this repository's most repeated failure mode. The twin is
+        # gone: the envelope structure comes from a parser now, so there is exactly ONE
+        # enumeration left and nothing to keep in step with it. What remains asserted is that the
+        # survivor still answers what its own callers need, which is the FORMAT/label scope rule.
         for keyword in ("subroutine", "function", "module", "submodule", "program"):
             for statement in (f"end {keyword}", f"end{keyword}"):
                 self.assertTrue(vps._FORTRAN_UNIT_END.match(statement), statement)
-                self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(statement), statement)
         self.assertTrue(vps._FORTRAN_UNIT_END.match("end"))
-        self.assertTrue(vps._FORTRAN_BARE_END.match("end"))
-        for only_here in ("end procedure", "endprocedure", "end block data"):
-            self.assertTrue(vps._FORTRAN_UNIT_END_KIND.match(only_here), only_here)
-            self.assertFalse(vps._FORTRAN_UNIT_END.match(only_here), only_here)
 
     def test_a_derived_type_named_is_is_a_definition_not_a_select_type_guard(self) -> None:
         # `type is` reads like a SELECT TYPE guard and is also a derived type NAMED `is`, which is
@@ -5602,7 +5995,7 @@ end module m
         # And the guard is still a guard: inside SELECT TYPE it opens no type, so the HOST's own
         # `contains` still cuts. If it opened one, the cut would be suppressed and the contained
         # procedure's declarations would rejoin its host.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(u, y)\n"
             "  class(*), intent(in) :: u\n"
             "  select type (u)\n"
@@ -5739,7 +6132,7 @@ end module m
         # procedure's dummies are attributed to its host again. Invisible to every other test
         # here, which is why the closing keyword gets its own case rather than sharing the
         # opener's.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(x, y)\n"
             "  type :: holder\n"
             "    real :: v\n"
@@ -5762,7 +6155,7 @@ end module m
         # Every consumer reports `{model_file}: subroutine {name}` in the order it iterates, and a
         # violation list that reorders itself between runs of the same file is a diff no reviewer
         # can read.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(x, y)\n  y = x\ncontains\n"
             "  subroutine inner(z)\n    z = 2.0\n  end subroutine inner\n"
             "end subroutine host\n"
@@ -5770,11 +6163,13 @@ end module m
         )
         self.assertEqual([e.name for e in envelopes], ["host", "inner", "last"])
 
-    def test_an_unclosed_interface_does_not_swallow_the_rest_of_the_file(self) -> None:
-        # Robustness, not legality: text this broken is rejected by `Generate.gate`'s syntax check
-        # before these gates run. What is asserted is the DIRECTION — an interface span nobody
-        # closed ends with its enclosing program unit, so the next subroutine is still read
-        # instead of being blanked to the end of the file.
+    def test_an_unclosed_interface_is_refused_not_guessed_at(self) -> None:
+        # Robustness, not legality: `gfortran -fsyntax-only -std=f2008` answers "Expecting END
+        # INTERFACE statement" (executed), and `Generate.gate` runs that syntax check BEFORE the
+        # static check, so no run reaches here with this text. The old walk force-closed the span
+        # at the enclosing program unit's END and read on; a parser refuses. Both are fail-closed
+        # against the defect that mattered (a span swallowing the rest of the file); the refusal
+        # is the one that does not have to guess where the author meant the span to end.
         source = """module m
 contains
 subroutine untouched(x, y)
@@ -5794,8 +6189,8 @@ subroutine solve(x, y)
 end subroutine solve
 end module m2
 """
-        self.assertIn("does not propagate dependency operation outputs",
-                      " ".join(self._dataflow_violations(source)))
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_prefixed_subroutine_headers_are_all_recognized(self) -> None:
         # The prefix words are deliberately NOT enumerated: F2008 has pure/impure/elemental/
@@ -5805,13 +6200,23 @@ end module m2
         # the whole suite until it existed, while `module pure recursive subroutine solve(x)` — a
         # legal separate module subprogram (`gfortran -fsyntax-only -std=f2008`) — lost its
         # envelope entirely (Codex review).
-        for prefix in ("", "pure ", "impure ", "elemental ", "recursive ", "non_recursive ",
+        for prefix in ("", "pure ", "impure ", "elemental ", "recursive ",
                        "module ", "pure elemental ", "recursive module ",
                        "module pure recursive ", "pure recursive elemental "):
-            envelopes = vps._fortran_subroutine_envelopes(
+            envelopes = vps._fortran_procedure_envelopes(
                 f"{prefix}subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
             )
             self.assertEqual([e.name for e in envelopes], ["solve"], prefix)
+        # `non_recursive` is F2018 and the ONE row this front end refuses (measured): the grammar
+        # it parses is F2008 + common extensions. It is unreachable in a run for a reason that is
+        # not this module's — `Generate.gate`'s syntax check runs `gfortran -std=f2008`, which
+        # rejects the prefix outright ("Expecting END PROGRAM statement", executed) and runs
+        # BEFORE the static check. Pinned so the day this toolchain moves to F2018 the row fails
+        # here rather than turning into a refused Generate in a billed run.
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._fortran_procedure_envelopes(
+                "non_recursive subroutine solve(x)\n  call dep__apply(x)\nend subroutine solve\n"
+            )
 
     def test_an_assignment_to_a_keyword_named_variable_is_not_structure(self) -> None:
         # One row per keyword this walk matches on, as the target of an ordinary assignment. None
@@ -5825,6 +6230,7 @@ end module m2
         # it. The fix is one predicate applied to every rule rather than a lookahead per rule, so
         # the row that matters is any row: dropping the predicate kills all of them at once, and
         # that is the point — the per-rule form is what let one rule be forgotten.
+        refused: set[tuple[str, str]] = set()
         for name in ("endsubroutine", "endprocedure", "endmodule", "endprogram", "endfunction",
                      "endsubmodule", "endblockdata", "endinterface", "interface", "contains",
                      "module", "submodule", "program", "type", "subroutine", "function"):
@@ -5836,8 +6242,39 @@ end module m2
                           f"  {declaration}\n  {assignment}\n"
                           f"  call dep__apply(x, scratch)\n  y = x\n"
                           f"end subroutine solve\nend module m\n")
+                try:
+                    vps._fortran_procedure_envelopes(source)
+                except vps._FortranSourceStructureError:
+                    refused.add((name, assignment))
+                    continue
                 self.assertIn("does not propagate dependency operation outputs",
                               " ".join(self._dataflow_violations(source)), assignment)
+        # The refused set is pinned as a SET, not sampled: it is the whole price this front end
+        # charges over this matrix, and a change that refuses one more row must fail here rather
+        # than be discovered as a refused Generate in a billed run. Every row below is a legal
+        # program (`gfortran -fsyntax-only -std=f2008` accepts each, executed) that the parser
+        # lexes as the END statement the name spells, and every one is repairable by the leaf
+        # renaming the variable — which is what the violation message asks for. 38 of the 48
+        # rows are still analysed and still flagged (the refused set below has TEN members, not
+        # four: three names x three shapes, plus one `type` row). An earlier version of this
+        # comment said 44, derived by subtracting NAMES from ROWS instead of counting the set two
+        # lines below it — a number written rather than measured, which is the failure this file
+        # keeps having to correct.
+        self.assertEqual(refused, {
+            ("endsubroutine", "endsubroutine = 1.0"),
+            ("endsubroutine", "endsubroutine(1) = 1.0"),
+            ("endsubroutine", "endsubroutine%c = 1.0"),
+            ("interface", "interface = 1.0"),
+            ("interface", "interface(1) = 1.0"),
+            ("interface", "interface%c = 1.0"),
+            ("contains", "contains = 1.0"),
+            ("contains", "contains(1) = 1.0"),
+            ("contains", "contains%c = 1.0"),
+            # `real :: type(3)` alone: an array declaration of a variable named `type` is
+            # character-for-character a derived-type declaration. The scalar and component rows
+            # of the same name are read correctly.
+            ("type", "type(1) = 1.0"),
+        })
 
     def test_a_construct_named_after_a_keyword_is_not_structure(self) -> None:
         # The second spelling of the same family, found one review round after the first. A
@@ -5851,6 +6288,7 @@ end module m2
         # by stripping the name where the view already strips a statement label. Two spellings in
         # two rounds is the signal that the answer is a normalisation step, not another guard: any
         # rule added after this one gets both for free.
+        refused: set[str] = set()
         for name in ("endsubroutine", "endmodule", "endprocedure", "interface", "contains",
                      "module", "type"):
             for construct, closer in (("do i = 1, 3", "end do"),
@@ -5864,8 +6302,19 @@ end module m2
                           f"  {name}: {construct}\n    y = x\n  {closer} {name}\n"
                           f"  call dep__apply(x, scratch)\n  y = x\n"
                           f"end subroutine solve\nend module m\n")
+                try:
+                    vps._fortran_procedure_envelopes(source)
+                except vps._FortranSourceStructureError:
+                    refused.add(name)
+                    continue
                 self.assertIn("does not propagate dependency operation outputs",
                               " ".join(self._dataflow_violations(source)), f"{name}: {construct}")
+        # Same shape of pin as the assignment matrix, and the same three names: a construct named
+        # `endsubroutine`, `interface` or `contains` is refused (all five constructs, so the set is
+        # by NAME), and the other four names are analysed and flagged. Every row is legal
+        # (`gfortran -fsyntax-only -std=f2008`, executed) and every refusal is repairable by
+        # renaming the construct.
+        self.assertEqual(refused, {"endsubroutine", "interface", "contains"})
 
     def test_an_interface_inside_an_interface_body_does_not_reopen_the_file(self) -> None:
         # `interface_depth` is a depth and not a flag because an interface body may declare a
@@ -5898,72 +6347,46 @@ end module m
         self.assertIn("does not propagate dependency operation outputs",
                       " ".join(self._dataflow_violations(source)))
 
-    def test_a_tab_before_the_assignment_operator_is_still_an_assignment(self) -> None:
+    def test_a_variable_named_endsubroutine_is_refused_however_it_is_spaced(self) -> None:
         # A tab in free-form source is nonconforming, but `gfortran -fsyntax-only -std=f2008`
         # accepts it with a warning and `Generate.gate`'s syntax check does not promote `-Wtabs`,
-        # so it reaches these gates. With the predicate keying on a literal space, the tab form
-        # was read as a terminator and silenced the gate where origin/main flagged it.
-        source = ("module m\ncontains\nsubroutine solve(x, y)\n"
-                  "  real, intent(in) :: x\n  real, intent(out) :: y\n"
-                  "  real :: scratch, endsubroutine\n"
-                  "  endsubroutine\t= 1.0\n"
-                  "  call dep__apply(x, scratch)\n  y = x + endsubroutine\n"
-                  "end subroutine solve\nend module m\n")
-        self.assertIn("does not propagate dependency operation outputs",
-                      " ".join(self._dataflow_violations(source)))
+        # so a source spelling it this way DOES reach these gates. Under the regex walk the space
+        # and the tab form were different rules' business (the predicate keyed on a literal space
+        # and the tab form silenced the gate); under a parser they are one fact — a variable named
+        # `endsubroutine` is lexed as `end subroutine` — and both are refused, with the same
+        # message asking for the rename. Whitespace is no longer a way to change the answer.
+        for operator in ("= 1.0", "\t= 1.0", " = 1.0", "  =  1.0"):
+            source = ("module m\ncontains\nsubroutine solve(x, y)\n"
+                      "  real, intent(in) :: x\n  real, intent(out) :: y\n"
+                      "  real :: scratch, endsubroutine\n"
+                      f"  endsubroutine{operator}\n"
+                      "  call dep__apply(x, scratch)\n  y = x + endsubroutine\n"
+                      "end subroutine solve\nend module m\n")
+            with self.assertRaises(vps._FortranSourceStructureError, msg=operator):
+                vps._fortran_procedure_envelopes(source)
 
-    def test_the_assignment_predicate_leaves_structural_statements_alone(self) -> None:
-        # The other half: over-classifying would make a real structural statement invisible, which
-        # fails LONG rather than open, but silently changes what every rule below sees. `=` inside
-        # parentheses is not a top-level assignment — `interface assignment(=)` is a real interface
-        # statement — and `==` / `/=` / `<=` / `>=` are comparisons.
-        for statement in ("subroutine solve(x)", "pure subroutine solve(x)", "end subroutine solve",
-                          "endsubroutine", "end", "module m", "submodule (parent) child",
-                          "program p", "block data bd", "module procedure solve", "contains",
-                          "interface", "abstract interface", "interface assignment(=)",
-                          "interface operator(==)", "end interface", "type :: holder",
-                          "type, extends(base) :: holder", "real function f(x) result(y)"):
-            self.assertFalse(
-                vps._fortran_statement_assigns_to_its_first_token(statement), statement)
-        for statement in ("endsubroutine = 1.0", "endsubroutine(1) = 1.0", "endsubroutine%c = 1.0",
-                          "interface = 1.0", "module(size(u, dim=1)) = 3.0", "p => target",
-                          # A coarray reference. `Generate.gate`'s syntax check passes no
-                          # `-fcoarray`, so no source carrying one reaches these gates today —
-                          # which is a property of an argv elsewhere, not of this walk, so the
-                          # bracket is closed here rather than relied upon there.
-                          "endsubroutine[1] = 1.0", "interface[1] = 1.0"):
-            self.assertTrue(
-                vps._fortran_statement_assigns_to_its_first_token(statement), statement)
-        # A comparison is not an assignment, and neither is an assignment to something OTHER than
-        # the first token: `if (flag) endmodule = 1` assigns, but not to `if`. Nothing downstream
-        # distinguishes these today — no structural rule matches a statement starting with `if` or
-        # `where`, and no structural statement carries a top-level `==` — so they are the
-        # predicate's own contract, which is the thing the rest of the walk is written against.
-        for statement in ("x == 1", "endsubroutine == 1.0", "a /= b", "a <= b", "a >= b",
-                          "if (flag) endmodule = 1", "where (mask) endsubroutine = 1.0"):
-            self.assertFalse(
-                vps._fortran_statement_assigns_to_its_first_token(statement), statement)
-
-    def test_a_name_that_looks_like_interface_does_not_open_a_span(self) -> None:
-        # The gate-level case of the row above, kept because it is the shape that was originally
-        # guarded here — an `interface` variable opens a span nothing closes, blanking the rest of
-        # the file. It no longer has its own guard; the predicate is what closes it.
+    def test_a_name_that_looks_like_interface_is_refused_not_read_as_a_span(self) -> None:
+        # The shape this file has guarded three different ways: a variable named `interface`. The
+        # flat regex read a span nothing closed and blanked the rest of the file (fail-OPEN); the
+        # walk closed it with a predicate; the parser refuses. What must never come back is the
+        # first answer, so this asserts the failure is LOUD rather than asserting which mechanism
+        # produced it.
         for assignment in ("interface = 1.0", "interface(3) = 1.0", "interface%x = 1.0"):
             source = (f"module m\ncontains\nsubroutine solve(x, y)\n"
                       f"  real, intent(in) :: x\n  real, intent(out) :: y\n  real :: scratch\n"
                       f"  {assignment}\n"
                       f"  call dep__apply(x, scratch)\n  y = x\n"
                       f"end subroutine solve\nend module m\n")
-            self.assertIn("does not propagate dependency operation outputs",
-                          " ".join(self._dataflow_violations(source)), assignment)
+            with self.assertRaises(vps._FortranSourceStructureError, msg=assignment):
+                vps._fortran_procedure_envelopes(source)
 
     def test_every_interface_span_spelling_is_skipped(self) -> None:
-        # One row per alternative of `_FORTRAN_INTERFACE_SPAN_OPEN` / `_FORTRAN_INTERFACE_SPAN_END`
-        # — `abstract` and the one-word `endinterface` are each legal (verified with `gfortran
-        # -fsyntax-only -std=f2008`) and each was a live hole until its own row existed: dropping
-        # either alternative leaves the span unrecognised, its `end subroutine` closing the
-        # enclosing envelope, and the gate silent. The matrices above use only the plain spelling,
-        # so nothing else notices.
+        # `abstract` and the one-word `endinterface` are each legal (verified with `gfortran
+        # -fsyntax-only -std=f2008`) and each was a live hole in the regex walk this replaced,
+        # where they were separate alternatives of separate patterns. They are now one question
+        # the parser answers, and the rows stay because the CONSEQUENCE is what matters: an
+        # unrecognised span leaves its `end subroutine` closing the enclosing envelope and the
+        # gate silent. The matrices above use only the plain spelling, so nothing else notices.
         for opener, closer in (("interface", "end interface"),
                                ("interface", "endinterface"),
                                ("abstract interface", "end interface"),
@@ -6044,7 +6467,7 @@ end module m
         # its contained procedures — a `call` in one of them, with the `intent(out)` in the host,
         # is the host's business and used to be invisible to every gate — while its out-scope stops
         # at the `contains`, because a contained procedure's dummies are its own.
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine host(x, y)\n"
             "  real, intent(in) :: x\n"
             "  real, intent(out) :: y\n"
@@ -6107,7 +6530,7 @@ end module shallow_water2d_model
         # was never matched — and its `end subroutine` then paired with the NEXT subroutine's
         # header, shifting that envelope's body. Legal F2008 (verified with `gfortran
         # -fsyntax-only -std=f2008`).
-        envelopes = vps._fortran_subroutine_envelopes(
+        envelopes = vps._fortran_procedure_envelopes(
             "subroutine setup\n  call init_marker()\nend subroutine setup\n"
             "subroutine solve(x, y)\n  real, intent(out) :: y\n  y = x\nend subroutine solve\n"
         )
@@ -6116,26 +6539,35 @@ end module shallow_water2d_model
         self.assertEqual(envelopes[1].dummy_args, "x, y")
         self.assertNotIn("init_marker", envelopes[1].body)
 
-    def test_a_function_between_two_subroutines_does_not_shift_either_envelope(self) -> None:
-        # Function frames exist only so a function's terminator — including a bare `end` — is not
-        # read as closing the subroutine that precedes it. The function body itself is NOT an
-        # envelope, which is a known hole recorded in `TODO.md`, not an accident.
+    def test_a_function_between_two_subroutines_is_its_own_envelope(self) -> None:
+        # This test used to assert the HOLE: a function's terminator was tracked only so it would
+        # not be read as closing the subroutine before it, and the function body itself was
+        # invisible to all three gates — 92 of the 365 in-tree models define one. The hole is
+        # closed, so what is asserted flips: the function is an envelope of its own, its result
+        # variable is its definable output, and the neighbouring subroutines are unchanged (the
+        # regression this test was originally written to catch).
         for function_end in ("end function scale_by", "endfunction", "end"):
-            envelopes = vps._fortran_subroutine_envelopes(
+            envelopes = vps._fortran_procedure_envelopes(
                 "module m\ncontains\n"
                 "subroutine first(x, y)\n  y = x\nend subroutine first\n"
                 f"real function scale_by(v)\n  scale_by = 2.0 * v\n{function_end}\n"
                 "subroutine second(a, b)\n  b = second_marker\nend subroutine second\n"
                 "end module m\n"
             )
-            self.assertEqual([e.name for e in envelopes], ["first", "second"], function_end)
+            self.assertEqual([(e.kind, e.name) for e in envelopes],
+                             [("subroutine", "first"), ("function", "scale_by"),
+                              ("subroutine", "second")], function_end)
             self.assertNotIn("scale_by", envelopes[0].body, function_end)
-            self.assertIn("second_marker", envelopes[1].body, function_end)
+            self.assertIn("second_marker", envelopes[2].body, function_end)
+            # No `result(...)`, so the definable output is the function's own name.
+            self.assertEqual("scale_by", envelopes[1].result_name, function_end)
+            self.assertEqual({"scale_by"}, set(envelopes[1].out_vars), function_end)
 
-    def test_an_unmatched_end_function_does_not_close_a_subroutine(self) -> None:
-        # The walk IGNORES an END whose kind matches no open frame rather than popping something.
-        # Popping on mismatch would turn every opener the walk does not recognise into a silent
-        # gate — the direction this change exists to remove — so the body runs LONG instead.
+    def test_an_unmatched_end_function_is_refused(self) -> None:
+        # The old walk ignored an END whose kind matched no open frame, so the body ran LONG.
+        # `gfortran -fsyntax-only -std=f2008` rejects this source ("Expecting END SUBROUTINE
+        # statement", executed), and the syntax check that runs before the static check is what
+        # keeps it out of a run; here it is refused rather than read past.
         source = """module m
 contains
 subroutine solve(x, y)
@@ -6148,14 +6580,16 @@ subroutine solve(x, y)
 end subroutine solve
 end module m
 """
-        self.assertIn("does not propagate dependency operation outputs",
-                      " ".join(self._dataflow_violations(source)))
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._fortran_procedure_envelopes(source.lower())
 
-    def test_an_unterminated_subroutine_body_runs_to_end_of_file(self) -> None:
-        # Same direction at the other edge. The old span emitted NOTHING for an unterminated
-        # subroutine, so the gates saw no subroutine at all. Text this broken is rejected by
-        # `Generate.gate`'s syntax check before these gates run; what matters is which way the
-        # walk fails when it does happen.
+    def test_an_unterminated_subroutine_body_is_refused(self) -> None:
+        # Same edge, third reading. The ORIGINAL flat span emitted nothing at all here (a silent
+        # gate); the walk emitted a body running to end of input; the parser refuses. Only the
+        # first of those three is fail-open. `gfortran -fsyntax-only -std=f2008` rejects the text
+        # ("Unexpected end of file", executed) and, for a fortran node, the syntax check
+        # precedes the static one (see the qualifier above — it does not hold for other
+        # languages, of which this tree has none).
         source = """module m
 contains
 subroutine solve(x, y)
@@ -6165,8 +6599,8 @@ subroutine solve(x, y)
   call dep__apply(x, scratch)
   y = x
 """
-        self.assertIn("does not propagate dependency operation outputs",
-                      " ".join(self._dataflow_violations(source)))
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_an_interface_span_is_blanked_in_place_not_deleted(self) -> None:
         # `body` must stay ONE CONTIGUOUS SLICE of a length-preserving transform of the view, so a
@@ -6193,7 +6627,7 @@ subroutine solve(x, y)
                       "  y = x\n"
                       "end subroutine solve\n")
             label = f"{opener} / {closer}"
-            envelopes = vps._fortran_subroutine_envelopes(source)
+            envelopes = vps._fortran_procedure_envelopes(source)
             self.assertEqual([e.name for e in envelopes], ["solve"], label)
             view_lines = vps._joined_masked_fortran_view(source).split("\n")
             # Every line between the header and the terminator, at its original width.
@@ -6204,15 +6638,15 @@ subroutine solve(x, y)
             )
             self.assertNotIn("other", envelopes[0].body, label)
 
-    def test_fortran_subroutine_envelopes_is_a_fixed_point_over_the_view(self) -> None:
+    def test_fortran_procedure_envelopes_is_a_fixed_point_over_the_view(self) -> None:
         # The helper reduces its own input, which is what lets a gate that has already reduced its
         # text hand it over unchanged and a test hand over raw source — the argument
         # `_split_fortran_names` already makes for itself.
         source = ("module m\ncontains\n"
                   "subroutine solve(x, &\n    y) ! wrapped\n"
                   "  real, intent(out) :: y\n  y = x\nend subroutine solve\nend module m\n")
-        from_raw = vps._fortran_subroutine_envelopes(source)
-        from_view = vps._fortran_subroutine_envelopes(vps._joined_masked_fortran_view(source))
+        from_raw = vps._fortran_procedure_envelopes(source)
+        from_view = vps._fortran_procedure_envelopes(vps._joined_masked_fortran_view(source))
         self.assertEqual(from_raw, from_view)
         # The dummy list survives the wrap; the whitespace the join leaves behind is not the
         # property under test, so it is read the way every caller reads it.
@@ -6298,7 +6732,7 @@ end module m
         vps._validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertTrue(any("metric-only scalar kernel" in v for v in violations), violations)
@@ -6330,7 +6764,7 @@ end module m
         vps._validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertEqual(violations, [])
@@ -6347,6 +6781,7 @@ end module m
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
             lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             dep_spec_ids=["dep"],
             violations=violations,
         )
@@ -6380,7 +6815,7 @@ end module shallow_water2d_model
         vps._validate_problem_model_literal_outputs(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertEqual(violations, [])
@@ -6417,7 +6852,7 @@ end module shallow_water2d_model
         vps._validate_problem_metric_only_scalar_kernel(
             execution=execution,
             model_file=Path("shallow_water2d_model.f90"),
-            lowered=source.lower(),
+            envelopes=vps._fortran_procedure_envelopes(source.lower()),
             violations=violations,
         )
         self.assertTrue(
@@ -6677,6 +7112,166 @@ end module shallow_water2d_model
                 f"a constant inside a {label} must not reach module scope; "
                 f"got: {self._dataflow_violations(source)}",
             )
+
+    def test_an_obsolescent_labelled_do_is_analysed_not_refused(self) -> None:
+        # The view strips a leading statement label so every rule can anchor on the statement's
+        # own keyword. That is right for the rules and wrong for a PARSER: in the obsolescent
+        # labelled `DO`, the label IS the loop's terminator, so stripping it leaves `do 100 …`
+        # with nothing closing it and the parse ERRORs. `gfortran -fsyntax-only -std=f2008 -Wall`
+        # accepts this source with no diagnostic at all and `origin/main` analysed it correctly,
+        # so refusing it was a regression — found by review, and invisible to the differential
+        # because 0 of the 365 in-tree models carry a statement label of any kind.
+        #
+        # The fix does not decide WHICH labels matter — three rules that tried were each
+        # defeated by a legal program in the next review round. The parser decides: the stripped
+        # reading is parsed first and the label-preserving twin only if that fails. This row and
+        # the labelled-header rows in the test below therefore have to pass together, since they
+        # need opposite readings of the same file.
+        source = """module shallow_water2d_model
+use dep_model
+implicit none
+contains
+subroutine solve(u, v, n)
+  integer, intent(in) :: n
+  real, intent(in) :: u(n)
+  real, intent(out) :: v(n)
+  real :: scratch(4)
+  integer :: i
+  call dep__op(scratch)
+  do 100 i = 1, 4
+    v(i) = u(i)
+100 continue
+end subroutine solve
+end module shallow_water2d_model
+"""
+        envelopes = vps._fortran_procedure_envelopes(source.lower())
+        self.assertEqual([("subroutine", "solve")], [(e.kind, e.name) for e in envelopes])
+        # ... and the body really is the body: the gate still sees the discarded dependency call.
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+        # Both terminator spellings reach the same envelope; the reading that works is chosen by
+        # the parser, not by which statement carries the label.
+        for spelling in ("100 continue", "100 v(i) = u(i)"):
+            body = source.replace("    v(i) = u(i)\n100 continue", f"    v(i) = u(i)\n{spelling}")
+            self.assertEqual(1, len(vps._fortran_procedure_envelopes(body.lower())), spelling)
+
+    def test_a_label_the_parser_needs_survives_however_it_is_spelled(self) -> None:
+        # A statement label is inert to every rule in this module, which is why the view strips
+        # it — but it is not inert to a parser: it terminates a labelled `DO` and it is part of a
+        # `FORMAT`. Neither reading of the source parses everything, so the reading is chosen by
+        # asking the parser, not by a rule about labels. Three such rules were written in three
+        # consecutive review rounds and each was defeated by a legal program; these rows are the
+        # counterexamples that killed them, kept as the regression set. Every row is accepted by
+        # `gfortran -fsyntax-only -std=f2008` (executed).
+        def envelope_names(source: str) -> list[str]:
+            return [e.name for e in vps._fortran_procedure_envelopes(source.lower())]
+
+        # (a) a labelled DO, including the spellings a TEXT comparison of the label split:
+        # a label is a NUMBER, so `do 0100` and `100 continue` are the same label.
+        for opener, terminator in (("100", "100"), ("0100", "100"), ("100", "0100"),
+                                   ("00100", "100"), ("010", "10")):
+            source = (f"module shallow_water2d_model\ncontains\n"
+                      f"subroutine solve(u, v)\n  real, intent(in) :: u\n"
+                      f"  real, intent(out) :: v\n  integer :: i\n  v = 0.0\n"
+                      f"  do {opener} i = 1, 4\n    v = v + u\n{terminator} continue\n"
+                      f"end subroutine solve\nend module shallow_water2d_model\n")
+            self.assertEqual(["solve"], envelope_names(source), f"do {opener} / {terminator}")
+
+        # (b) a labelled FORMAT in the SPECIFICATION part, which needs its label and which no
+        # `do` names — the row that defeated the rule keyed on `do` terminators.
+        self.assertEqual(["solve"], envelope_names("""module shallow_water2d_model
+  implicit none
+contains
+  subroutine solve(u, v)
+    real, intent(in) :: u
+900 format(1x, e12.4)
+    real, intent(out) :: v
+    write(*, 900) u
+    v = 1.0
+  end subroutine solve
+end module shallow_water2d_model
+"""))
+
+        # (c) a labelled `contains` and a labelled procedure header, which tree-sitter cannot
+        # parse WITH their labels — the rows that defeated the rule that kept every label.
+        self.assertEqual(["advance", "helper"], envelope_names("""module shallow_water2d_model
+implicit none
+integer :: ncomp
+10 contains
+subroutine advance(u_np1)
+  real, intent(out) :: u_np1
+  u_np1 = 1.0
+end subroutine advance
+20 subroutine helper(out_val)
+  real, intent(out) :: out_val
+  out_val = 3.0
+end subroutine helper
+end module shallow_water2d_model
+"""))
+
+    def test_the_fallbacks_offsets_are_translated_back_to_the_view(self) -> None:
+        # When the label-preserving reading is used, the parser's offsets index THAT string, and
+        # the gates slice the VIEW — so every offset is translated by line index. That translation
+        # was live, load-bearing and UNOBSERVED: deleting it left the whole suite green, because
+        # every other fallback fixture happens to carry exactly one label before its `end`, so the
+        # skew never crossed an assertion (found by review, by mutating it away).
+        #
+        # This asserts the TEXT of `body` and `out_scope`, on a source with FOUR labelled
+        # statements, so the skew is 4 label prefixes wide and lands the terminator inside the
+        # body. `gfortran -fsyntax-only -std=f2008 -Wall` accepts it (executed).
+        source = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(u, v, n)
+  integer, intent(in) :: n
+  real, intent(in) :: u(n)
+  real, intent(out) :: v(n)
+  integer :: i
+  do 100 i = 1, 4
+    v(i) = u(i)
+100 continue
+  do 200 i = 1, 4
+    v(i) = v(i) + u(i)
+200 continue
+end subroutine solve
+end module shallow_water2d_model
+"""
+        envelope = vps._fortran_procedure_envelopes(source.lower())[0]
+        # The body starts after the header and ends BEFORE the terminator, with no part of
+        # `end subroutine solve` inside it and nothing of the declarations lost from the front.
+        self.assertTrue(envelope.body.startswith("integer, intent(in) :: n\n"), envelope.body)
+        self.assertTrue(envelope.body.endswith("continue\n"), envelope.body)
+        self.assertNotIn("end subroutine", envelope.body)
+        # No `contains`, so out_scope is the whole body — the same two boundaries, translated.
+        self.assertEqual(envelope.body, envelope.out_scope)
+
+    def test_a_file_needing_both_label_readings_at_once_is_refused(self) -> None:
+        # THE DECLARED RESIDUE of choosing the reading per FILE rather than per statement: a
+        # source that needs the labels kept in one place and stripped in another parses under
+        # neither reading and is refused. It takes a labelled scoping statement (`100 contains`)
+        # AND a labelled `DO` in the same file; `gfortran -fsyntax-only -std=f2008 -Wall` accepts
+        # it (executed), and 0 of the 365 in-tree models carry a statement label of any kind, let
+        # alone both shapes.
+        #
+        # Pinned as REFUSED rather than left undiscovered: the failure is fail-closed and visible,
+        # and closing it would mean a fourth label mechanism — an error-guided per-statement
+        # repair — for a conjunction of two exotic features. Recorded in TODO.md instead.
+        source = """module shallow_water2d_model
+  implicit none
+100 contains
+  subroutine solve(u, v)
+    real, intent(in) :: u
+    real, intent(out) :: v
+    integer :: i
+    v = 0.0
+    do 100 i = 1, 4
+      v = v + u
+100 continue
+  end subroutine solve
+end module shallow_water2d_model
+"""
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_a_labelled_structural_statement_is_still_structural(self) -> None:
         # A statement LABEL may precede any statement. Both structural statements here are
@@ -6960,6 +7555,14 @@ end module shallow_water2d_model
                 "  real scratch\n  common /blk/ scratch\n  call dep__op(u_in, scratch)",
             ),
         ):
+            # `u_out = u_in` sits BEFORE `{body}`, not after it: one row ends its body with a
+            # CONTAINED procedure, and nothing may follow a `contains` part except the END
+            # statement — `gfortran -fsyntax-only -std=f2008` answers "Unexpected assignment
+            # statement in CONTAINS section" (executed). The old regex walk read the illegal
+            # source anyway; a parser refuses it, which turned a rule test into a refusal test
+            # for a reason that had nothing to do with the rule. The gate's answer does not
+            # depend on the order (the closure is assignment-based, not flow-sensitive), which is
+            # why every row still asserts the same violation.
             source = f"""module shallow_water2d_model
 use dep_model
 implicit none
@@ -6968,8 +7571,8 @@ contains
 subroutine solve(u_in, u_out)
   real, intent(in) :: u_in
   real, intent(out) :: u_out
-{body}
   u_out = u_in
+{body}
 end subroutine solve
 end module shallow_water2d_model
 """
@@ -7503,6 +8106,7 @@ end module m
                 execution=execution,
                 model_file=Path("shallow_water2d_model.f90"),
                 lowered=source.lower(),
+                envelopes=vps._fortran_procedure_envelopes(source.lower()),
                 dep_spec_ids=["flux"],
                 violations=violations,
             )
@@ -12924,8 +13528,17 @@ end program shallow_water2d_runner
         # Budget: the sibling `validate.execute` excerpt caps at 4000 chars and
         # `_compile_static_inproc` does not cap at all, so keep the per-line cost bounded.
         # 17 such lines (the canonical 2d example) must stay well inside that budget.
+        # Measured WITHOUT the leading `<contract_path>:`. That prefix is the checkout's
+        # path, not something this code authors: counting it made the budget depend on
+        # where the tree happens to live, and a deep enough checkout (or TMPDIR) failed
+        # this test on its own, with the remedy unchanged.
+        prefix = f"{contract_path}:"
+        authored = []
+        for line in undefined:
+            self.assertTrue(line.startswith(prefix), f"no path prefix to strip: {line}")
+            authored.append(line[len(prefix):])
         self.assertLess(
-            max(len(v) for v in undefined), 400,
+            max(len(v) for v in authored), 400,
             "the undefined-binding line grew past its excerpt budget; shorten the remedy "
             "and put the detail in phase_01_compile.md V3",
         )

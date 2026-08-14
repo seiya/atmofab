@@ -523,6 +523,22 @@ class DecisionTableTest(unittest.TestCase):
         d = wc.classify_gate_failure(["lint_findings", "stale_dependency_ir"])
         self.assertEqual(d.action, "fail_closed")
         self.assertIn("stale_dependency_ir", wc.GATE_FAILURE_TERMINAL)
+        # An absent Fortran structure front end is terminal for the same reason and a different
+        # owner: the machine running the gate lacks `tree-sitter` / `tree-sitter-fortran`, so no
+        # source the leaf can author makes the three `problem` gates readable again.
+        d = wc.classify_gate_failure(["static_frontend_unavailable"])
+        self.assertEqual(d.action, "fail_closed")
+        d = wc.classify_gate_failure(["lint_findings", "static_frontend_unavailable"])
+        self.assertEqual(d.action, "fail_closed")
+        self.assertIn("static_frontend_unavailable", wc.GATE_FAILURE_TERMINAL)
+        # It must also be a KNOWN category, not merely a terminal one: an unknown category keeps
+        # its first-seen position after the known ones and reaches the escalate path, so leaving
+        # it out of the canonical order makes the route reason non-deterministic in a union.
+        # (Found by mutation: nothing noticed when it was dropped from the order tuple.)
+        self.assertIn("static_frontend_unavailable", wc._GATE_CATEGORY_CANON_ORDER)
+        self.assertEqual(
+            ["lint_findings", "static_frontend_unavailable"],
+            wc._gate_categories_canonical(["static_frontend_unavailable", "lint_findings"]))
         # An unknown category escalates; an empty list escalates with the no-category reason.
         self.assertEqual(wc.classify_gate_failure(["mystery"]).action, "escalate")
         self.assertEqual(wc.classify_gate_failure([]).reason, "gate_fail_no_category")
@@ -14178,6 +14194,74 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "post_generate_violation")
             self.assertIn("pg-out", meta["failure_excerpt"])
+
+    def test_gate_static_check_maps_the_frontend_exit_code_to_a_terminal_category(self) -> None:
+        # The classification channel is the validator's EXIT CODE, imported from the module that
+        # sets it — never a copy of the number, and never the output text. The category it maps to
+        # must also BE terminal, which is asserted where GATE_FAILURE_TERMINAL is (routing test
+        # above); this row asserts the mapping, and neither implies the other.
+        import tempfile
+        from tools.validate_pipeline_semantics import FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    return wc.subprocess.CompletedProcess(
+                        cmd, FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                        "pipeline semantic validation: FAIL\n"
+                        "- [fortran-structure-unavailable] the Fortran structure front end is "
+                        "not available on this machine", "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "static_frontend_unavailable")
+
+    def test_no_gate_output_text_can_forge_the_frontend_classification(self) -> None:
+        # THE POINT OF THE EXIT CODE. A leaf chooses its model source's filename, and the
+        # validator interpolates that filename into ordinary violations, so every text-based
+        # classification was forgeable — three successive versions were defeated in three review
+        # rounds by a filename carrying the marker, then one carrying a newline before it, then
+        # one carrying a newline and `- ` before it. All three payloads are replayed here at rc 1;
+        # with the classification keyed on the code, the TEXT cannot matter, so this is a set
+        # assertion about the channel rather than another sample of the prose.
+        import tempfile
+        marker = "[fortran-structure-unavailable]"
+        payloads = (
+            f"- src: model source {marker}_model.f90 present but must be named spec_x_model.f90",
+            f"- src: model source x\n{marker}_model.f90 present but must be named spec_x",
+            f"- src: model source x\n- {marker}_model.f90 present but must be named spec_x",
+            f"- {marker} a violation that merely quotes the marker at the start of a line",
+        )
+        for payload in payloads:
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                refs = self._refs()
+                self._seed(repo, refs)
+                c = self._conductor(repo)
+
+                def run(cmd, _payload=payload, **kwargs):
+                    script = next((x for x in cmd if x.endswith(".py")), "")
+                    if script.endswith("validate_workspace_root.py"):
+                        return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                    if script.endswith("validate_pipeline_semantics.py"):
+                        return wc.subprocess.CompletedProcess(
+                            cmd, 1, f"pipeline semantic validation: FAIL\n{_payload}", "")
+                    raise AssertionError(f"unexpected subprocess: {cmd}")
+
+                with self._patch_run(run):
+                    out = c._gate_static_check(refs, "child-1", "captok")
+            self.assertEqual("post_generate_violation", out["failure_category"], payload)
+            self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
+                             payload)
 
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile

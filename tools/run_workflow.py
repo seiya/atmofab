@@ -95,9 +95,42 @@ PHASE_ORDER = ["Compile", "Generate", "Build", "Validate"]
 # but already in the agent's environment.
 REQUIRED_CLI_TOOLS = ("python3", "jq", "git")
 
+# Python packages the workflow runtime imports mid-run, checked here for the same reason as the
+# CLI tools above: without them the run does not fail at launch, it fails at the first `Generate`
+# node's `Generate.gate` static check — after lint and syntax have already passed, in a BILLED
+# run — and terminalizes, because an absent Fortran structure front end is fail-closed by design
+# (`tools/fortran_structure.py`). The failure is correct and the timing is not: nothing in this
+# repository installs these, so a machine that satisfies the RUNBOOK today does not have them.
+#
+# Checked by IMPORT NAME, not by distribution name: the distributions are `tree-sitter` and
+# `tree-sitter-fortran`, which is what the operator types, so the message carries both.
+REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = (
+    ("tree_sitter", "tree-sitter"),
+    ("tree_sitter_fortran", "tree-sitter-fortran"),
+)
+
 
 def _check_required_cli_tools() -> list[str]:
     return [tool for tool in REQUIRED_CLI_TOOLS if shutil.which(tool) is None]
+
+
+def _check_required_python_modules() -> list[str]:
+    """The distribution names of any `REQUIRED_PYTHON_MODULES` this interpreter cannot import.
+
+    `find_spec` rather than an import: this runs before anything else and must not execute a
+    third-party module's top level to answer a question about its presence.
+    """
+    import importlib.util
+
+    missing: list[str] = []
+    for module_name, distribution in REQUIRED_PYTHON_MODULES:
+        try:
+            found = importlib.util.find_spec(module_name) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append(distribution)
+    return missing
 
 
 @dataclass(frozen=True)
@@ -2263,6 +2296,23 @@ def _run_main(
                 "detail": f"missing tools: {','.join(missing_tools)}",
                 "missing": missing_tools,
                 "required": list(REQUIRED_CLI_TOOLS),
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
+        )
+        return 2
+    missing_modules = _check_required_python_modules()
+    if missing_modules:
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "missing_required_python_modules",
+                "detail": (
+                    f"missing python packages: {','.join(missing_modules)} — install with: "
+                    f"pip install {' '.join(missing_modules)}"
+                ),
+                "missing": missing_modules,
+                "required": [distribution for _module, distribution in REQUIRED_PYTHON_MODULES],
                 "docs_ref": "docs/RUNBOOK.md#0-1",
             },
             args.stdout_format,
