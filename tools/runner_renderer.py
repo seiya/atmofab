@@ -1084,7 +1084,7 @@ end subroutine harness_fortran_cpu__write_perf
 """
 
 # The §5.1 module-level `parameter` declarations. They are part of the published ABI but are not
-# stanzas, so `_parse_interface_stanzas` never sees them and the signature pin above compares only
+# stanzas, so `parse_interface_stanzas` never sees them and the signature pin above compares only
 # the SYMBOL `case_id_len`, never its value. A harness recert lowering it to 32 would therefore
 # leave the interface pin green while this renderer kept emitting a 64-wide `case_ids(:)` actual
 # for a 32-wide `intent(out)` dummy — the compiles-then-breaks class the case_id bound exists to
@@ -1123,16 +1123,18 @@ def assert_harness_pin(
     ``_certified_model_source``). Signatures that resolve to nothing usable (None / empty /
     malformed) fail closed as a missing-artifact error, distinctly from interface drift.
     """
-    from tools.validate_pipeline_semantics import (
-        _fortran_logical_lines, _parse_interface_stanzas, _stanza_atoms, _stanza_line_set,
-        _stanza_line_list)
+    # The §5.1 stanza layer, from the language backend. It used to be imported out of
+    # `validate_pipeline_semantics`, where it sat as five private names — Fortran knowledge in a
+    # neutral module, which this module then had to reach back into (docs/BACKEND_BOUNDARY.md).
+    from tools.backends.language.fortran.signatures import (
+        parse_interface_stanzas, source_atoms, stanza_atoms, stanza_line_set, stanza_line_list)
 
     if (harness_spec_id or "").strip() != EXPECTED_HARNESS_SPEC_ID:
         raise RenderError(
             f"harness_spec_id {harness_spec_id!r} is not the pinned "
             f"{EXPECTED_HARNESS_SPEC_ID!r}; the renderer only targets that harness")
 
-    exp_ops, exp_types, exp_errs = _parse_interface_stanzas(_HARNESS_V3_INTERFACE)
+    exp_ops, exp_types, exp_errs = parse_interface_stanzas(_HARNESS_V3_INTERFACE)
     if exp_errs:  # a renderer bug, not an input problem
         raise RenderError(f"embedded harness interface failed to parse: {exp_errs}")
 
@@ -1140,12 +1142,9 @@ def assert_harness_pin(
     # `integer, parameter :: dp = real64, case_id_len = 64` declaration matches — the same
     # normalization `_validate_infrastructure_generated_signatures` uses to pin §5.1 against the
     # source, applied here to pin the RENDERER against the source.
-    src_atoms = frozenset(
-        atom for line in _fortran_logical_lines(harness_source or "")
-        for atom in _stanza_atoms([line])
-    )
+    src_atoms = source_atoms(harness_source or "")
     for pline in _HARNESS_V3_PARAMETERS:
-        if any(atom not in src_atoms for atom in _stanza_atoms([pline])):
+        if any(atom not in src_atoms for atom in stanza_atoms([pline])):
             raise RenderError(
                 f"certified harness model source does not declare the pinned module parameter "
                 f"`{pline}`, whose VALUE the rendered glue hardcodes (its `case_ids(:)` buffer "
@@ -1185,7 +1184,7 @@ def assert_harness_pin(
             "artifact (or a caller that failed to resolve it), NOT interface drift; re-certify "
             "the harness IR (run_workflow.py --with-deps) so its public_api.signatures is present")
 
-    src_ops, src_types, _src_errs = _parse_interface_stanzas(harness_source or "")
+    src_ops, src_types, _src_errs = parse_interface_stanzas(harness_source or "")
 
     for symbol in used_symbols:
         exp_stanza = exp_ops.get(symbol) or exp_types.get(symbol)
@@ -1203,11 +1202,11 @@ def assert_harness_pin(
         if not ir_text:
             raise RenderError(
                 f"certified harness IR public_api.signatures omits {symbol!r}: {_PIN_DRIFT_HINT}")
-        ir_ops, ir_types, _ = _parse_interface_stanzas(ir_text)
+        ir_ops, ir_types, _ = parse_interface_stanzas(ir_text)
         ir_stanza = ir_ops.get(symbol) or ir_types.get(symbol)
         ir_ok = ir_stanza is not None and (
-            _stanza_line_list(ir_stanza) == _stanza_line_list(exp_stanza) if is_type
-            else _stanza_line_set(ir_stanza) == _stanza_line_set(exp_stanza))
+            stanza_line_list(ir_stanza) == stanza_line_list(exp_stanza) if is_type
+            else stanza_line_set(ir_stanza) == stanza_line_set(exp_stanza))
         if not ir_ok:
             raise RenderError(
                 f"certified harness IR signature for {symbol!r} differs from the pinned "
@@ -1221,10 +1220,10 @@ def assert_harness_pin(
             raise RenderError(
                 f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
         if is_type:
-            src_ok = _stanza_line_list(src_stanza) == _stanza_line_list(exp_stanza)
+            src_ok = stanza_line_list(src_stanza) == stanza_line_list(exp_stanza)
         else:
-            have = frozenset(_stanza_atoms(src_stanza))
-            src_ok = _stanza_line_set(exp_stanza).issubset(have)
+            have = frozenset(stanza_atoms(src_stanza))
+            src_ok = stanza_line_set(exp_stanza).issubset(have)
         if not src_ok:
             raise RenderError(
                 f"certified harness model source signature for {symbol!r} differs from the "

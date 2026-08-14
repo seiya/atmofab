@@ -6,12 +6,16 @@ Objective B (``docs`` plan ``swift-mixing-dijkstra``): ``controlled_spec`` §5.1
 Fortran stanza, and how a Fortran stanza parses back to the structured form — lives HERE, in one
 backend module, instead of being spread across the deterministic gates.
 
-This module exposes two pure functions plus the struct vocabulary:
+This module exposes two pure functions plus the struct vocabulary, over a §5.1 stanza layer
+(``parse_interface_stanzas`` / ``stanza_atoms`` / ``stanza_line_list`` / ``stanza_line_set`` /
+``declaration_atoms`` / ``canonicalize_end_line``) that the neutral gates also call directly:
+splitting a §5.1 block into per-symbol stanzas and reducing a stanza to its comparison atoms is
+Fortran knowledge, and the gates that compare them are neutral.
 
 - ``parse_signatures_from_fortran(block_body)`` — a §5.1 Fortran interface block → the structured
-  representation (``{module_parameters, types, procedures}``). Built on the existing
-  ``validate_pipeline_semantics`` stanza splitter / normalizer, so it inherits their comment /
-  continuation / case / whitespace handling.
+  representation (``{module_parameters, types, procedures}``). Built on this module's own stanza
+  splitter (``parse_interface_stanzas``) over the shared logical-line scanner in ``lines``, so it
+  inherits their comment / continuation / case / whitespace handling.
 - ``render_signatures_to_fortran(struct)`` — the inverse: the structured representation → a canonical
   Fortran interface block whose *normalized* lines (comments stripped, ``&`` joined, case-folded,
   whitespace-erased) are token-for-token what the current §5.1 gates compare.
@@ -36,11 +40,201 @@ import re
 from typing import Any
 
 from tools.backends.language.fortran import lines as fortran_lines
-from tools.validate_pipeline_semantics import (
-    _fortran_logical_lines,
-    _normalize_fortran_line,
-    _parse_interface_stanzas,
+
+# --- §5.1 canonical interface block: stanza parsing + comparison atoms ---------------------------
+#
+# §5.1 gives the exact published surface as a fenced Fortran interface block. Two deterministic
+# gates consume it: the ``--stage compile`` gate cross-checks its symbol set against §5, and the
+# ``Generate.static`` gate pins the generated model source against each signature's interface
+# lines. Both compare after a normalization that erases every non-semantic difference — inline
+# comments, ``&`` continuations, case, and whitespace — so a signature authored one way in §5.1
+# and formatted another way in the generated source still matches (and a genuine argument-name /
+# type / rank / intent drift still fails).
+#
+# This layer used to live in ``tools/validate_pipeline_semantics.py``, and this module imported it
+# back out of the neutral core — a backend reaching into the neutral core for its own subject
+# matter (`docs/BACKEND_BOUNDARY.md`, the blocking sub-item of TODO.md's validator area). The
+# gates that consume it are neutral and reach it here, through the language backend.
+
+_IFACE_PROC_START = re.compile(
+    r"^\s*(?:pure\s+|elemental\s+|recursive\s+)*(subroutine|function)\s+([A-Za-z0-9_]+)",
+    re.IGNORECASE,
 )
+# ``end\s*`` (space optional) accepts the legal no-space free-form keywords endsubroutine /
+# endfunction / endtype as well as the spaced forms.
+_IFACE_PROC_END = re.compile(r"^\s*end\s*(?:subroutine|function)\b", re.IGNORECASE)
+# A type DEFINITION header: ``type :: name`` or ``type, attrs :: name`` — never a component
+# declaration ``type(...) :: x`` (a ``(`` immediately follows ``type`` there, so ``::`` at the
+# end is preceded by the parenthesized kind, not a bare/attributed ``type``).
+_IFACE_TYPE_START = re.compile(
+    r"^\s*type\s*(?:,\s*[^:()]*?)?::\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE
+)
+_IFACE_TYPE_END = re.compile(r"^\s*end\s*type\b", re.IGNORECASE)
+
+_END_STMT_RE = re.compile(r"^\s*end\s*(type|subroutine|function)\b", re.IGNORECASE)
+
+
+def canonicalize_end_line(line: str) -> str:
+    """Reduce a closing ``end [type|subroutine|function] [name]`` to just ``end <kind>`` — the
+    optional trailing construct name is legal to omit (bare ``end type`` is the common style) and
+    is redundant with the header, so a stanza that drops it must still compare equal."""
+    m = _END_STMT_RE.match(line)
+    return f"end {m.group(1).lower()}" if m else line
+
+
+def parse_interface_stanzas(
+    block_body: str,
+) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
+    """Parse a §5.1 canonical Fortran interface block into per-symbol *stanzas*.
+
+    Returns ``(op_stanzas, type_stanzas, errors)``. Each stanza value is the ordered list of that
+    symbol's interface logical lines (comment-stripped, continuation-joined, but NOT yet
+    whitespace-normalized — kept readable for gate messages):
+    - a procedure stanza is its ``subroutine``/``function`` header + every dummy-argument /
+      ``result`` declaration up to (but excluding) the ``end`` line;
+    - a type stanza is its ``type :: name`` header + component declarations + the ``end type``
+      line (inclusive, so the closing name is pinned too).
+    Lines outside any stanza (the public ``parameter`` declarations, comments, blanks) are
+    ignored. An unterminated stanza OR a duplicate symbol name is reported in ``errors``
+    (fail-closed at the caller — a duplicate must never silently overwrite, which would let a
+    malformed first copy hide behind a correct second)."""
+    lines = fortran_lines.fortran_logical_line_texts(block_body)
+    op_stanzas: dict[str, list[str]] = {}
+    type_stanzas: dict[str, list[str]] = {}
+    errors: list[str] = []
+    seen: set[str] = set()
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        m_type = _IFACE_TYPE_START.match(line)
+        m_proc = _IFACE_PROC_START.match(line)
+        if m_type:
+            name = m_type.group(1)
+            stanza = [line]
+            i += 1
+            closed = False
+            while i < n:
+                cur = lines[i].strip()
+                # A following stanza header terminates this one so it cannot swallow the next
+                # symbol — but a derived type MUST close with `end type` (a bare `end` does NOT
+                # close a type in Fortran), so reaching a header first leaves `closed` False and
+                # the stanza is reported unterminated (fail-closed). Reprocess the header on the
+                # outer loop (do not advance).
+                if cur and (_IFACE_TYPE_START.match(cur) or _IFACE_PROC_START.match(cur)):
+                    break
+                if cur:
+                    stanza.append(cur)
+                if cur and _IFACE_TYPE_END.match(cur):
+                    closed = True
+                    i += 1
+                    break
+                i += 1
+            if not closed:
+                errors.append(f"unterminated derived-type definition '{name}'")
+            if name in seen:
+                errors.append(f"duplicate signature for symbol '{name}'")
+            seen.add(name)
+            type_stanzas[name] = stanza
+        elif m_proc:
+            name = m_proc.group(2)
+            stanza = [line]
+            i += 1
+            closed = False
+            while i < n:
+                cur = lines[i].strip()
+                if cur and _IFACE_PROC_END.match(cur):
+                    closed = True
+                    i += 1
+                    break
+                # A bare `end` (legal for a module procedure) is not matched above; terminate on the
+                # next stanza header so it cannot swallow the following symbol (reprocess it).
+                if cur and (_IFACE_PROC_START.match(cur) or _IFACE_TYPE_START.match(cur)):
+                    closed = True
+                    break
+                if cur:
+                    stanza.append(cur)
+                i += 1
+            if not closed:
+                errors.append(f"unterminated procedure interface '{name}'")
+            if name in seen:
+                errors.append(f"duplicate signature for symbol '{name}'")
+            seen.add(name)
+            op_stanzas[name] = stanza
+        else:
+            i += 1
+    return op_stanzas, type_stanzas, errors
+
+
+def declaration_atoms(logical_line: str) -> list[str]:
+    """Canonicalize a declaration into one line per declared entity, so a combined declarator
+    (``integer, intent(in) :: a, b`` — legal Fortran, ABI-identical, and explicitly permitted by
+    §5.1's "formatting may differ") compares equal to the one-per-line form. Non-declarations (a
+    ``subroutine``/``function`` header, an ``end`` line — no ``::``) pass through unchanged. The
+    shared type-spec + attributes (before ``::``) is prefixed onto each comma-separated entity of
+    the entity list (after ``::``, split on top-level commas so an array-spec comma stays intact).
+    """
+    if "::" not in logical_line:
+        return [logical_line]
+    lhs, _sep, rhs = logical_line.partition("::")
+    entities = [e.strip() for e in fortran_lines.split_top_level_commas(rhs)]
+    entities = [e for e in entities if e]
+    if not entities:
+        return [logical_line]
+    lhs = lhs.strip()
+    return [f"{lhs} :: {entity}" for entity in entities]
+
+
+def stanza_atoms(lines: list[str]) -> tuple[str, ...]:
+    """Ordered, normalized, per-entity atoms of a stanza — every declaration split into one atom
+    per declared name (``declaration_atoms``) then normalized. This is the canonical comparison
+    unit for both gates: it makes combined vs one-per-line declarations, and formatting /
+    continuation / comment / case / whitespace differences, all compare equal, while a genuine
+    name / type / rank / intent / component drift still differs. A closing ``end [type|subroutine|
+    function] [name]`` is canonicalized to drop the optional trailing name (bare ``end type`` — the
+    common Fortran style — is byte-for-ABI identical to ``end type <name>``; the type/proc name is
+    already pinned by the header)."""
+    out: list[str] = []
+    for line in lines:
+        line = canonicalize_end_line(line)
+        for atom in declaration_atoms(line):
+            norm = fortran_lines.normalize_fortran_line(atom)
+            if norm:
+                out.append(norm)
+    return tuple(out)
+
+
+def stanza_line_set(lines: list[str]) -> frozenset[str]:
+    """Per-entity atom SET of a stanza — used where declaration order is immaterial (a procedure's
+    dummy-argument declarations, which Fortran permits in any order and which the header line
+    already pins for call order)."""
+    return frozenset(stanza_atoms(lines))
+
+
+def stanza_line_list(lines: list[str]) -> tuple[str, ...]:
+    """Per-entity atom LIST of a stanza, order preserved — used where order is part of the contract
+    (a derived type's component layout; a verbatim IR transcription)."""
+    return stanza_atoms(lines)
+
+
+def source_atoms(text: str) -> frozenset[str]:
+    """Every comparison atom of a whole Fortran text, as a SET — the same per-entity atoms
+    ``stanza_atoms`` produces, taken over every logical line rather than one stanza's lines.
+
+    The view a caller needs to ask "does this source declare X anywhere", which is how the §5.1
+    module ``parameter`` declarations are pinned: they are part of the published ABI but are not
+    inside any stanza, so a stanza-scoped lookup cannot see them. Two callers had the same
+    two-level comprehension over `fortran_logical_line_texts` + `stanza_atoms`; stating it once
+    here also keeps the caller from needing the line scanner in its own right."""
+    return frozenset(
+        atom
+        for line in fortran_lines.fortran_logical_line_texts(text)
+        for atom in stanza_atoms([line])
+    )
+
 
 # --- struct vocabulary (documentation) ----------------------------------------------------------
 #
@@ -259,12 +453,12 @@ def parse_signatures_from_fortran(block_body: str) -> dict[str, Any]:
     derived-type stanzas become ``procedures`` / ``types``. Raises ``SignatureParseError`` on any
     stanza the backend cannot lower (fail-closed — a caller must not silently accept a partial parse).
     """
-    op_stanzas, type_stanzas, errors = _parse_interface_stanzas(block_body)
+    op_stanzas, type_stanzas, errors = parse_interface_stanzas(block_body)
     if errors:
         raise SignatureParseError("; ".join(errors))
 
     module_parameters: list[dict[str, Any]] = []
-    for logical in _fortran_logical_lines(block_body):
+    for logical in fortran_lines.fortran_logical_line_texts(block_body):
         mp = _MODULE_PARAM_RE.match(logical)
         if mp:
             module_parameters.append(
@@ -738,12 +932,13 @@ def normalized_stanza_index(block_body: str) -> dict[str, frozenset[str]]:
     per-symbol comparison key: symbol identity + a whitespace/case/comment-insensitive line set.
     Used to compare a rendered structured block against a generated ``.f90`` (or two structured
     forms) with the exact semantics the current gates use for procedures."""
-    op_stanzas, type_stanzas, errors = _parse_interface_stanzas(block_body)
+    op_stanzas, type_stanzas, errors = parse_interface_stanzas(block_body)
     if errors:
         raise SignatureParseError("; ".join(errors))
     index: dict[str, frozenset[str]] = {}
+    normalize = fortran_lines.normalize_fortran_line
     for name, lines in {**op_stanzas, **type_stanzas}.items():
         index[name] = frozenset(
-            _normalize_fortran_line(ln) for ln in lines if _normalize_fortran_line(ln)
+            normalize(ln) for ln in lines if normalize(ln)
         )
     return index

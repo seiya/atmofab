@@ -16,14 +16,18 @@ import copy
 import unittest
 from pathlib import Path
 
+from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import (
     SignatureParseError,
+    declaration_atoms,
     load_structured_signatures,
     normalized_stanza_index,
+    parse_interface_stanzas,
     parse_signatures_from_fortran,
     render_module_parameter_to_fortran,
     render_signatures_to_fortran,
     render_symbol_to_fortran,
+    stanza_atoms,
 )
 from tools.runner_renderer import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
@@ -171,13 +175,11 @@ class FortranStanzaParserTests(unittest.TestCase):
             parse_signatures_from_fortran(dup)
 
     def test_bare_end_does_not_swallow_following_procedure(self) -> None:
-        from tools.validate_pipeline_semantics import _parse_interface_stanzas
-
         block = (
             "function hx__a(x) result(s)\n  real, intent(in) :: x\n  real :: s\nend\n"
             "function hx__b(y) result(s)\n  real, intent(in) :: y\n  real :: s\n"
             "end function hx__b\n")
-        ops, _types, _errors = _parse_interface_stanzas(block)
+        ops, _types, _errors = parse_interface_stanzas(block)
         self.assertEqual(set(ops), {"hx__a", "hx__b"})
 
     def test_type_missing_end_type_is_unterminated(self) -> None:
@@ -198,11 +200,9 @@ class FortranStanzaParserTests(unittest.TestCase):
 
 
 def _type_lines(block: str, suffix: str) -> list[str]:
-    from tools.validate_pipeline_semantics import _parse_interface_stanzas, _normalize_fortran_line
-
-    _ops, types, _errs = _parse_interface_stanzas(block)
+    _ops, types, _errs = parse_interface_stanzas(block)
     name = next(n for n in types if n.endswith(suffix))
-    return [_normalize_fortran_line(ln) for ln in types[name] if _normalize_fortran_line(ln)]
+    return [normalize_fortran_line(ln) for ln in types[name] if normalize_fortran_line(ln)]
 
 
 class MalformedStructFailClosedTest(unittest.TestCase):
@@ -608,6 +608,114 @@ class SharedSplitterMigrationTests(unittest.TestCase):
         )
         names = [c["name"] for t in struct["types"] for c in t["components"]]
         self.assertEqual(names, ["sep", "g"])
+
+
+
+class BackendDoesNotImportTheNeutralCoreTest(unittest.TestCase):
+    """This module must not import `validate_pipeline_semantics`, at module level or lazily.
+
+    It did, for its whole life before this change: `_fortran_logical_lines`,
+    `_normalize_fortran_line` and `_parse_interface_stanzas` (and, through `runner_renderer`, the
+    stanza-atom family) were private helpers of the validator, so the Fortran backend reached back
+    into the neutral core for its own subject matter — the blocking sub-item of the validator area
+    in TODO.md's migration ledger. Nothing else observes the direction: the import worked, the
+    suite was green, and re-adding it today would be invisible without this.
+
+    A subprocess is required. `validate_pipeline_semantics` is imported by most of this test run,
+    so in-process `sys.modules` says nothing about who imported it; a fresh interpreter that
+    imports only this backend module can answer.
+    """
+
+    def test_importing_this_backend_does_not_drag_in_the_validator(self) -> None:
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import tools.backends.language.fortran.signatures\n"
+            "assert 'tools.validate_pipeline_semantics' not in sys.modules, "
+            "'the language backend imported the neutral core'\n"
+            "print('ok')\n" % str(REPO_ROOT)
+        )
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr[-2000:])
+        self.assertIn("ok", out.stdout)
+
+
+class Section51StanzaLayerTests(unittest.TestCase):
+    """The §5.1 stanza layer: `parse_interface_stanzas`, `declaration_atoms`, `stanza_atoms`.
+
+    Moved here with the functions themselves, which used to be private helpers of
+    `validate_pipeline_semantics`. Each of these is a reproducer for a defect that made a
+    deterministic gate wrong on source gfortran accepts, so they travel with the code they
+    pin rather than with the gates that call it."""
+
+    def test_commented_out_stanza_behind_an_exotic_separator_is_not_parsed(self) -> None:
+        # issue #23, defect A, at `_parse_interface_stanzas` — which the generated-signature
+        # gate runs over the MODEL SOURCE to compare each pinned §5.1 signature within its own
+        # procedure stanza. A form feed inside a comment ended the comment early under
+        # `str.splitlines()` and re-admitted its tail AS CODE, conjuring a stanza header out of
+        # prose: it never closes, so it is reported unterminated and fails Generate closed on a
+        # source gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = ("module hx_model\ncontains\n"
+                       f"  ! removed: {ch} subroutine hx__ghost(a)\n"
+                       "  subroutine hx__real(a)\n"
+                       "    real, intent(in) :: a\n"
+                       "  end subroutine\n"
+                       "end module\n")
+                ops, types, errors = parse_interface_stanzas(src)
+                self.assertEqual(errors, [], f"a {name} must not end the comment")
+                self.assertEqual(sorted(ops), ["hx__real"])
+                self.assertEqual(types, {})
+
+    def test_declaration_atoms_split_combined_declarators(self) -> None:
+        # A combined declarator splits into one atom per entity; array-spec commas stay intact.
+        self.assertEqual(
+            declaration_atoms("integer, intent(in) :: steps, cells_updated"),
+            ["integer, intent(in) :: steps", "integer, intent(in) :: cells_updated"])
+        self.assertEqual(
+            declaration_atoms("real(dp), intent(in) :: a(:), b(2,2)"),
+            ["real(dp), intent(in) :: a(:)", "real(dp), intent(in) :: b(2,2)"])
+        # A header (no ::) passes through unchanged.
+        self.assertEqual(
+            declaration_atoms("subroutine hx__foo(a, b)"), ["subroutine hx__foo(a, b)"])
+
+    def test_declaration_atoms_keep_a_comma_inside_a_character_literal(self) -> None:
+        # Splitter-level reproducer: this module used to define `_split_top_level_commas` twice
+        # ~9,500 lines apart, and the later quote-UNAWARE definition shadowed the quote-aware
+        # one, so the initializer's comma read as an entity separator — a truncated first atom
+        # plus a phantom `character(len=1), parameter :: '`.
+        self.assertEqual(
+            declaration_atoms("character(len=1), parameter :: sep = ',', tail = 'z'"),
+            ["character(len=1), parameter :: sep = ','",
+             "character(len=1), parameter :: tail = 'z'"])
+
+    def test_unbalanced_paren_in_an_initializer_does_not_split_the_forms_apart(self) -> None:
+        # The gate-level half, and the one the balanced case above does NOT reach: with a
+        # balanced literal both sides of the §5.1 comparison mis-split identically and cancel.
+        # An UNBALANCED paren inside the literal suppresses the split on the combined form only,
+        # so combined and one-per-line compared UNEQUAL and a legal declaration read as a
+        # signature mismatch — fail-closed. (gfortran -std=f2008 accepts the declaration.)
+        combined = ["character(len=3), parameter :: msg = 'a(b', tail = 'z'"]
+        per_line = ["character(len=3), parameter :: msg = 'a(b'",
+                    "character(len=3), parameter :: tail = 'z'"]
+        self.assertEqual(stanza_atoms(combined), stanza_atoms(per_line))
+
+    def test_combined_and_split_declarations_compare_equal(self) -> None:
+        combined = stanza_atoms(["integer, intent(in) :: a, b"])
+        split = stanza_atoms(
+            ["integer, intent(in) :: a", "integer, intent(in) :: b"])
+        self.assertEqual(combined, split)
+
+    def test_end_line_canonicalizes_trailing_name(self) -> None:
+        # bare `end type` compares equal to `end type NAME` (the name is pinned by the header).
+        with_name = stanza_atoms(
+            ["type :: hx__t", "  integer :: a", "end type hx__t"])
+        bare = stanza_atoms(["type :: hx__t", "  integer :: a", "end type"])
+        self.assertEqual(with_name, bare)
 
 
 if __name__ == "__main__":

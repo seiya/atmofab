@@ -67,14 +67,21 @@ every one of them turned a `Generate.static` verdict wrong for source gfortran a
 
 Stdlib only and importing nothing from this package, so every site can depend on it. No
 existing module is a home: the validator may not import `orchestration_runtime`
-(module-boundary rule); `backends.language.fortran.signatures` imports the validator at module level, so
-hosting it there would put the validator in a cycle; and hosting it in the validator would
-force `orchestration_runtime` to import that module at module level, which imports PyYAML
+(module-boundary rule), and hosting the scanner in the validator would force
+`orchestration_runtime` to import that module at module level, which imports PyYAML
 unconditionally — the runtime deliberately defers PyYAML so its recovery commands stay usable
 without it. Same precedent as `tools/pure_leaf.py`.
+
+An earlier version of that paragraph gave a third reason — that
+`backends.language.fortran.signatures` imports the validator at module level, so hosting the
+scanner there would put the validator in a cycle. That reason is GONE: those imports existed
+only because the §5.1 line and stanza helpers sat in the validator, and they now live here and
+in `signatures` itself, so `signatures` imports nothing from the neutral core.
 """
 
 from __future__ import annotations
+
+import re
 
 # gfortran's blank set for free-form source: space, tab, form feed. NOT Python's `str.strip()`
 # set, which also folds `\v`, `\x85`, `\xa0`, `\u2028` and friends. That difference is the same
@@ -241,6 +248,27 @@ def fortran_logical_lines(text: str) -> list[tuple[int, str]]:
     if not _is_all_blank(buffer):
         logical.append((start_lineno, buffer))
     return logical
+
+
+def fortran_logical_line_texts(text: str) -> list[str]:
+    """``fortran_logical_lines`` without the line numbers — the joined text of each logical line.
+
+    The view every §5.1 consumer wants: comments stripped and ``&`` continuations joined, case and
+    indentation preserved (normalization is per-line, in ``normalize_fortran_line``), blank and
+    comment-only lines producing no entry, and — unlike the validator's ``;``-splitting
+    ``_iter_fortran_logical_lines`` — no statement splitting, because the interface-stanza parser
+    wants each header as written.
+
+    It lives beside the scanner it adapts rather than in its caller: as a private helper in the
+    validator it was one of the three Fortran helpers `backends.language.fortran.signatures` had to
+    import back out of the neutral core (TODO.md's blocking sub-item)."""
+    return [joined for _lineno, joined in fortran_logical_lines(text)]
+
+
+def normalize_fortran_line(logical_line: str) -> str:
+    """Canonical form of a (comment-stripped, continuation-joined) logical line: lower-cased with
+    ALL whitespace removed, so formatting/alignment differences do not defeat an equality test."""
+    return re.sub(r"\s+", "", logical_line).lower()
 
 
 def continuation_state_after_line(
