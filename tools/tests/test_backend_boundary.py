@@ -21,12 +21,22 @@ boundary.
   leave a package — `tools/` is a namespace package that contains `tools/backends/`, so
   `from .backends.build_system.make import RULE` crosses the boundary without leaving it — and
   while a `SyntaxError` returned the empty set.
-* **Pinned by hand, in `ALLOWLIST_PATH`, which no command writes**: the allowlist above, the
-  scanned file set, and the token-class list. The first shared a file with the sampled half for
-  four review rounds and `--write-baseline` rewrote both, so a bypass added in any commit that
-  also shed a sampled token was absorbed without a word. The other two were observable only
-  through the regenerable baseline, whose failure message tells the maintainer to regenerate —
-  so narrowing the scope or deleting a token class failed once and passed forever after.
+* **Pinned by hand, in `ALLOWLIST_PATH`, which no command writes**: the allowlist above and the
+  instrument's REACH — its globs, its exclusions, its backend roots, and its token-class
+  patterns. The allowlist shared a file with the sampled half for four review rounds and
+  `--write-baseline` rewrote both, so a bypass added in any commit that also shed a sampled token
+  was absorbed without a word. Reach was observable only through the regenerable baseline, whose
+  failure message tells the maintainer to regenerate — so narrowing it failed once and passed
+  forever after, at three successive levels: a glob, a token class, and then one ALTERNATIVE of a
+  token class once the class names alone were pinned. The rules are pinned, not the file list
+  they produce: pinning the produced list made adding an ordinary new module a scope failure,
+  which is a false rejection on routine work.
+
+WHAT THIS SUITE CANNOT WITNESS ABOUT ITSELF. An assertion cannot observe its own weakening — an
+`assertEqual` relaxed to a containment, a necessity check relaxed to a tautology — because the
+weakened form is what would run. Five decisions here are of that kind. They are covered by
+external mutation runs, not by anything in this file, and are listed as a standing limit rather
+than left to read as covered.
 * **Pinned**: the *registry's own consistency*. Every declared axis has at least one backend,
   every `extracted` backend imports, and `unsupported_reason` answers `None` for exactly the
   declared members of a closed axis — an `open_vocabulary` axis accepts any non-empty token by
@@ -323,6 +333,14 @@ def _package_of(rel: str) -> str:
     return ".".join(parts[:-1])
 
 
+#: Callables that take a module name as a string and import it. `__import__` is here because it
+#: is a builtin — no import statement announces it — and a literal argument to it is as static and
+#: as executable as an `import` statement. What remains out of reach is an importer obtained
+#: INDIRECTLY (`importlib.__dict__["import_module"]("...")`) and any computed name; both are
+#: stated as limits rather than implied to be covered.
+_IMPORTER_CALLS = frozenset({"import_module", "__import__"})
+
+
 class UnparseableNeutralModule(Exception):
     """A neutral-core module the import pin could not parse.
 
@@ -333,7 +351,7 @@ class UnparseableNeutralModule(Exception):
     """
 
 
-def _imported_modules(source: str, package: str = "") -> set[str]:
+def _imported_modules(source: str, package: str = "", root: Path | None = None) -> set[str]:
     """Every backend-package module a source reaches, as an absolute dotted module path.
 
     Four spellings are read: `import a.b`, `from a.b import c`, `from .relative import c`, and
@@ -354,22 +372,27 @@ def _imported_modules(source: str, package: str = "") -> set[str]:
         raise UnparseableNeutralModule(str(exc)) from exc
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names.update(_module_prefix(alias.name) for alias in node.names)
+            names.update(_module_prefix(alias.name, root) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             target = _absolute_import_target(node.module, node.level, package)
             if not target:
                 continue
-            names.add(_module_prefix(target))
-            names.update(_module_prefix(f"{target}.{alias.name}") for alias in node.names)
+            names.add(_module_prefix(target, root))
+            names.update(
+                _module_prefix(f"{target}.{alias.name}", root) for alias in node.names)
         elif isinstance(node, ast.Call):
             func = node.func
             attr = func.attr if isinstance(func, ast.Attribute) else (
                 func.id if isinstance(func, ast.Name) else None)
-            if attr != "import_module" or not node.args:
+            if attr not in _IMPORTER_CALLS:
                 continue
-            first = node.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                names.add(_module_prefix(first.value))
+            # Positional OR keyword: `import_module(name="...")` and `__import__(name="...")`
+            # are the same crossing as the positional spelling, and requiring `node.args` read
+            # neither. The keyword is `name` for both callables.
+            candidates = [*node.args, *(k.value for k in node.keywords if k.arg == "name")]
+            for arg in candidates:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    names.add(_module_prefix(arg.value, root))
     return names
 
 
@@ -389,7 +412,7 @@ def direct_backend_imports(root: Path | None = None) -> dict[str, list[str]]:
         rel = path.relative_to(root).as_posix()
         try:
             reached = _imported_modules(
-                path.read_text(encoding="utf-8", errors="replace"), _package_of(rel))
+                path.read_text(encoding="utf-8", errors="replace"), _package_of(rel), root)
         except UnparseableNeutralModule as exc:
             raise UnparseableNeutralModule(f"{rel}: {exc}") from exc
         hits = {
@@ -444,6 +467,17 @@ def _load_baseline() -> dict[str, object]:
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
 
+def _absent_cause(rel: str, scanned: set[str]) -> str:
+    """Why a recorded file has no measured entry.
+
+    `token_counts` omits a file with no hits, so an absent entry means EITHER the file left the
+    scanned set OR it is still scanned and shed every sampled token. Naming only the first sent a
+    maintainer hunting for a scope change that had not happened. Extracted so both branches can
+    be driven directly: neither is reachable from this repository in a green state.
+    """
+    return "shed every sampled token" if rel in scanned else "left the scanned set"
+
+
 def _load_pinned() -> dict[str, object]:
     return json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
 
@@ -459,6 +493,7 @@ class TokenRatchetTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.baseline = _load_baseline()["token_counts"]
         cls.measured = token_counts()
+        cls.scanned = {p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()}
 
     def test_no_file_exceeds_its_recorded_count(self) -> None:
         grown: list[str] = []
@@ -476,6 +511,12 @@ class TokenRatchetTests(unittest.TestCase):
             "path), say so in the commit message and regenerate the baseline with "
             "`python3 -m tools.tests.test_backend_boundary --write-baseline`.")
 
+    def test_the_absent_file_message_names_the_right_cause(self) -> None:
+        # Both branches driven directly: in a green tree neither is reachable, so the message a
+        # maintainer acts on had no witness and named one cause for two situations.
+        self.assertEqual("shed every sampled token", _absent_cause("docs/a.md", {"docs/a.md"}))
+        self.assertEqual("left the scanned set", _absent_cause("docs/a.md", set()))
+
     def test_the_baseline_is_not_stale(self) -> None:
         # A ceiling that is never lowered stops being a ratchet. A file that shed backend spelling
         # — or left the scanned set entirely — must lower its recorded count in the same commit,
@@ -484,7 +525,8 @@ class TokenRatchetTests(unittest.TestCase):
         for rel, counts in sorted(self.baseline.items()):
             measured = self.measured.get(rel)
             if measured is None:
-                stale.append(f"{rel}: recorded but no longer in the scanned set")
+                stale.append(f"{rel}: recorded, now absent "
+                             f"({_absent_cause(rel, self.scanned)})")
                 continue
             for name, allowed in sorted(counts.items()):
                 n = measured.get(name, 0)
@@ -498,31 +540,43 @@ class TokenRatchetTests(unittest.TestCase):
 
 
 class ScopePinTests(unittest.TestCase):
-    """The scanned set and the token-class list, pinned by hand rather than by measurement.
+    """The instrument's REACH, pinned by hand rather than observed through its own measurements.
 
-    Both were previously observable only through the regenerable baseline, and both failure
-    messages tell the maintainer to regenerate. So narrowing the scope or deleting a token class
-    failed once and then passed forever: adding `docs/workflow/` to the exclusions dropped 89
-    recorded occurrences, deleting the `skills/**/*.md` glob dropped 13 files, and deleting a
-    token class together with its probe cost nothing — each green after one regeneration. Living
-    in `ALLOWLIST_PATH`, which no command writes, makes a change to either a reviewed hand edit.
+    Reach was previously visible only through the regenerable baseline, whose failure message
+    tells the maintainer to regenerate — so narrowing it failed once and passed forever after.
+    Measured escapes: adding `docs/workflow/` to the exclusions dropped 89 recorded occurrences;
+    deleting the `skills/**/*.md` glob dropped 13 files; deleting a token class with its probe
+    cost nothing; and — one level below the first fix for this — deleting ONE ALTERNATIVE of a
+    class with its probe dropped 13 more, because only the class NAMES were pinned.
+
+    What is pinned is the RULES, not the file list they produce. Pinning the produced list made
+    adding an ordinary new module a scope failure, which is a false rejection on routine work and
+    the fastest way to teach people to regenerate without reading. A glob, an exclusion, a
+    backend root or a token PATTERN changing is a reviewed hand edit; a new file matching the
+    existing rules is free.
     """
 
-    def test_the_scanned_file_set_matches_the_pinned_list(self) -> None:
-        recorded = list(_load_pinned()["scanned_files"])
-        measured = [p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()]
-        self.assertEqual(recorded, measured,
-                         "the scanned set changed. Widening it is the migration's job and "
-                         "narrowing it is a scope decision; either way, edit "
+    def test_the_scanning_rules_match_the_pinned_ones(self) -> None:
+        pinned = _load_pinned()
+        self.assertEqual([list(g) for g in pinned["scanned_globs"]],
+                         [list(g) for g in _SCANNED_GLOBS], "a scan glob changed")
+        self.assertEqual(list(pinned["excluded_prefixes"]), list(_EXCLUDED_PREFIXES),
+                         "an exclusion prefix changed")
+        self.assertEqual(list(pinned["backend_roots"]), list(_BACKEND_ROOTS),
+                         "a backend root changed")
+        self.assertEqual(pinned["skill_backend_shape"], _SKILL_BACKEND_SHAPE.pattern,
+                         "the skill backend-location shape changed")
+
+    def test_the_token_classes_match_the_pinned_patterns(self) -> None:
+        # Patterns, not names. Pinning names alone left the alternative level open: dropping
+        # `\bgcc\b` from `compiler-driver` together with its probe shed 13 occurrences, failed
+        # once with the regenerate-me message, and passed forever after — while
+        # `test_every_regex_alternative_is_necessary_and_probed` stayed green, since it only asks
+        # that the SURVIVING alternatives be necessary.
+        self.assertEqual(dict(_load_pinned()["token_classes"]), dict(_TOKEN_CLASSES),
+                         "a token class or one of its alternatives changed. Edit "
                          "tools/tests/data/backend_boundary_allowlist.json by hand — "
                          "`--write-baseline` does not touch it.")
-
-    def test_the_token_class_list_matches_the_pinned_list(self) -> None:
-        self.assertEqual(sorted(_load_pinned()["token_classes"]), sorted(_TOKEN_CLASSES),
-                         "a token class was added or removed. The probe table alone cannot "
-                         "catch this — deleting a class WITH its probe is free — and two of the "
-                         "four unextracted axes have a single class, so losing one loses an "
-                         "axis' whole sample.")
 
 
 class DirectImportPinTests(unittest.TestCase):
@@ -675,9 +729,23 @@ class ScannedSetTests(unittest.TestCase):
                 "docs/design/note.md",
                 "tools/tests/test_thing.py",
                 "docs/kept.md",
+                # MALFORMED backend locations. Each is under a backend root or matches the skill
+                # segment, and none is a backend: the axis segment is not a declared axis, or the
+                # `<axis>/<backend_id>` depth is missing. They must be SCANNED — excusing them is
+                # how debt came to vanish into `docs/backends/notes.md`, and requiring the axis
+                # segment to be declared had no control until this list grew these rows.
+                "docs/backends/notes.md",
+                "docs/backends/not_an_axis/fortran/abi.md",
+                "tools/backends/scratch.py",
+                "skills/gen/examples/backends/language.md",
+                "skills/gen/backends/not_an_axis/fortran.md",
             )
             found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
-        self.assertEqual({"docs/kept.md"}, found)
+        self.assertEqual(
+            {"docs/kept.md", "docs/backends/notes.md", "docs/backends/not_an_axis/fortran/abi.md",
+             "tools/backends/scratch.py", "skills/gen/examples/backends/language.md",
+             "skills/gen/backends/not_an_axis/fortran.md"},
+            found)
 
 
 class ImportReaderTests(unittest.TestCase):
@@ -708,6 +776,114 @@ class ImportReaderTests(unittest.TestCase):
             for name in found:
                 self.assertTrue(_is_module_path(name, REPO_ROOT),
                                 f"{label}: {name} is not a module")
+
+    def test_the_floor_keeps_an_unextracted_axis_visible(self) -> None:
+        """`tools.backends.<axis>` must survive even when no such directory exists.
+
+        Collapsing by existence alone walked `tools.backends.build_system.make` — an axis with
+        no package yet — all the way down to `tools.backends`, which is a REGISTRY module and so
+        filtered out. The blind set was the four unextracted axes, i.e. everything the migration
+        ledger is about. The guard that fixes this had no test: removing the floor left the whole
+        suite green.
+        """
+        for axis in registry.AXES:
+            if any(registry.get(axis, b).extracted for b in registry.backend_ids(axis)):
+                continue  # an extracted axis has a directory; the floor is not what saves it
+            backend_id = registry.backend_ids(axis)[0]
+            dotted = f"{BACKEND_PACKAGE}.{axis}.{backend_id}"
+            self.assertEqual(f"{BACKEND_PACKAGE}.{axis}", _module_prefix(dotted))
+            reached = _imported_modules(f"import {dotted}\n")
+            self.assertTrue(
+                reached - REGISTRY_MODULES,
+                f"{dotted} collapsed into the registry package and vanished from the pin")
+
+    def test_a_relative_import_into_a_backend_is_read(self) -> None:
+        # `tools/` is a PEP 420 namespace package that CONTAINS `tools/backends/`, so a relative
+        # import crosses the boundary without leaving the package. Skipping relative imports —
+        # the behaviour this replaced — left the whole suite green with a working bypass in place.
+        for package, source in (
+            ("tools", "from .backends.build_system.make import RULE\n"),
+            ("tools", "from .backends import language\n"),
+            ("tools.hooks", "from ..backends.language.fortran import structure\n"),
+        ):
+            reached = {n for n in _imported_modules(source, package)
+                       if n.startswith(BACKEND_PACKAGE)}
+            self.assertTrue(reached, f"{package}: {source.strip()!r} was not read")
+            self.assertTrue(reached - REGISTRY_MODULES, f"{package}: read only as the registry")
+        # And the package context is what makes it resolve to the RIGHT name: with no package
+        # the same statement yields `backends.…`, which is not under the backend package and so
+        # never reaches the pin.
+        self.assertEqual(
+            set(),
+            {n for n in _imported_modules("from .backends import language\n", "")
+             if n.startswith(BACKEND_PACKAGE)})
+
+    def test_an_unparseable_module_raises_instead_of_reading_as_clean(self) -> None:
+        # A file that does not parse is exactly where an unread import would sit. Returning the
+        # empty set let it leave the pin silently, and removing the raise left the suite green.
+        with self.assertRaises(UnparseableNeutralModule):
+            _imported_modules("import tools.backends.language.fortran.structure\ndef f(:\n")
+
+    def test_the_importer_call_spellings_are_read(self) -> None:
+        # `import_module(name=...)` required `node.args` and was unread; `__import__` is a
+        # builtin, so no import statement announces it and a literal argument to it is as static
+        # and as executable as an `import` statement.
+        for source in (
+            'import importlib\nimportlib.import_module(name="tools.backends.parallel.openmp")\n',
+            '__import__("tools.backends.compiler.gfortran")\n',
+            '__import__(name="tools.backends.linter.fortitude")\n',
+        ):
+            reached = {n for n in _imported_modules(source) if n.startswith(BACKEND_PACKAGE)}
+            self.assertTrue(reached - REGISTRY_MODULES, f"unread: {source.strip()!r}")
+
+    def test_an_indirectly_obtained_importer_is_out_of_reach_and_that_is_recorded(self) -> None:
+        # Not a defect to fix — resolving this needs the value of an expression, which a static
+        # reader does not have. Pinned so the documented limit stays true rather than becoming a
+        # guess, and so a later claim that the pin is total has a failing test to argue with.
+        source = ('import importlib\n'
+                  'importlib.__dict__["import_module"]("tools.backends.parallel.openmp")\n')
+        self.assertEqual(set(), {n for n in _imported_modules(source)
+                                 if n.startswith(BACKEND_PACKAGE)})
+
+    def test_the_reader_answers_from_the_root_it_is_given(self) -> None:
+        """`root` must reach the filesystem lookup, not just the signature.
+
+        It was accepted and ignored: `_module_prefix` resolved against `REPO_ROOT` regardless, so
+        a synthetic tree's imports were answered by the real repository — and no test passed a
+        root, so nothing noticed. Driven here against a tree that contains a DIFFERENT backend
+        layout from this one.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            pkg = tmp / "tools" / "backends" / "language" / "zz_probe"
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            dotted = f"{BACKEND_PACKAGE}.language.zz_probe.parts"
+            self.assertEqual(f"{BACKEND_PACKAGE}.language.zz_probe",
+                             _module_prefix(dotted, tmp))
+            # The real repository has no such package, so answering from REPO_ROOT stops at the
+            # axis floor — a different answer, which is what makes this a witness.
+            self.assertEqual(f"{BACKEND_PACKAGE}.language", _module_prefix(dotted))
+
+    def test_direct_backend_imports_is_driven_by_its_root(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            # A package that exists ONLY in the synthetic tree, so resolving against `REPO_ROOT`
+            # gives a different answer (the axis floor) and the assertion discriminates. With a
+            # tree whose layout matches this repository's, both readings agree and the test
+            # cannot tell whether `root` was used.
+            pkg = tmp / "tools" / "backends" / "language" / "zz_probe"
+            pkg.mkdir(parents=True)
+            (pkg / "__init__.py").write_text("", encoding="utf-8")
+            (tmp / "tools" / "probe.py").write_text(
+                "from .backends.language.zz_probe import parts\n"
+                "from .backends.build_system.make import RULE\n", encoding="utf-8")
+            self.assertEqual(
+                {"tools/probe.py": [f"{BACKEND_PACKAGE}.build_system",
+                                    f"{BACKEND_PACKAGE}.language.zz_probe"]},
+                direct_backend_imports(tmp))
 
     def test_a_computed_module_name_is_out_of_reach_and_that_is_recorded(self) -> None:
         # Not a defect to fix — a static reader cannot resolve this. Pinned so that the

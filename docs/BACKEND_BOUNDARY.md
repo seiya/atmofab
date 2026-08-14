@@ -31,7 +31,9 @@ Out of scope, each for a stated reason:
   and the artifact key its value is read from is declared in `tools/backends/registry.py`, which
   is the source of truth; this sentence is the only place the list is written out, and
   `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` and fails on any
-  other markdown line in the repository that enumerates four or more of the names. Other
+  other markdown line in the repository that quotes four or more of the names in backticks. A
+  restatement in plain prose, or one spread over several lines, is not detected — the guard
+  catches the spelling this repository actually uses, not every possible one. Other
   documents cite this section rather than repeating the list.
 - **backend**: the code that knows one value of one axis — the Fortran `language` backend, the
   `make` `build_system` backend. A backend is identified by `<axis>/<backend_id>`.
@@ -143,11 +145,13 @@ compliance.
 - `tools/backends/registry.py` declares where backend knowledge belongs and refuses an
   unimplemented axis value. It cannot observe knowledge that never asked it anything.
 - `tools/tests/test_backend_boundary.py` holds two measures with different reach.
-  - The **direct-import pin** is a set identity over four spellings — `import`, an absolute
-    `from ... import`, a relative `from . import`, and `importlib.import_module` with a literal
-    argument. Within those it is complete; a module name computed at runtime is out of reach of
-    any static reader and is not covered, and a module that does not parse raises rather than
-    reading as clean. The allowlist, the scanned file set and the token-class list live in
+  - The **direct-import pin** is a set identity over the spellings it reads: `import`, an
+    absolute `from ... import`, a relative `from . import`, and a literal module name passed to
+    `importlib.import_module` or `__import__`, positionally or as `name=`. Within those it is
+    complete, and a module that does not parse raises rather than reading as clean. Two things
+    are out of reach of any static reader and are NOT covered: a module name computed at runtime,
+    and an importer obtained indirectly (`importlib.__dict__["import_module"](...)`). Both are
+    pinned as limits by tests, so the boundary of the claim cannot quietly move. The allowlist, the scanned file set and the token-class list live in
     `tools/tests/data/backend_boundary_allowlist.json`, which no command writes: each is changed
     by a reviewed hand edit, so narrowing the instrument is not something a regeneration can
     bless.
