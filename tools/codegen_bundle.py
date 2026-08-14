@@ -36,6 +36,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from tools.backends import registry as backend_registry
+
 # --------------------------------------------------------------------------------------
 # Contract constants — the ENFORCEMENT source. The schema JSON is the declarative copy of
 # the same facts (plus what a draft-07 pattern can carry of them), and
@@ -68,8 +70,66 @@ UNIT_SHAREABLE_ROLES: frozenset[str] = frozenset({"helper", "internal_module"})
 # Compile order derives from the role alone — no `use`-statement analysis of generated code.
 ROLE_BUILD_PRECEDENCE: tuple[str, ...] = ("internal_module", "helper", "model", "checks")
 
-LANGUAGES: tuple[str, ...] = ("fortran",)
-LANGUAGE_EXTENSION_ALLOWLIST: dict[str, tuple[str, ...]] = {"fortran": (".f90",)}
+def _language_bundle(language: str) -> Any | None:
+    """The language backend's bundle interface, or `None` when there is none to reach.
+
+    `unavailable_reason` is the question — declared AND extracted — because this is about to READ
+    backend code. Membership would answer `None` for a value whose knowledge is still inlined in
+    the neutral core, and `load` would then raise on it.
+    """
+    if backend_registry.unavailable_reason("language", language) is not None:
+        return None
+    return getattr(backend_registry.load("language", language), "bundle", None)
+
+
+#: The languages a bundle may declare: those with a language backend that carries a bundle
+#: interface. Derived, so registering a backend is what widens it — this module does not keep a
+#: second list of the implemented set (docs/BACKEND_BOUNDARY.md).
+# The `implemented_backend_ids` half is redundant and kept as an intent marker: `_language_bundle`
+# answers non-None only for an EXTRACTED backend, and extracted implies implemented, so the outer
+# filter cannot change the result for any registry state. A census proved that; it is stated here
+# rather than left to read as a live narrowing.
+LANGUAGES: tuple[str, ...] = tuple(
+    lang for lang in backend_registry.implemented_backend_ids("language")
+    if _language_bundle(lang) is not None
+)
+#: Per language, the source extensions its bundle files may carry. The rule that a bundle file
+#: is source and never a build/script file is neutral (`RESERVED_LOGICAL_FILENAMES` /
+#: `FORBIDDEN_EXTENSIONS` below); WHICH extensions are that language's source is not.
+LANGUAGE_EXTENSION_ALLOWLIST: dict[str, tuple[str, ...]] = {
+    lang: tuple(_language_bundle(lang).SOURCE_EXTENSIONS) for lang in LANGUAGES
+}
+
+
+def _no_bundle_language_reason() -> str:
+    return (
+        "no implemented language backend carries a CodegenBundle interface, so the bundle "
+        "contract has no identifier grammar to enforce. Give the language backend a `bundle` "
+        "module (tools/backends/language/<backend_id>/bundle.py) and re-export it from the "
+        "backend package — see docs/BACKEND_BOUNDARY.md"
+    )
+
+
+def _bundle_identifier_max() -> int:
+    if not LANGUAGES:
+        # Measured in review: without this the module died on `max()` of an empty sequence, and
+        # the purpose-built message below was unreachable because this function runs first.
+        raise ValueError(_no_bundle_language_reason())
+    return max(_language_bundle(lang).IDENTIFIER_MAX for lang in LANGUAGES)
+
+
+def _bundle_identifier_pattern() -> str:
+    if not LANGUAGES:
+        raise ValueError(_no_bundle_language_reason())
+    patterns = {_language_bundle(lang).IDENTIFIER_PATTERN for lang in LANGUAGES}
+    if len(patterns) != 1:
+        raise ValueError(
+            "the CodegenBundle schema carries ONE identifier pattern, and the implemented "
+            f"languages {', '.join(LANGUAGES)} do not agree on one ({sorted(patterns)}). Make "
+            "the identifier check per-file-language before implementing a second language "
+            "backend whose identifier grammar differs — see docs/BACKEND_BOUNDARY.md"
+        )
+    return patterns.pop()
 
 # The no-arbitrary-command rule is structural: the schema is closed (no field a command
 # could travel in), these path rules reject build/script files, and the derived build
@@ -96,14 +156,34 @@ LOGICAL_PATH_SEGMENT_PATTERN = rf"^{_SEGMENT_BODY}{_END}"
 # and uniqueness rules are `logical_path_violations` (no draft-07 pattern can carry them).
 LOGICAL_PATH_PATTERN = rf"^{_SEGMENT_BODY}(?:/{_SEGMENT_BODY})*{_END}"
 _SEGMENT_RE = re.compile(LOGICAL_PATH_SEGMENT_PATTERN)
-# A Fortran identifier: 1-63 characters (the f2008/f2018 limit). An entrypoint `symbol` /
-# `module`, or a `state_bindings` `state_variable` / `storage_symbol`, longer than this cannot
-# pass the mandatory `Generate.gate` syntax check compiler gate, so the bundle contract rejects it before
-# assembly rather than deferring the failure to the build (v1 is fortran-only; a per-language
-# limit arrives with a second language).
-FORTRAN_IDENTIFIER_MAX = 63
-IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,62}}{_END}"
-_IDENTIFIER_RE = re.compile(IDENTIFIER_PATTERN)
+# The identifier bound an entrypoint `symbol` / `module` and a `state_bindings`
+# `state_variable` / `storage_symbol` must satisfy. It is the LANGUAGE's rule, so it comes from
+# the language backend (`tools/backends/language/<id>/bundle.py`) rather than being written
+# here: a symbol over the bound cannot pass the mandatory `Generate.gate` syntax check, and the
+# contract rejects it before assembly rather than deferring the failure to the build.
+#
+# The bundle SCHEMA carries one pattern (`spec/schema/generate/codegen_bundle.schema.json`),
+# because its `language` enum has one member. So does this module-level constant, and
+# `_bundle_identifier_pattern` is where the collapse happens — it refuses rather than picking a
+# winner if a second language backend ever disagrees, instead of silently validating one
+# language's symbols against another's grammar.
+# LAZY, and that is the point. Computing these at import made a legitimate second language
+# backend with a different identifier grammar raise inside `import tools.codegen_bundle` — which
+# `validate_pipeline_semantics`, `workflow_conductor` and `pure_leaf` all import, so the refusal
+# took down the whole deterministic gate stack and 374 tests did not run, with nothing able to
+# report why. Refusing is right; that blast radius is not. Resolved on first use instead, so the
+# failure lands in the bundle contract that owns the rule.
+def __getattr__(name: str) -> Any:
+    if name == "IDENTIFIER_MAX":
+        return _bundle_identifier_max()
+    if name == "IDENTIFIER_PATTERN":
+        return _bundle_identifier_pattern()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+@lru_cache(maxsize=1)
+def _identifier_re() -> re.Pattern[str]:
+    return re.compile(_bundle_identifier_pattern())
 # node_key = `<spec_kind>/<spec_id>@<spec_version>`, aligned with the repository's canonical
 # parser `tools/orchestration_runtime.py:_parse_node_key_strict`: `spec_id` is dot-separated
 # lowercase segments (each `[a-z0-9][a-z0-9_]*`), and `spec_version` is `[0-9][0-9A-Za-z._-]*`
@@ -148,18 +228,14 @@ TOOLCHAIN_ECHO_KEYS: tuple[str, ...] = (
 # `sh`, an absolute `/tmp/payload`, or a traversal `a/../b` are all runnable. They are echoed
 # only when they name a RECOGNIZED compiler/linker driver FOR THE BUNDLE'S LANGUAGE — a bare
 # program name (no path separator, so the backend resolves it on a trusted PATH), optionally
-# version-suffixed and prefixed by a TARGET TRIPLE, case-insensitive (Fujitsu `FCCpx`). A driver
-# for the WRONG language would be pinned as `FC` and deterministically fail on the sources
-# (`gcc` cannot compile `.f90`), so the allowlist is keyed by language. An unrecognized selector
-# is DROPPED and the backend uses its default (gfortran). v1 is fortran-only; a new language
-# adds its driver family set here.
+# version-suffixed and prefixed by a TARGET TRIPLE, case-insensitive (Fujitsu `FCCpx`). WHICH
+# program names are a driver is the language backend's fact (`bundle.COMPILER_SELECTOR_FAMILIES`);
+# what this module keeps is the neutral rule that the allowlist is keyed by language at all — a
+# driver for the WRONG language would be pinned as `FC` and deterministically fail on the
+# sources. An unrecognized selector is DROPPED and the build uses its default.
 EXECUTABLE_TOOLCHAIN_KEYS: frozenset[str] = frozenset({"compiler", "linker"})
 COMPILER_SELECTOR_FAMILIES_BY_LANGUAGE: dict[str, tuple[str, ...]] = {
-    "fortran": (
-        "gfortran", "flang", "flang-new", "f95", "g95", "ifort", "ifx", "nvfortran",
-        "pgfortran", "pgf90", "pgf95", "xlf", "xlf90", "xlf95", "armflang", "crayftn", "ftn",
-        "nagfor", "mpif90", "mpifort", "mpif77", "frt", "frtpx",
-    ),
+    lang: tuple(_language_bundle(lang).COMPILER_SELECTOR_FAMILIES) for lang in LANGUAGES
 }
 # A cross-compiler prefix is a GNU target triple, not an arbitrary token: it must START with a
 # known CPU architecture, so `payload-gfortran` / `sh-gfortran` (whose prefix is not an
@@ -435,7 +511,7 @@ def _closed_object_violations(obj: Mapping[str, Any], *, required: Sequence[str]
 
 
 def _is_identifier(value: Any) -> bool:
-    return isinstance(value, str) and bool(_IDENTIFIER_RE.fullmatch(value))
+    return isinstance(value, str) and bool(_identifier_re().fullmatch(value))
 
 
 def _is_node_key(value: Any) -> bool:

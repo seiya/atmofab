@@ -73,6 +73,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -1121,8 +1122,8 @@ class RegistryConsistencyTests(unittest.TestCase):
 
     def test_membership_and_usability_are_different_questions(self) -> None:
         # The defect this pins: guarding a hard-coded Fortran renderer on MEMBERSHIP meant that
-        # declaring a second `language` member with `module=None` — the state 5 of the 8 records
-        # are in, and the state the ledger says is normal — silently stopped the signature gates
+        # declaring a second `language` member with `module=None` — the state most records are
+        # in, and the state the ledger says is normal — silently stopped the signature gates
         # refusing. Asked of the registry rather than of a literal id list, so adding a backend
         # cannot make this test vacuous.
         for axis in registry.AXES:
@@ -1225,19 +1226,312 @@ class RegistryConsistencyTests(unittest.TestCase):
         for absent in ("", "   ", None):
             self.assertIsNone(vps._signature_backend_refusal(absent), repr(absent))
 
-    def test_the_registry_and_the_hard_coding_gates_agree_on_the_language_set(self) -> None:
-        """Two owners of one fact, the same shape the linter test closes.
+    def test_a_language_the_signature_helpers_do_not_serve_is_still_refused_by_them(self) -> None:
+        """The one gate family that a registry answer cannot widen, stated as a rule.
 
-        `_validate_toolchain_backend_supported` spells `(make, fortran)` itself and the §5.1
-        helpers import one backend by name, so declaring a second `language` member makes the
-        registry accept a value those gates refuse — silently, since nothing compared them.
-        Failing here is the intended outcome of adding a language backend: it says the gates in
-        `docs/BACKEND_BOUNDARY.md` §Operations Rules must migrate in the same change.
+        This test used to assert the language id SET was exactly the signature backend's, on the
+        grounds that `_validate_toolchain_backend_supported` also spelled `(make, fortran)`
+        itself. That gate now dispatches on registry capabilities, so the set equality was
+        pinning a RESULT — registering a second language backend would fail it even after the
+        gate had been migrated correctly. What survives is the actual constraint: the §5.1
+        helpers import one backend by name and take no `language` argument, so any OTHER
+        declared language must still be refused by the signature refusal, whatever the registry
+        says about it. Failing here means a language was declared without that gate migrating.
         """
+        for backend_id in registry.backend_ids("language"):
+            refusal = vps._signature_backend_refusal(backend_id)
+            if backend_id == vps._SIGNATURE_HELPERS_BACKEND_ID:
+                self.assertIsNone(refusal, backend_id)
+            else:
+                self.assertIsNotNone(
+                    refusal,
+                    f"language '{backend_id}' is declared but the §5.1 helpers still import "
+                    f"'{vps._SIGNATURE_HELPERS_BACKEND_ID}' by name; migrate that gate "
+                    "(docs/BACKEND_BOUNDARY.md, TODO.md) in the same change")
+
+    # --- the capability question ------------------------------------------------------------
+
+    def test_the_four_questions_answer_differently_for_the_three_states(self) -> None:
+        """Membership / implementation / capability / extraction, driven apart on one axis.
+
+        Three synthetic records, because the live registry cannot show the interesting state:
+        every declared member today is implemented, so the row that matters — REGISTERED AND
+        IMPLEMENTED NOWHERE — has no witness in the tree. That row is the fail-closed default
+        this design exists for: `unsupported_reason` says the value is known, and the other three
+        still refuse it.
+        """
+        axis = "build_system"
+        records = {
+            (axis, "zz_extracted"): registry.Backend(
+                axis, "zz_extracted", "tools.backends.language.fortran",
+                core_provides=frozenset({"control_file"})),
+            (axis, "zz_inlined"): registry.Backend(
+                axis, "zz_inlined", None, core_provides=frozenset({"control_file"})),
+            (axis, "zz_declared_only"): registry.Backend(axis, "zz_declared_only", None),
+        }
+        with mock.patch.dict(registry._BACKENDS, records):
+            for backend_id in ("zz_extracted", "zz_inlined", "zz_declared_only"):
+                self.assertIsNone(registry.unsupported_reason(axis, backend_id), backend_id)
+            # implemented — extracted or with an inlined capability
+            self.assertIsNone(registry.unimplemented_reason(axis, "zz_extracted"))
+            self.assertIsNone(registry.unimplemented_reason(axis, "zz_inlined"))
+            declared_only = registry.unimplemented_reason(axis, "zz_declared_only")
+            self.assertIsNotNone(declared_only)
+            self.assertIn("nothing implements it", declared_only)
+            with self.assertRaises(registry.BackendNotExtracted):
+                registry.require_implemented(axis, "zz_declared_only")
+            registry.require_implemented(axis, "zz_inlined")
+            # capability — independent of where the code lives
+            self.assertTrue(registry.provides(axis, "zz_inlined", "control_file"))
+            self.assertFalse(registry.provides(axis, "zz_declared_only", "control_file"))
+            self.assertFalse(registry.provides(axis, "zz_inlined", "build_execute"))
+            self.assertIsNone(
+                registry.missing_capability_reason(axis, "zz_inlined", "control_file"))
+            missing = registry.missing_capability_reason(
+                axis, "zz_declared_only", "control_file")
+            self.assertIsNotNone(missing)
+            for expected in ("zz_declared_only", "control_file", axis,
+                             "tools/backends/registry.py"):
+                self.assertIn(expected, missing)
+            # extraction — the question with the narrowest yes
+            self.assertIsNone(registry.unavailable_reason(axis, "zz_extracted"))
+            for unextracted in ("zz_inlined", "zz_declared_only"):
+                self.assertIsNotNone(registry.unavailable_reason(axis, unextracted), unextracted)
+
+    def test_every_capability_refuses_every_axis_it_is_not_a_question_of(self) -> None:
+        # Exhaustive over `CAPABILITIES × AXES`, replacing three hand-picked pairs. A census
+        # measured that widening any capability's axis tuple — so `provides` answers False
+        # instead of raising for a mis-asked question — is invisible to the suite for the three
+        # pairs nobody happened to pick.
+        for capability, (axes, _description) in registry.CAPABILITIES.items():
+            for axis in registry.AXES:
+                value = registry.backend_ids(axis)[0]
+                if axis in axes:
+                    self.assertIsInstance(registry.provides(axis, value, capability), bool)
+                    continue
+                with self.assertRaises(registry.UnsupportedBackend, msg=(axis, capability)):
+                    registry.provides(axis, value, capability)
+
+    def test_each_capability_names_the_same_declarers_it_did(self) -> None:
+        """The declarer SET per capability, not merely that it is non-empty.
+
+        `test_every_capability_is_declared_by_a_record_and_described` compares the union, so a
+        capability declared by two records survives losing one of them — measured for
+        `parallel_directives`, which `openmp` and `none` both declare. Asserted as a set, and
+        derived from the records rather than written out, so registering a backend that declares
+        an existing capability does not fail this: what fails is a declaration silently
+        DISAPPEARING from a record that had it.
+        """
+        declarers = {
+            capability: {f"{b.axis}/{b.backend_id}" for b in registry._BACKENDS.values()
+                         if capability in b.core_provides}
+            for capability in registry.CAPABILITIES
+        }
+        # Every declared capability has at least one declarer per axis it is a question of,
+        # which is the property the union test cannot see once a second declarer exists.
+        for capability, (axes, _description) in registry.CAPABILITIES.items():
+            for axis in axes:
+                self.assertTrue(
+                    any(d.startswith(f"{axis}/") for d in declarers[capability]),
+                    f"'{capability}' is a question of the {axis} axis and no {axis} record "
+                    f"declares it, so `provides` answers False for every value of that axis")
+
+    def test_a_capability_question_is_normalized_and_refused_when_it_is_a_typo(self) -> None:
+        # The value normalizes (the gates rely on it); the CAPABILITY does not fall back. A
+        # misspelled capability answering False would turn a host-authorship dispatch off
+        # silently — the same authorship flip a padded axis value used to cause — so it raises.
+        self.assertTrue(registry.provides("build_system", "  MAKE  ", "control_file"))
+        for axis, capability in (
+            ("build_system", "control-file"),      # wrong spelling
+            ("build_system", "runner_render"),     # a real capability, wrong axis
+            ("language", "build_execute"),         # likewise
+        ):
+            with self.assertRaises(registry.UnsupportedBackend):
+                registry.provides(axis, "make", capability)
+            with self.assertRaises(registry.UnsupportedBackend):
+                registry.missing_capability_reason(axis, "make", capability)
+
+    def test_a_none_value_does_not_collide_with_the_backend_named_none(self) -> None:
+        """`provides`'s `or ""` guard, which a census showed nothing observed.
+
+        Without it, `str(None).lower()` is the string `"none"` — which is a real backend id on
+        the `parallel` axis — so a caller passing `None` (an absent axis value) would get the
+        `parallel/none` record's answer instead of a refusal. Measured: deleting the guard
+        leaves the suite green, and `provides("parallel", None, "parallel_directives")` flips
+        from False to True. The collision is specific to this repository's own id, which is why
+        it reads as harmless and is not.
+        """
+        self.assertIn("none", registry.backend_ids("parallel"), "the collision id is live")
+        for absent in (None, "", "   "):
+            self.assertFalse(
+                registry.provides("parallel", absent, "parallel_directives"), repr(absent))
+            self.assertIsNotNone(registry.unimplemented_reason("parallel", absent), repr(absent))
+
+    def test_a_value_with_no_record_provides_nothing(self) -> None:
+        # Including on the open-vocabulary axis, where membership answers permissively: an
+        # unlisted token is accepted as a value but the host has no code for it, so a dispatch
+        # asking `provides` declines instead of rendering something it does not know.
+        self.assertIsNone(registry.unsupported_reason("parallel", "openmp_tasks"))
+        self.assertFalse(registry.provides("parallel", "openmp_tasks", "parallel_directives"))
+        self.assertFalse(registry.provides("build_system", "no_such_backend", "control_file"))
+
+    def test_the_declarations_are_checked_and_the_check_can_fail(self) -> None:
+        # `_check_declarations` runs at import, so in a green tree it is invisible: both
+        # branches are driven here, or the guard is asserted and never observed.
+        registry._check_declarations()  # the live declarations pass
+        for bad in (
+            registry.Backend("build_system", "zz", None, core_provides=frozenset({"no_such"})),
+            registry.Backend("build_system", "zz", None,
+                             core_provides=frozenset({"runner_render"})),
+        ):
+            with mock.patch.dict(registry._BACKENDS, {("build_system", "zz"): bad}):
+                with self.assertRaises(registry.UnsupportedBackend):
+                    registry._check_declarations()
+
+    def test_the_declaration_check_is_actually_invoked_at_import(self) -> None:
+        """The guard was pinned; its INVOCATION was not.
+
+        Review deleted the module-level `_check_declarations()` call and the whole suite stayed
+        green — the only test called the function directly, so it proved the guard works and
+        nothing proved it runs. Read from the source because that is where the fact lives: a
+        behavioural probe would have to re-import the module with a bad declaration, and the
+        declarations are built at import from literals, so there is nothing to patch first.
+        """
+        tree = ast.parse(Path(registry.__file__).read_text(encoding="utf-8"))
+        invocations = [
+            node.lineno for node in tree.body
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and getattr(node.value.func, "id", None) == "_check_declarations"
+        ]
         self.assertEqual(
-            (vps._SIGNATURE_HELPERS_BACKEND_ID,), registry.backend_ids("language"),
-            "the registry declares a language the neutral gates still refuse by hard-coding; "
-            "migrate those gates (docs/BACKEND_BOUNDARY.md, TODO.md) in the same change")
+            1, len(invocations),
+            "tools/backends/registry.py must call _check_declarations() at module level exactly "
+            "once; without it a misspelled capability answers False forever and a host-authorship "
+            "dispatch turns off silently (docs/BACKEND_BOUNDARY.md §Operations Rules)")
+
+    def test_each_capability_is_dispatched_on_exactly_where_it_says_it_is(self) -> None:
+        """Which capabilities a gate actually asks about, compared against what they claim.
+
+        THE THIRD ATTEMPT at this pin, and the first two are worth stating because both were
+        wrong in the same direction — they forbade correct work:
+
+        1. "every live record must be implemented" — refused `Backend("build_system", "cmake",
+           None)`, i.e. registering a member before writing its backend, which this registry
+           documents as the fail-closed default.
+        2. "every axis has at least one implemented backend" — refused the whole documented
+           three-step "Adding an axis" procedure (`docs/BACKEND_BOUNDARY.md`), since a brand-new
+           axis has nothing implemented yet and there is no capability to declare for it.
+
+        What I was actually reaching for is this: a capability that some gate dispatches on must
+        keep having that dispatch, and a capability that nothing asks about must say so rather
+        than read as a live rule. `DISPATCHED` below is the claim; the neutral-core source is the
+        evidence. Deleting a `provides(...)` call fails here; adding a new capability without a
+        caller fails here until it is declared declaration-only; and none of it constrains what
+        anyone registers.
+        """
+        dispatched = {"control_file", "build_execute", "runner_render"}
+        # The rest are declaration-only TODAY: they are how their records answer `implemented`,
+        # and they gain a dispatch when their ledger area lands (the compiler / linter adapters
+        # and the parallel knobs are still inlined in the neutral core).
+        declaration_only = set(registry.CAPABILITIES) - dispatched
+        asked: set[str] = set()
+        registry_path = Path(registry.__file__).resolve()
+        for path in neutral_core_files():
+            # The registry is where the capabilities are DEFINED and where `provides` itself
+            # lives, so scanning it would report every capability as asked — including the ones
+            # whose only mention is their own declaration.
+            if path.suffix != ".py" or path.resolve() == registry_path:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and getattr(node.func, "attr", getattr(node.func, "id", None))
+                in ("provides", "missing_capability_reason")
+            ]
+            if not calls:
+                continue
+            # Two shapes, and only these two — the instrument was wrong twice before settling
+            # here, in both directions. Scanning call arguments alone missed `build_execute`,
+            # which `_missing_toolchain_capability_clauses` passes through a tuple it loops over;
+            # scanning every capability-named string in the file instead picked up an unrelated
+            # `{"lint": ...}` dict key in the conductor. So: a direct argument to the call, or an
+            # element of a sequence literal that also names an axis — which is the
+            # `(axis, value, capability)` row those loops are built from.
+            for call in calls:
+                asked |= {a.value for a in call.args
+                          if isinstance(a, ast.Constant) and a.value in registry.CAPABILITIES}
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Tuple, ast.List)):
+                    continue
+                literals = {e.value for e in node.elts if isinstance(e, ast.Constant)}
+                if literals & set(registry.AXES):
+                    asked |= literals & set(registry.CAPABILITIES)
+        self.assertEqual(
+            dispatched, asked & set(registry.CAPABILITIES),
+            "the set of capabilities the neutral core dispatches on changed: a dispatch was "
+            "deleted, or a capability gained one without being moved out of the "
+            "declaration-only group here")
+        self.assertEqual(
+            set(), asked & declaration_only,
+            "a capability listed as declaration-only is now dispatched on")
+
+    def test_implemented_backend_ids_excludes_a_record_with_no_implementation(self) -> None:
+        # The filter is a no-op over today's declarations (every live record is implemented, by
+        # the test above), so replacing it with `backend_ids` survives the suite. Driven with a
+        # synthetic record, or the narrowing this function exists for has no witness at all.
+        record = registry.Backend("linter", "zz_named_only", None)
+        with mock.patch.dict(registry._BACKENDS, {("linter", "zz_named_only"): record}):
+            self.assertIn("zz_named_only", registry.backend_ids("linter"))
+            self.assertNotIn("zz_named_only", registry.implemented_backend_ids("linter"))
+
+    def test_the_membership_refusal_says_declared_and_lists_the_declared_set(self) -> None:
+        """Wording, pinned — because this string reaches a leaf verbatim.
+
+        The signature gates carry `unsupported_reason`'s clause into a leaf-facing violation. It
+        used to say "is not an implemented {axis} backend (implemented: …)" and list every
+        member, including ones nothing implements: once `implemented` became a distinct question
+        with its own function, that sentence pointed a leaf at values that cannot run. Both
+        halves of the correction — the word and the set — survived the full suite when reverted,
+        so neither was witnessed by anything.
+        """
+        reason = registry.unsupported_reason("build_system", "no_such_backend")
+        self.assertIsNotNone(reason)
+        self.assertIn("is not a declared build_system backend", reason)
+        self.assertNotIn("implemented", reason)
+        for declared in registry.backend_ids("build_system"):
+            self.assertIn(declared, reason)
+
+    def test_a_refusal_clause_names_the_values_that_do_implement_the_capability(self) -> None:
+        # Both reviewers' sweeps deleted the implemented-set half of the clause and no test
+        # noticed: the gate tests build their expected string by calling this same function, so
+        # they are invariant to what it says. An author who is told only "not implemented" has
+        # to go read the registry to find out what is.
+        # The refused value must NOT contain an implemented id as a substring, or the assertion
+        # holds from the "not '<value>'" half alone. The first version of this test probed
+        # `cmake` against an implemented set of exactly `{make}` and was vacuous for that reason
+        # — both round-2 reviewers found it independently, and a mutation that deleted the
+        # implemented-set half while keeping the surrounding phrase survived the whole suite.
+        for axis, refused in (("build_system", "ninja"), ("language", "cpp")):
+            able = [b for b in registry.backend_ids(axis)
+                    if registry.provides(axis, b, "control_file")]
+            self.assertTrue(able, axis)
+            for name in able:
+                self.assertNotIn(name, refused, "probe value must not contain an implemented id")
+            reason = registry.missing_capability_reason(axis, refused, "control_file")
+            self.assertIsNotNone(reason)
+            for name in able:
+                self.assertIn(name, reason)
+
+    def test_every_capability_is_declared_by_a_record_and_described(self) -> None:
+        # A capability nothing declares is a question whose answer is always False — a dispatch
+        # keyed on it is dead code that reads as a live rule.
+        declared = {c for b in registry._BACKENDS.values() for c in b.core_provides}
+        self.assertEqual(set(registry.CAPABILITIES), declared)
+        for capability, (axes, description) in registry.CAPABILITIES.items():
+            self.assertTrue(axes, capability)
+            self.assertTrue(set(axes) <= set(registry.AXES), capability)
+            self.assertTrue(description.strip(), capability)
 
     def test_an_extracted_but_undispatched_language_is_still_refused(self) -> None:
         # The behavioural witness for the second ground. Simulated by moving the constant rather
@@ -1264,7 +1558,12 @@ class RegistryConsistencyTests(unittest.TestCase):
             self.assertIsNone(registry.unsupported_reason("parallel", value))
             reason = registry.unavailable_reason("parallel", value)
             self.assertIsNotNone(reason)
-            self.assertIn("no backend package", reason)
+            # The refusal says the value has no record and names both routes to giving it one.
+            # It used to say only "no backend package", which is the extraction remedy — right
+            # for this question and wrong for `unimplemented_reason`, which shares the same
+            # message and asks whether the value can run at all.
+            self.assertIn("has no record for it", reason)
+            self.assertIn("tools/backends/parallel/", reason)
         # An empty token is not a value; it stays refused even on an open axis.
         self.assertIsNotNone(registry.unsupported_reason("parallel", "   "))
         # A closed axis is unaffected.
@@ -1298,11 +1597,69 @@ class RegistryConsistencyTests(unittest.TestCase):
                 self.assertIn(value, message)
                 self.assertIn("tools/backends/", message)
 
-    def test_the_linter_members_agree_with_the_gate_that_accepts_presets(self) -> None:
-        # Two owners of one fact. The registry listing fewer linters than the live gate accepts
-        # is the drift this repository keeps paying for, so it is compared rather than restated.
+    def test_the_lint_gate_keeps_no_preset_list_of_its_own(self) -> None:
+        """One owner, checked at the only place a second one could appear.
+
+        This test used to compare the registry's linter ids against `vps._LINT_ALLOWED_PRESETS`,
+        which was the second owner: comparing two copies keeps them equal but does not remove
+        the copy, and the gate's refusal still spelled its own set instead of carrying the
+        registry's clause. The set is gone and the gate asks `unimplemented_reason` per value, so
+        what is left to pin is that no new list appears — read from the source, since a list that
+        exists but is never consulted would pass any behavioural probe.
+        """
+        source = Path(vps.__file__).read_text(encoding="utf-8")
+        linter_ids = set(registry.backend_ids("linter"))
+        # SEQUENCE literals only. Extending this to dict VALUES was tried and reverted: it flags
+        # `_LINT_PRESET_FOR_LANGUAGE`, which is a legitimate structure carrying a different fact
+        # (which linter a language is linted with), so the guard would have refused correct code
+        # and taught the reader to route around it. That mapping's drift risk is real and is
+        # closed by the containment test below — the right instrument for a mapping is what its
+        # values must satisfy, not whether it exists.
+        literals = [
+            node.lineno for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.Set, ast.List, ast.Tuple))
+            and {getattr(e, "value", None) for e in node.elts} >= linter_ids
+        ]
         self.assertEqual(
-            set(registry.backend_ids("linter")), set(vps._LINT_ALLOWED_PRESETS))
+            [], literals,
+            "a collection in the validator enumerates the linter backends; ask "
+            f"registry.unimplemented_reason instead (line(s) {literals})")
+
+    def test_every_implemented_linter_can_be_inferred_from_a_logged_command(self) -> None:
+        """The pair this change opened by widening one side of it.
+
+        The lint evidence gate now accepts any IMPLEMENTED linter (it asks the registry), but the
+        next check in the same loop infers the preset from the logged command via a hard-coded
+        chain of executable names. Registering a fifth linter therefore passes the registry check
+        and then fails with "logged command does not match preset (inferred None)", which names
+        neither the cause nor the fix. `mixed` is excluded because it is not an executable: the
+        branch above this one refuses it and asks for separate entries per real linter.
+        """
+        for backend_id in registry.implemented_backend_ids("linter"):
+            if backend_id == "mixed":
+                continue
+            self.assertEqual(
+                backend_id, vps._infer_run_linter_preset_from_command([backend_id, "check"]),
+                f"the lint gate accepts preset '{backend_id}' but cannot infer it from a logged "
+                f"command, so the evidence check refuses it for an unrelated-sounding reason")
+
+    def test_the_language_to_linter_mapping_cannot_drift_from_the_registry(self) -> None:
+        """The other half of the same fact, which the guard above deliberately allows.
+
+        `_LINT_PRESET_FOR_LANGUAGE` maps a language to the linter it is linted with. That is
+        language knowledge, not a copy of the accepted-preset set, so it stays — but its VALUES
+        are linter backend ids, and review measured the drift: dropping the `ruff` member from
+        the registry leaves this mapping producing `ruff` for `python` while the gate refuses
+        it, suite green. Pinned as a containment (the mapping may name fewer linters than exist,
+        never one that does not), because equality would fail the day a linter is registered
+        before any language uses it.
+        """
+        implemented = set(registry.implemented_backend_ids("linter"))
+        used = set(vps._LINT_PRESET_FOR_LANGUAGE.values())
+        self.assertEqual(
+            set(), used - implemented,
+            "the language->linter mapping names a linter the registry does not implement, so "
+            "the lint evidence gate will refuse the preset this mapping produces")
 
     def test_a_registered_backend_module_lives_under_the_backend_package(self) -> None:
         for axis in registry.AXES:

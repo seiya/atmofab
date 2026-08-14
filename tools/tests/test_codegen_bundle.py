@@ -747,10 +747,113 @@ class FieldGrammarTest(unittest.TestCase):
         doc["entrypoints"][0]["symbol"] = "9 bad; rm -rf /"
         self.assertIn("entrypoints[0].symbol must be an identifier", cb.validate_bundle(doc))
 
+    def test_a_declared_but_unextracted_language_does_not_reach_load(self) -> None:
+        """`_language_bundle` asks EXTRACTION, and that choice had no witness.
+
+        A declared-but-unextracted language is the state the migration ledger calls normal, and
+        `registry.load` raises on it. Asking membership instead — the mutation that survived the
+        full suite — makes `import tools.codegen_bundle` die with `BackendNotExtracted` the day
+        such a language is registered, which is the import-time blast radius this module removed
+        for the identifier grammar in the same commit.
+        """
+        record = cb.backend_registry.Backend(
+            "language", "zz_declared", None, core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(
+                cb.backend_registry._BACKENDS, {("language", "zz_declared"): record}):
+            self.assertIsNone(cb.backend_registry.unsupported_reason("language", "zz_declared"))
+            self.assertIsNone(cb._language_bundle("zz_declared"))
+
+    def test_registering_a_second_language_keeps_this_module_importable(self) -> None:
+        """The regression this module's laziness exists to prevent, driven end to end.
+
+        `tools.codegen_bundle` is imported by `validate_pipeline_semantics`, `workflow_conductor`
+        and `pure_leaf`, so anything that raises at ITS import takes down the deterministic gate
+        stack — measured once at 374 tests unrun, with nothing able to report the cause. Three
+        separate decisions have to hold for that not to happen when a second language backend is
+        registered: `_language_bundle` asking extraction (so `load` is not called on an
+        unextracted member), the `LANGUAGES` filter (so the tables are not built from `None`),
+        and the identifier grammar being resolved lazily. Each was individually deletable with a
+        green suite; this drives the property they jointly provide, in a subprocess, because an
+        import that has already succeeded cannot be re-observed in this one.
+        """
+        import subprocess
+        import sys
+        probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from tools.backends import registry as r\n"
+            "r._BACKENDS[('language', 'zz_second')] = r.Backend(\n"
+            "    'language', 'zz_second', None,\n"
+            "    core_provides=frozenset({'control_file', 'runner_render'}))\n"
+            "import tools.codegen_bundle as cb\n"
+            "import tools.validate_pipeline_semantics\n"
+            "assert cb.LANGUAGES == ('fortran',), cb.LANGUAGES\n"
+            "assert cb.IDENTIFIER_MAX == 63, cb.IDENTIFIER_MAX\n"
+            "print('ok')\n" % str(Path(cb.__file__).resolve().parents[2])
+        )
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr[-2000:])
+        self.assertIn("ok", out.stdout)
+
+    def test_an_unknown_module_attribute_still_raises(self) -> None:
+        # `IDENTIFIER_MAX` / `IDENTIFIER_PATTERN` are served by a module-level `__getattr__`.
+        # Returning `None` for everything else instead of raising survived the whole suite, and
+        # would turn a typo into a silent `None` — and `getattr(cb, "IDENTIFIER_MAX", default)`
+        # into the default — for every caller.
+        with self.assertRaises(AttributeError):
+            cb.no_such_attribute
+        self.assertFalse(hasattr(cb, "no_such_attribute"))
+        self.assertEqual(63, cb.IDENTIFIER_MAX)
+
+    def test_the_single_identifier_grammar_refuses_to_pick_a_winner(self) -> None:
+        """The collapse guard, driven — it had no witness.
+
+        The bundle schema carries ONE identifier pattern, so this module collapses the language
+        backends' patterns to one. If a second language backend disagreed, silently picking
+        either would validate one language's symbols against the other's grammar. Review's sweep
+        replaced the refusal with a winner-picking `patterns.pop()` and nothing failed, because
+        the live registry has one language. Both empty and disagreeing are driven here; the
+        empty case previously died on `max()` of an empty sequence with a message that named
+        nothing.
+        """
+        class _OtherGrammar:
+            SOURCE_EXTENSIONS = (".zz",)
+            COMPILER_SELECTOR_FAMILIES = ("zzc",)
+            IDENTIFIER_MAX = 31
+            IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,30}(?![\s\S])"
+
+        real = cb._language_bundle
+
+        def _two_languages(language: str):
+            return _OtherGrammar if language == "zzlang" else real(language)
+
+        with mock.patch.object(cb, "LANGUAGES", ("fortran", "zzlang")), \
+                mock.patch.object(cb, "_language_bundle", _two_languages):
+            with self.assertRaises(ValueError) as caught:
+                cb._bundle_identifier_pattern()
+            self.assertIn("do not agree", str(caught.exception))
+            self.assertIn("docs/BACKEND_BOUNDARY.md", str(caught.exception))
+        with mock.patch.object(cb, "LANGUAGES", ()):
+            for call in (cb._bundle_identifier_pattern, cb._bundle_identifier_max):
+                with self.assertRaises(ValueError) as caught:
+                    call()
+                self.assertIn("no implemented language backend", str(caught.exception))
+        # And the refusal lands where the rule lives, not in `import tools.codegen_bundle`:
+        # computing it at import took down `validate_pipeline_semantics`, `workflow_conductor`
+        # and `pure_leaf` with it, so 374 unrelated tests did not run and nothing could report
+        # the cause. The module imports; the bundle contract is what refuses.
+        cb._identifier_re.cache_clear()
+        try:
+            with mock.patch.object(cb, "LANGUAGES", ()):
+                with self.assertRaises(ValueError):
+                    cb._is_identifier("abc")
+        finally:
+            cb._identifier_re.cache_clear()
+        self.assertTrue(cb._is_identifier("abc"))
+
     def test_identifier_length_is_capped_at_the_fortran_limit(self) -> None:
         # A symbol longer than the f2008/f2018 63-char limit cannot pass the Generate.syntax
         # compiler gate, so the bundle rejects it up front rather than deferring the failure.
-        self.assertEqual(cb.FORTRAN_IDENTIFIER_MAX, 63)
+        self.assertEqual(cb.IDENTIFIER_MAX, 63)
         at_limit = "a" + "x" * 62      # exactly 63
         over_limit = "a" + "x" * 63    # 64
         doc = _minimal_bundle()
@@ -1520,6 +1623,12 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertEqual(sorted(cb.ROLE_BUILD_PRECEDENCE), sorted(cb.FILE_ROLES))
 
     def test_schema_language_and_extension_allowlist_match_the_module(self) -> None:
+        # Both module values are now DERIVED from the registry and the language backend
+        # (`tools/backends/language/<id>/bundle.py`), so this pin spans two files that a single
+        # edit no longer keeps in step: the schema is `spec/`, which the backend migration does
+        # not touch, and the extensions it mirrors moved out of this module. Registering a second
+        # language backend without widening the schema enum fails here, which is the intended
+        # order — the schema is the contract a leaf's output is validated against.
         language = self._files_property("language")
         self.assertEqual(tuple(language["enum"]), cb.LANGUAGES)
         self.assertEqual(

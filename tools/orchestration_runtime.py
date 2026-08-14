@@ -62,6 +62,7 @@ def _require_yaml() -> Any:
     return _yaml_mod
 
 try:
+    from tools.backends import registry as backend_registry
     from tools.backends.language.fortran import lines as fortran_lines
     from tools.hooks.common import (
         _normalize_rel_posix,
@@ -91,6 +92,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     _REPO_ROOT = _THIS_FILE.parent.parent
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
+    from tools.backends import registry as backend_registry
     from tools.backends.language.fortran import lines as fortran_lines
     from tools.hooks.common import (
         _normalize_rel_posix,
@@ -5989,6 +5991,39 @@ def _require_safe_gate_ids(
                 f"{gate_label}: {label} must be a plain [A-Za-z0-9_-] token "
                 f"(got {value!r})"
             )
+
+
+def control_file_host_authored(build_system: str | None, language: str | None) -> bool:
+    """Does the HOST author the build control file for this toolchain, from the runtime's side.
+
+    The counterpart of ``Conductor._core_authors_control_file``, asking the registry the same
+    question (``control_file`` of both axes) rather than comparing against a pair spelled here.
+    The two must agree exactly: if the conductor authors while this side reports otherwise, the
+    leaf's write-pin is kept and the file is double-owned; the other way round it is authored by
+    nobody.
+
+    NAMED, and called by ``record_launch`` rather than inlined there, because the agreement was
+    only ever checked against a hand-copied RECONSTRUCTION of the inline expression in the test
+    suite — and a reconstruction is exactly as good as its last update. It was wrong once
+    already (it omitted the build-system normalization), and after the conductor moved to the
+    registry it went on comparing against ``(make, fortran)``, so a declaration that made the
+    live pair disagree could not be observed by the test that exists to observe it.
+
+    PADDING is refused here, exactly as the conductor's predicate refuses it. An earlier version
+    of this docstring claimed the opposite — that the function deliberately did not normalize —
+    while ``registry.provides`` strips internally, so it silently accepted a padded language
+    where the conductor declined: the two were documented as exact counterparts and were not. No live
+    input reaches that difference (``record_launch``'s readers strip before calling), so this
+    guard changes nothing today; it makes the counterpart claim true for any caller.
+
+    What is NOT symmetric, and must not be: an ABSENT value defaults here the same way the
+    conductor defaults it, and whitespace-only is absent to this side's readers but present to
+    the conductor's. That divergence is the pre-existing one the agreement test pins.
+    """
+    return all(
+        value == value.strip() and backend_registry.provides(axis, value, "control_file")
+        for axis, value in (("build_system", (build_system or "make")),
+                            ("language", (language or "fortran"))))
 
 
 def _impl_resolved_build_system(repo_root: Path, ir_ref: str) -> str | None:
@@ -17770,9 +17805,8 @@ def record_launch(
             # "fortran")`): an absent build_system/language defaults to make/fortran on both
             # sides, so the two never disagree (an absent build_system must not make the
             # conductor author while the runtime keeps the pin -> record_launch fail-closed).
-            request_payload["_resolved_makefile_host_authored"] = (
-                (_bs_for_mk or "make") == "make"
-                and (_lang_resolved or "fortran") == "fortran")
+            request_payload["_resolved_makefile_host_authored"] = control_file_host_authored(
+                _bs_for_mk, _lang_resolved)
         if is_pure:
             # No output paths, no file-tool pins, no write-contract preflight — a pure leaf
             # authors nothing in its window. Empty lists flow through the (inert for generate)

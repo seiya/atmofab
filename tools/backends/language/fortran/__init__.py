@@ -3,6 +3,9 @@
 
 Submodules, by capability:
 
+* `bundle` — the Fortran facts the neutral `CodegenBundle` contract applies (source extensions,
+  compiler-driver families, the identifier bound). Imported below so a caller that reached this
+  package through `registry.load` finds it as an attribute rather than composing a module name.
 * `lines` — free-form logical-line scanning (comments, `&` continuations, `;` statements).
 * `structure` — the tree-sitter-fortran structural front end the model gates read through.
 * `signatures` — the language-neutral structured signature form <-> Fortran interface stanzas.
@@ -10,3 +13,5 @@ Submodules, by capability:
 
 `docs/BACKEND_BOUNDARY.md` states which capabilities are still inlined in the neutral core.
 """
+
+from tools.backends.language.fortran import bundle as bundle  # noqa: F401  (re-export)

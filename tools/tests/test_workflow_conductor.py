@@ -11464,6 +11464,166 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_ir(repo, refs, direct_deps="[component/dep@0.1.0]")
             self.assertTrue(c._conductor_authors_makefile(refs))
 
+    def test_authorship_follows_the_capability_not_membership(self) -> None:
+        """Registering a backend must not make the host author for it.
+
+        The predicate reads `registry.provides(..., "control_file")`, not "is this value
+        implemented": `_write_makefile` emits ONE build system's syntax with ONE language's
+        compile rules, so a value that is implemented ELSEWHERE (an extracted backend of its
+        own) must fall to the leaf-authored path rather than into this writer. Both halves are
+        driven — a declared-only value and an extracted-but-capability-less one — because
+        neither state exists in the live registry, and the difference between them is invisible
+        to every other test.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        for record in (
+            backend_registry.Backend("build_system", "zz_bs", None),
+            backend_registry.Backend(
+                "build_system", "zz_bs", "tools.backends.language.fortran"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                c = self._conductor(repo)
+                self._write_ir(repo, refs, build_system="zz_bs")
+                with mock.patch.dict(
+                        backend_registry._BACKENDS, {("build_system", "zz_bs"): record}):
+                    self.assertIsNone(
+                        backend_registry.unsupported_reason("build_system", "zz_bs"))
+                    self.assertFalse(c._conductor_authors_makefile(refs), record)
+                    self.assertFalse(c._conductor_authors_runner(refs), record)
+
+    def test_the_runtime_predicate_refuses_padding_like_the_conductor_does(self) -> None:
+        """Driven DIRECTLY, because no indirect path can reach it.
+
+        `record_launch`'s readers strip before calling `control_file_host_authored`, so a padded
+        value never arrives through the live path or through this file's reader mirror. Its
+        docstring nonetheless claimed the function deliberately did not normalize — while
+        `registry.provides` strips internally, so it accepted a padded language where the
+        conductor's twin declined, and the two are documented as exact counterparts. The guard
+        makes that claim true; only a direct call observes it.
+        """
+        from tools.orchestration_runtime import control_file_host_authored
+        self.assertTrue(control_file_host_authored("make", "fortran"))
+        self.assertTrue(control_file_host_authored(None, None))  # absent defaults, both sides
+        for build_system, language in ((" make", "fortran"), ("make ", "fortran"),
+                                       ("make", " fortran"), ("make", "fortran ")):
+            self.assertFalse(control_file_host_authored(build_system, language),
+                             (build_system, language))
+
+    def test_conductor_and_runtime_agree_when_the_registry_moves(self) -> None:
+        """The agreement pair, driven by the lever that can now break it.
+
+        `test_conductor_runtime_makefile_authorship_agree` enumerates literal toolchain
+        fixtures, so it is structurally unable to see a divergence introduced by a REGISTRY
+        declaration — and that is the lever `docs/BACKEND_BOUNDARY.md` now names as how a new
+        backend's host-side work is admitted. Measured before the fix: declaring `control_file`
+        for a second build system made the conductor author `src/Makefile` while `record_launch`
+        kept the leaf's write-pin, so the file was double-owned.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        cases = [
+            ("second build system declared",
+             {("build_system", "zz_bs"): backend_registry.Backend(
+                 "build_system", "zz_bs", None,
+                 core_provides=frozenset({"control_file", "build_execute"}))},
+             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: zz_bs\n"),
+            ("second language declared",
+             {("language", "zz_lang"): backend_registry.Backend(
+                 "language", "zz_lang", None,
+                 core_provides=frozenset({"control_file", "runner_render"}))},
+             "impl_defaults:\n  toolchain:\n    language: zz_lang\n    build_system: make\n"),
+            ("registered with no capability",
+             {("build_system", "zz_bare"): backend_registry.Backend(
+                 "build_system", "zz_bare", None)},
+             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: zz_bare\n"),
+        ]
+        for label, records, ir_text in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                ir_path = repo / refs.ir_ref / "spec.ir.yaml"
+                ir_path.parent.mkdir(parents=True, exist_ok=True)
+                ir_path.write_text(ir_text + "dependency:\n  direct_deps: []\n", encoding="utf-8")
+                c = self._conductor(repo)
+                with mock.patch.dict(backend_registry._BACKENDS, records):
+                    self.assertEqual(
+                        c._conductor_authors_makefile(refs),
+                        _runtime_makefile_host_authored(repo, refs.ir_ref),
+                        f"conductor/runtime disagree for {label!r}")
+
+    def test_the_runner_render_capability_is_required_beyond_control_file(self) -> None:
+        """A language the neutral core can compile but not render must not get a host runner.
+
+        `_conductor_authors_runner` asks for `runner_render` on top of `_core_authors_control_file`,
+        and that clause was deletable with the full suite green: `fortran` is the only record
+        declaring either capability, so `control_file` currently implies `runner_render` and no
+        fixture separated them. Declared here instead of waited for — this is the state a
+        language backend with compile rules but no renderer would be in, which is the case the
+        clause names.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        record = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            c = self._conductor(repo)
+            self._write_ir(repo, refs, language="zz_compile_only",
+                           direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
+            with mock.patch.dict(
+                    backend_registry._BACKENDS, {("language", "zz_compile_only"): record}):
+                # The control file IS host-authored for it — the two capabilities are separate
+                # answers, and this is the half that must stay True or the test proves nothing.
+                self.assertTrue(c._conductor_authors_makefile(refs))
+                self.assertFalse(c._conductor_authors_runner(refs))
+        # And the converse row, which a census found subsumed: a language the host can render a
+        # runner for, under a build system it has no control-file writer for. The runner is
+        # BUILT by that control file, so host-rendering it while the leaf authors the build
+        # would produce a runner nothing compiles.
+        render_only = backend_registry.Backend(
+            "language", "zz_render_only", None, core_provides=frozenset({"runner_render"}))
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            c = self._conductor(repo)
+            self._write_ir(repo, refs, language="zz_render_only", build_system="zz_build_only",
+                           direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
+            with mock.patch.dict(backend_registry._BACKENDS, {
+                    ("language", "zz_render_only"): render_only,
+                    ("build_system", "zz_build_only"): build_only}):
+                self.assertTrue(
+                    backend_registry.provides("language", "zz_render_only", "runner_render"))
+                self.assertFalse(c._conductor_authors_runner(refs))
+
+    def test_an_untrimmed_toolchain_value_still_flips_authorship_off(self) -> None:
+        # The conductor compares `.lower()` WITHOUT stripping, while the registry normalizes
+        # with `.strip().lower()`. Handing a padded value straight to the registry would newly
+        # answer True here while `record_launch`'s reader — which strips — already reports the
+        # host as the author, which is the src/Makefile-authored-by-nobody class. The whitespace
+        # -only spelling has a pin below (via the runtime-agreement test); this is the padded
+        # TOKEN, which that one cannot reach.
+        for toolchain in ({"language": " fortran"}, {"build_system": "make "}):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                ir_path = repo / refs.ir_ref / "spec.ir.yaml"
+                ir_path.parent.mkdir(parents=True, exist_ok=True)
+                body = "".join(f'    {k}: "{v}"\n' for k, v in toolchain.items())
+                ir_path.write_text(
+                    f"impl_defaults:\n  toolchain:\n{body}", encoding="utf-8")
+                c = self._conductor(repo)
+                self.assertFalse(c._conductor_authors_makefile(refs), toolchain)
+                self.assertFalse(c._conductor_authors_runner(refs), toolchain)
+
     def test_conductor_runtime_makefile_authorship_agree(self) -> None:
         # The conductor (_conductor_authors_makefile) and the runtime
         # (_resolved_makefile_host_authored, computed in record_launch) must agree on whether
@@ -11814,21 +11974,22 @@ class WriteMakefileTest(unittest.TestCase):
 
 
 def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
-    """`record_launch`'s `_resolved_makefile_host_authored`, reconstructed VERBATIM
-    (orchestration_runtime, the `request_payload["_resolved_makefile_host_authored"]`
-    assignment): `.strip().lower()` on the build_system half, the language half compared
-    unstripped.
+    """`record_launch`'s `_resolved_makefile_host_authored`, via the REAL predicate.
 
-    ONE copy, shared by the agreement cases and the divergence pin below. An earlier version
-    omitted the build_system normalization, which made the test agree with itself for
-    `build_system: "   "` exactly where the live pair diverges — and a second, independent
-    copy in the divergence pin left the loop's copy unguarded all over again."""
+    This used to reconstruct the inline expression verbatim, and a reconstruction is only as
+    good as its last update: it was wrong once (it omitted the build_system normalization, so
+    the test agreed with itself exactly where the live pair diverges), and when the conductor
+    moved to the registry it went on comparing against `(make, fortran)` — so a registry
+    declaration that made the live pair disagree could not be seen by the test whose whole
+    purpose is to see it. `control_file_host_authored` is now named in `orchestration_runtime` and
+    called by `record_launch`, so what is compared here is the shipped predicate. Only the two
+    READERS (which resolve the values, and normalize the way record_launch does) are mirrored."""
     from tools.orchestration_runtime import (
-        _impl_resolved_build_system, _impl_resolved_language)
+        _impl_resolved_build_system, _impl_resolved_language, control_file_host_authored)
     bs_resolved = _impl_resolved_build_system(repo, ir_ref)
     lang = _impl_resolved_language(repo, ir_ref)
     bs = (bs_resolved or "").strip().lower() if isinstance(bs_resolved, str) else ""
-    return (bs or "make") == "make" and (lang or "fortran") == "fortran"
+    return control_file_host_authored(bs, lang)
 
 
 class WriteRunnerTest(unittest.TestCase):

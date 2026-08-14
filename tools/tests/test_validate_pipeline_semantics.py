@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 import tools.validate_pipeline_semantics as vps
+from tools.backends import registry as backend_registry
 from tools.backends.language.fortran.lines import strip_fortran_comment_tracking_quotes
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
@@ -10707,8 +10708,13 @@ end program shallow_water2d_runner
             v = validate_compile_stage(
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
-            self.assertTrue(
-                any("only implemented physical backend is (make, fortran)" in x for x in v), v)
+            clause = backend_registry.missing_capability_reason(
+                "language", "cpp", "control_file")
+            # If `cpp` ever becomes an implemented language this is `None`, and `None in str`
+            # raises a TypeError that talks about the probe instead of the gate. Fail with the
+            # cause named instead.
+            self.assertIsNotNone(clause, "the probe language is now implemented; pick another")
+            self.assertTrue(any(clause in x for x in v), v)
 
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
@@ -17918,6 +17924,214 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, (lang, v))
             self.assertIn(repr(lang), v[0])
 
+    def test_the_lint_evidence_preset_is_refused_with_the_registrys_clause(self) -> None:
+        """The branch this change rewrote, which had no test on either side of it.
+
+        It used to compare against a literal set and now asks
+        `registry.unimplemented_reason`. Both directions are driven: a linter that is not a
+        member at all, and — the reason this is `unimplemented_reason` and not
+        `unsupported_reason` — one that IS a declared member with no implementation anywhere.
+        A membership question would accept the second and let a preset name a linter nothing can
+        run. Review's sweep swapped the two questions and no test noticed.
+        """
+        from unittest import mock
+
+        def _run(preset: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                pipeline_root = Path(t) / "pipelines" / "p1"
+                source_dir = pipeline_root / "source" / "src_20260101_001"
+                source_dir.mkdir(parents=True)
+                (pipeline_root / "lint_evidence").mkdir()
+                (pipeline_root / "lint_evidence" / "src_20260101_001.json").write_text(
+                    json.dumps({
+                        "ok": True, "preset": "fortitude",
+                        "checked_at": "2026-08-15T00:00:00Z",
+                        "run_linter": [{"command_id": "c1", "command_log_ref": "logs/c1.json",
+                                        "preset": preset}],
+                    }), encoding="utf-8")
+                meta_path = source_dir / "source_meta.json"
+                meta_path.write_text("{}", encoding="utf-8")
+                v: list[str] = []
+                vps._validate_generate_lint_command_logs(
+                    Path(t), meta_path, {"verification_status": "pass"}, "fortran", v)
+                return v
+
+        # A non-member: refused, with the registry's clause rather than a set spelled here.
+        v = _run("no_such_linter")
+        self.assertTrue(any("no_such_linter" in x for x in v), v)
+        self.assertTrue(
+            any(backend_registry.unsupported_reason("linter", "no_such_linter") in x for x in v),
+            v)
+        # An implemented member: this branch lets it through (it fails later, on the command
+        # log, which is a different rule — the point is that the preset itself is accepted).
+        self.assertFalse(
+            any("is not a declared linter" in x for x in _run("fortitude")))
+        # A DECLARED member that implements nothing: membership would accept it; this must not.
+        record = backend_registry.Backend("linter", "zz_named_only", None)
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("linter", "zz_named_only"): record}):
+            self.assertIsNone(backend_registry.unsupported_reason("linter", "zz_named_only"))
+            v = _run("zz_named_only")
+            self.assertTrue(any("zz_named_only" in x for x in v), v)
+            self.assertTrue(any("nothing implements it" in x for x in v), v)
+
+    def test_the_m3c_mirror_follows_the_registry_clause_by_clause(self) -> None:
+        """`_ir_is_m3c_physics` is the third reader of the host-authorship question, and the one
+        that had no test naming it at all.
+
+        It gates `_validate_checks_source_files` and the harness render preconditions, so if it
+        disagrees with `_conductor_authors_runner` the disagreement is a wrong verdict in one
+        direction or the other: the checks-module contract demanded of a node whose runner is
+        leaf-authored, or not demanded of one whose runner the host rendered.
+
+        Measured before this test existed: reverting the whole predicate to the literal
+        `(make, fortran)` pair was caught ONLY by the token ratchet — which
+        `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector —
+        and a token-neutral corruption of the same lines survived the entire suite. Each clause
+        is driven separately here, because that is the granularity at which they were deletable.
+        """
+        from unittest import mock
+        base = {"meta": {"spec_kind": "component", "spec_id": "bx"},
+                "dependency": {"direct_deps": [
+                    {"node_key": "infrastructure/harness_fortran_cpu@0.7.0",
+                     "kind": "infrastructure"}]}}
+
+        def _ir(**toolchain) -> dict:
+            doc = json.loads(json.dumps(base))
+            doc["impl_defaults"] = {"toolchain": toolchain}
+            return doc
+
+        self.assertTrue(vps._ir_is_m3c_physics(_ir(build_system="make", language="fortran")))
+        # The padding guard: this reader `.lower()`s but does not strip, while `provides`
+        # strips — so without the guard a padded value would read as M3c here while the
+        # conductor declines to render the runner for it.
+        for padded in ({"build_system": "make ", "language": "fortran"},
+                       {"build_system": "make", "language": " fortran"}):
+            self.assertFalse(vps._ir_is_m3c_physics(_ir(**padded)), padded)
+        # The capability clauses, one at a time, against declared records that separate them.
+        compile_only = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        # A language the neutral core can RENDER a runner for but has no compile rules for.
+        # Today `fortran` declares both, so this row of the predicate is subsumed and was
+        # deletable; the census named it, so it is declared here rather than waited for.
+        render_only = backend_registry.Backend(
+            "language", "zz_render_only", None, core_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(backend_registry._BACKENDS, {
+                ("language", "zz_compile_only"): compile_only,
+                ("language", "zz_render_only"): render_only,
+                ("build_system", "zz_build_only"): build_only}):
+            self.assertFalse(vps._ir_is_m3c_physics(
+                _ir(build_system="make", language="zz_render_only")))
+            # A language the neutral core can compile but not render: NOT M3c (the `runner_render`
+            # clause), and it agrees with the conductor, which declines to render its runner.
+            self.assertFalse(vps._ir_is_m3c_physics(
+                _ir(build_system="make", language="zz_compile_only")))
+            # A build system the in-process path can drive but has no control-file writer for.
+            self.assertFalse(vps._ir_is_m3c_physics(
+                _ir(build_system="zz_build_only", language="fortran")))
+
+    def test_the_capability_layer_refuses_a_padded_value_on_its_own(self) -> None:
+        """The second layer, driven directly — the caller returns before it.
+
+        The old gate compared `build_system != "make"` exactly, so a padded value was refused
+        twice: by the shape check and again by the toolchain comparison. `registry.provides`
+        normalizes with `.strip().lower()`, so routing the comparison through it silently
+        deleted the second layer — measured, the registry-only form refused 4 of 32 padded
+        shapes where the old code refused 24. Nothing observable changed, because the shape
+        check returns first; that is precisely why this has to be driven at the helper.
+        """
+        for build_system, language in ((" make", "fortran"), ("make", " fortran"),
+                                       ("make ", "fortran "), (" make ", " fortran ")):
+            clauses = vps._missing_toolchain_capability_clauses(
+                build_system, language, is_infrastructure=False)
+            self.assertTrue(clauses, (build_system, language))
+            self.assertIn("whitespace", clauses[0])
+        # ...and the layer does not fire on the canonical spellings it must let through.
+        self.assertEqual(
+            [], vps._missing_toolchain_capability_clauses("make", "fortran", False))
+
+    def test_a_capability_the_neutral_core_lacks_is_refused_even_when_its_sibling_holds(
+            self) -> None:
+        """`control_file` without `runner_render`: the state the clause exists for.
+
+        Every other test drives a value with ZERO capabilities, so `control_file` and
+        `runner_render` are indistinguishable — `fortran` is the only record declaring either.
+        Both reviewers' sweeps deleted the `runner_render` requirement here and in the conductor
+        with the full suite green. A language the neutral core can compile but not render is
+        exactly what the clause is for, so it is declared here rather than waited for.
+        """
+        from unittest import mock
+        record = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("language", "zz_compile_only"): record}):
+            self.assertTrue(
+                backend_registry.provides("language", "zz_compile_only", "control_file"))
+            clauses = vps._missing_toolchain_capability_clauses(
+                "make", "zz_compile_only", is_infrastructure=False)
+            self.assertEqual(len(clauses), 1, clauses)
+            self.assertIn("runner_render", clauses[0])
+            v = self._run(toolchain={"build_system": "make", "language": "zz_compile_only"})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("runner_render", v[0])
+        # The build_system axis needs the same pair separated, and did not have it: a build
+        # system that can drive the in-process build but has no control-file writer must not
+        # pass the gate. Review's sweep deleted that requirement and nothing noticed.
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("build_system", "zz_build_only"): build_only}):
+            clauses = vps._missing_toolchain_capability_clauses(
+                "zz_build_only", "fortran", is_infrastructure=False)
+            self.assertEqual(len(clauses), 1, clauses)
+            self.assertIn("control_file", clauses[0])
+            # ...and an infrastructure node, which needs `build_execute` only, still passes.
+            self.assertEqual(
+                [], vps._missing_toolchain_capability_clauses(
+                    "zz_build_only", "fortran", is_infrastructure=True))
+            # The make-quality-check contract keys on `control_file` — it reads the control
+            # file's grammar and requires its test target — NOT on `build_execute`. A build
+            # system the in-process path can drive but whose control file is leaf-authored must
+            # not have that contract enforced against it. The two capabilities are coextensive
+            # for `make`, so this row was deletable until a record separated them.
+            self.assertFalse(vps._make_quality_check_applies("zz_build_only", "fortran"))
+            self.assertTrue(vps._make_quality_check_applies("make", "fortran"))
+
+    def test_a_registered_backend_that_implements_nothing_is_still_refused(self) -> None:
+        """The reverse pin: registering does not admit, IMPLEMENTING does.
+
+        This is the fail-open the last boundary change actually shipped, one question earlier —
+        a gate routed through membership stopped refusing the moment a member was declared,
+        while the code under it still emitted one backend's text. Driven by declaring the
+        member, because no fixture can show it otherwise: every live member is implemented.
+        """
+        from unittest import mock
+        records = {
+            ("language", "zz_lang"): backend_registry.Backend("language", "zz_lang", None),
+            ("build_system", "zz_bs"): backend_registry.Backend(
+                "build_system", "zz_bs", None),
+        }
+        with mock.patch.dict(backend_registry._BACKENDS, records):
+            # Declared — membership no longer refuses either value...
+            self.assertIsNone(backend_registry.unsupported_reason("language", "zz_lang"))
+            self.assertIsNone(backend_registry.unsupported_reason("build_system", "zz_bs"))
+            # ...and the gate refuses both anyway.
+            v = self._run(toolchain={"build_system": "make", "language": "zz_lang"})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("zz_lang", v[0])
+            v = self._run(toolchain={"build_system": "zz_bs", "language": "fortran"})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("zz_bs", v[0])
+            # Including for an infrastructure node, which is exempt on LANGUAGE only.
+            self.assertEqual(
+                self._run(spec_kind="infrastructure",
+                          toolchain={"build_system": "make", "language": "zz_lang"}), [])
+            self.assertEqual(
+                len(self._run(spec_kind="infrastructure",
+                              toolchain={"build_system": "zz_bs", "language": "fortran"})), 1)
+
     def test_infrastructure_kind_is_exempt_from_the_language_half_only(self) -> None:
         # The harness is certified per (language, hardware) target, so another language is a
         # legitimate future harness. `make` is NOT exempt: `_require_make_build_system` is
@@ -17931,11 +18145,15 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("build_system must be 'make' on every node", v[0])
         self.assertIn("_require_make_build_system", v[0])
-        # ...and its remedy names only build_system, never ordering the harness to become
-        # fortran. Anchored on the remedy clause itself, so a reformat of the declared-value
-        # prefix (which renders `language='fortran'`) cannot make this vacuous either way.
-        remedy = v[0].split("re-author impl_defaults.toolchain to ", 1)[1]
-        self.assertTrue(remedy.startswith("build_system 'make' ("), remedy[:60])
+        # ...and it refuses on the BUILD-SYSTEM capability only, never ordering the harness to
+        # become fortran. Anchored on the registry clauses the gate carries, so a reformat of
+        # the declared-value prefix (which renders `language='fortran'`) cannot make this
+        # vacuous either way, and so the pin follows the registry rather than restating it.
+        self.assertIn(
+            backend_registry.missing_capability_reason(
+                "build_system", "cmake", "build_execute"),
+            v[0])
+        self.assertNotIn("for language", v[0])
 
     def test_the_infrastructure_exemption_is_case_sensitive(self) -> None:
         # The exemption is spelled `.strip()`-only, the same rule as
@@ -17946,7 +18164,8 @@ class ToolchainBackendGateTests(unittest.TestCase):
                                    toolchain={"language": "c"}), [])
         v = self._run(spec_kind="Infrastructure", toolchain={"language": "c"})
         self.assertEqual(len(v), 1, v)
-        self.assertIn("(make, fortran)", v[0])
+        self.assertIn(
+            backend_registry.missing_capability_reason("language", "c", "control_file"), v[0])
 
     def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
         # This gate exempts an infrastructure node from the `fortran` half on the grounds
@@ -17996,7 +18215,18 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1)
         msg = v[0]
         self.assertIn("impl_defaults.toolchain", msg)
-        self.assertIn("(make, fortran)", msg)
+        # The refusal clause is the REGISTRY's, verbatim, for each axis that is missing a
+        # capability — the gate does not spell an implemented set of its own
+        # (docs/BACKEND_BOUNDARY.md §Design Policy).
+        self.assertIn(
+            backend_registry.missing_capability_reason(
+                "build_system", "cmake", "build_execute"), msg)
+        self.assertIn(
+            backend_registry.missing_capability_reason("language", "cpp", "control_file"), msg)
+        # ONE clause per axis, not per capability: `cpp` is missing both `control_file` and
+        # `runner_render`, and a message that said so twice would read as two defects. Counted,
+        # because dropping the dedup changed nothing any assertion looked at.
+        self.assertEqual(2, msg.count("this repository implements"), msg)
         # The message reports what the author WROTE. A present key is echoed verbatim (not
         # normalized — `CMake` must not come back as `'cmake'`), and an absent key is named
         # as absent rather than as a declaration nobody made.
@@ -18049,7 +18279,13 @@ class ToolchainBackendGateTests(unittest.TestCase):
         # (its message would name a value nobody wrote).
         v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
         self.assertEqual(len(v), 2, v)
-        self.assertFalse(any("only implemented physical backend" in x for x in v), v)
+        # The capability clauses must NOT also appear: the shape check returns first, so the
+        # message names the padding rather than telling an author to change their toolchain.
+        # (This assertion previously searched for "only implemented physical backend", a string
+        # this branch removed from the violation text — it could no longer fail. Anchored on the
+        # registry's clause instead, which is what the gate emits today.)
+        for msg in v:
+            self.assertNotIn("this repository implements", msg)
 
     def test_a_present_but_non_token_value_fires_whatever_spelling_produced_it(self) -> None:
         # The check is on the parsed SHAPE — "a plain non-empty string" — never on a

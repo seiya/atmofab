@@ -45,6 +45,7 @@ from zoneinfo import ZoneInfo
 
 import yaml
 
+from tools.backends import registry as backend_registry
 from tools.llm_config import (
     CAP_AGENTIC,
     CAP_PURE,
@@ -5262,8 +5263,38 @@ class Conductor:
             "backend": str(target.get("backend") or "").lower(),
         }
 
+    @staticmethod
+    def _core_authors_control_file(build_system: str, language: str) -> bool:
+        """Whether the NEUTRAL CORE has a control-file writer for this (build_system, language).
+
+        Asked of the registry (`control_file`, of both axes) instead of comparing against a pair
+        spelled here, so the fact has one owner. The capability — not membership, and not
+        "implemented" — is the question, because `_write_makefile` emits GNU make syntax with
+        Fortran compile rules: a predicate that answered "is this value implemented?" would
+        answer True the day a second build system is implemented as a backend and would route
+        its nodes into the make writer. A value that does not declare `control_file` gets False,
+        which is the documented leaf-authored path.
+
+        NORMALIZATION IS THE CALLER'S, and deliberately not the registry's: this repository's
+        two readers of `impl_defaults.toolchain` disagree on purpose. The conductor compares
+        `.lower()` without stripping, so a padded `" fortran"` is NOT the token it looks like and
+        host authorship flips off; `record_launch`'s reader strips and would report the host as
+        the author. `_validate_toolchain_backend_supported` rejects every untrimmed value for
+        exactly that reason. The registry normalizes with `.strip().lower()`, so handing it a
+        padded value would newly answer True here and silently reopen the orphaned-control-file
+        class — hence the equality test below rather than a bare lookup.
+        """
+        for axis, value in (("build_system", build_system), ("language", language)):
+            if value != value.strip():
+                return False
+            if not backend_registry.provides(axis, value, "control_file"):
+                return False
+        return True
+
     def _conductor_authors_makefile(self, refs: NodeRefs) -> bool:
-        """The conductor authors `src/Makefile` iff build_system=make AND language=fortran —
+        """The conductor authors `src/Makefile` iff the neutral core has a control-file writer
+        for the node's (build_system, language) — today make+fortran, asked of the registry via
+        `_core_authors_control_file`;
         exactly the scope of `_write_makefile`, for BOTH leaf and dependency nodes. The
         dependency Makefile is as deterministic as the leaf one (the closure + per-dep object
         rules come from the conductor-authored `dependency_graph.json` sidecar's `all_nodes`;
@@ -5276,12 +5307,16 @@ class Conductor:
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        return (str(tc.get("build_system") or "make").lower() == "make"
-                and str(tc.get("language") or "fortran").lower() == "fortran")
+        return self._core_authors_control_file(
+            str(tc.get("build_system") or "make").lower(),
+            str(tc.get("language") or "fortran").lower(),
+        )
 
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
-        make+fortran PHYSICS node with exactly one `infrastructure` (runner-harness) direct
+        PHYSICS node whose toolchain the neutral core both writes a control file for and renders
+        a runner for (today make+fortran — asked of the registry, see
+        `_core_authors_control_file`), with exactly one `infrastructure` (runner-harness) direct
         dependency. On such a node the runner is glue over the certified harness plumbing + the
         leaf-authored `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness
         interface (`tools/runner_renderer.render_runner`) — the leaf authors model+checks, not
@@ -5297,9 +5332,14 @@ class Conductor:
             return False
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        if str(tc.get("build_system") or "make").lower() != "make":
+        language = str(tc.get("language") or "fortran").lower()
+        # The runner is BUILT by the host-authored control file and RENDERED by the host's
+        # language-specific renderer, so both capabilities are required — the second is what
+        # keeps a language the neutral core can compile but not render out of this path.
+        if not self._core_authors_control_file(
+                str(tc.get("build_system") or "make").lower(), language):
             return False
-        if str(tc.get("language") or "fortran").lower() != "fortran":
+        if not backend_registry.provides("language", language, "runner_render"):
             return False
         meta = (ir.get("meta") or {}) if isinstance(ir, dict) else {}
         if str(meta.get("spec_kind") or "").strip() == "infrastructure":
@@ -5581,8 +5621,13 @@ class Conductor:
         language = tc["language"]
         standard = tc["standard"]
         build_system = tc["build_system"]
-        if build_system != "make" or language != "fortran":
-            return  # c/cpp/mixed (or non-make) keep LLM authoring — out of scope.
+        if not self._core_authors_control_file(build_system, language):
+            # A toolchain the neutral core has no control-file writer for keeps LLM authoring.
+            # Same predicate as `_conductor_authors_makefile`, which decides the matching
+            # write-authorization: if these two disagreed the file would be orphaned or
+            # double-owned. `_read_toolchain` has already lowered both values, and it does not
+            # strip — which the predicate relies on, so do not normalize again here.
+            return
         backend = tc["backend"]
         # The optional toolchain.compiler pins FC (a Fujitsu frt build only needs this IR
         # field plus a run_syntax_check adapter); unset keeps the gfortran default.

@@ -20,7 +20,7 @@
       "fortran-suffix": 3
     },
     "docs/BACKEND_BOUNDARY.md": {
-      "fortran": 6
+      "fortran": 7
     },
     "docs/BWRAP_ENABLEMENT.md": {
       "fortran-module-file": 2,
@@ -86,11 +86,10 @@
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
       "compiler-driver": 8,
-      "fortran": 24,
+      "fortran": 22,
       "fortran-intent": 1,
       "fortran-kind": 2,
       "fortran-module-file": 2,
-      "fortran-standard": 1,
       "fortran-subroutine": 1,
       "fortran-suffix": 14,
       "make-control-file": 15,
@@ -244,13 +243,12 @@
       "linter-fortitude": 2
     },
     "tools/codegen_bundle.py": {
-      "compiler-driver": 7,
-      "fortran": 30,
+      "compiler-driver": 2,
+      "fortran": 19,
       "fortran-kind": 1,
       "fortran-module-file": 3,
-      "fortran-standard": 2,
       "fortran-subroutine": 8,
-      "fortran-suffix": 17,
+      "fortran-suffix": 15,
       "make-control-file": 6
     },
     "tools/dependency_graph.py": {
@@ -324,7 +322,7 @@
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 37,
       "compiler-syntax-only": 8,
-      "fortran": 376,
+      "fortran": 373,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 43,
@@ -334,8 +332,8 @@
       "fortran-standard": 32,
       "fortran-subroutine": 85,
       "fortran-suffix": 43,
-      "linter-fortitude": 9,
-      "make-control-file": 108,
+      "linter-fortitude": 8,
+      "make-control-file": 110,
       "make-variable": 25,
       "parallel-construct": 10,
       "parallel-directive": 10
@@ -346,13 +344,13 @@
     "tools/workflow_conductor.py": {
       "compiler-driver": 28,
       "compiler-syntax-only": 2,
-      "fortran": 78,
+      "fortran": 77,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,
       "fortran-standard": 4,
       "fortran-suffix": 57,
-      "make-control-file": 98,
+      "make-control-file": 100,
       "make-variable": 61
     }
   }
