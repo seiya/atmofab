@@ -8294,39 +8294,33 @@ clean:
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
             if pg.returncode != 0:
-                from tools.fortran_structure import FORTRAN_STRUCTURE_UNAVAILABLE_MARKER
-                from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
+                from tools.validate_pipeline_semantics import (
+                    FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                    STALE_DEPENDENCY_IR_MARKER,
+                )
                 status = "fail"
-                # Two markers, both TERMINAL rather than a warm Generate retry, for the same
-                # reason: the leaf cannot repair either by re-authoring its source.
-                # `stale_dependency_ir` is a certified dependency IR the leaf does not own;
-                # `static_frontend_unavailable` is an absent parser on the machine running the
-                # gate — the Fortran gates read NOTHING without it, so failing closed here is what
-                # keeps an uninstalled front end from reading as a clean source.
+                # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
+                # re-authoring its source. `stale_dependency_ir` is a certified dependency IR the
+                # leaf does not own; `static_frontend_unavailable` is an absent parser on the
+                # machine running the gate, without which the Fortran gates read NOTHING.
                 # classify_gate_failure fail_closes any union verdict carrying either
-                # (GATE_FAILURE_TERMINAL). The markers are IMPORTED, never spelled here: a
-                # copy-pasted marker that drifts turns this scan into a silent
-                # `post_generate_violation` and puts the leaf back into a futile retry loop.
+                # (GATE_FAILURE_TERMINAL).
+                #
+                # THE FIRST IS CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
+                # third answer to one finding. Most violations interpolate a path the LEAF chose,
+                # so scanning the text let a model source named for the marker turn its own
+                # mis-naming into "this machine has no parser" — terminalizing the run instead of
+                # warm-retrying the rename. Anchoring the scan to a line start was defeated by a
+                # filename containing a newline; requiring `- ` in front was defeated by a
+                # filename containing a newline followed by `- `. Each was a tighter sample of the
+                # same prose. An exit code is set by the branch that knows and no leaf can write
+                # into it, so the class is closed rather than sampled again.
+                #
+                # `STALE_DEPENDENCY_IR_MARKER` is still a text scan and still carries that
+                # weakness; it predates this branch and is recorded in TODO.md, where the fix is
+                # now one already-built channel away.
                 gate_output = pg.stdout + pg.stderr
-                # ANCHORED to `- ` + marker at the START of an output line, not a substring
-                # search. The validator prints each violation as `- <text>`, and most violations
-                # interpolate a path the LEAF chose, so a plain `in` test lets a model source
-                # named `[fortran-structure-unavailable]_model.f90` turn its own mis-naming into
-                # "this machine has no parser" — terminalizing the run and spending nothing on the
-                # warm retry that would have fixed the name (reproduced in review).
-                #
-                # The `- ` is part of the anchor, not decoration, and that is the second half of
-                # the same finding: a violation may CONTAIN a newline, because the path it
-                # interpolates may, and only a violation's FIRST output line carries the prefix.
-                # Matching the marker at the start of any line was defeated by a source named
-                # `x\n[fortran-structure-unavailable]_model.f90` — my own first fix, incomplete,
-                # caught by the next review round. The unavailability violation is emitted
-                # marker-first so that this anchor matches it.
-                #
-                # `STALE_DEPENDENCY_IR_MARKER` interpolates its location first and so cannot be
-                # anchored at all; that instance predates this branch and is recorded in TODO.md.
-                if any(line.startswith(f"- {FORTRAN_STRUCTURE_UNAVAILABLE_MARKER}")
-                        for line in gate_output.splitlines()):
+                if pg.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
                     failure_category = "static_frontend_unavailable"
                 elif STALE_DEPENDENCY_IR_MARKER in gate_output:
                     failure_category = "stale_dependency_ir"

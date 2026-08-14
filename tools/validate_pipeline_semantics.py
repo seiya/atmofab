@@ -4581,15 +4581,11 @@ def _run_problem_model_gates(
 
     try:
         envelopes = _fortran_procedure_envelopes(lowered)
-    except fortran_structure.FortranStructureUnavailableError as exc:
-        # NOT a content failure: no edit to this source can fix a missing package, so this
-        # carries the marker `workflow_conductor._gate_static_check` scans for and the run is
-        # terminalized (`static_frontend_unavailable`) instead of burning the leaf's retries.
-        # The marker leads the VIOLATION, ahead of any path: `_gate_static_check` classifies on
-        # it, and it anchors the match to the start of the line for exactly that reason — see the
-        # note there. A path interpolated first would let a leaf-chosen filename carry the marker.
-        violations.append(f"{exc} (reading {model_file})")
-        return
+    # `FortranStructureUnavailableError` is deliberately NOT caught here. It is the OPERATOR's
+    # failure — an uninstalled package — and no edit to this source can clear it, so it propagates
+    # to `main`, which answers with a dedicated EXIT CODE. It used to be turned into a violation
+    # string carrying a marker for the conductor to scan for, and a leaf-chosen filename defeated
+    # that scan three times running; see the handler in `main`.
     except _FortranSourceStructureError as exc:
         for structure_error in exc.errors:
             violations.append(
@@ -4598,10 +4594,17 @@ def _run_problem_model_gates(
                 f"({'missing token' if structure_error.missing else 'parse error'}): "
                 f"{structure_error.snippet!r}. The `problem` model gates cannot read a "
                 f"source whose procedure structure is ambiguous, so this is a Generate "
-                f"failure. The measured cause is a VARIABLE or construct NAMED after a "
-                f"keyword — `endsubroutine`, `endmodule`, `endprocedure` and friends are "
-                f"legal names and are read here as the END statements they spell; rename it "
-                f"(e.g. `end_subroutine_flag`) and the source is accepted."
+                f"failure. Two causes have been observed, and the reported statement may be "
+                f"the module header rather than either of them, because that is where the "
+                f"parser gives up. (1) A VARIABLE or construct NAMED after a keyword — "
+                f"`endsubroutine`, `interface`, `contains` and friends are legal names and "
+                f"are read here as the statements they spell; rename it (e.g. "
+                f"`end_subroutine_flag`). (2) STATEMENT LABELS that are needed in one place "
+                f"and in the way in another — a labelled `DO` or a `FORMAT` alongside a "
+                f"labelled `contains` or procedure header; give the loop an `end do` and "
+                f"drop the label from the specification statement. Neither list is closed: "
+                f"the shape to look for is an identifier or a label sitting where this "
+                f"parser expects structure."
             )
         return
 
@@ -12817,6 +12820,11 @@ def _validate_ir_module_parameters_against_section51(
 # workflow_conductor.Conductor._gate_static_check keys on this exact string.
 STALE_DEPENDENCY_IR_MARKER = "[stale-dependency-ir]"
 
+#: `main`'s exit code when the Fortran structure front end is unavailable — an OPERATOR problem
+#: (an uninstalled package), never a content one. Distinct from 1 (violations found) and from
+#: argparse's 2, so a caller tells the three apart without reading a line of the output.
+FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE = 3
+
 
 def _validate_infrastructure_generated_signatures(
     repo_root: Path, execution: NodeExecution, model_files: list[Path], violations: list[str]
@@ -14189,6 +14197,21 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
                     # `--allow-missing-orchestration` silently switch off the verdict/summary pin.
                     require_verdict=True,
                 )
+    except fortran_structure.FortranStructureUnavailableError as exc:
+        # A DEDICATED EXIT CODE, because this failure is the OPERATOR's and no edit to any source
+        # can clear it. The conductor classifies on this code and on nothing in the text.
+        #
+        # It used to classify on a marker string in the output, and a leaf-chosen filename defeated
+        # that three times running: the marker anywhere in the output; then the marker at the start
+        # of any line (a filename may contain a newline); then `- ` + marker (a filename may
+        # contain a newline followed by `- `). Each fix was a tighter sample of the same prose. An
+        # exit code is not a sample — it is set by the branch that knows, and no leaf can write
+        # into it. The marker stays in the MESSAGE for a human reader and carries no decision.
+        #
+        # This clause must precede the `RuntimeError` one below, which would otherwise swallow it
+        # and report `schema_load_failed`: `FortranStructureUnavailableError` IS a `RuntimeError`.
+        print(f"pipeline semantic validation: FAIL\n- {exc}")
+        return FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
     except RuntimeError as exc:
         print(f"pipeline semantic validation: FAIL\n- schema_load_failed: {exc}")
         return 1

@@ -250,15 +250,17 @@ class FrontEndUnavailableTests(unittest.TestCase):
         # The message has to tell the operator what to do: this failure is theirs, not the leaf's.
         self.assertIn("INSTALL True", result.stdout)
 
-    def test_the_generate_gate_reports_the_marker_instead_of_going_quiet(self) -> None:
+    def test_the_generate_gate_raises_instead_of_going_quiet(self) -> None:
         # The whole point: without the front end the three `problem` gates can read NOTHING, and
         # the dangerous outcome is not an exception — it is a clean pass. This drives the real
         # `_validate_generate_outputs` over a real src dir, in a real interpreter with the import
-        # really broken, and asserts a VIOLATION carrying the marker comes back.
+        # really broken, and asserts the error PROPAGATES (so `main` can answer with the dedicated
+        # exit code) and that the literal-outputs violation this source would otherwise have
+        # earned is not reported in its place.
         result = self._run(textwrap.dedent("""
             import tempfile
             from pathlib import Path
-            from tools.fortran_structure import FORTRAN_STRUCTURE_UNAVAILABLE_MARKER
+            from tools import fortran_structure as fs
             import tools.validate_pipeline_semantics as vps
 
             td = Path(tempfile.mkdtemp())
@@ -271,15 +273,40 @@ class FrontEndUnavailableTests(unittest.TestCase):
             execution = vps.NodeExecution(node_key="problem/probe2d@0.1.0", node_dir=td,
                                           exec_dir=td, pipeline_dir=td)
             violations = []
-            vps._validate_generate_outputs(td, execution, src, violations)
-            print("MARKED", any(FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in v for v in violations))
-            # ... and the literal-outputs violation this source WOULD have earned is not reported
-            # in its place, because the gate did not run at all.
+            try:
+                vps._validate_generate_outputs(td, execution, src, violations)
+            except fs.FortranStructureUnavailableError as exc:
+                print("RAISED", fs.FORTRAN_STRUCTURE_UNAVAILABLE_MARKER in str(exc))
+            else:
+                print("NO-RAISE")
             print("SILENT", any("literal-only assignments" in v for v in violations))
         """))
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("MARKED True", result.stdout)
+        self.assertIn("RAISED True", result.stdout)
         self.assertIn("SILENT False", result.stdout)
+
+    def test_the_cli_answers_with_a_dedicated_exit_code(self) -> None:
+        # The classification channel itself. A leaf can write any text it likes into a filename,
+        # and did defeat three successive text-based scans; it cannot write into an exit code.
+        # This runs `main` in a real interpreter with the import really broken.
+        result = self._run(textwrap.dedent("""
+            import tempfile
+            from pathlib import Path
+            import tools.validate_pipeline_semantics as vps
+
+            td = Path(tempfile.mkdtemp())
+            src = td / "src"
+            src.mkdir()
+            (src / "probe2d_model.f90").write_text("module probe2d_model\\nend module probe2d_model\\n")
+            execution = vps.NodeExecution(node_key="problem/probe2d@0.1.0", node_dir=td,
+                                          exec_dir=td, pipeline_dir=td)
+            try:
+                vps._validate_generate_outputs(td, execution, src, [])
+            except Exception as exc:
+                print("EXIT", vps.FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE, type(exc).__name__)
+        """))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("EXIT 3 FortranStructureUnavailableError", result.stdout)
 
     def test_with_the_packages_present_the_same_source_is_gated_normally(self) -> None:
         # The control for the row above: the stub is what makes it fail, not the fixture.

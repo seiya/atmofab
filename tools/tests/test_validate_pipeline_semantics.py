@@ -7122,10 +7122,11 @@ end module shallow_water2d_model
         # so refusing it was a regression — found by review, and invisible to the differential
         # because 0 of the 365 in-tree models carry a statement label of any kind.
         #
-        # The fix keeps a label only when some `do` NAMES it, which is why the row below and the
-        # labelled-header rows in the next test have to pass together: keeping every label makes
-        # this one work and breaks those (the parser ERRORs on `10 contains` and
-        # `20 subroutine helper(v)`, both of which gfortran accepts — executed).
+        # The fix does not decide WHICH labels matter — three rules that tried were each
+        # defeated by a legal program in the next review round. The parser decides: the stripped
+        # reading is parsed first and the label-preserving twin only if that fails. This row and
+        # the labelled-header rows in the test below therefore have to pass together, since they
+        # need opposite readings of the same file.
         source = """module shallow_water2d_model
 use dep_model
 implicit none
@@ -7148,8 +7149,8 @@ end module shallow_water2d_model
         # ... and the body really is the body: the gate still sees the discarded dependency call.
         self.assertIn("does not propagate dependency operation outputs",
                       " ".join(self._dataflow_violations(source)))
-        # The label on the terminator is what is kept; a labelled statement no `do` refers to is
-        # still stripped, which the next test pins from the other side.
+        # Both terminator spellings reach the same envelope; the reading that works is chosen by
+        # the parser, not by which statement carries the label.
         for spelling in ("100 continue", "100 v(i) = u(i)"):
             body = source.replace("    v(i) = u(i)\n100 continue", f"    v(i) = u(i)\n{spelling}")
             self.assertEqual(1, len(vps._fortran_procedure_envelopes(body.lower())), spelling)
@@ -7207,6 +7208,42 @@ end subroutine advance
 end subroutine helper
 end module shallow_water2d_model
 """))
+
+    def test_the_fallbacks_offsets_are_translated_back_to_the_view(self) -> None:
+        # When the label-preserving reading is used, the parser's offsets index THAT string, and
+        # the gates slice the VIEW — so every offset is translated by line index. That translation
+        # was live, load-bearing and UNOBSERVED: deleting it left the whole suite green, because
+        # every other fallback fixture happens to carry exactly one label before its `end`, so the
+        # skew never crossed an assertion (found by review, by mutating it away).
+        #
+        # This asserts the TEXT of `body` and `out_scope`, on a source with FOUR labelled
+        # statements, so the skew is 4 label prefixes wide and lands the terminator inside the
+        # body. `gfortran -fsyntax-only -std=f2008 -Wall` accepts it (executed).
+        source = """module shallow_water2d_model
+implicit none
+contains
+subroutine solve(u, v, n)
+  integer, intent(in) :: n
+  real, intent(in) :: u(n)
+  real, intent(out) :: v(n)
+  integer :: i
+  do 100 i = 1, 4
+    v(i) = u(i)
+100 continue
+  do 200 i = 1, 4
+    v(i) = v(i) + u(i)
+200 continue
+end subroutine solve
+end module shallow_water2d_model
+"""
+        envelope = vps._fortran_procedure_envelopes(source.lower())[0]
+        # The body starts after the header and ends BEFORE the terminator, with no part of
+        # `end subroutine solve` inside it and nothing of the declarations lost from the front.
+        self.assertTrue(envelope.body.startswith("integer, intent(in) :: n\n"), envelope.body)
+        self.assertTrue(envelope.body.endswith("continue\n"), envelope.body)
+        self.assertNotIn("end subroutine", envelope.body)
+        # No `contains`, so out_scope is the whole body — the same two boundaries, translated.
+        self.assertEqual(envelope.body, envelope.out_scope)
 
     def test_a_file_needing_both_label_readings_at_once_is_refused(self) -> None:
         # THE DECLARED RESIDUE of choosing the reading per FILE rather than per statement: a
