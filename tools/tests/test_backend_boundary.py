@@ -148,7 +148,10 @@ _TOKEN_CLASSES: dict[str, str] = {
     "make-control-file": r"makefile",
     "make-variable": r"\bFFLAGS\b|\bCFLAGS\b|\bLDFLAGS\b|\bOBJDIR\b",
     # compiler
-    "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+\b|\bclang\+\+\b|\bgcc\b|\bclang\b",
+    # No trailing `\b` after `++`: a word boundary needs a word character on one side, and
+    # `g++ ` has none, so `\bg\+\+\b` could never match. The alternative was dead until a
+    # per-alternative probe asked it to match `g++ -c` and it did not.
+    "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+|\bclang\+\+|\bgcc\b|\bclang\b",
     "compiler-syntax-only": r"-fsyntax-only",
     # linter
     "linter-fortitude": r"fortitude",
@@ -374,6 +377,8 @@ class ScannedSetTests(unittest.TestCase):
                 "mcp_servers/tools/run_syntax_check.json",
                 "tools/prompt_templates/leaf.txt",
                 "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
             )
             found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
         # `skills/**/backends/...` is a BACKEND location by the placement table, but the
@@ -384,7 +389,7 @@ class ScannedSetTests(unittest.TestCase):
              "skills/some-skill/scripts/emit.py",
              "skills/some-skill/backends/language/fortran.md",
              "mcp_servers/tools/run_syntax_check.json", "tools/prompt_templates/leaf.txt",
-             "README.md"},
+             "README.md", "AGENTS.md", "CLAUDE.md"},
             found)
 
     def test_the_declared_exclusions_are_all_reachable(self) -> None:
@@ -465,43 +470,89 @@ class TokenClassReachTests(unittest.TestCase):
     something even when the tree happens not to contain that spelling.
     """
 
-    #: One string per class that the class MUST match, and one that it must NOT. The negative
-    #: half is what stops a class from being widened into a catch-all to keep this test green.
-    _PROBES: dict[str, tuple[str, str]] = {
-        "fortran": ("iso_fortran_env", "iso c binding"),
-        "fortran-suffix": ("model.f90", "model.py"),
-        "fortran-subroutine": ("end subroutine foo", "end procedure foo"),
-        "fortran-implicit-none": ("implicit none", "implicitly none"),
-        "fortran-intent": ("intent(in)", "intention of"),
-        "fortran-module-procedure": ("module procedure add", "module parameter add"),
-        "fortran-kind": ("real64", "real 64"),
-        "fortran-allocatable": ("allocatable :: x", "allocated :: x"),
-        "fortran-module-file": ("harness.mod", "harness.module"),
-        "fortran-standard": ("-std=f2008", "-std=c99"),
-        "c-include": ("#include <stdio.h>", "include stdio"),
-        "c-suffix": ("kernel.cpp", "llama.cpp"),
-        "make-control-file": ("src/Makefile", "src/BUILD.bazel"),
-        "make-variable": ("FFLAGS += -O2", "FLAGS += -O2"),
-        "compiler-driver": ("gfortran -c", "fortran compiler"),
-        "compiler-syntax-only": ("-fsyntax-only", "--syntax-only"),
-        "linter-fortitude": ("fortitude check", "fortifying the gate"),
-        "parallel-directive": ("!$omp parallel do", "$omp parallel do"),
-        "parallel-construct": ("do concurrent (i=1:n)", "run these concurrently"),
+    #: Per class: every string it MUST match, and every string it must NOT.
+    #:
+    #: ONE POSITIVE PER REGEX ALTERNATIVE, not one per class. An independent sweep removed
+    #: `f2003`, `CFLAGS`, `LDFLAGS`, `g++` and `clang++` one at a time and the suite stayed
+    #: green; their siblings died only because this corpus happens to contain those spellings
+    #: today — accident, not coverage. Same for the `\s+` in the two-word patterns, which is the
+    #: whole reason those are patterns rather than literals. The negative half is what stops a
+    #: class from being widened into a catch-all to keep the positives green; two of the first
+    #: negatives written here were wrong, which is the half doing work.
+    _PROBES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+        "fortran": (("iso_fortran_env", "GFortran"), ("iso c binding",)),
+        "fortran-suffix": ((" model.f90", "a.f95", "b.f03", "c.f08", "d.fpp"),
+                           ("model.py", "model.f77")),
+        "fortran-subroutine": (("end subroutine foo", "SUBROUTINE bar"), ("end procedure foo",)),
+        "fortran-implicit-none": (("implicit none", "implicit    none", "implicit\tnone"),
+                                  ("implicitly none", "implicitnone")),
+        "fortran-intent": (("intent(in)", "intent (out)"), ("intention of", "intent in")),
+        "fortran-module-procedure": (("module procedure add", "module   procedure add"),
+                                     ("module parameter add", "moduleprocedure add")),
+        "fortran-kind": (("real64", "real32"), ("real 64", "areal64")),
+        "fortran-allocatable": (("allocatable :: x",), ("allocated :: x",)),
+        "fortran-module-file": (("harness.mod",), ("harness.module",)),
+        "fortran-standard": (("-std=f2008", "-std=f2003", "-std=f95"), ("-std=c99", "f2018")),
+        "c-include": (("#include <stdio.h>",), ("include stdio",)),
+        "c-suffix": (("kernel.cpp", "k.hpp", "k.cxx", "k.cc", "k.hh"), ("llama.cpp", "k.cpp2")),
+        "make-control-file": (("src/Makefile", "GNUmakefile"), ("src/BUILD.bazel",)),
+        "make-variable": (("FFLAGS += -O2", "CFLAGS += -O2", "LDFLAGS += -s", "OBJDIR := o"),
+                          ("FLAGS += -O2", "MYFFLAGS")),
+        "compiler-driver": (("gfortran -c", "flang -c", "g++ -c", "clang++ -c", "gcc -c",
+                             "clang -c"), ("fortran compiler", "libgcc_s")),
+        "compiler-syntax-only": (("-fsyntax-only",), ("--syntax-only",)),
+        "linter-fortitude": (("fortitude check",), ("fortifying the gate",)),
+        "parallel-directive": (("!$omp parallel do",), ("$omp parallel do",)),
+        "parallel-construct": (("do concurrent (i=1:n)", "do  concurrent (i=1:n)"),
+                               ("run these concurrently",)),
     }
 
     def test_every_declared_class_has_a_probe(self) -> None:
         self.assertEqual(sorted(_TOKEN_CLASSES), sorted(self._PROBES),
                          "a token class was added or removed without its probe pair")
 
-    def test_each_class_matches_its_positive_and_rejects_its_negative(self) -> None:
-        for name, (positive, negative) in sorted(self._PROBES.items()):
+    def test_each_class_matches_every_positive_and_rejects_every_negative(self) -> None:
+        for name, (positives, negatives) in sorted(self._PROBES.items()):
             rx = _COMPILED[name]
-            self.assertTrue(rx.search(positive), f"{name} no longer matches {positive!r}")
-            self.assertIsNone(rx.search(negative), f"{name} now matches {negative!r}")
+            for probe in positives:
+                self.assertTrue(rx.search(probe), f"{name} no longer matches {probe!r}")
+            for probe in negatives:
+                self.assertIsNone(rx.search(probe), f"{name} now matches {probe!r}")
+
+    def test_every_regex_alternative_has_its_own_positive(self) -> None:
+        # The count is derived from the pattern, not written down: a class whose pattern grows an
+        # alternative without a probe fails here rather than joining the corpus-dependent kills.
+        for name, pattern in sorted(_TOKEN_CLASSES.items()):
+            alternatives = pattern.count("|") + 1
+            self.assertGreaterEqual(
+                len(self._PROBES[name][0]), alternatives,
+                f"{name}: {alternatives} regex alternative(s), "
+                f"{len(self._PROBES[name][0])} positive probe(s)")
 
 
 class RegistryConsistencyTests(unittest.TestCase):
     """The registry's own claims, checked against itself and against the import system."""
+
+    def test_the_canonical_document_lists_exactly_the_declared_axes(self) -> None:
+        """One owner for the axis list, compared rather than restated.
+
+        Three documents spelled the five names and nothing checked them: adding a sixth axis to
+        `AXES` left all three stale with the full suite green. `AGENTS.md` and `docs/GLOSSARY.md`
+        now cite the canonical §Definitions bullet instead of repeating it, and that bullet is
+        read here. The parse is deliberately narrow — the backticked names in the sentence that
+        begins "The declared axes are" — so a rewrite that drops the list fails rather than
+        silently matching nothing.
+        """
+        doc = (REPO_ROOT / "docs" / "BACKEND_BOUNDARY.md").read_text(encoding="utf-8")
+        match = re.search(r"The\s+declared\s+axes\s+are\s+(.+?)\.\s", doc, re.DOTALL)
+        self.assertIsNotNone(match, "docs/BACKEND_BOUNDARY.md no longer lists the declared axes")
+        listed = set(re.findall(r"`([a-z_]+)`", match.group(1)))
+        self.assertEqual(set(registry.AXES), listed)
+        for other in ("AGENTS.md", "docs/GLOSSARY.md"):
+            text = (REPO_ROOT / other).read_text(encoding="utf-8")
+            self.assertNotIn(
+                "`language`, `build_system`, `compiler`, `linter`", text,
+                f"{other} restates the axis list; cite docs/BACKEND_BOUNDARY.md instead")
 
     def test_every_axis_has_at_least_one_backend(self) -> None:
         for axis in registry.AXES:
@@ -615,6 +666,52 @@ class RegistryConsistencyTests(unittest.TestCase):
         # every language including the one that works.
         self.assertIsNone(
             registry.unavailable_reason("language", vps._SIGNATURE_HELPERS_BACKEND_ID))
+
+    def test_each_refusal_ground_is_reached_by_the_input_it_is_for(self) -> None:
+        """Both grounds, separately. Only the second one was observed.
+
+        The two grounds are coextensive while one language backend exists, so a mutation that
+        deleted the registry ground left the suite green — and made the gate answer a
+        NON-MEMBER language with the second ground's sentence, which says that language "has an
+        extracted language backend". False, and it sends a reader to thread `language` through
+        six helpers instead of to add a backend. The gate tests cannot catch this: they build
+        their expected clause by calling this predicate, so they are invariant to which ground
+        answered.
+        """
+        member_gap = vps._signature_backend_refusal("c")
+        self.assertEqual(registry.unavailable_reason("language", "c"), member_gap)
+        self.assertNotIn("still import", member_gap)
+        original = vps._SIGNATURE_HELPERS_BACKEND_ID
+        try:
+            vps._SIGNATURE_HELPERS_BACKEND_ID = "some_other_language"
+            dispatch_gap = vps._signature_backend_refusal("fortran")
+        finally:
+            vps._SIGNATURE_HELPERS_BACKEND_ID = original
+        self.assertIn("still import", dispatch_gap)
+        self.assertNotEqual(member_gap, dispatch_gap)
+
+    def test_the_refusal_normalizes_the_language_it_is_given(self) -> None:
+        # `registry.unavailable_reason` case-folds and strips; the identity comparison against
+        # `_SIGNATURE_HELPERS_BACKEND_ID` is exact. Trusting the caller made the two halves
+        # disagree about one string, and the direction is a false `Compile fail` on a valid node.
+        for spelling in ("fortran", "Fortran", "FORTRAN", "  fortran  ", "\tFortran\n"):
+            self.assertIsNone(vps._signature_backend_refusal(spelling), spelling)
+        for absent in ("", "   ", None):
+            self.assertIsNone(vps._signature_backend_refusal(absent), repr(absent))
+
+    def test_the_registry_and_the_hard_coding_gates_agree_on_the_language_set(self) -> None:
+        """Two owners of one fact, the same shape the linter test closes.
+
+        `_validate_toolchain_backend_supported` spells `(make, fortran)` itself and the §5.1
+        helpers import one backend by name, so declaring a second `language` member makes the
+        registry accept a value those gates refuse — silently, since nothing compared them.
+        Failing here is the intended outcome of adding a language backend: it says the gates in
+        `docs/BACKEND_BOUNDARY.md` §Operations Rules must migrate in the same change.
+        """
+        self.assertEqual(
+            (vps._SIGNATURE_HELPERS_BACKEND_ID,), registry.backend_ids("language"),
+            "the registry declares a language the neutral gates still refuse by hard-coding; "
+            "migrate those gates (docs/BACKEND_BOUNDARY.md, TODO.md) in the same change")
 
     def test_an_extracted_but_undispatched_language_is_still_refused(self) -> None:
         # The behavioural witness for the second ground. Simulated by moving the constant rather

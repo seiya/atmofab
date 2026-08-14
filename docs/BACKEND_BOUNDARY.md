@@ -28,7 +28,10 @@ Out of scope, each for a stated reason:
 ## Definitions
 - **target-stack axis** (**axis**): one dimension of the technology choice a run makes. The
   declared axes are `language`, `build_system`, `compiler`, `linter`, and `parallel`. Each axis
-  and the artifact key its value is read from is declared in `tools/backends/registry.py`.
+  and the artifact key its value is read from is declared in `tools/backends/registry.py`, which
+  is the source of truth; this sentence is the only restatement of the list, and
+  `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` so the two cannot
+  drift. Other documents cite this section rather than repeating the list.
 - **backend**: the code that knows one value of one axis — the Fortran `language` backend, the
   `make` `build_system` backend. A backend is identified by `<axis>/<backend_id>`.
 - **neutral core**: every module, template, skill, and document in scope that is not a backend.
@@ -99,8 +102,10 @@ the binding. A neutral document must not state the binding itself.
   opposite, and following it produced a backend nothing accepted — and then, after a partial fix,
   a backend that was accepted and silently rendered as Fortran.
 - **Adding an axis** requires an entry in `AXES` in `tools/backends/registry.py` naming where its
-  value is read from and whether its vocabulary is open, an entry in `docs/GLOSSARY.md`, and a row
-  in the placement table above.
+  value is read from and whether its vocabulary is open, and adding its name to the §Definitions
+  list above. No row is added to the placement table: that table is indexed by artifact kind and
+  parameterised by `<axis>`, so it already covers every axis. (The previous wording asked for a
+  row, which cannot be done.)
 - **Changing a rule stated here** requires washing every document that cites it. The citations are
   found with `grep -rn "BACKEND_BOUNDARY" docs skills tools mcp_servers *.md` from the repository
   root — the root `*.md` is load-bearing, since `TODO.md` carries the migration ledger and its

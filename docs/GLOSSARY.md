@@ -173,6 +173,6 @@ Note:
 
 ## 11. Backend Boundary Vocabulary (`axis` / `backend` / `neutral core`)
 Canonical source for the rule these terms serve: `docs/BACKEND_BOUNDARY.md`.
-- **target-stack axis** (**axis**): One dimension of the concrete technology choice a run makes. The declared axes are `language`, `build_system`, `compiler`, `linter`, and `parallel`. `tools/backends/registry.py` declares each axis and the artifact key its value is read from.
+- **target-stack axis** (**axis**): One dimension of the concrete technology choice a run makes. `tools/backends/registry.py` declares each axis and the artifact key its value is read from; `docs/BACKEND_BOUNDARY.md` §Definitions lists the declared axes. The list is not repeated here: three documents spelled it and nothing compared them against the registry, so a sixth axis left all three stale silently.
 - **backend**: The code that knows one value of one `axis`, identified by `<axis>/<backend_id>` and located at `tools/backends/<axis>/<backend_id>/`. Examples: `language/fortran`, `build_system/make`.
 - **neutral core**: Every module, prompt template, `SKILL`, and document in the scope of `docs/BACKEND_BOUNDARY.md` that is not a `backend`. It may name an `axis` value as an opaque token; it must not contain the knowledge that value implies.

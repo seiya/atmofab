@@ -6345,13 +6345,20 @@ def _signature_backend_refusal(language: str) -> str | None:
 
     An absent `language` is not refused here: it takes the default `docs/IMPL_PLAN_SPEC.md`
     documents, and `_validate_toolchain_backend_supported` owns the shape rules for the key.
+
+    The value is normalized HERE rather than trusted from the caller. Both current call sites
+    already strip and case-fold, so this is unreachable today — but the identity comparison
+    below is exact, and a caller that passed `Fortran` would get a false `Compile fail` on a
+    node that is perfectly valid. `registry.unavailable_reason` normalizes for its own answer,
+    which made the two halves of this predicate disagree about the same string.
     """
-    if not language:
+    normalized = str(language or "").strip().lower()
+    if not normalized:
         return None
-    unavailable = backend_registry.unavailable_reason("language", language)
+    unavailable = backend_registry.unavailable_reason("language", normalized)
     if unavailable:
         return unavailable
-    if language != _SIGNATURE_HELPERS_BACKEND_ID:
+    if normalized != _SIGNATURE_HELPERS_BACKEND_ID:
         return (
             f"'{language}' has an extracted language backend, but the \u00a75.1 signature helpers "
             f"in tools/validate_pipeline_semantics.py still import the "

@@ -100,7 +100,7 @@
       "parallel-directive": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "compiler-driver": 7,
+      "compiler-driver": 8,
       "fortran": 24,
       "fortran-intent": 1,
       "fortran-kind": 2,
@@ -328,9 +328,9 @@
       "make-control-file": 2
     },
     "tools/validate_pipeline_semantics.py": {
-      "compiler-driver": 36,
+      "compiler-driver": 37,
       "compiler-syntax-only": 8,
-      "fortran": 375,
+      "fortran": 376,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 43,
