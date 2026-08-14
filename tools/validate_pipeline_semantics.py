@@ -1248,13 +1248,16 @@ class _FortranProcedureEnvelope:
     member it EXEMPTED any function whose result happened to be input-dependent, which turned
     rewriting a subroutine as a function into a way to launder a fabricated `intent(out)`.
 
-    HOW FAR THE FUNCTION WIDENING ACTUALLY REACHES IN THIS TREE, measured rather than implied:
-    of the 422 function envelopes in the 365 in-tree `*_model.f90`, **0 declare an `intent(out)`
-    dummy** and none carries five outputs, so the literal-outputs gate and the metric-only-kernel
-    gate (which needs `len(out_vars) >= 5`) are both inert for every function that exists here
-    today. The gate that is live for functions is the dependency-dataflow one — which is the gate
-    this item's reproduction used, and the reason the widening was worth doing. A function that
-    does declare an `intent(out)` dummy is checked by all three.
+    HOW FAR THE FUNCTION WIDENING ACTUALLY REACHES IN THIS TREE, measured rather than implied,
+    and corrected once by review after a first version overstated it: of the 422 function
+    envelopes in the 365 in-tree `*_model.f90`, **0 declare an `intent(out)` dummy**, **none
+    carries five outputs**, and **none contains a dependency-operation call** (87 of them live in
+    files that have dependencies at all; the 124 procedures that do call one are all subroutines).
+    So the corpus COVERAGE added by this widening is zero in all three gates, not two — the +422
+    is a visibility number, and the only exercise of the new path is the synthetic reproduction
+    and the tests. The widening is prospective: it closes a shape a future model can take, and it
+    is the shape this item's own reproduction used. What it is NOT is a claim that anything in the
+    tree today is newly checked.
     """
 
     kind: str
@@ -1761,9 +1764,16 @@ def _validate_problem_metric_only_scalar_kernel(
             continue
 
         violations.append(
+            # The subroutine wording is unchanged byte for byte — it is what the 365-file
+            # differential compares against, and all four of the corpus's metric-only violations
+            # are subroutines. Only a function, whose count can include its result, says so.
             f"{model_file}: {envelope.kind} {sub_name} is metric-only scalar kernel for "
             f"{spec_id}; "
             "2d/3d problem model must not derive many intent(out) metrics without array inputs or update loops"
+            if envelope.kind == "subroutine"
+            else f"{model_file}: function {sub_name} is metric-only scalar kernel for {spec_id}; "
+            "2d/3d problem model must not derive many definable outputs (its intent(out) metrics "
+            "and its result) without array inputs or update loops"
         )
 
 

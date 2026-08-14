@@ -45,9 +45,7 @@ from tools.validate_pipeline_semantics import (  # noqa: E402
     NodeExecution,
     _fortran_procedure_envelopes,
     _FortranSourceStructureError,
-    _validate_problem_metric_only_scalar_kernel,
-    _validate_problem_model_dependency_dataflow,
-    _validate_problem_model_literal_outputs,
+    _run_problem_model_gates,
 )
 
 #: The candidates in the order the DECIDED note measured them. `flang-new` is the LLVM 17-19
@@ -92,15 +90,20 @@ def gate_violations(path: Path, lowered: str) -> list[str]:
         exec_dir=path.parent,
         pipeline_dir=path.parent,
     )
+    # THE PRODUCTION ENTRY POINT, not the three gates called by hand. Calling them directly
+    # skipped `_run_problem_model_gates`, and with it both new violation classes — the
+    # `module procedure` refusal and the unresolvable-structure refusal — so the harness the
+    # "verdict movement is zero" claim rests on could not have seen either of them move. Found in
+    # review. The node-kind scope lives in that function too, which is why the key above must be
+    # a `problem/` one.
     violations: list[str] = []
-    envelopes = _fortran_procedure_envelopes(lowered)
-    _validate_problem_model_literal_outputs(
-        execution=execution, model_file=path, envelopes=envelopes, violations=violations)
-    _validate_problem_model_dependency_dataflow(
-        execution=execution, model_file=path, lowered=lowered, envelopes=envelopes,
-        dep_spec_ids=dep_spec_ids_of(lowered), violations=violations)
-    _validate_problem_metric_only_scalar_kernel(
-        execution=execution, model_file=path, envelopes=envelopes, violations=violations)
+    _run_problem_model_gates(
+        execution=execution,
+        model_file=path,
+        lowered=lowered,
+        dep_spec_ids=dep_spec_ids_of(lowered),
+        violations=violations,
+    )
     return violations
 
 

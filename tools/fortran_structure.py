@@ -27,17 +27,22 @@ FAIL-CLOSED, IN TWO DIRECTIONS:
   parser could not resolve is exactly the input a silent gate is made of. Measured over the
   corpora this repository has (2026-08-13, tree-sitter 0.26.0 / tree-sitter-fortran 0.6.0): of
   the 365 in-tree `*_model.f90`, 0 carry an ERROR node over their view and the procedure set
-  agrees with the walk on 365/365. What it refuses is measured by the two matrices in
-  `test_validate_pipeline_semantics.py`, which are re-runnable and pinned as sets: of 48 rows
-  assigning to a variable named after a keyword, 10 are refused, and of 35 rows naming a CONSTRUCT
-  after one, 15 are. The refused names are `endsubroutine`, `interface` and `contains` (and
-  `real :: type(3)`, where an array declaration of a variable named `type` is character-for-
-  character a derived-type declaration) — every one a legal program that the parser lexes as the
-  END statement or block opener the name spells, and every one repairable by a rename, which the
-  violation message asks for. An earlier version of this note claimed a single ERROR carrier
-  (`endsubroutine`) measured over "58 inline fixtures"; that corpus was an ad-hoc extraction that
-  no longer exists, and the claim was refuted by this module's own pins — `interface` and
-  `contains` are equally carriers. Cite the matrices, which can be re-run.
+  agrees with the walk on 365/365.
+
+  WHAT IT REFUSES IS A CLASS, AND THE CLASS IS NOT ENUMERATED HERE — that is the whole point of
+  the swap, and two earlier versions of this note got it wrong in the same way, by naming the
+  members. The class is: **a legal program in which an identifier is spelled like a keyword the
+  parser needs in order to find structure**, so the parser lexes the identifier as the END
+  statement or block opener it spells. `endsubroutine`, `interface`, `contains`, `procedure`,
+  `associate`, `forall`, `enum`, `import`, `common`, `abstract`, `equivalence` and `type(3)` are
+  all members that have been observed; that list is a SAMPLE and review has extended it twice
+  (once by 17 rows), which is exactly what an enumeration does. Every member is repairable by a
+  rename, which the violation message asks for.
+
+  What IS pinned, as sets, are the two matrices in `test_validate_pipeline_semantics.py` — 48 rows
+  naming a variable after a keyword (10 refused) and 35 naming a CONSTRUCT after one (15 refused).
+  They bound the refusals over the names they sweep and nothing beyond; treat them as a regression
+  guard, not as the definition of the class.
 
 DEPENDENCIES. Two packages this repository does not otherwise declare:
 
@@ -232,7 +237,22 @@ def parse_view(view: str) -> StructureTree:
             )
         )
 
-    def walk(node, inside_interface: bool) -> None:
+    # AN EXPLICIT STACK, not recursion. A recursive walk costs one Python frame per tree node, so
+    # a source with deeply nested constructs raised `RecursionError` — at ~1000 nested `if` blocks
+    # here, and the exact depth moves with whatever stack the caller already spent, which is why a
+    # depth limit would be the wrong shape of fix. `RecursionError` is a `RuntimeError`, so
+    # `validate_pipeline_semantics.main`'s handler caught it, printed `schema_load_failed`, and
+    # DISCARDED every other violation of that invocation — a legal source (gfortran accepts it)
+    # taking down the whole gate run and reporting a cause that has nothing to do with it. The
+    # regex walk this module replaced had no recursion, so this was a surface the swap introduced.
+    # Found by review.
+    def walk(root) -> None:
+        stack: list[tuple[object, bool]] = [(root, False)]
+        while stack:
+            node, inside_interface = stack.pop()
+            visit(node, inside_interface, stack)
+
+    def visit(node, inside_interface: bool, stack: list) -> None:
         if node.type == "ERROR" or node.is_missing:
             record_error(node)
         if node.is_named and node.type == "interface":
@@ -256,10 +276,13 @@ def parse_view(view: str) -> StructureTree:
             procedure = _procedure(view, encoded, node, kind, to_char)
             if procedure is not None:
                 procedures.append(procedure)
-        for child in node.children:
-            walk(child, inside_interface)
+        # Reversed so the stack pops children left to right: `procedures` is sorted by
+        # `body_start` afterwards, but `errors` is reported in the order found and a reader
+        # follows it top to bottom.
+        for child in reversed(node.children):
+            stack.append((child, inside_interface))
 
-    walk(tree.root_node, False)
+    walk(tree.root_node)
     procedures.sort(key=lambda item: item.body_start)
     return StructureTree(
         view=view,

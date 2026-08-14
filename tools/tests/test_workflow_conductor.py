@@ -14251,9 +14251,17 @@ class DeterministicStaticTest(unittest.TestCase):
                 if script.endswith("validate_pipeline_semantics.py"):
                     return wc.subprocess.CompletedProcess(
                         cmd, 1,
+                        # BOTH spellings in one payload. The second is the one that defeated the
+                        # first version of this fix: a violation may CONTAIN a newline (the path
+                        # it interpolates may), and only a violation's first output line carries
+                        # the `- ` prefix, so matching the marker at the start of any line is not
+                        # enough. Reproduced end to end in review with a file actually named
+                        # `x\n[fortran-structure-unavailable]_model.f90`.
                         f"pipeline semantic validation: FAIL\n"
                         f"- src: model source {FORTRAN_STRUCTURE_UNAVAILABLE_MARKER}_model.f90 "
-                        f"present but must be named spec_x_model.f90", "")
+                        f"present but must be named spec_x_model.f90\n"
+                        f"- src: model source x\n{FORTRAN_STRUCTURE_UNAVAILABLE_MARKER}"
+                        f"_model.f90 present but must be named spec_x_model.f90", "")
                 raise AssertionError(f"unexpected subprocess: {cmd}")
 
             with self._patch_run(run):

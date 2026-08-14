@@ -123,6 +123,34 @@ class ParseViewShapeTests(unittest.TestCase):
         self.assertIsNone(fs.parse_view(view).procedures[0].contains_at)
 
 
+class DeepNestingTests(unittest.TestCase):
+    def test_a_deeply_nested_body_is_walked_without_recursion(self) -> None:
+        # The walk was recursive, one Python frame per tree node, so a source with deeply nested
+        # constructs raised `RecursionError`. That is a `RuntimeError`, so the validator's own
+        # handler caught it, printed `schema_load_failed`, and discarded every other violation of
+        # that invocation — a legal source (gfortran accepts it) taking down the whole gate run
+        # and blaming schema loading. The regex walk this module replaced had no recursion, so it
+        # is a surface the swap introduced. Found by review.
+        #
+        # The depth is deliberately far past the ~1000 where it used to break, and the assertion
+        # is on the PROCEDURE, not merely on "no exception": the first iterative version pushed
+        # children onto a different list than it popped, so it stopped raising AND stopped
+        # reporting anything — no procedures, no errors, which is the silent gate this whole
+        # module exists to prevent, and a green "no crash" test would have accepted it.
+        depth = 2000
+        opens = "".join(f"if (x > {index}.0) then\n" for index in range(depth))
+        closes = "end if\n" * depth
+        view = view_of(
+            f"module m\ncontains\nsubroutine solve(x, y)\n"
+            f"  real, intent(in) :: x\n  real, intent(out) :: y\n"
+            f"{opens}  y = x\n{closes}end subroutine solve\nend module m\n")
+        tree = fs.parse_view(view)
+        self.assertEqual([], list(tree.errors))
+        self.assertEqual([("subroutine", "solve")],
+                         [(p.kind, p.name) for p in tree.procedures])
+        self.assertIn("y = x", view[tree.procedures[0].body_start:tree.procedures[0].body_end])
+
+
 class InterfaceSpanTests(unittest.TestCase):
     def test_blanking_is_in_place_and_length_preserving(self) -> None:
         view = view_of(

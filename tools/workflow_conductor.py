@@ -8308,18 +8308,24 @@ clean:
                 # copy-pasted marker that drifts turns this scan into a silent
                 # `post_generate_violation` and puts the leaf back into a futile retry loop.
                 gate_output = pg.stdout + pg.stderr
-                # ANCHORED to the start of a violation line, not a substring search over the
-                # whole output. The validator prints one violation per line as `- <text>`, and
-                # most violations interpolate a path the LEAF chose; a plain `in` test therefore
-                # lets a model source named `[fortran-structure-unavailable]_model.f90` turn its
-                # own mis-naming into "this machine has no parser" — terminalizing the run and
-                # spending nothing on the warm retry that would have fixed it (reproduced in
-                # review). The unavailability violation is emitted marker-first so that anchoring
-                # is sufficient. `STALE_DEPENDENCY_IR_MARKER` interpolates its location first and
-                # so cannot be anchored the same way; that instance predates this branch and is
-                # recorded in TODO.md rather than changed here.
-                if any(line.lstrip().removeprefix("- ").startswith(
-                        FORTRAN_STRUCTURE_UNAVAILABLE_MARKER)
+                # ANCHORED to `- ` + marker at the START of an output line, not a substring
+                # search. The validator prints each violation as `- <text>`, and most violations
+                # interpolate a path the LEAF chose, so a plain `in` test lets a model source
+                # named `[fortran-structure-unavailable]_model.f90` turn its own mis-naming into
+                # "this machine has no parser" — terminalizing the run and spending nothing on the
+                # warm retry that would have fixed the name (reproduced in review).
+                #
+                # The `- ` is part of the anchor, not decoration, and that is the second half of
+                # the same finding: a violation may CONTAIN a newline, because the path it
+                # interpolates may, and only a violation's FIRST output line carries the prefix.
+                # Matching the marker at the start of any line was defeated by a source named
+                # `x\n[fortran-structure-unavailable]_model.f90` — my own first fix, incomplete,
+                # caught by the next review round. The unavailability violation is emitted
+                # marker-first so that this anchor matches it.
+                #
+                # `STALE_DEPENDENCY_IR_MARKER` interpolates its location first and so cannot be
+                # anchored at all; that instance predates this branch and is recorded in TODO.md.
+                if any(line.startswith(f"- {FORTRAN_STRUCTURE_UNAVAILABLE_MARKER}")
                         for line in gate_output.splitlines()):
                     failure_category = "static_frontend_unavailable"
                 elif STALE_DEPENDENCY_IR_MARKER in gate_output:

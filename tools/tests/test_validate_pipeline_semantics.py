@@ -5608,6 +5608,41 @@ end module shallow_water2d_model
             self.assertIn("literal-only assignments for all intent(out) vars",
                           " ".join(self._literal_output_violations(source)), label)
 
+    def test_a_functions_result_counts_toward_the_metric_only_floor(self) -> None:
+        # The metric-only gate fires at five definable outputs, and for a function that count
+        # INCLUDES its result — a decision that was unpinned until the mutation check found it:
+        # no function in the 365-model corpus reaches the floor (max outputs = 1), so nothing
+        # exercised either the count or the kind-aware message. Four `intent(out)` metrics plus
+        # the result is the smallest shape that does. `gfortran -fsyntax-only -std=f2008` accepts
+        # both spellings below (executed).
+        function_form = """module shallow_water2d_model
+implicit none
+contains
+function metrics(a, e_kin, e_pot, mass, enstrophy) result(e_tot)
+  real, intent(in) :: a
+  real, intent(out) :: e_kin, e_pot, mass, enstrophy
+  real :: e_tot
+  e_kin = a
+  e_pot = a
+  mass = a
+  enstrophy = a
+  e_tot = a
+end function metrics
+end module shallow_water2d_model
+"""
+        violations = " ".join(self._metric_kernel_violations(function_form))
+        self.assertIn("is metric-only scalar kernel", violations)
+        self.assertIn("function metrics", violations)
+        # The message says what was counted, so a reader is not sent looking for five
+        # `intent(out)` declarations that are not there.
+        self.assertIn("its result", violations)
+        # One fewer output is below the floor, which pins that the result is what carries it over
+        # rather than the gate having stopped counting.
+        below = function_form.replace("  real, intent(out) :: e_kin, e_pot, mass, enstrophy\n",
+                                      "  real, intent(out) :: e_kin, e_pot, mass\n")
+        below = below.replace("  enstrophy = a\n", "")
+        self.assertEqual([], self._metric_kernel_violations(below))
+
     def test_an_abbreviated_module_procedure_is_refused_and_the_full_form_is_checked(self) -> None:
         # The second spelling of this item's gap, and the one that cannot be closed by emitting an
         # envelope: F2008 forbids a separate module subprogram's body from redeclaring its dummies
