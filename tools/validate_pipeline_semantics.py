@@ -12001,11 +12001,13 @@ def _validate_toolchain_backend_supported(
 
     That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
     — in the same pass, so the order does not matter, both violations land in one list —
-    rejects a non-fortran harness outright, naming the missing
-    ``tools/backends/language/fortran/signatures``-style backend, which is the accurate remedy for that
-    shape and better than a second violation from here saying "use fortran". The carve-out
-    exists so that when a language backend IS added, this gate does not have to be edited
-    too. That hand-off only holds while both gates spell the exemption the SAME way: they
+    rejects a harness whose language has no backend, carrying
+    ``tools/backends/registry.unsupported_reason``'s clause, which names the implemented
+    set and where to register another. That is the accurate remedy for the shape, and
+    better than a second violation from here saying "use fortran". The carve-out exists so
+    that when a language backend IS added, this gate does not have to be edited too — and
+    neither does the other one, since the implemented set is the registry's, not either
+    gate's (``docs/BACKEND_BOUNDARY.md``). That hand-off only holds while both gates spell the exemption the SAME way: they
     now agree on ``.strip()`` with no case folding (as do
     ``runner_renderer.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
     divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
