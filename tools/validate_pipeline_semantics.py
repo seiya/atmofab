@@ -1270,14 +1270,6 @@ class _FortranProcedureEnvelope:
     out_vars: frozenset[str]
 
 
-#: The obsolescent labelled `DO`, whose loop is closed by the STATEMENT CARRYING THAT LABEL
-#: rather than by an `end do`. This is the whole reason a label can be load-bearing to a parser.
-_FORTRAN_LABELLED_DO_OPEN = re.compile(r"^do\s+(\d+)\b")
-#: `_FORTRAN_STATEMENT_LABEL` with the label captured. Separate rather than a group added to it,
-#: because that one is used with `.sub()` in several places where adding a group changes nothing
-#: but reads as if it might.
-_FORTRAN_STATEMENT_LABEL_VALUE = re.compile(r"^(\d+)\s+")
-
 
 def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
     """The gate view and a LABEL-PRESERVING twin of it, line for line.
@@ -1304,34 +1296,18 @@ def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
     stripped_lines = [
         _FORTRAN_STATEMENT_LABEL.sub("", statement, count=1) for statement in raw_statements
     ]
-    # A label is kept ONLY where it terminates a `do` that is already open at that point. Two
-    # weaker rules were tried and both were wrong, each in review:
-    #
-    # * keep EVERY label — a label may precede any statement, and `gfortran -fsyntax-only
-    #   -std=f2008` accepts `10 contains` and `20 subroutine helper(v)` (executed) while
-    #   tree-sitter ERRORs on both, so this trades the labelled-`DO` refusal for a labelled-header
-    #   one that two tests in this file pin as analysable;
-    # * keep any label some `do` names ANYWHERE in the file — a label number need only be unique
-    #   within a scoping unit, so `do 100` in one procedure resurrects the label onto a
-    #   `100 contains` in another and refuses the file again (reproduced).
-    #
-    # Position is what separates them: the terminator is the labelled statement that FOLLOWS its
-    # `do`. And the comparison is on the label's VALUE, not its text — a statement label is a
-    # number, so `do 0100` and `100 continue` name the same label, and comparing digit strings
-    # split them and took the whole file dark with a rename instruction that named nothing real
-    # (also reproduced; `gfortran` accepts all five spellings tried).
-    open_terminators: set[int] = set()
-    labelled_lines: list[str] = []
-    for raw, stripped in zip(raw_statements, stripped_lines):
-        label = _FORTRAN_STATEMENT_LABEL_VALUE.match(raw)
-        keep = bool(label) and int(label.group(1)) in open_terminators
-        if keep:
-            open_terminators.discard(int(label.group(1)))
-        labelled_lines.append(raw if keep else stripped)
-        # AFTER the keep decision: a `do 100` cannot be its own terminator.
-        opener = _FORTRAN_LABELLED_DO_OPEN.match(stripped)
-        if opener:
-            open_terminators.add(int(opener.group(1)))
+    # EVERY label is kept in the twin. WHICH reading to parse is not decided here at all — see
+    # `_fortran_procedure_envelopes`, which asks the parser both ways. Three versions of a rule
+    # that tried to decide it HERE were each defeated by a legal program, in three consecutive
+    # review rounds: keep every label (breaks `10 contains` / `20 subroutine helper(v)`, which
+    # tree-sitter cannot parse and gfortran accepts); keep any label a `do` names file-wide (a
+    # label is unique only within a scoping unit, so `do 100` in one procedure resurrected the
+    # label onto a `100 contains` in another); keep the label terminating an OPEN `do`, matched by
+    # value (misses a labelled `FORMAT` in the specification part, which needs its label and has
+    # no `do` naming it). The set of constructs whose label a parser needs is not closed by
+    # enumeration — which is the same argument this module makes for replacing the regex walk, and
+    # it applies to the rule standing in front of the parser too.
+    labelled_lines = raw_statements
 
     def finish(lines: list[str], keep: list[bool] | None) -> tuple[str, list[bool]]:
         masked = fortran_lines.mask_code_lookalikes("\n".join(lines)).split("\n")
@@ -1405,16 +1381,34 @@ def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope
     function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
     of which this tree has none. See `TODO.md`.
     """
-    # The PARSER reads the label-preserving twin and the GATES read the view; see
-    # `_fortran_view_pair` for why the two cannot be one string. Offsets come back indexing the
-    # twin and are translated by line index, which is exact because every one of them is a line
-    # start.
+    # TWO READINGS OF ONE PROGRAM, and the PARSER picks. A statement label is inert to every rule
+    # in this module — which is why the view strips labels, so each rule can anchor on the
+    # statement's own keyword — but it is not inert to a parser: it terminates a labelled `DO` and
+    # it is part of a `FORMAT`. Neither reading parses everything: tree-sitter cannot parse
+    # `10 contains` or `20 subroutine helper(v)` (labels kept), and it cannot parse a labelled
+    # `DO` or a `FORMAT` among declarations (labels stripped). Both are legal F2008 and gfortran
+    # accepts all four (executed).
+    #
+    # So the reading is not chosen by a rule about labels — three such rules were written and each
+    # was defeated by a legal program in the next review round. The stripped view is tried first
+    # because it is the common case (365 of the 365 in-tree models carry no label at all, and it
+    # needs no offset translation); the label-preserving twin is tried only when that fails. A
+    # source is refused only when NEITHER reading resolves, which is strictly weaker than either
+    # rule and needs no enumeration to stay true.
     view, labelled_view, view_starts, labelled_starts = _fortran_view_pair(lowered)
-    tree = fortran_structure.parse_view(labelled_view)
+    tree = fortran_structure.parse_view(view)
+    translate = False
     if tree.errors:
-        raise _FortranSourceStructureError(tree.errors)
+        labelled_tree = fortran_structure.parse_view(labelled_view)
+        if labelled_tree.errors:
+            # The STRIPPED reading's errors are reported: it is the canonical view, the one whose
+            # line numbers the rest of this module speaks in.
+            raise _FortranSourceStructureError(tree.errors)
+        tree, translate = labelled_tree, True
 
     def to_view(offset: int) -> int:
+        if not translate:
+            return offset
         # END OF INPUT IS NOT A LINE START, and it is the one offset that is not: the view never
         # ends in a newline, so `fortran_structure._next_line_start` answers `len(text)` for a
         # span reaching EOF. Mapping that by line index would silently shrink it to the start of

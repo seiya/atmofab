@@ -7154,13 +7154,19 @@ end module shallow_water2d_model
             body = source.replace("    v(i) = u(i)\n100 continue", f"    v(i) = u(i)\n{spelling}")
             self.assertEqual(1, len(vps._fortran_procedure_envelopes(body.lower())), spelling)
 
-    def test_a_do_terminator_label_is_matched_by_value_and_by_position(self) -> None:
-        # Two review findings against the rule above, both reproduced, both of which took the
-        # whole file dark with a rename instruction that named nothing real.
-        #
-        # BY VALUE: a statement label is a NUMBER, so `do 0100` and `100 continue` name the same
-        # label. Comparing digit strings split them. All five spellings are accepted by
+    def test_a_label_the_parser_needs_survives_however_it_is_spelled(self) -> None:
+        # A statement label is inert to every rule in this module, which is why the view strips
+        # it — but it is not inert to a parser: it terminates a labelled `DO` and it is part of a
+        # `FORMAT`. Neither reading of the source parses everything, so the reading is chosen by
+        # asking the parser, not by a rule about labels. Three such rules were written in three
+        # consecutive review rounds and each was defeated by a legal program; these rows are the
+        # counterexamples that killed them, kept as the regression set. Every row is accepted by
         # `gfortran -fsyntax-only -std=f2008` (executed).
+        def envelope_names(source: str) -> list[str]:
+            return [e.name for e in vps._fortran_procedure_envelopes(source.lower())]
+
+        # (a) a labelled DO, including the spellings a TEXT comparison of the label split:
+        # a label is a NUMBER, so `do 0100` and `100 continue` are the same label.
         for opener, terminator in (("100", "100"), ("0100", "100"), ("100", "0100"),
                                    ("00100", "100"), ("010", "10")):
             source = (f"module shallow_water2d_model\ncontains\n"
@@ -7168,16 +7174,52 @@ end module shallow_water2d_model
                       f"  real, intent(out) :: v\n  integer :: i\n  v = 0.0\n"
                       f"  do {opener} i = 1, 4\n    v = v + u\n{terminator} continue\n"
                       f"end subroutine solve\nend module shallow_water2d_model\n")
-            self.assertEqual(["solve"],
-                             [e.name for e in vps._fortran_procedure_envelopes(source.lower())],
-                             f"do {opener} / {terminator}")
+            self.assertEqual(["solve"], envelope_names(source), f"do {opener} / {terminator}")
 
-        # BY POSITION: a label number need only be unique within a SCOPING UNIT, so collecting
-        # "labels some `do` names" file-wide resurrected the label onto a labelled `contains`
-        # elsewhere — which tree-sitter cannot parse — and refused the file. The terminator is the
-        # labelled statement that FOLLOWS its `do`, so a label appearing before it is still
-        # stripped. `gfortran -fsyntax-only -std=f2008 -Wall` accepts this source (executed).
-        collision = """module shallow_water2d_model
+        # (b) a labelled FORMAT in the SPECIFICATION part, which needs its label and which no
+        # `do` names — the row that defeated the rule keyed on `do` terminators.
+        self.assertEqual(["solve"], envelope_names("""module shallow_water2d_model
+  implicit none
+contains
+  subroutine solve(u, v)
+    real, intent(in) :: u
+900 format(1x, e12.4)
+    real, intent(out) :: v
+    write(*, 900) u
+    v = 1.0
+  end subroutine solve
+end module shallow_water2d_model
+"""))
+
+        # (c) a labelled `contains` and a labelled procedure header, which tree-sitter cannot
+        # parse WITH their labels — the rows that defeated the rule that kept every label.
+        self.assertEqual(["advance", "helper"], envelope_names("""module shallow_water2d_model
+implicit none
+integer :: ncomp
+10 contains
+subroutine advance(u_np1)
+  real, intent(out) :: u_np1
+  u_np1 = 1.0
+end subroutine advance
+20 subroutine helper(out_val)
+  real, intent(out) :: out_val
+  out_val = 3.0
+end subroutine helper
+end module shallow_water2d_model
+"""))
+
+    def test_a_file_needing_both_label_readings_at_once_is_refused(self) -> None:
+        # THE DECLARED RESIDUE of choosing the reading per FILE rather than per statement: a
+        # source that needs the labels kept in one place and stripped in another parses under
+        # neither reading and is refused. It takes a labelled scoping statement (`100 contains`)
+        # AND a labelled `DO` in the same file; `gfortran -fsyntax-only -std=f2008 -Wall` accepts
+        # it (executed), and 0 of the 365 in-tree models carry a statement label of any kind, let
+        # alone both shapes.
+        #
+        # Pinned as REFUSED rather than left undiscovered: the failure is fail-closed and visible,
+        # and closing it would mean a fourth label mechanism — an error-guided per-statement
+        # repair — for a conjunction of two exotic features. Recorded in TODO.md instead.
+        source = """module shallow_water2d_model
   implicit none
 100 contains
   subroutine solve(u, v)
@@ -7191,8 +7233,8 @@ end module shallow_water2d_model
   end subroutine solve
 end module shallow_water2d_model
 """
-        self.assertEqual(["solve"],
-                         [e.name for e in vps._fortran_procedure_envelopes(collision.lower())])
+        with self.assertRaises(vps._FortranSourceStructureError):
+            vps._fortran_procedure_envelopes(source.lower())
 
     def test_a_labelled_structural_statement_is_still_structural(self) -> None:
         # A statement LABEL may precede any statement. Both structural statements here are
