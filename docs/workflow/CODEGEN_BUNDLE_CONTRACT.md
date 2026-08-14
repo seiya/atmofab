@@ -230,9 +230,11 @@ source; the bundle declares them, and `derive_build_graph` topologically sorts b
 Fortran module that publishes `symbol`), `kind` (`operation` or `checks_interface`),
 `node_key` (a unit member), and `defined_in` (the `logical_path` of a file in this bundle).
 An identifier — `symbol`, `module`, and in `state_bindings` (`state_variable`,
-`storage_symbol`, `module`) — is a Fortran identifier of at most `FORTRAN_IDENTIFIER_MAX`
-(63) characters, the f2008/f2018 limit; a longer name is rejected here rather than deferred to
-the `Generate.gate` syntax-check compiler gate.
+`storage_symbol`, `module`) — is an identifier of the file's `language`, at most
+`codegen_bundle.IDENTIFIER_MAX` characters. The bound and the grammar are the language
+backend's (`tools/backends/language/<backend_id>/bundle.py`, reached through
+`tools/backends/registry.py`), not this contract's; a longer name is rejected here rather than
+deferred to the `Generate.gate` syntax-check compiler gate.
 
 `module` exists so the host renders the boundary glue `use <module>, only: <symbol>`
 mechanically. A file may define several modules or name them freely, and the host never

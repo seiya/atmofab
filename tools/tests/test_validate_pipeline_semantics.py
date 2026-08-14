@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 
 import tools.validate_pipeline_semantics as vps
+from tools.backends import registry as backend_registry
 from tools.backends.language.fortran.lines import strip_fortran_comment_tracking_quotes
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
@@ -10708,7 +10709,8 @@ end program shallow_water2d_runner
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
             self.assertTrue(
-                any("only implemented physical backend is (make, fortran)" in x for x in v), v)
+                any(backend_registry.missing_capability_reason(
+                    "language", "cpp", "control_file") in x for x in v), v)
 
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
@@ -17918,6 +17920,39 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, (lang, v))
             self.assertIn(repr(lang), v[0])
 
+    def test_a_registered_backend_that_implements_nothing_is_still_refused(self) -> None:
+        """The reverse pin: registering does not admit, IMPLEMENTING does.
+
+        This is the fail-open the last boundary change actually shipped, one question earlier —
+        a gate routed through membership stopped refusing the moment a member was declared,
+        while the code under it still emitted one backend's text. Driven by declaring the
+        member, because no fixture can show it otherwise: every live member is implemented.
+        """
+        from unittest import mock
+        records = {
+            ("language", "zz_lang"): backend_registry.Backend("language", "zz_lang", None),
+            ("build_system", "zz_bs"): backend_registry.Backend(
+                "build_system", "zz_bs", None),
+        }
+        with mock.patch.dict(backend_registry._BACKENDS, records):
+            # Declared — membership no longer refuses either value...
+            self.assertIsNone(backend_registry.unsupported_reason("language", "zz_lang"))
+            self.assertIsNone(backend_registry.unsupported_reason("build_system", "zz_bs"))
+            # ...and the gate refuses both anyway.
+            v = self._run(toolchain={"build_system": "make", "language": "zz_lang"})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("zz_lang", v[0])
+            v = self._run(toolchain={"build_system": "zz_bs", "language": "fortran"})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("zz_bs", v[0])
+            # Including for an infrastructure node, which is exempt on LANGUAGE only.
+            self.assertEqual(
+                self._run(spec_kind="infrastructure",
+                          toolchain={"build_system": "make", "language": "zz_lang"}), [])
+            self.assertEqual(
+                len(self._run(spec_kind="infrastructure",
+                              toolchain={"build_system": "zz_bs", "language": "fortran"})), 1)
+
     def test_infrastructure_kind_is_exempt_from_the_language_half_only(self) -> None:
         # The harness is certified per (language, hardware) target, so another language is a
         # legitimate future harness. `make` is NOT exempt: `_require_make_build_system` is
@@ -17931,11 +17966,15 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("build_system must be 'make' on every node", v[0])
         self.assertIn("_require_make_build_system", v[0])
-        # ...and its remedy names only build_system, never ordering the harness to become
-        # fortran. Anchored on the remedy clause itself, so a reformat of the declared-value
-        # prefix (which renders `language='fortran'`) cannot make this vacuous either way.
-        remedy = v[0].split("re-author impl_defaults.toolchain to ", 1)[1]
-        self.assertTrue(remedy.startswith("build_system 'make' ("), remedy[:60])
+        # ...and it refuses on the BUILD-SYSTEM capability only, never ordering the harness to
+        # become fortran. Anchored on the registry clauses the gate carries, so a reformat of
+        # the declared-value prefix (which renders `language='fortran'`) cannot make this
+        # vacuous either way, and so the pin follows the registry rather than restating it.
+        self.assertIn(
+            backend_registry.missing_capability_reason(
+                "build_system", "cmake", "build_execute"),
+            v[0])
+        self.assertNotIn("for language", v[0])
 
     def test_the_infrastructure_exemption_is_case_sensitive(self) -> None:
         # The exemption is spelled `.strip()`-only, the same rule as
@@ -17946,7 +17985,8 @@ class ToolchainBackendGateTests(unittest.TestCase):
                                    toolchain={"language": "c"}), [])
         v = self._run(spec_kind="Infrastructure", toolchain={"language": "c"})
         self.assertEqual(len(v), 1, v)
-        self.assertIn("(make, fortran)", v[0])
+        self.assertIn(
+            backend_registry.missing_capability_reason("language", "c", "control_file"), v[0])
 
     def test_a_non_fortran_harness_is_rejected_by_the_gate_that_owns_that_rule(self) -> None:
         # This gate exempts an infrastructure node from the `fortran` half on the grounds
@@ -17996,7 +18036,14 @@ class ToolchainBackendGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1)
         msg = v[0]
         self.assertIn("impl_defaults.toolchain", msg)
-        self.assertIn("(make, fortran)", msg)
+        # The refusal clause is the REGISTRY's, verbatim, for each axis that is missing a
+        # capability — the gate does not spell an implemented set of its own
+        # (docs/BACKEND_BOUNDARY.md §Design Policy).
+        self.assertIn(
+            backend_registry.missing_capability_reason(
+                "build_system", "cmake", "build_execute"), msg)
+        self.assertIn(
+            backend_registry.missing_capability_reason("language", "cpp", "control_file"), msg)
         # The message reports what the author WROTE. A present key is echoed verbatim (not
         # normalized — `CMake` must not come back as `'cmake'`), and an absent key is named
         # as absent rather than as a declaration nobody made.

@@ -11464,6 +11464,57 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_ir(repo, refs, direct_deps="[component/dep@0.1.0]")
             self.assertTrue(c._conductor_authors_makefile(refs))
 
+    def test_authorship_follows_the_capability_not_membership(self) -> None:
+        """Registering a backend must not make the host author for it.
+
+        The predicate reads `registry.provides(..., "control_file")`, not "is this value
+        implemented": `_write_makefile` emits ONE build system's syntax with ONE language's
+        compile rules, so a value that is implemented ELSEWHERE (an extracted backend of its
+        own) must fall to the leaf-authored path rather than into this writer. Both halves are
+        driven — a declared-only value and an extracted-but-capability-less one — because
+        neither state exists in the live registry, and the difference between them is invisible
+        to every other test.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        for record in (
+            backend_registry.Backend("build_system", "zz_bs", None),
+            backend_registry.Backend(
+                "build_system", "zz_bs", "tools.backends.language.fortran"),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                c = self._conductor(repo)
+                self._write_ir(repo, refs, build_system="zz_bs")
+                with mock.patch.dict(
+                        backend_registry._BACKENDS, {("build_system", "zz_bs"): record}):
+                    self.assertIsNone(
+                        backend_registry.unsupported_reason("build_system", "zz_bs"))
+                    self.assertFalse(c._conductor_authors_makefile(refs), record)
+                    self.assertFalse(c._conductor_authors_runner(refs), record)
+
+    def test_an_untrimmed_toolchain_value_still_flips_authorship_off(self) -> None:
+        # The conductor compares `.lower()` WITHOUT stripping, while the registry normalizes
+        # with `.strip().lower()`. Handing a padded value straight to the registry would newly
+        # answer True here while `record_launch`'s reader — which strips — already reports the
+        # host as the author, which is the src/Makefile-authored-by-nobody class. The whitespace
+        # -only spelling has a pin below (via the runtime-agreement test); this is the padded
+        # TOKEN, which that one cannot reach.
+        for toolchain in ({"language": " fortran"}, {"build_system": "make "}):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                ir_path = repo / refs.ir_ref / "spec.ir.yaml"
+                ir_path.parent.mkdir(parents=True, exist_ok=True)
+                body = "".join(f'    {k}: "{v}"\n' for k, v in toolchain.items())
+                ir_path.write_text(
+                    f"impl_defaults:\n  toolchain:\n{body}", encoding="utf-8")
+                c = self._conductor(repo)
+                self.assertFalse(c._conductor_authors_makefile(refs), toolchain)
+                self.assertFalse(c._conductor_authors_runner(refs), toolchain)
+
     def test_conductor_runtime_makefile_authorship_agree(self) -> None:
         # The conductor (_conductor_authors_makefile) and the runtime
         # (_resolved_makefile_host_authored, computed in record_launch) must agree on whether

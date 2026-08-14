@@ -64,12 +64,28 @@ Out of scope, each for a stated reason:
   clause, and a gate that refuses on this ground carries it verbatim rather than spelling its own.
   An **absent** value is a separate case: it takes the default `docs/IMPL_PLAN_SPEC.md` documents,
   which this rule does not change.
-- **Membership and usability are different questions, and a caller must ask the one it means.**
-  `unsupported_reason` asks whether the value is a declared member. `unavailable_reason` asks
-  whether it is declared *and* extracted. Code that is about to run backend behaviour — a
-  renderer, a scanner, a control-file writer — asks the second: a declared-but-unextracted member
-  has no code of its own, so guarding on membership alone lets it fall through to whichever
-  backend the surrounding module hard-codes.
+- **There are four questions about an axis value, and a caller must ask the one it means.** They
+  are separate functions in `tools/backends/registry.py` because they were once fewer, and each
+  merge was a fail-open.
+
+  | Question | `None` / `True` when | Asked by |
+  | --- | --- | --- |
+  | `unsupported_reason` | the value is a declared member | naming, and building a refusal message |
+  | `unimplemented_reason` | it is declared **and** something implements it, extracted or still inlined | a gate deciding whether a run may carry the value at all |
+  | `provides(axis, value, capability)` | the **neutral core** does that named job for the value | a host-authorship dispatch, before running its own inlined writer |
+  | `unavailable_reason` | it is declared **and** extracted | code about to call into the backend package |
+
+  A member registered with no module and no capability — implemented nowhere — is a declaration,
+  not a configuration: membership answers permissively and the other three refuse. Registering a
+  backend therefore admits nothing on its own.
+- **A capability is a job the neutral core still does for one value**, declared on the `Backend`
+  record and listed in `registry.CAPABILITIES`. It exists because a host-authorship dispatch
+  cannot ask "is this value implemented?": the conductor's control-file writer and runner
+  renderer each emit one build system's and one language's text, so a predicate that widened
+  with implementation would route a second backend's nodes into the wrong writer — a worse
+  failure than the hard-coded pair it replaced. Declaring a capability asserts the inlined code
+  exists NOW. When the ledger area that owns it lands, the capability moves from a declaration to
+  real dispatch through the backend module and the declaration goes away with it.
 - An axis whose carrying artifact deliberately does not constrain its value is declared
   `open_vocabulary` (today: `parallel`, whose knob schema states it is not a whitelist). For such
   an axis the registry lists the members that have code; membership answers permissively and
@@ -94,19 +110,40 @@ the binding. A neutral document must not state the binding itself.
   the `Backend` record to `_BACKENDS` in `tools/backends/registry.py`; place the backend's
   documents, prompt fragments, and skill fragments under the paths above; add the backend's own
   tests.
-- **Which gates that procedure is sufficient for, TODAY: none of them.** Registering a backend
-  makes the registry accept the value; it does not make any gate use the new backend, because no
-  gate dispatches through one yet. The two infrastructure signature gates in
-  `tools/validate_pipeline_semantics.py` take their *refusal clause* from the registry but their
-  §5.1 helpers import one concrete backend by name and take no `language` argument, so they
-  additionally refuse any language those helpers are not wired to
-  (`_signature_backend_refusal`). `_validate_toolchain_backend_supported`, the
-  `make`-quality-check gates, `tools/workflow_conductor.py`'s `make ∧ fortran` authorship
-  conjunction and the per-language tables in `tools/codegen_bundle.py` spell their own set
-  outright. Adding a backend therefore requires editing those gates until the migration areas in
-  `TODO.md` are closed. Stated this way because the first version of this section claimed the
-  opposite, and following it produced a backend nothing accepted — and then, after a partial fix,
-  a backend that was accepted and silently rendered as Fortran.
+- **What that procedure is sufficient for, TODAY, and what it is not.** Registering a backend
+  makes the registry accept the value as a member. It admits nothing further on its own, by
+  design: a run reaches the value only where the registry can say the code exists. Measured over
+  the gates:
+  - `_validate_toolchain_backend_supported` and the `make`-quality-check gates in
+    `tools/validate_pipeline_semantics.py`, and `tools/workflow_conductor.py`'s authorship
+    predicates, no longer spell a pair of their own — they ask `provides` for the capability they
+    need and carry the registry's clause. They widen when the CAPABILITY is declared, which
+    asserts that inlined code in the neutral core already does that job for the value; until the
+    corresponding ledger area lands, declaring one is how a new backend's host-side work is
+    admitted, and the declaration is the thing to review.
+  - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
+    allowlist, the compiler-driver families and the identifier bound are read from the language
+    backend through the registry. The bundle SCHEMA (`spec/schema/generate/`) still carries its
+    own `language` enum and pattern, and `tools/tests/test_codegen_bundle.py` fails if the two
+    disagree — so a new language backend must widen the schema in the same change.
+  - The two infrastructure signature gates take their refusal clause from the registry, but their
+    §5.1 helpers import one concrete backend by name and take no `language` argument, so they
+    additionally refuse any language those helpers are not wired to
+    (`_signature_backend_refusal`). This is the one gate family the procedure above is still not
+    sufficient for; it migrates with the `validate_pipeline_semantics.py` source-reading area.
+  - `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES` remains a neutral-core policy set over language
+    families (`fortran`, `c`, `cpp`, `mixed`), not an implemented set; it migrates with the
+    compiler / linter adapters area, alongside `FORTRAN_C_FAMILY` in `mcp_servers/`.
+
+  Stated this way because the first version of this section claimed the procedure was sufficient,
+  and following it produced a backend nothing accepted — and then, after a partial fix, a backend
+  that was accepted and silently rendered as Fortran.
+- **Adding a capability** requires an entry in `registry.CAPABILITIES` naming which axes it is a
+  question of and what job it is, plus at least one record declaring it — a capability nothing
+  declares is a question whose answer is always `False`, so a dispatch keyed on it is dead code
+  that reads as a live rule. `tools/tests/test_backend_boundary.py` refuses both a capability no
+  record declares and a record declaring one of the wrong axis, and `registry` itself refuses at
+  import: a typo answering `False` forever would flip a host-authorship dispatch off silently.
 - **Adding an axis** requires three things: an entry in `AXES` in `tools/backends/registry.py`
   naming where its value is read from and whether its vocabulary is open; **at least one `Backend`
   record for it** (an axis with no members is refused by `tools/tests/test_backend_boundary.py`,

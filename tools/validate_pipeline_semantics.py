@@ -173,7 +173,36 @@ FORTRAN_KEYWORDS = {
 }
 QUALITY_CHECK_ALLOWED_COMMANDS = {"make", "ctest", "pytest"}
 FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
+# The languages whose quality check runs through the build system's test target rather than a
+# script. This is a POLICY set over language families, NOT a set of implemented backends: `c` /
+# `cpp` / `mixed` are not registry members, and a physics node naming one is rejected by
+# `_validate_toolchain_backend_supported` before this set is consulted — an INFRASTRUCTURE node,
+# which that gate exempts on language, is what keeps them live. It is the same kind of set as
+# `mcp_servers/build_runtime_server.py`'s `FORTRAN_C_FAMILY` and migrates with it (ledger:
+# TODO.md, the compiler / linter adapters area). The BUILD-SYSTEM half of the same condition is
+# asked of the registry instead — see `_make_quality_check_applies`.
 MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES = {"fortran", "c", "cpp", "mixed"}
+
+
+def _make_quality_check_applies(build_system: str | None, language: str | None) -> bool:
+    """Whether the build-control-file quality-check contract binds this node.
+
+    The three gates that check it — the no-relink rule, the `make test` invocation rule, and the
+    `run_quality_checks` command rule — read the control file's grammar and require its
+    `test`/`check` target. That is `control_file` knowledge, so the build-system half asks the
+    registry which value the neutral core carries it for instead of naming one. The language half
+    is `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES`, a policy set (see there).
+
+    The three gates shared a spelled-out condition rather than a predicate, and a fourth site
+    (`_validate_quality_check_commands`) wrote it inverted, so any change had to be made in four
+    places in two polarities.
+    """
+    return (
+        backend_registry.provides("build_system", build_system or "", "control_file")
+        and str(language or "") in MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES
+    )
+
+
 TEST_ID_HEADING_PATTERN = re.compile(r"^###\s+\d+-\d+\.\s+`([^`]+)`\s*$")
 # tests.md test-id declarations come in two forms: the problem-spec heading form
 # (`### 6-1. `<id>``, matched above) and the component/profile bullet form
@@ -459,7 +488,10 @@ _LINT_PRESET_FOR_LANGUAGE: dict[str, str] = {
     "mixed": "mixed",
     "python": "ruff",
 }
-_LINT_ALLOWED_PRESETS = frozenset({"fortitude", "cppcheck", "ruff", "mixed"})
+# NOTE: there is deliberately no lint-preset set here. The accepted presets ARE the implemented
+# `linter` backends, and the gate asks `backend_registry.unimplemented_reason` per value rather
+# than holding a copy — the copy was a drift pair, where registering a linter left this gate
+# refusing it and narrowing the set left the registry claiming it.
 _NODE_KEY_SAFE_PATTERN_LINEAGE = re.compile(
     r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
 )
@@ -2687,7 +2719,7 @@ def _validate_makefile_test_no_relink(
     # quality-check toolchains (`Validate.execute` runs `make_test`/`make_check`
     # only then). Skip any other toolchain — a Makefile kept for local
     # convenience must not fail post_generate/post_build here.
-    if build_system != "make" or language not in MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES:
+    if not _make_quality_check_applies(build_system, language):
         return
     if not src_dir.is_dir():
         return
@@ -2831,7 +2863,7 @@ def _validate_makefile_test_invokes_cases(
     the check guards the LLM-authored c/cpp/mixed path. Best-effort static parse —
     the runtime ``quality_check`` is the deterministic backstop. Scoped to the
     make-based quality-check toolchains (same as the no-relink check)."""
-    if build_system != "make" or language not in MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES:
+    if not _make_quality_check_applies(build_system, language):
         return
     if not src_dir.is_dir():
         return
@@ -7030,10 +7062,16 @@ def _validate_generate_lint_command_logs(
             )
             continue
         preset_decl_l = preset_decl.strip().lower()
-        if preset_decl_l not in _LINT_ALLOWED_PRESETS:
+        # The refusal clause is the registry's, verbatim: it names the axis, the value, the
+        # implemented set and where to register another, which "must be one of [...]" did not
+        # (docs/BACKEND_BOUNDARY.md §Design Policy). `unimplemented_reason` is the question —
+        # a linter registered with no code anywhere must not become an accepted preset just by
+        # being named, and this gate does not load the linter's code, so it is not the
+        # extraction question either.
+        unimplemented = backend_registry.unimplemented_reason("linter", preset_decl_l)
+        if unimplemented is not None:
             violations.append(
-                f"{meta_path}: lint evidence run_linter[{idx}].preset must be one of "
-                f"{sorted(_LINT_ALLOWED_PRESETS)}"
+                f"{meta_path}: lint evidence run_linter[{idx}].preset {unimplemented}"
             )
             continue
         if preset_decl_l == "mixed":
@@ -9473,7 +9511,7 @@ def _validate_quality_check_commands(
             else None
         )
 
-        if build_system == "make" and language in MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES:
+        if _make_quality_check_applies(build_system, language):
             if preset not in {"make_test", "make_check"}:
                 violations.append(
                     f"{trial_meta_path}:run_quality_checks command_id={command_id} "
@@ -12059,12 +12097,18 @@ def _validate_toolchain_backend_supported(
     set and where to register another. That is the accurate remedy for the shape, and
     better than a second violation from here saying "use fortran".
 
-    THIS gate, by contrast, still spells ``(make, fortran)`` itself, 140 lines below. That is
-    a boundary violation under ``docs/BACKEND_BOUNDARY.md`` and an open ledger item in
-    ``TODO.md``, not a design: a second language backend would be refused here regardless of
-    what the registry says, so the documented "add a backend without editing a gate" procedure
-    does not hold for this one yet. Stated rather than quietly relied on, because the previous
-    version of this paragraph claimed the opposite while the hard-coded pair sat underneath it.
+    THIS gate no longer spells ``(make, fortran)`` itself: it asks
+    ``registry.missing_capability_reason`` for the capabilities a node needs of its toolchain
+    (``build_execute`` of every node's build system; ``control_file`` and ``runner_render``
+    besides on a physics node) and carries the registry's clause. What it refuses therefore
+    follows the registry rather than a pair written here — but note what that does and does not
+    mean. Registering a backend does not widen this gate; DECLARING THE CAPABILITY does, and a
+    capability declaration asserts that inlined code in the neutral core already does that job
+    for the value. So the gate cannot be widened past what the host can actually author, which
+    is the fail-open the previous version of this paragraph would have created had it been
+    routed through membership: `_write_makefile` emits GNU make syntax with Fortran compile
+    rules, and a predicate that answered "implemented?" would have handed a second build
+    system's nodes to it.
 
     That hand-off only holds while both gates spell the exemption the SAME way: they
     now agree on ``.strip()`` with no case folding (as do
@@ -12204,16 +12248,43 @@ def _validate_toolchain_backend_supported(
         return
     build_system = str(tc.get("build_system") or "make").lower()
     language = str(tc.get("language") or "fortran").lower()
-    bad = build_system != "make" or (language != "fortran" and not is_infrastructure)
-    if not bad:
+    # What this node NEEDS of its toolchain, asked of the registry one capability at a time
+    # rather than by comparing against a pair spelled here. Each capability is the reason the
+    # scope text below gives, made answerable: `build_execute` is the kind-agnostic in-process
+    # build / execute path, `control_file` is the host-authored src/Makefile (whose syntax is
+    # the build system's and whose compile rules are the language's), and `runner_render` is
+    # the host-rendered runner source. An infrastructure node needs only the first: it authors
+    # its own runner and its control file is leaf-authored, which is exactly why its exemption
+    # is language-shaped.
+    required: tuple[tuple[str, str, str], ...] = (
+        ("build_system", build_system, "build_execute"),
+    ) if is_infrastructure else (
+        ("build_system", build_system, "build_execute"),
+        ("build_system", build_system, "control_file"),
+        ("language", language, "control_file"),
+        ("language", language, "runner_render"),
+    )
+    # One clause per AXIS, not per capability: two clauses about the same value read as two
+    # defects and lengthen a message an author has to act on. The first missing capability of an
+    # axis is the one reported.
+    clauses: list[str] = []
+    reported_axes: set[str] = set()
+    for axis, value, capability in required:
+        if axis in reported_axes:
+            continue
+        reason = backend_registry.missing_capability_reason(axis, value, capability)
+        if reason is not None:
+            clauses.append(reason)
+            reported_axes.add(axis)
+    if not clauses:
         return
     scope = ("build_system must be 'make' on every node, an infrastructure node included: "
              "the in-process build / execute path is make-only and kind-agnostic "
              "(_require_make_build_system)"
              if is_infrastructure else
-             "the only implemented physical backend is (make, fortran) — the host-authored "
-             "src/Makefile and src/<spec_id>_runner.f90 exist for make+fortran only, and "
-             "the non-(make, fortran) node path has been removed")
+             "the host-authored src/Makefile and src/<spec_id>_runner.f90 exist only where the "
+             "neutral core implements them, and the node path for a toolchain it does not has "
+             "been removed")
     def _declared(key: str, default: str) -> str:
         # Report what the author wrote. An absent key is "absent (defaults to X)", never a
         # value they never typed, and a present one is echoed verbatim rather than normalized.
@@ -12223,12 +12294,11 @@ def _validate_toolchain_backend_supported(
         f"{derived_path}: impl_defaults.toolchain declares "
         f"(build_system={_declared('build_system', 'make')}, "
         f"language={_declared('language', 'fortran')}); {scope} "
-        "(docs/workflow/phases/phase_01_compile.md). The controlled_spec is "
-        "language-neutral, so nothing in it pins another toolchain: re-author "
-        "impl_defaults.toolchain to build_system 'make'"
-        + ("" if is_infrastructure else " and language 'fortran'")
-        + " (keys stated explicitly — V6 requires every fixed impl_defaults sub-key to "
-        "have a value, and the post_generate lint/syntax gates read `language`). The "
+        "(docs/workflow/phases/phase_01_compile.md). " + " ".join(clauses)
+        + " The controlled_spec is language-neutral, so nothing in it pins another toolchain, so "
+        "re-authoring impl_defaults.toolchain to a supported one is a content change with no "
+        "spec consequence (keys stated explicitly — V6 requires every fixed impl_defaults "
+        "sub-key to have a value, and the post_generate lint/syntax gates read `language`). The "
         "values are compared case-insensitively; an untrimmed value never reaches this "
         "comparison because the shape check above rejects it first.")
 

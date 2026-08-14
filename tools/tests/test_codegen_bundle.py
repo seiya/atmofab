@@ -750,7 +750,7 @@ class FieldGrammarTest(unittest.TestCase):
     def test_identifier_length_is_capped_at_the_fortran_limit(self) -> None:
         # A symbol longer than the f2008/f2018 63-char limit cannot pass the Generate.syntax
         # compiler gate, so the bundle rejects it up front rather than deferring the failure.
-        self.assertEqual(cb.FORTRAN_IDENTIFIER_MAX, 63)
+        self.assertEqual(cb.IDENTIFIER_MAX, 63)
         at_limit = "a" + "x" * 62      # exactly 63
         over_limit = "a" + "x" * 63    # 64
         doc = _minimal_bundle()
@@ -1520,6 +1520,12 @@ class ContractPlumbingTest(unittest.TestCase):
         self.assertEqual(sorted(cb.ROLE_BUILD_PRECEDENCE), sorted(cb.FILE_ROLES))
 
     def test_schema_language_and_extension_allowlist_match_the_module(self) -> None:
+        # Both module values are now DERIVED from the registry and the language backend
+        # (`tools/backends/language/<id>/bundle.py`), so this pin spans two files that a single
+        # edit no longer keeps in step: the schema is `spec/`, which the backend migration does
+        # not touch, and the extensions it mirrors moved out of this module. Registering a second
+        # language backend without widening the schema enum fails here, which is the intended
+        # order — the schema is the contract a leaf's output is validated against.
         language = self._files_property("language")
         self.assertEqual(tuple(language["enum"]), cb.LANGUAGES)
         self.assertEqual(
