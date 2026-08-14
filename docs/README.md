@@ -12,8 +12,9 @@ This document set is organized so that "the reading order = the way to proceed".
 7. `ORCHESTRATION.md` (execution conventions for `orchestration agent -> substep agent` and `orchestration agent -> step agent`)
 8. `RUNBOOK.md` (minimal operational procedures for running trials)
 9. `IMPL_PLAN_SPEC.md` (default-value rules for the `spec.ir.yaml.impl_defaults` section; canonical key names of its parallelization knobs: `spec/schema/ir/impl_defaults.schema.json`)
-10. `PERFORMANCE_DIAGNOSTICS.md` (`perf.json` specification)
-11. `TUNING_WORKFLOW.md` (optional flow: operational guidance for performance exploration)
+10. `BACKEND_BOUNDARY.md` (where knowledge of a concrete target-stack technology may live; canonical for the `axis` list)
+11. `PERFORMANCE_DIAGNOSTICS.md` (`perf.json` specification)
+12. `TUNING_WORKFLOW.md` (optional flow: operational guidance for performance exploration)
 
 ## Role-based Structure
 ### Core (direction / contracts)
@@ -30,6 +31,7 @@ This document set is organized so that "the reading order = the way to proceed".
 
 ### Execution / Performance (implementation and performance)
 - `IMPL_PLAN_SPEC.md`
+- `BACKEND_BOUNDARY.md`
 - `PERFORMANCE_DIAGNOSTICS.md`
 
 ### Optional flows (optional flows, outside the core workflow)

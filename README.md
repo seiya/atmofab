@@ -141,6 +141,7 @@ python3 -m pytest tools/tests/ -q -p no:randomly
 | `docs/ORCHESTRATION.md` | orchestration design and contract; `docs/AGENT_CONTRACT.md` holds the child-agent contract |
 | `docs/AGENT_SKILLS.md` | phase-to-`SKILL` mapping |
 | `docs/GLOSSARY.md` | canonical terminology and artifact definitions |
+| `docs/BACKEND_BOUNDARY.md` | where knowledge of a concrete target-stack technology may live, and which `axis` selects it |
 | `AGENTS.md` | conventions every agent working in this repository follows |
 | `TODO.md` | incomplete tasks aggregated across the repository |
 

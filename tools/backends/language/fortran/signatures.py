@@ -17,7 +17,7 @@ This module exposes two pure functions plus the struct vocabulary:
   whitespace-erased) are token-for-token what the current §5.1 gates compare.
 
 The correctness contract is the round-trip on the REAL harness §5.1 (see
-``tools/tests/test_lang_backend_fortran.py``): for every published symbol,
+``tools/tests/test_fortran_signatures.py``): for every published symbol,
 ``normalized_stanza_lines(render(parse(real_block)))`` equals ``normalized_stanza_lines(real_block)``.
 As long as that holds, switching §5.1 / the IR to the structured form leaves every downstream
 signature comparison byte-for-byte unchanged — the gate renders the structured form back to the exact
@@ -35,7 +35,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tools import fortran_lines
+from tools.backends.language.fortran import lines as fortran_lines
 from tools.validate_pipeline_semantics import (
     _fortran_logical_lines,
     _normalize_fortran_line,

@@ -357,7 +357,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
     def test_lone_ampersand_line_is_not_promoted_by_werror_ampersand(self) -> None:
         # A lone-`&` continuation line draws a diagnostic with NO `-W<class>` tag (bare
         # `f951: Warning: '&' not allowed by itself`), so `-Werror=ampersand` does not
-        # promote it and such a source still reaches a gate. `tools/fortran_lines` states
+        # promote it and such a source still reaches a gate. `tools/backends/language/fortran/lines` states
         # that as the reason its scanner must keep handling the shape; pinned here because
         # it is the compiler's answer, not an inference from the flag name.
         result = self._check({

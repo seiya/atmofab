@@ -22,13 +22,14 @@ try:
     # copies mis-read six inputs (issue #23), each one a false `Generate fail` on a
     # source gfortran accepts. `fortran_lines` is stdlib-only, so importing it here introduces
     # no cycle — and it is not `orchestration_runtime`, which this module may not import.
-    from tools import fortran_lines
+    from tools.backends import registry as backend_registry
+    from tools.backends.language.fortran import lines as fortran_lines
     # The Fortran STRUCTURE front end, for the same reason and with one more: it is the single
     # place that knows how this repository reads Fortran's keyword structure, and it fails closed
     # when its parser is absent rather than reading less. Importing the module is cheap — the
     # tree-sitter packages themselves are imported lazily, inside `parse_view`, so a stage that
     # never reaches a Fortran gate never needs them installed.
-    from tools import fortran_structure
+    from tools.backends.language.fortran import structure as fortran_structure
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -51,7 +52,9 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
 
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    from tools import fortran_lines, fortran_structure
+    from tools.backends import registry as backend_registry
+    from tools.backends.language.fortran import lines as fortran_lines
+    from tools.backends.language.fortran import structure as fortran_structure
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -431,6 +434,21 @@ SUBSTEP_WORKFLOW_STEPS = frozenset({"compile", "generate", "validate"})
 AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 
 # Generate-stage static lint (MCP run_linter); see docs/workflow/WORKFLOW_CORE.md and docs/workflow/phases/phase_02_generate.md
+#: The `language` backend id that the §5.1 signature helpers in this module import BY NAME
+#: (`_section51_module_parameters`, `_section51_parameter_lines`,
+#: `_parse_canonical_interface_from_controlled_spec`, `_validate_ir_signatures_against_section51`,
+#: `_validate_ir_module_parameters_against_section51`,
+#: `_validate_infrastructure_generated_signatures`). None of them takes a `language` argument, so
+#: none of them dispatches: they render and compare through one concrete backend whatever the IR
+#: says. Until they resolve their backend through `tools/backends/registry.py`, the two
+#: infrastructure signature gates must refuse any OTHER language — a registry answer of "this
+#: language has an extracted backend" is not the same claim as "these helpers will use it".
+#: Asking the registry alone was a fail-open twice in review: first for a member declared with
+#: `module=None`, then for a member with a real module that these helpers still ignore.
+#: `test_backend_boundary.RegistryConsistencyTests` pins this constant against the set of backend
+#: modules this file actually imports, so the two cannot drift.
+_SIGNATURE_HELPERS_BACKEND_ID = "fortran"
+
 _LINT_PRESET_FOR_LANGUAGE: dict[str, str] = {
     "fortran": "fortitude",
     "cuda_fortran": "fortitude",
@@ -1335,7 +1353,7 @@ def _line_starts(text: str) -> list[int]:
 def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
-    The structure comes from `tools/fortran_structure.parse_view` (tree-sitter-fortran), NOT from
+    The structure comes from `tools/backends/language/fortran/structure.parse_view` (tree-sitter-fortran), NOT from
     a hand-rolled scan of Fortran's keyword structure. The scan this replaces was rewritten four
     times and broken sixteen, always the same way: a spelling the language allows and the rules
     did not enumerate — the one-word `endsubroutine`, a bare `end`, a construct NAMED after a
@@ -5273,7 +5291,7 @@ def _validate_component_generated_surface(
 # rejected before any source reaches this gate, so the anchor holds over every literal that gets
 # here, with no state and no qualifier.
 #
-# That joining scanner does live in the tree again, as `tools/fortran_lines` (issue #23) — but for
+# That joining scanner does live in the tree again, as `tools/backends/language/fortran/lines` (issue #23) — but for
 # consumers this floor is not: they read the JOINED logical line and compare it against a declared
 # surface, so they cannot anchor their way out of the state. A presence check can, so this one still
 # must not take the dependency. The two answers are not in conflict; the question differs.
@@ -6314,6 +6332,44 @@ def _section51_fence_body(controlled_spec_path: Path) -> tuple[str | None, str |
     return (blocks[0], None)
 
 
+def _signature_backend_refusal(language: str) -> str | None:
+    """Why the §5.1 signature gates cannot pin a node written in `language`, or `None`.
+
+    Two grounds, in order, each with its own message because a single sentence naming one cause
+    sends a reader to the wrong repair:
+
+    1. The registry has no usable backend for the value (`unavailable_reason` — not a member, or
+       a member whose knowledge has not been extracted).
+    2. It HAS one, but the §5.1 helpers in this module import `_SIGNATURE_HELPERS_BACKEND_ID`
+       directly and would render this node's signatures through that backend instead.
+
+    An absent `language` is not refused here: it takes the default `docs/IMPL_PLAN_SPEC.md`
+    documents, and `_validate_toolchain_backend_supported` owns the shape rules for the key.
+
+    The value is normalized HERE rather than trusted from the caller. Both current call sites
+    already strip and case-fold, so this is unreachable today — but the identity comparison
+    below is exact, and a caller that passed `Fortran` would get a false `Compile fail` on a
+    node that is perfectly valid. `registry.unavailable_reason` normalizes for its own answer,
+    which made the two halves of this predicate disagree about the same string.
+    """
+    normalized = str(language or "").strip().lower()
+    if not normalized:
+        return None
+    unavailable = backend_registry.unavailable_reason("language", normalized)
+    if unavailable:
+        return unavailable
+    if normalized != _SIGNATURE_HELPERS_BACKEND_ID:
+        return (
+            f"'{language}' has an extracted language backend, but the \u00a75.1 signature helpers "
+            f"in tools/validate_pipeline_semantics.py still import the "
+            f"'{_SIGNATURE_HELPERS_BACKEND_ID}' backend directly, so this node would be rendered "
+            f"and compared as '{_SIGNATURE_HELPERS_BACKEND_ID}'. Dispatching those helpers "
+            "through tools/backends/registry.py is the open item (TODO.md, "
+            "docs/BACKEND_BOUNDARY.md)"
+        )
+    return None
+
+
 def _section51_module_parameters(controlled_spec_path: Path) -> list[dict]:
     """The §5.1 structured ``module_parameters`` entries (each ``{name, base?, value}``). These are
     part of the published ABI a consuming node sees. Returns the well-formed entries (both ``name``
@@ -6321,7 +6377,7 @@ def _section51_module_parameters(controlled_spec_path: Path) -> list[dict]:
     at the calling gate, which flags a §5.1 that cannot be parsed). Used both to render the Fortran
     declaration lines for the Generate.static source pin and to pin the IR's ``public_api.
     module_parameters`` at Compile."""
-    from tools.lang_backend_fortran import load_structured_signatures
+    from tools.backends.language.fortran.signatures import load_structured_signatures
 
     body, err = _section51_fence_body(controlled_spec_path)
     if err or body is None:
@@ -6350,7 +6406,7 @@ def _section51_parameter_lines(controlled_spec_path: Path) -> list[str]:
     §5.1 struct first and short-circuits with a violation on any unrenderable parameter — and wraps
     this call in ``except SignatureParseError`` as defense-in-depth, so a malformed §5.1 fails closed
     with a clear violation, never an uncaught gate crash."""
-    from tools.lang_backend_fortran import render_module_parameter_to_fortran
+    from tools.backends.language.fortran.signatures import render_module_parameter_to_fortran
 
     return [
         render_module_parameter_to_fortran(mp)
@@ -6371,7 +6427,7 @@ def _parse_canonical_interface_from_controlled_spec(
     Returns ``(op_stanzas, type_stanzas, error)``. ``error`` is non-``None`` when the block is
     missing, duplicated, not valid structured YAML, or renders to zero signatures — every such case
     is fail-closed at the gate (a spec that fails to pin its own surface cannot certify)."""
-    from tools.lang_backend_fortran import (
+    from tools.backends.language.fortran.signatures import (
         SignatureParseError,
         load_structured_signatures,
         render_signatures_to_fortran,
@@ -11998,11 +12054,19 @@ def _validate_toolchain_backend_supported(
 
     That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
     — in the same pass, so the order does not matter, both violations land in one list —
-    rejects a non-fortran harness outright, naming the missing
-    ``tools/lang_backend_fortran``-style backend, which is the accurate remedy for that
-    shape and better than a second violation from here saying "use fortran". The carve-out
-    exists so that when a language backend IS added, this gate does not have to be edited
-    too. That hand-off only holds while both gates spell the exemption the SAME way: they
+    rejects a harness whose language has no EXTRACTED backend, carrying
+    ``tools/backends/registry.unavailable_reason``'s clause, which names the implemented
+    set and where to register another. That is the accurate remedy for the shape, and
+    better than a second violation from here saying "use fortran".
+
+    THIS gate, by contrast, still spells ``(make, fortran)`` itself, 140 lines below. That is
+    a boundary violation under ``docs/BACKEND_BOUNDARY.md`` and an open ledger item in
+    ``TODO.md``, not a design: a second language backend would be refused here regardless of
+    what the registry says, so the documented "add a backend without editing a gate" procedure
+    does not hold for this one yet. Stated rather than quietly relied on, because the previous
+    version of this paragraph claimed the opposite while the hard-coded pair sat underneath it.
+
+    That hand-off only holds while both gates spell the exemption the SAME way: they
     now agree on ``.strip()`` with no case folding (as do
     ``runner_renderer.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
     divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
@@ -12442,20 +12506,26 @@ def _validate_infrastructure_public_api(
     if str(meta.get("spec_kind") or "").strip() != "infrastructure":
         return  # exact-published-surface contract is infrastructure-only
 
-    # The §5.1 signature pin renders the structured signatures to the target language, and only a
-    # Fortran backend exists (tools/lang_backend_fortran). A non-Fortran infrastructure node is
-    # fail-closed here — never silently rendered as Fortran and compared against non-Fortran source
-    # — until its language backend is implemented. (No such node exists yet: the sole harness is
-    # fortran/cpu.) The §5 published-NAME surface is language-neutral, but without a signature
-    # backend the node cannot certify at all, so stop early with one clear message.
+    # The §5.1 signature pin renders the structured signatures to the target language, so it needs
+    # a language backend. A language this repository has no backend for is fail-closed here — never
+    # silently rendered as Fortran and compared against non-Fortran source — until one is added.
+    # (No such node exists yet: the sole harness is fortran/cpu.) The §5 published-NAME surface is
+    # language-neutral, but without a signature backend the node cannot certify at all, so stop
+    # early with one clear message. WHICH languages have a usable backend is not spelled here:
+    # the set lives in `tools/backends/registry.py` (docs/BACKEND_BOUNDARY.md), and the reason
+    # string comes from there too rather than being this module's second spelling of it. The
+    # question asked is `unavailable_reason`, NOT `unsupported_reason`: a member declared with
+    # `module=None` is a language this repository knows about but whose knowledge still sits in
+    # the neutral core, so the renderer below — a hard-coded import of the Fortran backend —
+    # would pin its signatures by rendering them as Fortran. Membership is not usability.
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
-    if language and language != "fortran":
+    unsupported = _signature_backend_refusal(language)
+    if unsupported:
         violations.append(
-            f"{derived_path}: infrastructure signature pinning has only a Fortran language backend "
-            f"(tools/lang_backend_fortran); a '{language}' infrastructure node needs its own backend "
-            "before its §5.1 / public_api.signatures can be pinned")
+            f"{derived_path}: infrastructure signature pinning needs a language backend — "
+            f"{unsupported}")
         return
 
     spec_id = meta.get("spec_id")
@@ -12612,7 +12682,7 @@ def _validate_ir_signatures_against_section51(
     normalized stanza LIST equals §5.1's (ordered — a derived type's component layout is part of the
     §5 compatibility contract, so a component reorder must NOT be accepted). A drift here becomes a
     drift in the model the Generate leaf transcribes, so it is a Compile fail to Compile.generate."""
-    from tools.lang_backend_fortran import SignatureParseError, render_symbol_to_fortran
+    from tools.backends.language.fortran.signatures import SignatureParseError, render_symbol_to_fortran
 
     spec51: dict[str, tuple[str, ...]] = {}
     for name, lines in {**op_stanzas, **type_stanzas}.items():
@@ -12721,7 +12791,7 @@ def _validate_ir_module_parameters_against_section51(
     the Generate.static source pin), so YAML int ``64`` == string ``"64"`` and the neutral kind
     token ``float64`` == ``FLOAT64`` (both §5.1 and IR carry the neutral value); ``base`` is not
     compared (the validator constrains it to integer/absent and the renderer fixes it)."""
-    from tools.lang_backend_fortran import SignatureParseError, _validate_module_parameter
+    from tools.backends.language.fortran.signatures import SignatureParseError, _validate_module_parameter
 
     def _norm(value: Any) -> str:
         # Case-fold (Fortran identifiers are case-insensitive, so the neutral `float64` == `FLOAT64`)
@@ -12892,18 +12962,20 @@ def _validate_infrastructure_generated_signatures(
         _fail_closed_if_infra(f"controlled_spec ({cs_ref}) unresolvable")
         return
 
-    # Only a Fortran signature backend exists (tools/lang_backend_fortran); render+compare below is
-    # Fortran. A non-Fortran infrastructure node is fail-closed rather than pinned against the wrong
-    # language. (Compile's _validate_infrastructure_public_api already fail-closes it, so this is a
-    # defense-in-depth stop; no non-Fortran infra node exists yet.)
+    # The render+compare below is a hard-coded import of the Fortran backend. A node whose
+    # language has no EXTRACTED backend is fail-closed rather than pinned against the wrong
+    # language — `unavailable_reason`, not `unsupported_reason`, because a declared-but-
+    # unextracted member has no renderer of its own and would silently take Fortran's.
+    # (Compile's `_validate_infrastructure_public_api` already fail-closes it with the same
+    # registry clause, so this is a defense-in-depth stop; no non-Fortran infra node exists.)
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
-    if language and language != "fortran":
+    unsupported = _signature_backend_refusal(language)
+    if unsupported:
         loc = model_files[0] if model_files else ir_path
         violations.append(
-            f"{loc}: a '{language}' infrastructure node's signatures cannot be pinned — only a "
-            "Fortran language backend is implemented (tools/lang_backend_fortran)")
+            f"{loc}: this infrastructure node's signatures cannot be pinned — {unsupported}")
         return
 
     op_stanzas, type_stanzas, iface_err = _parse_canonical_interface_from_controlled_spec(cs_path)
@@ -12997,7 +13069,7 @@ def _validate_infrastructure_generated_signatures(
     # lower, so a raise here is not reachable in the current gate order. Guard it anyway — this is
     # the lone backend render not already inside an `except SignatureParseError`, so a future reorder
     # or a new caller must fail closed with a clear violation, never crash the gate.
-    from tools.lang_backend_fortran import SignatureParseError
+    from tools.backends.language.fortran.signatures import SignatureParseError
     try:
         param_lines = _section51_parameter_lines(cs_path)
     except SignatureParseError as exc:

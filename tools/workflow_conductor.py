@@ -233,7 +233,7 @@ GATE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # futile. `stale_dependency_ir` — a certified dependency IR predating a carrier contract (e.g. the
 # harness's public_api.module_parameters) reached Generate.gate on a resume that skipped Compile;
 # the fix is a re-certification (a version bump makes dependency freshness re-run it), not a re-author.
-# `static_frontend_unavailable` — the Fortran structure front end (`tools/fortran_structure.py`,
+# `static_frontend_unavailable` — the Fortran structure front end (`tools/backends/language/fortran/structure.py`,
 # tree-sitter) is not installed on the machine running the gate, so the three `problem` model gates
 # have nothing to read; no source the leaf can author changes that, and a warm retry would spend
 # the leaf's budget on a machine problem. The fix is `pip install tree-sitter tree-sitter-fortran`

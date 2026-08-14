@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/lang_backend_fortran (Objective B language backend).
+"""Unit tests for tools/backends/language/fortran/signatures (Objective B language backend).
 
 The correctness contract is a round-trip driven by the REAL published interfaces (not a synthetic
 fixture — a hand-built struct could pass while the real §5.1 shape breaks; see the fixture-fiction
@@ -16,7 +16,7 @@ import copy
 import unittest
 from pathlib import Path
 
-from tools.lang_backend_fortran import (
+from tools.backends.language.fortran.signatures import (
     SignatureParseError,
     load_structured_signatures,
     normalized_stanza_index,

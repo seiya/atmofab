@@ -58,11 +58,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import fortran_structure  # noqa: E402
+from tools.backends.language.fortran import structure as fortran_structure  # noqa: E402
 from tools.validate_pipeline_semantics import (  # noqa: E402
     NodeExecution,
     _fortran_procedure_envelopes,

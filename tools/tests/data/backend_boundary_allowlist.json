@@ -1,0 +1,98 @@
+{
+  "backend_roots": [
+    "tools/backends",
+    "tools/prompt_templates/backends",
+    "docs/backends"
+  ],
+  "direct_backend_imports": {
+    "tools/orchestration_runtime.py": [
+      "tools.backends.language.fortran",
+      "tools.backends.language.fortran.lines"
+    ],
+    "tools/runner_renderer.py": [
+      "tools.backends.language.fortran.signatures"
+    ],
+    "tools/validate_pipeline_semantics.py": [
+      "tools.backends.language.fortran",
+      "tools.backends.language.fortran.lines",
+      "tools.backends.language.fortran.signatures",
+      "tools.backends.language.fortran.structure"
+    ]
+  },
+  "excluded_prefixes": [
+    "docs/design/",
+    "tools/tests/"
+  ],
+  "scanned_globs": [
+    [
+      "tools",
+      "**/*.py"
+    ],
+    [
+      "tools/prompt_templates",
+      "**/*.txt"
+    ],
+    [
+      "mcp_servers",
+      "**/*.py"
+    ],
+    [
+      "mcp_servers",
+      "**/*.md"
+    ],
+    [
+      "mcp_servers",
+      "**/*.json"
+    ],
+    [
+      "docs",
+      "**/*.md"
+    ],
+    [
+      "docs",
+      "**/*.yaml"
+    ],
+    [
+      "skills",
+      "**/*.md"
+    ],
+    [
+      "skills",
+      "**/*.py"
+    ],
+    [
+      ".",
+      "README.md"
+    ],
+    [
+      ".",
+      "AGENTS.md"
+    ],
+    [
+      ".",
+      "CLAUDE.md"
+    ]
+  ],
+  "skill_backend_shape": "^skills/[^/]+/backends/([^/]+)/([^/]+)\\.md$",
+  "token_classes": {
+    "c-include": "#include",
+    "c-suffix": "(?<!llama)\\.(?:cpp|hpp|cxx|cc|hh)\\b",
+    "compiler-driver": "\\bgfortran\\b|\\bflang\\b|\\bg\\+\\+|\\bgcc\\b|\\bclang\\b",
+    "compiler-syntax-only": "-fsyntax-only",
+    "fortran": "fortran",
+    "fortran-allocatable": "allocatable",
+    "fortran-implicit-none": "implicit\\s+none",
+    "fortran-intent": "\\bintent\\s*\\(",
+    "fortran-kind": "\\breal(?:64|32)\\b",
+    "fortran-module-file": "\\.mod\\b",
+    "fortran-module-procedure": "module\\s+procedure",
+    "fortran-standard": "\\bf2008\\b|\\bf2003\\b|\\bf95\\b",
+    "fortran-subroutine": "subroutine",
+    "fortran-suffix": "\\.f9[05]\\b|\\.f0[38]\\b|\\.fpp\\b",
+    "linter-fortitude": "fortitude",
+    "make-control-file": "makefile",
+    "make-variable": "\\bFFLAGS\\b|\\bCFLAGS\\b|\\bLDFLAGS\\b|\\bOBJDIR\\b",
+    "parallel-construct": "do\\s+concurrent",
+    "parallel-directive": "!\\$omp"
+  }
+}
