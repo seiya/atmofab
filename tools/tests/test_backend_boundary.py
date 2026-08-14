@@ -331,6 +331,55 @@ class DirectImportPinTests(unittest.TestCase):
             "to it is a boundary regression, removing from it is the migration.")
 
 
+class ImportReaderTests(unittest.TestCase):
+    """The three spellings `_imported_modules` claims to read, and the one it does not.
+
+    The tree exercises only `import` and `from ... import` today, so the `importlib` branch
+    survived a mutation that deleted it — an unexercised branch is a claim with no witness.
+    These probes are that witness. They are SAMPLES of each spelling, not a definition of the
+    set of ways Python can reach a module; the docstring above states where the reader stops.
+    """
+
+    def test_it_reads_all_three_declared_spellings(self) -> None:
+        for label, source in (
+            ("import", "import tools.backends.language.fortran.lines\n"),
+            ("from-import-module",
+             "from tools.backends.language import fortran\n"),
+            ("from-import-symbol",
+             "from tools.backends.language.fortran.signatures import SignatureParseError\n"),
+            ("importlib-literal",
+             'import importlib\n'
+             'm = importlib.import_module("tools.backends.language.fortran.lines")\n'),
+            ("importlib-bare-name",
+             'from importlib import import_module\n'
+             'm = import_module("tools.backends.language.fortran.structure")\n'),
+        ):
+            found = {n for n in _imported_modules(source) if n.startswith(BACKEND_PACKAGE)}
+            self.assertTrue(found, f"{label}: the reader saw no backend module")
+            for name in found:
+                self.assertIsNotNone(importlib.util.find_spec(name),
+                                     f"{label}: {name} is not a module")
+
+    def test_a_computed_module_name_is_out_of_reach_and_that_is_recorded(self) -> None:
+        # Not a defect to fix — a static reader cannot resolve this. Pinned so that the
+        # docstring's stated limit stays true rather than becoming a guess, and so that anyone
+        # who later claims the pin is total has a failing test to argue with.
+        source = ('import importlib\n'
+                  'axis = "language"\n'
+                  'm = importlib.import_module(f"tools.backends.{axis}.fortran.lines")\n')
+        self.assertEqual(
+            set(), {n for n in _imported_modules(source) if n.startswith(BACKEND_PACKAGE)})
+
+    def test_a_symbol_import_is_recorded_as_the_module_it_crosses_into(self) -> None:
+        source = ("from tools.backends.language.fortran.signatures import "
+                  "SignatureParseError, render_symbol_to_fortran\n")
+        # Both symbols and the `from` target collapse to the one module actually crossed into —
+        # that collapse is the whole point, so the expected set is a singleton.
+        self.assertEqual(
+            {"tools.backends.language.fortran.signatures"},
+            {n for n in _imported_modules(source) if n.startswith(BACKEND_PACKAGE)})
+
+
 class TokenClassReachTests(unittest.TestCase):
     """Every declared token class must be exercised, or it can be deleted for free.
 
