@@ -13409,8 +13409,17 @@ end program shallow_water2d_runner
         # Budget: the sibling `validate.execute` excerpt caps at 4000 chars and
         # `_compile_static_inproc` does not cap at all, so keep the per-line cost bounded.
         # 17 such lines (the canonical 2d example) must stay well inside that budget.
+        # Measured WITHOUT the leading `<contract_path>:`. That prefix is the checkout's
+        # path, not something this code authors: counting it made the budget depend on
+        # where the tree happens to live, and a deep enough checkout (or TMPDIR) failed
+        # this test on its own, with the remedy unchanged.
+        prefix = f"{contract_path}:"
+        authored = []
+        for line in undefined:
+            self.assertTrue(line.startswith(prefix), f"no path prefix to strip: {line}")
+            authored.append(line[len(prefix):])
         self.assertLess(
-            max(len(v) for v in undefined), 400,
+            max(len(v) for v in authored), 400,
             "the undefined-binding line grew past its excerpt budget; shorten the remedy "
             "and put the detail in phase_01_compile.md V3",
         )
