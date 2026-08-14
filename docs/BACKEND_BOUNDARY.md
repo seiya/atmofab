@@ -46,7 +46,10 @@ Out of scope, each for a stated reason:
   keyword, a statement grammar, a compiler argument, a lint rule id, a directive spelling, a
   control-file syntax, a symbol-naming convention, a diagnostic format.
 - Every backend lives in exactly one package, `tools/backends/<axis>/<backend_id>/`, and is
-  registered in `tools/backends/registry.py`.
+  registered in `tools/backends/registry.py`. The `<axis>/<backend_id>` SHAPE is load-bearing at
+  every backend location in the placement table: a file merely under a backend root — a
+  `docs/backends/notes.md`, a `tools/backends/scratch.py` — is neutral core, and moving knowledge
+  there is not a migration.
 - The neutral core reaches a backend through `tools/backends/registry.py` only. A direct import of
   a backend module from the neutral core is a violation even when the imported name is neutral.
 - The dependency direction is one-way: a backend may import the neutral core; the neutral core may
@@ -140,9 +143,14 @@ compliance.
 - `tools/backends/registry.py` declares where backend knowledge belongs and refuses an
   unimplemented axis value. It cannot observe knowledge that never asked it anything.
 - `tools/tests/test_backend_boundary.py` holds two measures with different reach.
-  - The **direct-import pin** is a set identity over three spellings — `import`, `from ... import`,
-    and `importlib.import_module` with a literal argument. Within those it is complete; a module
-    name computed at runtime is out of reach of any static reader and is not covered.
+  - The **direct-import pin** is a set identity over four spellings — `import`, an absolute
+    `from ... import`, a relative `from . import`, and `importlib.import_module` with a literal
+    argument. Within those it is complete; a module name computed at runtime is out of reach of
+    any static reader and is not covered, and a module that does not parse raises rather than
+    reading as clean. The allowlist, the scanned file set and the token-class list live in
+    `tools/tests/data/backend_boundary_allowlist.json`, which no command writes: each is changed
+    by a reviewed hand edit, so narrowing the instrument is not something a regeneration can
+    bless.
   - The **token ratchet** counts, per neutral file and per token class, the occurrences of a fixed
     list of technology-specific tokens, and fails both when a count exceeds the frozen baseline in
     `tools/tests/data/backend_boundary_baseline.json` and when it falls below it (a stale

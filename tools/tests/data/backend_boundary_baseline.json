@@ -234,6 +234,15 @@
       "parallel-construct": 1,
       "parallel-directive": 1
     },
+    "tools/backends/__init__.py": {
+      "fortran": 1
+    },
+    "tools/backends/registry.py": {
+      "compiler-driver": 2,
+      "fortran": 8,
+      "fortran-subroutine": 1,
+      "linter-fortitude": 2
+    },
     "tools/codegen_bundle.py": {
       "compiler-driver": 7,
       "fortran": 30,

@@ -9,16 +9,24 @@ WHAT IS PINNED, AND WHAT IS ONLY SAMPLED. Stating this precisely matters more he
 because a green boundary check reads as "the boundary holds" whether or not it can see the
 boundary.
 
-* **Pinned, over three spellings**: the *direct backend imports*. The set of neutral-core modules
-  that reach a module under `tools/backends/` other than the registry is decided by reading every
-  `import`, every `from ... import`, and every `importlib.import_module` with a literal argument,
-  so within those three it is a complete answer and a module removed from the allowlist cannot
-  silently come back. A module name COMPUTED at runtime is out of reach of any static reader and
-  is not covered — `_imported_modules` says so at the point where it stops looking. This half
-  lives in `ALLOWLIST_PATH`, which **no command writes**: it shared a file with the sampled half
-  for four review rounds, and `--write-baseline` — the remedy this module tells maintainers to
-  run — rewrote both, so a new bypass added in any commit that also shed a sampled token was
-  absorbed without a word.
+* **Pinned, over four spellings**: the *direct backend imports*. The set of neutral-core modules
+  that reach a module under `tools/backends/` other than the registry is read from every
+  `import`, every absolute `from ... import`, every RELATIVE `from . import`, and every
+  `importlib.import_module` with a literal argument. Over those four the answer is complete and a
+  module removed from the allowlist cannot silently come back. Two things it does not do, both
+  once claimed otherwise: a module name COMPUTED at runtime is out of reach of any static reader
+  and is not covered; an UNPARSEABLE module is not read as clean but raises
+  `UnparseableNeutralModule`. Earlier versions of this sentence said "three spellings" and "a
+  complete answer" while relative imports were skipped on the false premise that they cannot
+  leave a package — `tools/` is a namespace package that contains `tools/backends/`, so
+  `from .backends.build_system.make import RULE` crosses the boundary without leaving it — and
+  while a `SyntaxError` returned the empty set.
+* **Pinned by hand, in `ALLOWLIST_PATH`, which no command writes**: the allowlist above, the
+  scanned file set, and the token-class list. The first shared a file with the sampled half for
+  four review rounds and `--write-baseline` rewrote both, so a bypass added in any commit that
+  also shed a sampled token was absorbed without a word. The other two were observable only
+  through the regenerable baseline, whose failure message tells the maintainer to regenerate —
+  so narrowing the scope or deleting a token class failed once and passed forever after.
 * **Pinned**: the *registry's own consistency*. Every declared axis has at least one backend,
   every `extracted` backend imports, and `unsupported_reason` answers `None` for exactly the
   declared members of a closed axis — an `open_vocabulary` axis accepts any non-empty token by
@@ -34,8 +42,11 @@ boundary.
   file that shrinks forces the baseline down (a stale-baseline failure), so the measure cannot
   drift upward and cannot silently stop tightening.
 
-The direction of both failures is toward the rule: a violation fails the suite, and no shape of
-input makes the check pass by reading less. What no shape of input does is prove compliance.
+The direction of every failure is toward the rule. What NO shape of input does is prove
+compliance — and the reverse claim, that no input makes the check pass by reading less, was made
+here and was false three times over: the scope, the class list and the allowlist could each be
+narrowed and then blessed by one regeneration. Those three are hand-pinned now; the sampled
+counts remain a sample.
 
 Regenerating the baseline is deliberate, not automatic: run
 
@@ -64,12 +75,15 @@ from tools.backends import registry  # noqa: E402
 #: maintainer to do exactly that when a token appears in a neutral role.
 BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_baseline.json"
 
-#: The PINNED half, in its own file that no command writes. The two lived in one file for four
-#: review rounds, and `--write-baseline` rewrote both — so the remedy this module prescribes for
-#: the sample laundered the pin. Measured over the 60 commits before this one, 14 of them delete
-#: a sampled token from an in-scope file and would therefore have asked for a regeneration; any
-#: bypass import added in such a commit would have been absorbed silently. A change here is a
-#: hand edit, reviewed as the boundary decision it is.
+#: The PINNED half, in its own file that no command writes: the direct-import allowlist, the
+#: scanned file set, and the token-class list. The allowlist lived in the regenerable file for
+#: four review rounds, and `--write-baseline` rewrote both — so the remedy this module prescribes
+#: for the sample laundered the pin. Regeneration is not rare: a commit that merely deletes a
+#: sampled token from an in-scope file is asked to regenerate, and roughly one in five recent
+#: commits does. (A figure of "14 of the 60 preceding commits" appeared here and did not
+#: reproduce — an independent count of the same range gave 10 — so it is stated as an order of
+#: magnitude rather than a measurement.) A change here is a hand edit, reviewed as the boundary
+#: decision it is.
 ALLOWLIST_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_allowlist.json"
 
 #: The package prefix every backend lives under, and the one module inside it the neutral core is
@@ -107,11 +121,13 @@ _SCANNED_GLOBS = (
     (".", "CLAUDE.md"),
 )
 
+#: Out of scope by the rule. The three backend ROOTS are deliberately absent: a path under a
+#: backend root is excused by `_is_backend_location`, which requires the placement table's shape,
+#: and listing the roots here would short-circuit that check — which is how
+#: `tools/backends/scratch.py` and `docs/backends/notes.md` came to be invisible. The consequence
+#: is that `tools/backends/registry.py` and the package `__init__.py` files ARE scanned: they are
+#: neutral infrastructure that names axis values, and naming is not knowing.
 _EXCLUDED_PREFIXES = (
-    # Backends themselves — this is where the knowledge belongs.
-    "tools/backends/",
-    "tools/prompt_templates/backends/",
-    "docs/backends/",
     # Design notes record decisions about a named technology (out of scope by the rule).
     "docs/design/",
     # Tests supply backend-shaped input in order to exercise backends (out of scope by the rule).
@@ -125,14 +141,33 @@ _EXCLUDED_PREFIXES = (
 #: reported it as GROWTH IN THE NEUTRAL CORE, with a message telling the maintainer to move it
 #: where it already was. Worse, that area's stated acceptance ("its baseline counts drop") was
 #: unachievable, because the occurrences never left the scanned set.
-_BACKEND_DIR_SEGMENT = re.compile(r"(?:^|/)backends/")
+#: The three roots under which a backend directory may sit, and the skill shape, as the
+#: placement table spells them. Each requires `<axis>/<backend_id>` BENEATH the root: a prefix
+#: test alone excused `tools/backends/scratch.py`, `docs/backends/notes.md` and
+#: `skills/x/examples/backends/y.md` — none of which is a backend — so moving debt to a
+#: malformed path under a backend root dropped the recorded figure and stayed green. Measured:
+#: relocating a 76-token contract to `docs/backends/<flat file>` took the total 2584 -> 2508
+#: with no backend created.
+_BACKEND_ROOTS = ("tools/backends", "tools/prompt_templates/backends", "docs/backends")
+_SKILL_BACKEND_SHAPE = re.compile(r"^skills/[^/]+/backends/([^/]+)/([^/]+)\.md$")
 
 
-def _is_backend_location(rel: str) -> bool:
-    """Whether `rel` is one of the four backend locations in the rule's placement table."""
-    if rel.startswith(("tools/backends/", "tools/prompt_templates/backends/", "docs/backends/")):
-        return True
-    return rel.startswith("skills/") and bool(_BACKEND_DIR_SEGMENT.search(rel))
+def _is_backend_location(rel: str, axes: frozenset[str] | None = None) -> bool:
+    """Whether `rel` sits at one of the placement table's backend locations, in its right SHAPE.
+
+    The axis segment must be a declared axis. The backend id is NOT required to be a registered
+    member: a package is created before its `Backend` record in the documented procedure, and a
+    check that refused the intermediate state would make the procedure unfollowable. What the
+    shape does exclude is a file that is merely *under* a backend root — the excuse that let debt
+    vanish into `docs/backends/notes.md`.
+    """
+    axes = axes if axes is not None else frozenset(registry.AXES)
+    for root in _BACKEND_ROOTS:
+        if rel.startswith(root + "/"):
+            rest = rel[len(root) + 1:].split("/")
+            return len(rest) >= 3 and rest[0] in axes
+    match = _SKILL_BACKEND_SHAPE.match(rel)
+    return bool(match) and match.group(1) in axes
 
 
 def neutral_core_files(root: Path | None = None) -> list[Path]:
@@ -180,10 +215,12 @@ _TOKEN_CLASSES: dict[str, str] = {
     "make-control-file": r"makefile",
     "make-variable": r"\bFFLAGS\b|\bCFLAGS\b|\bLDFLAGS\b|\bOBJDIR\b",
     # compiler
-    # No trailing `\b` after `++`: a word boundary needs a word character on one side, and
-    # `g++ ` has none, so `\bg\+\+\b` could never match. The alternative was dead until a
-    # per-alternative probe asked it to match `g++ -c` and it did not.
-    "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+|\bclang\+\+|\bgcc\b|\bclang\b",
+    # Two lessons from probing this class one alternative at a time. No trailing `\b` after
+    # `++`: a word boundary needs a word character on one side and `g++ ` has none, so
+    # `\bg\+\+\b` could never match. And there is no `\bclang\+\+` alternative, because
+    # `\bclang\b` already matches `clang++` — the `\b` between `g` and `+` exists — so it was
+    # redundant, and a probe for `clang++ -c` was being killed by its sibling.
+    "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+|\bgcc\b|\bclang\b",
     "compiler-syntax-only": r"-fsyntax-only",
     # linter
     "linter-fortitude": r"fortitude",
@@ -228,7 +265,7 @@ def _is_module_path(dotted: str, root: Path) -> bool:
 
 
 def _module_prefix(dotted: str, root: Path | None = None) -> str:
-    """The longest prefix of `dotted` that names a real module, or `dotted` itself.
+    """The longest prefix of `dotted` that names a real module, never shorter than an axis.
 
     `from ...fortran.signatures import SignatureParseError` names a SYMBOL, not a module, and
     the first version of this reader recorded the symbol. Two consequences, both demonstrated in
@@ -238,43 +275,92 @@ def _module_prefix(dotted: str, root: Path | None = None) -> str:
     Neither had crossed a boundary that was not already crossed. Collapsing to the module makes
     the recorded set what its name says it is, so the allowlist counts crossings rather than
     spellings.
+
+    THE FLOOR IS THE POINT. Collapsing by existence alone made the pin blind to exactly the
+    crossings the migration ledger is about: `tools.backends.build_system.make` has no directory
+    yet, so every prefix down to `tools.backends` was tried and that one EXISTS — and it is in
+    `REGISTRY_MODULES`, so the crossing was filtered out as if it were a registry call. Verified:
+    a neutral module importing `tools.backends.build_system.make` passed the whole suite. The four
+    unextracted axes were the blind set. A name under the backend package therefore never
+    collapses below `tools.backends.<axis>`, whether or not that directory exists.
     """
     root = root or REPO_ROOT
     parts = dotted.split(".")
-    for stop in range(len(parts), 0, -1):
+    backend_parts = BACKEND_PACKAGE.split(".")
+    floor = 1
+    if parts[:len(backend_parts)] == backend_parts and len(parts) > len(backend_parts):
+        floor = len(backend_parts) + 1
+    for stop in range(len(parts), floor - 1, -1):
         candidate = ".".join(parts[:stop])
         if _is_module_path(candidate, root):
             return candidate
-    return dotted
+    return ".".join(parts[:floor]) if floor > 1 else dotted
 
 
-def _imported_modules(source: str) -> set[str]:
-    """Every backend-package module a source file reaches, as a dotted module path.
+def _absolute_import_target(module: str | None, level: int, package: str) -> str | None:
+    """Resolve a `from ... import` target to an absolute dotted name.
 
-    Three spellings are read: `import a.b`, `from a.b import c`, and `importlib.import_module`
-    with a STRING LITERAL argument — the last because it is the spelling `registry.load` itself
-    uses, so a neutral-core module can copy it. A relative import cannot leave a package, so it
-    can never be a neutral-core module reaching into a backend, and is ignored.
+    `level` 0 is already absolute. A RELATIVE import is resolved against `package`, the dotted
+    package the importing file lives in. The first version skipped relative imports outright,
+    on the stated ground that "a relative import cannot leave a package, so it can never be a
+    neutral-core module reaching into a backend". That premise is false in this tree: `tools/`
+    is a PEP 420 namespace package that CONTAINS `tools/backends/`, so
+    `from .backends.build_system.make import RULE` inside `tools/codegen_bundle.py` crosses the
+    boundary without leaving the package. It was executed and it works.
+    """
+    ancestors = package.split(".") if package else []
+    if level == 0:
+        return module
+    if level - 1 > len(ancestors):
+        return None
+    base = ancestors[: len(ancestors) - (level - 1)]
+    return ".".join([*base, module]) if module else ".".join(base)
+
+
+def _package_of(rel: str) -> str:
+    """The dotted package a repo-relative `.py` path lives in (`tools/a/b.py` -> `tools.a`)."""
+    parts = Path(rel).parts
+    return ".".join(parts[:-1])
+
+
+class UnparseableNeutralModule(Exception):
+    """A neutral-core module the import pin could not parse.
+
+    Raised rather than swallowed. Returning an empty set on `SyntaxError` made an unparseable
+    module leave the pin silently — and a file that does not parse is precisely where an unread
+    import would sit. The direction has to be loud: a module in scope is either read or the
+    check fails.
+    """
+
+
+def _imported_modules(source: str, package: str = "") -> set[str]:
+    """Every backend-package module a source reaches, as an absolute dotted module path.
+
+    Four spellings are read: `import a.b`, `from a.b import c`, `from .relative import c`, and
+    `importlib.import_module` with a STRING LITERAL argument — the last because it is the
+    spelling `registry.load` itself uses, so a neutral-core module can copy it.
 
     WHAT THIS CANNOT SEE, so that the pin is not read as more than it is: a module name computed
     at runtime (an f-string, a concatenation, a name from a config file) is out of reach of any
     static reader. `docs/BACKEND_BOUNDARY.md` states the criterion as "imports, or names for
-    import"; a computed name does neither at parse time. The pin is a complete answer over the
-    three spellings above and silent beyond them.
+    import"; a computed name does neither at parse time. Over the four spellings above the answer
+    is complete; beyond them it is silent, and an unparseable module raises instead of reading as
+    clean.
     """
     names: set[str] = set()
     try:
         tree = ast.parse(source)
-    except SyntaxError:
-        return names
+    except SyntaxError as exc:
+        raise UnparseableNeutralModule(str(exc)) from exc
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names.update(_module_prefix(alias.name) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
-            if node.level or not node.module:
+            target = _absolute_import_target(node.module, node.level, package)
+            if not target:
                 continue
-            names.add(_module_prefix(node.module))
-            names.update(_module_prefix(f"{node.module}.{alias.name}") for alias in node.names)
+            names.add(_module_prefix(target))
+            names.update(_module_prefix(f"{target}.{alias.name}") for alias in node.names)
         elif isinstance(node, ast.Call):
             func = node.func
             attr = func.attr if isinstance(func, ast.Attribute) else (
@@ -288,20 +374,32 @@ def _imported_modules(source: str) -> set[str]:
 
 
 def direct_backend_imports(root: Path | None = None) -> dict[str, list[str]]:
-    """Per neutral-core Python module, the backend modules it imports outside the registry."""
+    """Per neutral-core Python module, the backend modules it imports outside the registry.
+
+    `root` is honoured end to end — the package context of each file and the filesystem the
+    module names resolve against both come from it. It used to be accepted and then ignored:
+    `_module_prefix` resolved against `REPO_ROOT` regardless, so a synthetic tree's imports were
+    answered by the real repository, and nothing drove it with a root to notice.
+    """
     root = root or REPO_ROOT
     offenders: dict[str, list[str]] = {}
     for path in neutral_core_files(root):
         if path.suffix != ".py":
             continue
+        rel = path.relative_to(root).as_posix()
+        try:
+            reached = _imported_modules(
+                path.read_text(encoding="utf-8", errors="replace"), _package_of(rel))
+        except UnparseableNeutralModule as exc:
+            raise UnparseableNeutralModule(f"{rel}: {exc}") from exc
         hits = {
             name
-            for name in _imported_modules(path.read_text(encoding="utf-8", errors="replace"))
+            for name in reached
             if (name == BACKEND_PACKAGE or name.startswith(BACKEND_PACKAGE + "."))
             and name not in REGISTRY_MODULES
         }
         if hits:
-            offenders[path.relative_to(root).as_posix()] = sorted(hits)
+            offenders[rel] = sorted(hits)
     return offenders
 
 
@@ -346,8 +444,12 @@ def _load_baseline() -> dict[str, object]:
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
 
+def _load_pinned() -> dict[str, object]:
+    return json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
+
+
 def _load_allowlist() -> dict[str, list[str]]:
-    return json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))["direct_backend_imports"]
+    return _load_pinned()["direct_backend_imports"]
 
 
 class TokenRatchetTests(unittest.TestCase):
@@ -395,8 +497,61 @@ class TokenRatchetTests(unittest.TestCase):
             "tightening, and update the measured debt in TODO.md.")
 
 
+class ScopePinTests(unittest.TestCase):
+    """The scanned set and the token-class list, pinned by hand rather than by measurement.
+
+    Both were previously observable only through the regenerable baseline, and both failure
+    messages tell the maintainer to regenerate. So narrowing the scope or deleting a token class
+    failed once and then passed forever: adding `docs/workflow/` to the exclusions dropped 89
+    recorded occurrences, deleting the `skills/**/*.md` glob dropped 13 files, and deleting a
+    token class together with its probe cost nothing — each green after one regeneration. Living
+    in `ALLOWLIST_PATH`, which no command writes, makes a change to either a reviewed hand edit.
+    """
+
+    def test_the_scanned_file_set_matches_the_pinned_list(self) -> None:
+        recorded = list(_load_pinned()["scanned_files"])
+        measured = [p.relative_to(REPO_ROOT).as_posix() for p in neutral_core_files()]
+        self.assertEqual(recorded, measured,
+                         "the scanned set changed. Widening it is the migration's job and "
+                         "narrowing it is a scope decision; either way, edit "
+                         "tools/tests/data/backend_boundary_allowlist.json by hand — "
+                         "`--write-baseline` does not touch it.")
+
+    def test_the_token_class_list_matches_the_pinned_list(self) -> None:
+        self.assertEqual(sorted(_load_pinned()["token_classes"]), sorted(_TOKEN_CLASSES),
+                         "a token class was added or removed. The probe table alone cannot "
+                         "catch this — deleting a class WITH its probe is free — and two of the "
+                         "four unextracted axes have a single class, so losing one loses an "
+                         "axis' whole sample.")
+
+
 class DirectImportPinTests(unittest.TestCase):
     """The pinned measure: which neutral-core modules bypass the registry, exactly."""
+
+    def test_write_baseline_does_not_touch_the_pinned_file(self) -> None:
+        """The write set of `_write_baseline`, observed rather than described.
+
+        The commit that split the two halves is the fix for a laundering path, and its guard
+        checked `measure()`'s keys — so appending an `ALLOWLIST_PATH.write_text(...)` to
+        `_write_baseline` reinstated the laundering with the whole suite green. This runs the
+        command and compares the pinned file's bytes.
+        """
+        before = ALLOWLIST_PATH.read_bytes()
+        baseline_before = BASELINE_PATH.read_bytes()
+        # A SENTINEL, not the file's own bytes. Comparing the bytes only catches a write whose
+        # content differs, and the write that matters — recomputing the allowlist — produces
+        # identical bytes on a clean tree and differing bytes exactly when a bypass has just been
+        # added. The sentinel makes ANY write to this path visible, clean tree or not.
+        sentinel = before + b"\n"
+        try:
+            ALLOWLIST_PATH.write_bytes(sentinel)
+            _write_baseline()
+            after = ALLOWLIST_PATH.read_bytes()
+        finally:
+            ALLOWLIST_PATH.write_bytes(before)
+            BASELINE_PATH.write_bytes(baseline_before)
+        self.assertEqual(sentinel, after,
+                         "--write-baseline wrote to the hand-edited pin")
 
     def test_the_regenerable_half_cannot_carry_the_allowlist(self) -> None:
         # `--write-baseline` writes `measure()`. While `measure()` also returned the import set,
@@ -450,6 +605,7 @@ class ScannedSetTests(unittest.TestCase):
                 "docs/a/b/c/deep.md",
                 "docs/examples/pinned.yaml",
                 "skills/some-skill/scripts/emit.py",
+                "skills/some-skill/SKILL.md",
                 "skills/some-skill/backends/language/fortran.md",
                 "mcp_servers/tools/run_syntax_check.json",
                 "tools/prompt_templates/leaf.txt",
@@ -464,7 +620,7 @@ class ScannedSetTests(unittest.TestCase):
         # and leave the area's "counts drop" acceptance unreachable.
         self.assertEqual(
             {"docs/reference/moved_contract.md", "docs/a/b/c/deep.md", "docs/examples/pinned.yaml",
-             "skills/some-skill/scripts/emit.py",
+             "skills/some-skill/scripts/emit.py", "skills/some-skill/SKILL.md",
              "mcp_servers/tools/run_syntax_check.json", "tools/prompt_templates/leaf.txt",
              "README.md", "AGENTS.md", "CLAUDE.md"},
             found)
@@ -490,12 +646,19 @@ class ScannedSetTests(unittest.TestCase):
             (tmp / "docs" / "README.md").write_text(
                 f"10. BACKEND_BOUNDARY.md (a {slashes} model)\n", encoding="utf-8")
             (tmp / "TODO.md").write_text(f"a registry declaring {commas}\n", encoding="utf-8")
+            # Four of the five names — the exact evasion `_AXIS_LIST_QUORUM` is chosen for, and
+            # the reason it is 4 rather than 5. Setting the constant to 5 was free before this.
+            four = ", ".join(f"`{n}`" for n in names[:4])
+            (tmp / "docs" / "four_of_five.md").write_text(f"axes: {four}\n", encoding="utf-8")
             (tmp / "docs" / "innocent.md").write_text(
-                f"the `{names[0]}` axis and the `{names[1]}` axis\n", encoding="utf-8")
+                f"the `{names[0]}` axis and the `{names[1]}` axis and `{names[2]}`\n",
+                encoding="utf-8")
             (tmp / "docs" / "design").mkdir()
             (tmp / "docs" / "design" / "note.md").write_text(f"{commas}\n", encoding="utf-8")
             found = axis_list_restatements(tmp)
-        self.assertEqual(["README.md:1", "TODO.md:1", "docs/README.md:1"], found)
+        self.assertEqual(
+            ["README.md:1", "TODO.md:1", "docs/README.md:1", "docs/four_of_five.md:1"],
+            found)
 
     def test_the_declared_exclusions_are_all_reachable(self) -> None:
         # An exclusion no glob can produce is dead text that reads as a rule. Two were, before
@@ -625,15 +788,75 @@ class TokenClassReachTests(unittest.TestCase):
             for probe in negatives:
                 self.assertIsNone(rx.search(probe), f"{name} now matches {probe!r}")
 
-    def test_every_regex_alternative_has_its_own_positive(self) -> None:
-        # The count is derived from the pattern, not written down: a class whose pattern grows an
-        # alternative without a probe fails here rather than joining the corpus-dependent kills.
+    @staticmethod
+    def _top_level_alternatives(pattern: str) -> list[str]:
+        """Split on `|` at depth 0 only.
+
+        A plain `str.split("|")` cut `\\breal(?:64|32)\\b` in half and produced two patterns
+        that do not compile — the same class-of-splitter defect this repository fixed for Fortran
+        commas (issue #23). Character classes and groups both hold their contents.
+        """
+        parts: list[str] = []
+        buf: list[str] = []
+        depth = 0
+        in_class = False
+        escaped = False
+        for ch in pattern:
+            if escaped:
+                buf.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                buf.append(ch)
+                escaped = True
+                continue
+            if in_class:
+                buf.append(ch)
+                if ch == "]":
+                    in_class = False
+                continue
+            if ch == "[":
+                in_class = True
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == "|" and depth == 0:
+                parts.append("".join(buf))
+                buf = []
+                continue
+            buf.append(ch)
+        parts.append("".join(buf))
+        return parts
+
+    def test_every_regex_alternative_is_necessary_and_probed(self) -> None:
+        r"""Each top-level alternative must be the ONLY thing matching one of its probes.
+
+        Counting probes against alternatives, which this replaced, promised necessity and checked
+        arithmetic: `\bclang\+\+` is subsumed by `\bclang\b` — a word boundary does exist
+        between `g` and `+` — so it could be deleted for free while the `clang++ -c` probe went
+        on passing, killed by its sibling. Removing one alternative and requiring some positive
+        to stop matching is the property the name claims.
+        """
         for name, pattern in sorted(_TOKEN_CLASSES.items()):
-            alternatives = pattern.count("|") + 1
-            self.assertGreaterEqual(
-                len(self._PROBES[name][0]), alternatives,
-                f"{name}: {alternatives} regex alternative(s), "
-                f"{len(self._PROBES[name][0])} positive probe(s)")
+            alternatives = self._top_level_alternatives(pattern)
+            if len(alternatives) == 1:
+                continue
+            positives = self._PROBES[name][0]
+            for index in range(len(alternatives)):
+                reduced = "|".join(a for i, a in enumerate(alternatives) if i != index)
+                rx = re.compile(reduced, re.IGNORECASE)
+                self.assertTrue(
+                    any(not rx.search(probe) for probe in positives),
+                    f"{name}: alternative {alternatives[index]!r} is redundant or unprobed — "
+                    "every positive still matches without it")
+
+    def test_every_class_has_at_least_one_negative(self) -> None:
+        # "The negative half is what stops a class from being widened into a catch-all" — a claim
+        # nothing observed, since an empty negatives tuple passed.
+        for name, (positives, negatives) in sorted(self._PROBES.items()):
+            self.assertTrue(positives, f"{name}: no positive probe")
+            self.assertTrue(negatives, f"{name}: no negative probe")
 
 
 class RegistryConsistencyTests(unittest.TestCase):
@@ -746,9 +969,19 @@ class RegistryConsistencyTests(unittest.TestCase):
         # being prevented is a call to the WRONG registry function, which no fixture can show
         # without a second language backend existing.
         source = Path(vps.__file__).read_text(encoding="utf-8")
+        # An AST walk, not a substring count: the count was bound to one spelling, and a third
+        # membership call written with single quotes (or `axis=`) passed the whole suite.
+        membership_calls = [
+            node for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "attr", getattr(node.func, "id", None)) == "unsupported_reason"
+            and any(isinstance(a, ast.Constant) and a.value == "language"
+                    for a in [*node.args, *(k.value for k in node.keywords)])
+        ]
         self.assertEqual(
-            0, source.count('backend_registry.unsupported_reason("language"'),
-            "a signature gate guards a Fortran-only renderer on membership alone")
+            [], membership_calls,
+            "a signature gate guards a Fortran-only renderer on membership alone "
+            f"(line(s) {[n.lineno for n in membership_calls]})")
         self.assertEqual(
             2, source.count("unsupported = _signature_backend_refusal(language)"),
             "both infrastructure signature gates must go through the one refusal predicate")
@@ -789,8 +1022,14 @@ class RegistryConsistencyTests(unittest.TestCase):
         their expected clause by calling this predicate, so they are invariant to which ground
         answered.
         """
-        member_gap = vps._signature_backend_refusal("c")
-        self.assertEqual(registry.unavailable_reason("language", "c"), member_gap)
+        # The non-member is DERIVED, not the literal "c": registering a `c` language backend
+        # would have silently converted this probe from the membership ground to the extraction
+        # ground while both assertions still passed.
+        non_member = next(
+            c for c in ("c", "cpp", "rust", "zz_not_a_language")
+            if registry.unsupported_reason("language", c) is not None)
+        member_gap = vps._signature_backend_refusal(non_member)
+        self.assertEqual(registry.unavailable_reason("language", non_member), member_gap)
         self.assertNotIn("still import", member_gap)
         original = vps._SIGNATURE_HELPERS_BACKEND_ID
         try:
