@@ -17,7 +17,8 @@ boundary.
   is not covered — `_imported_modules` says so at the point where it stops looking.
 * **Pinned**: the *registry's own consistency*. Every declared axis has at least one backend,
   every `extracted` backend imports, and `unsupported_reason` answers `None` for exactly the
-  declared members.
+  declared members of a closed axis — an `open_vocabulary` axis accepts any non-empty token by
+  design, and the tests read that flag from the axis rather than naming which axis it is.
 * **Sampled**: the *token counts*. `_TOKEN_CLASSES` is an ENUMERATION of technology-specific
   spellings, and an enumeration of a language's surface is exactly the instrument this repository
   has already watched fail sixteen times (`tools/backends/language/fortran/structure.py` explains
@@ -42,7 +43,6 @@ and the diff is then reviewable as the migration step it represents.
 from __future__ import annotations
 
 import ast
-import importlib.util
 import json
 import re
 import sys
@@ -67,9 +67,10 @@ REGISTRY_MODULES = frozenset({"tools.backends", "tools.backends.registry"})
 
 # --- what counts as the neutral core -------------------------------------------------------------
 #
-# The scope is `docs/BACKEND_BOUNDARY.md`'s scope. The exclusions are that document's exclusions,
-# plus two of this instrument's own: its baseline (which quotes paths, not knowledge) and the
-# migration ledger.
+# The scope is `docs/BACKEND_BOUNDARY.md`'s scope, and `_EXCLUDED_PREFIXES` is that document's
+# exclusion list — no more. Two files that might be expected here are simply never globbed rather
+# than excluded: this instrument's own baseline (under `tools/tests/`) and `TODO.md`, which holds
+# the migration ledger and would otherwise count the debt it describes.
 #
 # Every glob is RECURSIVE. The first version scanned `docs/*.md` plus `docs/workflow/**` only,
 # which made a move into any new `docs/<subdir>/` indistinguishable from a migration into a
@@ -84,6 +85,7 @@ _SCANNED_GLOBS = (
     ("mcp_servers", "**/*.md"),
     ("mcp_servers", "**/*.json"),
     ("docs", "**/*.md"),
+    ("docs", "**/*.yaml"),
     ("skills", "**/*.md"),
     ("skills", "**/*.py"),
     (".", "README.md"),
@@ -177,8 +179,21 @@ def token_counts(root: Path | None = None) -> dict[str, dict[str, int]]:
 # --- the pinned direct-import set ----------------------------------------------------------------
 
 
-def _module_prefix(dotted: str) -> str:
-    """The longest prefix of `dotted` that names a real module or package, or `dotted` itself.
+def _is_module_path(dotted: str, root: Path) -> bool:
+    """Whether `dotted` names a module or package file under `root`, decided by the FILESYSTEM.
+
+    Deliberately not `importlib.util.find_spec`, which the first version used: `find_spec`
+    IMPORTS every parent package, so one call to `direct_backend_imports()` executed 20
+    neutral-core modules at import time, and any module-level failure in any of them surfaced
+    here as a boundary-pin error with a message about backend imports. A reader described as
+    static must not run the code it reads.
+    """
+    base = root.joinpath(*dotted.split("."))
+    return base.with_suffix(".py").is_file() or (base / "__init__.py").is_file()
+
+
+def _module_prefix(dotted: str, root: Path | None = None) -> str:
+    """The longest prefix of `dotted` that names a real module, or `dotted` itself.
 
     `from ...fortran.signatures import SignatureParseError` names a SYMBOL, not a module, and
     the first version of this reader recorded the symbol. Two consequences, both demonstrated in
@@ -189,14 +204,12 @@ def _module_prefix(dotted: str) -> str:
     the recorded set what its name says it is, so the allowlist counts crossings rather than
     spellings.
     """
+    root = root or REPO_ROOT
     parts = dotted.split(".")
     for stop in range(len(parts), 0, -1):
         candidate = ".".join(parts[:stop])
-        try:
-            if importlib.util.find_spec(candidate) is not None:
-                return candidate
-        except (ImportError, AttributeError, ValueError):
-            continue
+        if _is_module_path(candidate, root):
+            return candidate
     return dotted
 
 
@@ -331,8 +344,70 @@ class DirectImportPinTests(unittest.TestCase):
             "to it is a boundary regression, removing from it is the migration.")
 
 
+class ScannedSetTests(unittest.TestCase):
+    """The scanned set is driven against a synthetic tree, not against this repository.
+
+    Every glob being RECURSIVE is a fix with no witness in this tree: `docs/` currently has only
+    the subdirectories the globs happen to reach, so reverting `docs/**/*.md` to `docs/*.md`
+    leaves the suite green. Review found that survivor. A file placed in a directory that does
+    not exist here is the only way to observe the property, so `neutral_core_files` takes a
+    `root` and these tests build one.
+    """
+
+    def _tree(self, tmp: Path, *relatives: str) -> None:
+        for rel in relatives:
+            path = tmp / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("subroutine placeholder\n", encoding="utf-8")
+
+    def test_a_document_in_an_unforeseen_subdirectory_is_scanned(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            self._tree(
+                tmp,
+                "docs/reference/moved_contract.md",
+                "docs/a/b/c/deep.md",
+                "docs/examples/pinned.yaml",
+                "skills/some-skill/scripts/emit.py",
+                "skills/some-skill/backends/language/fortran.md",
+                "mcp_servers/tools/run_syntax_check.json",
+                "tools/prompt_templates/leaf.txt",
+                "README.md",
+            )
+            found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
+        # `skills/**/backends/...` is a BACKEND location by the placement table, but the
+        # exclusion list keys on repository-root prefixes, so it is scanned. Recorded as an
+        # observed property rather than asserted away: it over-measures, never under-measures.
+        self.assertEqual(
+            {"docs/reference/moved_contract.md", "docs/a/b/c/deep.md", "docs/examples/pinned.yaml",
+             "skills/some-skill/scripts/emit.py",
+             "skills/some-skill/backends/language/fortran.md",
+             "mcp_servers/tools/run_syntax_check.json", "tools/prompt_templates/leaf.txt",
+             "README.md"},
+            found)
+
+    def test_the_declared_exclusions_are_all_reachable(self) -> None:
+        # An exclusion no glob can produce is dead text that reads as a rule. Two were, before
+        # the globs became recursive.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            self._tree(
+                tmp,
+                "tools/backends/language/fortran/lines.py",
+                "tools/prompt_templates/backends/language/fortran/gen.txt",
+                "docs/backends/language/fortran/abi.md",
+                "docs/design/note.md",
+                "tools/tests/test_thing.py",
+                "docs/kept.md",
+            )
+            found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
+        self.assertEqual({"docs/kept.md"}, found)
+
+
 class ImportReaderTests(unittest.TestCase):
-    """The three spellings `_imported_modules` claims to read, and the one it does not.
+    """The spellings `_imported_modules` claims to read, and the one it does not.
 
     The tree exercises only `import` and `from ... import` today, so the `importlib` branch
     survived a mutation that deleted it — an unexercised branch is a claim with no witness.
@@ -340,7 +415,7 @@ class ImportReaderTests(unittest.TestCase):
     set of ways Python can reach a module; the docstring above states where the reader stops.
     """
 
-    def test_it_reads_all_three_declared_spellings(self) -> None:
+    def test_it_reads_every_declared_spelling(self) -> None:
         for label, source in (
             ("import", "import tools.backends.language.fortran.lines\n"),
             ("from-import-module",
@@ -357,8 +432,8 @@ class ImportReaderTests(unittest.TestCase):
             found = {n for n in _imported_modules(source) if n.startswith(BACKEND_PACKAGE)}
             self.assertTrue(found, f"{label}: the reader saw no backend module")
             for name in found:
-                self.assertIsNotNone(importlib.util.find_spec(name),
-                                     f"{label}: {name} is not a module")
+                self.assertTrue(_is_module_path(name, REPO_ROOT),
+                                f"{label}: {name} is not a module")
 
     def test_a_computed_module_name_is_out_of_reach_and_that_is_recorded(self) -> None:
         # Not a defect to fix — a static reader cannot resolve this. Pinned so that the
@@ -513,8 +588,49 @@ class RegistryConsistencyTests(unittest.TestCase):
             0, source.count('backend_registry.unsupported_reason("language"'),
             "a signature gate guards a Fortran-only renderer on membership alone")
         self.assertEqual(
-            2, source.count('backend_registry.unavailable_reason("language"'),
-            "the two signature gates must both ask whether the language backend is usable")
+            2, source.count("unsupported = _signature_backend_refusal(language)"),
+            "both infrastructure signature gates must go through the one refusal predicate")
+
+    def test_the_signature_helper_backend_matches_what_the_module_imports(self) -> None:
+        """`_SIGNATURE_HELPERS_BACKEND_ID` must name the backend the helpers actually import.
+
+        A SET IDENTITY, not a sample: every `tools.backends.language.<id>` module the validator
+        imports is collected from its source, and the set of `<id>`s must be exactly the one the
+        constant names. Review reached the same fail-open twice by asking the registry a question
+        whose answer did not constrain which module the helpers import — first with a member
+        declared `module=None`, then with a member carrying a real module. The constant closes
+        that only while it agrees with the imports, which is what this reads.
+        """
+        source = Path(vps.__file__).read_text(encoding="utf-8")
+        prefix = f"{BACKEND_PACKAGE}.language."
+        imported_language_backends = {
+            name[len(prefix):].split(".")[0]
+            for name in _imported_modules(source)
+            if name.startswith(prefix)
+        }
+        self.assertEqual(
+            {vps._SIGNATURE_HELPERS_BACKEND_ID}, imported_language_backends,
+            "the validator imports a language backend the signature refusal does not name")
+        # And the id it names has to be a real, extracted backend — a typo would silently refuse
+        # every language including the one that works.
+        self.assertIsNone(
+            registry.unavailable_reason("language", vps._SIGNATURE_HELPERS_BACKEND_ID))
+
+    def test_an_extracted_but_undispatched_language_is_still_refused(self) -> None:
+        # The behavioural witness for the second ground. Simulated by moving the constant rather
+        # than by registering a second backend, because the refusal must hold for ANY language
+        # the helpers are not wired to, and that property does not depend on which one is.
+        original = vps._SIGNATURE_HELPERS_BACKEND_ID
+        try:
+            vps._SIGNATURE_HELPERS_BACKEND_ID = "some_other_language"
+            reason = vps._signature_backend_refusal("fortran")
+            self.assertIsNotNone(
+                reason, "a language the helpers do not import was accepted by the gates")
+            self.assertIn("still import", reason)
+        finally:
+            vps._SIGNATURE_HELPERS_BACKEND_ID = original
+        self.assertIsNone(vps._signature_backend_refusal("fortran"))
+        self.assertIsNone(vps._signature_backend_refusal(""))
 
     def test_an_open_vocabulary_axis_accepts_a_value_it_has_no_record_for(self) -> None:
         # `parallel` is an exploration knob whose schema says its vocabulary is deliberately not

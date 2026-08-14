@@ -434,6 +434,21 @@ SUBSTEP_WORKFLOW_STEPS = frozenset({"compile", "generate", "validate"})
 AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 
 # Generate-stage static lint (MCP run_linter); see docs/workflow/WORKFLOW_CORE.md and docs/workflow/phases/phase_02_generate.md
+#: The `language` backend id that the §5.1 signature helpers in this module import BY NAME
+#: (`_section51_module_parameters`, `_section51_parameter_lines`,
+#: `_parse_canonical_interface_from_controlled_spec`, `_validate_ir_signatures_against_section51`,
+#: `_validate_ir_module_parameters_against_section51`,
+#: `_validate_infrastructure_generated_signatures`). None of them takes a `language` argument, so
+#: none of them dispatches: they render and compare through one concrete backend whatever the IR
+#: says. Until they resolve their backend through `tools/backends/registry.py`, the two
+#: infrastructure signature gates must refuse any OTHER language — a registry answer of "this
+#: language has an extracted backend" is not the same claim as "these helpers will use it".
+#: Asking the registry alone was a fail-open twice in review: first for a member declared with
+#: `module=None`, then for a member with a real module that these helpers still ignore.
+#: `test_backend_boundary.RegistryConsistencyTests` pins this constant against the set of backend
+#: modules this file actually imports, so the two cannot drift.
+_SIGNATURE_HELPERS_BACKEND_ID = "fortran"
+
 _LINT_PRESET_FOR_LANGUAGE: dict[str, str] = {
     "fortran": "fortitude",
     "cuda_fortran": "fortitude",
@@ -6315,6 +6330,37 @@ def _section51_fence_body(controlled_spec_path: Path) -> tuple[str | None, str |
     if len(blocks) > 1:
         return (None, "§5.1 has multiple fenced code blocks (the interface block must be the only one)")
     return (blocks[0], None)
+
+
+def _signature_backend_refusal(language: str) -> str | None:
+    """Why the §5.1 signature gates cannot pin a node written in `language`, or `None`.
+
+    Two grounds, in order, each with its own message because a single sentence naming one cause
+    sends a reader to the wrong repair:
+
+    1. The registry has no usable backend for the value (`unavailable_reason` — not a member, or
+       a member whose knowledge has not been extracted).
+    2. It HAS one, but the §5.1 helpers in this module import `_SIGNATURE_HELPERS_BACKEND_ID`
+       directly and would render this node's signatures through that backend instead.
+
+    An absent `language` is not refused here: it takes the default `docs/IMPL_PLAN_SPEC.md`
+    documents, and `_validate_toolchain_backend_supported` owns the shape rules for the key.
+    """
+    if not language:
+        return None
+    unavailable = backend_registry.unavailable_reason("language", language)
+    if unavailable:
+        return unavailable
+    if language != _SIGNATURE_HELPERS_BACKEND_ID:
+        return (
+            f"'{language}' has an extracted language backend, but the \u00a75.1 signature helpers "
+            f"in tools/validate_pipeline_semantics.py still import the "
+            f"'{_SIGNATURE_HELPERS_BACKEND_ID}' backend directly, so this node would be rendered "
+            f"and compared as '{_SIGNATURE_HELPERS_BACKEND_ID}'. Dispatching those helpers "
+            "through tools/backends/registry.py is the open item (TODO.md, "
+            "docs/BACKEND_BOUNDARY.md)"
+        )
+    return None
 
 
 def _section51_module_parameters(controlled_spec_path: Path) -> list[dict]:
@@ -12468,7 +12514,7 @@ def _validate_infrastructure_public_api(
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
-    unsupported = backend_registry.unavailable_reason("language", language) if language else None
+    unsupported = _signature_backend_refusal(language)
     if unsupported:
         violations.append(
             f"{derived_path}: infrastructure signature pinning needs a language backend — "
@@ -12918,7 +12964,7 @@ def _validate_infrastructure_generated_signatures(
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
-    unsupported = backend_registry.unavailable_reason("language", language) if language else None
+    unsupported = _signature_backend_refusal(language)
     if unsupported:
         loc = model_files[0] if model_files else ir_path
         violations.append(

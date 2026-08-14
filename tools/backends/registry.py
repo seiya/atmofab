@@ -163,13 +163,32 @@ def backend_ids(axis: str) -> tuple[str, ...]:
 
 
 def get(axis: str, backend_id: str) -> Backend:
-    """The `Backend` record, or raise `UnsupportedBackend` naming what IS implemented."""
+    """The `Backend` record, or raise naming why there is none.
+
+    The two raises are classified the same way `require_available` classifies them, because the
+    same input reaching two entry points must not be two different kinds of failure: a value
+    that is not a member at all is `UnsupportedBackend`, and a value an `open_vocabulary` axis
+    accepts but has no record for is `BackendNotExtracted`. The first version built its message
+    as ``unsupported_reason(...) or ""`` and raised the EMPTY STRING for the second case, while
+    its own docstring promised a message naming what is implemented.
+    """
     _require_axis(axis)
-    key = (axis, str(backend_id or "").strip().lower())
-    try:
-        return _BACKENDS[key]
-    except KeyError:
-        raise UnsupportedBackend(unsupported_reason(axis, backend_id) or "") from None
+    normalized = str(backend_id or "").strip().lower()
+    backend = _BACKENDS.get((axis, normalized))
+    if backend is not None:
+        return backend
+    reason = unsupported_reason(axis, backend_id)
+    if reason is not None:
+        raise UnsupportedBackend(reason)
+    raise BackendNotExtracted(_no_record_reason(axis, backend_id))
+
+
+def _no_record_reason(axis: str, backend_id: str) -> str:
+    return (
+        f"'{backend_id}' is an accepted {axis} value but has no backend package; "
+        f"extract one under tools/backends/{axis}/ and register it in "
+        f"tools/backends/registry.py — see docs/BACKEND_BOUNDARY.md"
+    )
 
 
 def unsupported_reason(axis: str, backend_id: str) -> str | None:
@@ -222,15 +241,11 @@ def unavailable_reason(axis: str, backend_id: str) -> str | None:
         return reason
     normalized = str(backend_id or "").strip().lower()
     backend = _BACKENDS.get((axis, normalized))
-    if backend is None or backend.extracted:
-        # `None` here means an open-vocabulary axis accepted a token with no record. Such an
-        # axis has no extracted code to offer either, so say so rather than implying it does.
-        if backend is None:
-            return (
-                f"'{backend_id}' is an accepted {axis} value but has no backend package; "
-                f"extract one under tools/backends/{axis}/ and register it in "
-                f"tools/backends/registry.py — see docs/BACKEND_BOUNDARY.md"
-            )
+    if backend is None:
+        # An open-vocabulary axis accepted a token with no record. Such an axis has no extracted
+        # code to offer either, so say so rather than implying it does.
+        return _no_record_reason(axis, backend_id)
+    if backend.extracted:
         return None
     return (
         f"the {axis} backend '{backend.backend_id}' is declared but not extracted: its "
@@ -259,14 +274,12 @@ def require_available(axis: str, backend_id: str) -> None:
 def load(axis: str, backend_id: str) -> ModuleType:
     """Import and return the backend package.
 
-    `UnsupportedBackend` when the axis value is not implemented; `BackendNotExtracted` when it
-    is implemented but its knowledge still lives in the neutral core.
+    `UnsupportedBackend` when the axis value is not a member; `BackendNotExtracted` when it is a
+    member (or an open-vocabulary value) whose knowledge still lives in the neutral core. The
+    classification is `require_available`'s rather than this function's own, so the same input
+    cannot be one kind of failure here and another kind there — it was, for one review round.
     """
-    backend = get(axis, backend_id)
-    if backend.module is None:
-        raise BackendNotExtracted(
-            f"the {axis} backend '{backend.backend_id}' is implemented but not extracted: its "
-            "knowledge is still inlined in the neutral core, so there is no module to load "
-            "(migration ledger: TODO.md, rule: docs/BACKEND_BOUNDARY.md)"
-        )
-    return importlib.import_module(backend.module)
+    require_available(axis, backend_id)
+    module = _BACKENDS[(axis, str(backend_id or "").strip().lower())].module
+    assert module is not None  # `require_available` returned, so the record is extracted
+    return importlib.import_module(module)

@@ -85,15 +85,19 @@ the binding. A neutral document must not state the binding itself.
   the `Backend` record to `_BACKENDS` in `tools/backends/registry.py`; place the backend's
   documents, prompt fragments, and skill fragments under the paths above; add the backend's own
   tests.
-- **Which gates that procedure is sufficient for, TODAY.** It is sufficient for the two
-  infrastructure signature gates in `tools/validate_pipeline_semantics.py`
-  (`_validate_infrastructure_public_api`, `_validate_infrastructure_generated_signatures`), which
-  take their refusal from the registry. It is **not** sufficient for the gates that still spell
-  their own set: `_validate_toolchain_backend_supported` and the `make`-quality-check gates in the
-  same module, `tools/workflow_conductor.py`'s `make ∧ fortran` authorship conjunction, and the
-  per-language tables in `tools/codegen_bundle.py`. Those refuse a new backend regardless of the
-  registry, and migrating them is an area in the ledger in `TODO.md`. The target state is that no
-  gate spells the set; this document does not claim the target state has been reached.
+- **Which gates that procedure is sufficient for, TODAY: none of them.** Registering a backend
+  makes the registry accept the value; it does not make any gate use the new backend, because no
+  gate dispatches through one yet. The two infrastructure signature gates in
+  `tools/validate_pipeline_semantics.py` take their *refusal clause* from the registry but their
+  §5.1 helpers import one concrete backend by name and take no `language` argument, so they
+  additionally refuse any language those helpers are not wired to
+  (`_signature_backend_refusal`). `_validate_toolchain_backend_supported`, the
+  `make`-quality-check gates, `tools/workflow_conductor.py`'s `make ∧ fortran` authorship
+  conjunction and the per-language tables in `tools/codegen_bundle.py` spell their own set
+  outright. Adding a backend therefore requires editing those gates until the migration areas in
+  `TODO.md` are closed. Stated this way because the first version of this section claimed the
+  opposite, and following it produced a backend nothing accepted — and then, after a partial fix,
+  a backend that was accepted and silently rendered as Fortran.
 - **Adding an axis** requires an entry in `AXES` in `tools/backends/registry.py` naming where its
   value is read from and whether its vocabulary is open, an entry in `docs/GLOSSARY.md`, and a row
   in the placement table above.

@@ -14,7 +14,6 @@ from pathlib import Path
 import yaml
 
 import tools.validate_pipeline_semantics as vps
-from tools.backends import registry as backend_registry
 from tools.backends.language.fortran.lines import strip_fortran_comment_tracking_quotes
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
@@ -16293,11 +16292,12 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": self._full_api()})
             violations: list[str] = []
             _validate_infrastructure_public_api(tmpp, tmpp, violations)
-            # The expected clause is ASKED OF THE REGISTRY rather than written out here: the
-            # gate is required to carry the registry's reason verbatim, so that the set of
-            # implemented backends has one spelling. A test that copied today's wording would
-            # go on passing after a backend was added and the gate stopped consulting it.
-            reason = backend_registry.unsupported_reason("language", "c")
+            # The expected clause is ASKED OF THE GATE'S OWN PREDICATE rather than written out
+            # here, so that a test cannot go on passing after the gate stops consulting it. The
+            # earlier version asked `registry.unsupported_reason`, which is the MEMBERSHIP
+            # question the gate is forbidden to use — it agreed only because `c` is a
+            # non-member, where membership and usability return the same string.
+            reason = vps._signature_backend_refusal("c")
             self.assertIsNotNone(reason)
             self.assertTrue(any(reason in v for v in violations), violations)
 
@@ -17971,7 +17971,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
                 vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
                 self.assertEqual(v, [], f"{spelling}: exempt from the language half")
                 vps._validate_infrastructure_public_api(tmp, ir_dir, v)
-                reason = backend_registry.unsupported_reason("language", "c")
+                reason = vps._signature_backend_refusal("c")
                 self.assertIsNotNone(reason)
                 self.assertTrue(any(reason in x for x in v),
                                 f"{spelling}: nothing rejected the non-fortran harness: {v}")
