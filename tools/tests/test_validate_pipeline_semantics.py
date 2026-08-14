@@ -17961,7 +17961,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
         # An implemented member: this branch lets it through (it fails later, on the command
         # log, which is a different rule — the point is that the preset itself is accepted).
         self.assertFalse(
-            any("is not an implemented linter" in x for x in _run("fortitude")))
+            any("is not a declared linter" in x for x in _run("fortitude")))
         # A DECLARED member that implements nothing: membership would accept it; this must not.
         record = backend_registry.Backend("linter", "zz_named_only", None)
         with mock.patch.dict(
@@ -18015,6 +18015,21 @@ class ToolchainBackendGateTests(unittest.TestCase):
             v = self._run(toolchain={"build_system": "make", "language": "zz_compile_only"})
             self.assertEqual(len(v), 1, v)
             self.assertIn("runner_render", v[0])
+        # The build_system axis needs the same pair separated, and did not have it: a build
+        # system that can drive the in-process build but has no control-file writer must not
+        # pass the gate. Review's sweep deleted that requirement and nothing noticed.
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("build_system", "zz_build_only"): build_only}):
+            clauses = vps._missing_toolchain_capability_clauses(
+                "zz_build_only", "fortran", is_infrastructure=False)
+            self.assertEqual(len(clauses), 1, clauses)
+            self.assertIn("control_file", clauses[0])
+            # ...and an infrastructure node, which needs `build_execute` only, still passes.
+            self.assertEqual(
+                [], vps._missing_toolchain_capability_clauses(
+                    "zz_build_only", "fortran", is_infrastructure=True))
 
     def test_a_registered_backend_that_implements_nothing_is_still_refused(self) -> None:
         """The reverse pin: registering does not admit, IMPLEMENTING does.

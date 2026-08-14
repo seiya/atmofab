@@ -780,6 +780,18 @@ class FieldGrammarTest(unittest.TestCase):
                 with self.assertRaises(ValueError) as caught:
                     call()
                 self.assertIn("no implemented language backend", str(caught.exception))
+        # And the refusal lands where the rule lives, not in `import tools.codegen_bundle`:
+        # computing it at import took down `validate_pipeline_semantics`, `workflow_conductor`
+        # and `pure_leaf` with it, so 374 unrelated tests did not run and nothing could report
+        # the cause. The module imports; the bundle contract is what refuses.
+        cb._identifier_re.cache_clear()
+        try:
+            with mock.patch.object(cb, "LANGUAGES", ()):
+                with self.assertRaises(ValueError):
+                    cb._is_identifier("abc")
+        finally:
+            cb._identifier_re.cache_clear()
+        self.assertTrue(cb._is_identifier("abc"))
 
     def test_identifier_length_is_capped_at_the_fortran_limit(self) -> None:
         # A symbol longer than the f2008/f2018 63-char limit cannot pass the Generate.syntax

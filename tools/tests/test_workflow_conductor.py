@@ -11495,6 +11495,49 @@ class WriteMakefileTest(unittest.TestCase):
                     self.assertFalse(c._conductor_authors_makefile(refs), record)
                     self.assertFalse(c._conductor_authors_runner(refs), record)
 
+    def test_conductor_and_runtime_agree_when_the_registry_moves(self) -> None:
+        """The agreement pair, driven by the lever that can now break it.
+
+        `test_conductor_runtime_makefile_authorship_agree` enumerates literal toolchain
+        fixtures, so it is structurally unable to see a divergence introduced by a REGISTRY
+        declaration — and that is the lever `docs/BACKEND_BOUNDARY.md` now names as how a new
+        backend's host-side work is admitted. Measured before the fix: declaring `control_file`
+        for a second build system made the conductor author `src/Makefile` while `record_launch`
+        kept the leaf's write-pin, so the file was double-owned.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        cases = [
+            ("second build system declared",
+             {("build_system", "zz_bs"): backend_registry.Backend(
+                 "build_system", "zz_bs", None,
+                 core_provides=frozenset({"control_file", "build_execute"}))},
+             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: zz_bs\n"),
+            ("second language declared",
+             {("language", "zz_lang"): backend_registry.Backend(
+                 "language", "zz_lang", None,
+                 core_provides=frozenset({"control_file", "runner_render"}))},
+             "impl_defaults:\n  toolchain:\n    language: zz_lang\n    build_system: make\n"),
+            ("registered with no capability",
+             {("build_system", "zz_bare"): backend_registry.Backend(
+                 "build_system", "zz_bare", None)},
+             "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: zz_bare\n"),
+        ]
+        for label, records, ir_text in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                ir_path = repo / refs.ir_ref / "spec.ir.yaml"
+                ir_path.parent.mkdir(parents=True, exist_ok=True)
+                ir_path.write_text(ir_text + "dependency:\n  direct_deps: []\n", encoding="utf-8")
+                c = self._conductor(repo)
+                with mock.patch.dict(backend_registry._BACKENDS, records):
+                    self.assertEqual(
+                        c._conductor_authors_makefile(refs),
+                        _runtime_makefile_host_authored(repo, refs.ir_ref),
+                        f"conductor/runtime disagree for {label!r}")
+
     def test_the_runner_render_capability_is_required_beyond_control_file(self) -> None:
         """A language the neutral core can compile but not render must not get a host runner.
 
@@ -11893,21 +11936,22 @@ class WriteMakefileTest(unittest.TestCase):
 
 
 def _runtime_makefile_host_authored(repo: Path, ir_ref: str) -> bool:
-    """`record_launch`'s `_resolved_makefile_host_authored`, reconstructed VERBATIM
-    (orchestration_runtime, the `request_payload["_resolved_makefile_host_authored"]`
-    assignment): `.strip().lower()` on the build_system half, the language half compared
-    unstripped.
+    """`record_launch`'s `_resolved_makefile_host_authored`, via the REAL predicate.
 
-    ONE copy, shared by the agreement cases and the divergence pin below. An earlier version
-    omitted the build_system normalization, which made the test agree with itself for
-    `build_system: "   "` exactly where the live pair diverges — and a second, independent
-    copy in the divergence pin left the loop's copy unguarded all over again."""
+    This used to reconstruct the inline expression verbatim, and a reconstruction is only as
+    good as its last update: it was wrong once (it omitted the build_system normalization, so
+    the test agreed with itself exactly where the live pair diverges), and when the conductor
+    moved to the registry it went on comparing against `(make, fortran)` — so a registry
+    declaration that made the live pair disagree could not be seen by the test whose whole
+    purpose is to see it. `control_file_host_authored` is now named in `orchestration_runtime` and
+    called by `record_launch`, so what is compared here is the shipped predicate. Only the two
+    READERS (which resolve the values, and normalize the way record_launch does) are mirrored."""
     from tools.orchestration_runtime import (
-        _impl_resolved_build_system, _impl_resolved_language)
+        _impl_resolved_build_system, _impl_resolved_language, control_file_host_authored)
     bs_resolved = _impl_resolved_build_system(repo, ir_ref)
     lang = _impl_resolved_language(repo, ir_ref)
     bs = (bs_resolved or "").strip().lower() if isinstance(bs_resolved, str) else ""
-    return (bs or "make") == "make" and (lang or "fortran") == "fortran"
+    return control_file_host_authored(bs, lang)
 
 
 class WriteRunnerTest(unittest.TestCase):

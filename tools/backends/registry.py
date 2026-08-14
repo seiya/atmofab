@@ -393,9 +393,13 @@ def unsupported_reason(axis: str, backend_id: str) -> str | None:
         return None
     if spec.open_vocabulary and normalized:
         return None
-    implemented = ", ".join(backend_ids(axis))
+    # DECLARED, not "implemented". This message predates the split and said "implemented",
+    # listing every member — including ones nothing implements. `implemented` is now a distinct
+    # technical question with its own function, and the signature gates carry this clause
+    # verbatim to a leaf, so the old wording pointed a leaf at values that cannot run.
+    declared = ", ".join(backend_ids(axis))
     return (
-        f"'{backend_id}' is not an implemented {axis} backend (implemented: {implemented}); "
+        f"'{backend_id}' is not a declared {axis} backend (declared: {declared}); "
         f"add one under tools/backends/{axis}/ and register it in tools/backends/registry.py "
         f"— see docs/BACKEND_BOUNDARY.md"
     )

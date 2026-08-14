@@ -4857,10 +4857,20 @@ def _ir_is_m3c_physics(ir: dict[str, Any]) -> bool:
         return False
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
-    if str(tc.get("build_system") or "make").lower() != "make":
-        return False
-    if str(tc.get("language") or "fortran").lower() != "fortran":
-        return False
+    build_system = str(tc.get("build_system") or "make").lower()
+    language = str(tc.get("language") or "fortran").lower()
+    # The SAME question the conductor asks, asked the same way — see
+    # `Conductor._core_authors_control_file` and `_conductor_authors_runner`. This mirror kept
+    # comparing against `(make, fortran)` after the conductor moved to the registry, so declaring
+    # `control_file` for a second build system made the two disagree: the conductor host-renders
+    # the runner while this predicate answers False and switches `_validate_checks_source_files`
+    # off for it — a violation passing. Normalization stays the caller's for the same reason it
+    # does there (the readers of this key deliberately differ on padding).
+    for axis, value, capability in (("build_system", build_system, "control_file"),
+                                    ("language", language, "control_file"),
+                                    ("language", language, "runner_render")):
+        if value != value.strip() or not backend_registry.provides(axis, value, capability):
+            return False
     return len(_infra_direct_dep_node_keys(ir)) == 1
 
 

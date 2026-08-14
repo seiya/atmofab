@@ -230,11 +230,17 @@ source; the bundle declares them, and `derive_build_graph` topologically sorts b
 Fortran module that publishes `symbol`), `kind` (`operation` or `checks_interface`),
 `node_key` (a unit member), and `defined_in` (the `logical_path` of a file in this bundle).
 An identifier — `symbol`, `module`, and in `state_bindings` (`state_variable`,
-`storage_symbol`, `module`) — is an identifier of the file's `language`, at most
-`codegen_bundle.IDENTIFIER_MAX` characters. The bound and the grammar are the language
-backend's (`tools/backends/language/<backend_id>/bundle.py`, reached through
+`storage_symbol`, `module`) — is at most `codegen_bundle.IDENTIFIER_MAX` characters and matches
+`codegen_bundle.IDENTIFIER_PATTERN`. The bound and the grammar are the language backend's
+(`tools/backends/language/<backend_id>/bundle.py`, reached through
 `tools/backends/registry.py`), not this contract's; a longer name is rejected here rather than
 deferred to the `Generate.gate` syntax-check compiler gate.
+
+The check is applied to a bundle as a whole, NOT per file: v1's `language` enum has one member,
+so the contract collapses the implemented backends' grammars to one and refuses to proceed if a
+second backend ever disagrees, rather than picking a winner. Making the check per-file-language
+is the work that unblocks a second language backend whose identifier grammar differs; it is not
+what the code does today, and an earlier version of this paragraph said otherwise.
 
 `module` exists so the host renders the boundary glue `use <module>, only: <symbol>`
 mechanically. A file may define several modules or name them freely, and the host never

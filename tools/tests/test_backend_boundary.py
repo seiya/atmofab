@@ -1355,27 +1355,27 @@ class RegistryConsistencyTests(unittest.TestCase):
             "once; without it a misspelled capability answers False forever and a host-authorship "
             "dispatch turns off silently (docs/BACKEND_BOUNDARY.md §Operations Rules)")
 
-    def test_no_live_record_is_declared_without_an_implementation(self) -> None:
-        """A record with neither a module nor a capability is a state the CODE must handle and
-        the DECLARATIONS must not be in.
+    def test_every_axis_has_at_least_one_implemented_backend(self) -> None:
+        """An axis whose every member is unimplemented is an axis nothing can run.
 
-        It is the fail-closed default, and the synthetic records above drive it. But a live
-        record in that state means this repository declares a value nothing can run, which is a
-        declaration nobody can act on. This is also what makes the capabilities that no
-        `provides` call ever names — `syntax_check`, `lint`, `parallel_directives` — load
-        bearing: they are how their records answer `implemented`. Review deleted `syntax_check`
-        and its declaration with the suite green; this is the reader that was missing.
+        This replaces a stricter rule I wrote first — that EVERY live record must be implemented
+        — which review showed forbids a state this registry documents as legitimate: registering
+        a member with no module and no capability is the fail-closed default for a new backend,
+        and on the open-vocabulary `parallel` axis giving the axis a spelling is the documented
+        reason a member exists at all. Under that rule, `Backend("build_system", "cmake", None)`
+        — ordinary correct work — turned the suite red.
+
+        The axis-level rule is what I actually needed: it still fails if a capability and its
+        declaration are deleted together (measured: dropping `syntax_check` from `CAPABILITIES`
+        and from the `gfortran` record leaves the `compiler` axis with nothing implemented),
+        which is what makes the capabilities no `provides` call names — `syntax_check`, `lint`,
+        `parallel_directives` — load bearing: they are how their records answer `implemented`.
         """
-        unimplemented = [
-            f"{axis}/{backend_id}"
-            for axis in registry.AXES
-            for backend_id in registry.backend_ids(axis)
-            if not registry.get(axis, backend_id).implemented
-        ]
-        self.assertEqual(
-            [], unimplemented,
-            "these records declare neither a module nor a capability, so the registry says the "
-            "value exists and every other question refuses it")
+        for axis in registry.AXES:
+            self.assertTrue(
+                registry.implemented_backend_ids(axis),
+                f"axis '{axis}' declares members but implements none of them, so every question "
+                f"except membership refuses every value it accepts")
 
     def test_implemented_backend_ids_excludes_a_record_with_no_implementation(self) -> None:
         # The filter is a no-op over today's declarations (every live record is implemented, by
@@ -1391,11 +1391,21 @@ class RegistryConsistencyTests(unittest.TestCase):
         # noticed: the gate tests build their expected string by calling this same function, so
         # they are invariant to what it says. An author who is told only "not implemented" has
         # to go read the registry to find out what is.
-        reason = registry.missing_capability_reason("build_system", "cmake", "control_file")
-        self.assertIsNotNone(reason)
-        for able in registry.backend_ids("build_system"):
-            if registry.provides("build_system", able, "control_file"):
-                self.assertIn(able, reason)
+        # The refused value must NOT contain an implemented id as a substring, or the assertion
+        # holds from the "not '<value>'" half alone. The first version of this test probed
+        # `cmake` against an implemented set of exactly `{make}` and was vacuous for that reason
+        # — both round-2 reviewers found it independently, and a mutation that deleted the
+        # implemented-set half while keeping the surrounding phrase survived the whole suite.
+        for axis, refused in (("build_system", "ninja"), ("language", "cpp")):
+            able = [b for b in registry.backend_ids(axis)
+                    if registry.provides(axis, b, "control_file")]
+            self.assertTrue(able, axis)
+            for name in able:
+                self.assertNotIn(name, refused, "probe value must not contain an implemented id")
+            reason = registry.missing_capability_reason(axis, refused, "control_file")
+            self.assertIsNotNone(reason)
+            for name in able:
+                self.assertIn(name, reason)
 
     def test_every_capability_is_declared_by_a_record_and_described(self) -> None:
         # A capability nothing declares is a question whose answer is always False — a dispatch
@@ -1493,6 +1503,24 @@ class RegistryConsistencyTests(unittest.TestCase):
             [], literals,
             "a collection in the validator enumerates the linter backends; ask "
             f"registry.unimplemented_reason instead (line(s) {literals})")
+
+    def test_every_implemented_linter_can_be_inferred_from_a_logged_command(self) -> None:
+        """The pair this change opened by widening one side of it.
+
+        The lint evidence gate now accepts any IMPLEMENTED linter (it asks the registry), but the
+        next check in the same loop infers the preset from the logged command via a hard-coded
+        chain of executable names. Registering a fifth linter therefore passes the registry check
+        and then fails with "logged command does not match preset (inferred None)", which names
+        neither the cause nor the fix. `mixed` is excluded because it is not an executable: the
+        branch above this one refuses it and asks for separate entries per real linter.
+        """
+        for backend_id in registry.implemented_backend_ids("linter"):
+            if backend_id == "mixed":
+                continue
+            self.assertEqual(
+                backend_id, vps._infer_run_linter_preset_from_command([backend_id, "check"]),
+                f"the lint gate accepts preset '{backend_id}' but cannot infer it from a logged "
+                f"command, so the evidence check refuses it for an unrelated-sounding reason")
 
     def test_the_language_to_linter_mapping_cannot_drift_from_the_registry(self) -> None:
         """The other half of the same fact, which the guard above deliberately allows.

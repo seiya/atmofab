@@ -163,9 +163,23 @@ _SEGMENT_RE = re.compile(LOGICAL_PATH_SEGMENT_PATTERN)
 # `_bundle_identifier_pattern` is where the collapse happens — it refuses rather than picking a
 # winner if a second language backend ever disagrees, instead of silently validating one
 # language's symbols against another's grammar.
-IDENTIFIER_MAX = _bundle_identifier_max()
-IDENTIFIER_PATTERN = _bundle_identifier_pattern()
-_IDENTIFIER_RE = re.compile(IDENTIFIER_PATTERN)
+# LAZY, and that is the point. Computing these at import made a legitimate second language
+# backend with a different identifier grammar raise inside `import tools.codegen_bundle` — which
+# `validate_pipeline_semantics`, `workflow_conductor` and `pure_leaf` all import, so the refusal
+# took down the whole deterministic gate stack and 374 tests did not run, with nothing able to
+# report why. Refusing is right; that blast radius is not. Resolved on first use instead, so the
+# failure lands in the bundle contract that owns the rule.
+def __getattr__(name: str) -> Any:
+    if name == "IDENTIFIER_MAX":
+        return _bundle_identifier_max()
+    if name == "IDENTIFIER_PATTERN":
+        return _bundle_identifier_pattern()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+@lru_cache(maxsize=1)
+def _identifier_re() -> re.Pattern[str]:
+    return re.compile(_bundle_identifier_pattern())
 # node_key = `<spec_kind>/<spec_id>@<spec_version>`, aligned with the repository's canonical
 # parser `tools/orchestration_runtime.py:_parse_node_key_strict`: `spec_id` is dot-separated
 # lowercase segments (each `[a-z0-9][a-z0-9_]*`), and `spec_version` is `[0-9][0-9A-Za-z._-]*`
@@ -493,7 +507,7 @@ def _closed_object_violations(obj: Mapping[str, Any], *, required: Sequence[str]
 
 
 def _is_identifier(value: Any) -> bool:
-    return isinstance(value, str) and bool(_IDENTIFIER_RE.fullmatch(value))
+    return isinstance(value, str) and bool(_identifier_re().fullmatch(value))
 
 
 def _is_node_key(value: Any) -> bool:
