@@ -306,8 +306,15 @@ def provides(axis: str, backend_id: str, capability: str) -> bool:
     and answering False for it would silently turn a dispatch off — the same authorship flip a
     padded axis value used to cause.
     """
+    # `_require_axis` is REDUNDANT here and kept as an intent marker, not a live guard: a census
+    # proved that for every unknown axis and every capability, `_require_capability` raises
+    # first, so no input can reach it. Deleting it changes nothing observable; saying so beats
+    # leaving a reader to assume it is load bearing.
     _require_axis(axis)
     _require_capability(axis, capability)
+    # `or ""` is load bearing, and its absence is NOT observable by inspection: `str(None)` is
+    # `"none"`, which is a real backend id on the `parallel` axis, so a caller passing an absent
+    # value would get that record's answer instead of a refusal.
     backend = _BACKENDS.get((axis, str(backend_id or "").strip().lower()))
     return backend is not None and capability in backend.core_provides
 
@@ -372,10 +379,15 @@ def get(axis: str, backend_id: str) -> Backend:
 
 
 def _no_record_reason(axis: str, backend_id: str) -> str:
+    # Shared by the EXTRACTION question and the IMPLEMENTATION one, so the remedy names both
+    # routes. It used to say only "extract one under tools/backends/<axis>/", which is the
+    # extraction remedy — accurate for `unavailable_reason` and wrong for `unimplemented_reason`,
+    # whose caller is asking whether the value can run at all, not whether it has a package.
     return (
-        f"'{backend_id}' is an accepted {axis} value but has no backend package; "
-        f"extract one under tools/backends/{axis}/ and register it in "
-        f"tools/backends/registry.py — see docs/BACKEND_BOUNDARY.md"
+        f"'{backend_id}' is an accepted {axis} value but this repository has no record for it; "
+        f"register it in tools/backends/registry.py, with either a backend package under "
+        f"tools/backends/{axis}/ or a declared capability if the code is still in the neutral "
+        f"core — see docs/BACKEND_BOUNDARY.md"
     )
 
 

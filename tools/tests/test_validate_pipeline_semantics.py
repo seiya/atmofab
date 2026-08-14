@@ -18013,9 +18013,17 @@ class ToolchainBackendGateTests(unittest.TestCase):
             "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
         build_only = backend_registry.Backend(
             "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        # A language the neutral core can RENDER a runner for but has no compile rules for.
+        # Today `fortran` declares both, so this row of the predicate is subsumed and was
+        # deletable; the census named it, so it is declared here rather than waited for.
+        render_only = backend_registry.Backend(
+            "language", "zz_render_only", None, core_provides=frozenset({"runner_render"}))
         with mock.patch.dict(backend_registry._BACKENDS, {
                 ("language", "zz_compile_only"): compile_only,
+                ("language", "zz_render_only"): render_only,
                 ("build_system", "zz_build_only"): build_only}):
+            self.assertFalse(vps._ir_is_m3c_physics(
+                _ir(build_system="make", language="zz_render_only")))
             # A language the neutral core can compile but not render: NOT M3c (the `runner_render`
             # clause), and it agrees with the conductor, which declines to render its runner.
             self.assertFalse(vps._ir_is_m3c_physics(
@@ -18083,6 +18091,13 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(
                 [], vps._missing_toolchain_capability_clauses(
                     "zz_build_only", "fortran", is_infrastructure=True))
+            # The make-quality-check contract keys on `control_file` — it reads the control
+            # file's grammar and requires its test target — NOT on `build_execute`. A build
+            # system the in-process path can drive but whose control file is leaf-authored must
+            # not have that contract enforced against it. The two capabilities are coextensive
+            # for `make`, so this row was deletable until a record separated them.
+            self.assertFalse(vps._make_quality_check_applies("zz_build_only", "fortran"))
+            self.assertTrue(vps._make_quality_check_applies("make", "fortran"))
 
     def test_a_registered_backend_that_implements_nothing_is_still_refused(self) -> None:
         """The reverse pin: registering does not admit, IMPLEMENTING does.

@@ -15562,6 +15562,44 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                  "/gen_child.request.json").read_text(encoding="utf-8"))
             self.assertTrue(persisted["_resolved_makefile_host_authored"])
 
+    def test_the_persisted_makefile_ownership_is_false_for_a_toolchain_the_host_cannot_author(
+            self) -> None:
+        """The other half of the pin above, which did not exist.
+
+        Only the True case was asserted, so a census measured that hardcoding
+        `request_payload["_resolved_makefile_host_authored"] = True` in `record_launch` passes
+        the entire suite — the call site of the predicate is what carries the decision into the
+        artifact, and nothing observed it answering False. The consequence of a wrong True is
+        the one the sibling test describes in reverse: the leaf's write-pin on `src/Makefile` is
+        suppressed for a node the conductor does NOT author it for, so the file is authored by
+        nobody.
+        """
+        import tools.workflow_conductor as wc
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            ir_path = repo_root / _FIX_IR_REF / "spec.ir.yaml"
+            ir_path.parent.mkdir(parents=True, exist_ok=True)
+            ir_path.write_text(
+                "impl_defaults:\n  toolchain:\n    language: c\n    build_system: make\n",
+                encoding="utf-8")
+            self._perm_test_preflight(repo_root, "vperm11b")
+            req = wc.build_launch_request(
+                self._perm_test_refs(),
+                step="generate", substep="generate",
+                orchestration_id="vperm11b",
+                orchestration_agent_run_id="orch_vperm11b",
+                child_agent_run_id="gen_child",
+                agent_model="claude-opus-4-8",
+                workflow_mode="dev",
+            )
+            self._perm_record_and_cap(
+                repo_root, orchestration_id="vperm11b", parent="orch_vperm11b",
+                child="gen_child", req=req)
+            persisted = json.loads(
+                (repo_root / "workspace/orchestrations/vperm11b/launches"
+                 "/gen_child.request.json").read_text(encoding="utf-8"))
+            self.assertFalse(persisted["_resolved_makefile_host_authored"])
+
     def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
         """The id becomes a directory name and every gate's path base, so both entry
         points refuse it. Resume as well as init: a workspace created under an older

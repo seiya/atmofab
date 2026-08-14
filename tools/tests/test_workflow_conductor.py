@@ -11583,6 +11583,26 @@ class WriteMakefileTest(unittest.TestCase):
                 # answers, and this is the half that must stay True or the test proves nothing.
                 self.assertTrue(c._conductor_authors_makefile(refs))
                 self.assertFalse(c._conductor_authors_runner(refs))
+        # And the converse row, which a census found subsumed: a language the host can render a
+        # runner for, under a build system it has no control-file writer for. The runner is
+        # BUILT by that control file, so host-rendering it while the leaf authors the build
+        # would produce a runner nothing compiles.
+        render_only = backend_registry.Backend(
+            "language", "zz_render_only", None, core_provides=frozenset({"runner_render"}))
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            c = self._conductor(repo)
+            self._write_ir(repo, refs, language="zz_render_only", build_system="zz_build_only",
+                           direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
+            with mock.patch.dict(backend_registry._BACKENDS, {
+                    ("language", "zz_render_only"): render_only,
+                    ("build_system", "zz_build_only"): build_only}):
+                self.assertTrue(
+                    backend_registry.provides("language", "zz_render_only", "runner_render"))
+                self.assertFalse(c._conductor_authors_runner(refs))
 
     def test_an_untrimmed_toolchain_value_still_flips_authorship_off(self) -> None:
         # The conductor compares `.lower()` WITHOUT stripping, while the registry normalizes

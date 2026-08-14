@@ -763,6 +763,37 @@ class FieldGrammarTest(unittest.TestCase):
             self.assertIsNone(cb.backend_registry.unsupported_reason("language", "zz_declared"))
             self.assertIsNone(cb._language_bundle("zz_declared"))
 
+    def test_registering_a_second_language_keeps_this_module_importable(self) -> None:
+        """The regression this module's laziness exists to prevent, driven end to end.
+
+        `tools.codegen_bundle` is imported by `validate_pipeline_semantics`, `workflow_conductor`
+        and `pure_leaf`, so anything that raises at ITS import takes down the deterministic gate
+        stack — measured once at 374 tests unrun, with nothing able to report the cause. Three
+        separate decisions have to hold for that not to happen when a second language backend is
+        registered: `_language_bundle` asking extraction (so `load` is not called on an
+        unextracted member), the `LANGUAGES` filter (so the tables are not built from `None`),
+        and the identifier grammar being resolved lazily. Each was individually deletable with a
+        green suite; this drives the property they jointly provide, in a subprocess, because an
+        import that has already succeeded cannot be re-observed in this one.
+        """
+        import subprocess
+        import sys
+        probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "from tools.backends import registry as r\n"
+            "r._BACKENDS[('language', 'zz_second')] = r.Backend(\n"
+            "    'language', 'zz_second', None,\n"
+            "    core_provides=frozenset({'control_file', 'runner_render'}))\n"
+            "import tools.codegen_bundle as cb\n"
+            "import tools.validate_pipeline_semantics\n"
+            "assert cb.LANGUAGES == ('fortran',), cb.LANGUAGES\n"
+            "assert cb.IDENTIFIER_MAX == 63, cb.IDENTIFIER_MAX\n"
+            "print('ok')\n" % str(Path(cb.__file__).resolve().parents[2])
+        )
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr[-2000:])
+        self.assertIn("ok", out.stdout)
+
     def test_an_unknown_module_attribute_still_raises(self) -> None:
         # `IDENTIFIER_MAX` / `IDENTIFIER_PATTERN` are served by a module-level `__getattr__`.
         # Returning `None` for everything else instead of raising survived the whole suite, and

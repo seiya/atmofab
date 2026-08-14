@@ -1298,6 +1298,44 @@ class RegistryConsistencyTests(unittest.TestCase):
             for unextracted in ("zz_inlined", "zz_declared_only"):
                 self.assertIsNotNone(registry.unavailable_reason(axis, unextracted), unextracted)
 
+    def test_every_capability_refuses_every_axis_it_is_not_a_question_of(self) -> None:
+        # Exhaustive over `CAPABILITIES × AXES`, replacing three hand-picked pairs. A census
+        # measured that widening any capability's axis tuple — so `provides` answers False
+        # instead of raising for a mis-asked question — is invisible to the suite for the three
+        # pairs nobody happened to pick.
+        for capability, (axes, _description) in registry.CAPABILITIES.items():
+            for axis in registry.AXES:
+                value = registry.backend_ids(axis)[0]
+                if axis in axes:
+                    self.assertIsInstance(registry.provides(axis, value, capability), bool)
+                    continue
+                with self.assertRaises(registry.UnsupportedBackend, msg=(axis, capability)):
+                    registry.provides(axis, value, capability)
+
+    def test_each_capability_names_the_same_declarers_it_did(self) -> None:
+        """The declarer SET per capability, not merely that it is non-empty.
+
+        `test_every_capability_is_declared_by_a_record_and_described` compares the union, so a
+        capability declared by two records survives losing one of them — measured for
+        `parallel_directives`, which `openmp` and `none` both declare. Asserted as a set, and
+        derived from the records rather than written out, so registering a backend that declares
+        an existing capability does not fail this: what fails is a declaration silently
+        DISAPPEARING from a record that had it.
+        """
+        declarers = {
+            capability: {f"{b.axis}/{b.backend_id}" for b in registry._BACKENDS.values()
+                         if capability in b.core_provides}
+            for capability in registry.CAPABILITIES
+        }
+        # Every declared capability has at least one declarer per axis it is a question of,
+        # which is the property the union test cannot see once a second declarer exists.
+        for capability, (axes, _description) in registry.CAPABILITIES.items():
+            for axis in axes:
+                self.assertTrue(
+                    any(d.startswith(f"{axis}/") for d in declarers[capability]),
+                    f"'{capability}' is a question of the {axis} axis and no {axis} record "
+                    f"declares it, so `provides` answers False for every value of that axis")
+
     def test_a_capability_question_is_normalized_and_refused_when_it_is_a_typo(self) -> None:
         # The value normalizes (the gates rely on it); the CAPABILITY does not fall back. A
         # misspelled capability answering False would turn a host-authorship dispatch off
@@ -1312,6 +1350,22 @@ class RegistryConsistencyTests(unittest.TestCase):
                 registry.provides(axis, "make", capability)
             with self.assertRaises(registry.UnsupportedBackend):
                 registry.missing_capability_reason(axis, "make", capability)
+
+    def test_a_none_value_does_not_collide_with_the_backend_named_none(self) -> None:
+        """`provides`'s `or ""` guard, which a census showed nothing observed.
+
+        Without it, `str(None).lower()` is the string `"none"` — which is a real backend id on
+        the `parallel` axis — so a caller passing `None` (an absent axis value) would get the
+        `parallel/none` record's answer instead of a refusal. Measured: deleting the guard
+        leaves the suite green, and `provides("parallel", None, "parallel_directives")` flips
+        from False to True. The collision is specific to this repository's own id, which is why
+        it reads as harmless and is not.
+        """
+        self.assertIn("none", registry.backend_ids("parallel"), "the collision id is live")
+        for absent in (None, "", "   "):
+            self.assertFalse(
+                registry.provides("parallel", absent, "parallel_directives"), repr(absent))
+            self.assertIsNotNone(registry.unimplemented_reason("parallel", absent), repr(absent))
 
     def test_a_value_with_no_record_provides_nothing(self) -> None:
         # Including on the open-vocabulary axis, where membership answers permissively: an
@@ -1504,7 +1558,12 @@ class RegistryConsistencyTests(unittest.TestCase):
             self.assertIsNone(registry.unsupported_reason("parallel", value))
             reason = registry.unavailable_reason("parallel", value)
             self.assertIsNotNone(reason)
-            self.assertIn("no backend package", reason)
+            # The refusal says the value has no record and names both routes to giving it one.
+            # It used to say only "no backend package", which is the extraction remedy — right
+            # for this question and wrong for `unimplemented_reason`, which shares the same
+            # message and asks whether the value can run at all.
+            self.assertIn("has no record for it", reason)
+            self.assertIn("tools/backends/parallel/", reason)
         # An empty token is not a value; it stays refused even on an open axis.
         self.assertIsNotNone(registry.unsupported_reason("parallel", "   "))
         # A closed axis is unaffected.

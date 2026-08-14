@@ -85,6 +85,10 @@ def _language_bundle(language: str) -> Any | None:
 #: The languages a bundle may declare: those with a language backend that carries a bundle
 #: interface. Derived, so registering a backend is what widens it — this module does not keep a
 #: second list of the implemented set (docs/BACKEND_BOUNDARY.md).
+# The `implemented_backend_ids` half is redundant and kept as an intent marker: `_language_bundle`
+# answers non-None only for an EXTRACTED backend, and extracted implies implemented, so the outer
+# filter cannot change the result for any registry state. A census proved that; it is stated here
+# rather than left to read as a live narrowing.
 LANGUAGES: tuple[str, ...] = tuple(
     lang for lang in backend_registry.implemented_backend_ids("language")
     if _language_bundle(lang) is not None
