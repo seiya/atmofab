@@ -6,6 +6,13 @@ Conventions every agent (Codex / Claude Code) working in this repository must fo
 - **Authoring repository documents** (style, terminology, math notation, forbidden expressions, structure, checklist): `docs/DOC_STYLE.md`.
 - **CLI argument information-acquisition policy** (which subcommand uses a doc vs `--help`): the "Information-acquisition policy" section of `docs/CLI_REFERENCE.md`.
 - **Hook implementation structure** (where hook validation / invocations are defined): `docs/HOOKS.md`.
+- **Backend boundary** (where knowledge of a concrete language / build tool / compiler / linter / parallel model may live): `docs/BACKEND_BOUNDARY.md`.
+
+## Backend boundary rules
+- A concrete technology is chosen per **`axis`** — `language`, `build_system`, `compiler`, `linter`, `parallel` — and the knowledge each choice implies lives in exactly one **`backend`** package, `tools/backends/<axis>/<backend_id>/`, registered in `tools/backends/registry.py`. `docs/BACKEND_BOUNDARY.md` is canonical for the rule, the placement table (code / documents / prompt templates / `SKILL`), and the procedure for adding a `backend` or an `axis`.
+- The **`neutral core`** — every other module, template, `SKILL`, and document — may name an `axis` value as an opaque token. It must not contain a file extension, keyword, statement grammar, compiler argument, lint rule id, directive spelling, control-file syntax, symbol-naming convention, or diagnostic format that the value implies.
+- Do not write a new technology-specific rule into a `neutral core` file, and do not import a `backend` module outside `tools/backends/registry.py`. `tools/tests/test_backend_boundary.py` fails on either; `docs/BACKEND_BOUNDARY.md` §Enforcement states what that check does and does not prove.
+- The `neutral core` still carries measured pre-existing debt. Adding to it is forbidden; the per-area migration plan is in `TODO.md`. Do not restate the boundary rule in another document — cite `docs/BACKEND_BOUNDARY.md`.
 
 ## MCP execution rules
 - Always run `compile` / `run` / `quality check` through the MCP server.
