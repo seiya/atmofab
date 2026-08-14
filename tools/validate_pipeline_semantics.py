@@ -1304,22 +1304,34 @@ def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
     stripped_lines = [
         _FORTRAN_STATEMENT_LABEL.sub("", statement, count=1) for statement in raw_statements
     ]
-    # ONLY a label that some `do` names as its terminator is kept. Keeping every label is the
-    # obvious move and it is wrong in the other direction: a label may precede ANY statement, and
-    # `gfortran -fsyntax-only -std=f2008` accepts `10 contains` and `20 subroutine helper(v)`
-    # (executed) while tree-sitter reports ERROR on both — so a blanket keep trades the labelled
-    # `DO` refusal for a labelled-header one, which two tests in this file already pin as
-    # analysable. What makes the difference is not the label but what REFERS to it.
-    terminator_labels = {
-        match.group(1)
-        for match in (_FORTRAN_LABELLED_DO_OPEN.match(line) for line in stripped_lines)
-        if match
-    }
-    labelled_lines = [
-        raw if (label := _FORTRAN_STATEMENT_LABEL_VALUE.match(raw)) and label.group(1) in
-        terminator_labels else stripped
-        for raw, stripped in zip(raw_statements, stripped_lines)
-    ]
+    # A label is kept ONLY where it terminates a `do` that is already open at that point. Two
+    # weaker rules were tried and both were wrong, each in review:
+    #
+    # * keep EVERY label — a label may precede any statement, and `gfortran -fsyntax-only
+    #   -std=f2008` accepts `10 contains` and `20 subroutine helper(v)` (executed) while
+    #   tree-sitter ERRORs on both, so this trades the labelled-`DO` refusal for a labelled-header
+    #   one that two tests in this file pin as analysable;
+    # * keep any label some `do` names ANYWHERE in the file — a label number need only be unique
+    #   within a scoping unit, so `do 100` in one procedure resurrects the label onto a
+    #   `100 contains` in another and refuses the file again (reproduced).
+    #
+    # Position is what separates them: the terminator is the labelled statement that FOLLOWS its
+    # `do`. And the comparison is on the label's VALUE, not its text — a statement label is a
+    # number, so `do 0100` and `100 continue` name the same label, and comparing digit strings
+    # split them and took the whole file dark with a rename instruction that named nothing real
+    # (also reproduced; `gfortran` accepts all five spellings tried).
+    open_terminators: set[int] = set()
+    labelled_lines: list[str] = []
+    for raw, stripped in zip(raw_statements, stripped_lines):
+        label = _FORTRAN_STATEMENT_LABEL_VALUE.match(raw)
+        keep = bool(label) and int(label.group(1)) in open_terminators
+        if keep:
+            open_terminators.discard(int(label.group(1)))
+        labelled_lines.append(raw if keep else stripped)
+        # AFTER the keep decision: a `do 100` cannot be its own terminator.
+        opener = _FORTRAN_LABELLED_DO_OPEN.match(stripped)
+        if opener:
+            open_terminators.add(int(opener.group(1)))
 
     def finish(lines: list[str], keep: list[bool] | None) -> tuple[str, list[bool]]:
         masked = fortran_lines.mask_code_lookalikes("\n".join(lines)).split("\n")
@@ -1403,6 +1415,14 @@ def _fortran_procedure_envelopes(lowered: str) -> list[_FortranProcedureEnvelope
         raise _FortranSourceStructureError(tree.errors)
 
     def to_view(offset: int) -> int:
+        # END OF INPUT IS NOT A LINE START, and it is the one offset that is not: the view never
+        # ends in a newline, so `fortran_structure._next_line_start` answers `len(text)` for a
+        # span reaching EOF. Mapping that by line index would silently shrink it to the start of
+        # the last line. Reachability today is zero — every other offset is a line start, checked
+        # over all 365 in-tree models and the hand-built shapes — so this is a guard on the
+        # premise, not a fix for an observed defect (review).
+        if offset >= len(labelled_view):
+            return len(view)
         index = bisect.bisect_right(labelled_starts, offset) - 1
         if index >= len(view_starts):
             return len(view)

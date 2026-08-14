@@ -7154,6 +7154,46 @@ end module shallow_water2d_model
             body = source.replace("    v(i) = u(i)\n100 continue", f"    v(i) = u(i)\n{spelling}")
             self.assertEqual(1, len(vps._fortran_procedure_envelopes(body.lower())), spelling)
 
+    def test_a_do_terminator_label_is_matched_by_value_and_by_position(self) -> None:
+        # Two review findings against the rule above, both reproduced, both of which took the
+        # whole file dark with a rename instruction that named nothing real.
+        #
+        # BY VALUE: a statement label is a NUMBER, so `do 0100` and `100 continue` name the same
+        # label. Comparing digit strings split them. All five spellings are accepted by
+        # `gfortran -fsyntax-only -std=f2008` (executed).
+        for opener, terminator in (("100", "100"), ("0100", "100"), ("100", "0100"),
+                                   ("00100", "100"), ("010", "10")):
+            source = (f"module shallow_water2d_model\ncontains\n"
+                      f"subroutine solve(u, v)\n  real, intent(in) :: u\n"
+                      f"  real, intent(out) :: v\n  integer :: i\n  v = 0.0\n"
+                      f"  do {opener} i = 1, 4\n    v = v + u\n{terminator} continue\n"
+                      f"end subroutine solve\nend module shallow_water2d_model\n")
+            self.assertEqual(["solve"],
+                             [e.name for e in vps._fortran_procedure_envelopes(source.lower())],
+                             f"do {opener} / {terminator}")
+
+        # BY POSITION: a label number need only be unique within a SCOPING UNIT, so collecting
+        # "labels some `do` names" file-wide resurrected the label onto a labelled `contains`
+        # elsewhere — which tree-sitter cannot parse — and refused the file. The terminator is the
+        # labelled statement that FOLLOWS its `do`, so a label appearing before it is still
+        # stripped. `gfortran -fsyntax-only -std=f2008 -Wall` accepts this source (executed).
+        collision = """module shallow_water2d_model
+  implicit none
+100 contains
+  subroutine solve(u, v)
+    real, intent(in) :: u
+    real, intent(out) :: v
+    integer :: i
+    v = 0.0
+    do 100 i = 1, 4
+      v = v + u
+100 continue
+  end subroutine solve
+end module shallow_water2d_model
+"""
+        self.assertEqual(["solve"],
+                         [e.name for e in vps._fortran_procedure_envelopes(collision.lower())])
+
     def test_a_labelled_structural_statement_is_still_structural(self) -> None:
         # A statement LABEL may precede any statement. Both structural statements here are
         # labelled deliberately, and that is what makes the strip load-bearing: the specification
