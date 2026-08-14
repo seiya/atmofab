@@ -50,6 +50,14 @@ class Axis(NamedTuple):
     #: accessor here would be a second owner of a fact those readers already share.
     source: str
     description: str
+    #: True when the artifact that carries this axis deliberately does NOT constrain its value,
+    #: so `_BACKENDS` lists the members that have code and is not a whitelist. Membership
+    #: questions answer permissively for such an axis; extraction questions do not. Declaring a
+    #: closed set here for an open knob would refuse values the schema exists to allow —
+    #: `spec/schema/ir/impl_defaults.schema.json` says of `parallelization` that "the vocabulary
+    #: is deliberately NOT a whitelist, since this is an exploration knob", and the validator
+    #: accepts `openmp+simd` / `openmp_tasks` / `cpu_openmp` today.
+    open_vocabulary: bool = False
 
 
 #: The axes, in the order a run resolves them.
@@ -73,7 +81,11 @@ AXES: dict[str, Axis] = {
     ),
     "compiler": Axis(
         name="compiler",
-        source="METDSL_SYNTAX_COMPILERS, and the mandatory stage each language backend names",
+        source=(
+            "ir.impl_defaults.toolchain.compiler (optional; pins the build compiler, "
+            "docs/IMPL_PLAN_SPEC.md) and METDSL_SYNTAX_COMPILERS plus the mandatory "
+            "syntax-only stage each language backend names"
+        ),
         description=(
             "The compiler front end the syntax-only gate drives: its argv, its diagnostic "
             "format, and which of its warnings the gate promotes to errors."
@@ -94,6 +106,7 @@ AXES: dict[str, Axis] = {
             "The parallel execution model: its directive or construct spelling in the target "
             "language, and the knobs (thread counts, scopes) the host renders for it."
         ),
+        open_vocabulary=True,
     ),
 }
 
@@ -118,10 +131,16 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         Backend("language", "fortran", "tools.backends.language.fortran"),
         Backend("build_system", "make", None),
         Backend("compiler", "gfortran", None),
+        # The linter members are the presets `validate_pipeline_semantics._LINT_ALLOWED_PRESETS`
+        # already accepts. Listing only `fortitude` here would have made this registry disagree
+        # with the live gate about which linters exist.
         Backend("linter", "fortitude", None),
+        Backend("linter", "cppcheck", None),
+        Backend("linter", "ruff", None),
+        Backend("linter", "mixed", None),
         Backend("parallel", "openmp", None),
         # A node that declares no parallel model. It has no code of its own — it exists as a
-        # member so `require_supported` accepts the value the IR is allowed to carry.
+        # member so the axis has a spelling for "serial" alongside its open vocabulary.
         Backend("parallel", "none", None),
     )
 }
@@ -154,17 +173,31 @@ def get(axis: str, backend_id: str) -> Backend:
 
 
 def unsupported_reason(axis: str, backend_id: str) -> str | None:
-    """`None` when `backend_id` is implemented for `axis`; otherwise the reason, as one clause.
+    """`None` when `backend_id` is a declared member of `axis`; otherwise the reason.
+
+    MEMBERSHIP ONLY. A member declared with `module=None` answers `None` here, because it IS
+    declared — the axis value is one this repository knows. A caller that is about to RUN
+    backend code must ask `unavailable_reason` instead; the two were one function for one
+    review round, and in that round registering a second `language` member with `module=None`
+    silently stopped the signature gates refusing while the renderer under them was still
+    Fortran. Membership and usability are different questions and each caller wants exactly one
+    of them.
 
     Returned rather than raised because the callers that need it most are the deterministic
     gates, which do not raise on a content failure — they append a violation string whose
     prefix (the artifact path) is theirs to choose and whose routing depends on the list it
     lands in. A gate that had to catch an exception to build that string would be spelling the
     reason a second time, which is the drift this repository keeps paying for.
+
+    An `open_vocabulary` axis answers `None` for any non-empty token: `_BACKENDS` lists the
+    members that have code, and the artifact carrying that axis deliberately does not constrain
+    its value, so a membership test there would refuse values the schema exists to allow.
     """
-    _require_axis(axis)
+    spec = _require_axis(axis)
     normalized = str(backend_id or "").strip().lower()
     if (axis, normalized) in _BACKENDS:
+        return None
+    if spec.open_vocabulary and normalized:
         return None
     implemented = ", ".join(backend_ids(axis))
     return (
@@ -174,11 +207,53 @@ def unsupported_reason(axis: str, backend_id: str) -> str | None:
     )
 
 
+def unavailable_reason(axis: str, backend_id: str) -> str | None:
+    """`None` when `backend_id` is declared for `axis` AND its code has been extracted.
+
+    This is the question a caller that is about to run backend code has — a signature renderer,
+    a source scanner, a control-file writer. `unsupported_reason` is not that question: it
+    answers `None` for a declared-but-unextracted member, whose code by definition still sits
+    in the neutral core behind a hard-coded import of some OTHER backend. A gate that guarded a
+    Fortran-only renderer on membership alone would let a `cpp` node through and pin its
+    signatures by rendering them as Fortran.
+    """
+    reason = unsupported_reason(axis, backend_id)
+    if reason is not None:
+        return reason
+    normalized = str(backend_id or "").strip().lower()
+    backend = _BACKENDS.get((axis, normalized))
+    if backend is None or backend.extracted:
+        # `None` here means an open-vocabulary axis accepted a token with no record. Such an
+        # axis has no extracted code to offer either, so say so rather than implying it does.
+        if backend is None:
+            return (
+                f"'{backend_id}' is an accepted {axis} value but has no backend package; "
+                f"extract one under tools/backends/{axis}/ and register it in "
+                f"tools/backends/registry.py — see docs/BACKEND_BOUNDARY.md"
+            )
+        return None
+    return (
+        f"the {axis} backend '{backend.backend_id}' is declared but not extracted: its "
+        f"knowledge still sits in the neutral core, so nothing can run it (migration ledger: "
+        f"TODO.md, rule: docs/BACKEND_BOUNDARY.md)"
+    )
+
+
 def require_supported(axis: str, backend_id: str) -> None:
-    """Raise `UnsupportedBackend` unless `backend_id` is implemented for `axis`."""
+    """Raise `UnsupportedBackend` unless `backend_id` is a declared member of `axis`."""
     reason = unsupported_reason(axis, backend_id)
     if reason is not None:
         raise UnsupportedBackend(reason)
+
+
+def require_available(axis: str, backend_id: str) -> None:
+    """Raise unless `backend_id` is declared for `axis` AND extracted."""
+    reason = unavailable_reason(axis, backend_id)
+    if reason is None:
+        return
+    if unsupported_reason(axis, backend_id) is not None:
+        raise UnsupportedBackend(reason)
+    raise BackendNotExtracted(reason)
 
 
 def load(axis: str, backend_id: str) -> ModuleType:

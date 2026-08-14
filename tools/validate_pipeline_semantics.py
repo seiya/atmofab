@@ -12001,13 +12001,19 @@ def _validate_toolchain_backend_supported(
 
     That language exemption admits nothing TODAY: ``_validate_infrastructure_public_api``
     — in the same pass, so the order does not matter, both violations land in one list —
-    rejects a harness whose language has no backend, carrying
-    ``tools/backends/registry.unsupported_reason``'s clause, which names the implemented
+    rejects a harness whose language has no EXTRACTED backend, carrying
+    ``tools/backends/registry.unavailable_reason``'s clause, which names the implemented
     set and where to register another. That is the accurate remedy for the shape, and
-    better than a second violation from here saying "use fortran". The carve-out exists so
-    that when a language backend IS added, this gate does not have to be edited too — and
-    neither does the other one, since the implemented set is the registry's, not either
-    gate's (``docs/BACKEND_BOUNDARY.md``). That hand-off only holds while both gates spell the exemption the SAME way: they
+    better than a second violation from here saying "use fortran".
+
+    THIS gate, by contrast, still spells ``(make, fortran)`` itself, 140 lines below. That is
+    a boundary violation under ``docs/BACKEND_BOUNDARY.md`` and an open ledger item in
+    ``TODO.md``, not a design: a second language backend would be refused here regardless of
+    what the registry says, so the documented "add a backend without editing a gate" procedure
+    does not hold for this one yet. Stated rather than quietly relied on, because the previous
+    version of this paragraph claimed the opposite while the hard-coded pair sat underneath it.
+
+    That hand-off only holds while both gates spell the exemption the SAME way: they
     now agree on ``.strip()`` with no case folding (as do
     ``runner_renderer.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
     divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
@@ -12452,14 +12458,17 @@ def _validate_infrastructure_public_api(
     # silently rendered as Fortran and compared against non-Fortran source — until one is added.
     # (No such node exists yet: the sole harness is fortran/cpu.) The §5 published-NAME surface is
     # language-neutral, but without a signature backend the node cannot certify at all, so stop
-    # early with one clear message. WHICH languages are implemented is not spelled here: the set
-    # lives in `tools/backends/registry.py` (docs/BACKEND_BOUNDARY.md), so adding a backend does
-    # not mean editing this gate — and the reason string comes from there too, rather than being
-    # this module's second spelling of it.
+    # early with one clear message. WHICH languages have a usable backend is not spelled here:
+    # the set lives in `tools/backends/registry.py` (docs/BACKEND_BOUNDARY.md), and the reason
+    # string comes from there too rather than being this module's second spelling of it. The
+    # question asked is `unavailable_reason`, NOT `unsupported_reason`: a member declared with
+    # `module=None` is a language this repository knows about but whose knowledge still sits in
+    # the neutral core, so the renderer below — a hard-coded import of the Fortran backend —
+    # would pin its signatures by rendering them as Fortran. Membership is not usability.
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
-    unsupported = backend_registry.unsupported_reason("language", language) if language else None
+    unsupported = backend_registry.unavailable_reason("language", language) if language else None
     if unsupported:
         violations.append(
             f"{derived_path}: infrastructure signature pinning needs a language backend — "
@@ -12900,14 +12909,16 @@ def _validate_infrastructure_generated_signatures(
         _fail_closed_if_infra(f"controlled_spec ({cs_ref}) unresolvable")
         return
 
-    # The render+compare below goes through a language backend. A node whose language has none is
-    # fail-closed rather than pinned against the wrong language. (Compile's
-    # `_validate_infrastructure_public_api` already fail-closes it with the same registry reason,
-    # so this is a defense-in-depth stop; no non-Fortran infra node exists yet.)
+    # The render+compare below is a hard-coded import of the Fortran backend. A node whose
+    # language has no EXTRACTED backend is fail-closed rather than pinned against the wrong
+    # language — `unavailable_reason`, not `unsupported_reason`, because a declared-but-
+    # unextracted member has no renderer of its own and would silently take Fortran's.
+    # (Compile's `_validate_infrastructure_public_api` already fail-closes it with the same
+    # registry clause, so this is a defense-in-depth stop; no non-Fortran infra node exists.)
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     language = str(tc.get("language") or "").strip().lower()
-    unsupported = backend_registry.unsupported_reason("language", language) if language else None
+    unsupported = backend_registry.unavailable_reason("language", language) if language else None
     if unsupported:
         loc = model_files[0] if model_files else ir_path
         violations.append(
