@@ -647,6 +647,34 @@ class RegistryConsistencyTests(unittest.TestCase):
         # A closed axis is unaffected.
         self.assertIsNotNone(registry.unsupported_reason("language", "no_such_language"))
 
+    def test_every_entry_point_refuses_one_input_the_same_way_with_a_message(self) -> None:
+        """One input must not be two kinds of failure, and no refusal may be empty.
+
+        A mutation sweep found this unpinned: `get` built its exception as
+        ``unsupported_reason(...) or ""`` and raised the EMPTY STRING for a value an
+        `open_vocabulary` axis accepts but has no record for, while `require_available` raised
+        `BackendNotExtracted` with a full message for the identical input. An operator reading
+        `UnsupportedBackend: ` has nothing to act on.
+        """
+        cases = [
+            # (axis, value, expected exception) — one per axis kind, chosen from the axis flag
+            # rather than hard-coded, so a change of which axis is open cannot make this vacuous.
+            *[(axis, "no_such_backend",
+               registry.BackendNotExtracted if registry.AXES[axis].open_vocabulary
+               else registry.UnsupportedBackend)
+              for axis in registry.AXES],
+        ]
+        for axis, value, expected in cases:
+            for call in (lambda a=axis, v=value: registry.get(a, v),
+                         lambda a=axis, v=value: registry.load(a, v),
+                         lambda a=axis, v=value: registry.require_available(a, v)):
+                with self.assertRaises(expected) as caught:
+                    call()
+                message = str(caught.exception)
+                self.assertTrue(message.strip(), f"{axis}/{value}: refused with an empty message")
+                self.assertIn(value, message)
+                self.assertIn("tools/backends/", message)
+
     def test_the_linter_members_agree_with_the_gate_that_accepts_presets(self) -> None:
         # Two owners of one fact. The registry listing fewer linters than the live gate accepts
         # is the drift this repository keeps paying for, so it is compared rather than restated.
