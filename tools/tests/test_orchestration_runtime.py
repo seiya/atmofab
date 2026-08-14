@@ -29383,8 +29383,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # and the abbreviated `module procedure s` form gains an authoring rule because it is now
         # refused. Both are rules a leaf is failed on, so they have to be in the leaf's own doc;
         # the long-form rationale stays in phase_02_generate.md, which is NOT leaf-read. Measured
-        # 38181, so the ceiling keeps ~220 B of headroom rather than the tripwire margins this
-        # table has had to correct twice.
+        # 38275, so the ceiling keeps 125 B of headroom rather than the tripwire margins this
+        # table has had to correct twice. (An earlier version of this line said 38181, which was
+        # the size before the last edit of the same commit — review caught it. A byte count in a
+        # comment is exactly the kind of prose that goes stale silently, which is why the CHECK is
+        # the ceiling below and not this sentence.)
         "skills/workflow-generate-generate/SKILL.md": 38400,
         # Bumped 21400->21700: the test/check target must invoke the runner with
         # `--cases $(SPEC) $(CASES)` (the runner aborts without it; make test must
