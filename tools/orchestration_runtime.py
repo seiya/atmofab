@@ -6009,14 +6009,21 @@ def control_file_host_authored(build_system: str | None, language: str | None) -
     registry it went on comparing against ``(make, fortran)``, so a declaration that made the
     live pair disagree could not be observed by the test that exists to observe it.
 
-    The caller normalizes; this function does not, deliberately — the two readers of
-    ``impl_defaults.toolchain`` differ on padding on purpose (see the conductor's predicate), and
-    silently stripping here would erase that documented asymmetry.
+    PADDING is refused here, exactly as the conductor's predicate refuses it. An earlier version
+    of this docstring claimed the opposite — that the function deliberately did not normalize —
+    while ``registry.provides`` strips internally, so it silently accepted a padded language
+    where the conductor declined: the two were documented as exact counterparts and were not. No live
+    input reaches that difference (``record_launch``'s readers strip before calling), so this
+    guard changes nothing today; it makes the counterpart claim true for any caller.
+
+    What is NOT symmetric, and must not be: an ABSENT value defaults here the same way the
+    conductor defaults it, and whitespace-only is absent to this side's readers but present to
+    the conductor's. That divergence is the pre-existing one the agreement test pins.
     """
     return all(
-        backend_registry.provides(axis, value, "control_file")
-        for axis, value in (("build_system", build_system or "make"),
-                            ("language", language or "fortran")))
+        value == value.strip() and backend_registry.provides(axis, value, "control_file")
+        for axis, value in (("build_system", (build_system or "make")),
+                            ("language", (language or "fortran"))))
 
 
 def _impl_resolved_build_system(repo_root: Path, ir_ref: str) -> str | None:

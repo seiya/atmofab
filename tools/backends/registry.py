@@ -227,6 +227,13 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # spelling for "serial" alongside its open vocabulary, and it carries the capability
         # because the neutral core does implement it: rendering no directive is what the
         # conductor already does for it, so a node declaring it runs today.
+        #
+        # DECLARED, NOT WITNESSED, and stated rather than pretended: measured, deleting this
+        # record's capability leaves the whole suite green. Nothing dispatches on
+        # `parallel_directives` — it is one of the declaration-only capabilities
+        # `test_each_capability_is_dispatched_on_exactly_where_it_says_it_is` lists as such —
+        # so there is no observer to fail. It gains one when the `parallel` area of the
+        # migration ledger lands and the directive rendering moves into a backend.
         Backend("parallel", "none", None, core_provides=frozenset({"parallel_directives"})),
     )
 }
@@ -319,10 +326,17 @@ def missing_capability_reason(axis: str, backend_id: str, capability: str) -> st
     # The capability's PROSE is not repeated here. A violation string is read by an author
     # deciding what to re-write, and `CAPABILITIES` is where the job is described; two clauses
     # each carrying a paragraph made the message longer than the artifact it is about.
+    #
+    # The REMEDY names declaring the capability, not registering the backend. Registering is
+    # `unsupported_reason`'s remedy and is the right one there; here it is the step
+    # `docs/BACKEND_BOUNDARY.md` explicitly calls insufficient — "Registering a backend does not
+    # widen this gate; DECLARING THE CAPABILITY does" — and this clause is carried verbatim into
+    # a leaf-facing violation, so it was telling a reader to do the one thing that would not fix
+    # what they were looking at.
     return (
         f"this repository implements '{capability}' for {axis} {able}, not '{backend_id}' "
-        f"(add it under tools/backends/{axis}/ and register it in tools/backends/registry.py "
-        f"— see docs/BACKEND_BOUNDARY.md)"
+        f"(implement it for '{backend_id}' and declare '{capability}' on its record in "
+        f"tools/backends/registry.py — see docs/BACKEND_BOUNDARY.md)"
     )
 
 

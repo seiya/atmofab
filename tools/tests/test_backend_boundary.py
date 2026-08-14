@@ -1355,27 +1355,72 @@ class RegistryConsistencyTests(unittest.TestCase):
             "once; without it a misspelled capability answers False forever and a host-authorship "
             "dispatch turns off silently (docs/BACKEND_BOUNDARY.md §Operations Rules)")
 
-    def test_every_axis_has_at_least_one_implemented_backend(self) -> None:
-        """An axis whose every member is unimplemented is an axis nothing can run.
+    def test_each_capability_is_dispatched_on_exactly_where_it_says_it_is(self) -> None:
+        """Which capabilities a gate actually asks about, compared against what they claim.
 
-        This replaces a stricter rule I wrote first — that EVERY live record must be implemented
-        — which review showed forbids a state this registry documents as legitimate: registering
-        a member with no module and no capability is the fail-closed default for a new backend,
-        and on the open-vocabulary `parallel` axis giving the axis a spelling is the documented
-        reason a member exists at all. Under that rule, `Backend("build_system", "cmake", None)`
-        — ordinary correct work — turned the suite red.
+        THE THIRD ATTEMPT at this pin, and the first two are worth stating because both were
+        wrong in the same direction — they forbade correct work:
 
-        The axis-level rule is what I actually needed: it still fails if a capability and its
-        declaration are deleted together (measured: dropping `syntax_check` from `CAPABILITIES`
-        and from the `gfortran` record leaves the `compiler` axis with nothing implemented),
-        which is what makes the capabilities no `provides` call names — `syntax_check`, `lint`,
-        `parallel_directives` — load bearing: they are how their records answer `implemented`.
+        1. "every live record must be implemented" — refused `Backend("build_system", "cmake",
+           None)`, i.e. registering a member before writing its backend, which this registry
+           documents as the fail-closed default.
+        2. "every axis has at least one implemented backend" — refused the whole documented
+           three-step "Adding an axis" procedure (`docs/BACKEND_BOUNDARY.md`), since a brand-new
+           axis has nothing implemented yet and there is no capability to declare for it.
+
+        What I was actually reaching for is this: a capability that some gate dispatches on must
+        keep having that dispatch, and a capability that nothing asks about must say so rather
+        than read as a live rule. `DISPATCHED` below is the claim; the neutral-core source is the
+        evidence. Deleting a `provides(...)` call fails here; adding a new capability without a
+        caller fails here until it is declared declaration-only; and none of it constrains what
+        anyone registers.
         """
-        for axis in registry.AXES:
-            self.assertTrue(
-                registry.implemented_backend_ids(axis),
-                f"axis '{axis}' declares members but implements none of them, so every question "
-                f"except membership refuses every value it accepts")
+        dispatched = {"control_file", "build_execute", "runner_render"}
+        # The rest are declaration-only TODAY: they are how their records answer `implemented`,
+        # and they gain a dispatch when their ledger area lands (the compiler / linter adapters
+        # and the parallel knobs are still inlined in the neutral core).
+        declaration_only = set(registry.CAPABILITIES) - dispatched
+        asked: set[str] = set()
+        registry_path = Path(registry.__file__).resolve()
+        for path in neutral_core_files():
+            # The registry is where the capabilities are DEFINED and where `provides` itself
+            # lives, so scanning it would report every capability as asked — including the ones
+            # whose only mention is their own declaration.
+            if path.suffix != ".py" or path.resolve() == registry_path:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            calls = [
+                node for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and getattr(node.func, "attr", getattr(node.func, "id", None))
+                in ("provides", "missing_capability_reason")
+            ]
+            if not calls:
+                continue
+            # Two shapes, and only these two — the instrument was wrong twice before settling
+            # here, in both directions. Scanning call arguments alone missed `build_execute`,
+            # which `_missing_toolchain_capability_clauses` passes through a tuple it loops over;
+            # scanning every capability-named string in the file instead picked up an unrelated
+            # `{"lint": ...}` dict key in the conductor. So: a direct argument to the call, or an
+            # element of a sequence literal that also names an axis — which is the
+            # `(axis, value, capability)` row those loops are built from.
+            for call in calls:
+                asked |= {a.value for a in call.args
+                          if isinstance(a, ast.Constant) and a.value in registry.CAPABILITIES}
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Tuple, ast.List)):
+                    continue
+                literals = {e.value for e in node.elts if isinstance(e, ast.Constant)}
+                if literals & set(registry.AXES):
+                    asked |= literals & set(registry.CAPABILITIES)
+        self.assertEqual(
+            dispatched, asked & set(registry.CAPABILITIES),
+            "the set of capabilities the neutral core dispatches on changed: a dispatch was "
+            "deleted, or a capability gained one without being moved out of the "
+            "declaration-only group here")
+        self.assertEqual(
+            set(), asked & declaration_only,
+            "a capability listed as declaration-only is now dispatched on")
 
     def test_implemented_backend_ids_excludes_a_record_with_no_implementation(self) -> None:
         # The filter is a no-op over today's declarations (every live record is implemented, by
@@ -1385,6 +1430,23 @@ class RegistryConsistencyTests(unittest.TestCase):
         with mock.patch.dict(registry._BACKENDS, {("linter", "zz_named_only"): record}):
             self.assertIn("zz_named_only", registry.backend_ids("linter"))
             self.assertNotIn("zz_named_only", registry.implemented_backend_ids("linter"))
+
+    def test_the_membership_refusal_says_declared_and_lists_the_declared_set(self) -> None:
+        """Wording, pinned — because this string reaches a leaf verbatim.
+
+        The signature gates carry `unsupported_reason`'s clause into a leaf-facing violation. It
+        used to say "is not an implemented {axis} backend (implemented: …)" and list every
+        member, including ones nothing implements: once `implemented` became a distinct question
+        with its own function, that sentence pointed a leaf at values that cannot run. Both
+        halves of the correction — the word and the set — survived the full suite when reverted,
+        so neither was witnessed by anything.
+        """
+        reason = registry.unsupported_reason("build_system", "no_such_backend")
+        self.assertIsNotNone(reason)
+        self.assertIn("is not a declared build_system backend", reason)
+        self.assertNotIn("implemented", reason)
+        for declared in registry.backend_ids("build_system"):
+            self.assertIn(declared, reason)
 
     def test_a_refusal_clause_names_the_values_that_do_implement_the_capability(self) -> None:
         # Both reviewers' sweeps deleted the implemented-set half of the clause and no test

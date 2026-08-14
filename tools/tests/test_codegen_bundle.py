@@ -747,6 +747,32 @@ class FieldGrammarTest(unittest.TestCase):
         doc["entrypoints"][0]["symbol"] = "9 bad; rm -rf /"
         self.assertIn("entrypoints[0].symbol must be an identifier", cb.validate_bundle(doc))
 
+    def test_a_declared_but_unextracted_language_does_not_reach_load(self) -> None:
+        """`_language_bundle` asks EXTRACTION, and that choice had no witness.
+
+        A declared-but-unextracted language is the state the migration ledger calls normal, and
+        `registry.load` raises on it. Asking membership instead — the mutation that survived the
+        full suite — makes `import tools.codegen_bundle` die with `BackendNotExtracted` the day
+        such a language is registered, which is the import-time blast radius this module removed
+        for the identifier grammar in the same commit.
+        """
+        record = cb.backend_registry.Backend(
+            "language", "zz_declared", None, core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(
+                cb.backend_registry._BACKENDS, {("language", "zz_declared"): record}):
+            self.assertIsNone(cb.backend_registry.unsupported_reason("language", "zz_declared"))
+            self.assertIsNone(cb._language_bundle("zz_declared"))
+
+    def test_an_unknown_module_attribute_still_raises(self) -> None:
+        # `IDENTIFIER_MAX` / `IDENTIFIER_PATTERN` are served by a module-level `__getattr__`.
+        # Returning `None` for everything else instead of raising survived the whole suite, and
+        # would turn a typo into a silent `None` — and `getattr(cb, "IDENTIFIER_MAX", default)`
+        # into the default — for every caller.
+        with self.assertRaises(AttributeError):
+            cb.no_such_attribute
+        self.assertFalse(hasattr(cb, "no_such_attribute"))
+        self.assertEqual(63, cb.IDENTIFIER_MAX)
+
     def test_the_single_identifier_grammar_refuses_to_pick_a_winner(self) -> None:
         """The collapse guard, driven — it had no witness.
 

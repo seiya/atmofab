@@ -11495,6 +11495,24 @@ class WriteMakefileTest(unittest.TestCase):
                     self.assertFalse(c._conductor_authors_makefile(refs), record)
                     self.assertFalse(c._conductor_authors_runner(refs), record)
 
+    def test_the_runtime_predicate_refuses_padding_like_the_conductor_does(self) -> None:
+        """Driven DIRECTLY, because no indirect path can reach it.
+
+        `record_launch`'s readers strip before calling `control_file_host_authored`, so a padded
+        value never arrives through the live path or through this file's reader mirror. Its
+        docstring nonetheless claimed the function deliberately did not normalize — while
+        `registry.provides` strips internally, so it accepted a padded language where the
+        conductor's twin declined, and the two are documented as exact counterparts. The guard
+        makes that claim true; only a direct call observes it.
+        """
+        from tools.orchestration_runtime import control_file_host_authored
+        self.assertTrue(control_file_host_authored("make", "fortran"))
+        self.assertTrue(control_file_host_authored(None, None))  # absent defaults, both sides
+        for build_system, language in ((" make", "fortran"), ("make ", "fortran"),
+                                       ("make", " fortran"), ("make", "fortran ")):
+            self.assertFalse(control_file_host_authored(build_system, language),
+                             (build_system, language))
+
     def test_conductor_and_runtime_agree_when_the_registry_moves(self) -> None:
         """The agreement pair, driven by the lever that can now break it.
 

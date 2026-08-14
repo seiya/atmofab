@@ -10708,9 +10708,13 @@ end program shallow_water2d_runner
             v = validate_compile_stage(
                 repo_root, "workspace",
                 "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001")
-            self.assertTrue(
-                any(backend_registry.missing_capability_reason(
-                    "language", "cpp", "control_file") in x for x in v), v)
+            clause = backend_registry.missing_capability_reason(
+                "language", "cpp", "control_file")
+            # If `cpp` ever becomes an implemented language this is `None`, and `None in str`
+            # raises a TypeError that talks about the probe instead of the gate. Fail with the
+            # cause named instead.
+            self.assertIsNotNone(clause, "the probe language is now implemented; pick another")
+            self.assertTrue(any(clause in x for x in v), v)
 
     def _plant_tests_md(self, repo_root: Path, test_ids: tuple[str, ...] = ("t1",)) -> None:
         """A compile-stage fixture needs the tests.md its `meta.source_refs.tests` names: the ref is
@@ -17970,6 +17974,55 @@ class ToolchainBackendGateTests(unittest.TestCase):
             v = _run("zz_named_only")
             self.assertTrue(any("zz_named_only" in x for x in v), v)
             self.assertTrue(any("nothing implements it" in x for x in v), v)
+
+    def test_the_m3c_mirror_follows_the_registry_clause_by_clause(self) -> None:
+        """`_ir_is_m3c_physics` is the third reader of the host-authorship question, and the one
+        that had no test naming it at all.
+
+        It gates `_validate_checks_source_files` and the harness render preconditions, so if it
+        disagrees with `_conductor_authors_runner` the disagreement is a wrong verdict in one
+        direction or the other: the checks-module contract demanded of a node whose runner is
+        leaf-authored, or not demanded of one whose runner the host rendered.
+
+        Measured before this test existed: reverting the whole predicate to the literal
+        `(make, fortran)` pair was caught ONLY by the token ratchet — which
+        `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector —
+        and a token-neutral corruption of the same lines survived the entire suite. Each clause
+        is driven separately here, because that is the granularity at which they were deletable.
+        """
+        from unittest import mock
+        base = {"meta": {"spec_kind": "component", "spec_id": "bx"},
+                "dependency": {"direct_deps": [
+                    {"node_key": "infrastructure/harness_fortran_cpu@0.7.0",
+                     "kind": "infrastructure"}]}}
+
+        def _ir(**toolchain) -> dict:
+            doc = json.loads(json.dumps(base))
+            doc["impl_defaults"] = {"toolchain": toolchain}
+            return doc
+
+        self.assertTrue(vps._ir_is_m3c_physics(_ir(build_system="make", language="fortran")))
+        # The padding guard: this reader `.lower()`s but does not strip, while `provides`
+        # strips — so without the guard a padded value would read as M3c here while the
+        # conductor declines to render the runner for it.
+        for padded in ({"build_system": "make ", "language": "fortran"},
+                       {"build_system": "make", "language": " fortran"}):
+            self.assertFalse(vps._ir_is_m3c_physics(_ir(**padded)), padded)
+        # The capability clauses, one at a time, against declared records that separate them.
+        compile_only = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        build_only = backend_registry.Backend(
+            "build_system", "zz_build_only", None, core_provides=frozenset({"build_execute"}))
+        with mock.patch.dict(backend_registry._BACKENDS, {
+                ("language", "zz_compile_only"): compile_only,
+                ("build_system", "zz_build_only"): build_only}):
+            # A language the neutral core can compile but not render: NOT M3c (the `runner_render`
+            # clause), and it agrees with the conductor, which declines to render its runner.
+            self.assertFalse(vps._ir_is_m3c_physics(
+                _ir(build_system="make", language="zz_compile_only")))
+            # A build system the in-process path can drive but has no control-file writer for.
+            self.assertFalse(vps._ir_is_m3c_physics(
+                _ir(build_system="zz_build_only", language="fortran")))
 
     def test_the_capability_layer_refuses_a_padded_value_on_its_own(self) -> None:
         """The second layer, driven directly — the caller returns before it.
