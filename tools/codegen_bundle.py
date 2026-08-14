@@ -97,11 +97,26 @@ LANGUAGE_EXTENSION_ALLOWLIST: dict[str, tuple[str, ...]] = {
 }
 
 
+def _no_bundle_language_reason() -> str:
+    return (
+        "no implemented language backend carries a CodegenBundle interface, so the bundle "
+        "contract has no identifier grammar to enforce. Give the language backend a `bundle` "
+        "module (tools/backends/language/<backend_id>/bundle.py) and re-export it from the "
+        "backend package — see docs/BACKEND_BOUNDARY.md"
+    )
+
+
 def _bundle_identifier_max() -> int:
+    if not LANGUAGES:
+        # Measured in review: without this the module died on `max()` of an empty sequence, and
+        # the purpose-built message below was unreachable because this function runs first.
+        raise ValueError(_no_bundle_language_reason())
     return max(_language_bundle(lang).IDENTIFIER_MAX for lang in LANGUAGES)
 
 
 def _bundle_identifier_pattern() -> str:
+    if not LANGUAGES:
+        raise ValueError(_no_bundle_language_reason())
     patterns = {_language_bundle(lang).IDENTIFIER_PATTERN for lang in LANGUAGES}
     if len(patterns) != 1:
         raise ValueError(
@@ -145,7 +160,7 @@ _SEGMENT_RE = re.compile(LOGICAL_PATH_SEGMENT_PATTERN)
 #
 # The bundle SCHEMA carries one pattern (`spec/schema/generate/codegen_bundle.schema.json`),
 # because its `language` enum has one member. So does this module-level constant, and
-# `_bundle_language_pattern` is where the collapse happens — it refuses rather than picking a
+# `_bundle_identifier_pattern` is where the collapse happens — it refuses rather than picking a
 # winner if a second language backend ever disagrees, instead of silently validating one
 # language's symbols against another's grammar.
 IDENTIFIER_MAX = _bundle_identifier_max()

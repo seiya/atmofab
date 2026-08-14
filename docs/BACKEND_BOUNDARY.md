@@ -141,9 +141,12 @@ the binding. A neutral document must not state the binding itself.
 - **Adding a capability** requires an entry in `registry.CAPABILITIES` naming which axes it is a
   question of and what job it is, plus at least one record declaring it — a capability nothing
   declares is a question whose answer is always `False`, so a dispatch keyed on it is dead code
-  that reads as a live rule. `tools/tests/test_backend_boundary.py` refuses both a capability no
-  record declares and a record declaring one of the wrong axis, and `registry` itself refuses at
-  import: a typo answering `False` forever would flip a host-authorship dispatch off silently.
+  that reads as a live rule. Conversely a record declaring NOTHING — no module, no capability —
+  says this repository knows a value nothing can run; the code fails closed on that state, and the
+  live declarations must not be in it. `registry` checks its own declarations at import, since a
+  typo answering `False` forever would flip a host-authorship dispatch off silently, and
+  `tools/tests/test_backend_boundary.py` pins the check, the rules above, and the fact that the
+  check is INVOKED at import — deleting that call left the whole suite green.
 - **Adding an axis** requires three things: an entry in `AXES` in `tools/backends/registry.py`
   naming where its value is read from and whether its vocabulary is open; **at least one `Backend`
   record for it** (an axis with no members is refused by `tools/tests/test_backend_boundary.py`,

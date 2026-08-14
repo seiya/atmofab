@@ -1334,6 +1334,69 @@ class RegistryConsistencyTests(unittest.TestCase):
                 with self.assertRaises(registry.UnsupportedBackend):
                     registry._check_declarations()
 
+    def test_the_declaration_check_is_actually_invoked_at_import(self) -> None:
+        """The guard was pinned; its INVOCATION was not.
+
+        Review deleted the module-level `_check_declarations()` call and the whole suite stayed
+        green — the only test called the function directly, so it proved the guard works and
+        nothing proved it runs. Read from the source because that is where the fact lives: a
+        behavioural probe would have to re-import the module with a bad declaration, and the
+        declarations are built at import from literals, so there is nothing to patch first.
+        """
+        tree = ast.parse(Path(registry.__file__).read_text(encoding="utf-8"))
+        invocations = [
+            node.lineno for node in tree.body
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+            and getattr(node.value.func, "id", None) == "_check_declarations"
+        ]
+        self.assertEqual(
+            1, len(invocations),
+            "tools/backends/registry.py must call _check_declarations() at module level exactly "
+            "once; without it a misspelled capability answers False forever and a host-authorship "
+            "dispatch turns off silently (docs/BACKEND_BOUNDARY.md §Operations Rules)")
+
+    def test_no_live_record_is_declared_without_an_implementation(self) -> None:
+        """A record with neither a module nor a capability is a state the CODE must handle and
+        the DECLARATIONS must not be in.
+
+        It is the fail-closed default, and the synthetic records above drive it. But a live
+        record in that state means this repository declares a value nothing can run, which is a
+        declaration nobody can act on. This is also what makes the capabilities that no
+        `provides` call ever names — `syntax_check`, `lint`, `parallel_directives` — load
+        bearing: they are how their records answer `implemented`. Review deleted `syntax_check`
+        and its declaration with the suite green; this is the reader that was missing.
+        """
+        unimplemented = [
+            f"{axis}/{backend_id}"
+            for axis in registry.AXES
+            for backend_id in registry.backend_ids(axis)
+            if not registry.get(axis, backend_id).implemented
+        ]
+        self.assertEqual(
+            [], unimplemented,
+            "these records declare neither a module nor a capability, so the registry says the "
+            "value exists and every other question refuses it")
+
+    def test_implemented_backend_ids_excludes_a_record_with_no_implementation(self) -> None:
+        # The filter is a no-op over today's declarations (every live record is implemented, by
+        # the test above), so replacing it with `backend_ids` survives the suite. Driven with a
+        # synthetic record, or the narrowing this function exists for has no witness at all.
+        record = registry.Backend("linter", "zz_named_only", None)
+        with mock.patch.dict(registry._BACKENDS, {("linter", "zz_named_only"): record}):
+            self.assertIn("zz_named_only", registry.backend_ids("linter"))
+            self.assertNotIn("zz_named_only", registry.implemented_backend_ids("linter"))
+
+    def test_a_refusal_clause_names_the_values_that_do_implement_the_capability(self) -> None:
+        # Both reviewers' sweeps deleted the implemented-set half of the clause and no test
+        # noticed: the gate tests build their expected string by calling this same function, so
+        # they are invariant to what it says. An author who is told only "not implemented" has
+        # to go read the registry to find out what is.
+        reason = registry.missing_capability_reason("build_system", "cmake", "control_file")
+        self.assertIsNotNone(reason)
+        for able in registry.backend_ids("build_system"):
+            if registry.provides("build_system", able, "control_file"):
+                self.assertIn(able, reason)
+
     def test_every_capability_is_declared_by_a_record_and_described(self) -> None:
         # A capability nothing declares is a question whose answer is always False — a dispatch
         # keyed on it is dead code that reads as a live rule.
@@ -1415,6 +1478,12 @@ class RegistryConsistencyTests(unittest.TestCase):
         """
         source = Path(vps.__file__).read_text(encoding="utf-8")
         linter_ids = set(registry.backend_ids("linter"))
+        # SEQUENCE literals only. Extending this to dict VALUES was tried and reverted: it flags
+        # `_LINT_PRESET_FOR_LANGUAGE`, which is a legitimate structure carrying a different fact
+        # (which linter a language is linted with), so the guard would have refused correct code
+        # and taught the reader to route around it. That mapping's drift risk is real and is
+        # closed by the containment test below — the right instrument for a mapping is what its
+        # values must satisfy, not whether it exists.
         literals = [
             node.lineno for node in ast.walk(ast.parse(source))
             if isinstance(node, (ast.Set, ast.List, ast.Tuple))
@@ -1424,6 +1493,24 @@ class RegistryConsistencyTests(unittest.TestCase):
             [], literals,
             "a collection in the validator enumerates the linter backends; ask "
             f"registry.unimplemented_reason instead (line(s) {literals})")
+
+    def test_the_language_to_linter_mapping_cannot_drift_from_the_registry(self) -> None:
+        """The other half of the same fact, which the guard above deliberately allows.
+
+        `_LINT_PRESET_FOR_LANGUAGE` maps a language to the linter it is linted with. That is
+        language knowledge, not a copy of the accepted-preset set, so it stays — but its VALUES
+        are linter backend ids, and review measured the drift: dropping the `ruff` member from
+        the registry leaves this mapping producing `ruff` for `python` while the gate refuses
+        it, suite green. Pinned as a containment (the mapping may name fewer linters than exist,
+        never one that does not), because equality would fail the day a linter is registered
+        before any language uses it.
+        """
+        implemented = set(registry.implemented_backend_ids("linter"))
+        used = set(vps._LINT_PRESET_FOR_LANGUAGE.values())
+        self.assertEqual(
+            set(), used - implemented,
+            "the language->linter mapping names a linter the registry does not implement, so "
+            "the lint evidence gate will refuse the preset this mapping produces")
 
     def test_a_registered_backend_module_lives_under_the_backend_package(self) -> None:
         for axis in registry.AXES:

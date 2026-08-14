@@ -405,7 +405,8 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     """`None` when `backend_id` is declared for `axis` AND this repository implements it.
 
     Implemented means the code exists — in the backend package (`extracted`) or still in the
-    neutral core (`inlined`). This is the question a NODE-ACCEPTANCE gate has: may a run carry
+    neutral core, which is what a declared `core_provides` capability asserts. This is the
+    question a NODE-ACCEPTANCE gate has: may a run carry
     this axis value at all. `unavailable_reason` is not that question — it refuses every value
     whose backend has not been extracted yet, which today is most of them, so a gate asking it
     would reject every node this repository can actually build.
@@ -414,7 +415,7 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     this function. Membership answers `None` for a value that was added to `_BACKENDS` and has
     no code anywhere; a gate guarding on membership alone would accept such a node and hand it
     to whichever backend the surrounding module hard-codes. Registering a member is therefore
-    inert here until its `module` or `inlined` says where the code is.
+    inert here until its `module` or its `core_provides` says where the code is.
 
     Returned rather than raised for `unsupported_reason`'s reason: the callers are deterministic
     gates that append a violation string rather than raising.

@@ -11495,6 +11495,34 @@ class WriteMakefileTest(unittest.TestCase):
                     self.assertFalse(c._conductor_authors_makefile(refs), record)
                     self.assertFalse(c._conductor_authors_runner(refs), record)
 
+    def test_the_runner_render_capability_is_required_beyond_control_file(self) -> None:
+        """A language the neutral core can compile but not render must not get a host runner.
+
+        `_conductor_authors_runner` asks for `runner_render` on top of `_core_authors_control_file`,
+        and that clause was deletable with the full suite green: `fortran` is the only record
+        declaring either capability, so `control_file` currently implies `runner_render` and no
+        fixture separated them. Declared here instead of waited for — this is the state a
+        language backend with compile rules but no renderer would be in, which is the case the
+        clause names.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        record = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            c = self._conductor(repo)
+            self._write_ir(repo, refs, language="zz_compile_only",
+                           direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
+            with mock.patch.dict(
+                    backend_registry._BACKENDS, {("language", "zz_compile_only"): record}):
+                # The control file IS host-authored for it — the two capabilities are separate
+                # answers, and this is the half that must stay True or the test proves nothing.
+                self.assertTrue(c._conductor_authors_makefile(refs))
+                self.assertFalse(c._conductor_authors_runner(refs))
+
     def test_an_untrimmed_toolchain_value_still_flips_authorship_off(self) -> None:
         # The conductor compares `.lower()` WITHOUT stripping, while the registry normalizes
         # with `.strip().lower()`. Handing a padded value straight to the registry would newly

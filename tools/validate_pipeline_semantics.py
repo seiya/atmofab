@@ -193,9 +193,16 @@ def _make_quality_check_applies(build_system: str | None, language: str | None) 
     registry which value the neutral core carries it for instead of naming one. The language half
     is `MAKE_QUALITY_CHECK_REQUIRED_LANGUAGES`, a policy set (see there).
 
-    The three gates shared a spelled-out condition rather than a predicate, and a fourth site
-    (`_validate_quality_check_commands`) wrote it inverted, so any change had to be made in four
-    places in two polarities.
+    The three gates spelled the condition out rather than sharing a predicate, and the third of
+    them (`_validate_quality_check_commands`) wrote it INVERTED, so any change had to be made in
+    three places in two polarities. (An earlier version of this paragraph said "a fourth site",
+    miscounting the same three.)
+
+    NORMALIZATION: `provides` strips and case-folds the build-system value while the language
+    half is compared exactly. Measured, that makes this predicate fire on 16 spellings the old
+    condition did not (` make`, `MAKE`, …). No live input reaches the difference — both callers
+    (`_impl_toolchain_from_pipeline_dir` and this gate's own reader) already `.strip().lower()`
+    — and the direction is stricter, not looser.
     """
     return (
         backend_registry.provides("build_system", build_system or "", "control_file")
@@ -488,10 +495,17 @@ _LINT_PRESET_FOR_LANGUAGE: dict[str, str] = {
     "mixed": "mixed",
     "python": "ruff",
 }
-# NOTE: there is deliberately no lint-preset set here. The accepted presets ARE the implemented
-# `linter` backends, and the gate asks `backend_registry.unimplemented_reason` per value rather
-# than holding a copy — the copy was a drift pair, where registering a linter left this gate
-# refusing it and narrowing the set left the registry claiming it.
+# NOTE: there is deliberately no lint-preset SET here. Which presets are accepted is asked of
+# `backend_registry.unimplemented_reason` per value rather than held as a copy — the copy was a
+# drift pair, where registering a linter left the gate refusing it and narrowing the set left the
+# registry claiming it.
+#
+# The mapping ABOVE is a different fact — which linter a language is linted with — and it is
+# language knowledge that migrates with the language backends, not a second copy of the accepted
+# set. But its VALUES are linter backend ids, so it can drift the same way: review measured that
+# dropping the `ruff` member from the registry leaves this mapping producing `ruff` for `python`
+# while the gate refuses it, with the suite green. `test_backend_boundary` pins the values
+# against the registry's implemented linters so that pair cannot open.
 _NODE_KEY_SAFE_PATTERN_LINEAGE = re.compile(
     r"^[a-z][a-z0-9_]*__[a-z0-9][a-z0-9_]*__[0-9][0-9A-Za-z._-]*$"
 )
@@ -12057,6 +12071,65 @@ def _validate_harness_dependency_consistency(
             f"(language={language}, class={hw_class}): expected {expected!r}")
 
 
+def _missing_toolchain_capability_clauses(
+    build_system: str, language: str, is_infrastructure: bool
+) -> list[str]:
+    """The registry clauses for what this node's toolchain cannot do, one per AXIS.
+
+    What a node NEEDS of its toolchain, asked of the registry one capability at a time rather
+    than by comparing against a pair spelled here. Each capability is the reason the caller's
+    scope text gives, made answerable: ``build_execute`` is the kind-agnostic in-process build /
+    execute path, ``control_file`` is the host-authored control file (whose syntax is the build
+    system's and whose compile rules are the language's), and ``runner_render`` is the
+    host-rendered runner source. An infrastructure node needs only the first: it authors its own
+    runner and its control file is leaf-authored, which is exactly why its exemption is
+    language-shaped.
+
+    ONE CLAUSE PER AXIS, not per capability: two clauses about the same value read as two defects
+    and lengthen a message an author has to act on. The first missing capability of an axis is
+    the one reported.
+
+    A value that is not equal to its stripped form is refused here WITHOUT asking the registry.
+    That is defense in depth, and it is a layer this gate had and briefly lost: the old code
+    compared ``build_system != "make"`` exactly, so a padded value was refused twice — by the
+    shape check above the caller and again by the comparison — whereas ``registry.provides``
+    normalizes with ``.strip().lower()`` and would answer as if the padding were not there.
+    Measured with the caller's shape check neutered, the registry-only form refused 4 of 32
+    padded shapes where the old code refused 24. The class this protects is real (a padded value
+    leaves ``src/Makefile`` authored by nobody, because the conductor compares unstripped and
+    declines while ``record_launch``'s reader strips and suppresses the leaf's write-pin), the
+    conductor re-added the same guard for the same reason
+    (``Conductor._core_authors_control_file``), and a defense that exists in one of two readers
+    is the asymmetry this pair keeps paying for. Extracted from the gate so this layer can be
+    driven directly, rather than only through a caller that returns before it.
+    """
+    required: tuple[tuple[str, str, str], ...] = (
+        ("build_system", build_system, "build_execute"),
+    ) if is_infrastructure else (
+        ("build_system", build_system, "build_execute"),
+        ("build_system", build_system, "control_file"),
+        ("language", language, "control_file"),
+        ("language", language, "runner_render"),
+    )
+    clauses: list[str] = []
+    reported_axes: set[str] = set()
+    for axis, value, capability in required:
+        if axis in reported_axes:
+            continue
+        if value != value.strip():
+            clauses.append(
+                f"the {axis} value {value!r} has leading or trailing whitespace, so it is not "
+                f"the token it looks like; the host's readers of this key disagree about "
+                f"padding and one of them would author nothing")
+            reported_axes.add(axis)
+            continue
+        reason = backend_registry.missing_capability_reason(axis, value, capability)
+        if reason is not None:
+            clauses.append(reason)
+            reported_axes.add(axis)
+    return clauses
+
+
 def _validate_toolchain_backend_supported(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
@@ -12248,34 +12321,7 @@ def _validate_toolchain_backend_supported(
         return
     build_system = str(tc.get("build_system") or "make").lower()
     language = str(tc.get("language") or "fortran").lower()
-    # What this node NEEDS of its toolchain, asked of the registry one capability at a time
-    # rather than by comparing against a pair spelled here. Each capability is the reason the
-    # scope text below gives, made answerable: `build_execute` is the kind-agnostic in-process
-    # build / execute path, `control_file` is the host-authored src/Makefile (whose syntax is
-    # the build system's and whose compile rules are the language's), and `runner_render` is
-    # the host-rendered runner source. An infrastructure node needs only the first: it authors
-    # its own runner and its control file is leaf-authored, which is exactly why its exemption
-    # is language-shaped.
-    required: tuple[tuple[str, str, str], ...] = (
-        ("build_system", build_system, "build_execute"),
-    ) if is_infrastructure else (
-        ("build_system", build_system, "build_execute"),
-        ("build_system", build_system, "control_file"),
-        ("language", language, "control_file"),
-        ("language", language, "runner_render"),
-    )
-    # One clause per AXIS, not per capability: two clauses about the same value read as two
-    # defects and lengthen a message an author has to act on. The first missing capability of an
-    # axis is the one reported.
-    clauses: list[str] = []
-    reported_axes: set[str] = set()
-    for axis, value, capability in required:
-        if axis in reported_axes:
-            continue
-        reason = backend_registry.missing_capability_reason(axis, value, capability)
-        if reason is not None:
-            clauses.append(reason)
-            reported_axes.add(axis)
+    clauses = _missing_toolchain_capability_clauses(build_system, language, is_infrastructure)
     if not clauses:
         return
     scope = ("build_system must be 'make' on every node, an infrastructure node included: "
@@ -12294,7 +12340,10 @@ def _validate_toolchain_backend_supported(
         f"{derived_path}: impl_defaults.toolchain declares "
         f"(build_system={_declared('build_system', 'make')}, "
         f"language={_declared('language', 'fortran')}); {scope} "
-        "(docs/workflow/phases/phase_01_compile.md). " + " ".join(clauses)
+        "(docs/workflow/phases/phase_01_compile.md). "
+        # Terminated, not merely joined: the registry clause ends in a parenthesis, so `" ".join`
+        # ran two sentences together mid-message.
+        + " ".join(f"{clause.rstrip('.')}." for clause in clauses)
         + " The controlled_spec is language-neutral, so nothing in it pins another toolchain, so "
         "re-authoring impl_defaults.toolchain to a supported one is a content change with no "
         "spec consequence (keys stated explicitly — V6 requires every fixed impl_defaults "

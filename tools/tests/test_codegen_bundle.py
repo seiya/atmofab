@@ -747,6 +747,40 @@ class FieldGrammarTest(unittest.TestCase):
         doc["entrypoints"][0]["symbol"] = "9 bad; rm -rf /"
         self.assertIn("entrypoints[0].symbol must be an identifier", cb.validate_bundle(doc))
 
+    def test_the_single_identifier_grammar_refuses_to_pick_a_winner(self) -> None:
+        """The collapse guard, driven — it had no witness.
+
+        The bundle schema carries ONE identifier pattern, so this module collapses the language
+        backends' patterns to one. If a second language backend disagreed, silently picking
+        either would validate one language's symbols against the other's grammar. Review's sweep
+        replaced the refusal with a winner-picking `patterns.pop()` and nothing failed, because
+        the live registry has one language. Both empty and disagreeing are driven here; the
+        empty case previously died on `max()` of an empty sequence with a message that named
+        nothing.
+        """
+        class _OtherGrammar:
+            SOURCE_EXTENSIONS = (".zz",)
+            COMPILER_SELECTOR_FAMILIES = ("zzc",)
+            IDENTIFIER_MAX = 31
+            IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,30}(?![\s\S])"
+
+        real = cb._language_bundle
+
+        def _two_languages(language: str):
+            return _OtherGrammar if language == "zzlang" else real(language)
+
+        with mock.patch.object(cb, "LANGUAGES", ("fortran", "zzlang")), \
+                mock.patch.object(cb, "_language_bundle", _two_languages):
+            with self.assertRaises(ValueError) as caught:
+                cb._bundle_identifier_pattern()
+            self.assertIn("do not agree", str(caught.exception))
+            self.assertIn("docs/BACKEND_BOUNDARY.md", str(caught.exception))
+        with mock.patch.object(cb, "LANGUAGES", ()):
+            for call in (cb._bundle_identifier_pattern, cb._bundle_identifier_max):
+                with self.assertRaises(ValueError) as caught:
+                    call()
+                self.assertIn("no implemented language backend", str(caught.exception))
+
     def test_identifier_length_is_capped_at_the_fortran_limit(self) -> None:
         # A symbol longer than the f2008/f2018 63-char limit cannot pass the Generate.syntax
         # compiler gate, so the bundle rejects it up front rather than deferring the failure.

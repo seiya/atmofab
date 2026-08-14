@@ -17920,6 +17920,102 @@ class ToolchainBackendGateTests(unittest.TestCase):
             self.assertEqual(len(v), 1, (lang, v))
             self.assertIn(repr(lang), v[0])
 
+    def test_the_lint_evidence_preset_is_refused_with_the_registrys_clause(self) -> None:
+        """The branch this change rewrote, which had no test on either side of it.
+
+        It used to compare against a literal set and now asks
+        `registry.unimplemented_reason`. Both directions are driven: a linter that is not a
+        member at all, and — the reason this is `unimplemented_reason` and not
+        `unsupported_reason` — one that IS a declared member with no implementation anywhere.
+        A membership question would accept the second and let a preset name a linter nothing can
+        run. Review's sweep swapped the two questions and no test noticed.
+        """
+        from unittest import mock
+
+        def _run(preset: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                pipeline_root = Path(t) / "pipelines" / "p1"
+                source_dir = pipeline_root / "source" / "src_20260101_001"
+                source_dir.mkdir(parents=True)
+                (pipeline_root / "lint_evidence").mkdir()
+                (pipeline_root / "lint_evidence" / "src_20260101_001.json").write_text(
+                    json.dumps({
+                        "ok": True, "preset": "fortitude",
+                        "checked_at": "2026-08-15T00:00:00Z",
+                        "run_linter": [{"command_id": "c1", "command_log_ref": "logs/c1.json",
+                                        "preset": preset}],
+                    }), encoding="utf-8")
+                meta_path = source_dir / "source_meta.json"
+                meta_path.write_text("{}", encoding="utf-8")
+                v: list[str] = []
+                vps._validate_generate_lint_command_logs(
+                    Path(t), meta_path, {"verification_status": "pass"}, "fortran", v)
+                return v
+
+        # A non-member: refused, with the registry's clause rather than a set spelled here.
+        v = _run("no_such_linter")
+        self.assertTrue(any("no_such_linter" in x for x in v), v)
+        self.assertTrue(
+            any(backend_registry.unsupported_reason("linter", "no_such_linter") in x for x in v),
+            v)
+        # An implemented member: this branch lets it through (it fails later, on the command
+        # log, which is a different rule — the point is that the preset itself is accepted).
+        self.assertFalse(
+            any("is not an implemented linter" in x for x in _run("fortitude")))
+        # A DECLARED member that implements nothing: membership would accept it; this must not.
+        record = backend_registry.Backend("linter", "zz_named_only", None)
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("linter", "zz_named_only"): record}):
+            self.assertIsNone(backend_registry.unsupported_reason("linter", "zz_named_only"))
+            v = _run("zz_named_only")
+            self.assertTrue(any("zz_named_only" in x for x in v), v)
+            self.assertTrue(any("nothing implements it" in x for x in v), v)
+
+    def test_the_capability_layer_refuses_a_padded_value_on_its_own(self) -> None:
+        """The second layer, driven directly — the caller returns before it.
+
+        The old gate compared `build_system != "make"` exactly, so a padded value was refused
+        twice: by the shape check and again by the toolchain comparison. `registry.provides`
+        normalizes with `.strip().lower()`, so routing the comparison through it silently
+        deleted the second layer — measured, the registry-only form refused 4 of 32 padded
+        shapes where the old code refused 24. Nothing observable changed, because the shape
+        check returns first; that is precisely why this has to be driven at the helper.
+        """
+        for build_system, language in ((" make", "fortran"), ("make", " fortran"),
+                                       ("make ", "fortran "), (" make ", " fortran ")):
+            clauses = vps._missing_toolchain_capability_clauses(
+                build_system, language, is_infrastructure=False)
+            self.assertTrue(clauses, (build_system, language))
+            self.assertIn("whitespace", clauses[0])
+        # ...and the layer does not fire on the canonical spellings it must let through.
+        self.assertEqual(
+            [], vps._missing_toolchain_capability_clauses("make", "fortran", False))
+
+    def test_a_capability_the_neutral_core_lacks_is_refused_even_when_its_sibling_holds(
+            self) -> None:
+        """`control_file` without `runner_render`: the state the clause exists for.
+
+        Every other test drives a value with ZERO capabilities, so `control_file` and
+        `runner_render` are indistinguishable — `fortran` is the only record declaring either.
+        Both reviewers' sweeps deleted the `runner_render` requirement here and in the conductor
+        with the full suite green. A language the neutral core can compile but not render is
+        exactly what the clause is for, so it is declared here rather than waited for.
+        """
+        from unittest import mock
+        record = backend_registry.Backend(
+            "language", "zz_compile_only", None, core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS, {("language", "zz_compile_only"): record}):
+            self.assertTrue(
+                backend_registry.provides("language", "zz_compile_only", "control_file"))
+            clauses = vps._missing_toolchain_capability_clauses(
+                "make", "zz_compile_only", is_infrastructure=False)
+            self.assertEqual(len(clauses), 1, clauses)
+            self.assertIn("runner_render", clauses[0])
+            v = self._run(toolchain={"build_system": "make", "language": "zz_compile_only"})
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("runner_render", v[0])
+
     def test_a_registered_backend_that_implements_nothing_is_still_refused(self) -> None:
         """The reverse pin: registering does not admit, IMPLEMENTING does.
 
@@ -18044,6 +18140,10 @@ class ToolchainBackendGateTests(unittest.TestCase):
                 "build_system", "cmake", "build_execute"), msg)
         self.assertIn(
             backend_registry.missing_capability_reason("language", "cpp", "control_file"), msg)
+        # ONE clause per axis, not per capability: `cpp` is missing both `control_file` and
+        # `runner_render`, and a message that said so twice would read as two defects. Counted,
+        # because dropping the dedup changed nothing any assertion looked at.
+        self.assertEqual(2, msg.count("this repository implements"), msg)
         # The message reports what the author WROTE. A present key is echoed verbatim (not
         # normalized — `CMake` must not come back as `'cmake'`), and an absent key is named
         # as absent rather than as a declaration nobody made.
@@ -18096,7 +18196,13 @@ class ToolchainBackendGateTests(unittest.TestCase):
         # (its message would name a value nobody wrote).
         v = self._run(toolchain={"build_system": "make ", "language": "fortran "})
         self.assertEqual(len(v), 2, v)
-        self.assertFalse(any("only implemented physical backend" in x for x in v), v)
+        # The capability clauses must NOT also appear: the shape check returns first, so the
+        # message names the padding rather than telling an author to change their toolchain.
+        # (This assertion previously searched for "only implemented physical backend", a string
+        # this branch removed from the violation text — it could no longer fail. Anchored on the
+        # registry's clause instead, which is what the gate emits today.)
+        for msg in v:
+            self.assertNotIn("this repository implements", msg)
 
     def test_a_present_but_non_token_value_fires_whatever_spelling_produced_it(self) -> None:
         # The check is on the parsed SHAPE — "a plain non-empty string" — never on a
