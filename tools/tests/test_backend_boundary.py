@@ -9,10 +9,12 @@ WHAT IS PINNED, AND WHAT IS ONLY SAMPLED. Stating this precisely matters more he
 because a green boundary check reads as "the boundary holds" whether or not it can see the
 boundary.
 
-* **Pinned**: the *direct backend imports*. The set of neutral-core modules that import a module
-  under `tools/backends/` other than the registry is decided by reading every import statement in
-  every neutral-core module, so it is a complete answer to the question it asks. A module removed
-  from the allowlist can never silently come back.
+* **Pinned, over three spellings**: the *direct backend imports*. The set of neutral-core modules
+  that reach a module under `tools/backends/` other than the registry is decided by reading every
+  `import`, every `from ... import`, and every `importlib.import_module` with a literal argument,
+  so within those three it is a complete answer and a module removed from the allowlist cannot
+  silently come back. A module name COMPUTED at runtime is out of reach of any static reader and
+  is not covered — `_imported_modules` says so at the point where it stops looking.
 * **Pinned**: the *registry's own consistency*. Every declared axis has at least one backend,
   every `extracted` backend imports, and `unsupported_reason` answers `None` for exactly the
   declared members.
@@ -40,6 +42,7 @@ and the diff is then reviewable as the migration step it represents.
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import re
 import sys
@@ -50,6 +53,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import tools.validate_pipeline_semantics as vps  # noqa: E402
 from tools.backends import registry  # noqa: E402
 
 BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_baseline.json"
@@ -66,13 +70,25 @@ REGISTRY_MODULES = frozenset({"tools.backends", "tools.backends.registry"})
 # The scope is `docs/BACKEND_BOUNDARY.md`'s scope. The exclusions are that document's exclusions,
 # plus two of this instrument's own: its baseline (which quotes paths, not knowledge) and the
 # migration ledger.
+#
+# Every glob is RECURSIVE. The first version scanned `docs/*.md` plus `docs/workflow/**` only,
+# which made a move into any new `docs/<subdir>/` indistinguishable from a migration into a
+# backend: both lowered the debt figure and both stayed green. Review demonstrated it by moving
+# `CHECKS_MODULE_CONTRACT.md` (76 occurrences) into a fresh `docs/reference/` and regenerating.
+# The declaration files under `mcp_servers/tools/` and the two root documents are here for the
+# same reason: they are where `compiler`- and `linter`-axis argv is actually spelled.
 _SCANNED_GLOBS = (
     ("tools", "**/*.py"),
-    ("mcp_servers", "**/*.py"),
     ("tools/prompt_templates", "**/*.txt"),
-    ("docs", "*.md"),
-    ("docs/workflow", "**/*.md"),
-    ("skills", "**/SKILL.md"),
+    ("mcp_servers", "**/*.py"),
+    ("mcp_servers", "**/*.md"),
+    ("mcp_servers", "**/*.json"),
+    ("docs", "**/*.md"),
+    ("skills", "**/*.md"),
+    ("skills", "**/*.py"),
+    (".", "README.md"),
+    (".", "AGENTS.md"),
+    (".", "CLAUDE.md"),
 )
 
 _EXCLUDED_PREFIXES = (
@@ -161,13 +177,42 @@ def token_counts(root: Path | None = None) -> dict[str, dict[str, int]]:
 # --- the pinned direct-import set ----------------------------------------------------------------
 
 
-def _imported_modules(source: str) -> set[str]:
-    """Every module a source file names for import, as a dotted path.
+def _module_prefix(dotted: str) -> str:
+    """The longest prefix of `dotted` that names a real module or package, or `dotted` itself.
 
-    `from tools.backends.language.fortran import lines` yields both the package and the
-    `...fortran.lines` submodule, because either spelling reaches the same code and only counting
-    one of them would make the other a free pass. A relative import cannot leave a package, so it
+    `from ...fortran.signatures import SignatureParseError` names a SYMBOL, not a module, and
+    the first version of this reader recorded the symbol. Two consequences, both demonstrated in
+    review: importing one MORE symbol from an already-allowlisted module failed the pin, and
+    re-spelling the identical crossing as `import signatures as _sig` failed it too — while the
+    failure message said "the set of neutral-core MODULES importing a backend directly changed".
+    Neither had crossed a boundary that was not already crossed. Collapsing to the module makes
+    the recorded set what its name says it is, so the allowlist counts crossings rather than
+    spellings.
+    """
+    parts = dotted.split(".")
+    for stop in range(len(parts), 0, -1):
+        candidate = ".".join(parts[:stop])
+        try:
+            if importlib.util.find_spec(candidate) is not None:
+                return candidate
+        except (ImportError, AttributeError, ValueError):
+            continue
+    return dotted
+
+
+def _imported_modules(source: str) -> set[str]:
+    """Every backend-package module a source file reaches, as a dotted module path.
+
+    Three spellings are read: `import a.b`, `from a.b import c`, and `importlib.import_module`
+    with a STRING LITERAL argument — the last because it is the spelling `registry.load` itself
+    uses, so a neutral-core module can copy it. A relative import cannot leave a package, so it
     can never be a neutral-core module reaching into a backend, and is ignored.
+
+    WHAT THIS CANNOT SEE, so that the pin is not read as more than it is: a module name computed
+    at runtime (an f-string, a concatenation, a name from a config file) is out of reach of any
+    static reader. `docs/BACKEND_BOUNDARY.md` states the criterion as "imports, or names for
+    import"; a computed name does neither at parse time. The pin is a complete answer over the
+    three spellings above and silent beyond them.
     """
     names: set[str] = set()
     try:
@@ -176,12 +221,21 @@ def _imported_modules(source: str) -> set[str]:
         return names
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
+            names.update(_module_prefix(alias.name) for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             if node.level or not node.module:
                 continue
-            names.add(node.module)
-            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+            names.add(_module_prefix(node.module))
+            names.update(_module_prefix(f"{node.module}.{alias.name}") for alias in node.names)
+        elif isinstance(node, ast.Call):
+            func = node.func
+            attr = func.attr if isinstance(func, ast.Attribute) else (
+                func.id if isinstance(func, ast.Name) else None)
+            if attr != "import_module" or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                names.add(_module_prefix(first.value))
     return names
 
 
@@ -277,6 +331,51 @@ class DirectImportPinTests(unittest.TestCase):
             "to it is a boundary regression, removing from it is the migration.")
 
 
+class TokenClassReachTests(unittest.TestCase):
+    """Every declared token class must be exercised, or it can be deleted for free.
+
+    A class whose baseline is zero everywhere is ratcheting nothing: removing it from
+    `_TOKEN_CLASSES` changes no count and no test notices. Review found exactly one such class
+    (`c-include`). Rather than delete it — the C family is a declared future language — each
+    class is exercised against a synthetic sample here, so the class list is pinned by
+    something even when the tree happens not to contain that spelling.
+    """
+
+    #: One string per class that the class MUST match, and one that it must NOT. The negative
+    #: half is what stops a class from being widened into a catch-all to keep this test green.
+    _PROBES: dict[str, tuple[str, str]] = {
+        "fortran": ("iso_fortran_env", "iso c binding"),
+        "fortran-suffix": ("model.f90", "model.py"),
+        "fortran-subroutine": ("end subroutine foo", "end procedure foo"),
+        "fortran-implicit-none": ("implicit none", "implicitly none"),
+        "fortran-intent": ("intent(in)", "intention of"),
+        "fortran-module-procedure": ("module procedure add", "module parameter add"),
+        "fortran-kind": ("real64", "real 64"),
+        "fortran-allocatable": ("allocatable :: x", "allocated :: x"),
+        "fortran-module-file": ("harness.mod", "harness.module"),
+        "fortran-standard": ("-std=f2008", "-std=c99"),
+        "c-include": ("#include <stdio.h>", "include stdio"),
+        "c-suffix": ("kernel.cpp", "llama.cpp"),
+        "make-control-file": ("src/Makefile", "src/BUILD.bazel"),
+        "make-variable": ("FFLAGS += -O2", "FLAGS += -O2"),
+        "compiler-driver": ("gfortran -c", "fortran compiler"),
+        "compiler-syntax-only": ("-fsyntax-only", "--syntax-only"),
+        "linter-fortitude": ("fortitude check", "fortifying the gate"),
+        "parallel-directive": ("!$omp parallel do", "$omp parallel do"),
+        "parallel-construct": ("do concurrent (i=1:n)", "run these concurrently"),
+    }
+
+    def test_every_declared_class_has_a_probe(self) -> None:
+        self.assertEqual(sorted(_TOKEN_CLASSES), sorted(self._PROBES),
+                         "a token class was added or removed without its probe pair")
+
+    def test_each_class_matches_its_positive_and_rejects_its_negative(self) -> None:
+        for name, (positive, negative) in sorted(self._PROBES.items()):
+            rx = _COMPILED[name]
+            self.assertTrue(rx.search(positive), f"{name} no longer matches {positive!r}")
+            self.assertIsNone(rx.search(negative), f"{name} now matches {negative!r}")
+
+
 class RegistryConsistencyTests(unittest.TestCase):
     """The registry's own claims, checked against itself and against the import system."""
 
@@ -307,6 +406,13 @@ class RegistryConsistencyTests(unittest.TestCase):
                 # The spelling rule the gates rely on: padded and mixed-case values normalize.
                 self.assertIsNone(
                     registry.unsupported_reason(axis, f"  {backend_id.upper()}  "))
+            # An open-vocabulary axis accepts an unlisted token by design; the refusal below is
+            # about a CLOSED axis. `open_vocabulary` is read from the axis rather than the axis
+            # name being special-cased, so declaring another open axis cannot make this vacuous
+            # without also making the refusal it skips untrue.
+            if registry.AXES[axis].open_vocabulary:
+                self.assertIsNone(registry.unsupported_reason(axis, "no_such_backend"))
+                continue
             reason = registry.unsupported_reason(axis, "no_such_backend")
             self.assertIsNotNone(reason)
             # The refusal must name the axis, the offending value, and where to register a fix —
@@ -327,6 +433,60 @@ class RegistryConsistencyTests(unittest.TestCase):
         ):
             with self.assertRaises(registry.UnsupportedBackend):
                 call()
+
+    def test_membership_and_usability_are_different_questions(self) -> None:
+        # The defect this pins: guarding a hard-coded Fortran renderer on MEMBERSHIP meant that
+        # declaring a second `language` member with `module=None` — the state 5 of the 8 records
+        # are in, and the state the ledger says is normal — silently stopped the signature gates
+        # refusing. Asked of the registry rather than of a literal id list, so adding a backend
+        # cannot make this test vacuous.
+        for axis in registry.AXES:
+            for backend_id in registry.backend_ids(axis):
+                backend = registry.get(axis, backend_id)
+                self.assertIsNone(registry.unsupported_reason(axis, backend_id))
+                if backend.extracted:
+                    self.assertIsNone(registry.unavailable_reason(axis, backend_id))
+                    registry.require_available(axis, backend_id)
+                else:
+                    reason = registry.unavailable_reason(axis, backend_id)
+                    self.assertIsNotNone(
+                        reason, f"{axis}/{backend_id} is unextracted but reads as usable")
+                    self.assertIn("not extracted", reason)
+                    with self.assertRaises(registry.BackendNotExtracted):
+                        registry.require_available(axis, backend_id)
+
+    def test_the_signature_gates_ask_for_usability_not_membership(self) -> None:
+        # The gate-side half of the pin above: reading the module text, because the failure
+        # being prevented is a call to the WRONG registry function, which no fixture can show
+        # without a second language backend existing.
+        source = Path(vps.__file__).read_text(encoding="utf-8")
+        self.assertEqual(
+            0, source.count('backend_registry.unsupported_reason("language"'),
+            "a signature gate guards a Fortran-only renderer on membership alone")
+        self.assertEqual(
+            2, source.count('backend_registry.unavailable_reason("language"'),
+            "the two signature gates must both ask whether the language backend is usable")
+
+    def test_an_open_vocabulary_axis_accepts_a_value_it_has_no_record_for(self) -> None:
+        # `parallel` is an exploration knob whose schema says its vocabulary is deliberately not
+        # a whitelist; the validator accepts `openmp+simd` and friends today. Membership must
+        # not refuse those, and usability must still refuse them, since no code exists for them.
+        self.assertTrue(registry.AXES["parallel"].open_vocabulary)
+        for value in ("openmp+simd", "openmp_tasks", "cpu_openmp"):
+            self.assertIsNone(registry.unsupported_reason("parallel", value))
+            reason = registry.unavailable_reason("parallel", value)
+            self.assertIsNotNone(reason)
+            self.assertIn("no backend package", reason)
+        # An empty token is not a value; it stays refused even on an open axis.
+        self.assertIsNotNone(registry.unsupported_reason("parallel", "   "))
+        # A closed axis is unaffected.
+        self.assertIsNotNone(registry.unsupported_reason("language", "no_such_language"))
+
+    def test_the_linter_members_agree_with_the_gate_that_accepts_presets(self) -> None:
+        # Two owners of one fact. The registry listing fewer linters than the live gate accepts
+        # is the drift this repository keeps paying for, so it is compared rather than restated.
+        self.assertEqual(
+            set(registry.backend_ids("linter")), set(vps._LINT_ALLOWED_PRESETS))
 
     def test_a_registered_backend_module_lives_under_the_backend_package(self) -> None:
         for axis in registry.AXES:

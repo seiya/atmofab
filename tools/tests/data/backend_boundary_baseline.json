@@ -5,24 +5,25 @@
       "tools.backends.language.fortran.lines"
     ],
     "tools/runner_renderer.py": [
-      "tools.backends.language.fortran.signatures",
-      "tools.backends.language.fortran.signatures.SignatureParseError",
-      "tools.backends.language.fortran.signatures.render_symbol_to_fortran"
+      "tools.backends.language.fortran.signatures"
     ],
     "tools/validate_pipeline_semantics.py": [
       "tools.backends.language.fortran",
       "tools.backends.language.fortran.lines",
       "tools.backends.language.fortran.signatures",
-      "tools.backends.language.fortran.signatures.SignatureParseError",
-      "tools.backends.language.fortran.signatures._validate_module_parameter",
-      "tools.backends.language.fortran.signatures.load_structured_signatures",
-      "tools.backends.language.fortran.signatures.render_module_parameter_to_fortran",
-      "tools.backends.language.fortran.signatures.render_signatures_to_fortran",
-      "tools.backends.language.fortran.signatures.render_symbol_to_fortran",
       "tools.backends.language.fortran.structure"
     ]
   },
   "token_counts": {
+    "AGENTS.md": {
+      "compiler-driver": 4,
+      "fortran": 3
+    },
+    "README.md": {
+      "compiler-driver": 4,
+      "fortran": 7,
+      "linter-fortitude": 2
+    },
     "docs/AGENT_CONTRACT.md": {
       "fortran-suffix": 1,
       "make-control-file": 1
@@ -34,7 +35,7 @@
       "fortran-suffix": 3
     },
     "docs/BACKEND_BOUNDARY.md": {
-      "fortran": 2
+      "fortran": 5
     },
     "docs/BWRAP_ENABLEMENT.md": {
       "fortran-module-file": 2,
@@ -174,6 +175,16 @@
       "make-control-file": 3,
       "make-variable": 1
     },
+    "mcp_servers/README.md": {
+      "compiler-driver": 10,
+      "compiler-syntax-only": 1,
+      "fortran": 13,
+      "fortran-suffix": 1,
+      "linter-fortitude": 3,
+      "make-control-file": 6,
+      "make-variable": 2,
+      "parallel-directive": 1
+    },
     "mcp_servers/build_runtime_server.py": {
       "compiler-driver": 15,
       "compiler-syntax-only": 2,
@@ -186,6 +197,16 @@
       "linter-fortitude": 9,
       "make-control-file": 16,
       "make-variable": 8
+    },
+    "mcp_servers/tools/run_linter.json": {
+      "linter-fortitude": 3,
+      "make-control-file": 1
+    },
+    "mcp_servers/tools/run_syntax_check.json": {
+      "compiler-driver": 3,
+      "fortran": 5,
+      "fortran-standard": 1,
+      "make-control-file": 1
     },
     "skills/spec-input-check/SKILL.md": {
       "fortran": 1
@@ -309,7 +330,7 @@
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 36,
       "compiler-syntax-only": 8,
-      "fortran": 369,
+      "fortran": 374,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 43,
