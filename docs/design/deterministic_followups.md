@@ -1561,7 +1561,7 @@ source of truth. `tests.md`/catalog bumped to 0.2.0 (in-place respec — no cons
 **Gates (`tools/validate_pipeline_semantics.py`).** A §5.1 parser
 (`_parse_canonical_interface_from_controlled_spec` → per-symbol *stanzas*; `_parse_interface_stanzas`,
 `_fortran_logical_lines`, `_normalize_fortran_line`, and the comment stripper — since issue #23 the
-shared `tools/fortran_lines.strip_fortran_comment_tracking_quotes`) normalizes away
+shared `tools/backends/language/fortran/lines.strip_fortran_comment_tracking_quotes`) normalizes away
 comments, `&` continuations (spanning interleaved blank/comment lines — the §5.1 `write_perf`
 header is >132 cols and MUST wrap), case, and whitespace. Three deterministic pins:
 - **Compile** (`_validate_infrastructure_public_api` + `_validate_ir_signatures_against_section51`):
@@ -3055,7 +3055,7 @@ Sharing the parser also surfaced two FALSE POSITIVES that predate this work and 
 alone (both confirmed legal with `gfortran -fsyntax-only -std=f2008`, both now fixed in the shared function, so both
 gates improve at once): a logical line was never split at its `;` statement separators, so `public :: a; public :: b`
 lost `a` (its token was `a;`) and invented a name `public` — the repo's existing string- and paren-aware statement
-splitter (since issue #23, `tools/fortran_lines.split_fortran_statements`) now runs first; and `proc_start`'s type-spec prefix was greedy enough to run from a
+splitter (since issue #23, `tools/backends/language/fortran/lines.split_fortran_statements`) now runs first; and `proc_start`'s type-spec prefix was greedy enough to run from a
 declaration's type keyword into a string literal, so
 `character(len=*), parameter :: note = 'run subroutine case_setup first'` registered a phantom definition AND
 incremented `proc_depth`, suppressing every later `public ::` and real definition — the whole ABI reported unpublished
@@ -3420,8 +3420,8 @@ one of them errs toward a false `Generate fail` / `Compile fail` on a source gfo
   &` / `! note` / `     & b)` header reached the gates as two fragments. Only `_iter_fortran_logical_lines`; the other
   two skipped such lines, and the runtime copy then space-joined the resume, which is the third bullet.
 
-**One implementation, three adapters.** `tools/fortran_lines.py` is stdlib-only and imports nothing from the package,
-because no existing module is a home: the validator may not import `orchestration_runtime`; `lang_backend_fortran`
+**One implementation, three adapters.** `tools/backends/language/fortran/lines.py` is stdlib-only and imports nothing from the package,
+because no existing module is a home: the validator may not import `orchestration_runtime`; `backends.language.fortran.signatures`
 imports the validator at module level, so hosting it there would put the validator in a cycle; and hosting it in the
 validator would force `orchestration_runtime` to import a module that requires PyYAML unconditionally, while the
 runtime defers PyYAML so its recovery commands stay usable without it. The three sites keep their names, signatures

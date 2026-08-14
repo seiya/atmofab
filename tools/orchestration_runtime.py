@@ -62,7 +62,7 @@ def _require_yaml() -> Any:
     return _yaml_mod
 
 try:
-    from tools import fortran_lines
+    from tools.backends.language.fortran import lines as fortran_lines
     from tools.hooks.common import (
         _normalize_rel_posix,
         _utc_now_iso,
@@ -91,7 +91,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     _REPO_ROOT = _THIS_FILE.parent.parent
     if str(_REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(_REPO_ROOT))
-    from tools import fortran_lines
+    from tools.backends.language.fortran import lines as fortran_lines
     from tools.hooks.common import (
         _normalize_rel_posix,
         _utc_now_iso,

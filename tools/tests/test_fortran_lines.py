@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/fortran_lines — the shared free-form Fortran logical-line scanner.
+"""Unit tests for tools/backends/language/fortran/lines — the shared free-form Fortran logical-line scanner.
 
 These pin the scanner directly. Most of them are the tests written for the issue #22 OpenMP
 floor (commit `166946a`) and deleted with it in `5f3ccf6`, re-targeted from floor verdicts to
@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 import unittest
 
-from tools.fortran_lines import (
+from tools.backends.language.fortran.lines import (
     _split_top_level,
     fortran_logical_lines,
     mask_code_lookalikes,

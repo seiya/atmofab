@@ -49,7 +49,7 @@ DEPENDENCIES. Two packages this repository does not otherwise declare:
     pip install tree-sitter tree-sitter-fortran
 
 pinned by measurement at **tree-sitter 0.26.0** and **tree-sitter-fortran 0.6.0**. A version bump
-re-runs `tools/fortran_structure_differential.py` (both halves) before it is accepted — the tree
+re-runs `tools/backends/language/fortran/structure_differential.py` (both halves) before it is accepted — the tree
 half proves the corpus still parses the same, the flang half proves it parses it RIGHT. Declaring
 these two in a dependency manifest is owned by the MCP-tests-and-CI item of `TODO.md`, which owns
 the fact that this repository declares no dependencies at all.
@@ -171,7 +171,7 @@ def _load_parser():
             f"does not define the node types this front end reads ({', '.join(unknown)}), so it "
             f"cannot report procedures at all. This module is written against "
             f"tree-sitter-fortran 0.6.0; pin that version, and re-run "
-            f"tools/fortran_structure_differential.py (both halves) before accepting a newer one."
+            f"tools/backends/language/fortran/structure_differential.py (both halves) before accepting a newer one."
         )
     return parser
 

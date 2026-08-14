@@ -14,8 +14,9 @@ from pathlib import Path
 import yaml
 
 import tools.validate_pipeline_semantics as vps
-from tools.fortran_lines import strip_fortran_comment_tracking_quotes
-from tools.lang_backend_fortran import parse_signatures_from_fortran
+from tools.backends import registry as backend_registry
+from tools.backends.language.fortran.lines import strip_fortran_comment_tracking_quotes
+from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
     _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
     NodeExecution,
@@ -16292,8 +16293,13 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
                 "public_api": self._full_api()})
             violations: list[str] = []
             _validate_infrastructure_public_api(tmpp, tmpp, violations)
-            self.assertTrue(any("only a Fortran language backend" in v for v in violations),
-                            violations)
+            # The expected clause is ASKED OF THE REGISTRY rather than written out here: the
+            # gate is required to carry the registry's reason verbatim, so that the set of
+            # implemented backends has one spelling. A test that copied today's wording would
+            # go on passing after a backend was added and the gate stopped consulting it.
+            reason = backend_registry.unsupported_reason("language", "c")
+            self.assertIsNotNone(reason)
+            self.assertTrue(any(reason in v for v in violations), violations)
 
     def test_signatures_type_drift_flagged(self) -> None:
         # An IR signature that drifts from §5.1 (here: change entries' element type) is flagged —
@@ -17965,7 +17971,9 @@ class ToolchainBackendGateTests(unittest.TestCase):
                 vps._validate_toolchain_backend_supported(tmp, ir_dir, v)
                 self.assertEqual(v, [], f"{spelling}: exempt from the language half")
                 vps._validate_infrastructure_public_api(tmp, ir_dir, v)
-                self.assertTrue(any("Fortran language backend" in x for x in v),
+                reason = backend_registry.unsupported_reason("language", "c")
+                self.assertIsNotNone(reason)
+                self.assertTrue(any(reason in x for x in v),
                                 f"{spelling}: nothing rejected the non-fortran harness: {v}")
         # The hand-off also requires the OTHER gate to reject the spellings this one does
         # NOT exempt — otherwise the pair would agree only where it happens to be tested.

@@ -25,7 +25,7 @@ pip install tree-sitter tree-sitter-fortran
 
 | package | purpose |
 |---|---|
-| `tree-sitter` | the parser runtime behind `tools/fortran_structure.py` |
+| `tree-sitter` | the parser runtime behind `tools/backends/language/fortran/structure.py` |
 | `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (written against 0.6.0) |
 
 They are needed by the HOST that runs the conductor, because `Generate.gate`'s static check runs

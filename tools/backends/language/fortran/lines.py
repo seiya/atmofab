@@ -67,7 +67,7 @@ every one of them turned a `Generate.static` verdict wrong for source gfortran a
 
 Stdlib only and importing nothing from this package, so every site can depend on it. No
 existing module is a home: the validator may not import `orchestration_runtime`
-(module-boundary rule); `lang_backend_fortran` imports the validator at module level, so
+(module-boundary rule); `backends.language.fortran.signatures` imports the validator at module level, so
 hosting it there would put the validator in a cycle; and hosting it in the validator would
 force `orchestration_runtime` to import that module at module level, which imports PyYAML
 unconditionally — the runtime deliberately defers PyYAML so its recovery commands stay usable

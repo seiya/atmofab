@@ -1,4 +1,4 @@
-"""Tests for the Fortran structure front end (`tools/fortran_structure.py`).
+"""Tests for the Fortran structure front end (`tools/backends/language/fortran/structure.py`).
 
 WHAT IS PINNED HERE and what is not, stated because "pin" has been claimed for a sample in this
 repository three times and broken three times:
@@ -6,7 +6,7 @@ repository three times and broken three times:
 * the SHAPE of what `parse_view` reports — kind, name, dummy text, result name, body offsets,
   interface spans — is pinned by construction, one row per alternative the module enumerates;
 * the CORRECTNESS of that report against a whole corpus is NOT pinned here and cannot be: it is
-  measured by `tools/fortran_structure_differential.py` against the 365 in-tree models and
+  measured by `tools/backends/language/fortran/structure_differential.py` against the 365 in-tree models and
   against flang, which is a development harness rather than a suite test because it needs
   binaries a run must not depend on;
 * the three `problem` gates' own behaviour is pinned in `test_validate_pipeline_semantics.py`;
@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools import fortran_structure as fs  # noqa: E402
+from tools.backends.language.fortran import structure as fs  # noqa: E402
 from tools.validate_pipeline_semantics import _joined_masked_fortran_view  # noqa: E402
 
 
@@ -236,7 +236,7 @@ class FrontEndUnavailableTests(unittest.TestCase):
 
     def test_parse_view_raises_the_unavailable_error_carrying_the_marker(self) -> None:
         result = self._run(textwrap.dedent("""
-            from tools import fortran_structure as fs
+            from tools.backends.language.fortran import structure as fs
             try:
                 fs.parse_view("subroutine s\\nend subroutine s\\n")
             except fs.FortranStructureUnavailableError as exc:
@@ -260,7 +260,7 @@ class FrontEndUnavailableTests(unittest.TestCase):
         result = self._run(textwrap.dedent("""
             import tempfile
             from pathlib import Path
-            from tools import fortran_structure as fs
+            from tools.backends.language.fortran import structure as fs
             import tools.validate_pipeline_semantics as vps
 
             td = Path(tempfile.mkdtemp())
@@ -343,7 +343,7 @@ class GrammarContractTests(unittest.TestCase):
         for node_type in (*fs._PROCEDURE_KINDS, *fs._REQUIRED_NODE_TYPES):
             self.assertIsNotNone(language.id_for_node_kind(node_type, True), node_type)
         # The list is not decorative: every name in it is matched somewhere in the module.
-        source = (REPO_ROOT / "tools" / "fortran_structure.py").read_text()
+        source = Path(fs.__file__).read_text()
         for node_type in fs._REQUIRED_NODE_TYPES:
             self.assertIn(f'"{node_type}"', source, node_type)
 
@@ -398,7 +398,7 @@ class ImportBootstrapTests(unittest.TestCase):
             return names
 
         self.assertEqual(imported(bootstrap.body), imported(bootstrap.handlers[0].body))
-        self.assertIn("tools.fortran_structure", imported(bootstrap.body))
+        self.assertIn("tools.backends.language.fortran.structure", imported(bootstrap.body))
 
 
 if __name__ == "__main__":

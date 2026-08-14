@@ -1157,7 +1157,7 @@ def assert_harness_pin(
     # Certified IR signatures, keyed by symbol. Each entry's `signature` is the language-neutral
     # structured form (Objective B); the Fortran backend renders it back to the stanza currency the
     # pin compares in (the same rendering `_validate_ir_signatures_against_section51` uses).
-    from tools.lang_backend_fortran import SignatureParseError, render_symbol_to_fortran
+    from tools.backends.language.fortran.signatures import SignatureParseError, render_symbol_to_fortran
 
     ir_iface: dict[str, str] = {}
     for entry in (harness_signatures if isinstance(harness_signatures, list) else []):

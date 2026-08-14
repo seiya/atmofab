@@ -99,7 +99,7 @@ REQUIRED_CLI_TOOLS = ("python3", "jq", "git")
 # CLI tools above: without them the run does not fail at launch, it fails at the first `Generate`
 # node's `Generate.gate` static check — after lint and syntax have already passed, in a BILLED
 # run — and terminalizes, because an absent Fortran structure front end is fail-closed by design
-# (`tools/fortran_structure.py`). The failure is correct and the timing is not: nothing in this
+# (`tools/backends/language/fortran/structure.py`). The failure is correct and the timing is not: nothing in this
 # repository installs these, so a machine that satisfies the RUNBOOK today does not have them.
 #
 # Checked by IMPORT NAME, not by distribution name: the distributions are `tree-sitter` and

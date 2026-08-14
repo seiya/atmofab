@@ -33,7 +33,7 @@ from tools.runner_renderer import (
     render_runner,
     spec_id_length_violation,
 )
-from tools.lang_backend_fortran import parse_signatures_from_fortran
+from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
