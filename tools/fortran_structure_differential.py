@@ -15,6 +15,28 @@ Two independent halves, neither of which contributes to any verdict:
   on which machine ran it, and flang is not a dependency this toolchain can require (``gfortran``
   is). See the DECIDED note in ``TODO.md``.
 
+WHY THE `--flang` HALF SHELLS OUT DIRECTLY, since `AGENTS.md` requires compile / run / quality
+checks to go through the build-runtime MCP server and a reviewer has raised this once. Three
+reasons, each checked rather than argued:
+
+* **The MCP tool cannot produce what the oracle compares.** `run_syntax_check` returns a
+  pass/fail verdict plus diagnostics; this harness needs flang's CANONICAL UNPARSE
+  (`-fc1 -fdebug-unparse-no-sema`), which is a transformed copy of the source and is not in that
+  tool's payload at all. `_SYNTAX_COMPILER_ADAPTERS` in `mcp_servers/build_runtime_server.py`
+  registers exactly one adapter — gfortran, with a fixed `-fsyntax-only -std=<std>` argv — so
+  there is no flang path to route through and no way to ask for that mode.
+* **Adding one would contradict a recorded decision.** Making flang an MCP capability makes it a
+  capability of a RUN, and `TODO.md`'s DECIDED note keeps it out of the gate precisely so no
+  verdict depends on which machine ran it. This harness never contributes to a verdict.
+* **The rule's own scope.** `AGENTS.md` bans one-off BUILDS that call a compiler directly, and
+  says in the same breath that the syntax front-end gate is outside that ban because it builds
+  nothing. This produces no object file and no build artifact either; it reads one file and
+  prints text. It also runs outside any orchestration, so it holds none of the
+  `orchestration_id` / `agent_run_id` / `capability_token` the workflow-mode MCP tools require.
+
+If that reasoning stops holding — if the gate ever needs flang, or the MCP server grows an
+unparse mode — this half moves behind it.
+
 THIS IS NOT A SUITE TEST, and it does not skip. Both halves check their prerequisites up front and
 EXIT NON-ZERO when one is missing, because the calibration lesson of this repository is that a
 check which quietly skips is a check that has stopped running. Run it by hand when the front end,

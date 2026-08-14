@@ -6,7 +6,7 @@ This document defines the "minimal operational procedure for running trials". Th
 - From a `spec`'s `Controlled Spec` (physics definition) and `tests` (verification profile), perform execution and judgment, and evaluate physical validity and performance.
 - Isolate where a failure's cause lies among **Spec / Compile / Generate / Build / Validate**. The optional flows `Tune` / `Promote` are handled outside the core workflow.
 
-## 0-1. Required CLI tools
+## 0-1. Required CLI tools and Python packages
 
 Workflow execution and the repair procedures of this RUNBOOK presume the following CLI.
 
@@ -16,7 +16,24 @@ Workflow execution and the repair procedures of this RUNBOOK presume the followi
 | `jq` | extracting shell variables from JSON such as output_manifest (`python3 -c` is blocked by `forbid_python_inline_write`, so it cannot be substituted) |
 | `git` | `write_scope_baseline` (FS-diff for terminal write authorization) / status check |
 
-When absent, it fail-fasts at the point `tools/run_workflow.py` starts.
+The host interpreter additionally needs two Python packages, which this repository does not
+install for you:
+
+```
+pip install tree-sitter tree-sitter-fortran
+```
+
+| package | purpose |
+|---|---|
+| `tree-sitter` | the parser runtime behind `tools/fortran_structure.py` |
+| `tree-sitter-fortran` | the Fortran grammar the three `problem` model gates read structure through (written against 0.6.0) |
+
+They are needed by the HOST that runs the conductor, because `Generate.gate`'s static check runs
+`python3 tools/validate_pipeline_semantics.py` there; no leaf needs them. Without them that gate
+cannot read a Fortran source at all and fails closed — correctly, but only after lint and syntax
+have passed, i.e. part-way into a billed run — so their absence is checked at launch instead.
+
+When any of these is absent, it fail-fasts at the point `tools/run_workflow.py` starts.
 
 ## 0-2. Claude backend preflight requirements (operator setup)
 
