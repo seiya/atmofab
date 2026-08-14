@@ -14,7 +14,11 @@ boundary.
   `import`, every `from ... import`, and every `importlib.import_module` with a literal argument,
   so within those three it is a complete answer and a module removed from the allowlist cannot
   silently come back. A module name COMPUTED at runtime is out of reach of any static reader and
-  is not covered — `_imported_modules` says so at the point where it stops looking.
+  is not covered — `_imported_modules` says so at the point where it stops looking. This half
+  lives in `ALLOWLIST_PATH`, which **no command writes**: it shared a file with the sampled half
+  for four review rounds, and `--write-baseline` — the remedy this module tells maintainers to
+  run — rewrote both, so a new bypass added in any commit that also shed a sampled token was
+  absorbed without a word.
 * **Pinned**: the *registry's own consistency*. Every declared axis has at least one backend,
   every `extracted` backend imports, and `unsupported_reason` answers `None` for exactly the
   declared members of a closed axis — an `open_vocabulary` axis accepts any non-empty token by
@@ -56,7 +60,17 @@ if str(REPO_ROOT) not in sys.path:
 import tools.validate_pipeline_semantics as vps  # noqa: E402
 from tools.backends import registry  # noqa: E402
 
+#: The SAMPLED half. Regenerable: `--write-baseline` rewrites it, and the growth check tells the
+#: maintainer to do exactly that when a token appears in a neutral role.
 BASELINE_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_baseline.json"
+
+#: The PINNED half, in its own file that no command writes. The two lived in one file for four
+#: review rounds, and `--write-baseline` rewrote both — so the remedy this module prescribes for
+#: the sample laundered the pin. Measured over the 60 commits before this one, 14 of them delete
+#: a sampled token from an in-scope file and would therefore have asked for a regeneration; any
+#: bypass import added in such a commit would have been absorbed silently. A change here is a
+#: hand edit, reviewed as the boundary decision it is.
+ALLOWLIST_PATH = REPO_ROOT / "tools" / "tests" / "data" / "backend_boundary_allowlist.json"
 
 #: The package prefix every backend lives under, and the one module inside it the neutral core is
 #: allowed to import. Derived from the registry's own module paths rather than restated, so a
@@ -104,6 +118,22 @@ _EXCLUDED_PREFIXES = (
     "tools/tests/",
 )
 
+#: The fourth backend location from the placement table. It is not a repository-root prefix — the
+#: rule puts a skill's backend fragments at `skills/<skill>/backends/<axis>/<id>.md` — so a prefix
+#: list cannot express it, and for four review rounds it did not: the ledger's own `skills`
+#: migration moved 191 occurrences into a directory the rule names as their home and the check
+#: reported it as GROWTH IN THE NEUTRAL CORE, with a message telling the maintainer to move it
+#: where it already was. Worse, that area's stated acceptance ("its baseline counts drop") was
+#: unachievable, because the occurrences never left the scanned set.
+_BACKEND_DIR_SEGMENT = re.compile(r"(?:^|/)backends/")
+
+
+def _is_backend_location(rel: str) -> bool:
+    """Whether `rel` is one of the four backend locations in the rule's placement table."""
+    if rel.startswith(("tools/backends/", "tools/prompt_templates/backends/", "docs/backends/")):
+        return True
+    return rel.startswith("skills/") and bool(_BACKEND_DIR_SEGMENT.search(rel))
+
 
 def neutral_core_files(root: Path | None = None) -> list[Path]:
     """Every in-scope neutral-core file, repo-relative-sorted and deduplicated."""
@@ -118,6 +148,8 @@ def neutral_core_files(root: Path | None = None) -> list[Path]:
                 continue
             rel = path.relative_to(root).as_posix()
             if "__pycache__" in rel or rel.startswith(_EXCLUDED_PREFIXES):
+                continue
+            if _is_backend_location(rel):
                 continue
             found.add(path)
     return sorted(found, key=lambda p: p.relative_to(root).as_posix())
@@ -274,14 +306,48 @@ def direct_backend_imports(root: Path | None = None) -> dict[str, list[str]]:
 
 
 def measure(root: Path | None = None) -> dict[str, object]:
-    return {
-        "token_counts": token_counts(root),
-        "direct_backend_imports": direct_backend_imports(root),
-    }
+    """The regenerable half only. `direct_backend_imports` is deliberately absent — see
+    `ALLOWLIST_PATH`."""
+    return {"token_counts": token_counts(root)}
+
+
+#: How many of the declared axis names on one line make it a restatement of the list. Four of five
+#: rather than all five, so dropping one name is not an escape.
+_AXIS_LIST_QUORUM = 4
+
+
+def axis_list_restatements(root: Path) -> list[str]:
+    """Every markdown line under `root` that enumerates the axis list, outside its one owner.
+
+    Separator-agnostic by construction: it counts backticked axis NAMES on a line, not the commas
+    or slashes between them. The first version of this guard read two files by name and matched
+    one comma spelling — and the same branch then added two slash-separated restatements to
+    `README.md` and `docs/README.md` and one to `TODO.md`, none of which it could see. Taking a
+    `root` is what lets a synthetic tree drive it: with no violating file in this repository, a
+    guard that only ever runs here reports success whether or not it looks at anything.
+    """
+    canonical = (root / "docs" / "BACKEND_BOUNDARY.md").resolve()
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.md")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith((".git/", "workspace", "docs/design/")):
+            continue
+        if path.resolve() == canonical:
+            continue
+        for lineno, line in enumerate(
+                path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            quoted = set(re.findall(r"`([a-z_]+)`", line)) & set(registry.AXES)
+            if len(quoted) >= _AXIS_LIST_QUORUM:
+                offenders.append(f"{rel}:{lineno}")
+    return offenders
 
 
 def _load_baseline() -> dict[str, object]:
     return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+
+
+def _load_allowlist() -> dict[str, list[str]]:
+    return json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))["direct_backend_imports"]
 
 
 class TokenRatchetTests(unittest.TestCase):
@@ -332,8 +398,17 @@ class TokenRatchetTests(unittest.TestCase):
 class DirectImportPinTests(unittest.TestCase):
     """The pinned measure: which neutral-core modules bypass the registry, exactly."""
 
+    def test_the_regenerable_half_cannot_carry_the_allowlist(self) -> None:
+        # `--write-baseline` writes `measure()`. While `measure()` also returned the import set,
+        # the command that the sampled check tells maintainers to run rewrote the pin too, and a
+        # bypass added in the same commit was absorbed silently. Pinned on `measure()`'s keys
+        # rather than on the file's, so re-adding it fails here and not two review rounds later.
+        self.assertEqual({"token_counts"}, set(measure()))
+        self.assertNotIn("direct_backend_imports", _load_baseline())
+        self.assertNotEqual(BASELINE_PATH, ALLOWLIST_PATH)
+
     def test_direct_backend_imports_match_the_allowlist(self) -> None:
-        recorded = _load_baseline()["direct_backend_imports"]
+        recorded = _load_allowlist()
         measured = direct_backend_imports()
         # Equality, not containment, in both directions: a new bypass fails, and a bypass that was
         # removed must leave the allowlist in the same commit. This is the half of this module that
@@ -343,8 +418,10 @@ class DirectImportPinTests(unittest.TestCase):
             {k: sorted(v) for k, v in sorted(measured.items())},
             "the set of neutral-core modules importing a backend directly changed. The rule "
             "(docs/BACKEND_BOUNDARY.md) is that the neutral core reaches a backend only through "
-            "tools/backends/registry.py; the allowlist records the modules that do not yet. Adding "
-            "to it is a boundary regression, removing from it is the migration.")
+            "tools/backends/registry.py; tools/tests/data/backend_boundary_allowlist.json records "
+            "the modules that do not yet. Adding to it is a boundary regression, removing from it "
+            "is the migration. Edit that file BY HAND: no command writes it, precisely so that "
+            "regenerating the sampled baseline cannot absorb a new bypass.")
 
 
 class ScannedSetTests(unittest.TestCase):
@@ -381,16 +458,44 @@ class ScannedSetTests(unittest.TestCase):
                 "CLAUDE.md",
             )
             found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
-        # `skills/**/backends/...` is a BACKEND location by the placement table, but the
-        # exclusion list keys on repository-root prefixes, so it is scanned. Recorded as an
-        # observed property rather than asserted away: it over-measures, never under-measures.
+        # `skills/<skill>/backends/<axis>/<id>.md` is the placement table's fourth backend
+        # location and is NOT scanned — the ledger's `skills` migration moves knowledge there,
+        # and a check that counted it as neutral core would report a correct migration as growth
+        # and leave the area's "counts drop" acceptance unreachable.
         self.assertEqual(
             {"docs/reference/moved_contract.md", "docs/a/b/c/deep.md", "docs/examples/pinned.yaml",
              "skills/some-skill/scripts/emit.py",
-             "skills/some-skill/backends/language/fortran.md",
              "mcp_servers/tools/run_syntax_check.json", "tools/prompt_templates/leaf.txt",
              "README.md", "AGENTS.md", "CLAUDE.md"},
             found)
+
+    def test_the_axis_list_detector_flags_a_restatement_whatever_its_separators(self) -> None:
+        """A positive control, because this repository contains no violating line.
+
+        A guard with nothing to find reports success whether or not it looks: narrowing it back
+        to two named files, or back to matching one comma spelling, both left the suite green.
+        The three spellings below are the ones actually written on this branch — commas, slashes,
+        and a table cell — plus the near-miss that must NOT be flagged.
+        """
+        import tempfile
+        names = sorted(registry.AXES)
+        commas = ", ".join(f"`{n}`" for n in names)
+        slashes = " / ".join(f"`{n}`" for n in names)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            (tmp / "docs").mkdir()
+            (tmp / "docs" / "BACKEND_BOUNDARY.md").write_text(
+                f"The declared axes are {commas}.\n", encoding="utf-8")
+            (tmp / "README.md").write_text(f"| doc | knowledge of {slashes} |\n", encoding="utf-8")
+            (tmp / "docs" / "README.md").write_text(
+                f"10. BACKEND_BOUNDARY.md (a {slashes} model)\n", encoding="utf-8")
+            (tmp / "TODO.md").write_text(f"a registry declaring {commas}\n", encoding="utf-8")
+            (tmp / "docs" / "innocent.md").write_text(
+                f"the `{names[0]}` axis and the `{names[1]}` axis\n", encoding="utf-8")
+            (tmp / "docs" / "design").mkdir()
+            (tmp / "docs" / "design" / "note.md").write_text(f"{commas}\n", encoding="utf-8")
+            found = axis_list_restatements(tmp)
+        self.assertEqual(["README.md:1", "TODO.md:1", "docs/README.md:1"], found)
 
     def test_the_declared_exclusions_are_all_reachable(self) -> None:
         # An exclusion no glob can produce is dead text that reads as a rule. Two were, before
@@ -403,6 +508,7 @@ class ScannedSetTests(unittest.TestCase):
                 "tools/backends/language/fortran/lines.py",
                 "tools/prompt_templates/backends/language/fortran/gen.txt",
                 "docs/backends/language/fortran/abi.md",
+                "skills/gen/backends/language/fortran.md",
                 "docs/design/note.md",
                 "tools/tests/test_thing.py",
                 "docs/kept.md",
@@ -548,11 +654,16 @@ class RegistryConsistencyTests(unittest.TestCase):
         self.assertIsNotNone(match, "docs/BACKEND_BOUNDARY.md no longer lists the declared axes")
         listed = set(re.findall(r"`([a-z_]+)`", match.group(1)))
         self.assertEqual(set(registry.AXES), listed)
-        for other in ("AGENTS.md", "docs/GLOSSARY.md"):
-            text = (REPO_ROOT / other).read_text(encoding="utf-8")
-            self.assertNotIn(
-                "`language`, `build_system`, `compiler`, `linter`", text,
-                f"{other} restates the axis list; cite docs/BACKEND_BOUNDARY.md instead")
+        # And nowhere else may enumerate it. Checked over EVERY markdown file in the tree, with a
+        # separator-agnostic rule (a line quoting four or more axis names), because the first
+        # version of this guard read two named files for one comma spelling — and the same branch
+        # then added two slash-separated restatements to `README.md` and `docs/README.md`, plus
+        # one in `TODO.md`, none of which it could see. A guard that names its subjects is a
+        # sample; this one enumerates the corpus.
+        self.assertEqual(
+            [], axis_list_restatements(REPO_ROOT),
+            "these lines enumerate the axis list, which has one owner "
+            "(docs/BACKEND_BOUNDARY.md §Definitions); cite that section instead")
 
     def test_every_axis_has_at_least_one_backend(self) -> None:
         for axis in registry.AXES:
@@ -794,8 +905,10 @@ def _write_baseline() -> None:
     data = _load_baseline()
     total = sum(sum(v.values()) for v in data["token_counts"].values())
     print(f"wrote {BASELINE_PATH.relative_to(REPO_ROOT)}: "
-          f"{len(data['token_counts'])} files, {total} sampled occurrences, "
-          f"{len(data['direct_backend_imports'])} modules importing a backend directly")
+          f"{len(data['token_counts'])} files, {total} sampled occurrences "
+          f"(the direct-import allowlist is NOT written by this command; "
+          f"{len(_load_allowlist())} modules recorded, edit "
+          f"{ALLOWLIST_PATH.relative_to(REPO_ROOT)} by hand)")
 
 
 if __name__ == "__main__":

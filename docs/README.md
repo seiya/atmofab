@@ -12,7 +12,7 @@ This document set is organized so that "the reading order = the way to proceed".
 7. `ORCHESTRATION.md` (execution conventions for `orchestration agent -> substep agent` and `orchestration agent -> step agent`)
 8. `RUNBOOK.md` (minimal operational procedures for running trials)
 9. `IMPL_PLAN_SPEC.md` (default-value rules for the `spec.ir.yaml.impl_defaults` section; canonical key names of its parallelization knobs: `spec/schema/ir/impl_defaults.schema.json`)
-10. `BACKEND_BOUNDARY.md` (where knowledge of a concrete `language` / `build_system` / `compiler` / `linter` / `parallel` model may live)
+10. `BACKEND_BOUNDARY.md` (where knowledge of a concrete target-stack technology may live; canonical for the `axis` list)
 11. `PERFORMANCE_DIAGNOSTICS.md` (`perf.json` specification)
 12. `TUNING_WORKFLOW.md` (optional flow: operational guidance for performance exploration)
 

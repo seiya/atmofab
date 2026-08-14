@@ -1,19 +1,4 @@
 {
-  "direct_backend_imports": {
-    "tools/orchestration_runtime.py": [
-      "tools.backends.language.fortran",
-      "tools.backends.language.fortran.lines"
-    ],
-    "tools/runner_renderer.py": [
-      "tools.backends.language.fortran.signatures"
-    ],
-    "tools/validate_pipeline_semantics.py": [
-      "tools.backends.language.fortran",
-      "tools.backends.language.fortran.lines",
-      "tools.backends.language.fortran.signatures",
-      "tools.backends.language.fortran.structure"
-    ]
-  },
   "token_counts": {
     "AGENTS.md": {
       "compiler-driver": 4,

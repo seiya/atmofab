@@ -29,9 +29,10 @@ Out of scope, each for a stated reason:
 - **target-stack axis** (**axis**): one dimension of the technology choice a run makes. The
   declared axes are `language`, `build_system`, `compiler`, `linter`, and `parallel`. Each axis
   and the artifact key its value is read from is declared in `tools/backends/registry.py`, which
-  is the source of truth; this sentence is the only restatement of the list, and
-  `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` so the two cannot
-  drift. Other documents cite this section rather than repeating the list.
+  is the source of truth; this sentence is the only place the list is written out, and
+  `tools/tests/test_backend_boundary.py` compares it against `registry.AXES` and fails on any
+  other markdown line in the repository that enumerates four or more of the names. Other
+  documents cite this section rather than repeating the list.
 - **backend**: the code that knows one value of one axis — the Fortran `language` backend, the
   `make` `build_system` backend. A backend is identified by `<axis>/<backend_id>`.
 - **neutral core**: every module, template, skill, and document in scope that is not a backend.
@@ -101,11 +102,18 @@ the binding. A neutral document must not state the binding itself.
   `TODO.md` are closed. Stated this way because the first version of this section claimed the
   opposite, and following it produced a backend nothing accepted — and then, after a partial fix,
   a backend that was accepted and silently rendered as Fortran.
-- **Adding an axis** requires an entry in `AXES` in `tools/backends/registry.py` naming where its
-  value is read from and whether its vocabulary is open, and adding its name to the §Definitions
-  list above. No row is added to the placement table: that table is indexed by artifact kind and
-  parameterised by `<axis>`, so it already covers every axis. (The previous wording asked for a
-  row, which cannot be done.)
+- **Adding an axis** requires three things: an entry in `AXES` in `tools/backends/registry.py`
+  naming where its value is read from and whether its vocabulary is open; **at least one `Backend`
+  record for it** (an axis with no members is refused by `tools/tests/test_backend_boundary.py`,
+  since an axis nothing implements is a declaration with no subject); and adding its name to the
+  §Definitions list above. No row is added to the placement table: that table is indexed by
+  artifact kind and parameterised by `<axis>`, so it already covers every axis.
+- **Migrating an area** moves knowledge into a backend location from the placement table. Two
+  consequences are expected and are not violations: the sampled counts of the *citing* documents
+  rise, because a path naming a backend id is naming, not knowing (§Decision Criteria); and the
+  moved file leaves the scanned set, which fails the stale-baseline half until the baseline is
+  regenerated. Regeneration rewrites the sampled half only — the direct-import allowlist lives in
+  its own file and is edited by hand, so a migration cannot absorb a new bypass.
 - **Changing a rule stated here** requires washing every document that cites it. The citations are
   found with `grep -rn "BACKEND_BOUNDARY" docs skills tools mcp_servers *.md` from the repository
   root — the root `*.md` is load-bearing, since `TODO.md` carries the migration ledger and its

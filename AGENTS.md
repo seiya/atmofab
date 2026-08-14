@@ -6,7 +6,7 @@ Conventions every agent (Codex / Claude Code) working in this repository must fo
 - **Authoring repository documents** (style, terminology, math notation, forbidden expressions, structure, checklist): `docs/DOC_STYLE.md`.
 - **CLI argument information-acquisition policy** (which subcommand uses a doc vs `--help`): the "Information-acquisition policy" section of `docs/CLI_REFERENCE.md`.
 - **Hook implementation structure** (where hook validation / invocations are defined): `docs/HOOKS.md`.
-- **Backend boundary** (where knowledge of a concrete language / build tool / compiler / linter / parallel model may live): `docs/BACKEND_BOUNDARY.md`.
+- **Backend boundary** (where knowledge of a concrete target-stack technology may live, and the `axis` list): `docs/BACKEND_BOUNDARY.md`.
 
 ## Backend boundary rules
 - A concrete technology is chosen per **`axis`**, and the knowledge each choice implies lives in exactly one **`backend`** package, `tools/backends/<axis>/<backend_id>/`, registered in `tools/backends/registry.py`. `docs/BACKEND_BOUNDARY.md` is canonical for the rule, the placement table (code / documents / prompt templates / `SKILL`), and the procedure for adding a `backend` or an `axis`.
