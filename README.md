@@ -127,9 +127,19 @@ workspace/    trial artifacts
 
 ## Tests
 
+Default (excludes wall-clock-bound `slow` tests):
+
 ```bash
-python3 -m pytest tools/tests/ -q -p no:randomly
+python3 -m pytest tools/tests/ -q
 ```
+
+Full suite (includes `slow`):
+
+```bash
+python3 -m pytest tools/tests/ -q -m "slow or not slow"
+```
+
+`pytest.ini` registers the `slow` marker and sets `-m "not slow"` / `-p no:randomly` by default.
 
 ## Documentation entry points
 

@@ -31,6 +31,8 @@ from pathlib import Path
 from unittest import mock
 from zoneinfo import ZoneInfo
 
+import pytest
+
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
@@ -6476,11 +6478,13 @@ class _ScriptedStream:
 
         Order matters: the write end goes first, so any conductor reader still parked on
         this pipe — including one the conductor deliberately abandoned — sees EOF and
-        returns before the read end is taken out from under it.
+        returns before the read end is taken out from under it. Closing the write end
+        also unblocks a scripted writer stuck on a full pipe (the abandon/interrupt
+        plateau cases), so the join below cannot burn the full timeout every time.
         """
         self._aborted.set()
-        self._thread.join(timeout=5.0)
         self._close_write()
+        self._thread.join(timeout=0.5)
         time.sleep(0.01)
         try:
             self.reader.close()
@@ -6495,6 +6499,35 @@ def _config_from_text(text: str) -> lc.LlmConfig:
     path = Path(directory) / "llm.yaml"
     path.write_text(text, encoding="utf-8")
     return lc.load_llm_config(path)
+
+
+def _assert_writer_plateaus(
+    case: unittest.TestCase,
+    stream: _ScriptedStream,
+    *,
+    ceiling: int,
+    progress_s: float = 0.5,
+    settle_s: float = 0.05,
+) -> None:
+    """After a flood is released: wait briefly for the writer to move, then assert it plateaus.
+
+    The observable is that an abandoned reader stops draining within one block — the writer's
+    own `bytes_written` stops climbing once the pipe fills. A multi-second busy-wait was
+    enough to dominate the suite wall clock without tightening the property.
+    """
+    baseline = stream.bytes_written
+    deadline = time.monotonic() + progress_s
+    while stream.bytes_written == baseline and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(settle_s)
+    case.assertLess(
+        stream.bytes_written, ceiling,
+        "the readers must stop draining once the driver is unwinding")
+    settled = stream.bytes_written
+    time.sleep(settle_s)
+    case.assertEqual(
+        stream.bytes_written, settled,
+        "...and stay stopped: the writer is wedged on a full pipe")
 
 
 class LeafSpawnTest(unittest.TestCase):
@@ -7760,6 +7793,7 @@ class LeafSpawnTest(unittest.TestCase):
                         "P", {"HOME": "/h"}, session_id="A", child_arid="A")
         self.assertIn((424242, signal.SIGTERM), signalled)
 
+    @pytest.mark.slow
     def test_an_interrupted_claude_leaf_stops_draining_a_leaked_descendant(self) -> None:
         """The interrupt handler's obligation, matching the codex path's. Under bwrap a
         descendant the leaf leaked survives the group signal, and readers left running keep
@@ -7810,16 +7844,9 @@ class LeafSpawnTest(unittest.TestCase):
         # interrupt paths use: a reader parked on a SILENT pipe stays parked either way, so
         # what the flag buys is that a reader still being delivered to stops within one block.
         held.set()
-        deadline = time.monotonic() + 5.0
-        while leaked.bytes_written == 0 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        time.sleep(0.3)
-        ceiling = wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024
-        self.assertLess(leaked.bytes_written, ceiling,
-                        "the readers must stop draining once the driver is unwinding")
-        settled = leaked.bytes_written
-        time.sleep(0.2)
-        self.assertEqual(leaked.bytes_written, settled)
+        _assert_writer_plateaus(
+            self, leaked,
+            ceiling=wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024)
 
     def test_a_recycled_pid_is_never_signalled(self) -> None:
         """The teardown must not signal a group that merely INHERITED the leaf's pid.
@@ -8085,6 +8112,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIs(proc.timed_out, False)
         self.assertEqual(proc.stderr, "")                   # no marker on a clean drain
 
+    @pytest.mark.slow
     def test_a_real_wedged_leaf_is_killed_and_harvested(self) -> None:
         """One END-TO-END case against a REAL subprocess. Every other test here drives hand
         written `Popen` doubles, which encode assumptions about CPython and about the kernel
@@ -8103,15 +8131,15 @@ class LeafSpawnTest(unittest.TestCase):
                     llm_command=f"python3 -c {leaf!r}")
         c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
         out = io.StringIO()
-        with patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
-                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
+        with patch.object(wc, "_leaf_timeout_seconds", lambda: 0.25), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.25), \
                 redirect_stdout(out):
             started = time.monotonic()
             proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A",
                                 timeout_context={"node_key": "n", "step": "generate",
                                                  "substep": "generate", "agent_run_id": "A"})
             elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 20.0)
+        self.assertLess(elapsed, 5.0)
         self.assertIs(proc.timed_out, True)
         self.assertNotEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "partial answer\n")       # written before the wedge
@@ -8120,7 +8148,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
         events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
         self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
-        self.assertGreaterEqual(events[0]["elapsed_seconds"], 1.0)
+        self.assertGreaterEqual(events[0]["elapsed_seconds"], 0.25)
 
     def test_a_real_claude_leaf_flooding_without_newlines_is_captured_within_budget(self) -> None:
         """Issue #18's acceptance, on the claude path, against a REAL subprocess.
@@ -8209,6 +8237,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIn("leaf_stdout_record_truncated", proc.raw_stdout)
         self.assertLess(len(proc.raw_stdout), limit * 2)
 
+    @pytest.mark.slow
     def test_a_real_wedged_codex_leaf_is_killed_and_its_jsonl_kept(self) -> None:
         """The codex twin of `test_a_real_wedged_leaf_is_killed_and_harvested`, which had no
         counterpart on this backend: every other codex test drives a hand-written `Popen`
@@ -8232,8 +8261,8 @@ class LeafSpawnTest(unittest.TestCase):
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
             c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-            with patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
-                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
+            with patch.object(wc, "_leaf_timeout_seconds", lambda: 0.25), \
+                    patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.25), \
                     redirect_stdout(out):
                 started = time.monotonic()
                 proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A",
@@ -8241,7 +8270,7 @@ class LeafSpawnTest(unittest.TestCase):
                                                      "substep": "generate",
                                                      "agent_run_id": "A"})
                 elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 20.0)
+        self.assertLess(elapsed, 5.0)
         self.assertIs(proc.timed_out, True)
         self.assertNotEqual(proc.returncode, 0)
         # A wedge's last words are the whole evidence, on both streams.
@@ -9017,6 +9046,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIs(proc.timed_out, True)
         self.assertIn("leaf_timeout", out.getvalue())
 
+    @pytest.mark.slow
     def test_codex_keeps_and_reads_the_queued_backlog_after_the_break(self) -> None:
         """Whatever the pump had already queued when the read stopped is still evidence, and
         can still carry meaning. `leaf.stdout.jsonl` is the only record of what a codex leaf
@@ -9068,7 +9098,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_STREAM_POLL_SECONDS", 0.001), \
                 patch.object(wc.os, "getpgid", lambda pid: 999), \
                 patch.object(wc.os, "killpg", lambda pgid, sig: None), \
-                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 2.0), \
+                patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.25), \
                 redirect_stdout(io.StringIO()):
             proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P")
         # Every line is in the raw capture, including the ones queued past the break...
@@ -9767,6 +9797,7 @@ class LeafSpawnTest(unittest.TestCase):
         # Published exactly once, whichever of the two racing publishers got there first.
         self.assertEqual(proc.stderr.count("leaf_stderr_capture_tail"), 1)
 
+    @pytest.mark.slow
     def test_the_stream_tail_is_consistent_under_a_concurrent_publisher(self) -> None:
         """`add` runs on the reader thread while `publish`/`text` run on the main thread, so
         the two must not see each other half-done. An unsynchronized version increments the
@@ -9834,7 +9865,7 @@ class LeafSpawnTest(unittest.TestCase):
                     # does not guarantee the target has executed, and `publish` correctly
                     # no-ops on an empty tail — so without this the race is sometimes not a
                     # race at all, and under load the trial has nothing to parse.
-                    deadline = time.monotonic() + 5.0
+                    deadline = time.monotonic() + 0.5
                     while not racing.dropped and time.monotonic() < deadline:
                         time.sleep(0)
                     self.assertTrue(racing.dropped, "the writer never started")
@@ -10123,6 +10154,7 @@ class LeafSpawnTest(unittest.TestCase):
                 self.assertEqual(("leaf_stderr_capture_truncated" in captured), truncated)
                 self.assertEqual(captured.count("y"), min(size, 1000))
 
+    @pytest.mark.slow
     def test_the_pump_holds_a_bounded_number_of_BYTES_not_lines(self) -> None:
         """The queue bounds LINES, and one JSONL record can be a whole tool result: 2048 slots
         of a megabyte each is ~2 GB held in front of the reader, i.e. the driver OOMs before
@@ -10253,6 +10285,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertFalse(pump.is_alive(),
                          "the pump must stop, not park in put() on a queue nobody drains")
 
+    @pytest.mark.slow
     def test_an_interrupted_codex_leaf_does_not_leave_its_pump_running(self) -> None:
         """The interrupt path's obligation is the abandon path's: the frame is unwinding and
         the queue goes with it, so a pump left behind drains the leaf's pipe into a capture
@@ -10315,16 +10348,9 @@ class LeafSpawnTest(unittest.TestCase):
         # is that a reader still being DELIVERED to stops within one block.
         self.assertEqual(len(made), 2)
         held.set()                              # ...let the flood loose
-        deadline = time.monotonic() + 5.0
-        while stdout_stream.bytes_written == 0 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        time.sleep(0.3)
-        ceiling = wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024
-        self.assertLess(stdout_stream.bytes_written, ceiling,
-                        "the pump must stop draining once the driver is unwinding")
-        settled = stdout_stream.bytes_written
-        time.sleep(0.2)
-        self.assertEqual(stdout_stream.bytes_written, settled)
+        _assert_writer_plateaus(
+            self, stdout_stream,
+            ceiling=wc.LEAF_STREAM_READ_BLOCK_BYTES * 2 + 64 * 1024)
 
     def test_a_whole_turn_left_in_the_queue_is_accepted_and_its_identity_bound(self) -> None:
         """The reader can fall behind by the ENTIRE turn: the leaf answers and exits with its
@@ -10618,6 +10644,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertIn('"thread.started"', proc.raw_stdout)
         self.assertIn("leaf_timeout", out.getvalue())
 
+    @pytest.mark.slow
     def test_codex_stderr_drain_cannot_block_after_the_leaf_exits(self) -> None:
         """The cap bounds the stderr JOIN too, not just the reads. The drain thread ends at
         EOF, and EOF needs every inheritor of the write end to close it — a tool subprocess
@@ -10691,19 +10718,12 @@ class LeafSpawnTest(unittest.TestCase):
         # writer's own progress is the evidence. A reader that went on draining would let
         # all 4 MB through.
         released.set()                       # ...let the flood loose
-        deadline = time.monotonic() + 5.0
-        while leaked_stderr.bytes_written == 0 and time.monotonic() < deadline:
-            time.sleep(0.01)
-        time.sleep(0.3)
         # One in-flight read plus whatever the kernel pipe itself holds, and then nothing.
-        ceiling = 65536 * 2 + 64 * 1024
-        self.assertLess(leaked_stderr.bytes_written, ceiling,
-                        "the abandoned reader must stop, not drain the rest")
-        settled = leaked_stderr.bytes_written
-        time.sleep(0.2)
-        self.assertEqual(leaked_stderr.bytes_written, settled,
-                         "...and stay stopped: the writer is wedged on a full pipe")
+        _assert_writer_plateaus(
+            self, leaked_stderr,
+            ceiling=65536 * 2 + 64 * 1024)
 
+    @pytest.mark.slow
     def test_codex_timeout_race_with_a_clean_finish_is_not_a_timeout(self) -> None:
         """The boundary case the cap cannot avoid: the leaf is still running when the deadline
         expires — so the conductor kills it and calls it a timeout — but it was finishing at

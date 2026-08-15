@@ -475,20 +475,51 @@ def _probe(src: str) -> list[str]:
 
 
 class SkipReasonsAreDeclaredTests(unittest.TestCase):
+    """Corpus-wide skip inventory. The AST walk over every tracked test module is shared
+    across the two assertions that need it, so the suite pays for one scan rather than two.
+    """
+
+    _tracked: list[Path]
+    _violations: list[str]
+    _used_reasons: set[str]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        tracked = _tracked_test_modules()
+        violations: list[str] = []
+        used: set[str] = set()
+        for module in tracked:
+            if not module.is_file():
+                violations.append(f"{module.name}: tracked but not present in the checkout")
+                continue
+            for line, api, reason in _skip_sites(module):
+                if reason is None:
+                    violations.append(
+                        f"{module.name}:{line}: {api} stops a test without a literal reason "
+                        "this table can check")
+                elif reason not in _DECLARED_ENVIRONMENT_SKIPS:
+                    violations.append(
+                        f"{module.name}:{line}: {api}({reason!r}) is not a declared "
+                        "environment capability")
+                else:
+                    used.add(reason)
+        cls._tracked = tracked
+        cls._violations = violations
+        cls._used_reasons = used
+
     def test_every_skip_reason_is_a_declared_environment_capability(self) -> None:
-        violations = _violations(_tracked_test_modules())
-        self.assertEqual(violations, [], (
+        self.assertEqual(self._violations, [], (
             "a test stops running for a reason nobody declared. If this is a real host "
             "capability, add it to _DECLARED_ENVIRONMENT_SKIPS with a note saying what about "
             "the host it depends on. If it is a missing repository file, capture the file into "
-            f"tools/tests/data/ instead of skipping: {violations}"))
+            f"tools/tests/data/ instead of skipping: {self._violations}"))
 
     def test_scan_covers_every_tracked_test_module(self) -> None:
         # The property that makes this a class guard is that it reads ALL of them. Deriving the
         # corpus from `git ls-files` rather than a glob means a narrowed scan is a failure here,
         # not a quietly smaller sweep — the first version of this file had a `rglob` that could
         # be replaced with a single module while every test stayed green.
-        modules = _tracked_test_modules()
+        modules = self._tracked
         on_disk = set(TESTS_DIR.rglob("*.py"))
         tracked = set(modules)
         self.assertEqual(tracked - on_disk, set(), "tracked module missing from the checkout")
@@ -779,9 +810,7 @@ class SkipReasonsAreDeclaredTests(unittest.TestCase):
     def test_no_declared_reason_is_unused(self) -> None:
         # A permission table that only grows is a table that stops meaning anything. Every entry
         # must correspond to a skip that exists; a removed skip takes its entry with it.
-        used = {reason for module in _tracked_test_modules() if module.is_file()
-                for _, _, reason in _skip_sites(module) if reason is not None}
-        unused = sorted(set(_DECLARED_ENVIRONMENT_SKIPS) - used)
+        unused = sorted(set(_DECLARED_ENVIRONMENT_SKIPS) - self._used_reasons)
         self.assertEqual(unused, [], (
             f"declared environment capabilities no test skips on any more: {unused}"))
 
