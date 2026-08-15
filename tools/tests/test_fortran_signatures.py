@@ -19,6 +19,7 @@ from pathlib import Path
 from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import (
     SignatureParseError,
+    canonicalize_end_line,
     declaration_atoms,
     load_structured_signatures,
     normalized_stanza_index,
@@ -181,6 +182,41 @@ class FortranStanzaParserTests(unittest.TestCase):
             "end function hx__b\n")
         ops, _types, _errors = parse_interface_stanzas(block)
         self.assertEqual(set(ops), {"hx__a", "hx__b"})
+
+    def test_duplicate_derived_type_errors(self) -> None:
+        # The duplicate check has a branch per stanza kind, and only the PROCEDURE branch was
+        # pinned (`test_duplicate_stanza_errors`): deleting the derived-type branch left the whole
+        # suite green while a §5.1 block declaring `hx__t` twice silently kept the second stanza —
+        # the "a malformed first copy hides behind a correct second" fail-open the parser's own
+        # docstring says it exists to prevent. Two reviewers found the gap independently.
+        dup = (
+            "type :: hx__t\n  integer :: a\nend type hx__t\n"
+            "type :: hx__t\n  real :: b\nend type hx__t\n")
+        with self.assertRaisesRegex(SignatureParseError, "duplicate signature for symbol 'hx__t'"):
+            parse_signatures_from_fortran(dup)
+
+    def test_no_space_endtype_closes_a_type_stanza(self) -> None:
+        # The `endfunction` half of the no-space rule was pinned; the `endtype` half was not, in
+        # BOTH regexes that carry it. Tightening either `end\s*` to `end\s+` kept the suite green
+        # while refusing source gfortran accepts — the over-rejection direction.
+        block = ("type :: hx__t\n  integer :: a\nendtype hx__t\n"
+                 "type :: hx__u\n  real :: b\nend type hx__u\n")
+        struct = parse_signatures_from_fortran(block)
+        self.assertEqual({t["name"] for t in struct["types"]}, {"hx__t", "hx__u"})
+        # ... and the closing line canonicalizes the same way with or without the space, which is
+        # what makes the two spellings compare equal at the gates (`_END_STMT_RE`).
+        self.assertEqual(canonicalize_end_line("endtype hx__t"), "end type")
+        self.assertEqual(canonicalize_end_line("end type hx__t"), "end type")
+
+    def test_stanza_headers_are_case_insensitive(self) -> None:
+        # Fortran identifiers and keywords are case-insensitive, so the stanza headers carry
+        # `re.IGNORECASE`. Dropping it from the procedure header left the suite green.
+        block = ("SUBROUTINE Hx__Foo(a)\n  INTEGER, INTENT(IN) :: a\nEND SUBROUTINE Hx__Foo\n"
+                 "TYPE :: Hx__T\n  INTEGER :: a\nEND TYPE Hx__T\n")
+        ops, types, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(ops), ["Hx__Foo"])
+        self.assertEqual(sorted(types), ["Hx__T"])
 
     def test_type_missing_end_type_is_unterminated(self) -> None:
         block = (
