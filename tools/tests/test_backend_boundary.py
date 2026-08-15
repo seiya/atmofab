@@ -1757,6 +1757,75 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 registry.capability_module("language", "zz_liar", "runner_render")
         self.assertIn("re-exports no", str(ctx.exception))
 
+    def test_a_package_capability_is_name_and_axis_checked_like_a_core_one(self) -> None:
+        # W1c. `_check_declarations` walked `core_provides` before the two sets existed, and
+        # reverting it to that survives the whole suite: a `backend_provides` entry naming a
+        # capability that does not exist, or one belonging to another axis, reached NO check —
+        # the CAPABILITY_MODULE_ATTR guard below it fires on a different ground and with a
+        # different message, so it LOOKS like coverage. Both grounds are asserted by message.
+        unknown = registry.Backend(
+            "language", "zz_unknown_cap", "tools.backends.language.fortran",
+            backend_provides=frozenset({"zz_not_a_capability"}))
+        with self._patched(unknown):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("unknown capability", str(ctx.exception))
+        # `lint` IS a capability — of the `linter` axis. Declared on a `language` record it must
+        # be refused as a wrong-axis question, not as a missing reach convention.
+        wrong_axis = registry.Backend(
+            "language", "zz_wrong_axis", "tools.backends.language.fortran",
+            backend_provides=frozenset({"lint"}))
+        with self._patched(wrong_axis):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("axis only", str(ctx.exception))
+
+    def test_the_refusal_names_the_value_that_does_implement_the_capability(self) -> None:
+        # W8b. `missing_capability_reason` builds its "this repository implements it for X" list
+        # from the records, and reverting that read to `core_provides` survives: the clause then
+        # says "no value of this axis" for a capability the Fortran backend demonstrably has.
+        # This string is carried VERBATIM into a leaf-facing violation, so a clause that names no
+        # implementer tells an author to go implement something that already exists.
+        reason = registry.missing_capability_reason("language", "cpp", "runner_render")
+        self.assertIsNotNone(reason)
+        self.assertIn("fortran", reason)
+        self.assertNotIn("no value of this axis", reason)
+        # And the negative half, so the assertion above cannot pass by naming everything: an
+        # axis where nothing declares the capability really does say so.
+        with mock.patch.dict(
+                registry._BACKENDS,
+                {k: v._replace(core_provides=frozenset(), backend_provides=frozenset())
+                 for k, v in registry._BACKENDS.items() if k[0] == "language"}):
+            bare = registry.missing_capability_reason("language", "cpp", "runner_render")
+        self.assertIn("no value of this axis", bare)
+
+    def test_the_package_reexport_is_what_the_dispatch_actually_reaches(self) -> None:
+        """W7b. Driven in a FRESH interpreter, because in this one the question is already
+        answered by accident.
+
+        `capability_module` reads the capability off the package as an attribute, and importing
+        a submodule anywhere sets that attribute on its parent. Several test modules import
+        `...fortran.runner` directly, so by the time W7 runs the attribute exists whether or not
+        `__init__` re-exports it — measured: deleting the re-export leaves the entire suite
+        green, while a real run (where nothing imports the submodule by name) fail-closes on
+        every M3c node. A subprocess that imports only the registry is the one observer that
+        sees the line.
+        """
+        import subprocess
+        import sys
+        probe = (
+            "from tools.backends import registry as r\n"
+            "m = r.capability_module('language', 'fortran', 'runner_render')\n"
+            "assert 'runner' in m.__name__, m.__name__\n"
+            "assert hasattr(m, 'render_runner')\n"
+            "print('ok')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe], cwd=str(REPO_ROOT),
+            capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("ok", proc.stdout)
+
     def test_the_fortran_package_carries_what_its_record_claims(self) -> None:
         # W7. The declaration is a claim about the tree; this is the tree. Without it the record
         # could name a capability whose implementation had been renamed or deleted, and only a

@@ -21980,5 +21980,50 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                     for v in violations))
 
 
+class DirectExecutionBootstrapTests(unittest.TestCase):
+    """The `except ModuleNotFoundError` import block, which only runs when this module is
+    executed as a script from a cwd where `tools` is not importable.
+
+    Nothing observed it, and the defect class is not "this one import is missing" but "the two
+    blocks disagree" — every module-level import is spelled twice, and a name added to one and
+    not the other is a `NameError` at the moment of use, on a CLI path the suite is structurally
+    unable to reach (under pytest the FIRST block always succeeds, so the fallback is dead code).
+
+    An earlier version of this test ran the module as a script from outside the repository and
+    asserted it printed usage. That does not observe the rule: the fallback names are referenced
+    inside functions, not at import, so dropping one still imports cleanly and prints usage —
+    measured, the mutation survived. Set equality over the two blocks is the instrument that
+    actually fails, and it fails for ANY name, not only the one this change added.
+    """
+
+    def test_the_two_import_blocks_name_the_same_modules(self) -> None:
+        import ast
+
+        source = Path(vps.__file__).with_suffix(".py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        tries = [n for n in tree.body if isinstance(n, ast.Try)]
+        self.assertTrue(tries, "the module-level try/except import bootstrap is gone")
+        bootstrap = tries[0]
+
+        def imported(nodes: list[ast.stmt]) -> set[str]:
+            names: set[str] = set()
+            for node in ast.walk(ast.Module(body=nodes, type_ignores=[])):
+                if isinstance(node, ast.Import):
+                    names |= {a.name for a in node.names}
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names |= {f"{node.module}.{a.name}" for a in node.names}
+            return names
+
+        primary = imported(bootstrap.body)
+        # The `sys` import and the sys.path repair are the fallback's own business; everything
+        # else in it exists solely to re-do the primary block.
+        fallback = imported([h for h in bootstrap.handlers][0].body) - {"sys"}
+        self.assertEqual(
+            primary, fallback,
+            "the module-level import block and its ModuleNotFoundError fallback name different "
+            "modules; a name in only one of them is a NameError when this module is run as a "
+            "script from outside the repository, which no test can reach")
+
+
 if __name__ == "__main__":
     unittest.main()
