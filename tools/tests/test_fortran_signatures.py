@@ -219,46 +219,68 @@ class FortranStanzaParserTests(unittest.TestCase):
         self.assertEqual(canonicalize_end_line("endtype hx__t"), "end type")
         self.assertEqual(canonicalize_end_line("end type hx__t"), "end type")
 
-    def test_the_two_procedure_header_patterns_agree(self) -> None:
-        # `_PROC_HEADER_RE` (which lowers a header) is a strict extension of `_IFACE_PROC_START`
-        # (which finds one). They cannot be collapsed — the group numbering differs — so the
-        # containment is pinned instead: a header the lowering pattern accepts must be one the
-        # splitter finds, or a stanza would be split out and then fail to lower. The type pair had
-        # the same shape and WAS collapsed; this is the half that could not be.
-        #
-        # The prefix ALTERNATION is compared as a set identity, not sampled. The first version of
-        # this test only ran the real §5.1 headers plus three hand-written probes, so adding an
-        # alternative (`impure`) to one pattern and not the other survived it — a witness that
-        # could only see the prefixes someone had already thought of.
-        import re as _re
+    #: The vocabulary the two procedure-header patterns are compared over. It is the BOUND of the
+    #: test below — a divergence spelled with a token that is not here is not observed — so it
+    #: carries the Fortran prefixes and procedure keywords either pattern could plausibly grow,
+    #: not only the ones they have today, plus identifier shapes that differ between the two
+    #: character classes.
+    _HEADER_PREFIXES = ("", "pure ", "elemental ", "recursive ", "impure ", "module ",
+                        "pure elemental ", "recursive pure ", "PURE ", "Elemental ")
+    _HEADER_KEYWORDS = ("subroutine", "function", "SUBROUTINE", "Function",
+                        "operator", "submodule", "interface", "procedure")
+    _HEADER_NAMES = ("hx__foo", "A1_b", "x", "a$b", "a-b", "a.b")
 
+    def test_the_two_procedure_header_patterns_agree(self) -> None:
+        # `_PROC_HEADER_RE` (which lowers a header) must accept nothing `_IFACE_PROC_START` (which
+        # finds one) does not, and the two must read the same keyword and the same NAME out of it.
+        # A header the parser lowers but the splitter never finds is a signature that cannot be
+        # compared; a header where they extract different names is a stanza filed under one symbol
+        # and lowered as another.
+        #
+        # Two earlier versions of this test were wrong in the two ways this repository keeps
+        # paying for. The first sampled: the real §5.1 headers plus three hand-written probes, so
+        # adding an alternative to one pattern alone survived it. The second scraped the prefix
+        # alternation out of the pattern SOURCE with another regex and compared the two sets for
+        # EQUALITY — which (a) refused legitimate rewrites of either pattern (factoring the shared
+        # `\s+`, `re.VERBOSE`, a capturing group) by failing its own scraper, (b) refused a
+        # STRICTLY SAFE change, widening the splitter alone, because containment is the property
+        # and equality is not it, and (c) compared only the prefixes, leaving the keyword group
+        # and the identifier class unobserved. Both defects were found by review.
+        #
+        # So: no introspection of the pattern text, and the direction asserted is the direction
+        # claimed. The bound is the declared vocabulary above rather than a regex parse.
         from tools.backends.language.fortran.signatures import (
             _IFACE_PROC_START, _PROC_HEADER_RE)
 
-        def prefixes(pattern: str) -> set[str]:
-            m = _re.search(r"\(\?:((?:[a-z]+\\s\+\|?)+)\)\*", pattern)
-            assert m, f"prefix alternation not found in {pattern!r}"
-            return {alt for alt in m.group(1).split("|") if alt}
+        checked = 0
+        for prefix in self._HEADER_PREFIXES:
+            for keyword in self._HEADER_KEYWORDS:
+                for name in self._HEADER_NAMES:
+                    for tail in ("(a)", "(a, b) result(s)", "()"):
+                        header = f"{prefix}{keyword} {name}{tail}"
+                        lowered = _PROC_HEADER_RE.match(header)
+                        if lowered is None:
+                            continue
+                        checked += 1
+                        found = _IFACE_PROC_START.match(header)
+                        self.assertIsNotNone(
+                            found, f"the parser lowers a header the splitter never finds: "
+                                   f"{header!r}")
+                        self.assertEqual(
+                            lowered.group(1).lower(), found.group(1).lower(),
+                            f"the two patterns read a different keyword out of {header!r}")
+                        self.assertEqual(
+                            lowered.group(2), found.group(2),
+                            f"the two patterns read a different symbol name out of {header!r}")
+        self.assertGreater(checked, 20, "the probe vocabulary lowered almost nothing — the "
+                                        "corpus stopped exercising the patterns")
 
-        self.assertEqual(prefixes(_PROC_HEADER_RE.pattern), prefixes(_IFACE_PROC_START.pattern),
-                         "the two procedure header patterns accept different prefix sets")
-
-        # ... and the containment holds behaviourally, over every prefix either pattern declares
-        # and over the real §5.1 headers.
-        for prefix in sorted(prefixes(_PROC_HEADER_RE.pattern)):
-            word = prefix.replace("\\s+", " ")
-            for header in (f"{word}subroutine hx__p(a)",
-                           f"{word.upper()}FUNCTION hx__f(a) RESULT(s)"):
-                self.assertIsNotNone(_PROC_HEADER_RE.match(header), header)
+        # The real §5.1 headers, as the corpus half: whatever the vocabulary above misses, the
+        # published surface still has to satisfy the same implication.
+        for header in _real_section51_block().splitlines():
+            lowered = _PROC_HEADER_RE.match(header)
+            if lowered is not None:
                 self.assertIsNotNone(_IFACE_PROC_START.match(header), header)
-
-        headers = [ln for ln in _real_section51_block().splitlines()
-                   if _PROC_HEADER_RE.match(ln)]
-        self.assertTrue(headers, "no procedure headers in the real §5.1 block")
-        for header in headers:
-            self.assertIsNotNone(
-                _IFACE_PROC_START.match(header),
-                f"the stanza splitter does not find a header the parser lowers: {header!r}")
 
     def test_stanza_headers_are_case_insensitive(self) -> None:
         # Fortran keywords and identifiers are case-insensitive, so all four stanza patterns carry
