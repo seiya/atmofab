@@ -21996,7 +21996,7 @@ class DirectExecutionBootstrapTests(unittest.TestCase):
     actually fails, and it fails for ANY name, not only the one this change added.
     """
 
-    def test_the_two_import_blocks_name_the_same_modules(self) -> None:
+    def test_the_fallback_import_block_redoes_every_primary_import(self) -> None:
         import ast
 
         source = Path(vps.__file__).with_suffix(".py").read_text(encoding="utf-8")
@@ -22015,14 +22015,21 @@ class DirectExecutionBootstrapTests(unittest.TestCase):
             return names
 
         primary = imported(bootstrap.body)
-        # The `sys` import and the sys.path repair are the fallback's own business; everything
-        # else in it exists solely to re-do the primary block.
-        fallback = imported([h for h in bootstrap.handlers][0].body) - {"sys"}
+        fallback = imported([h for h in bootstrap.handlers][0].body)
+        # A SUPERSET, not set equality, and the asymmetry is the whole rule. The fallback exists
+        # to redo the primary block, so every primary name must appear in it — that direction is
+        # the one no test can reach, because under pytest the primary block always succeeds and
+        # the fallback is dead code. The other direction needs no rule here: a name dropped from
+        # the PRIMARY block is a `NameError` the moment any gate uses it, which the suite sees
+        # immediately. Requiring equality would additionally reject a fallback that legitimately
+        # needs a bootstrap-only import — it already needs `sys` for the `sys.path` repair, and
+        # `os` or `pathlib` are the obvious next ones. Rejecting the repo's own next legitimate
+        # edit is how a pin teaches people to stop reading it.
         self.assertEqual(
-            primary, fallback,
-            "the module-level import block and its ModuleNotFoundError fallback name different "
-            "modules; a name in only one of them is a NameError when this module is run as a "
-            "script from outside the repository, which no test can reach")
+            set(), primary - fallback,
+            "the ModuleNotFoundError fallback does not re-import everything the module-level "
+            "block does; a name in only the primary block is a NameError when this module is "
+            "run as a script from outside the repository, which no test can reach")
 
 
 if __name__ == "__main__":

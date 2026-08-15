@@ -1078,12 +1078,16 @@ class SpecIdBoundAgreementTest(unittest.TestCase):
              and any(getattr(t, "id", None) == "MAX_SPEC_ID_LEN" for t in n.targets)),
             None)
         self.assertIsNotNone(assign, "the backend's spec_id bound is gone")
-        names = {
+        # Either spelling of the same derivation: the module attribute, or the name imported
+        # directly. The rule is that the bound is COMPUTED from the identifier limit, not that
+        # it is reached through a particular module object — pinning the spelling would reject a
+        # `from ...bundle import IDENTIFIER_MAX` refactor that preserves the derivation exactly.
+        referenced = {
             f"{getattr(n.value, 'id', '')}.{n.attr}"
             for n in ast.walk(assign) if isinstance(n, ast.Attribute)
-        }
-        self.assertIn(
-            "bundle.IDENTIFIER_MAX", names,
+        } | {n.id for n in ast.walk(assign) if isinstance(n, ast.Name)}
+        self.assertTrue(
+            {"bundle.IDENTIFIER_MAX", "IDENTIFIER_MAX"} & referenced,
             "the backend's spec_id bound must be DERIVED from the language identifier limit, "
             "not restated as a literal: a literal does not move when the limit does")
 
