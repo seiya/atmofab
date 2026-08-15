@@ -17347,6 +17347,27 @@ class ChecksSourceGateTests(unittest.TestCase):
             "end module bx_checks", "end module bx_wrong")
         self.assertTrue(any("module bx_checks" in v for v in self._run(bad)))
 
+    def test_a_module_declaration_only_inside_a_comment_does_not_satisfy_the_gate(self) -> None:
+        # The module-name check reads COMMENT-STRIPPED, CONTINUATION-JOINED logical lines, and
+        # that was caught by nothing behavioural: a census showed the only thing observing it was
+        # the sampled token ratchet, and a token-preserving weakening to raw `splitlines()` left
+        # the whole suite green. Both directions are pinned here.
+        #
+        # Fail-OPEN half: a `module bx_checks` that exists only inside a comment must NOT satisfy
+        # the declaration requirement.
+        commented = _CHECKS_OK.replace("module bx_checks\n",
+                                       "module bx_wrong\n  ! module bx_checks\n", 1).replace(
+            "end module bx_checks", "end module bx_wrong")
+        self.assertTrue(any("module bx_checks" in v for v in self._run(commented)),
+                        "a commented-out declaration satisfied the gate")
+
+        # Over-rejection half: a declaration legally split across a `&` continuation must still
+        # satisfy it. Raw line splitting sees `module bx_&` and reports the module missing on a
+        # source gfortran accepts.
+        continued = _CHECKS_OK.replace("module bx_checks\n", "module bx_&\n  &checks\n", 1)
+        self.assertEqual([v for v in self._run(continued) if "module bx_checks" in v], [],
+                         "a continuation-split declaration was reported missing")
+
     def test_missing_public_name(self) -> None:
         bad = _CHECKS_OK.replace("checks_compute, metric_compute", "checks_compute")
         v = self._run(bad)

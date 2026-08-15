@@ -219,10 +219,11 @@ class FortranStanzaParserTests(unittest.TestCase):
         self.assertEqual(canonicalize_end_line("endtype hx__t"), "end type")
         self.assertEqual(canonicalize_end_line("end type hx__t"), "end type")
 
-    #: Headers that MUST lower today. Every combination of these is required to reach the
-    #: containment assertion, which is what bounds the test: an earlier version asserted only
-    #: `checked > 20` against an actual 288, so shrinking any of these lists by 4x still passed
-    #: the floor it exists to defend.
+    #: Headers that MUST lower today. Every combination of these is required to be taken by BOTH
+    #: patterns; `_MUST_STAY_LOWERED_*` below keeps the lists from being eroded, which is what
+    #: actually bounds the test. Two earlier versions bounded nothing: a `checked > 20` floor
+    #: against an actual 288, then this product with no pin on the lists it multiplies — cutting
+    #: all four to one entry each took it to a single combination with the suite green.
     _MUST_LOWER_PREFIXES = ("", "pure ", "elemental ", "recursive ", "pure elemental ",
                             "recursive pure ", "PURE ", "Elemental ")
     _MUST_LOWER_KEYWORDS = ("subroutine", "function", "SUBROUTINE", "Function")
@@ -235,15 +236,18 @@ class FortranStanzaParserTests(unittest.TestCase):
     _DIVERGENCE_PREFIXES = ("impure ", "module ")
     _DIVERGENCE_KEYWORDS = ("operator", "submodule", "interface", "procedure")
 
-    #: Identifier shapes outside `[A-Za-z0-9_]`. These are NOT symmetric probes, which is measured,
-    #: not assumed: the splitter has no end anchor — it must find a header inside a longer line —
-    #: so `subroutine a$b(a)` matches it, reading the name as `a`, while the anchored lowering
-    #: pattern refuses the whole header. That asymmetry is by design and pre-existing; it is
-    #: asserted below in the shape it actually has, so that either half changing becomes visible.
-    #: (An earlier comment called these "shapes that differ between the two character classes" —
-    #: both classes are byte-identical, so the claim was false; and a later version asserted both
-    #: patterns refuse them, which the measurement above disproves.)
-    _UNANCHORED_ASYMMETRY_NAMES = ("a$b", "a-b", "a.b")
+    #: Tokens that must stay PROBED — in the must-lower lists or the divergence lists, either is
+    #: fine, but not deleted. Without this, emptying the divergence lists and widening one pattern
+    #: is invisible: a census constructed exactly that pair and the suite stayed green. Moving a
+    #: token from one list to the other is the deliberate act this permits; dropping it is not.
+    _MUST_STAY_PROBED_PREFIXES = ("impure ", "module ")
+    _MUST_STAY_PROBED_KEYWORDS = ("operator", "submodule", "interface", "procedure")
+
+    #: ... and the same for the must-lower side, which had no bound at all: shrinking all four
+    #: lists to one entry each took 288 combinations down to 1 with the suite green — the same
+    #: erosion the `checked > 20` floor allowed, in the mechanism written to replace it.
+    _MUST_STAY_LOWERED_PREFIXES = ("", "pure ", "elemental ", "recursive ")
+    _MUST_STAY_LOWERED_KEYWORDS = ("subroutine", "function")
 
     def _assert_patterns_agree(self, header: str) -> bool:
         """Assert both patterns answer the same on a WELL-FORMED header; return whether they took it.
@@ -254,15 +258,15 @@ class FortranStanzaParserTests(unittest.TestCase):
           is never compared;
         * splitter-only — a stanza with no lowering. Measured: adding `impure` to the splitter
           alone turns `impure subroutine hx__f(a)` from silently ignored into a hard
-          `SignatureParseError`. An earlier version of this test asserted one-way containment and
-          justified it by calling the splitter-only direction "strictly safe", which a reviewer
-          measured false — while `signatures.py`'s own comment beside `_PROC_HEADER_RE` said the
-          opposite. The one-way version was itself a correction of a set-equality version that
-          compared regex SOURCE TEXT; what was wrong there was the introspection, not the
-          direction.
+          `SignatureParseError`.
 
         The asymmetry the patterns legitimately have — the splitter has no end anchor, so it also
-        matches a malformed tail — is kept out by probing well-formed headers only.
+        matches a malformed tail — is kept out by probing well-formed headers only. An earlier
+        version pinned that asymmetry over identifier shapes no compiler accepts (`a$b`), which
+        refused two legitimate changes: giving the splitter an end anchor (the change that would
+        make the patterns fully agree, i.e. the property this test is named for) and widening both
+        identifier classes symmetrically. It was removed rather than repaired — pinning behaviour
+        over source no compiler accepts buys nothing and costs the improvement.
         """
         from tools.backends.language.fortran.signatures import (
             _IFACE_PROC_START, _PROC_HEADER_RE)
@@ -283,13 +287,6 @@ class FortranStanzaParserTests(unittest.TestCase):
                          f"the two patterns read a different symbol name out of {header!r}")
         return True
 
-    #: Tokens that must stay PROBED — in the must-lower lists or the divergence lists, either is
-    #: fine, but not deleted. Without this, emptying the divergence lists and widening one pattern
-    #: is invisible: a census constructed exactly that pair and the suite stayed green. Moving a
-    #: token from one list to the other is the deliberate act this permits; dropping it is not.
-    _MUST_STAY_PROBED_PREFIXES = ("impure ", "module ")
-    _MUST_STAY_PROBED_KEYWORDS = ("operator", "submodule", "interface", "procedure")
-
     def test_the_probe_vocabulary_keeps_the_tokens_it_was_built_for(self) -> None:
         prefixes = set(self._MUST_LOWER_PREFIXES) | set(self._DIVERGENCE_PREFIXES)
         keywords = set(self._MUST_LOWER_KEYWORDS) | set(self._DIVERGENCE_KEYWORDS)
@@ -301,6 +298,18 @@ class FortranStanzaParserTests(unittest.TestCase):
             self.assertIn(token, keywords,
                           f"{token!r} stopped being probed by the header-pair test; a one-sided "
                           f"widening on it would now be invisible")
+        for token in self._MUST_STAY_LOWERED_PREFIXES:
+            self.assertIn(token, self._MUST_LOWER_PREFIXES,
+                          f"{token!r} stopped being exercised as a header that must lower")
+        for token in self._MUST_STAY_LOWERED_KEYWORDS:
+            self.assertIn(token, self._MUST_LOWER_KEYWORDS,
+                          f"{token!r} stopped being exercised as a header that must lower")
+        self.assertTrue(any(p != p.lower() for p in self._MUST_LOWER_PREFIXES)
+                        and any(k != k.lower() for k in self._MUST_LOWER_KEYWORDS),
+                        "the must-lower vocabulary lost its upper-cased entries, so the patterns' "
+                        "case-insensitivity is no longer exercised here")
+        self.assertGreaterEqual(len(self._MUST_LOWER_NAMES), 2)
+        self.assertGreaterEqual(len(self._HEADER_TAILS), 2)
 
     def test_the_two_procedure_header_patterns_agree(self) -> None:
         # Every MUST-LOWER combination has to be taken by both patterns — that is the bound,
@@ -330,24 +339,6 @@ class FortranStanzaParserTests(unittest.TestCase):
                 self.assertFalse(self._assert_patterns_agree(f"{keyword} {name}(a)"),
                                  f"{keyword!r} is listed as accepted by neither pattern, but both "
                                  f"now accept it")
-        # The one asymmetry the two patterns legitimately have, pinned in the shape it has: the
-        # unanchored splitter takes the leading valid identifier, the anchored parser refuses the
-        # header. If either half changes — the splitter gaining an anchor, or the parser widening
-        # its class — this fails and the change has to be deliberate.
-        from tools.backends.language.fortran.signatures import (
-            _IFACE_PROC_START, _PROC_HEADER_RE)
-
-        for name in self._UNANCHORED_ASYMMETRY_NAMES:
-            for keyword in self._MUST_LOWER_KEYWORDS:
-                header = f"{keyword} {name}(a)"
-                found = _IFACE_PROC_START.match(header)
-                self.assertIsNotNone(found, f"the splitter stopped finding {header!r}")
-                self.assertEqual(found.group(2), name.split(name[1])[0],
-                                 f"the splitter reads a different leading name out of {header!r}")
-                self.assertIsNone(_PROC_HEADER_RE.match(header),
-                                  f"the lowering pattern now accepts {header!r}; if that is "
-                                  f"intended, the splitter must gain the same shape")
-
         # The real §5.1 headers, as the corpus half: whatever the vocabulary above misses, the
         # published surface still has to satisfy the same agreement.
         for header in _real_section51_block().splitlines():
@@ -469,11 +460,12 @@ class FortranStanzaParserTests(unittest.TestCase):
         # the way the compiler reads it, while the normalizer erases Python's `\s`, which is
         # wider. A line holding only such a character therefore survives the scan and normalizes
         # to the empty string, and `stanza_atoms` must drop it: an empty atom breaks the ordered
-        # stanza comparison and raises a §5.1 drift violation on source gfortran accepts.
+        # stanza comparison.
         #
-        # Recorded as a live guard after a census labelled it unreachable and a reviewer disproved
-        # that by construction. Nothing in the tree contains such a line, so this is the only
-        # observer.
+        # The guard is live — a census labelled it unreachable and a reviewer disproved that by
+        # construction — but its consequence is bounded, and that was measured too: gfortran
+        # rejects all four characters (`Error: Invalid character in name`), so no source carrying
+        # one can be certified. This pins the behaviour, not a wrong-verdict path.
         for blank in ("\xa0", "\v", "\x85", "\u2028"):
             with self.subTest(blank=repr(blank)):
                 self.assertEqual(normalize_fortran_line(blank), "")
@@ -963,29 +955,64 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     implied to be covered, the same way `tools/tests/test_backend_boundary.py` records it.
     """
 
-    #: Modules under `tools/backends/` that legitimately depend on the neutral core, and why.
-    #: This is the ONLY hand-maintained list left, and it is the inverse of the old one: the
-    #: scanned set is now DISCOVERED by walking the package, so a module cannot go unscanned by
-    #: being forgotten. Four rounds of review each found a different file the enumerated version
-    #: had missed — `structure.py`, `registry.py`, and both package `__init__` modules — which is
-    #: the signature of an enumeration standing in for a rule.
-    _NEUTRAL_CORE_DEPENDENTS = {
-        # A developer harness, not a runtime path: it diffs `structure` against a flang oracle and
-        # drives the validator's own helpers to do it. `docs/BACKEND_BOUNDARY.md` permits the
-        # direction; nothing imports this module from the neutral core, so it is off the cycle.
-        "tools/backends/language/fortran/structure_differential.py",
-    }
+    #: The modules whose SUBJECT MATTER moved here. A renewed dependency on the neutral core from
+    #: these is the regression the move removed, whatever its spelling.
+    _SUBJECT_MATTER_ROOTS = (
+        "tools/backends/language/fortran/signatures.py",
+        "tools/backends/language/fortran/lines.py",
+    )
 
     @classmethod
-    def _scanned_backend_modules(cls) -> list[str]:
-        """Every module under `tools/backends/`, minus the declared exceptions."""
-        root = REPO_ROOT / "tools/backends"
-        found = sorted(
-            str(path.relative_to(REPO_ROOT))
-            for path in root.rglob("*.py")
-            if "__pycache__" not in path.parts
-        )
-        return [rel for rel in found if rel not in cls._NEUTRAL_CORE_DEPENDENTS]
+    def _rel_paths_for(cls, dotted: str) -> list[str]:
+        """The files importing `dotted` executes: the module (or package) and its parent packages."""
+        parts = dotted.split(".")
+        out: list[str] = []
+        for i in range(1, len(parts) + 1):
+            stem = "/".join(parts[:i])
+            for rel in (f"{stem}.py", f"{stem}/__init__.py"):
+                if (REPO_ROOT / rel).is_file():
+                    out.append(rel)
+        return out
+
+    @classmethod
+    def _modules_on_the_cycle(cls) -> list[str]:
+        """The backend modules that must not import the validator — COMPUTED, not listed.
+
+        Two kinds of root, for the two reasons the docstring gives:
+
+        * the subject-matter roots above;
+        * every backend module the validator imports, since importing it back is a cycle.
+
+        Then everything reachable from those roots by imports WITHIN `tools/backends`, because a
+        dependency routed through a sibling is the same dependency — and every parent package on
+        the way, since importing `a.b.c` executes `a/__init__.py` too.
+
+        What this deliberately does NOT cover is a backend module no root reaches:
+        `structure_differential.py` (a developer harness) imports the validator today and is
+        allowed to, and so would a future `build_system/make/` module —
+        `docs/BACKEND_BOUNDARY.md` permits backend -> neutral core. An earlier version of this
+        check walked every file under `tools/backends/` and refused exactly that, with a message
+        claiming a cycle that does not exist; a reviewer constructed the next area of the
+        migration ledger and watched it fail. Computing the closure removes the over-rejection AND
+        the hand-maintained exception list that came with the walk — an exemption a reviewer
+        showed was itself a bypass, since `signatures` could reach the validator THROUGH the
+        exempted module with the suite green.
+        """
+        seen: set[str] = set()
+        queue: list[str] = list(cls._SUBJECT_MATTER_ROOTS)
+        validator = REPO_ROOT / "tools/validate_pipeline_semantics.py"
+        for _lineno, name in cls._imported_names(validator):
+            if name.startswith("tools.backends"):
+                queue += cls._rel_paths_for(name)
+        while queue:
+            rel = queue.pop()
+            if rel in seen or not (REPO_ROOT / rel).is_file():
+                continue
+            seen.add(rel)
+            for _lineno, name in cls._imported_names(REPO_ROOT / rel):
+                if name.startswith("tools.backends"):
+                    queue += cls._rel_paths_for(name)
+        return sorted(seen)
 
     #: The importer callables whose LITERAL first argument the source check reads. Same set, and
     #: the same limit, as `tools/tests/test_backend_boundary.py`.
@@ -1027,8 +1054,17 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
         return out
 
     def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
-        scanned = self._scanned_backend_modules()
-        self.assertGreater(len(scanned), 5, "the backend package walk found almost nothing")
+        scanned = self._modules_on_the_cycle()
+        # The floor is the roots plus the packages every import of them executes; stated as a
+        # membership check rather than a number, because a number is what the previous version
+        # used and it sat at 5 against an actual 8.
+        for required in self._SUBJECT_MATTER_ROOTS + (
+                "tools/backends/__init__.py",
+                "tools/backends/language/__init__.py",
+                "tools/backends/language/fortran/__init__.py"):
+            self.assertIn(required, scanned,
+                          "the closure stopped covering a module every import of the backend "
+                          "executes")
         for rel in scanned:
             for lineno, name in self._imported_names(REPO_ROOT / rel):
                 self.assertNotIn(
@@ -1037,41 +1073,50 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
                     f"validator imports this module at module level); a lazy one reinstates the "
                     f"dependency on the neutral core that moving the §5.1 layer here removed.")
 
-    def test_every_declared_exception_still_needs_to_be_one(self) -> None:
-        # The exception list is the only thing that can hide a module from the check above, so it
-        # is held to its own justification: a module listed here must ACTUALLY import the neutral
-        # core. One that stopped doing so would otherwise sit in the list forever, silently
-        # exempting whatever it grows next.
-        for rel in sorted(self._NEUTRAL_CORE_DEPENDENTS):
-            path = REPO_ROOT / rel
-            self.assertTrue(path.is_file(), f"{rel} is listed as an exception but does not exist")
-            imports_neutral_core = any(
-                name.startswith("tools.") and not name.startswith("tools.backends")
-                for _lineno, name in self._imported_names(path))
-            self.assertTrue(
-                imports_neutral_core,
-                f"{rel} no longer imports the neutral core; remove it from "
-                f"_NEUTRAL_CORE_DEPENDENTS so it is scanned like every other backend module")
+    def test_a_dependency_routed_through_a_sibling_is_still_covered(self) -> None:
+        # The closure's reason for existing. `structure_differential` imports the validator and is
+        # allowed to; what must not happen is a subject-matter root reaching the validator THROUGH
+        # it. Nothing does today, so the module is outside the closure — and if `signatures` ever
+        # imports it, it enters the closure and its validator import is caught. Asserted as the
+        # property, over the real import graph.
+        scanned = set(self._modules_on_the_cycle())
+        harness = "tools/backends/language/fortran/structure_differential.py"
+        self.assertTrue((REPO_ROOT / harness).is_file())
+        self.assertNotIn(harness, scanned,
+                         "nothing on the cycle imports the developer harness, so it should be "
+                         "outside the closure")
+        importers = [
+            rel for rel in scanned
+            if any(name.startswith("tools.backends.language.fortran.structure_differential")
+                   for _lineno, name in self._imported_names(REPO_ROOT / rel))
+        ]
+        self.assertEqual(importers, [],
+                         "a module on the cycle imports the developer harness, which imports the "
+                         "validator — the closure must therefore include it")
 
-    def test_the_walk_covers_what_the_validator_imports(self) -> None:
-        # A second reading of the same property, from the other end: whatever the validator
-        # imports out of `tools/backends` must be in the scanned set. The walk makes this true by
-        # construction today; it is asserted so that narrowing the walk — to a prefix, a list, or
-        # a glob that misses `__init__.py` — fails here rather than silently shrinking the check.
-        validator = REPO_ROOT / "tools/validate_pipeline_semantics.py"
-        scanned = set(self._scanned_backend_modules())
-        required: set[str] = set()
-        for _lineno, name in self._imported_names(validator):
-            if not name.startswith("tools.backends"):
-                continue
-            for rel in (name.replace(".", "/") + ".py",
-                        name.replace(".", "/") + "/__init__.py"):
-                if (REPO_ROOT / rel).is_file():
-                    required.add(rel)
-        self.assertTrue(required, "the validator imports no backend module at all")
-        self.assertLessEqual(required, scanned,
-                             "the validator imports a backend module the cycle check does not "
-                             "scan")
+    def test_a_backend_module_no_root_reaches_is_free_to_import_the_neutral_core(self) -> None:
+        # The over-rejection guard, kept for the whole life of this check rather than run once:
+        # `docs/BACKEND_BOUNDARY.md` permits backend -> neutral core, and the next area of the
+        # migration ledger (`build_system/make`) will exercise it. A version of this check that
+        # walked every file under `tools/backends/` refused that, so the property is pinned.
+        scanned = set(self._modules_on_the_cycle())
+        for outside in ("tools/backends/language/fortran/structure_differential.py",
+                        "tools/backends/build_system/make/rules.py"):
+            self.assertNotIn(outside, scanned,
+                             f"{outside} is not reachable from any root; refusing its imports "
+                             f"would refuse work the boundary rule permits")
+
+    def test_an_unparseable_module_on_the_cycle_raises(self) -> None:
+        # The reader must not answer "no imports" for a file it could not read: a module that
+        # fails to parse is where an unread import would sit. Making `_imported_names` swallow
+        # `SyntaxError` and return `[]` is invisible to every other test.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            broken = Path(td) / "broken.py"
+            broken.write_text("def broken(:\n", encoding="utf-8")
+            with self.assertRaises(SyntaxError):
+                self._imported_names(broken)
 
     def test_importing_this_backend_does_not_execute_the_validator(self) -> None:
         import subprocess

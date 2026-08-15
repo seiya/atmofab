@@ -220,16 +220,20 @@ def stanza_atoms(lines: list[str]) -> tuple[str, ...]:
         line = canonicalize_end_line(line)
         for atom in declaration_atoms(line):
             norm = fortran_lines.normalize_fortran_line(atom)
-            # `if norm:` is a LIVE guard, not an intent marker — an earlier version of this
-            # comment called it unreachable and a reviewer disproved it by construction. The two
-            # blank definitions differ: the scanner keeps a line the compiler treats as content
-            # (its blank set is space/tab/form-feed, gfortran's), while this normalizer erases
-            # Python's `\s`, which is wider. So a line holding only U+00A0 (or `\v`, `\x85`,
-            # `\u2028`) survives as a logical line and normalizes to the empty string. Without
-            # this filter it becomes an empty ATOM, which breaks the ordered stanza comparison and
-            # raises a §5.1 drift violation on source the compiler accepts — over-rejection.
-            # Nothing in the tree contains such a line today, which is why deleting the guard
-            # passes the suite; `test_a_line_of_exotic_blanks_produces_no_atom` is the witness.
+            # `if norm:` FIRES on a reachable input, which is why it is not labelled inert like
+            # its neighbours: the scanner and this normalizer disagree about "blank" by design —
+            # the scanner uses gfortran's set (space, tab, form feed) so a U+00A0 stays content,
+            # while this erases Python's wider `\s` — so a line of such characters survives the
+            # scan and normalizes to empty. Without the filter it becomes an empty ATOM and breaks
+            # the ordered stanza comparison.
+            #
+            # What it does NOT prevent, measured rather than asserted: a wrong verdict on a real
+            # run. `gfortran -fsyntax-only -std=f2008` rejects every one of those characters
+            # (`Error: Invalid character in name`), so no source carrying one can be certified.
+            # An earlier version of this comment claimed the harm was over-rejection "on source
+            # the compiler accepts", which a reviewer disproved by running the compiler. The
+            # guard is kept because an empty atom is meaningless in any case, not because a live
+            # input needs it. `test_a_line_of_exotic_blanks_produces_no_atom` is the witness.
             if norm:
                 out.append(norm)
     return tuple(out)
