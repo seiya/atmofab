@@ -804,52 +804,75 @@ class SharedSplitterMigrationTests(unittest.TestCase):
 class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     """No backend module the validator imports may import it back — at module level or lazily.
 
-    The reason is mechanical, and stating it precisely matters because the boundary rule does NOT
-    forbid this direction: `docs/BACKEND_BOUNDARY.md` says a backend MAY import the neutral core,
-    and a sibling in this very package does (`structure_differential.py:66`). What forbids it HERE
-    is that `validate_pipeline_semantics` now imports this module at module level, so any
-    back-import closes a cycle. An earlier version of this test asserted the boundary rule instead
-    and would have refused a boundary-legal import — the over-rejection direction.
+    Two reasons, and they cover different spellings, so both are stated:
 
-    What it is guarding against is the state this module was in for its whole life until the §5.1
-    line and stanza layer moved here: it imported `_fortran_logical_lines`,
-    `_normalize_fortran_line` and `_parse_interface_stanzas` out of the validator, so the Fortran
-    backend reached into the neutral core for its own subject matter (TODO.md's blocking
-    sub-item). Nothing observed that: the import worked and the suite was green.
+    * a MODULE-LEVEL back-import is a cycle. `validate_pipeline_semantics` imports these modules at
+      module level, so importing it back closes one. This half is mechanical.
+    * a LAZY back-import is not a cycle — a function-local import is the standard way to break one,
+      and it executes fine. What forbids it here is narrower than the boundary rule and narrower
+      than "no cycles": these modules had their OWN SUBJECT MATTER sitting in the neutral core and
+      the whole point of the move was that they no longer need anything from it. A renewed
+      dependency IS the regression, whatever its spelling.
 
-    Two checks, because neither alone covers the property:
+    Stating that precisely matters because the boundary rule does NOT forbid this direction:
+    `docs/BACKEND_BOUNDARY.md` says a backend MAY import the neutral core, and a sibling in this
+    very package does (`structure_differential.py:66`). The first version of this test asserted the
+    boundary rule and would have refused a boundary-legal import — the over-rejection direction.
+    The second asserted the cycle for both spellings, which is false for the lazy one.
 
-    * the SOURCE check reads every `import` / `from ... import` in this module and in `lines`, at
-      any nesting depth, so a function-local import — the exact spelling `runner_renderer` used —
-      is caught. The subprocess probe below cannot see one.
-    * the IMPORT check runs a fresh interpreter, so it catches a module-level import (and one
-      reached transitively through `lines`) as an actually-executed fact rather than a reading of
-      the source. In-process `sys.modules` says nothing here: most of this test run imports the
-      validator anyway.
+    What it guards against is the state these modules were in until the §5.1 line and stanza layer
+    moved here: `signatures` imported `_fortran_logical_lines`, `_normalize_fortran_line` and
+    `_parse_interface_stanzas` out of the validator, so the Fortran backend reached into the
+    neutral core for its own subject matter (TODO.md's blocking sub-item). Nothing observed that:
+    the import worked and the suite was green.
+
+    THREE checks, because no two of them cover the property:
+
+    * the SOURCE check reads every import in every scanned module, at any nesting depth, in every
+      spelling the reader knows — `import`, `from ... import` (module AND alias), relative, and a
+      literal `importlib.import_module` / `__import__`. The subprocess probe cannot see a lazy one.
+    * the SCOPE check derives which modules are scanned from the validator's own backend imports,
+      so a newly imported backend module cannot go unscanned. It found `structure.py` on its first
+      run, and `registry.py` after a reviewer showed the prefix filter excluded it.
+    * the IMPORT check runs a fresh interpreter, so a module-level import — including one reached
+      transitively through a sibling — is an executed fact rather than a reading of the source.
+      In-process `sys.modules` says nothing: most of this test run imports the validator anyway.
+
+    A COMPUTED module name (`importlib.import_module(name_from_a_variable)`) is out of reach of the
+    source check and invisible to the probe when lazy. It is recorded as a limit here rather than
+    implied to be covered, the same way `tools/tests/test_backend_boundary.py` records it.
     """
 
-    #: The modules the validator imports AT MODULE LEVEL, which is what makes a back-import a
-    #: cycle. Not hand-picked: `test_the_scanned_modules_are_the_ones_the_validator_imports`
-    #: compares this against the validator's own imports, so adding a third module-level backend
-    #: import without listing it here fails rather than going unscanned.
+    #: The modules whose imports are scanned. Not hand-picked:
+    #: `test_the_scanned_modules_are_the_ones_the_validator_imports` derives the required set from
+    #: the validator's own backend imports and fails if any of them is missing here.
     _BACKEND_MODULES = (
         "tools/backends/language/fortran/signatures.py",
         "tools/backends/language/fortran/lines.py",
-        # The validator imports the tree-sitter front end at module level too, so it is on the
-        # same cycle. It was NOT in the hand-written pair: the derivation below found it the first
-        # time it ran, which is the reason the bound is derived rather than written.
+        # The tree-sitter front end: on the same cycle, and NOT in the hand-written pair this
+        # started as — the derivation found it the first time it ran.
         "tools/backends/language/fortran/structure.py",
+        # The registry: also imported by the validator at module level, so also on the cycle. The
+        # derivation missed it at first because it filtered on the `language.fortran` prefix; a
+        # reviewer reinstated a back-import here with the whole suite green.
+        "tools/backends/registry.py",
     )
 
-    @staticmethod
-    def _imported_names(path: Path) -> list[tuple[int, str]]:
+    #: The importer callables whose LITERAL first argument the source check reads. Same set, and
+    #: the same limit, as `tools/tests/test_backend_boundary.py`.
+    _IMPORTER_CALLS = frozenset({"import_module", "__import__"})
+
+    @classmethod
+    def _imported_names(cls, path: Path) -> list[tuple[int, str]]:
         """Every dotted name imported anywhere in `path`, at any nesting depth.
 
         `ImportFrom` contributes `module.alias` and not just `module`: `from tools import
         validate_pipeline_semantics` names the target in the ALIAS, and reading only `node.module`
         missed it — a reviewer reinstated the whole backend-to-neutral-core edge in that spelling
         with this test green. Relative imports contribute their written form too, since `tools` is
-        a namespace package and a relative import can cross into it.
+        a namespace package and a relative import can cross into it. A literal
+        `importlib.import_module("...")` contributes its argument, because it is an import that no
+        import statement announces — a census showed it evaded both halves of this test.
         """
         import ast
 
@@ -863,6 +886,15 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
                 out.append((node.lineno, "." * node.level + base))
                 out += [(node.lineno, f"{'.' * node.level}{base}.{alias.name}".strip("."))
                         for alias in node.names]
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = getattr(func, "attr", None) or getattr(func, "id", None)
+                if name not in cls._IMPORTER_CALLS:
+                    continue
+                args = list(node.args) + [kw.value for kw in node.keywords
+                                          if kw.arg in (None, "name")]
+                out += [(node.lineno, a.value) for a in args
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)]
         return out
 
     def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
@@ -870,44 +902,36 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
             for lineno, name in self._imported_names(REPO_ROOT / rel):
                 self.assertNotIn(
                     "validate_pipeline_semantics", name,
-                    f"{rel}:{lineno} imports {name} — the validator imports this package at "
-                    f"module level, so this closes an import cycle")
+                    f"{rel}:{lineno} imports {name}. A module-level import closes a cycle (the "
+                    f"validator imports this module at module level); a lazy one reinstates the "
+                    f"dependency on the neutral core that moving the §5.1 layer here removed.")
 
     def test_the_scanned_modules_are_the_ones_the_validator_imports(self) -> None:
-        # The bound of the check above is which files it reads. Derive it from the validator
-        # instead of trusting a hand-written pair: every backend module the validator imports at
-        # MODULE level is a module a back-import would cycle through, so it must be scanned.
+        # The bound of the check above is which files it reads, so derive it from the validator
+        # rather than trusting a hand-written list: every backend module the validator imports is
+        # a module a back-import would cycle through, and must be scanned.
+        #
+        # ANY nesting depth, deliberately — a lazy import in the validator still binds the module,
+        # so the cycle risk is the same and the safe direction is to scan more, not less. An
+        # earlier version filtered on the `tools.backends.language.fortran` prefix and therefore
+        # excluded `tools/backends/registry.py`, which the validator imports at module level.
         import ast
 
         validator = REPO_ROOT / "tools/validate_pipeline_semantics.py"
         tree = ast.parse(validator.read_text(encoding="utf-8"), filename=str(validator))
-        at_module_level: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+        imported_backend_modules: set[str] = set()
+        for _lineno, name in self._imported_names(validator):
+            if not name.startswith("tools.backends"):
                 continue
-            for lineno, name in self._imported_names_of_node(node):
-                del lineno
-                if not name.startswith("tools.backends.language.fortran"):
-                    continue
-                rel = name.replace(".", "/") + ".py"
-                if (REPO_ROOT / rel).is_file():
-                    at_module_level.add(rel)
-        self.assertTrue(at_module_level, "the validator imports no backend module at all")
+            rel = name.replace(".", "/") + ".py"
+            if (REPO_ROOT / rel).is_file():
+                imported_backend_modules.add(rel)
+        del tree
+        self.assertTrue(imported_backend_modules, "the validator imports no backend module at all")
         self.assertLessEqual(
-            at_module_level, set(self._BACKEND_MODULES),
+            imported_backend_modules, set(self._BACKEND_MODULES),
             "the validator imports a backend module that the cycle check does not scan; add it "
             "to _BACKEND_MODULES")
-
-    @staticmethod
-    def _imported_names_of_node(node) -> list[tuple[int, str]]:
-        import ast
-
-        if isinstance(node, ast.Import):
-            return [(node.lineno, alias.name) for alias in node.names]
-        base = node.module or ""
-        out = [(node.lineno, base)]
-        out += [(node.lineno, f"{base}.{alias.name}") for alias in node.names]
-        return out
 
     def test_importing_this_backend_does_not_execute_the_validator(self) -> None:
         import subprocess
