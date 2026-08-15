@@ -1385,6 +1385,25 @@ class HarnessPinTest(unittest.TestCase):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
 
 
+    def test_type_component_reorder_drift_in_the_harness_SOURCE(self) -> None:
+        # The sibling above perturbs the certified IR signatures, which exercises check (1). The
+        # SOURCE-side ordered comparison — check (2), `stanza_line_list(src) == stanza_line_list
+        # (exp)` — had no observer at all: relaxing it to a set left the whole suite green, so a
+        # recert that reordered a derived type's components in the generated model source while
+        # leaving its IR signatures correct would have passed the pin. Component ORDER is the §5
+        # compatibility contract (it is the record layout the rendered runner is compiled
+        # against), so the two sides need one observer each.
+        reordered = self.src.replace(
+            "    character(len=:), allocatable :: case_id\n"
+            "    logical :: expected_xfail\n",
+            "    logical :: expected_xfail\n"
+            "    character(len=:), allocatable :: case_id\n")
+        self.assertNotEqual(reordered, self.src, "the reorder did not apply to the stub")
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, reordered)
+        self.assertIn("model source signature", str(cm.exception))
+
+
 @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
 class GfortranSmokeTest(unittest.TestCase):
     def test_rendered_runner_compiles_and_runs(self) -> None:
