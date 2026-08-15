@@ -463,6 +463,18 @@ class Section51NormalizationTests(unittest.TestCase):
         self.assertEqual(len(joined), 1)
         self.assertEqual(normalize_fortran_line(joined[0]), "subroutinehx__wp(a,b,c)")
 
+    def test_the_section51_view_does_not_split_on_semicolons(self) -> None:
+        # The docstring of `fortran_logical_line_texts` asserts this as its distinguishing
+        # property against the validator's `;`-splitting `_iter_fortran_logical_lines`: the
+        # interface-stanza parser wants each header AS WRITTEN. Adding a `;` split changed the
+        # atoms of 79 real corpus files and left the whole suite green — the property the
+        # adapter's own docstring claims had no observer.
+        text = "associate(unused_z_b=>z_b); end associate\n"
+        self.assertEqual(fortran_logical_line_texts(text), ["associate(unused_z_b=>z_b); end associate"])
+        # ... while the statement splitter, which is a different view over the same scan, does.
+        self.assertEqual(split_fortran_statements(fortran_logical_line_texts(text)[0]),
+                         ["associate(unused_z_b=>z_b)", " end associate"])
+
     def test_normalization_joins_continuations_and_folds_case(self) -> None:
         # A continuation-split, differently-cased, comment-bearing header normalizes to the
         # same canonical line as its single-line form.

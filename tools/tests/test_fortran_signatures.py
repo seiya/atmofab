@@ -180,8 +180,19 @@ class FortranStanzaParserTests(unittest.TestCase):
             "function hx__a(x) result(s)\n  real, intent(in) :: x\n  real :: s\nend\n"
             "function hx__b(y) result(s)\n  real, intent(in) :: y\n  real :: s\n"
             "end function hx__b\n")
-        ops, _types, _errors = parse_interface_stanzas(block)
+        ops, _types, errors = parse_interface_stanzas(block)
         self.assertEqual(set(ops), {"hx__a", "hx__b"})
+        # ... and it is ACCEPTED, not merely found: a bare `end` legally closes a module
+        # procedure, so the termination branch must mark the stanza closed. Deleting that one
+        # assignment left `set(ops)` unchanged and turned this legal input into an
+        # `unterminated procedure interface` refusal, with nothing watching.
+        self.assertEqual(errors, [])
+        # The bare `end` line itself lands in the stanza (it is appended before the next header
+        # terminates it) — recorded as measured, not as expected: this is `origin/main` behaviour
+        # and the branch does not change it.
+        self.assertEqual(
+            ops["hx__a"],
+            ["function hx__a(x) result(s)", "real, intent(in) :: x", "real :: s", "end"])
 
     def test_duplicate_derived_type_errors(self) -> None:
         # The duplicate check has a branch per stanza kind, and only the PROCEDURE branch was
@@ -283,6 +294,61 @@ class FortranStanzaParserTests(unittest.TestCase):
         # case and the gate refuses correct source. Case-blind here means over-rejection there.
         self.assertEqual(stanza_atoms(types["Hx__T"]), stanza_atoms(
             ["type :: hx__t", "  integer :: a", "end type hx__t"]))
+
+    def test_duplicate_symbol_across_stanza_KINDS_errors(self) -> None:
+        # The duplicate check is one shared `seen` set across both kinds, and both duplicate tests
+        # used same-kind pairs. Splitting it per kind left the suite green while a symbol declared
+        # BOTH as a type and as a procedure passed silently — and the gates merge the two dicts
+        # (`{**op_stanzas, **type_stanzas}`), so the procedure stanza disappears from the §5.1 side
+        # and goes unpinned. Third branch of the same rule; a reviewer found it had no witness.
+        dup = ("type :: hx__x\n  integer :: a\nend type hx__x\n"
+               "subroutine hx__x(a)\n  integer, intent(in) :: a\nend subroutine hx__x\n")
+        with self.assertRaisesRegex(SignatureParseError, "duplicate signature for symbol 'hx__x'"):
+            parse_signatures_from_fortran(dup)
+
+    def test_case_insensitive_lowering_of_declarations_and_parameters(self) -> None:
+        # `parse_interface_stanzas` is case-blind by its own patterns; the LOWERING below it has
+        # two more (`_INTENT_RE`, `_MODULE_PARAM_RE`) that carry the same rule and that no test
+        # observed. Their harms point in opposite directions, so both are asserted here.
+        #
+        #  * `_INTENT_RE` case-blind => `INTENT(IN)` is an "unsupported declaration attribute"
+        #    and a legal upper-cased source is REFUSED.
+        #  * `_MODULE_PARAM_RE` case-blind => the module-parameter list comes back EMPTY, which is
+        #    fail-open: those entries are the pin that catches a `case_id_len = 64 -> 32` drift.
+        struct = parse_signatures_from_fortran(
+            "INTEGER, PARAMETER :: DP = REAL64\n"
+            "SUBROUTINE Hx__Foo(a)\n  REAL(DP), INTENT(IN) :: a\nEND SUBROUTINE Hx__Foo\n")
+        self.assertEqual([mp["name"] for mp in struct["module_parameters"]], ["DP"])
+        self.assertEqual(struct["module_parameters"][0]["value"], "float64")
+        (proc,) = struct["procedures"]
+        self.assertEqual(proc["args"][0]["intent"], "in")
+
+    def test_a_component_declaration_is_not_a_type_header(self) -> None:
+        # `_TYPE_HEADER_RE` is now the ONE owner of "what a type header is" — the stanza splitter
+        # and `_parse_type` share it — so what it accepts is worth an explicit test: a component
+        # declaration must not open a stanza and swallow the rest of the enclosing type.
+        #
+        # MEASURED, and deliberately NOT pinning the pattern's `[^:()]` class: what keeps a
+        # component out is the missing comma before `::`, not the paren exclusion. The only input
+        # the paren exclusion decides is `type, extends(base_t) :: t` — a legal extensible-type
+        # header that the pattern REFUSES (silently: `parse_interface_stanzas` returns no stanza
+        # and no error). Asserting the class here would freeze that over-rejection, so the ledger
+        # records it instead.
+        block = ("type :: hx__outer\n"
+                 "  type(hx__inner), allocatable :: parts(:)\n"
+                 "  integer :: n\n"
+                 "end type hx__outer\n")
+        _ops, types, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(types), ["hx__outer"])
+        self.assertEqual(len(types["hx__outer"]), 4)
+
+    def test_atoms_fold_a_tab_like_any_other_whitespace(self) -> None:
+        # `normalize_fortran_line` erases `\s+`, not just spaces. Narrowing it to ` +` left the
+        # suite green while a tab-formatted source (gfortran accepts tabs as a blank) compared
+        # unequal to §5.1 — over-rejection.
+        self.assertEqual(stanza_atoms(["integer,\tintent(in) :: a"]),
+                         stanza_atoms(["integer, intent(in) :: a"]))
 
     def test_type_missing_end_type_is_unterminated(self) -> None:
         block = (
