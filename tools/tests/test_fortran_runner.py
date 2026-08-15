@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/runner_renderer (R1/M3c-β host-rendered runner glue).
+"""Unit tests for the Fortran backend's runner_render capability (R1/M3c-β runner glue).
 
 `render_runner` is a pure function of the IR: these tests pin its rendered shape
 (a boundary-copy IR and a metrics-bearing IR), determinism, the render-error
@@ -19,18 +19,18 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tools.runner_renderer import (
+from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
     CHECK_STATUS_WIDTH,
     EXPECTED_HARNESS_SPEC_ID,
     _HARNESS_V3_PARAMETERS,
-    RenderError,
     _HARNESS_V3_INTERFACE,
     assert_harness_pin,
     ir_content_violations,
     render_runner,
 )
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
+from tools.host_render import RenderError
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -1037,6 +1037,31 @@ class IrContentViolationsTest(unittest.TestCase):
             path(ir)
             v = ir_content_violations(ir, BOUNDARY_SID, HARNESS)
             self.assertTrue(v, v)  # non-empty, and no exception escaped
+
+
+class SpecIdBoundAgreementTest(unittest.TestCase):
+    """The neutral spec-input bound and this backend's render-time bound are one number.
+
+    `tools/spec_input_gates.MAX_SPEC_ID_LEN` cannot ask a backend for it — the gate runs on a
+    `spec_ref` before any IR exists, so no language has been resolved — so the number is spelled
+    on both sides. That is the pattern the ledger already accepts for a pre-IR bound, and it is
+    only safe with this comparison: without it, raising the identifier limit in the backend would
+    silently leave the spec-input gate rejecting spec_ids the renderer would now accept, and
+    lowering it would let an unrenderable spec_id through to a render-time workflow-kill."""
+
+    def test_the_backend_bound_derives_from_the_language_identifier_limit(self) -> None:
+        from tools.backends.language.fortran import bundle
+        from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND
+        # The longest generated name appends a 7-character role suffix; the extra character is
+        # the declared margin. Restating `55` here would be a third copy of the same number.
+        self.assertEqual(bundle.IDENTIFIER_MAX - len("_runner") - 1, BACKEND_BOUND)
+        for suffix in ("_runner", "_checks", "_model"):
+            self.assertLessEqual(BACKEND_BOUND + len(suffix), bundle.IDENTIFIER_MAX)
+
+    def test_the_spec_input_gate_carries_the_same_bound(self) -> None:
+        from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND
+        from tools.spec_input_gates import MAX_SPEC_ID_LEN as NEUTRAL_BOUND
+        self.assertEqual(BACKEND_BOUND, NEUTRAL_BOUND)
 
 
 class LineWidthTest(unittest.TestCase):

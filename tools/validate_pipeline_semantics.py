@@ -36,6 +36,9 @@ try:
     # tree-sitter packages themselves are imported lazily, inside `parse_view`, so a stage that
     # never reaches a Fortran gate never needs them installed.
     from tools.backends.language.fortran import structure as fortran_structure
+    # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
+    # for its dispatch functions only — the renderer itself is never named here.
+    from tools import host_render
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -62,6 +65,9 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.backends.language.fortran import lines as fortran_lines
     from tools.backends.language.fortran import signatures as fortran_signatures
     from tools.backends.language.fortran import structure as fortran_structure
+    # The neutral seam to whichever language backend host-renders a node's runner glue. Imported
+    # for its dispatch functions only — the renderer itself is never named here.
+    from tools import host_render
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
         required_meta_keys_for_step,
@@ -4313,7 +4319,7 @@ def _validate_raw_evidence(
                                 # and everything a host-rendered runner writes) carries no
                                 # test_id. Its required set is the UNION over every test
                                 # ranging over the case — precisely what
-                                # `runner_renderer._per_case_vars` emitted. Without this
+                                # the language backend runner's `_per_case_vars` emitted. Without this
                                 # anchor an IR whose `case.test_case_set[]` omits `test_id`
                                 # (never a required field) falls through to "every declared
                                 # variable" and false-rejects a conformant per-case snapshot,
@@ -4827,12 +4833,14 @@ def _validate_generate_outputs(
 _FORTRAN_NAME_LIMIT = 63
 
 
-# R1/M3c-β: the fixed public ABI of a physics node's `<spec_id>_checks.f90`
-# (see docs/workflow/CHECKS_MODULE_CONTRACT.md). Imported, NOT restated: `runner_renderer` owns
-# this set — it renders the runner that consumes it, and selects the per-node subset it imports
-# FROM it. A second copy here would be a second authority for one fact, which is exactly how the
-# Z2 bundle gate came to require the imported subset while this gate required all ten.
-from tools.runner_renderer import CHECKS_PUBLIC_NAMES as _CHECKS_PUBLIC_NAMES  # noqa: E402
+# R1/M3c-β: the fixed public ABI of a physics node's checks module
+# (see docs/workflow/CHECKS_MODULE_CONTRACT.md) is ASKED PER NODE, not restated here. The
+# language backend that renders the runner owns the set — it renders the consumer, and selects
+# the per-node subset that runner imports FROM it. A copy here would be a second authority for
+# one fact, which is exactly how the Z2 bundle gate came to require the imported subset while
+# this gate required all ten. It cannot be a module-level import either: module scope has no
+# node, so it has no language to ask about — `_validate_checks_source_files` asks with the
+# node's own value through `tools/host_render.py`.
 
 
 def _infra_direct_dep_node_keys(ir: dict[str, Any]) -> list[str]:
@@ -4852,16 +4860,24 @@ def _infra_direct_dep_node_keys(ir: dict[str, Any]) -> list[str]:
     return out
 
 
-def _ir_is_m3c_physics(ir: dict[str, Any]) -> bool:
-    """True iff the IR dict describes an M3c physics node: make+fortran, ``spec_kind`` !=
-    ``infrastructure``, with exactly one ``infrastructure`` (runner-harness) direct
-    dependency. On such a node the runner is host-rendered and the leaf authors
-    ``<spec_id>_checks.f90`` — mirrors ``workflow_conductor._conductor_authors_runner``."""
+def _ir_m3c_language(ir: dict[str, Any]) -> str | None:
+    """The implementation language of an M3c physics node, or ``None`` when the IR is not one.
+
+    The predicate and the value it turns on, from ONE read. Every caller that needs the language
+    needs it *because* this returned non-None — the checks ABI and the runner text both belong to
+    the backend this predicate just established has the `runner_render` capability — so deriving
+    it separately would be a second reader of the field with its own defaulting, which is exactly
+    how this mirror and the conductor drifted before.
+
+    M3c means: a toolchain the host both writes a control file for and renders a runner for,
+    ``spec_kind`` != ``infrastructure``, and exactly one ``infrastructure`` (runner-harness)
+    direct dependency. On such a node the runner is host-rendered and the leaf authors the checks
+    module — mirrors ``workflow_conductor._conductor_authors_runner``."""
     if not isinstance(ir, dict):
-        return False
+        return None
     meta = ir.get("meta") if isinstance(ir.get("meta"), dict) else {}
     if str(meta.get("spec_kind") or "").strip() == "infrastructure":
-        return False
+        return None
     impl = ir.get("impl_defaults") if isinstance(ir.get("impl_defaults"), dict) else {}
     tc = impl.get("toolchain") if isinstance(impl.get("toolchain"), dict) else {}
     build_system = str(tc.get("build_system") or "make").lower()
@@ -4877,27 +4893,40 @@ def _ir_is_m3c_physics(ir: dict[str, Any]) -> bool:
                                     ("language", language, "control_file"),
                                     ("language", language, "runner_render")):
         if value != value.strip() or not backend_registry.provides(axis, value, capability):
-            return False
-    return len(_infra_direct_dep_node_keys(ir)) == 1
+            return None
+    return language if len(_infra_direct_dep_node_keys(ir)) == 1 else None
 
 
-def _execution_is_m3c(repo_root: Path, execution: NodeExecution) -> bool:
-    """True iff the node is an M3c physics node (see ``_ir_is_m3c_physics``)."""
+def _ir_is_m3c_physics(ir: dict[str, Any]) -> bool:
+    """True iff the IR dict describes an M3c physics node (see ``_ir_m3c_language``)."""
+    return _ir_m3c_language(ir) is not None
+
+
+def _execution_m3c_language(repo_root: Path, execution: NodeExecution) -> str | None:
+    """The implementation language of an M3c physics node, or ``None`` when it is not one.
+
+    One read of the IR answering both questions the caller has. They cannot be answered
+    separately: the checks ABI belongs to the backend that renders the runner, and
+    ``_ir_is_m3c_physics`` is the predicate that already established such a backend exists for
+    this value — re-deriving the language elsewhere would be a second reader of the same field
+    with its own defaulting, which is how the conductor and this mirror drifted before.
+    """
     ir_dir = _ir_dir_for_execution(repo_root, execution)
     if ir_dir is None:
-        return False
+        return None
     ir_path = ir_dir / "spec.ir.yaml"
     if not ir_path.is_file():
-        return False
+        return None
     try:
         ir = _read_yaml(ir_path)
     except (json.JSONDecodeError, yaml.YAMLError):
-        return False
-    return _ir_is_m3c_physics(ir) if isinstance(ir, dict) else False
+        return None
+    return _ir_m3c_language(ir) if isinstance(ir, dict) else None
 
 
 def _validate_checks_source_files(
-    execution: NodeExecution, src_dir: Path, model_files: list[Path], violations: list[str]
+    execution: NodeExecution, language: str, src_dir: Path, model_files: list[Path],
+    violations: list[str],
 ) -> None:
     """R1/M3c-β deterministic gate: an M3c physics node's leaf-authored
     ``<spec_id>_checks.f90`` must satisfy the fixed-ABI contract
@@ -4926,11 +4955,24 @@ def _validate_checks_source_files(
             f"{checks_path}: must declare `module {spec_id}_checks` (the fixed ABI module)")
 
     published, _, _ = checks_module_abi_facts(text, spec_id)
-    missing = [n for n in _CHECKS_PUBLIC_NAMES if n not in published]
+    # The ABI is the renderer's, so it is read per node from the backend that renders THIS
+    # node's runner — not from a module-level constant, because module scope has no language.
+    # A refusal becomes a violation and NEVER an exception: this runs inside
+    # `_validate_compile_stage_impl`, where an uncaught raise discards every violation the
+    # sibling gates have already collected and replaces an actionable list with a traceback.
+    abi_refusal = host_render.runner_render_refusal(language)
+    if abi_refusal is not None:
+        violations.append(
+            f"{checks_path}: this node is host-rendered, but the checks ABI its runner would "
+            f"call cannot be stated for language {language!r}: {abi_refusal}")
+        checks_public_names: tuple[str, ...] = ()
+    else:
+        checks_public_names = host_render.checks_public_names(language)
+    missing = [n for n in checks_public_names if n not in published]
     if missing:
         violations.append(
             f"{checks_path}: checks module must publish the fixed ABI names "
-            f"{list(_CHECKS_PUBLIC_NAMES)}; missing {missing}")
+            f"{list(checks_public_names)}; missing {missing}")
 
     _validate_checks_source_harness_isolation(execution, src_dir, model_files, violations)
 
@@ -5182,9 +5224,11 @@ def _validate_generate_outputs_for_generation(
         known_case_ids=_case_ids_for_execution(repo_root, execution),
     )
     # R1/M3c-β: the leaf-authored checks module (fixed ABI) is gated only on an M3c node.
-    is_m3c = _execution_is_m3c(repo_root, execution)
+    m3c_language = _execution_m3c_language(repo_root, execution)
+    is_m3c = m3c_language is not None
     if is_m3c:
-        _validate_checks_source_files(execution, src_dir, model_files, violations)
+        _validate_checks_source_files(
+            execution, m3c_language, src_dir, model_files, violations)
 
     if dep_spec_ids:
         _validate_dependency_operation_on_model_files(
@@ -6448,7 +6492,7 @@ def _case_id_to_test_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
     """Map each case_id to every test_id ranging over it, from
     ``io_contract.test_predicates[].target_cases``.
 
-    This is the anchor a host-rendered runner is built from: `runner_renderer._per_case_vars`
+    This is the anchor a host-rendered runner is built from: the language backend runner's `_per_case_vars`
     emits, per case, the union of `required_raw_variables` over exactly these tests. Reading
     the same field here makes the post_execute snapshot check a mirror of what the renderer
     wrote, rather than an independent guess (the `_validate_harness_render_preconditions`
@@ -6487,7 +6531,7 @@ def _test_id_to_case_ids(contract: dict[str, Any]) -> dict[str, list[str]]:
 
     This is the row set of a test's metrics-basis evidence: the host-rendered runner emits one
     ``h_mb_entry`` per ``(test_id, case_id)`` pair over exactly this product
-    (``runner_renderer.render_runner``), so the post_execute completeness matrix
+    (``host_render.render_runner``), so the post_execute completeness matrix
     (``_validate_metrics_basis_per_test``) mirrors the renderer rather than guessing. Empty dict
     when the IR declares no predicates.
     """
@@ -8621,7 +8665,7 @@ def _validate_metrics_basis_per_test(
 
     # The expected evidence is the test x target_case MATRIX: one entry per case each test's
     # predicate ranges over. `test_predicates[].target_cases` is the anchor the host-rendered
-    # runner emits from (`runner_renderer._target_cases`), so both sides read one field.
+    # runner emits from (the language backend runner's `_target_cases`), so both sides read one field.
     #
     # The row SET is `test_requirements`, whose source (`_contract_test_evidence_requirements`)
     # drops a test declaring an EMPTY `required_raw_variables` while the renderer's
@@ -11058,7 +11102,7 @@ def _validate_compile_stage_impl(
 # draft-07 has no way to say "this misspelling means that key".
 #
 # Every entry was observed in a real workspace IR. Four recompiles of one harness spec produced four
-# vocabularies for the same knobs, and `runner_renderer` reads only `num_threads`, so an aliased
+# vocabularies for the same knobs, and the language backend's runner reads only `num_threads`, so an aliased
 # thread count degraded a 4-thread request to 1 with nothing reporting it.
 # Keys are matched case-INSENSITIVELY (compared lowercased), because `Threads` and `NUM_THREADS`
 # degrade a run exactly as silently as `threads` does — a one-character change must not buy an
@@ -11113,7 +11157,7 @@ def _validate_impl_defaults_knobs(
     The knob layer was un-pinned, and an unpinned name is not a contract: the same spec recompiled
     produced ``parallelization`` as a flat string and as a mapping, and spelled the scope knob and
     the thread count five and three ways respectively. Nothing downstream can key off a name that
-    changes every regeneration — and the one consumer that does (``runner_renderer`` reads exactly
+    changes every regeneration — and the one consumer that does (the language backend's runner reads exactly
     ``backend_overrides.openmp.num_threads``) silently ignored every alias, so a node asking for 4
     threads ran on 1.
 
@@ -11333,8 +11377,8 @@ def _append_impl_alias_violations(
             # A key that IS a canonical knob but is not spelled exactly. Normalizing for the alias
             # lookup is right — `Threads` must still be caught as an alias — but normalizing the
             # CANONICAL side let a wrong-cased or space-padded key pass as canonical, which is the
-            # silent degradation this whole table exists to prevent: `runner_renderer._threads`
-            # (`tools/runner_renderer.py`) reads the literal `num_threads` and returns 1 for
+            # silent degradation this whole table exists to prevent: the runner renderer
+            # (the language backend's `runner`) reads the literal `num_threads` and returns 1 for
             # `NUM_THREADS` or `"num_threads "`. Only `num_threads` has a machine consumer today;
             # the rest are pinned so that they can have one, which is exactly the property an
             # inexact spelling destroys.
@@ -12068,7 +12112,7 @@ def _validate_toolchain_backend_supported(
 
     That hand-off only holds while both gates spell the exemption the SAME way: they
     now agree on ``.strip()`` with no case folding (as do
-    ``runner_renderer.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
+    ``spec_input_gates.infra_dep_count_violation`` and ``_conductor_authors_runner``), and a
     divergence would reopen the gap — a padded ``meta.spec_kind`` once took this gate's
     exemption while the other gate's exact match skipped the node, so a non-fortran harness
     produced no violation at all. The value is the IR's self-declared ``meta.spec_kind``,
@@ -12242,7 +12286,7 @@ def _validate_harness_render_preconditions(
     precondition of an M3c physics node's host-rendered runner.
 
     A harness-backed (M3c) node's ``<spec_id>_runner.f90`` is rendered host-side by the
-    conductor (``runner_renderer.render_runner``) from the IR alone. Any IR *content* the
+    conductor (``host_render.render_runner``) from the IR alone. Any IR *content* the
     renderer cannot faithfully render (a ``time_variable`` other than the harness's fixed key
     ``t``; a snapshot variable colliding with a reserved key ``t``/``case_id``/``step``; an
     unparseable ``shape_expr`` or rank>4; a ``verdict.fields`` outside the harness fold surface
@@ -12253,7 +12297,7 @@ def _validate_harness_render_preconditions(
     Compile-authored value caught at an unrecoverable position.
 
     This gate mirrors those preconditions at Compile (cheap, pre-Generate) by delegating to
-    ``runner_renderer.ir_content_violations``, which INVOKES ``render_runner`` itself with the
+    ``host_render.ir_content_violations``, which INVOKES the backend's renderer itself with the
     same ``(ir, spec_id, harness_spec_id)`` the conductor's ``_write_runner`` uses — an exact
     mirror by construction, so a defect routes back to ``compile.generate`` (warm re-author)
     instead. The renderer keeps every assertion as a defense-in-depth backstop.
@@ -12262,8 +12306,8 @@ def _validate_harness_render_preconditions(
     a re-author cannot repair — the spec_id / derived-name length and >1 infra dep. These are
     NOT hoisted here (routing an unrepairable defect to a warm-resume retry would only spin).
     Neither identity defect can reach the render backstop from a live run. BOTH are bounded at
-    SPEC-INPUT, before any phase runs, by ``runner_renderer.spec_id_length_violation`` and
-    ``runner_renderer.infra_dep_count_violation`` — enforced unconditionally by ``resolve_node``
+    SPEC-INPUT, before any phase runs, by ``spec_input_gates.spec_id_length_violation`` and
+    ``spec_input_gates.infra_dep_count_violation`` — enforced unconditionally by ``resolve_node``
     (workflow_conductor) and mirrored over the whole closure by run_workflow's dependency visit.
     So a spec_id over 55 is an early, clear rejection rather than a late workflow-kill (and the
     derived ``<spec_id>_runner``/``_checks``/``_model`` names, spec_id + 7, stay inside the f2008
@@ -12285,7 +12329,8 @@ def _validate_harness_render_preconditions(
         ir = _read_yaml(derived_path)
     except (json.JSONDecodeError, yaml.YAMLError):
         return
-    if not isinstance(ir, dict) or not _ir_is_m3c_physics(ir):
+    language = _ir_m3c_language(ir) if isinstance(ir, dict) else None
+    if language is None:
         return
     # Derive the node's spec_id from its node IDENTITY — the same source the conductor's
     # `_write_runner` uses (`refs.spec_id`, from the node key), NOT the optional `meta.spec_id`.
@@ -12309,9 +12354,17 @@ def _validate_harness_render_preconditions(
     if len(infra) != 1:  # defensive; _ir_is_m3c_physics already pins this
         return
     harness_sid = infra[0].partition("@")[0].partition("/")[2]
-    from tools.runner_renderer import ir_content_violations
+    # `_ir_m3c_language` returned a value, so it provides `runner_render` — the seam cannot
+    # refuse it. The refusal is still handled, and handled as a VIOLATION rather than a raise: an
+    # uncaught exception here discards every violation the sibling gates already collected.
+    refusal = host_render.runner_render_refusal(language)
+    if refusal is not None:
+        violations.append(
+            f"{derived_path}: this node is host-rendered, but no backend renders a runner for "
+            f"language {language!r}: {refusal}")
+        return
 
-    for msg in ir_content_violations(ir, spec_id.strip(), harness_sid):
+    for msg in host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid):
         violations.append(f"{derived_path}: {msg}")
 
 

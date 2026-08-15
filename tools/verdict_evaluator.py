@@ -630,7 +630,7 @@ def _check_ref(loc: str, ref: str, check_ids: set[str], verdict_fields: set[str]
     # Any other head is a per-case metric ADDRESS; the WHOLE ref must be pinned in
     # diagnostics_contract.metrics (the intermediate per-case addressing contract). Exact match,
     # never a head prefix: the renderer emits one metric key per declared address verbatim
-    # (`runner_renderer._metrics`) and `_resolve_predicate_ref` looks the ref up as a whole-string
+    # (the language backend runner's `_metrics`) and `_resolve_predicate_ref` looks the ref up as a whole-string
     # key, so a `metrics: ["cfl"]` pin behind a `cfl.max` ref would emit `cfl`, resolve
     # `ref_absent`, and fail every run as a structural_violation. Reject it here, where it is
     # repairable, rather than at execute.

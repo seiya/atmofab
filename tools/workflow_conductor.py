@@ -380,7 +380,7 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # Categories the table above routes to Generate that a HOST-RENDERED-runner node (M3c, see
 # `_conductor_authors_runner`) cannot repair there. On such a node the leaf authors only
 # `<spec_id>_model.f90` + `<spec_id>_checks.f90`; `src/<spec_id>_runner.f90` is rendered by the
-# conductor from the IR (`runner_renderer.render_runner`), which emits the per-case
+# conductor from the IR (`host_render.render_runner`), which emits the per-case
 # `__write_snapshot` call for every `case.test_case_set[].case_id`. A missing per-case snapshot
 # file is therefore decided entirely by the IR + the renderer — regenerating model/checks cannot
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
@@ -3453,6 +3453,21 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     return (best[1], best[2]) if best is not None else None
 
 
+def _ir_language(ir: Any) -> str:
+    """The node's implementation language, read from the IR the one way every reader must.
+
+    Three places need it — the control-file authorship predicate, the runner authorship
+    predicate, and the runner render that follows the second — and the defaulting is the part
+    that must not vary: a reader that refused an absent `toolchain.language` where another
+    defaulted would fail-close a render its own predicate had just approved. `.lower()` without
+    `.strip()` is the conductor's deliberate normalization (see `_core_authors_control_file`).
+    """
+    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
+    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
+    value = tc.get("language") if isinstance(tc, dict) else None
+    return str(value or "fortran").lower()
+
+
 @dataclass
 class Conductor:
     """Holds invariant context and the primitive operations of the loop."""
@@ -5319,7 +5334,7 @@ class Conductor:
         `_core_authors_control_file`), with exactly one `infrastructure` (runner-harness) direct
         dependency. On such a node the runner is glue over the certified harness plumbing + the
         leaf-authored `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness
-        interface (`tools/runner_renderer.render_runner`) — the leaf authors model+checks, not
+        interface (`tools/host_render.render_runner`) — the leaf authors model+checks, not
         the runner. An `infrastructure` node authors its own self-test runner (not glue), and is
         the only live leaf-authored-runner node: a physics node that is not make+fortran with
         exactly one infra dep is rejected upstream (spec-input for the dep count,
@@ -5332,7 +5347,7 @@ class Conductor:
             return False
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
         tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        language = str(tc.get("language") or "fortran").lower()
+        language = _ir_language(ir)
         # The runner is BUILT by the host-authored control file and RENDERED by the host's
         # language-specific renderer, so both capabilities are required — the second is what
         # keeps a language the neutral core can compile but not render out of this path.
@@ -5408,11 +5423,18 @@ class Conductor:
         render-error matrix). run_phase routes the raise to transport fail_closed (operator
         `--resume`), NOT a Generate content retry. Mirrors `_write_makefile` (host-authored,
         runtime-owned, before the substeps run so the write is outside the FS-diff window)."""
-        from tools.runner_renderer import render_runner, assert_harness_pin, RenderError
+        from tools.host_render import render_runner, assert_harness_pin, RenderError
         from tools.orchestration_runtime import (
             _certified_binary_meta, _certified_ir_dir, _is_safe_path_token,
             _latest_pipeline_dir, _model_source_from_binary_meta)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        # The node's language decides WHICH backend renders the glue. Read through the SAME
+        # helper `_conductor_authors_runner` uses, so the predicate that decided to author and
+        # the seam that authors cannot disagree about the value — a mismatch would fail-close a
+        # render the predicate had just approved. That predicate has already required this value
+        # to provide `runner_render`, so the seam's refusal below is a backstop for a caller that
+        # skipped it, not a live branch.
+        language = _ir_language(ir)
         infra = self._infra_direct_deps(ir)
         if len(infra) != 1:
             raise RuntimeError(
@@ -5516,7 +5538,8 @@ class Conductor:
                 f"{self._rel(harness_ir_dir)} carries no usable public_api.signatures to pin "
                 f"against (re-certify the harness)")
         try:
-            assert_harness_pin(ir, refs.spec_id, harness_sid, harness_signatures, source_text)
+            assert_harness_pin(
+                language, ir, refs.spec_id, harness_sid, harness_signatures, source_text)
         except RenderError as e:
             # A pin failure on the LEGACY-fallback path (no source_ir_id) matched against the
             # latest certified IR, not a provenance-bound one. Per the same-version signature
@@ -5530,7 +5553,7 @@ class Conductor:
                     f"stale-IR false drift, rebuild the harness (run_workflow.py --with-deps) to "
                     f"stamp source_ir_id and bind the pin to the source's origin IR]") from e
             raise
-        runner_text = render_runner(ir, refs.spec_id, harness_sid)
+        runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
         path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
@@ -8233,7 +8256,7 @@ clean:
                     # node source here) yet outside allowed_output_paths. It gets no probe:
                     # it `use`s the leaf-authored checks module, so it is not self-contained
                     # and cannot be compiled alone. It is held clean at the source instead —
-                    # tools/tests/test_runner_renderer.py compiles the rendered runner under
+                    # tools/tests/test_fortran_runner.py compiles the rendered runner under
                     # these exact promoted flags, so a renderer edit that emitted an unused
                     # dummy or local could not ship green.
                     if staged_deps and dep_files:

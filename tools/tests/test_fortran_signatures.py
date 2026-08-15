@@ -5,7 +5,7 @@ The correctness contract is a round-trip driven by the REAL published interfaces
 fixture — a hand-built struct could pass while the real §5.1 shape breaks; see the fixture-fiction
 lesson): loading the real harness structured §5.1 block and rendering/reparsing it through Fortran
 must preserve the struct and the exact NORMALIZED stanza lines the current gates compare. The same must hold for
-`runner_renderer._HARNESS_V3_INTERFACE`, the third hardcoded copy of the harness signatures the
+`the fortran backend runner's _HARNESS_V3_INTERFACE`, the third hardcoded copy of the harness signatures the
 renderer pin uses. Drift tests confirm the structured form keeps the gate's discriminating power
 (a changed intent / rank / type / name changes the normalized index).
 """
@@ -30,7 +30,7 @@ from tools.backends.language.fortran.signatures import (
     render_symbol_to_fortran,
     stanza_atoms,
 )
-from tools.runner_renderer import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
+from tools.backends.language.fortran.runner import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -79,8 +79,8 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
             {mp["name"] for mp in struct["module_parameters"]}, {"dp", "case_id_len"}
         )
 
-    def test_round_trip_runner_renderer_hardcoded_copy(self) -> None:
-        # The third copy of the signatures (runner_renderer._HARNESS_V3_INTERFACE) must lower and
+    def test_round_trip_backend_runner_hardcoded_copy(self) -> None:
+        # The third copy of the signatures (the fortran backend runner's _HARNESS_V3_INTERFACE) must lower and
         # round-trip identically, so B.3 can single-source the renderer pin through this backend.
         self._assert_round_trip(_HARNESS_V3_INTERFACE)
 

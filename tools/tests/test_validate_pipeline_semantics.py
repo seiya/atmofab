@@ -1094,7 +1094,7 @@ class MetricsBasisEvidenceMatrixTests(unittest.TestCase):
     """R3-core: post_execute pins metrics_basis against the (test_id, target case_id) product.
 
     The anchor is `io_contract.test_predicates[].target_cases` — the same field the
-    host-rendered runner emits its entries from (`runner_renderer._target_cases`), so the
+    host-rendered runner emits its entries from (`the fortran backend runner's _target_cases`), so the
     gate mirrors the renderer instead of guessing.
     """
 
@@ -1831,7 +1831,7 @@ end program shallow_water2d_runner
         `test_id`, while the IR's `case.test_case_set[]` omits `test_id` too — so neither the
         case->test map, the in-file `test_id`, nor the file stem resolves a per-test contract.
         `io_contract.test_predicates[].target_cases` is the remaining anchor, and it is the
-        exact field `runner_renderer._per_case_vars` renders the snapshot from.
+        exact field `the fortran backend runner's _per_case_vars` renders the snapshot from.
 
         Regression for the billed dev E2E 2026-07-09 (orch `…075057Z_89f9f59a`,
         `dynamics_shallow_water_flux_2d_rusanov_p0`): the gate fell back to the strict union
@@ -2000,7 +2000,7 @@ end program shallow_water2d_runner
 
     def test_snapshot_scope_declared_but_untargeted_case_requires_nothing(self) -> None:
         """A case declared in `case.test_case_set[]` that NO predicate ranges over has an empty
-        union, and `runner_renderer._per_case_vars` renders it as an empty-state snapshot
+        union, and `the fortran backend runner's _per_case_vars` renders it as an empty-state snapshot
         (`allocate(vals(0))`). The gate must mirror that instead of demanding every declared
         variable — otherwise it false-rejects a conformant runner, the very defect the
         `target_cases` anchor was added to remove. An untargeted case is schema-valid:
@@ -17167,15 +17167,28 @@ class ChecksAbiSingleAuthorityTests(unittest.TestCase):
     prompt-conformant bundle passed one and failed the other."""
 
     def test_static_gate_and_renderer_share_one_tuple(self) -> None:
-        from tools.runner_renderer import CHECKS_PUBLIC_NAMES
+        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
+        from tools import host_render
         # `is`, not `==`: equal-but-separate tuples are the drift surface, and they would be
-        # equal right up to the commit that edits one of them.
-        self.assertIs(vps._CHECKS_PUBLIC_NAMES, CHECKS_PUBLIC_NAMES)
+        # equal right up to the commit that edits one of them. The seam hands back the
+        # renderer's own object (`tuple(t) is t` for a tuple), so identity still holds across it.
+        self.assertIs(host_render.checks_public_names("fortran"), CHECKS_PUBLIC_NAMES)
+
+    def test_the_static_gate_reads_the_set_and_does_not_restate_it(self) -> None:
+        # The gate lost its module-level import when the ABI moved into the backend (module
+        # scope has no node, so it has no language to ask about). What must not come back is a
+        # literal list: that is the second authority this class exists to forbid.
+        import inspect
+        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
+        src = inspect.getsource(vps._validate_checks_source_files)
+        self.assertIn("checks_public_names", src)
+        for name in CHECKS_PUBLIC_NAMES:
+            self.assertNotIn(f'"{name}"', src, "the ABI names must not be restated here")
 
     def test_bundle_gate_requires_exactly_that_set(self) -> None:
         # The Z2 acceptance layer must key off the same authority, not a restatement.
         import inspect
-        from tools.runner_renderer import CHECKS_PUBLIC_NAMES
+        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
         import tools.codegen_bundle as _cb
         src = inspect.getsource(_cb.m3c_checks_abi_violation)
         self.assertIn("CHECKS_PUBLIC_NAMES", src)
@@ -17260,7 +17273,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # The `open(` scan reads code, so a quoted `'open('` in a message is not a call — matching
         # it would fail-close a legal module. Masking strings for this scan (but NOT for the
         # forbidden-filename scan, which inspects string content) draws the line correctly.
-        from tools.runner_renderer import CHECKS_PUBLIC_NAMES as TEN
+        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES as TEN
         body = ("".join(f"  public :: {n}\n" for n in TEN) + "contains\n"
                 + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in TEN))
         legal = ("module bx_checks\n  private\n"
@@ -17278,7 +17291,7 @@ class ChecksSourceGateTests(unittest.TestCase):
         # legal Fortran (gfortran rc=0) that breaches the isolation invariant with nothing
         # downstream to catch it: the harness IS staged for Generate.syntax, and the bundle
         # contract has no isolation layer. Both halves of the gate now read STATEMENTS.
-        from tools.runner_renderer import CHECKS_PUBLIC_NAMES as TEN
+        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES as TEN
         body = ("".join(f"  public :: {n}\n" for n in TEN) + "contains\n"
                 + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in TEN))
         src = ("module bx_checks\n"
@@ -17333,7 +17346,7 @@ class ChecksSourceGateTests(unittest.TestCase):
                 (src / "bx_checks.f90").write_text(checks)
             violations: list[str] = []
             vps._validate_checks_source_files(
-                self._exec(tmp), src, [src / "bx_model.f90"], violations)
+                self._exec(tmp), "fortran", src, [src / "bx_model.f90"], violations)
             return violations
 
     def test_clean_checks_passes(self) -> None:
@@ -18083,7 +18096,7 @@ class ToolchainBackendGateTests(unittest.TestCase):
 
     def test_the_infrastructure_exemption_is_case_sensitive(self) -> None:
         # The exemption is spelled `.strip()`-only, the same rule as
-        # `runner_renderer.infra_dep_count_violation` and `_conductor_authors_runner` — whose
+        # `spec_input_gates.infra_dep_count_violation` and `_conductor_authors_runner` — whose
         # comments cite THIS gate as their reason for not case-folding. Pin it at the reader
         # they name, or the claim is asserted in three places and held in none.
         self.assertEqual(self._run(spec_kind="  infrastructure  ",
@@ -19537,7 +19550,7 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         # Normalizing for the ALIAS lookup is right (`Threads` must still be caught), but
         # normalizing the CANONICAL side let a wrong-cased key pass as canonical — which is the
         # silent one-thread degradation this table exists to prevent, since
-        # `runner_renderer._threads` reads the literal `num_threads`.
+        # `the fortran backend runner's _threads` reads the literal `num_threads`.
         v = self._run(self._impl(overrides={"openmp": {"NUM_THREADS": "default"}}))
         self.assertEqual(len(v), 2, v)
         self.assertTrue(any("spelled inexactly" in x for x in v), v)
@@ -19546,7 +19559,7 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
     def test_canonical_keys_must_be_spelled_exactly(self) -> None:
         # Correctly TYPED but inexactly spelled: the type check alone reports nothing, so before
         # this the gate was silent while the renderer returned 1.
-        import tools.runner_renderer as rr
+        import tools.backends.language.fortran.runner as rr
         for key in ("NUM_THREADS", "Num_Threads", "num_threads ", " num_threads"):
             impl = self._impl(overrides={"openmp": {key: 4}})
             v = self._run(impl)
@@ -19736,7 +19749,7 @@ class ImplDefaultsKnobNameGateTests(unittest.TestCase):
         # The renderer reads `.num_threads` off this section, so a scalar or list loses every
         # override in it and falls back to one thread. The exact-`openmp` early return meant the
         # CANONICAL spelling was the one case where that went unreported.
-        import tools.runner_renderer as rr
+        import tools.backends.language.fortran.runner as rr
         for value in (4, "static", ["a"], {"num_threads": 4}.items().__class__.__name__):
             impl = self._impl(overrides={"openmp": value})
             v = self._run(impl)

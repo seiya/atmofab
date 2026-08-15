@@ -1,7 +1,10 @@
-"""Host-side renderer for a physics node's runner glue (R1/M3c-β).
+"""The Fortran backend's `runner_render` capability: a physics node's host-authored runner glue.
 
-Pure-function module (sibling of ``tools/verdict_evaluator.py`` /
-``tools/dependency_graph.py``): it takes a compiled IR plus the target/harness
+Pure-function module reached through `registry.capability_module("language", <lang>,
+"runner_render")` — the neutral seam is `tools/host_render.py`, which is what the conductor and
+the compile gate call. Nothing outside this package imports it by name.
+
+It takes a compiled IR plus the target/harness
 spec ids and returns the text of ``<spec_id>_runner.f90`` — the deterministic
 "glue" main program that drives the physics node's ``<spec_id>_checks`` callbacks
 and emits the standard runner outputs *through the certified
@@ -36,9 +39,16 @@ from __future__ import annotations
 
 from typing import Any
 
-# Neutral spec-input policy this emitter also enforces at render time: the safe-token grammar a
-# case_id must obey (it reaches a filesystem path and an argv, neither of which is a language
-# question). One owner, three readers — see `tools/spec_input_gates.py`.
+from tools.backends.language.fortran import bundle
+
+# Neutral policy this emitter also enforces at render time.
+#
+# `RenderError` is the seam's class, not this module's, and importing it is what makes the
+# neutral `except RenderError:` clauses at the three call sites work: a class obtained through
+# `registry.load` is a different object to the one an `except` in a neutral module names.
+# `CASE_ID_TOKEN_RE` is the safe-token grammar a case_id must obey — it reaches a filesystem
+# path and an argv, neither of which is a language question.
+from tools.host_render import RenderError
 from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
 # The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
@@ -74,12 +84,14 @@ CHECK_STATUS_WIDTH = 4
 # bare `case ('<id>')` label only reaches column 100 at ~87 chars), so `_case_ids` bounds it.
 CASE_ID_LEN = 64
 
-# f2008 identifier limit; the longest derived name is `<spec_id>_checks` /
-# `<spec_id>_runner` (spec_id + 7). Keep a margin: cap spec_id at 55. The neutral spec-input
-# gate (`tools/spec_input_gates.py`) carries the same bound as a pre-IR precondition; this copy
-# is the render-time backstop.
-MAX_SPEC_ID_LEN = 55
-MAX_IDENTIFIER_LEN = 63
+# The bound on a spec_id, DERIVED rather than restated: the longest name generated from a
+# spec_id appends a 7-character role suffix (`_runner` / `_checks`), and `bundle.IDENTIFIER_MAX`
+# is this language's identifier limit — the one place that number is spelled for this backend.
+# The extra character is margin. `tools/spec_input_gates.MAX_SPEC_ID_LEN` carries the same bound
+# as a pre-IR spec-input precondition (it runs before any language is resolved, so it cannot ask
+# for this one); `test_fortran_runner` pins the two equal so they cannot drift, and the render
+# time check below stays as the backstop.
+MAX_SPEC_ID_LEN = bundle.IDENTIFIER_MAX - len("_runner") - 1
 
 
 # The deterministic Generate.gate lint-checker column limit (fortitude S001). The rendered runner must stay
@@ -95,27 +107,6 @@ _HARNESS_CORE_OPS = (
     "parse_cases", "box", "write_snapshot",
     "write_metrics_basis", "write_diagnostics", "write_perf",
 )
-
-
-class RenderError(RuntimeError):
-    """A physics IR that cannot be faithfully rendered into runner glue.
-
-    Raised for a structural impossibility (bad shape_expr, rank>4, reserved-key
-    collision, unsupported verdict.fields, >1 infra dep, over-long identifier).
-    The conductor routes it to transport fail_closed — it is a spec/IR defect,
-    not content a Generate retry could repair by re-authoring the model.
-
-    ``identity=True`` marks the subset whose offending value is the node's IDENTITY
-    (spec_id / a derived module-name length, or >1 infra dep) rather than authored IR
-    *content*. Re-authoring the IR cannot repair an identity defect, so the compile.static
-    mirror (``ir_content_violations``) excludes it — it belongs to spec-input validation,
-    NOT a compile.generate warm-resume retry. Every other RenderError (``identity=False``) is
-    Compile-authored content the compile gate hoists so a defect routes to compile.generate
-    instead of killing the workflow at conductor render time."""
-
-    def __init__(self, message: str, *, identity: bool = False) -> None:
-        super().__init__(message)
-        self.identity = identity
 
 
 # --- IR extraction helpers (all defensive: tolerate missing/mistyped nodes) ---
@@ -469,17 +460,17 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
         raise RenderError(
             f"spec_id {spec_id!r} is {len(spec_id)} chars (>{MAX_SPEC_ID_LEN}); "
             "the derived `<spec_id>_checks`/`_runner` identifiers would risk the "
-            f"f2008 {MAX_IDENTIFIER_LEN}-char limit", identity=True)
+            f"f2008 {bundle.IDENTIFIER_MAX}-char limit", identity=True)
     for derived in (f"{spec_id}_runner", f"{spec_id}_checks", f"{spec_id}_model"):
-        if len(derived) > MAX_IDENTIFIER_LEN:
+        if len(derived) > bundle.IDENTIFIER_MAX:
             raise RenderError(
-                f"identifier {derived!r} is {len(derived)} chars (>{MAX_IDENTIFIER_LEN})",
+                f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS):
         name = _hname(harness_spec_id, sym)
-        if len(name) > MAX_IDENTIFIER_LEN:
+        if len(name) > bundle.IDENTIFIER_MAX:
             raise RenderError(
-                f"harness identifier {name!r} is {len(name)} chars (>{MAX_IDENTIFIER_LEN})",
+                f"harness identifier {name!r} is {len(name)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
 
 
@@ -1022,7 +1013,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
 _PIN_DRIFT_HINT = (
     "the certified harness interface no longer matches the renderer's pinned "
     "expectation — a harness recert changed its published surface; update the "
-    "runner_renderer pin (_HARNESS_V3_INTERFACE / _HARNESS_V3_PARAMETERS) AND the "
+    "renderer pin (_HARNESS_V3_INTERFACE / _HARNESS_V3_PARAMETERS) AND the "
     "render template together, then re-certify dependent nodes")
 
 

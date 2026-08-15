@@ -1322,9 +1322,13 @@ class RegistryConsistencyTests(unittest.TestCase):
         an existing capability does not fail this: what fails is a declaration silently
         DISAPPEARING from a record that had it.
         """
+        # `provided`, the UNION: a capability that has moved into a backend package is still
+        # declared for that value, and `provides` — the question this test is about — still
+        # answers True for it. Reading `core_provides` alone would report a capability as
+        # undeclared on the commit that finishes its migration, which is backwards.
         declarers = {
             capability: {f"{b.axis}/{b.backend_id}" for b in registry._BACKENDS.values()
-                         if capability in b.core_provides}
+                         if capability in b.provided}
             for capability in registry.CAPABILITIES
         }
         # Every declared capability has at least one declarer per axis it is a question of,
@@ -1447,7 +1451,7 @@ class RegistryConsistencyTests(unittest.TestCase):
                 node for node in ast.walk(tree)
                 if isinstance(node, ast.Call)
                 and getattr(node.func, "attr", getattr(node.func, "id", None))
-                in ("provides", "missing_capability_reason")
+                in ("provides", "missing_capability_reason", "capability_module")
             ]
             if not calls:
                 continue
@@ -1526,7 +1530,7 @@ class RegistryConsistencyTests(unittest.TestCase):
     def test_every_capability_is_declared_by_a_record_and_described(self) -> None:
         # A capability nothing declares is a question whose answer is always False — a dispatch
         # keyed on it is dead code that reads as a live rule.
-        declared = {c for b in registry._BACKENDS.values() for c in b.core_provides}
+        declared = {c for b in registry._BACKENDS.values() for c in b.provided}
         self.assertEqual(set(registry.CAPABILITIES), declared)
         for capability, (axes, description) in registry.CAPABILITIES.items():
             self.assertTrue(axes, capability)
@@ -1668,6 +1672,115 @@ class RegistryConsistencyTests(unittest.TestCase):
                 if module is None:
                     continue
                 self.assertEqual(module, f"{BACKEND_PACKAGE}.{axis}.{backend_id}")
+
+
+class CapabilityOwnershipTests(unittest.TestCase):
+    """The two capability sets, and the dispatch that reaches the second one.
+
+    `core_provides` says a job is still inlined in the neutral core; `backend_provides` says the
+    record's own package does it. Every guard below was reverted and measured: without it the
+    suite stays green while the registry can describe a state that cannot exist, or hand a seam a
+    backend that never claimed the work.
+    """
+
+    def _patched(self, record: "registry.Backend"):
+        return mock.patch.dict(registry._BACKENDS, {(record.axis, record.backend_id): record})
+
+    def test_a_package_capability_requires_a_package(self) -> None:
+        # W1. `module=None` with `backend_provides` is "the package implementation in the package
+        # that does not exist". Nothing else refuses it: `provides` would answer True and
+        # `capability_module` would then raise on a value the registry called implemented.
+        record = registry.Backend(
+            "language", "zz_no_pkg", None, backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("no backend package", str(ctx.exception))
+
+    def test_a_capability_may_not_be_owned_twice(self) -> None:
+        # W2. Both sets naming one capability leaves no answer to WHICH implementation runs —
+        # the ambiguity the migration removes, reintroduced by a declaration.
+        record = registry.Backend(
+            "language", "zz_both", "tools.backends.language.fortran",
+            core_provides=frozenset({"runner_render"}),
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("BOTH", str(ctx.exception))
+
+    def test_a_package_capability_needs_a_place_to_be_reached(self) -> None:
+        # W1b. A `backend_provides` entry with no `CAPABILITY_MODULE_ATTR` row is a capability
+        # that is declared true and unreachable at the same time.
+        record = registry.Backend(
+            "language", "zz_unreachable", "tools.backends.language.fortran",
+            backend_provides=frozenset({"control_file"}))
+        with self._patched(record):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("CAPABILITY_MODULE_ATTR", str(ctx.exception))
+
+    def test_provides_is_the_union_and_not_extraction(self) -> None:
+        # W3. Two ways to get `provides` wrong, and each needs its own record. Simplifying it to
+        # "the record is extracted" would answer True for a package that does not do this job —
+        # the authorship flip the predicate exists to prevent.
+        pkg_only = registry.Backend(
+            "language", "zz_pkg_only", "tools.backends.language.fortran",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(pkg_only):
+            self.assertTrue(registry.provides("language", "zz_pkg_only", "runner_render"))
+        extracted_mute = registry.Backend(
+            "language", "zz_mute", "tools.backends.language.fortran")
+        with self._patched(extracted_mute):
+            self.assertIsNone(registry.unavailable_reason("language", "zz_mute"))
+            self.assertFalse(registry.provides("language", "zz_mute", "runner_render"))
+
+    def test_capability_module_refuses_a_backend_that_never_claimed_the_job(self) -> None:
+        # W5. Extraction is not a claim. `load` would hand this package straight back — and it
+        # HAS a `runner` module, so the seam would render Fortran for a value whose record says
+        # nothing about rendering.
+        record = registry.Backend("language", "zz_mute", "tools.backends.language.fortran")
+        with self._patched(record):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_mute", "runner_render")
+            self.assertIsNotNone(registry.load("language", "zz_mute"))  # `load` does not refuse
+        self.assertIn("does not implement", str(ctx.exception))
+
+    def test_capability_module_refuses_a_package_that_does_not_carry_it(self) -> None:
+        # W5b. The declaration and the tree disagreeing the other way: the record claims the job,
+        # the package has no such module. Returning the package anyway would defer the failure to
+        # a missing attribute inside a seam, where it reads as a render bug.
+        record = registry.Backend(
+            "language", "zz_liar", "tools.backends", backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_liar", "runner_render")
+        self.assertIn("re-exports no", str(ctx.exception))
+
+    def test_the_fortran_package_carries_what_its_record_claims(self) -> None:
+        # W7. The declaration is a claim about the tree; this is the tree. Without it the record
+        # could name a capability whose implementation had been renamed or deleted, and only a
+        # live workflow would find out.
+        module = registry.capability_module("language", "fortran", "runner_render")
+        for name in ("render_runner", "assert_harness_pin", "ir_content_violations",
+                     "CHECKS_PUBLIC_NAMES"):
+            self.assertTrue(hasattr(module, name), name)
+
+    def test_the_seam_refuses_a_language_that_declares_no_renderer(self) -> None:
+        # W8. The seam must not fall through to whichever backend happens to be extracted, and
+        # the refusal must be the REGISTRY's sentence — a second wording here is a second
+        # authority for what a leaf is told to implement.
+        from tools import host_render
+        expected = registry.missing_capability_reason("language", "cpp", "runner_render")
+        self.assertIsNotNone(expected)
+        self.assertEqual(expected, host_render.runner_render_refusal("cpp"))
+        for call in (lambda: host_render.render_runner("cpp", {}, "bx", "hx"),
+                     lambda: host_render.checks_public_names("cpp"),
+                     lambda: host_render.ir_content_violations("cpp", {}, "bx", "hx"),
+                     lambda: host_render.assert_harness_pin("cpp", {}, "bx", "hx", [], "")):
+            with self.assertRaises(host_render.RunnerRenderUnavailable) as ctx:
+                call()
+            self.assertEqual(expected, str(ctx.exception))
 
 
 def _write_baseline() -> None:
