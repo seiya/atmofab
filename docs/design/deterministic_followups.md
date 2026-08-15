@@ -1558,6 +1558,8 @@ renderer holds zero serialization knowledge — M3c-β). A new **§5.1 canonical
 fenced Fortran interface: every published type + operation signature) is the machine-readable
 source of truth. `tests.md`/catalog bumped to 0.2.0 (in-place respec — no consumers).
 
+> **STATUS NOTE (2026-08-15).** The §5.1 line and stanza layer named below (`_parse_interface_stanzas`, `_fortran_logical_lines`, `_normalize_fortran_line` and the declaration-atom family) no longer lives in `tools/validate_pipeline_semantics.py`. It moved into the language backend — `tools/backends/language/fortran/signatures.py` (`parse_interface_stanzas`, `stanza_atoms`, `stanza_line_list`, `stanza_line_set`, `declaration_atoms`, `canonicalize_end_line`, `source_atoms`) and `.../fortran/lines.py` (`fortran_logical_line_texts`, `normalize_fortran_line`) — under `docs/BACKEND_BOUNDARY.md`. The gates described below are unchanged and still neutral; only where they read the layer from moved. This paragraph is left as written, per this document's convention.
+
 **Gates (`tools/validate_pipeline_semantics.py`).** A §5.1 parser
 (`_parse_canonical_interface_from_controlled_spec` → per-symbol *stanzas*; `_parse_interface_stanzas`,
 `_fortran_logical_lines`, `_normalize_fortran_line`, and the comment stripper — since issue #23 the
