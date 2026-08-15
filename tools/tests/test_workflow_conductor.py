@@ -11577,6 +11577,61 @@ class WriteMakefileTest(unittest.TestCase):
                     self.assertIsNone(backend_registry.unsupported_reason("language", "zz_lang"))
                     self.assertFalse(c._conductor_authors_runner(refs), record)
 
+    def test_the_toolchain_field_shapes_the_two_mirrors_must_read_alike(self) -> None:
+        """The IR SHAPES, not the registry — the other half of the mirror property.
+
+        The registry-moving test below writes a well-formed toolchain every time, so two things
+        it cannot see were unobserved. First, the `"fortran"` DEFAULT: a mutation spelled so the
+        sampled ratchet cannot fire (`str(value or "fortran"[:0])`) left the whole suite green,
+        while `_ir_language`'s own docstring says the defaulting is the part that must not vary —
+        and varying it is exactly a predicate approving authorship that the render then refuses.
+        Second, a NON-DICT `impl_defaults.toolchain`: the language read guarded it while the
+        build-system read beside it dereferenced the same object, so the conductor raised
+        `AttributeError` where the validator's mirror answers `False`.
+        """
+        import tools.validate_pipeline_semantics as vps
+
+        shapes = {
+            "language absent": "impl_defaults:\n  toolchain:\n    build_system: make\n",
+            "toolchain absent": "impl_defaults: {}\n",
+            "impl_defaults absent": "meta:\n  spec_kind: component\n",
+            "toolchain is a list": "impl_defaults:\n  toolchain: [make, fortran]\n",
+            "toolchain is a string": "impl_defaults:\n  toolchain: make\n",
+            "impl_defaults is a string": "impl_defaults: nonsense\n",
+        }
+        for name, block in shapes.items():
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                ir_dir = repo / refs.ir_ref
+                ir_dir.mkdir(parents=True, exist_ok=True)
+                (ir_dir / "spec.ir.yaml").write_text(
+                    "meta:\n  spec_kind: component\n" + block
+                    + "dependency:\n  direct_deps: "
+                      "[infrastructure/harness_fortran_cpu@0.7.0]\n",
+                    encoding="utf-8")
+                c = self._conductor(repo)
+                ir = wc._read_yaml(ir_dir / "spec.ir.yaml")
+                # Neither reader may raise on a shape the other one survives, and they must
+                # agree on the verdict.
+                self.assertEqual(
+                    c._conductor_authors_runner(refs), vps._ir_is_m3c_physics(ir), name)
+        # The default itself: with the language field absent the node is STILL host-rendered,
+        # which is what makes the default load bearing rather than cosmetic.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            ir_dir = repo / refs.ir_ref
+            ir_dir.mkdir(parents=True, exist_ok=True)
+            (ir_dir / "spec.ir.yaml").write_text(
+                "meta:\n  spec_kind: component\n"
+                "impl_defaults:\n  toolchain:\n    build_system: make\n"
+                "dependency:\n  direct_deps: [infrastructure/harness_fortran_cpu@0.7.0]\n",
+                encoding="utf-8")
+            c = self._conductor(repo)
+            self.assertTrue(c._conductor_authors_runner(refs))
+            self.assertTrue(c._conductor_authors_makefile(refs))
+
     def test_the_two_runner_authorship_mirrors_answer_alike_when_the_registry_moves(self) -> None:
         """`_conductor_authors_runner` and `_ir_is_m3c_physics` are two readers of one question.
 

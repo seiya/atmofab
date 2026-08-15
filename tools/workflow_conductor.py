@@ -3453,6 +3453,24 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     return (best[1], best[2]) if best is not None else None
 
 
+def _ir_build_system(ir: Any) -> str:
+    """The node's build system, read the same way and with the same guards as `_ir_language`.
+
+    Split out for symmetry, not for reuse: the language read was made robust against a non-dict
+    `impl_defaults.toolchain` while the build-system read beside it kept dereferencing the same
+    object, so one shape (`toolchain:` holding a list or a string) raised `AttributeError` in the
+    conductor where the validator's mirror answers `False`. Two mirrors of one question must not
+    differ on which inputs they can read at all.
+    """
+    return str(_toolchain(ir).get("build_system") or "make").lower()
+
+
+def _toolchain(ir: Any) -> dict[str, Any]:
+    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
+    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
+    return tc if isinstance(tc, dict) else {}
+
+
 def _ir_language(ir: Any) -> str:
     """The node's implementation language, read from the IR the one way every reader must.
 
@@ -3462,9 +3480,7 @@ def _ir_language(ir: Any) -> str:
     defaulted would fail-close a render its own predicate had just approved. `.lower()` without
     `.strip()` is the conductor's deliberate normalization (see `_core_authors_control_file`).
     """
-    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-    value = tc.get("language") if isinstance(tc, dict) else None
+    value = _toolchain(ir).get("language")
     # `.lower()` is an INTENT MARKER, not a live guard, and saying so beats leaving a reader to
     # assume it is load bearing: measured, deleting it leaves the whole suite green because every
     # consumer re-normalizes. `registry.provides` / `capability_module` apply `.strip().lower()`
@@ -5326,12 +5342,7 @@ class Conductor:
         authoring — which since the toolchain gate landed means only an `infrastructure` node
         on a future non-fortran language, every physics node being rejected at compile."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        return self._core_authors_control_file(
-            str(tc.get("build_system") or "make").lower(),
-            str(tc.get("language") or "fortran").lower(),
-        )
+        return self._core_authors_control_file(_ir_build_system(ir), _ir_language(ir))
 
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
@@ -5351,14 +5362,11 @@ class Conductor:
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         if not isinstance(ir, dict):
             return False
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
         language = _ir_language(ir)
         # The runner is BUILT by the host-authored control file and RENDERED by the host's
         # language-specific renderer, so both capabilities are required — the second is what
         # keeps a language the neutral core can compile but not render out of this path.
-        if not self._core_authors_control_file(
-                str(tc.get("build_system") or "make").lower(), language):
+        if not self._core_authors_control_file(_ir_build_system(ir), language):
             return False
         if not backend_registry.provides("language", language, "runner_render"):
             return False
