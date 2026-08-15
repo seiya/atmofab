@@ -13,11 +13,24 @@ value that does not declare `runner_render` is REFUSED with the registry's own
 backend happens to be extracted, is the authorship flip the capability question exists to
 prevent.
 
-`RenderError` is defined HERE rather than in the backend, and that is deliberate. Three call
-sites catch it (`workflow_conductor._write_runner`, and the compile gate through
-`ir_content_violations`), and a class obtained through `registry.load` is not the class an
-`except` clause in a neutral module names — the clause would have to be `except Exception`,
-which is the same as no clause at all. The backend imports it from here and raises it.
+`RenderError` is defined HERE rather than in the backend, and that is deliberate. The neutral
+core catches it in `workflow_conductor._write_runner`, and a class obtained through
+`registry.load` is not the class an `except` clause in a neutral module names — the clause would
+have to be `except Exception`, which is the same as no clause at all. (The backend has a second
+`except RenderError` inside `ir_content_violations`, where it catches its own raise and class
+identity is trivial; it is not what this placement is for. An earlier version of this note said
+"three call sites", which was never true — there are two clauses and one of them is that one.)
+The backend imports the class from here and raises it.
+
+ONE PREDICATE, asked once. `runner_render_refusal` is defined as "what `_module` refuses with",
+not as a second question that happens to agree: they disagreed, and the disagreement was a real
+defect. The guard asked `provides` — the UNION of `core_provides` and `backend_provides`, which
+is the authorship question — while the dispatch asked `capability_module`, which requires the
+package half. For a record carrying `runner_render` in `core_provides` WITH a module (a state
+the registry explicitly permits, and the shape the live language backend already has for `control_file`) the
+guard said "renderable" and the dispatch raised `BackendNotExtracted` — inside
+`_validate_compile_stage_impl`, where an uncaught raise discards every violation the sibling
+gates collected, which is exactly what the gate's own comment promises cannot happen.
 """
 
 from __future__ import annotations
@@ -63,9 +76,16 @@ class RunnerRenderUnavailable(RuntimeError):
 def _module(language: Any) -> ModuleType:
     """The backend module that implements `runner_render` for `language`, or raise.
 
-    `registry.capability_module` refuses on both grounds that matter — a value whose backend is
-    not extracted, and one whose record does not claim this job — so this seam never loads a
-    backend that has not said it does the work.
+    Two grounds, and both must be asked HERE rather than split across this function and its
+    guard. `missing_capability_reason` answers whether the job is the host's at all — the
+    authorship question, over the union of both capability sets. `capability_module` answers
+    whether THIS record's package implements it, and refuses a value whose backend is not
+    extracted, one whose record does not claim the job, and one whose package does not carry
+    what the record claims. A value can pass the first and fail the second; see the module
+    docstring for the defect that shape produced.
+
+    Every refusal leaves as `RunnerRenderUnavailable`, so a caller has one exception type to
+    handle and `runner_render_refusal` can be defined as "what this refuses with".
     """
     lang = str(language or "").strip()
     # The axis and the capability are spelled as LITERALS, not module constants, so the
@@ -75,18 +95,30 @@ def _module(language: Any) -> ModuleType:
     reason = registry.missing_capability_reason("language", lang, "runner_render")
     if reason is not None:
         raise RunnerRenderUnavailable(reason)
-    return registry.capability_module("language", lang, "runner_render")
+    try:
+        return registry.capability_module("language", lang, "runner_render")
+    except (registry.UnsupportedBackend, registry.BackendNotExtracted) as exc:
+        # The registry's own wording, re-typed rather than re-worded: the gates below catch one
+        # class, and letting the registry's exception through would be the uncaught raise this
+        # seam exists to prevent.
+        raise RunnerRenderUnavailable(str(exc)) from exc
 
 
 def runner_render_refusal(language: Any) -> str | None:
-    """`None` when `language` has a host runner renderer; else the registry's refusal clause.
+    """`None` when `language` has a host runner renderer; else the refusal clause.
 
-    For the deterministic gates, which append a violation string rather than raising. The wording
-    is `registry.missing_capability_reason`'s, unaltered: one owner for the sentence that names
-    what would have had to be implemented.
+    For the deterministic gates, which append a violation string rather than raising. DEFINED as
+    what `_module` refuses with — not as a second question that happens to agree today. The two
+    were separate predicates for one review round and they disagreed on a state the registry
+    permits, which turned a documented "violation, never an exception" into an uncaught raise.
+    The wording is the registry's, unaltered: one owner for the sentence that names what would
+    have had to be implemented.
     """
-    return registry.missing_capability_reason(
-        "language", str(language or "").strip(), "runner_render")
+    try:
+        _module(language)
+    except RunnerRenderUnavailable as exc:
+        return str(exc)
+    return None
 
 
 def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_id: str) -> str:
