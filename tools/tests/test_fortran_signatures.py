@@ -219,16 +219,43 @@ class FortranStanzaParserTests(unittest.TestCase):
         self.assertEqual(canonicalize_end_line("endtype hx__t"), "end type")
         self.assertEqual(canonicalize_end_line("end type hx__t"), "end type")
 
-    #: The vocabulary the two procedure-header patterns are compared over. It is the BOUND of the
-    #: test below — a divergence spelled with a token that is not here is not observed — so it
-    #: carries the Fortran prefixes and procedure keywords either pattern could plausibly grow,
-    #: not only the ones they have today, plus identifier shapes that differ between the two
-    #: character classes.
-    _HEADER_PREFIXES = ("", "pure ", "elemental ", "recursive ", "impure ", "module ",
-                        "pure elemental ", "recursive pure ", "PURE ", "Elemental ")
-    _HEADER_KEYWORDS = ("subroutine", "function", "SUBROUTINE", "Function",
-                        "operator", "submodule", "interface", "procedure")
-    _HEADER_NAMES = ("hx__foo", "A1_b", "x", "a$b", "a-b", "a.b")
+    #: Headers that MUST lower today. Every combination of these is required to reach the
+    #: containment assertion, which is what bounds the test: an earlier version asserted only
+    #: `checked > 20` against an actual 288, so shrinking any of these lists by 4x still passed
+    #: the floor it exists to defend.
+    _MUST_LOWER_PREFIXES = ("", "pure ", "elemental ", "recursive ", "pure elemental ",
+                            "recursive pure ", "PURE ", "Elemental ")
+    _MUST_LOWER_KEYWORDS = ("subroutine", "function", "SUBROUTINE", "Function")
+    _MUST_LOWER_NAMES = ("hx__foo", "A1_b", "x")
+    _HEADER_TAILS = ("(a)", "(a, b) result(s)", "()")
+
+    #: Tokens NEITHER pattern accepts today. They lower nothing now — that is the point: each is a
+    #: shape one pattern could plausibly grow without the other, and on that day it starts
+    #: reaching the containment assertion. `$`/`-`/`.` are identifier shapes; both patterns use the
+    #: byte-identical `[A-Za-z0-9_]+` today, so they CANNOT differ until one is widened. (An
+    #: earlier comment claimed they "differ between the two character classes", which a census
+    #: measured false.) Verified live: adding `$` to the lowering class alone, or `operator`, or
+    #: `impure`, each makes this test fail.
+    _DIVERGENCE_PREFIXES = ("impure ", "module ")
+    _DIVERGENCE_KEYWORDS = ("operator", "submodule", "interface", "procedure")
+    _DIVERGENCE_NAMES = ("a$b", "a-b", "a.b")
+
+    def _assert_containment(self, header: str) -> bool:
+        """True when the lowering pattern accepted `header`; asserts the two patterns agree."""
+        from tools.backends.language.fortran.signatures import (
+            _IFACE_PROC_START, _PROC_HEADER_RE)
+
+        lowered = _PROC_HEADER_RE.match(header)
+        if lowered is None:
+            return False
+        found = _IFACE_PROC_START.match(header)
+        self.assertIsNotNone(
+            found, f"the parser lowers a header the splitter never finds: {header!r}")
+        self.assertEqual(lowered.group(1).lower(), found.group(1).lower(),
+                         f"the two patterns read a different keyword out of {header!r}")
+        self.assertEqual(lowered.group(2), found.group(2),
+                         f"the two patterns read a different symbol name out of {header!r}")
+        return True
 
     def test_the_two_procedure_header_patterns_agree(self) -> None:
         # `_PROC_HEADER_RE` (which lowers a header) must accept nothing `_IFACE_PROC_START` (which
@@ -237,50 +264,36 @@ class FortranStanzaParserTests(unittest.TestCase):
         # compared; a header where they extract different names is a stanza filed under one symbol
         # and lowered as another.
         #
-        # Two earlier versions of this test were wrong in the two ways this repository keeps
-        # paying for. The first sampled: the real §5.1 headers plus three hand-written probes, so
-        # adding an alternative to one pattern alone survived it. The second scraped the prefix
-        # alternation out of the pattern SOURCE with another regex and compared the two sets for
-        # EQUALITY — which (a) refused legitimate rewrites of either pattern (factoring the shared
-        # `\s+`, `re.VERBOSE`, a capturing group) by failing its own scraper, (b) refused a
-        # STRICTLY SAFE change, widening the splitter alone, because containment is the property
-        # and equality is not it, and (c) compared only the prefixes, leaving the keyword group
-        # and the identifier class unobserved. Both defects were found by review.
+        # Three earlier versions of this test were wrong, each in a way this repository keeps
+        # paying for. The first sampled real §5.1 headers plus three hand probes, so a divergence
+        # in an unsampled alternative survived. The second scraped the prefix alternation out of
+        # the pattern SOURCE and compared for EQUALITY, which refused legitimate rewrites of either
+        # pattern AND refused the strictly-safe direction of widening the splitter alone, while
+        # seeing neither the keyword group nor the identifier class. The third asserted a floor of
+        # 20 against 288 actual, so the vocabulary could be gutted without failing.
         #
-        # So: no introspection of the pattern text, and the direction asserted is the direction
-        # claimed. The bound is the declared vocabulary above rather than a regex parse.
-        from tools.backends.language.fortran.signatures import (
-            _IFACE_PROC_START, _PROC_HEADER_RE)
-
-        checked = 0
-        for prefix in self._HEADER_PREFIXES:
-            for keyword in self._HEADER_KEYWORDS:
-                for name in self._HEADER_NAMES:
-                    for tail in ("(a)", "(a, b) result(s)", "()"):
+        # Now: every MUST-LOWER combination is required to lower — that is the bound, stated as a
+        # rule rather than as a count — and the divergence probes ride the same implication.
+        for prefix in self._MUST_LOWER_PREFIXES:
+            for keyword in self._MUST_LOWER_KEYWORDS:
+                for name in self._MUST_LOWER_NAMES:
+                    for tail in self._HEADER_TAILS:
                         header = f"{prefix}{keyword} {name}{tail}"
-                        lowered = _PROC_HEADER_RE.match(header)
-                        if lowered is None:
-                            continue
-                        checked += 1
-                        found = _IFACE_PROC_START.match(header)
-                        self.assertIsNotNone(
-                            found, f"the parser lowers a header the splitter never finds: "
-                                   f"{header!r}")
-                        self.assertEqual(
-                            lowered.group(1).lower(), found.group(1).lower(),
-                            f"the two patterns read a different keyword out of {header!r}")
-                        self.assertEqual(
-                            lowered.group(2), found.group(2),
-                            f"the two patterns read a different symbol name out of {header!r}")
-        self.assertGreater(checked, 20, "the probe vocabulary lowered almost nothing — the "
-                                        "corpus stopped exercising the patterns")
+                        self.assertTrue(
+                            self._assert_containment(header),
+                            f"a header that must lower does not: {header!r} — either the lowering "
+                            f"pattern narrowed, or this vocabulary is stale")
+
+        for prefix in self._MUST_LOWER_PREFIXES + self._DIVERGENCE_PREFIXES:
+            for keyword in self._MUST_LOWER_KEYWORDS + self._DIVERGENCE_KEYWORDS:
+                for name in self._MUST_LOWER_NAMES + self._DIVERGENCE_NAMES:
+                    for tail in self._HEADER_TAILS:
+                        self._assert_containment(f"{prefix}{keyword} {name}{tail}")
 
         # The real §5.1 headers, as the corpus half: whatever the vocabulary above misses, the
         # published surface still has to satisfy the same implication.
         for header in _real_section51_block().splitlines():
-            lowered = _PROC_HEADER_RE.match(header)
-            if lowered is not None:
-                self.assertIsNotNone(_IFACE_PROC_START.match(header), header)
+            self._assert_containment(header)
 
     def test_stanza_headers_are_case_insensitive(self) -> None:
         # Fortran keywords and identifiers are case-insensitive, so all four stanza patterns carry
@@ -345,17 +358,34 @@ class FortranStanzaParserTests(unittest.TestCase):
         (proc,) = struct["procedures"]
         self.assertEqual(proc["args"][0]["intent"], "in")
 
+    def test_an_attributed_type_header_opens_a_stanza(self) -> None:
+        # `type, public :: t` — an attributed derived-type header — occurs 16 times in the real
+        # in-tree corpus and had NO test input, so deleting the attribute group from
+        # `_TYPE_HEADER_RE` left the whole suite green. The consequence on a real run is
+        # over-rejection, not bypass: the splitter returns no stanza for the header, and
+        # `_validate_infrastructure_generated_signatures` then reports a published type as missing
+        # from a source that declares it correctly. Found by a witness census; it is the sharpest
+        # gap this branch's own sweeps did not reach, because the decision is in code the move
+        # relocated without changing.
+        block = ("type, public :: hx__t\n  integer :: a\nend type hx__t\n"
+                 "type, public, abstract :: hx__u\n  integer :: b\nend type hx__u\n")
+        _ops, types, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(types), ["hx__t", "hx__u"])
+
     def test_a_component_declaration_is_not_a_type_header(self) -> None:
         # `_TYPE_HEADER_RE` is now the ONE owner of "what a type header is" — the stanza splitter
         # and `_parse_type` share it — so what it accepts is worth an explicit test: a component
         # declaration must not open a stanza and swallow the rest of the enclosing type.
         #
         # MEASURED, and deliberately NOT pinning the pattern's `[^:()]` class: what keeps a
-        # component out is the missing comma before `::`, not the paren exclusion. The only input
-        # the paren exclusion decides is `type, extends(base_t) :: t` — a legal extensible-type
-        # header that the pattern REFUSES (silently: `parse_interface_stanzas` returns no stanza
-        # and no error). Asserting the class here would freeze that over-rejection, so the ledger
-        # records it instead.
+        # component out is the missing comma before `::`, not the paren exclusion. What the paren
+        # exclusion actually decides is every attribute list CONTAINING parentheses — `extends(b)`,
+        # `bind(c)`, `public, bind(c)` — each of which is a legal type header the pattern silently
+        # refuses (no stanza, no error). An earlier version of this comment named `extends` as the
+        # only such input, which a reviewer measured false. None of those forms appears in the
+        # corpus today; pinning the class here would freeze the refusal, so the ledger records it
+        # for the language area instead.
         block = ("type :: hx__outer\n"
                  "  type(hx__inner), allocatable :: parts(:)\n"
                  "  integer :: n\n"
