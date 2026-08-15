@@ -31,6 +31,7 @@ from tools.backends.language.fortran.runner import (
 )
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
+import tools.backends.language.fortran.runner as fortran_runner_module
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -1057,6 +1058,34 @@ class SpecIdBoundAgreementTest(unittest.TestCase):
         self.assertEqual(bundle.IDENTIFIER_MAX - len("_runner") - 1, BACKEND_BOUND)
         for suffix in ("_runner", "_checks", "_model"):
             self.assertLessEqual(BACKEND_BOUND + len(suffix), bundle.IDENTIFIER_MAX)
+
+    def test_the_bound_is_derived_in_the_source_and_not_restated(self) -> None:
+        """The rule, not the number — because today the two are the same number.
+
+        Replacing the derivation with the literal `55` is behaviourally identical at the current
+        identifier limit, so every value comparison in this class survives it. What the
+        derivation buys is the FUTURE change: raise the language's identifier limit and the
+        backend bound must move with it, or a spec_id one character too long renders symbols
+        that breach the limit. Reading the assignment is the only observer of that, the same way
+        the registry's import-time check is pinned by reading its invocation."""
+        import ast
+
+        source = Path(
+            fortran_runner_module.__file__).read_text(encoding="utf-8")  # type: ignore[arg-type]
+        assign = next(
+            (n for n in ast.parse(source).body
+             if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", None) == "MAX_SPEC_ID_LEN" for t in n.targets)),
+            None)
+        self.assertIsNotNone(assign, "the backend's spec_id bound is gone")
+        names = {
+            f"{getattr(n.value, 'id', '')}.{n.attr}"
+            for n in ast.walk(assign) if isinstance(n, ast.Attribute)
+        }
+        self.assertIn(
+            "bundle.IDENTIFIER_MAX", names,
+            "the backend's spec_id bound must be DERIVED from the language identifier limit, "
+            "not restated as a literal: a literal does not move when the limit does")
 
     def test_the_spec_input_gate_carries_the_same_bound(self) -> None:
         from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND

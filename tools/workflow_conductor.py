@@ -3465,6 +3465,12 @@ def _ir_language(ir: Any) -> str:
     impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
     tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
     value = tc.get("language") if isinstance(tc, dict) else None
+    # `.lower()` is an INTENT MARKER, not a live guard, and saying so beats leaving a reader to
+    # assume it is load bearing: measured, deleting it leaves the whole suite green because every
+    # consumer re-normalizes. `registry.provides` / `capability_module` apply `.strip().lower()`
+    # internally, and `_core_authors_control_file`'s own guard is about PADDING, not case. It
+    # stays because this function's value is the one both authorship predicates read, and a
+    # future consumer that compares it literally should get the normalized token.
     return str(value or "fortran").lower()
 
 

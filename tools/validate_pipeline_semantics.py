@@ -4960,6 +4960,16 @@ def _validate_checks_source_files(
     # A refusal becomes a violation and NEVER an exception: this runs inside
     # `_validate_compile_stage_impl`, where an uncaught raise discards every violation the
     # sibling gates have already collected and replaces an actionable list with a traceback.
+    #
+    # UNREACHABLE FROM THE LIVE CALLER, and stated rather than left to look like a live branch:
+    # `language` comes from `_ir_m3c_language`, which returns a value only after
+    # `provides(language, "runner_render")` held, and `runner_render_refusal` is `None` exactly
+    # when that holds — on the same string, since both sides normalize identically. It is kept
+    # as the fail-closed shape for a future caller that has no such predicate in front of it,
+    # NOT because anything can reach it today. It has no witness for that reason. (The sibling
+    # branch in `codegen_bundle.m3c_checks_abi_violation` IS reachable and does have one: its
+    # language comes from bundle file data, constrained only to the languages with a `bundle`
+    # interface, which is a different set from the ones that declare `runner_render`.)
     abi_refusal = host_render.runner_render_refusal(language)
     if abi_refusal is not None:
         violations.append(
@@ -12355,8 +12365,10 @@ def _validate_harness_render_preconditions(
         return
     harness_sid = infra[0].partition("@")[0].partition("/")[2]
     # `_ir_m3c_language` returned a value, so it provides `runner_render` — the seam cannot
-    # refuse it. The refusal is still handled, and handled as a VIOLATION rather than a raise: an
-    # uncaught exception here discards every violation the sibling gates already collected.
+    # refuse it, by the same construction as in `_validate_checks_source_files` (see the note
+    # there). UNREACHABLE, and unwitnessed for that reason; it is kept because the shape a
+    # future caller needs is a VIOLATION rather than a raise — an uncaught exception here
+    # discards every violation the sibling gates already collected.
     refusal = host_render.runner_render_refusal(language)
     if refusal is not None:
         violations.append(

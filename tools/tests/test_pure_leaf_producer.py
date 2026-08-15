@@ -384,6 +384,41 @@ class PureBundleViolationsTests(unittest.TestCase):
             vps._validate_checks_source_files(execution, "fortran", src, [], v)
             self.assertEqual([s for s in v if "publish the fixed ABI" in s], [], v)
 
+    def test_a_bundle_language_with_no_runner_renderer_is_refused_not_waived(self) -> None:
+        """The refusal branch of the ABI gate, driven — it is corpus-dependent, not unreachable.
+
+        The two vps call sites of this seam take their language from `_ir_m3c_language`, which
+        has already required the value to provide `runner_render`, so their refusal really is
+        dead code. THIS one does not: the language is read off the bundle FILE entry, which the
+        bundle validator constrains only to `LANGUAGES` — the languages whose backend carries a
+        `bundle` interface. That set is computed independently of who declares `runner_render`,
+        so a language can legally reach here with no checks ABI to be held to. Today the two
+        sets happen to be equal (`('fortran',)`), which is why deleting the branch survives the
+        suite; a second language backend with a bundle and no renderer separates them, and then
+        a waiver here would accept a checks module against an ABI nobody defined.
+        """
+        from unittest import mock
+
+        import tools.codegen_bundle as cb
+        from tools.backends import registry as backend_registry
+
+        bundle = _valid_bundle()
+        checks = next(f for f in bundle["files"] if f["role"] == "checks")
+        checks["language"] = "zz_bundle_only"
+        record = backend_registry.Backend(
+            "language", "zz_bundle_only", "tools.backends.language.fortran",
+            core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS,
+                {("language", "zz_bundle_only"): record}):
+            self.assertFalse(
+                backend_registry.provides("language", "zz_bundle_only", "runner_render"))
+            violation = cb.m3c_checks_abi_violation(bundle, _SPEC_ID)
+        self.assertIsNotNone(violation, "a language with no checks ABI must not be waived")
+        self.assertIn("zz_bundle_only", violation)
+        # The registry's own clause, carried rather than re-worded.
+        self.assertIn("runner_render", violation)
+
     def test_runner_imported_subset_is_not_the_required_set(self) -> None:
         # Pins the direction of the Codex P1 fix: the runner here imports 6 of the 10, and a
         # bundle publishing only those 6 must be REJECTED (Generate.static wants all ten).

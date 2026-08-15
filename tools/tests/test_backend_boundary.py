@@ -1799,6 +1799,19 @@ class CapabilityOwnershipTests(unittest.TestCase):
             bare = registry.missing_capability_reason("language", "cpp", "runner_render")
         self.assertIn("no value of this axis", bare)
 
+    def test_capability_module_classifies_a_caller_typo_as_a_caller_typo(self) -> None:
+        # W5c. `capability_module` validates the capability BEFORE asking about the record, and
+        # deleting that survives — because without it every bad capability still gets refused,
+        # just as `BackendNotExtracted` ("this backend does not implement it") instead of
+        # `UnsupportedBackend` ("there is no such capability"). The registry's own contract is
+        # that one input must not be one kind of failure at one entry point and another kind at
+        # the next, and the second message sends a reader to declare a capability that does not
+        # exist. The class is the assertion; the message would pass either way.
+        for capability, ground in (("lint", "axis"), ("zz_not_a_capability", "unknown")):
+            with self.assertRaises(registry.UnsupportedBackend, msg=capability) as ctx:
+                registry.capability_module("language", "fortran", capability)
+            self.assertIn(ground, str(ctx.exception))
+
     def test_the_package_reexport_is_what_the_dispatch_actually_reaches(self) -> None:
         """W7b. Driven in a FRESH interpreter, because in this one the question is already
         answered by accident.
