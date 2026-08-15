@@ -413,8 +413,13 @@ def _tracked_test_modules(root: Path = REPO_ROOT) -> list[Path]:
     return sorted(root / p for p in out.split("\0") if p.endswith(".py"))
 
 
-def _violations(modules: list[Path]) -> list[str]:
+def _scan(modules: list[Path]) -> tuple[list[str], set[str]]:
+    """One AST walk answering both questions the corpus asks: what is undeclared, and which
+    declared reasons are actually used. Sharing the walk is a cost decision; it must not become
+    a second implementation, so `_violations` — the entry point every mutation witness in this
+    file drives — is defined as this function rather than as a copy of it."""
     out: list[str] = []
+    used: set[str] = set()
     for module in modules:
         if not module.is_file():
             out.append(f"{module.name}: tracked but not present in the checkout")
@@ -426,7 +431,13 @@ def _violations(modules: list[Path]) -> list[str]:
             elif reason not in _DECLARED_ENVIRONMENT_SKIPS:
                 out.append(f"{module.name}:{line}: {api}({reason!r}) is not a declared "
                            "environment capability")
-    return out
+            else:
+                used.add(reason)
+    return out, used
+
+
+def _violations(modules: list[Path]) -> list[str]:
+    return _scan(modules)[0]
 
 
 _UNDECLARED = "not a capability of any host"
@@ -476,43 +487,26 @@ def _probe(src: str) -> list[str]:
 
 class SkipReasonsAreDeclaredTests(unittest.TestCase):
     """Corpus-wide skip inventory. The AST walk over every tracked test module is shared
-    across the two assertions that need it, so the suite pays for one scan rather than two.
+    across the two assertions that need it, so the suite pays for one scan rather than two —
+    through `_scan`, the function `_violations` is defined as, so the witnesses in this file
+    still pin the code the corpus check actually runs.
     """
 
     _tracked: list[Path]
-    _violations: list[str]
+    _corpus_violations: list[str]
     _used_reasons: set[str]
 
     @classmethod
     def setUpClass(cls) -> None:
-        tracked = _tracked_test_modules()
-        violations: list[str] = []
-        used: set[str] = set()
-        for module in tracked:
-            if not module.is_file():
-                violations.append(f"{module.name}: tracked but not present in the checkout")
-                continue
-            for line, api, reason in _skip_sites(module):
-                if reason is None:
-                    violations.append(
-                        f"{module.name}:{line}: {api} stops a test without a literal reason "
-                        "this table can check")
-                elif reason not in _DECLARED_ENVIRONMENT_SKIPS:
-                    violations.append(
-                        f"{module.name}:{line}: {api}({reason!r}) is not a declared "
-                        "environment capability")
-                else:
-                    used.add(reason)
-        cls._tracked = tracked
-        cls._violations = violations
-        cls._used_reasons = used
+        cls._tracked = _tracked_test_modules()
+        cls._corpus_violations, cls._used_reasons = _scan(cls._tracked)
 
     def test_every_skip_reason_is_a_declared_environment_capability(self) -> None:
-        self.assertEqual(self._violations, [], (
+        self.assertEqual(self._corpus_violations, [], (
             "a test stops running for a reason nobody declared. If this is a real host "
             "capability, add it to _DECLARED_ENVIRONMENT_SKIPS with a note saying what about "
             "the host it depends on. If it is a missing repository file, capture the file into "
-            f"tools/tests/data/ instead of skipping: {self._violations}"))
+            f"tools/tests/data/ instead of skipping: {self._corpus_violations}"))
 
     def test_scan_covers_every_tracked_test_module(self) -> None:
         # The property that makes this a class guard is that it reads ALL of them. Deriving the

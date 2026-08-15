@@ -127,19 +127,21 @@ workspace/    trial artifacts
 
 ## Tests
 
-Default (excludes wall-clock-bound `slow` tests):
+Full suite (the default):
 
 ```bash
 python3 -m pytest tools/tests/ -q
 ```
 
-Full suite (includes `slow`):
+Fast local loop, deselecting the wall-clock-bound `slow` tests:
 
 ```bash
-python3 -m pytest tools/tests/ -q -m "slow or not slow"
+python3 -m pytest tools/tests/ -q -m "not slow"
 ```
 
-`pytest.ini` registers the `slow` marker and sets `-m "not slow"` / `-p no:randomly` by default.
+`pytest.ini` registers the `slow` marker and sets `-p no:randomly`. The marker is opt-out
+because nothing else runs the full set: deselecting it by default would leave the leaf
+deadline / abandon / teardown guards executed by nobody.
 
 ## Documentation entry points
 

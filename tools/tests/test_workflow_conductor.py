@@ -6409,6 +6409,8 @@ class _ScriptedStream:
         self._aborted = threading.Event()
         self.finished = threading.Event()
         self._hold_open = False
+        self._close_lock = threading.Lock()
+        self._write_closed = False
         # BINARY, because that is what `Popen(stdout=PIPE)` hands the conductor now that it
         # decodes for itself. A text-mode read end would be a shape production no longer
         # produces — and the conductor only ever takes `fileno()` off this, so a text wrapper
@@ -6468,23 +6470,35 @@ class _ScriptedStream:
             time.sleep(0.01)
 
     def _close_write(self) -> None:
-        try:
-            os.close(self._write_fd)
-        except OSError:
-            pass
+        """Close the write end at most once, from whichever thread gets there first.
+
+        `_run`'s `finally` and `release` both call this, so without the flag the second
+        call closes a descriptor NUMBER the suite may already have recycled onto an
+        unrelated file — an `OSError: [Errno 9]` in some other test, attributed there.
+        """
+        with self._close_lock:
+            if self._write_closed:
+                return
+            self._write_closed = True
+            try:
+                os.close(self._write_fd)
+            except OSError:
+                pass
 
     def release(self) -> None:
         """Abort the script and let go of both ends. Registered as test cleanup.
 
-        Order matters: the write end goes first, so any conductor reader still parked on
-        this pipe — including one the conductor deliberately abandoned — sees EOF and
-        returns before the read end is taken out from under it. Closing the write end
-        also unblocks a scripted writer stuck on a full pipe (the abandon/interrupt
-        plateau cases), so the join below cannot burn the full timeout every time.
+        Order matters: the writer thread is joined FIRST, so nothing is still using the
+        write fd when it is closed; then the write end goes before the read end, so any
+        conductor reader still parked on this pipe — including one the conductor
+        deliberately abandoned — sees EOF and returns before the read end is taken out
+        from under it. The join does not need the close to make progress: `_write` polls
+        with `select(..., 0.05)` and re-checks `self._aborted`, so a writer wedged on a
+        full pipe returns within one poll of the flag being set above.
         """
         self._aborted.set()
+        self._thread.join(timeout=1.0)
         self._close_write()
-        self._thread.join(timeout=0.5)
         time.sleep(0.01)
         try:
             self.reader.close()
@@ -6506,20 +6520,24 @@ def _assert_writer_plateaus(
     stream: _ScriptedStream,
     *,
     ceiling: int,
-    progress_s: float = 0.5,
-    settle_s: float = 0.05,
+    progress_s: float = 5.0,
+    drain_s: float = 0.3,
+    settle_s: float = 0.2,
 ) -> None:
-    """After a flood is released: wait briefly for the writer to move, then assert it plateaus.
+    """After a flood is released: wait for the writer to move, then assert it plateaus.
 
     The observable is that an abandoned reader stops draining within one block — the writer's
-    own `bytes_written` stops climbing once the pipe fills. A multi-second busy-wait was
-    enough to dominate the suite wall clock without tightening the property.
+    own `bytes_written` stops climbing once the pipe fills. `progress_s` costs nothing in the
+    passing case (the loop exits the moment the writer moves), and the precondition is
+    ASSERTED: without it, a flood that never started makes both plateau assertions hold
+    trivially and the test reports success having observed nothing at all.
     """
     baseline = stream.bytes_written
     deadline = time.monotonic() + progress_s
     while stream.bytes_written == baseline and time.monotonic() < deadline:
         time.sleep(0.01)
-    time.sleep(settle_s)
+    case.assertGreater(stream.bytes_written, baseline, "the writer never started")
+    time.sleep(drain_s)
     case.assertLess(
         stream.bytes_written, ceiling,
         "the readers must stop draining once the driver is unwinding")
@@ -8131,7 +8149,11 @@ class LeafSpawnTest(unittest.TestCase):
                     llm_command=f"python3 -c {leaf!r}")
         c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
         out = io.StringIO()
-        with patch.object(wc, "_leaf_timeout_seconds", lambda: 0.25), \
+        # The budget has to cover CPython startup for a REAL `python3 -c` leaf, which is
+        # routinely 100 ms+ on a loaded or cold host: below ~1 s the leaf is killed before it
+        # can flush "partial answer", and the harvest assertion below fails for a reason that
+        # has nothing to do with the property.
+        with patch.object(wc, "_leaf_timeout_seconds", lambda: 1.0), \
                 patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.25), \
                 redirect_stdout(out):
             started = time.monotonic()
@@ -8148,7 +8170,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(wc._leaf_infra_error(proc)[0], "leaf_timeout")
         events = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
         self.assertEqual([e["event"] for e in events], ["leaf_timeout"])
-        self.assertGreaterEqual(events[0]["elapsed_seconds"], 0.25)
+        self.assertGreaterEqual(events[0]["elapsed_seconds"], 1.0)
 
     def test_a_real_claude_leaf_flooding_without_newlines_is_captured_within_budget(self) -> None:
         """Issue #18's acceptance, on the claude path, against a REAL subprocess.
@@ -8261,7 +8283,8 @@ class LeafSpawnTest(unittest.TestCase):
             c._bwrap_enabled = lambda: False  # type: ignore[method-assign]
             c._ensure_codex_feature_cache = lambda *a, **k: None  # type: ignore[method-assign]
             c._register_codex_thread = lambda *a: None  # type: ignore[method-assign]
-            with patch.object(wc, "_leaf_timeout_seconds", lambda: 0.25), \
+            # As on the claude twin: the budget must cover real interpreter startup.
+            with patch.object(wc, "_leaf_timeout_seconds", lambda: 1.0), \
                     patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.25), \
                     redirect_stdout(out):
                 started = time.monotonic()
@@ -9865,7 +9888,10 @@ class LeafSpawnTest(unittest.TestCase):
                     # does not guarantee the target has executed, and `publish` correctly
                     # no-ops on an empty tail — so without this the race is sometimes not a
                     # race at all, and under load the trial has nothing to parse.
-                    deadline = time.monotonic() + 0.5
+                    # Costs nothing when it passes (the loop exits on the flag), and the wait
+                    # is for a GIL hand-off to a `time.sleep(0)` busy-waiter — a short window
+                    # is missed outright on a loaded or oversubscribed host.
+                    deadline = time.monotonic() + 2.0
                     while not racing.dropped and time.monotonic() < deadline:
                         time.sleep(0)
                     self.assertTrue(racing.dropped, "the writer never started")
