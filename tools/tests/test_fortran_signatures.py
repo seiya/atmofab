@@ -250,14 +250,39 @@ class FortranStanzaParserTests(unittest.TestCase):
                 f"the stanza splitter does not find a header the parser lowers: {header!r}")
 
     def test_stanza_headers_are_case_insensitive(self) -> None:
-        # Fortran identifiers and keywords are case-insensitive, so the stanza headers carry
-        # `re.IGNORECASE`. Dropping it from the procedure header left the suite green.
+        # Fortran keywords and identifiers are case-insensitive, so all four stanza patterns carry
+        # `re.IGNORECASE`. Dropping it from any of them left the suite green.
+        #
+        # The first version of this test asserted only the symbol sets and `errors == []`, which
+        # does NOT observe `_IFACE_PROC_END`: with the end line unmatched, the FOLLOWING type
+        # header terminates the procedure stanza, so the symbol sets and the error list are
+        # unchanged and only the stanza CONTENTS differ. A reviewer caught that the test did not
+        # pin the property it is named for. Both halves are asserted now.
         block = ("SUBROUTINE Hx__Foo(a)\n  INTEGER, INTENT(IN) :: a\nEND SUBROUTINE Hx__Foo\n"
                  "TYPE :: Hx__T\n  INTEGER :: a\nEND TYPE Hx__T\n")
         ops, types, errors = parse_interface_stanzas(block)
         self.assertEqual(errors, [])
         self.assertEqual(sorted(ops), ["Hx__Foo"])
         self.assertEqual(sorted(types), ["Hx__T"])
+        # The `end` line is NOT part of a procedure stanza (it is part of a type stanza), so an
+        # unmatched upper-case `END SUBROUTINE` shows up here as an extra atom.
+        self.assertEqual(ops["Hx__Foo"], ["SUBROUTINE Hx__Foo(a)", "INTEGER, INTENT(IN) :: a"])
+        self.assertEqual(types["Hx__T"], ["TYPE :: Hx__T", "INTEGER :: a", "END TYPE Hx__T"])
+
+        # ... and with nothing after it to rescue the termination, an upper-cased procedure is
+        # reported unterminated: a fail-closed refusal of legal Fortran, the over-rejection
+        # direction.
+        lone = "PURE SUBROUTINE Hx__Bar(a)\n  REAL, INTENT(IN) :: a\nENDSUBROUTINE Hx__Bar\n"
+        ops_lone, _types_lone, errors_lone = parse_interface_stanzas(lone)
+        self.assertEqual(errors_lone, [])
+        self.assertEqual(ops_lone["Hx__Bar"], ["PURE SUBROUTINE Hx__Bar(a)", "REAL, INTENT(IN) :: a"])
+
+        # The fifth pattern, `_END_STMT_RE`, is reached through the ATOMS rather than through the
+        # stanza split: an upper-cased closing line must canonicalize to `end type` like any other,
+        # or a type stanza written in capitals compares unequal to the same type written in lower
+        # case and the gate refuses correct source. Case-blind here means over-rejection there.
+        self.assertEqual(stanza_atoms(types["Hx__T"]), stanza_atoms(
+            ["type :: hx__t", "  integer :: a", "end type hx__t"]))
 
     def test_type_missing_end_type_is_unterminated(self) -> None:
         block = (
