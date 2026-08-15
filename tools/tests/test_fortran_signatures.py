@@ -611,22 +611,57 @@ class SharedSplitterMigrationTests(unittest.TestCase):
 
 
 
-class BackendDoesNotImportTheNeutralCoreTest(unittest.TestCase):
-    """This module must not import `validate_pipeline_semantics`, at module level or lazily.
+class SignaturesMustNotImportTheValidatorTest(unittest.TestCase):
+    """`signatures` must not import `validate_pipeline_semantics` — at module level or lazily.
 
-    It did, for its whole life before this change: `_fortran_logical_lines`,
-    `_normalize_fortran_line` and `_parse_interface_stanzas` (and, through `runner_renderer`, the
-    stanza-atom family) were private helpers of the validator, so the Fortran backend reached back
-    into the neutral core for its own subject matter — the blocking sub-item of the validator area
-    in TODO.md's migration ledger. Nothing else observes the direction: the import worked, the
-    suite was green, and re-adding it today would be invisible without this.
+    The reason is mechanical, and stating it precisely matters because the boundary rule does NOT
+    forbid this direction: `docs/BACKEND_BOUNDARY.md` says a backend MAY import the neutral core,
+    and a sibling in this very package does (`structure_differential.py:66`). What forbids it HERE
+    is that `validate_pipeline_semantics` now imports this module at module level, so any
+    back-import closes a cycle. An earlier version of this test asserted the boundary rule instead
+    and would have refused a boundary-legal import — the over-rejection direction.
 
-    A subprocess is required. `validate_pipeline_semantics` is imported by most of this test run,
-    so in-process `sys.modules` says nothing about who imported it; a fresh interpreter that
-    imports only this backend module can answer.
+    What it is guarding against is the state this module was in for its whole life until the §5.1
+    line and stanza layer moved here: it imported `_fortran_logical_lines`,
+    `_normalize_fortran_line` and `_parse_interface_stanzas` out of the validator, so the Fortran
+    backend reached into the neutral core for its own subject matter (TODO.md's blocking
+    sub-item). Nothing observed that: the import worked and the suite was green.
+
+    Two checks, because neither alone covers the property:
+
+    * the SOURCE check reads every `import` / `from ... import` in this module and in `lines`, at
+      any nesting depth, so a function-local import — the exact spelling `runner_renderer` used —
+      is caught. The subprocess probe below cannot see one.
+    * the IMPORT check runs a fresh interpreter, so it catches a module-level import (and one
+      reached transitively through `lines`) as an actually-executed fact rather than a reading of
+      the source. In-process `sys.modules` says nothing here: most of this test run imports the
+      validator anyway.
     """
 
-    def test_importing_this_backend_does_not_drag_in_the_validator(self) -> None:
+    _BACKEND_MODULES = (
+        "tools/backends/language/fortran/signatures.py",
+        "tools/backends/language/fortran/lines.py",
+    )
+
+    def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
+        import ast
+
+        for rel in self._BACKEND_MODULES:
+            path = REPO_ROOT / rel
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module]
+                for name in names:
+                    self.assertNotIn(
+                        "validate_pipeline_semantics", name,
+                        f"{rel}:{node.lineno} imports {name} — the validator imports this "
+                        f"package at module level, so this closes an import cycle")
+
+    def test_importing_this_backend_does_not_execute_the_validator(self) -> None:
         import subprocess
         import sys
 
@@ -634,7 +669,7 @@ class BackendDoesNotImportTheNeutralCoreTest(unittest.TestCase):
             "import sys; sys.path.insert(0, %r)\n"
             "import tools.backends.language.fortran.signatures\n"
             "assert 'tools.validate_pipeline_semantics' not in sys.modules, "
-            "'the language backend imported the neutral core'\n"
+            "'importing the language backend executed the validator'\n"
             "print('ok')\n" % str(REPO_ROOT)
         )
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
