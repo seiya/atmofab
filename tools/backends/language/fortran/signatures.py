@@ -70,6 +70,13 @@ _IFACE_PROC_END = re.compile(r"^\s*end\s*(?:subroutine|function)\b", re.IGNORECA
 # splitter accepts and the parser rejects is a stanza with no lowering — so they read one pattern.
 _IFACE_TYPE_END = re.compile(r"^\s*end\s*type\b", re.IGNORECASE)
 
+# The `subroutine` / `function` alternatives are REACHED — `source_atoms` runs
+# `canonicalize_end_line` over every logical line of real model source, which rewrites
+# 1,316 such lines across the in-tree corpus — but no consumer's ANSWER depends on them:
+# the only atoms ever looked up in that set are module `parameter` declarations, and a
+# procedure stanza excludes its own terminator by construction. Recorded with the right
+# predicate: an earlier note said "no consumer reaches", which is measurably false and
+# would mislead anyone pruning the pattern.
 _END_STMT_RE = re.compile(r"^\s*end\s*(type|subroutine|function)\b", re.IGNORECASE)
 
 
@@ -115,6 +122,10 @@ def parse_interface_stanzas(
             continue
         m_type = _TYPE_HEADER_RE.match(line)
         m_proc = _IFACE_PROC_START.match(line)
+        # The type-before-procedure order is an intent marker, not a live decision: the two
+        # patterns are disjoint (one requires a leading `type`, the other a procedure keyword
+        # after an optional prefix), so no line reaches both arms. Flipping the order changes no
+        # answer; stated so it does not read as a precedence rule someone must preserve.
         if m_type:
             name = m_type.group(1)
             stanza = [line]
