@@ -1261,8 +1261,15 @@ class HarnessPinTest(unittest.TestCase):
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src)
 
     def test_wrong_harness_id(self) -> None:
-        with self.assertRaises(RenderError):
+        # Assert the MESSAGE, not just the raise. Neutering the `harness_spec_id` guard leaves this
+        # test passing on the exception the symbol lookup raises a few lines later ("renderer
+        # depends on harness symbol ... not present"), so the guard itself had no observer and the
+        # distinct, actionable refusal could have been lost while the test stayed green. A reviewer
+        # measured that: replacing the condition with `False` left the whole suite passing.
+        with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, "harness_other", self.sigs, self.src)
+        self.assertIn("is not the pinned", str(cm.exception))
+        self.assertIn("the renderer only targets that harness", str(cm.exception))
 
     def test_ir_signature_drift(self) -> None:
         bad = copy.deepcopy(self.sigs)
@@ -1383,6 +1390,25 @@ class HarnessPinTest(unittest.TestCase):
                 components[cid], components[xf] = components[xf], components[cid]
         with self.assertRaises(RenderError):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, bad, self.src)
+
+
+    def test_type_component_reorder_drift_in_the_harness_SOURCE(self) -> None:
+        # The sibling above perturbs the certified IR signatures, which exercises check (1). The
+        # SOURCE-side ordered comparison — check (2), `stanza_line_list(src) == stanza_line_list
+        # (exp)` — had no observer at all: relaxing it to a set left the whole suite green, so a
+        # recert that reordered a derived type's components in the generated model source while
+        # leaving its IR signatures correct would have passed the pin. Component ORDER is the §5
+        # compatibility contract (it is the record layout the rendered runner is compiled
+        # against), so the two sides need one observer each.
+        reordered = self.src.replace(
+            "    character(len=:), allocatable :: case_id\n"
+            "    logical :: expected_xfail\n",
+            "    logical :: expected_xfail\n"
+            "    character(len=:), allocatable :: case_id\n")
+        self.assertNotEqual(reordered, self.src, "the reorder did not apply to the stub")
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, reordered)
+        self.assertIn("model source signature", str(cm.exception))
 
 
 @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")

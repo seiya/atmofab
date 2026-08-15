@@ -16,14 +16,19 @@ import copy
 import unittest
 from pathlib import Path
 
+from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import (
     SignatureParseError,
+    canonicalize_end_line,
+    declaration_atoms,
     load_structured_signatures,
     normalized_stanza_index,
+    parse_interface_stanzas,
     parse_signatures_from_fortran,
     render_module_parameter_to_fortran,
     render_signatures_to_fortran,
     render_symbol_to_fortran,
+    stanza_atoms,
 )
 from tools.runner_renderer import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
@@ -171,14 +176,324 @@ class FortranStanzaParserTests(unittest.TestCase):
             parse_signatures_from_fortran(dup)
 
     def test_bare_end_does_not_swallow_following_procedure(self) -> None:
-        from tools.validate_pipeline_semantics import _parse_interface_stanzas
-
         block = (
             "function hx__a(x) result(s)\n  real, intent(in) :: x\n  real :: s\nend\n"
             "function hx__b(y) result(s)\n  real, intent(in) :: y\n  real :: s\n"
             "end function hx__b\n")
-        ops, _types, _errors = _parse_interface_stanzas(block)
+        ops, _types, errors = parse_interface_stanzas(block)
         self.assertEqual(set(ops), {"hx__a", "hx__b"})
+        # ... and it is ACCEPTED, not merely found: a bare `end` legally closes a module
+        # procedure, so the termination branch must mark the stanza closed. Deleting that one
+        # assignment left `set(ops)` unchanged and turned this legal input into an
+        # `unterminated procedure interface` refusal, with nothing watching.
+        self.assertEqual(errors, [])
+        # The bare `end` line itself lands in the stanza (it is appended before the next header
+        # terminates it) — recorded as measured, not as expected: this is `origin/main` behaviour
+        # and the branch does not change it.
+        self.assertEqual(
+            ops["hx__a"],
+            ["function hx__a(x) result(s)", "real, intent(in) :: x", "real :: s", "end"])
+
+    def test_duplicate_derived_type_errors(self) -> None:
+        # The duplicate check has a branch per stanza kind, and only the PROCEDURE branch was
+        # pinned (`test_duplicate_stanza_errors`): deleting the derived-type branch left the whole
+        # suite green while a §5.1 block declaring `hx__t` twice silently kept the second stanza —
+        # the "a malformed first copy hides behind a correct second" fail-open the parser's own
+        # docstring says it exists to prevent. Two reviewers found the gap independently.
+        dup = (
+            "type :: hx__t\n  integer :: a\nend type hx__t\n"
+            "type :: hx__t\n  real :: b\nend type hx__t\n")
+        with self.assertRaisesRegex(SignatureParseError, "duplicate signature for symbol 'hx__t'"):
+            parse_signatures_from_fortran(dup)
+
+    def test_no_space_endtype_closes_a_type_stanza(self) -> None:
+        # The `endfunction` half of the no-space rule was pinned; the `endtype` half was not, in
+        # BOTH regexes that carry it. Tightening either `end\s*` to `end\s+` kept the suite green
+        # while refusing source gfortran accepts — the over-rejection direction.
+        block = ("type :: hx__t\n  integer :: a\nendtype hx__t\n"
+                 "type :: hx__u\n  real :: b\nend type hx__u\n")
+        struct = parse_signatures_from_fortran(block)
+        self.assertEqual({t["name"] for t in struct["types"]}, {"hx__t", "hx__u"})
+        # ... and the closing line canonicalizes the same way with or without the space, which is
+        # what makes the two spellings compare equal at the gates (`_END_STMT_RE`).
+        self.assertEqual(canonicalize_end_line("endtype hx__t"), "end type")
+        self.assertEqual(canonicalize_end_line("end type hx__t"), "end type")
+
+    #: Headers that MUST lower today. Every combination of these is required to be taken by BOTH
+    #: patterns; `_MUST_STAY_LOWERED_*` below keeps the lists from being eroded, which is what
+    #: actually bounds the test. Two earlier versions bounded nothing: a `checked > 20` floor
+    #: against an actual 288, then this product with no pin on the lists it multiplies — cutting
+    #: all four to one entry each took it to a single combination with the suite green.
+    _MUST_LOWER_PREFIXES = ("", "pure ", "elemental ", "recursive ", "pure elemental ",
+                            "recursive pure ", "PURE ", "Elemental ")
+    _MUST_LOWER_KEYWORDS = ("subroutine", "function", "SUBROUTINE", "Function")
+    _MUST_LOWER_NAMES = ("hx__foo", "A1_b", "x")
+    _HEADER_TAILS = ("(a)", "(a, b) result(s)", "()")
+
+    #: Tokens NEITHER pattern accepts today. Each is a shape one pattern could plausibly grow
+    #: without the other; while neither has it, the test asserts both REFUSE it, so a one-sided
+    #: widening is caught on the day it happens rather than whenever someone thinks to probe it.
+    _DIVERGENCE_PREFIXES = ("impure ", "module ")
+    _DIVERGENCE_KEYWORDS = ("operator", "submodule", "interface", "procedure")
+
+    #: Tokens that must stay PROBED — in the must-lower lists or the divergence lists, either is
+    #: fine, but not deleted. Without this, emptying the divergence lists and widening one pattern
+    #: is invisible: a census constructed exactly that pair and the suite stayed green. Moving a
+    #: token from one list to the other is the deliberate act this permits; dropping it is not.
+    _MUST_STAY_PROBED_PREFIXES = ("impure ", "module ")
+    _MUST_STAY_PROBED_KEYWORDS = ("operator", "submodule", "interface", "procedure")
+
+    #: ... and the same for the must-lower side, which had no bound at all: shrinking all four
+    #: lists to one entry each took 288 combinations down to 1 with the suite green — the same
+    #: erosion the `checked > 20` floor allowed, in the mechanism written to replace it.
+    _MUST_STAY_LOWERED_PREFIXES = ("", "pure ", "elemental ", "recursive ", "pure elemental ")
+    _MUST_STAY_LOWERED_KEYWORDS = ("subroutine", "function")
+    #: A tail with a `result(...)` clause and a MULTI-TOKEN prefix are named explicitly because
+    #: neither appears in the real §5.1 corpus, so the corpus half cannot stand in for them. The
+    #: first floor kept the lists from collapsing to one entry but still allowed 288 combinations
+    #: down to 60 — enough to drop both, and a one-sided narrowing of the splitter's prefix
+    #: repetition then passed.
+    _MUST_STAY_LOWERED_TAILS = ("(a, b) result(s)",)
+
+    def _assert_patterns_agree(self, header: str) -> bool:
+        """Assert both patterns answer the same on a WELL-FORMED header; return whether they took it.
+
+        Agreement in BOTH directions, because both disagreements change behaviour:
+
+        * parser-only — a signature the gates lower but the splitter never files as a stanza, so it
+          is never compared;
+        * splitter-only — a stanza with no lowering. Measured: adding `impure` to the splitter
+          alone turns `impure subroutine hx__f(a)` from silently ignored into a hard
+          `SignatureParseError`.
+
+        The asymmetry the patterns legitimately have — the splitter has no end anchor, so it also
+        matches a malformed tail — is kept out by probing well-formed headers only. An earlier
+        version pinned that asymmetry over identifier shapes no compiler accepts (`a$b`), which
+        refused two legitimate changes: giving the splitter an end anchor (the change that would
+        make the patterns fully agree, i.e. the property this test is named for) and widening both
+        identifier classes symmetrically. It was removed rather than repaired — pinning behaviour
+        over source no compiler accepts buys nothing and costs the improvement.
+
+        RECORDED COST of that removal: a ONE-SIDED widening of the splitter's identifier class is
+        no longer observed, because this helper probes well-formed headers only and the splitter is
+        unanchored. The consequence is a `SignatureParseError` on a header gfortran rejects anyway,
+        which is why the trade was taken; stated rather than left for the next census to rediscover.
+        """
+        from tools.backends.language.fortran.signatures import (
+            _IFACE_PROC_START, _PROC_HEADER_RE)
+
+        lowered = _PROC_HEADER_RE.match(header)
+        found = _IFACE_PROC_START.match(header)
+        self.assertEqual(
+            lowered is not None, found is not None,
+            f"the two procedure-header patterns disagree on {header!r}: "
+            f"the parser {'accepts' if lowered else 'rejects'} it and the splitter "
+            f"{'accepts' if found else 'rejects'} it. A header only one of them takes is either a "
+            f"signature that is never compared or a stanza that cannot be lowered.")
+        if lowered is None:
+            return False
+        self.assertEqual(lowered.group(1).lower(), found.group(1).lower(),
+                         f"the two patterns read a different keyword out of {header!r}")
+        self.assertEqual(lowered.group(2), found.group(2),
+                         f"the two patterns read a different symbol name out of {header!r}")
+        return True
+
+    def test_the_probe_vocabulary_keeps_the_tokens_it_was_built_for(self) -> None:
+        prefixes = set(self._MUST_LOWER_PREFIXES) | set(self._DIVERGENCE_PREFIXES)
+        keywords = set(self._MUST_LOWER_KEYWORDS) | set(self._DIVERGENCE_KEYWORDS)
+        for token in self._MUST_STAY_PROBED_PREFIXES:
+            self.assertIn(token, prefixes,
+                          f"{token!r} stopped being probed by the header-pair test; a one-sided "
+                          f"widening on it would now be invisible")
+        for token in self._MUST_STAY_PROBED_KEYWORDS:
+            self.assertIn(token, keywords,
+                          f"{token!r} stopped being probed by the header-pair test; a one-sided "
+                          f"widening on it would now be invisible")
+        for token in self._MUST_STAY_LOWERED_PREFIXES:
+            self.assertIn(token, self._MUST_LOWER_PREFIXES,
+                          f"{token!r} stopped being exercised as a header that must lower")
+        for token in self._MUST_STAY_LOWERED_KEYWORDS:
+            self.assertIn(token, self._MUST_LOWER_KEYWORDS,
+                          f"{token!r} stopped being exercised as a header that must lower")
+        self.assertTrue(any(p != p.lower() for p in self._MUST_LOWER_PREFIXES)
+                        and any(k != k.lower() for k in self._MUST_LOWER_KEYWORDS),
+                        "the must-lower vocabulary lost its upper-cased entries, so the patterns' "
+                        "case-insensitivity is no longer exercised here")
+        for tail in self._MUST_STAY_LOWERED_TAILS:
+            self.assertIn(tail, self._HEADER_TAILS,
+                          f"{tail!r} stopped being exercised; it appears in no real §5.1 header, "
+                          f"so nothing else covers it")
+        self.assertGreaterEqual(len(self._MUST_LOWER_NAMES), 2)
+        self.assertGreaterEqual(len(self._HEADER_TAILS), 2)
+
+    def test_the_two_procedure_header_patterns_agree(self) -> None:
+        # Every MUST-LOWER combination has to be taken by both patterns — that is the bound,
+        # stated as a rule rather than as a count — and every divergence probe has to be REFUSED
+        # by both. The second half is what gives the divergence vocabulary teeth: an earlier
+        # version only rode them through a one-way implication, so emptying those lists hid a
+        # one-sided widening entirely.
+        for prefix in self._MUST_LOWER_PREFIXES:
+            for keyword in self._MUST_LOWER_KEYWORDS:
+                for name in self._MUST_LOWER_NAMES:
+                    for tail in self._HEADER_TAILS:
+                        header = f"{prefix}{keyword} {name}{tail}"
+                        self.assertTrue(
+                            self._assert_patterns_agree(header),
+                            f"a header that must lower does not: {header!r} — either the lowering "
+                            f"pattern narrowed, or this vocabulary is stale")
+
+        for prefix in self._DIVERGENCE_PREFIXES:
+            for keyword in self._MUST_LOWER_KEYWORDS:
+                for name in self._MUST_LOWER_NAMES:
+                    self.assertFalse(
+                        self._assert_patterns_agree(f"{prefix}{keyword} {name}(a)"),
+                        f"{prefix!r} is listed as a token NEITHER pattern accepts, but both now do "
+                        f"— move it to _MUST_LOWER_PREFIXES deliberately")
+        for keyword in self._DIVERGENCE_KEYWORDS:
+            for name in self._MUST_LOWER_NAMES:
+                self.assertFalse(self._assert_patterns_agree(f"{keyword} {name}(a)"),
+                                 f"{keyword!r} is listed as accepted by neither pattern, but both "
+                                 f"now accept it")
+        # The real §5.1 headers, as the corpus half: whatever the vocabulary above misses, the
+        # published surface still has to satisfy the same agreement.
+        for header in _real_section51_block().splitlines():
+            self._assert_patterns_agree(header)
+
+    def test_stanza_headers_are_case_insensitive(self) -> None:
+        # Fortran keywords and identifiers are case-insensitive, so all four stanza patterns carry
+        # `re.IGNORECASE`. Dropping it from any of them left the suite green.
+        #
+        # The first version of this test asserted only the symbol sets and `errors == []`, which
+        # does NOT observe `_IFACE_PROC_END`: with the end line unmatched, the FOLLOWING type
+        # header terminates the procedure stanza, so the symbol sets and the error list are
+        # unchanged and only the stanza CONTENTS differ. A reviewer caught that the test did not
+        # pin the property it is named for. Both halves are asserted now.
+        block = ("SUBROUTINE Hx__Foo(a)\n  INTEGER, INTENT(IN) :: a\nEND SUBROUTINE Hx__Foo\n"
+                 "TYPE :: Hx__T\n  INTEGER :: a\nEND TYPE Hx__T\n")
+        ops, types, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(ops), ["Hx__Foo"])
+        self.assertEqual(sorted(types), ["Hx__T"])
+        # The `end` line is NOT part of a procedure stanza (it is part of a type stanza), so an
+        # unmatched upper-case `END SUBROUTINE` shows up here as an extra atom.
+        self.assertEqual(ops["Hx__Foo"], ["SUBROUTINE Hx__Foo(a)", "INTEGER, INTENT(IN) :: a"])
+        self.assertEqual(types["Hx__T"], ["TYPE :: Hx__T", "INTEGER :: a", "END TYPE Hx__T"])
+
+        # ... and with nothing after it to rescue the termination, an upper-cased procedure is
+        # reported unterminated: a fail-closed refusal of legal Fortran, the over-rejection
+        # direction.
+        lone = "PURE SUBROUTINE Hx__Bar(a)\n  REAL, INTENT(IN) :: a\nENDSUBROUTINE Hx__Bar\n"
+        ops_lone, _types_lone, errors_lone = parse_interface_stanzas(lone)
+        self.assertEqual(errors_lone, [])
+        self.assertEqual(ops_lone["Hx__Bar"], ["PURE SUBROUTINE Hx__Bar(a)", "REAL, INTENT(IN) :: a"])
+
+        # The fifth pattern, `_END_STMT_RE`, is reached through the ATOMS rather than through the
+        # stanza split: an upper-cased closing line must canonicalize to `end type` like any other,
+        # or a type stanza written in capitals compares unequal to the same type written in lower
+        # case and the gate refuses correct source. Case-blind here means over-rejection there.
+        self.assertEqual(stanza_atoms(types["Hx__T"]), stanza_atoms(
+            ["type :: hx__t", "  integer :: a", "end type hx__t"]))
+
+    def test_duplicate_symbol_across_stanza_KINDS_errors(self) -> None:
+        # The duplicate check is one shared `seen` set across both kinds, and both duplicate tests
+        # used same-kind pairs. Splitting it per kind left the suite green while a symbol declared
+        # BOTH as a type and as a procedure passed silently — and the gates merge the two dicts
+        # (`{**op_stanzas, **type_stanzas}`), so the procedure stanza disappears from the §5.1 side
+        # and goes unpinned. Third branch of the same rule; a reviewer found it had no witness.
+        dup = ("type :: hx__x\n  integer :: a\nend type hx__x\n"
+               "subroutine hx__x(a)\n  integer, intent(in) :: a\nend subroutine hx__x\n")
+        with self.assertRaisesRegex(SignatureParseError, "duplicate signature for symbol 'hx__x'"):
+            parse_signatures_from_fortran(dup)
+
+    def test_case_insensitive_lowering_of_declarations_and_parameters(self) -> None:
+        # `parse_interface_stanzas` is case-blind by its own patterns; the LOWERING below it has
+        # two more (`_INTENT_RE`, `_MODULE_PARAM_RE`) that carry the same rule and that no test
+        # observed. Their harms point in opposite directions, so both are asserted here.
+        #
+        #  * `_INTENT_RE` case-blind => `INTENT(IN)` is an "unsupported declaration attribute"
+        #    and a legal upper-cased source is REFUSED.
+        #  * `_MODULE_PARAM_RE` case-blind => the module-parameter list comes back EMPTY, which is
+        #    fail-open: those entries are the pin that catches a `case_id_len = 64 -> 32` drift.
+        struct = parse_signatures_from_fortran(
+            "INTEGER, PARAMETER :: DP = REAL64\n"
+            "SUBROUTINE Hx__Foo(a)\n  REAL(DP), INTENT(IN) :: a\nEND SUBROUTINE Hx__Foo\n")
+        self.assertEqual([mp["name"] for mp in struct["module_parameters"]], ["DP"])
+        self.assertEqual(struct["module_parameters"][0]["value"], "float64")
+        (proc,) = struct["procedures"]
+        self.assertEqual(proc["args"][0]["intent"], "in")
+
+    def test_an_attributed_type_header_opens_a_stanza(self) -> None:
+        # `type, public :: t` — an attributed derived-type header — occurs 16 times in the real
+        # in-tree corpus and had NO test input, so deleting the attribute group from
+        # `_TYPE_HEADER_RE` left the whole suite green. The consequence on a real run is
+        # over-rejection, not bypass: the splitter returns no stanza for the header, and
+        # `_validate_infrastructure_generated_signatures` then reports a published type as missing
+        # from a source that declares it correctly. Found by a witness census; it is the sharpest
+        # gap this branch's own sweeps did not reach, because the decision is in code the move
+        # relocated without changing.
+        block = ("type, public :: hx__t\n  integer :: a\nend type hx__t\n"
+                 "type, public, abstract :: hx__u\n  integer :: b\nend type hx__u\n")
+        _ops, types, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(types), ["hx__t", "hx__u"])
+
+    def test_a_multi_name_type_line_is_not_a_type_header(self) -> None:
+        # `_TYPE_HEADER_RE`'s trailing anchor. Removing it survives the suite, and the harm is a
+        # false stanza OPEN: `type :: a, b` is not a derived-type definition, but an unanchored
+        # pattern reads it as one named `a` and swallows what follows into its stanza. Absent from
+        # the corpus; the anchor is cheap to observe, so it is observed rather than recorded.
+        _ops, types, errors = parse_interface_stanzas(
+            "type :: hx__a, hx__b\n  integer :: x\nend type hx__a\n")
+        self.assertEqual(types, {})
+        self.assertEqual(errors, [])
+
+    def test_a_component_declaration_is_not_a_type_header(self) -> None:
+        # `_TYPE_HEADER_RE` is now the ONE owner of "what a type header is" — the stanza splitter
+        # and `_parse_type` share it — so what it accepts is worth an explicit test: a component
+        # declaration must not open a stanza and swallow the rest of the enclosing type.
+        #
+        # MEASURED, and deliberately NOT pinning the pattern's `[^:()]` class: what keeps a
+        # component out is the missing comma before `::`, not the paren exclusion. What the paren
+        # exclusion actually decides is every attribute list CONTAINING parentheses — `extends(b)`,
+        # `bind(c)`, `public, bind(c)` — each of which is a legal type header the pattern silently
+        # refuses (no stanza, no error). An earlier version of this comment named `extends` as the
+        # only such input, which a reviewer measured false. None of those forms appears in the
+        # corpus today; pinning the class here would freeze the refusal, so the ledger records it
+        # for the language area instead.
+        block = ("type :: hx__outer\n"
+                 "  type(hx__inner), allocatable :: parts(:)\n"
+                 "  integer :: n\n"
+                 "end type hx__outer\n")
+        _ops, types, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(types), ["hx__outer"])
+        self.assertEqual(len(types["hx__outer"]), 4)
+
+    def test_a_line_of_exotic_blanks_produces_no_atom(self) -> None:
+        # The scanner and the normalizer disagree about what "blank" means, deliberately: the
+        # scanner uses gfortran's blank set (space, tab, form feed) so that a U+00A0 stays CONTENT
+        # the way the compiler reads it, while the normalizer erases Python's `\s`, which is
+        # wider. A line holding only such a character therefore survives the scan and normalizes
+        # to the empty string, and `stanza_atoms` must drop it: an empty atom breaks the ordered
+        # stanza comparison.
+        #
+        # The guard is live — a census labelled it unreachable and a reviewer disproved that by
+        # construction — but its consequence is bounded, and that was measured too: gfortran
+        # rejects all four characters (`Error: Invalid character in name`), so no source carrying
+        # one can be certified. This pins the behaviour, not a wrong-verdict path.
+        for blank in ("\xa0", "\v", "\x85", "\u2028"):
+            with self.subTest(blank=repr(blank)):
+                self.assertEqual(normalize_fortran_line(blank), "")
+                self.assertEqual(
+                    stanza_atoms(["type :: hx__t", blank, "  integer :: a", "end type hx__t"]),
+                    stanza_atoms(["type :: hx__t", "  integer :: a", "end type hx__t"]))
+
+    def test_atoms_fold_a_tab_like_any_other_whitespace(self) -> None:
+        # `normalize_fortran_line` erases `\s+`, not just spaces. Narrowing it to ` +` left the
+        # suite green while a tab-formatted source (gfortran accepts tabs as a blank) compared
+        # unequal to §5.1 — over-rejection.
+        self.assertEqual(stanza_atoms(["integer,\tintent(in) :: a"]),
+                         stanza_atoms(["integer, intent(in) :: a"]))
 
     def test_type_missing_end_type_is_unterminated(self) -> None:
         block = (
@@ -198,11 +513,9 @@ class FortranStanzaParserTests(unittest.TestCase):
 
 
 def _type_lines(block: str, suffix: str) -> list[str]:
-    from tools.validate_pipeline_semantics import _parse_interface_stanzas, _normalize_fortran_line
-
-    _ops, types, _errs = _parse_interface_stanzas(block)
+    _ops, types, _errs = parse_interface_stanzas(block)
     name = next(n for n in types if n.endswith(suffix))
-    return [_normalize_fortran_line(ln) for ln in types[name] if _normalize_fortran_line(ln)]
+    return [normalize_fortran_line(ln) for ln in types[name] if normalize_fortran_line(ln)]
 
 
 class MalformedStructFailClosedTest(unittest.TestCase):
@@ -608,6 +921,407 @@ class SharedSplitterMigrationTests(unittest.TestCase):
         )
         names = [c["name"] for t in struct["types"] for c in t["components"]]
         self.assertEqual(names, ["sep", "g"])
+
+
+
+class NoImportCycleWithTheValidatorTest(unittest.TestCase):
+    """No backend module the validator imports may import it back — at module level or lazily.
+
+    Two reasons, and they cover different spellings, so both are stated:
+
+    * a MODULE-LEVEL back-import is a cycle. `validate_pipeline_semantics` imports these modules at
+      module level, so importing it back closes one. This half is mechanical.
+    * a LAZY back-import is not a cycle — a function-local import is the standard way to break one,
+      and it executes fine. What forbids it here is narrower than the boundary rule and narrower
+      than "no cycles": these modules had their OWN SUBJECT MATTER sitting in the neutral core and
+      the whole point of the move was that they no longer need anything from it. A renewed
+      dependency IS the regression, whatever its spelling.
+
+    Stating that precisely matters because the boundary rule does NOT forbid this direction:
+    `docs/BACKEND_BOUNDARY.md` says a backend MAY import the neutral core, and a sibling in this
+    very package does (`structure_differential.py:66`). The first version of this test asserted the
+    boundary rule and would have refused a boundary-legal import — the over-rejection direction.
+    The second asserted the cycle for both spellings, which is false for the lazy one.
+
+    What it guards against is the state these modules were in until the §5.1 line and stanza layer
+    moved here: `signatures` imported `_fortran_logical_lines`, `_normalize_fortran_line` and
+    `_parse_interface_stanzas` out of the validator, so the Fortran backend reached into the
+    neutral core for its own subject matter (TODO.md's blocking sub-item). Nothing observed that:
+    the import worked and the suite was green.
+
+    FOUR checks, because no subset of them covers the property:
+
+    * the SOURCE check reads every import in every scanned module, at any nesting depth, in every
+      spelling the reader knows — `import`, `from ... import` (module AND alias), relative, and a
+      literal `importlib.import_module` / `__import__`. The subprocess probe cannot see a lazy one.
+    * WHICH modules are scanned is DISCOVERED by walking `tools/backends/`, not enumerated. Four
+      review rounds each found a different file an enumerated version had missed — `structure.py`,
+      `registry.py`, and both package `__init__` modules — which is what an enumeration standing in
+      for a rule looks like. The only hand-maintained part left is the inverse: the modules that
+      legitimately depend on the neutral core, which is a list of exceptions a reader can audit.
+    * the EXCEPTION check holds that list to its justification, so an entry cannot outlive its
+      reason and go on exempting whatever the module grows next.
+    * the IMPORT check runs a fresh interpreter, so a module-level import — including one reached
+      transitively through a sibling — is an executed fact rather than a reading of the source.
+      In-process `sys.modules` says nothing: most of this test run imports the validator anyway.
+
+    A COMPUTED module name (`importlib.import_module(name_from_a_variable)`) is out of reach of the
+    source check and invisible to the probe when lazy. It is recorded as a limit here rather than
+    implied to be covered, the same way `tools/tests/test_backend_boundary.py` records it.
+    """
+
+    #: The modules whose SUBJECT MATTER moved here. A renewed dependency on the neutral core from
+    #: these is the regression the move removed, whatever its spelling.
+    _SUBJECT_MATTER_ROOTS = (
+        "tools/backends/language/fortran/signatures.py",
+        "tools/backends/language/fortran/lines.py",
+    )
+
+    @classmethod
+    def _rel_paths_for(cls, dotted: str, root: Path) -> list[str]:
+        """The files importing `dotted` executes: the module (or package) and its parent packages."""
+        parts = dotted.split(".")
+        out: list[str] = []
+        for i in range(1, len(parts) + 1):
+            stem = "/".join(parts[:i])
+            for rel in (f"{stem}.py", f"{stem}/__init__.py"):
+                if (root / rel).is_file():
+                    out.append(rel)
+        return out
+
+    @staticmethod
+    def _absolute_name(name: str, importer_rel: str) -> str:
+        """Resolve a written import name against the module importing it.
+
+        A relative import arrives here as its WRITTEN form (`.keywords`, `..registry`), which no
+        prefix test on `tools.backends` can match — so the closure never followed the edge, and a
+        helper split out of `signatures.py` and imported as `from . import keywords` could reach
+        the validator with the whole suite green. That was the sixth spelling to break this check
+        and the first one the closure itself introduced.
+        """
+        level = len(name) - len(name.lstrip("."))
+        if not level:
+            return name
+        package = importer_rel[: -len(".py")].split("/")
+        if package[-1] == "__init__":
+            package = package[:-1]
+        else:
+            package = package[:-1]
+        base = package[: len(package) - (level - 1)] if level > 1 else package
+        tail = name.lstrip(".")
+        return ".".join(base + ([tail] if tail else []))
+
+    @classmethod
+    def _modules_on_the_cycle(cls, root: Path | None = None,
+                              subject_matter_roots: tuple[str, ...] | None = None) -> list[str]:
+        """The backend modules that must not import the validator — COMPUTED, not listed.
+
+        Two kinds of root, for the two reasons the class docstring gives:
+
+        * the subject-matter roots;
+        * every backend module the validator imports, since importing it back is a cycle.
+
+        Then everything reachable from those roots by imports WITHIN `tools/backends`, because a
+        dependency routed through a sibling is the same dependency — and every parent package on
+        the way, since importing `a.b.c` executes `a/__init__.py` too. Relative imports are
+        resolved against the importing module first.
+
+        What this deliberately does NOT cover is a backend module no root reaches:
+        `structure_differential.py` (a developer harness) imports the validator today and is
+        allowed to, and so would a future `build_system/make/` module —
+        `docs/BACKEND_BOUNDARY.md` permits backend -> neutral core. An earlier version walked every
+        file under `tools/backends/` and refused exactly that.
+
+        RECORDED LIMITS, because a check that overstates itself is worse than one that does not:
+        a dependency routed through a NEUTRAL module (backend -> `tools/some_shim.py` -> validator)
+        is one hop outside the traversal and is not seen; nor is a module name computed at runtime,
+        or a literal handed to a locally-defined import helper. Following arbitrary chains through
+        the neutral core is not a question a source reader at this level can answer, and stating
+        that beats implying coverage.
+
+        `root` and `subject_matter_roots` are parameters so the algorithm can be driven against a
+        SYNTHETIC tree with a known shape. Before that, deleting the transitive step below left the
+        whole suite green — the redesign that introduced it had no witness at all.
+        """
+        root = REPO_ROOT if root is None else root
+        roots = cls._SUBJECT_MATTER_ROOTS if subject_matter_roots is None else subject_matter_roots
+        seen: set[str] = set()
+        queue: list[str] = [rel for rel in roots if (root / rel).is_file()]
+        validator = root / "tools/validate_pipeline_semantics.py"
+        if validator.is_file():
+            for _lineno, name in cls._imported_names(validator):
+                if name.startswith("tools.backends"):
+                    queue += cls._rel_paths_for(name, root)
+        while queue:
+            rel = queue.pop()
+            if rel in seen or not (root / rel).is_file():
+                continue
+            seen.add(rel)
+            for _lineno, written in cls._imported_names(root / rel):
+                name = cls._absolute_name(written, rel)
+                if name.startswith("tools.backends"):
+                    queue += cls._rel_paths_for(name, root)
+        return sorted(seen)
+
+    #: The importer callables whose LITERAL first argument the source check reads. Same set, and
+    #: the same limit, as `tools/tests/test_backend_boundary.py`.
+    _IMPORTER_CALLS = frozenset({"import_module", "__import__"})
+
+    @classmethod
+    def _imported_names(cls, path: Path) -> list[tuple[int, str]]:
+        """Every dotted name imported anywhere in `path`, at any nesting depth.
+
+        `ImportFrom` contributes `module.alias` and not just `module`: `from tools import
+        validate_pipeline_semantics` names the target in the ALIAS, and reading only `node.module`
+        missed it — a reviewer reinstated the whole backend-to-neutral-core edge in that spelling
+        with this test green. Relative imports contribute their written form too, since `tools` is
+        a namespace package and a relative import can cross into it. A literal
+        `importlib.import_module("...")` contributes its argument, because it is an import that no
+        import statement announces — a census showed it evaded both halves of this test.
+        """
+        import ast
+
+        out: list[tuple[int, str]] = []
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out += [(node.lineno, alias.name) for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # The written form is KEPT, dots and all: `.strip(".")` here turned
+                # `from . import keywords` into the bare name `keywords`, which no prefix test
+                # matches and no resolver can place — the relative edge was invisible to the
+                # closure because of this one call.
+                prefix = "." * node.level + (node.module or "")
+                out.append((node.lineno, prefix))
+                sep = "." if node.module else ""
+                out += [(node.lineno, f"{prefix}{sep}{alias.name}") for alias in node.names]
+            elif isinstance(node, ast.Call):
+                func = node.func
+                name = getattr(func, "attr", None) or getattr(func, "id", None)
+                if name not in cls._IMPORTER_CALLS:
+                    continue
+                args = list(node.args) + [kw.value for kw in node.keywords
+                                          if kw.arg in (None, "name")]
+                out += [(node.lineno, a.value) for a in args
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+        return out
+
+    def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
+        scanned = self._modules_on_the_cycle()
+        # The floor is the roots plus the packages every import of them executes; stated as a
+        # membership check rather than a number, because a number is what the previous version
+        # used and it sat at 5 against an actual 8.
+        for required in self._SUBJECT_MATTER_ROOTS + (
+                "tools/backends/__init__.py",
+                "tools/backends/language/__init__.py",
+                "tools/backends/language/fortran/__init__.py"):
+            self.assertIn(required, scanned,
+                          "the closure stopped covering a module every import of the backend "
+                          "executes")
+        for rel in scanned:
+            for lineno, name in self._imported_names(REPO_ROOT / rel):
+                self.assertNotIn(
+                    "validate_pipeline_semantics", name,
+                    f"{rel}:{lineno} imports {name}. A module-level import closes a cycle (the "
+                    f"validator imports this module at module level); a lazy one reinstates the "
+                    f"dependency on the neutral core that moving the §5.1 layer here removed.")
+
+    @staticmethod
+    def _synthetic_tree(base: Path, files: dict[str, str]) -> None:
+        for rel, body in files.items():
+            path = base / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+    #: A backend package with the shapes that matter: a root, a helper reached by an ABSOLUTE
+    #: import, a helper reached by a RELATIVE one, a module no root reaches, and a second axis
+    #: standing in for the migration ledger's next area.
+    _SYNTHETIC = {
+        "tools/validate_pipeline_semantics.py": (
+            "from tools.backends.language.fortran import lines as fortran_lines\n"),
+        "tools/backends/__init__.py": "",
+        "tools/backends/registry.py": "import importlib\n",
+        "tools/backends/language/__init__.py": "",
+        "tools/backends/language/fortran/__init__.py": "",
+        "tools/backends/language/fortran/lines.py": "import re\n",
+        "tools/backends/language/fortran/signatures.py": (
+            "from tools.backends.language.fortran import lines\n"
+            "from . import keywords\n"),
+        "tools/backends/language/fortran/keywords.py": "WORDS = ()\n",
+        "tools/backends/language/fortran/structure_differential.py": (
+            "from tools.validate_pipeline_semantics import anything\n"),
+        "tools/backends/build_system/__init__.py": "",
+        "tools/backends/build_system/make/__init__.py": "",
+        "tools/backends/build_system/make/rules.py": (
+            "from tools.validate_pipeline_semantics import anything\n"),
+    }
+
+    def _closure_of(self, base: Path) -> set[str]:
+        return set(self._modules_on_the_cycle(
+            root=base,
+            subject_matter_roots=("tools/backends/language/fortran/signatures.py",
+                                  "tools/backends/language/fortran/lines.py")))
+
+    def test_the_closure_algorithm_on_a_synthetic_tree(self) -> None:
+        # Drives the COMPUTATION, not today's import graph — the distinction this class had to
+        # learn twice. Measured before this test existed: deleting the transitive expansion, and
+        # reverting wholesale to the previous whole-directory walk plus its exception list, each
+        # left every test in this class green. Both are now observed, and so is the relative-import
+        # resolution that the closure originally lacked.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            self._synthetic_tree(base, self._SYNTHETIC)
+            closure = self._closure_of(base)
+
+            # reached from a root by an absolute import, and by a RELATIVE one
+            self.assertIn("tools/backends/language/fortran/lines.py", closure)
+            self.assertIn("tools/backends/language/fortran/keywords.py", closure,
+                          "a `from . import x` edge was not followed")
+            # every parent package an import executes
+            for pkg in ("tools/backends/__init__.py", "tools/backends/language/__init__.py",
+                        "tools/backends/language/fortran/__init__.py"):
+                self.assertIn(pkg, closure)
+            # reached by nothing: the developer harness and the next migration area, both of which
+            # import the neutral core legally
+            self.assertNotIn("tools/backends/language/fortran/structure_differential.py", closure)
+            self.assertNotIn("tools/backends/build_system/make/rules.py", closure)
+
+    def test_the_closure_follows_a_dependency_routed_through_a_sibling(self) -> None:
+        # The transitive step, witnessed: when a root imports the harness, the harness — and its
+        # validator import — come inside the closure.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            files = dict(self._SYNTHETIC)
+            files["tools/backends/language/fortran/signatures.py"] += (
+                "from tools.backends.language.fortran import structure_differential\n")
+            self._synthetic_tree(base, files)
+            closure = self._closure_of(base)
+            harness = "tools/backends/language/fortran/structure_differential.py"
+            self.assertIn(harness, closure,
+                          "a dependency routed through a sibling escaped the closure")
+            offenders = [
+                rel for rel in closure
+                if any("validate_pipeline_semantics" in name
+                       for _lineno, name in self._imported_names(base / rel))
+            ]
+            self.assertEqual(offenders, [harness])
+
+    def test_the_live_closure_matches_the_property(self) -> None:
+        # The real tree, as the corpus half of the same property.
+        scanned = set(self._modules_on_the_cycle())
+        self.assertNotIn("tools/backends/language/fortran/structure_differential.py", scanned,
+                         "nothing on the cycle imports the developer harness, so it should be "
+                         "outside the closure")
+        self.assertIn("tools/backends/language/fortran/bundle.py", scanned,
+                      "bundle is reached only transitively, through the package __init__ — if it "
+                      "dropped out, the transitive step is gone")
+
+    def test_an_unparseable_module_on_the_cycle_raises(self) -> None:
+        # The reader must not answer "no imports" for a file it could not read: a module that
+        # fails to parse is where an unread import would sit. Making `_imported_names` swallow
+        # `SyntaxError` and return `[]` is invisible to every other test.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            broken = Path(td) / "broken.py"
+            broken.write_text("def broken(:\n", encoding="utf-8")
+            with self.assertRaises(SyntaxError):
+                self._imported_names(broken)
+
+    def test_importing_this_backend_does_not_execute_the_validator(self) -> None:
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys; sys.path.insert(0, %r)\n"
+            "import tools.backends.language.fortran.signatures\n"
+            "assert 'tools.validate_pipeline_semantics' not in sys.modules, "
+            "'importing the language backend executed the validator'\n"
+            "print('ok')\n" % str(REPO_ROOT)
+        )
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr[-2000:])
+        self.assertIn("ok", out.stdout)
+
+
+class Section51StanzaLayerTests(unittest.TestCase):
+    """The §5.1 stanza layer: `parse_interface_stanzas`, `declaration_atoms`, `stanza_atoms`.
+
+    Moved here with the functions themselves, which used to be private helpers of
+    `validate_pipeline_semantics`. Each of these is a reproducer for a defect that made a
+    deterministic gate wrong on source gfortran accepts, so they travel with the code they
+    pin rather than with the gates that call it."""
+
+    def test_commented_out_stanza_behind_an_exotic_separator_is_not_parsed(self) -> None:
+        # issue #23, defect A, at `_parse_interface_stanzas` — which the generated-signature
+        # gate runs over the MODEL SOURCE to compare each pinned §5.1 signature within its own
+        # procedure stanza. A form feed inside a comment ended the comment early under
+        # `str.splitlines()` and re-admitted its tail AS CODE, conjuring a stanza header out of
+        # prose: it never closes, so it is reported unterminated and fails Generate closed on a
+        # source gfortran and fortitude both accept.
+        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
+                         ("\u2028", "LINE SEPARATOR")):
+            with self.subTest(separator=name):
+                src = ("module hx_model\ncontains\n"
+                       f"  ! removed: {ch} subroutine hx__ghost(a)\n"
+                       "  subroutine hx__real(a)\n"
+                       "    real, intent(in) :: a\n"
+                       "  end subroutine\n"
+                       "end module\n")
+                ops, types, errors = parse_interface_stanzas(src)
+                self.assertEqual(errors, [], f"a {name} must not end the comment")
+                self.assertEqual(sorted(ops), ["hx__real"])
+                self.assertEqual(types, {})
+
+    def test_declaration_atoms_split_combined_declarators(self) -> None:
+        # A combined declarator splits into one atom per entity; array-spec commas stay intact.
+        self.assertEqual(
+            declaration_atoms("integer, intent(in) :: steps, cells_updated"),
+            ["integer, intent(in) :: steps", "integer, intent(in) :: cells_updated"])
+        self.assertEqual(
+            declaration_atoms("real(dp), intent(in) :: a(:), b(2,2)"),
+            ["real(dp), intent(in) :: a(:)", "real(dp), intent(in) :: b(2,2)"])
+        # A header (no ::) passes through unchanged.
+        self.assertEqual(
+            declaration_atoms("subroutine hx__foo(a, b)"), ["subroutine hx__foo(a, b)"])
+
+    def test_declaration_atoms_keep_a_comma_inside_a_character_literal(self) -> None:
+        # Splitter-level reproducer: this module used to define `_split_top_level_commas` twice
+        # ~9,500 lines apart, and the later quote-UNAWARE definition shadowed the quote-aware
+        # one, so the initializer's comma read as an entity separator — a truncated first atom
+        # plus a phantom `character(len=1), parameter :: '`.
+        self.assertEqual(
+            declaration_atoms("character(len=1), parameter :: sep = ',', tail = 'z'"),
+            ["character(len=1), parameter :: sep = ','",
+             "character(len=1), parameter :: tail = 'z'"])
+
+    def test_unbalanced_paren_in_an_initializer_does_not_split_the_forms_apart(self) -> None:
+        # The gate-level half, and the one the balanced case above does NOT reach: with a
+        # balanced literal both sides of the §5.1 comparison mis-split identically and cancel.
+        # An UNBALANCED paren inside the literal suppresses the split on the combined form only,
+        # so combined and one-per-line compared UNEQUAL and a legal declaration read as a
+        # signature mismatch — fail-closed. (gfortran -std=f2008 accepts the declaration.)
+        combined = ["character(len=3), parameter :: msg = 'a(b', tail = 'z'"]
+        per_line = ["character(len=3), parameter :: msg = 'a(b'",
+                    "character(len=3), parameter :: tail = 'z'"]
+        self.assertEqual(stanza_atoms(combined), stanza_atoms(per_line))
+
+    def test_combined_and_split_declarations_compare_equal(self) -> None:
+        combined = stanza_atoms(["integer, intent(in) :: a, b"])
+        split = stanza_atoms(
+            ["integer, intent(in) :: a", "integer, intent(in) :: b"])
+        self.assertEqual(combined, split)
+
+    def test_end_line_canonicalizes_trailing_name(self) -> None:
+        # bare `end type` compares equal to `end type NAME` (the name is pinned by the header).
+        with_name = stanza_atoms(
+            ["type :: hx__t", "  integer :: a", "end type hx__t"])
+        bare = stanza_atoms(["type :: hx__t", "  integer :: a", "end type"])
+        self.assertEqual(with_name, bare)
 
 
 if __name__ == "__main__":

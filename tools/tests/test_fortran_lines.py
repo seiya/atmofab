@@ -16,7 +16,9 @@ import unittest
 
 from tools.backends.language.fortran.lines import (
     _split_top_level,
+    fortran_logical_line_texts,
     fortran_logical_lines,
+    normalize_fortran_line,
     mask_code_lookalikes,
     split_fortran_statements,
     split_top_level_commas,
@@ -439,6 +441,55 @@ class SplitTopLevelCommasTests(unittest.TestCase):
             _split_top_level("a//b", "//", "(", ")")
         with self.assertRaises(ValueError):
             _split_top_level("a(b", "(", "([", ")]")
+
+
+
+class Section51NormalizationTests(unittest.TestCase):
+    """The §5.1 view of the scanner: `fortran_logical_line_texts` + `normalize_fortran_line`.
+
+    These moved here with the two functions, which used to be private helpers of
+    `validate_pipeline_semantics` that the language backend had to import back out of the
+    neutral core (docs/BACKEND_BOUNDARY.md). The gates that consume them stay neutral, so
+    their own tests stayed in `test_validate_pipeline_semantics`."""
+
+    def test_continuation_join_skips_interleaved_comment_and_blank(self) -> None:
+        # Free-form Fortran allows blank / full-comment lines inside a `&` continuation; the join
+        # must span them (the §5.1 write_perf header is >132 cols and MUST wrap).
+        joined = fortran_logical_line_texts(
+            "subroutine hx__wp(a, &\n"
+            "  ! a comment inside the wrap\n"
+            "\n"
+            "    b, c)\n")
+        self.assertEqual(len(joined), 1)
+        self.assertEqual(normalize_fortran_line(joined[0]), "subroutinehx__wp(a,b,c)")
+
+    def test_the_section51_view_does_not_split_on_semicolons(self) -> None:
+        # The docstring of `fortran_logical_line_texts` asserts this as its distinguishing
+        # property against the validator's `;`-splitting `_iter_fortran_logical_lines`: the
+        # interface-stanza parser wants each header AS WRITTEN. Adding a `;` split changed the
+        # atoms of 79 real corpus files and left the whole suite green — the property the
+        # adapter's own docstring claims had no observer.
+        text = "associate(unused_z_b=>z_b); end associate\n"
+        self.assertEqual(fortran_logical_line_texts(text), ["associate(unused_z_b=>z_b); end associate"])
+        # ... while the statement splitter, which is a different view over the same scan, does.
+        self.assertEqual(split_fortran_statements(fortran_logical_line_texts(text)[0]),
+                         ["associate(unused_z_b=>z_b)", " end associate"])
+
+    def test_normalization_joins_continuations_and_folds_case(self) -> None:
+        # A continuation-split, differently-cased, comment-bearing header normalizes to the
+        # same canonical line as its single-line form.
+        joined = fortran_logical_line_texts(
+            "SUBROUTINE Hx__Foo(a, &  ! keep going\n     b)  ! done\n")
+        self.assertEqual(len(joined), 1)
+        self.assertEqual(
+            normalize_fortran_line(joined[0]), "subroutinehx__foo(a,b)")
+
+    def test_comment_strip_honors_strings(self) -> None:
+        # The stripper is now the shared one (issue #23); `None` is the "this physical line does
+        # not start inside a character literal" state, and the returned state is discarded here.
+        line = strip_fortran_comment_tracking_quotes(
+            "s = '! not a comment' ! real comment", None)[0]
+        self.assertEqual(normalize_fortran_line(line), "s='!notacomment'")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

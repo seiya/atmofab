@@ -15,7 +15,7 @@ import yaml
 
 import tools.validate_pipeline_semantics as vps
 from tools.backends import registry as backend_registry
-from tools.backends.language.fortran.lines import strip_fortran_comment_tracking_quotes
+from tools.backends.language.fortran.lines import normalize_fortran_line
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.validate_pipeline_semantics import (
     _BUNDLED_SHAPE_EXPR_SCHEMA_PATH,
@@ -16715,27 +16715,6 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         # a top-level `parameter` declaration is not a stanza
         self.assertNotIn("dp", ops)
 
-    def test_commented_out_stanza_behind_an_exotic_separator_is_not_parsed(self) -> None:
-        # issue #23, defect A, at `_parse_interface_stanzas` — which the generated-signature
-        # gate runs over the MODEL SOURCE to compare each pinned §5.1 signature within its own
-        # procedure stanza. A form feed inside a comment ended the comment early under
-        # `str.splitlines()` and re-admitted its tail AS CODE, conjuring a stanza header out of
-        # prose: it never closes, so it is reported unterminated and fails Generate closed on a
-        # source gfortran and fortitude both accept.
-        for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
-                         ("\u2028", "LINE SEPARATOR")):
-            with self.subTest(separator=name):
-                src = ("module hx_model\ncontains\n"
-                       f"  ! removed: {ch} subroutine hx__ghost(a)\n"
-                       "  subroutine hx__real(a)\n"
-                       "    real, intent(in) :: a\n"
-                       "  end subroutine\n"
-                       "end module\n")
-                ops, types, errors = vps._parse_interface_stanzas(src)
-                self.assertEqual(errors, [], f"a {name} must not end the comment")
-                self.assertEqual(sorted(ops), ["hx__real"])
-                self.assertEqual(types, {})
-
     def test_missing_fence_errors(self) -> None:
         _, _, err = vps._parse_canonical_interface_from_controlled_spec(self._cs(""))
         self.assertIsNotNone(err)
@@ -16803,39 +16782,6 @@ class CanonicalInterfaceParserTests(unittest.TestCase):
         self.assertIsNotNone(err)
         self.assertIn("could not render", err)
 
-    def test_declaration_atoms_split_combined_declarators(self) -> None:
-        # A combined declarator splits into one atom per entity; array-spec commas stay intact.
-        self.assertEqual(
-            vps._declaration_atoms("integer, intent(in) :: steps, cells_updated"),
-            ["integer, intent(in) :: steps", "integer, intent(in) :: cells_updated"])
-        self.assertEqual(
-            vps._declaration_atoms("real(dp), intent(in) :: a(:), b(2,2)"),
-            ["real(dp), intent(in) :: a(:)", "real(dp), intent(in) :: b(2,2)"])
-        # A header (no ::) passes through unchanged.
-        self.assertEqual(
-            vps._declaration_atoms("subroutine hx__foo(a, b)"), ["subroutine hx__foo(a, b)"])
-
-    def test_declaration_atoms_keep_a_comma_inside_a_character_literal(self) -> None:
-        # Splitter-level reproducer: this module used to define `_split_top_level_commas` twice
-        # ~9,500 lines apart, and the later quote-UNAWARE definition shadowed the quote-aware
-        # one, so the initializer's comma read as an entity separator — a truncated first atom
-        # plus a phantom `character(len=1), parameter :: '`.
-        self.assertEqual(
-            vps._declaration_atoms("character(len=1), parameter :: sep = ',', tail = 'z'"),
-            ["character(len=1), parameter :: sep = ','",
-             "character(len=1), parameter :: tail = 'z'"])
-
-    def test_unbalanced_paren_in_an_initializer_does_not_split_the_forms_apart(self) -> None:
-        # The gate-level half, and the one the balanced case above does NOT reach: with a
-        # balanced literal both sides of the §5.1 comparison mis-split identically and cancel.
-        # An UNBALANCED paren inside the literal suppresses the split on the combined form only,
-        # so combined and one-per-line compared UNEQUAL and a legal declaration read as a
-        # signature mismatch — fail-closed. (gfortran -std=f2008 accepts the declaration.)
-        combined = ["character(len=3), parameter :: msg = 'a(b', tail = 'z'"]
-        per_line = ["character(len=3), parameter :: msg = 'a(b'",
-                    "character(len=3), parameter :: tail = 'z'"]
-        self.assertEqual(vps._stanza_atoms(combined), vps._stanza_atoms(per_line))
-
     def test_unbalanced_paren_in_a_format_literal_still_reaches_the_json_gate(self) -> None:
         # The fail-open-by-truncation half. A format literal carrying an unbalanced paren — an
         # apostrophe edit descriptor emitting `)`, or a `)` inside a double-quoted piece — skewed
@@ -16870,30 +16816,6 @@ end program p
         vps._validate_runner_json_serialization(Path("runner.f90"), source, violations)
         self.assertTrue(any("L edit descriptor" in v for v in violations), violations)
 
-    def test_combined_and_split_declarations_compare_equal(self) -> None:
-        combined = vps._stanza_atoms(["integer, intent(in) :: a, b"])
-        split = vps._stanza_atoms(
-            ["integer, intent(in) :: a", "integer, intent(in) :: b"])
-        self.assertEqual(combined, split)
-
-    def test_end_line_canonicalizes_trailing_name(self) -> None:
-        # bare `end type` compares equal to `end type NAME` (the name is pinned by the header).
-        with_name = vps._stanza_atoms(
-            ["type :: hx__t", "  integer :: a", "end type hx__t"])
-        bare = vps._stanza_atoms(["type :: hx__t", "  integer :: a", "end type"])
-        self.assertEqual(with_name, bare)
-
-    def test_continuation_join_skips_interleaved_comment_and_blank(self) -> None:
-        # Free-form Fortran allows blank / full-comment lines inside a `&` continuation; the join
-        # must span them (the §5.1 write_perf header is >132 cols and MUST wrap).
-        joined = vps._fortran_logical_lines(
-            "subroutine hx__wp(a, &\n"
-            "  ! a comment inside the wrap\n"
-            "\n"
-            "    b, c)\n")
-        self.assertEqual(len(joined), 1)
-        self.assertEqual(vps._normalize_fortran_line(joined[0]), "subroutinehx__wp(a,b,c)")
-
     def test_unrelated_fence_before_subsection_ignored(self) -> None:
         # A code fence in §5 prose BEFORE ### 5.1 must not be mistaken for the interface block.
         body = "```text\nan illustrative example\n```\n" + self._FENCE
@@ -16904,25 +16826,8 @@ end program p
 
     def test_parameter_lines_extracted(self) -> None:
         params = vps._section51_parameter_lines(self._cs(self._FENCE))
-        self.assertEqual([vps._normalize_fortran_line(p) for p in params],
+        self.assertEqual([normalize_fortran_line(p) for p in params],
                          ["integer,parameter::dp=real64"])
-
-    def test_normalization_joins_continuations_and_folds_case(self) -> None:
-        # A continuation-split, differently-cased, comment-bearing header normalizes to the
-        # same canonical line as its single-line form.
-        joined = vps._fortran_logical_lines(
-            "SUBROUTINE Hx__Foo(a, &  ! keep going\n     b)  ! done\n")
-        self.assertEqual(len(joined), 1)
-        self.assertEqual(
-            vps._normalize_fortran_line(joined[0]), "subroutinehx__foo(a,b)")
-
-    def test_comment_strip_honors_strings(self) -> None:
-        # The stripper is now the shared one (issue #23); `None` is the "this physical line does
-        # not start inside a character literal" state, and the returned state is discarded here.
-        line = strip_fortran_comment_tracking_quotes(
-            "s = '! not a comment' ! real comment", None)[0]
-        self.assertEqual(vps._normalize_fortran_line(line), "s='!notacomment'")
-
 
 class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     """_validate_infrastructure_generated_signatures: the Generate.static gate pinning the
@@ -17441,6 +17346,27 @@ class ChecksSourceGateTests(unittest.TestCase):
         bad = _CHECKS_OK.replace("module bx_checks", "module bx_wrong", 1).replace(
             "end module bx_checks", "end module bx_wrong")
         self.assertTrue(any("module bx_checks" in v for v in self._run(bad)))
+
+    def test_a_module_declaration_only_inside_a_comment_does_not_satisfy_the_gate(self) -> None:
+        # The module-name check reads COMMENT-STRIPPED, CONTINUATION-JOINED logical lines, and
+        # that was caught by nothing behavioural: a census showed the only thing observing it was
+        # the sampled token ratchet, and a token-preserving weakening to raw `splitlines()` left
+        # the whole suite green. Both directions are pinned here.
+        #
+        # Fail-OPEN half: a `module bx_checks` that exists only inside a comment must NOT satisfy
+        # the declaration requirement.
+        commented = _CHECKS_OK.replace("module bx_checks\n",
+                                       "module bx_wrong\n  ! module bx_checks\n", 1).replace(
+            "end module bx_checks", "end module bx_wrong")
+        self.assertTrue(any("module bx_checks" in v for v in self._run(commented)),
+                        "a commented-out declaration satisfied the gate")
+
+        # Over-rejection half: a declaration legally split across a `&` continuation must still
+        # satisfy it. Raw line splitting sees `module bx_&` and reports the module missing on a
+        # source gfortran accepts.
+        continued = _CHECKS_OK.replace("module bx_checks\n", "module bx_&\n  &checks\n", 1)
+        self.assertEqual([v for v in self._run(continued) if "module bx_checks" in v], [],
+                         "a continuation-split declaration was reported missing")
 
     def test_missing_public_name(self) -> None:
         bad = _CHECKS_OK.replace("checks_compute, metric_compute", "checks_compute")
