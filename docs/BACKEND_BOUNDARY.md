@@ -72,20 +72,27 @@ Out of scope, each for a stated reason:
   | --- | --- | --- |
   | `unsupported_reason` | the value is a declared member | naming, and building a refusal message |
   | `unimplemented_reason` | it is declared **and** something implements it, extracted or still inlined | a gate deciding whether a run may carry the value at all |
-  | `provides(axis, value, capability)` | the **neutral core** does that named job for the value | a host-authorship dispatch, before running its own inlined writer |
+  | `provides(axis, value, capability)` | **this repository** does that named job for the value, wherever the code lives | a host-authorship dispatch, deciding whether the job is the host's or a leaf's |
   | `unavailable_reason` | it is declared **and** extracted | code about to call into the backend package |
 
   A member registered with no module and no capability — implemented nowhere — is a declaration,
   not a configuration: membership answers permissively and the other three refuse. Registering a
   backend therefore admits nothing on its own.
-- **A capability is a job the neutral core still does for one value**, declared on the `Backend`
-  record and listed in `registry.CAPABILITIES`. It exists because a host-authorship dispatch
-  cannot ask "is this value implemented?": the conductor's control-file writer and runner
-  renderer each emit one build system's and one language's text, so a predicate that widened
-  with implementation would route a second backend's nodes into the wrong writer — a worse
-  failure than the hard-coded pair it replaced. Declaring a capability asserts the inlined code
-  exists NOW. When the ledger area that owns it lands, the capability moves from a declaration to
-  real dispatch through the backend module and the declaration goes away with it.
+- **A capability is a job this repository does for one value**, declared on the `Backend` record
+  and listed in `registry.CAPABILITIES`. It exists because a host-authorship dispatch cannot ask
+  "is this value implemented?": the control-file writer and the runner renderer each emit one
+  build system's and one language's text, so a predicate that widened with implementation would
+  route a second backend's nodes into the wrong writer — a worse failure than the hard-coded pair
+  it replaced. Declaring a capability asserts the code exists NOW.
+- **WHERE that code lives is a second question, and the record answers it separately.**
+  `core_provides` is the job still inlined in the neutral core — the debt the ledger is paying
+  down. `backend_provides` is the job the record's own package implements, reached only through
+  `registry.capability_module`, which refuses a value that has not declared the job and a package
+  that does not carry what its record claims. A capability may not appear in both sets: one job,
+  one owner. When the ledger area that owns a capability lands, the capability moves from the
+  first set to the second and its dispatch site starts routing through `capability_module`.
+  `provides` is the union, so the authorship answer — which is not a question about where the
+  code sits — does not move with it, and no node changes hands on the migration commit.
 - An axis whose carrying artifact deliberately does not constrain its value is declared
   `open_vocabulary` (today: `parallel`, whose knob schema states it is not a whitelist). For such
   an axis the registry lists the members that have code; membership answers permissively and
@@ -141,7 +148,16 @@ the binding. A neutral document must not state the binding itself.
 - **Adding a capability** requires an entry in `registry.CAPABILITIES` naming which axes it is a
   question of and what job it is, plus at least one record declaring it — a capability nothing
   declares is a question whose answer is always `False`, so a dispatch keyed on it is dead code
-  that reads as a live rule. Conversely a record declaring NOTHING — no module, no capability —
+  that reads as a live rule. A capability a backend PACKAGE implements additionally requires a
+  `registry.CAPABILITY_MODULE_ATTR` row naming the submodule the package re-exports it under: a
+  `backend_provides` entry without one is a capability that is declared true and unreachable at
+  the same time, and the import-time check refuses it.
+- **Moving a capability into a backend** is one commit, not two: create the module under
+  `tools/backends/<axis>/<backend_id>/`, re-export it from the package `__init__`, move the
+  capability from `core_provides` to `backend_provides`, point the neutral seam at
+  `capability_module`, delete the neutral module, and remove its direct-import allowlist entry.
+  Splitting it would leave the declaration describing a tree that does not exist — briefly, but
+  the declaration is what every dispatch believes. Conversely a record declaring NOTHING — no module, no capability —
   says this repository knows a value nothing can run; the code fails closed on that state, and the
   live declarations must not be in it. `registry` checks its own declarations at import, since a
   typo answering `False` forever would flip a host-authorship dispatch off silently, and
