@@ -713,8 +713,8 @@ class SharedSplitterMigrationTests(unittest.TestCase):
 
 
 
-class SignaturesMustNotImportTheValidatorTest(unittest.TestCase):
-    """`signatures` must not import `validate_pipeline_semantics` — at module level or lazily.
+class NoImportCycleWithTheValidatorTest(unittest.TestCase):
+    """No backend module the validator imports may import it back — at module level or lazily.
 
     The reason is mechanical, and stating it precisely matters because the boundary rule does NOT
     forbid this direction: `docs/BACKEND_BOUNDARY.md` says a backend MAY import the neutral core,
@@ -740,28 +740,86 @@ class SignaturesMustNotImportTheValidatorTest(unittest.TestCase):
       validator anyway.
     """
 
+    #: The modules the validator imports AT MODULE LEVEL, which is what makes a back-import a
+    #: cycle. Not hand-picked: `test_the_scanned_modules_are_the_ones_the_validator_imports`
+    #: compares this against the validator's own imports, so adding a third module-level backend
+    #: import without listing it here fails rather than going unscanned.
     _BACKEND_MODULES = (
         "tools/backends/language/fortran/signatures.py",
         "tools/backends/language/fortran/lines.py",
+        # The validator imports the tree-sitter front end at module level too, so it is on the
+        # same cycle. It was NOT in the hand-written pair: the derivation below found it the first
+        # time it ran, which is the reason the bound is derived rather than written.
+        "tools/backends/language/fortran/structure.py",
     )
 
-    def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
+    @staticmethod
+    def _imported_names(path: Path) -> list[tuple[int, str]]:
+        """Every dotted name imported anywhere in `path`, at any nesting depth.
+
+        `ImportFrom` contributes `module.alias` and not just `module`: `from tools import
+        validate_pipeline_semantics` names the target in the ALIAS, and reading only `node.module`
+        missed it — a reviewer reinstated the whole backend-to-neutral-core edge in that spelling
+        with this test green. Relative imports contribute their written form too, since `tools` is
+        a namespace package and a relative import can cross into it.
+        """
         import ast
 
+        out: list[tuple[int, str]] = []
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                out += [(node.lineno, alias.name) for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                out.append((node.lineno, "." * node.level + base))
+                out += [(node.lineno, f"{'.' * node.level}{base}.{alias.name}".strip("."))
+                        for alias in node.names]
+        return out
+
+    def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
         for rel in self._BACKEND_MODULES:
-            path = REPO_ROOT / rel
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                names: list[str] = []
-                if isinstance(node, ast.Import):
-                    names = [alias.name for alias in node.names]
-                elif isinstance(node, ast.ImportFrom) and node.module:
-                    names = [node.module]
-                for name in names:
-                    self.assertNotIn(
-                        "validate_pipeline_semantics", name,
-                        f"{rel}:{node.lineno} imports {name} — the validator imports this "
-                        f"package at module level, so this closes an import cycle")
+            for lineno, name in self._imported_names(REPO_ROOT / rel):
+                self.assertNotIn(
+                    "validate_pipeline_semantics", name,
+                    f"{rel}:{lineno} imports {name} — the validator imports this package at "
+                    f"module level, so this closes an import cycle")
+
+    def test_the_scanned_modules_are_the_ones_the_validator_imports(self) -> None:
+        # The bound of the check above is which files it reads. Derive it from the validator
+        # instead of trusting a hand-written pair: every backend module the validator imports at
+        # MODULE level is a module a back-import would cycle through, so it must be scanned.
+        import ast
+
+        validator = REPO_ROOT / "tools/validate_pipeline_semantics.py"
+        tree = ast.parse(validator.read_text(encoding="utf-8"), filename=str(validator))
+        at_module_level: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)):
+                continue
+            for lineno, name in self._imported_names_of_node(node):
+                del lineno
+                if not name.startswith("tools.backends.language.fortran"):
+                    continue
+                rel = name.replace(".", "/") + ".py"
+                if (REPO_ROOT / rel).is_file():
+                    at_module_level.add(rel)
+        self.assertTrue(at_module_level, "the validator imports no backend module at all")
+        self.assertLessEqual(
+            at_module_level, set(self._BACKEND_MODULES),
+            "the validator imports a backend module that the cycle check does not scan; add it "
+            "to _BACKEND_MODULES")
+
+    @staticmethod
+    def _imported_names_of_node(node) -> list[tuple[int, str]]:
+        import ast
+
+        if isinstance(node, ast.Import):
+            return [(node.lineno, alias.name) for alias in node.names]
+        base = node.module or ""
+        out = [(node.lineno, base)]
+        out += [(node.lineno, f"{base}.{alias.name}") for alias in node.names]
+        return out
 
     def test_importing_this_backend_does_not_execute_the_validator(self) -> None:
         import subprocess
