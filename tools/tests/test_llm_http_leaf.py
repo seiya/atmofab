@@ -26,6 +26,8 @@ import urllib.error
 import urllib.request
 from unittest.mock import patch
 
+import pytest
+
 from tools import llm_config as lc
 from tools import llm_http_leaf as hl
 from tools import workflow_conductor as wc
@@ -750,7 +752,7 @@ class TransportBoundsTests(unittest.TestCase):
                 conn.recv(65536)
                 conn.sendall(status_line + b"\r\nContent-Length: 100000\r\n"
                              b"Content-Type: application/json\r\n\r\n")
-                stop.wait(0.9)               # just before a 1.0s deadline
+                stop.wait(0.4)               # just before a 0.5s deadline
                 try:
                     conn.sendall(b" ")
                 except OSError:
@@ -759,6 +761,7 @@ class TransportBoundsTests(unittest.TestCase):
         threading.Thread(target=_serve, daemon=True).start()
         return f"http://127.0.0.1:{srv.getsockname()[1]}/v1"
 
+    @pytest.mark.slow
     def test_an_error_body_that_goes_silent_still_ends_at_the_deadline(self) -> None:
         """The wrapper chain nests differently for an `HTTPError` (it adds a layer), so a
         fixed-path unwrap reached the socket for a success and not for an error — a 503 whose
@@ -766,20 +769,23 @@ class TransportBoundsTests(unittest.TestCase):
         against a 2 s bound)."""
         entry = _entry(base_url=self._silent_after_one_byte(b"HTTP/1.1 503 Unavailable"))
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=1.0)
+        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=0.5)
         elapsed = time.monotonic() - started
         self.assertIn("HTTP 503", str(out.transport_error))
-        # An un-narrowed socket would wait a full extra timeout from t=0.9 -> ~1.9s.
-        self.assertLess(elapsed, 1.4, msg=f"took {elapsed:.1f}s for a 1.0s deadline")
+        # An un-narrowed socket would wait a full extra timeout from t=0.4 -> ~0.9s. The bound
+        # sits midway: correct behaviour has 0.2s of headroom, the defect 0.2s of margin.
+        self.assertLess(elapsed, 0.7, msg=f"took {elapsed:.2f}s for a 0.5s deadline")
 
+    @pytest.mark.slow
     def test_a_success_body_that_goes_silent_ends_at_the_deadline(self) -> None:
         entry = _entry(base_url=self._silent_after_one_byte(b"HTTP/1.1 200 OK"))
         started = time.monotonic()
-        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=1.0)
+        out = hl.run_pure_http_leaf(entry, [{"role": "user", "content": "P"}], timeout_s=0.5)
         elapsed = time.monotonic() - started
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
-        self.assertLess(elapsed, 1.4, msg=f"took {elapsed:.1f}s for a 1.0s deadline")
+        self.assertLess(elapsed, 0.7, msg=f"took {elapsed:.2f}s for a 0.5s deadline")
 
+    @pytest.mark.slow
     def test_the_deadline_bounds_the_TOTAL_not_each_receive(self) -> None:
         """`urlopen(timeout=)` applies to each receive independently, so a server that sends a
         byte just before the deadline and then stalls would buy itself another full timeout —
@@ -805,7 +811,7 @@ class TransportBoundsTests(unittest.TestCase):
                 conn.recv(65536)
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n"
                              b"Content-Type: application/json\r\n\r\n")
-                time.sleep(0.9)              # a byte just before a 1 s deadline...
+                time.sleep(0.4)              # a byte just before a 0.5 s deadline...
                 try:
                     conn.sendall(b" ")
                 except OSError:
@@ -816,11 +822,12 @@ class TransportBoundsTests(unittest.TestCase):
         entry = _entry(base_url=f"http://127.0.0.1:{srv.getsockname()[1]}/v1")
         started = time.monotonic()
         out = hl.run_pure_http_leaf(
-            entry, [{"role": "user", "content": "P"}], timeout_s=1.0)
+            entry, [{"role": "user", "content": "P"}], timeout_s=0.5)
         elapsed = time.monotonic() - started
         self.assertEqual(out.transport_error, "response_deadline_exceeded")
-        # Comfortably under 2x, which is what an un-narrowed per-receive timeout would give.
-        self.assertLess(elapsed, 1.6, msg=f"took {elapsed:.1f}s for a 1.0s deadline")
+        # Comfortably under 2x (=1.0s), which is what an un-narrowed per-receive timeout would
+        # give: the byte at t=0.4 buys the socket another full 0.5s, landing at ~0.9s.
+        self.assertLess(elapsed, 0.7, msg=f"took {elapsed:.2f}s for a 0.5s deadline")
 
     def test_an_oversized_response_is_refused(self) -> None:
         class _Flood:
@@ -1667,6 +1674,7 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 
+    @pytest.mark.slow
     def test_a_keepalive_trailer_after_the_terminator_does_not_lose_the_answer(self) -> None:
         """The sibling case, and the one an SSE gateway produces by design: it holds the
         connection open with `: keepalive` comments after the answer is complete, so the read
@@ -1679,7 +1687,7 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
             stall=True)
         out = hl.run_pure_http_leaf(
             _entry(base_url=base, stream=True), [{"role": "user", "content": "P"}],
-            timeout_s=1.0)
+            timeout_s=0.5)
         self.assertIsNone(out.transport_error)
         self.assertEqual(out.text, '{"ok": true}')
 
