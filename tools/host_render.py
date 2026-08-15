@@ -87,6 +87,10 @@ def _module(language: Any) -> ModuleType:
     Every refusal leaves as `RunnerRenderUnavailable`, so a caller has one exception type to
     handle and `runner_render_refusal` can be defined as "what this refuses with".
     """
+    # `or ""` and `.strip()` are INTENT MARKERS here, not live guards, and saying so beats
+    # leaving a reader to take them for load bearing: measured, `str(language)` alone leaves the
+    # suite green, because `missing_capability_reason` and `capability_module` both normalize
+    # internally. They stay so the value this seam passes on reads as the token it names.
     lang = str(language or "").strip()
     # The axis and the capability are spelled as LITERALS, not module constants, so the
     # neutral-core scan in `test_backend_boundary` that inventories which capabilities are

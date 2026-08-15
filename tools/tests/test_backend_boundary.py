@@ -1956,6 +1956,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         This is the "hands a node to the wrong writer" class, and one language backend is not
         enough to observe it: a second one is synthesised so the answers are distinguishable.
         """
+        import json
         import sys
         import types
 
@@ -1990,7 +1991,37 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 ["zz_second says no"],
                 list(host_render.ir_content_violations(
                     vps._ir_m3c_language(ir), ir, "bx", "harness_fortran_cpu")))
-            # (2) the bundle ABI gate asks for the FILE's language, not a fixed one
+            # (2) the checks-source gate holds the leaf to THIS language's ABI. Driven through
+            # the gate body, not through the seam: hard-coding the language inside the gate
+            # survived the whole suite, because the seam's own witness never enters it.
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations: list[str] = []
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_second", src, [],
+                    violations)
+            self.assertTrue(
+                any("zz_only_abi_name" in v for v in violations),
+                f"the gate demanded some other language's ABI: {violations}")
+
+            # (3) the render-precondition gate asks THIS language's renderer for its objections
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                (ir_dir / "spec.ir.yaml").write_text(json.dumps({
+                    **ir, "dependency": {"direct_deps": [
+                        {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]}}),
+                    encoding="utf-8")
+                pre: list[str] = []
+                vps._validate_harness_render_preconditions(ir_dir, ir_dir, pre)
+            self.assertTrue(
+                any("zz_second says no" in v for v in pre),
+                f"the gate consulted some other language's renderer: {pre}")
+
+            # (4) the bundle ABI gate asks for the FILE's language, not a fixed one
             bundle = {
                 "files": [{"logical_path": "bx_checks.f90", "role": "checks",
                            "language": "zz_second", "member_node_key": "component/bx@0.1.0",
@@ -2000,6 +2031,66 @@ class CapabilityOwnershipTests(unittest.TestCase):
             violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
             self.assertIsNotNone(violation)
             self.assertIn("zz_only_abi_name", violation)
+
+    @staticmethod
+    def _unreachable_package_capabilities(
+            backends: "dict[tuple[str, str], registry.Backend]") -> list[str]:
+        """Every `backend_provides` declaration in `backends` that cannot actually be reached.
+
+        COMPUTED over the records rather than written out, because a hand-listed check answers
+        only for the records someone remembered — and the one tree check that existed was
+        hard-coded to a single (axis, value, capability) triple, so a second backend declaring a
+        capability its package does not carry would have been accepted by everything.
+        """
+        unreachable = []
+        for (axis, backend_id), record in backends.items():
+            for capability in sorted(record.backend_provides):
+                try:
+                    registry.capability_module(axis, backend_id, capability)
+                except Exception as exc:  # noqa: BLE001 — any failure is unreachability
+                    unreachable.append(f"{axis}/{backend_id}:{capability} ({exc!r})")
+        return unreachable
+
+    def test_every_declared_package_capability_is_reachable_in_this_tree(self) -> None:
+        # The declaration/tree gap cannot be closed at declaration time — the registry must not
+        # import a backend there — so this is where it is closed for THIS tree: one loop over
+        # every record, asking the question the seam will ask at run time.
+        self.assertEqual(
+            [], self._unreachable_package_capabilities(dict(registry._BACKENDS)),
+            "a record declares a capability in backend_provides that its package does not "
+            "carry; the seam would refuse a node the authorship predicates approved")
+
+    def test_the_reachability_loop_is_observed_against_a_known_bad_tree(self) -> None:
+        """The loop itself, driven — because over the live tree it can only ever pass.
+
+        A check that iterates the real records answers "today's tree is fine" and says nothing
+        about whether the iteration works. Deleting its body, or narrowing it back to one
+        hard-coded triple, leaves it green. So it runs against a synthetic mapping with a known
+        shape instead, the way this file's scanned-set tests do.
+        """
+        import sys
+        import types
+
+        hollow = types.ModuleType("zz_hollow_pkg")  # declares the job, carries nothing
+        good = types.ModuleType("zz_good_pkg")
+        good.runner = types.ModuleType("zz_good_pkg.runner")
+        synthetic = {
+            ("language", "zz_good"): registry.Backend(
+                "language", "zz_good", "zz_good_pkg",
+                backend_provides=frozenset({"runner_render"})),
+            ("language", "zz_hollow"): registry.Backend(
+                "language", "zz_hollow", "zz_hollow_pkg",
+                backend_provides=frozenset({"runner_render"})),
+            ("language", "zz_inlined"): registry.Backend(
+                "language", "zz_inlined", None, core_provides=frozenset({"control_file"})),
+        }
+        with mock.patch.dict(sys.modules, {"zz_hollow_pkg": hollow, "zz_good_pkg": good}), \
+                mock.patch.dict(registry._BACKENDS, synthetic):
+            found = self._unreachable_package_capabilities(synthetic)
+        # Exactly the hollow one: the good record is reached, and the record that declares
+        # nothing in `backend_provides` is not visited at all.
+        self.assertEqual(1, len(found), found)
+        self.assertIn("zz_hollow:runner_render", found[0])
 
     def test_a_declaration_that_outruns_its_package_lands_in_the_gates_as_a_violation(self):
         """The gap that cannot be closed, checked where it lands.
@@ -2076,6 +2167,60 @@ class CapabilityOwnershipTests(unittest.TestCase):
                     violations)
         self.assertIn("a sibling gate already found this", violations)
         self.assertTrue(any("could not be loaded" in v for v in violations), violations)
+
+    def test_neither_gate_empties_its_violation_list_on_a_broken_backend(self) -> None:
+        """BOTH gates, because the conversion is written twice and only one copy was driven.
+
+        A backend package that cannot be imported is a host fault. The seam lets it escape as
+        itself — re-typing it would tell a leaf to implement what already exists — so each gate
+        converts it, and `_validate_compile_stage_impl` has no handler of its own: an escape
+        replaces the sibling gates' actionable list with a traceback. The copy in
+        `_validate_harness_render_preconditions` had no witness; its twin did.
+        """
+        import json
+        import tempfile
+
+        import tools.validate_pipeline_semantics as vps
+
+        record = registry.Backend(
+            "language", "zz_no_pkg", "zz_module_that_does_not_exist",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        ir = {
+            "meta": {"spec_kind": "component", "spec_id": "bx"},
+            "impl_defaults": {"toolchain": {"language": "zz_no_pkg", "build_system": "make"}},
+            "dependency": {"node_key": "component/bx@0.1.0", "direct_deps": [
+                {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+        }
+        with self._patched(record):
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                (ir_dir / "spec.ir.yaml").write_text(json.dumps(ir), encoding="utf-8")
+                violations = ["a sibling gate already found this"]
+                vps._validate_harness_render_preconditions(ir_dir, ir_dir, violations)
+        self.assertIn("a sibling gate already found this", violations)
+        self.assertTrue(any("could not be loaded" in v for v in violations), violations)
+
+    def test_implemented_counts_a_package_only_record(self) -> None:
+        # `Backend.implemented` reads `provided`, and reverting it to `module is not None`
+        # survives — every live record with a capability also has a module or lacks both. The
+        # separating shape is a record with a capability and NO module, which is the honest
+        # state of a value whose code is still inlined in the neutral core.
+        record = registry.Backend(
+            "linter", "zz_inlined_only", None, core_provides=frozenset({"lint"}))
+        with self._patched(record):
+            self.assertTrue(record.implemented)
+            self.assertIn("zz_inlined_only", registry.implemented_backend_ids("linter"))
+            self.assertIsNone(registry.unimplemented_reason("linter", "zz_inlined_only"))
+
+    def test_capability_module_normalizes_the_value_like_every_other_entry_point(self) -> None:
+        # `capability_module` lower-cases and strips before the lookup, and dropping that
+        # survives: no test passes it a padded or upper-cased value. Every other entry point
+        # normalizes, and a seam handed `" Fortran "` by a caller that did not would get a
+        # refusal for a value this repository implements.
+        for spelling in (" fortran", "FORTRAN", "Fortran ", " FoRtRaN "):
+            module = registry.capability_module("language", spelling, "runner_render")
+            self.assertTrue(hasattr(module, "render_runner"), spelling)
 
     def test_a_capability_may_migrate_one_axis_at_a_time(self) -> None:
         """The rule above must not block the ledger's own next area.

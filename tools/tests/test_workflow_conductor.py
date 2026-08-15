@@ -12346,6 +12346,49 @@ class WriteRunnerTest(unittest.TestCase):
                     / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
         self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
 
+    def test_write_runner_names_a_declaration_that_outruns_its_package(self) -> None:
+        """The clauses added to fix the previous round, which were themselves unobserved.
+
+        A record can declare `runner_render` in `backend_provides` while its package carries no
+        renderer: the registry refuses to import a backend at declaration time, so nothing can
+        catch that until something dispatches. `_conductor_authors_runner` approves the node on
+        the declaration and the seam then refuses it. Both entries into the seam must say so as
+        a build precondition — an operator fixes the record or the package — rather than reaching
+        the conductor's generic handler, which reports it as a render failure and points a reader
+        at the IR.
+
+        ONE clause, at `assert_harness_pin` — which is the unconditional first entry into the
+        seam, so a backend that cannot be dispatched to has already raised by the time the render
+        call is reached. A second clause was written around the render call and measured
+        unreachable; it was deleted rather than given a witness it cannot have.
+        """
+        import sys
+        import types
+
+        from tools.backends import registry as backend_registry
+
+        hollow = types.ModuleType("zz_hollow_runner_pkg")  # declares the job, carries nothing
+        record = backend_registry.Backend(
+            "language", "zz_hollow", "zz_hollow_runner_pkg",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._write_consumer_ir(repo, refs, infra=1, language="zz_hollow")
+            self._seed_harness_pipeline(repo)
+            with mock.patch.dict(sys.modules, {"zz_hollow_runner_pkg": hollow}), \
+                    mock.patch.dict(
+                        backend_registry._BACKENDS, {("language", "zz_hollow"): record}):
+                c = self._conductor(repo)
+                # the authorship predicate approves it — that is the premise, not a bug
+                self.assertTrue(c._conductor_authors_runner(refs))
+                with self.assertRaises(RuntimeError) as ctx:
+                    c._write_runner(refs)
+        message = str(ctx.exception)
+        self.assertIn("cannot be dispatched to", message)
+        self.assertIn("zz_hollow", message)
+
     def test_write_runner_renders_and_pins(self) -> None:
         from tools.backends.language.fortran.runner import render_runner
         from tools.tests.test_fortran_runner import _boundary_ir

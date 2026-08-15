@@ -1113,6 +1113,28 @@ class SpecIdBoundAgreementTest(unittest.TestCase):
         self.assertEqual(BACKEND_BOUND, NEUTRAL_BOUND)
 
 
+class DerivedNameLengthTest(unittest.TestCase):
+    """The per-name loop in `_check_identifier_lengths`, which the spec_id bound hides.
+
+    The bound leaves a one-character margin, so no spec_id that passes it can produce a derived
+    name over the limit — the loop is unreachable from the bound alone. It is reachable from the
+    HARNESS id, which the bound does not constrain, and that is what drives it here. Measured:
+    without this, replacing `bundle.IDENTIFIER_MAX` in that loop with a much larger number left
+    the whole suite green."""
+
+    def test_an_over_long_harness_symbol_is_an_identity_error(self) -> None:
+        from tools.backends.language.fortran import bundle
+
+        ir = _boundary_ir()
+        long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__write_metrics_basis") + 1)
+        with self.assertRaises(RenderError) as ctx:
+            render_runner(ir, BOUNDARY_SID, long_harness)
+        # `identity=True`: a harness id is node identity, so the compile.static mirror excludes
+        # it rather than routing it to a re-author that cannot change it.
+        self.assertTrue(ctx.exception.identity)
+        self.assertIn(str(bundle.IDENTIFIER_MAX), str(ctx.exception))
+
+
 class LineWidthTest(unittest.TestCase):
     """R1/M3c-β (review round 3): every rendered line must stay within the 100-col lint limit,
     including for long IR-sourced names (metric addresses, case_ids) — the hot lines are wrapped."""

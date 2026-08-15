@@ -43,8 +43,13 @@ class SpecIdLengthGateTest(unittest.TestCase):
         self.assertIsNone(spec_id_length_violation("y" * MAX_SPEC_ID_LEN))
 
     def test_non_string_and_whitespace(self) -> None:
+        # The isinstance guard, driven on the input that needs it: a NON-string whose `str()`
+        # would exceed the bound. Without the guard this gate would reject a value it cannot
+        # measure, and the gate runs before any phase — the rejection would be unappealable.
         self.assertIsNone(spec_id_length_violation(None))
         self.assertIsNone(spec_id_length_violation(123))
+        self.assertIsNone(spec_id_length_violation(10 ** (MAX_SPEC_ID_LEN + 5)))
+        self.assertIsNone(spec_id_length_violation(["x" * (MAX_SPEC_ID_LEN + 5)]))
         # Surrounding whitespace is stripped before measuring.
         self.assertIsNone(spec_id_length_violation("  short  "))
         self.assertIsNotNone(spec_id_length_violation("  " + "z" * (MAX_SPEC_ID_LEN + 1) + "  "))

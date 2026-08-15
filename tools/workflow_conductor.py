@@ -5585,13 +5585,12 @@ class Conductor:
                 f"host render for {refs.node_key}: the registry says this repository renders a "
                 f"runner for language {language!r}, but the backend cannot be dispatched to: "
                 f"{e}") from e
-        try:
-            runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
-        except RunnerRenderUnavailable as e:  # same ground, second call into the seam
-            raise RuntimeError(
-                f"host render for {refs.node_key}: the registry says this repository renders a "
-                f"runner for language {language!r}, but the backend cannot be dispatched to: "
-                f"{e}") from e
+        # No `RunnerRenderUnavailable` clause here, deliberately: `assert_harness_pin` above is
+        # the FIRST entry into the seam and is unconditional, so a backend that cannot be
+        # dispatched to has already raised. A second clause was written here and measured
+        # unreachable — deleting it left the suite green — and an unreachable duplicate of an
+        # error path is worse than none: it reads as a second live guard.
+        runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
         path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")

@@ -673,6 +673,12 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
     require_available(axis, backend_id)
     backend = _BACKENDS[(axis, str(backend_id or "").strip().lower())]
     if capability not in backend.backend_provides:
+        # Two clauses, and only the second is reachable for a LEGAL record: the first names a
+        # capability in `core_provides`, which the second-pass rule refuses once anything on the
+        # axis has migrated it — and a capability nothing has migrated has no
+        # `CAPABILITY_MODULE_ATTR` row, so `capability_module` is not the way it is reached.
+        # It stays because the ordering above is not a property this function can see, and a
+        # wrong diagnosis here would send a reader to the wrong declaration.
         where = (
             "it is still carried by the neutral core" if capability in backend.core_provides
             else "nothing in this repository implements it for that value")
