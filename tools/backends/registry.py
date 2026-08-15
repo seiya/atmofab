@@ -672,6 +672,13 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
     _require_capability(axis, capability)
     require_available(axis, backend_id)
     backend = _BACKENDS[(axis, str(backend_id or "").strip().lower())]
+    # `backend_provides`, not `provided` — and MOOT for any record `_check_declarations`
+    # accepts, which is why widening it to `provided` leaves the suite green. The second-pass
+    # rule guarantees that once a capability has moved into a package on an axis, no record of
+    # that axis carries it in `core_provides`, so the two sets agree for exactly the
+    # capabilities reached through here. It is spelled as the narrower set because THIS
+    # function's contract is about the package, and a reader should not have to know the
+    # declaration rule to see that.
     if capability not in backend.backend_provides:
         # Two clauses, and only the second is reachable for a LEGAL record: the first names a
         # capability in `core_provides`, which the second-pass rule refuses once anything on the
