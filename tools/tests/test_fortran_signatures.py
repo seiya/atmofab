@@ -246,8 +246,14 @@ class FortranStanzaParserTests(unittest.TestCase):
     #: ... and the same for the must-lower side, which had no bound at all: shrinking all four
     #: lists to one entry each took 288 combinations down to 1 with the suite green — the same
     #: erosion the `checked > 20` floor allowed, in the mechanism written to replace it.
-    _MUST_STAY_LOWERED_PREFIXES = ("", "pure ", "elemental ", "recursive ")
+    _MUST_STAY_LOWERED_PREFIXES = ("", "pure ", "elemental ", "recursive ", "pure elemental ")
     _MUST_STAY_LOWERED_KEYWORDS = ("subroutine", "function")
+    #: A tail with a `result(...)` clause and a MULTI-TOKEN prefix are named explicitly because
+    #: neither appears in the real §5.1 corpus, so the corpus half cannot stand in for them. The
+    #: first floor kept the lists from collapsing to one entry but still allowed 288 combinations
+    #: down to 60 — enough to drop both, and a one-sided narrowing of the splitter's prefix
+    #: repetition then passed.
+    _MUST_STAY_LOWERED_TAILS = ("(a, b) result(s)",)
 
     def _assert_patterns_agree(self, header: str) -> bool:
         """Assert both patterns answer the same on a WELL-FORMED header; return whether they took it.
@@ -267,6 +273,11 @@ class FortranStanzaParserTests(unittest.TestCase):
         make the patterns fully agree, i.e. the property this test is named for) and widening both
         identifier classes symmetrically. It was removed rather than repaired — pinning behaviour
         over source no compiler accepts buys nothing and costs the improvement.
+
+        RECORDED COST of that removal: a ONE-SIDED widening of the splitter's identifier class is
+        no longer observed, because this helper probes well-formed headers only and the splitter is
+        unanchored. The consequence is a `SignatureParseError` on a header gfortran rejects anyway,
+        which is why the trade was taken; stated rather than left for the next census to rediscover.
         """
         from tools.backends.language.fortran.signatures import (
             _IFACE_PROC_START, _PROC_HEADER_RE)
@@ -308,6 +319,10 @@ class FortranStanzaParserTests(unittest.TestCase):
                         and any(k != k.lower() for k in self._MUST_LOWER_KEYWORDS),
                         "the must-lower vocabulary lost its upper-cased entries, so the patterns' "
                         "case-insensitivity is no longer exercised here")
+        for tail in self._MUST_STAY_LOWERED_TAILS:
+            self.assertIn(tail, self._HEADER_TAILS,
+                          f"{tail!r} stopped being exercised; it appears in no real §5.1 header, "
+                          f"so nothing else covers it")
         self.assertGreaterEqual(len(self._MUST_LOWER_NAMES), 2)
         self.assertGreaterEqual(len(self._HEADER_TAILS), 2)
 
@@ -963,55 +978,89 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     )
 
     @classmethod
-    def _rel_paths_for(cls, dotted: str) -> list[str]:
+    def _rel_paths_for(cls, dotted: str, root: Path) -> list[str]:
         """The files importing `dotted` executes: the module (or package) and its parent packages."""
         parts = dotted.split(".")
         out: list[str] = []
         for i in range(1, len(parts) + 1):
             stem = "/".join(parts[:i])
             for rel in (f"{stem}.py", f"{stem}/__init__.py"):
-                if (REPO_ROOT / rel).is_file():
+                if (root / rel).is_file():
                     out.append(rel)
         return out
 
+    @staticmethod
+    def _absolute_name(name: str, importer_rel: str) -> str:
+        """Resolve a written import name against the module importing it.
+
+        A relative import arrives here as its WRITTEN form (`.keywords`, `..registry`), which no
+        prefix test on `tools.backends` can match — so the closure never followed the edge, and a
+        helper split out of `signatures.py` and imported as `from . import keywords` could reach
+        the validator with the whole suite green. That was the sixth spelling to break this check
+        and the first one the closure itself introduced.
+        """
+        level = len(name) - len(name.lstrip("."))
+        if not level:
+            return name
+        package = importer_rel[: -len(".py")].split("/")
+        if package[-1] == "__init__":
+            package = package[:-1]
+        else:
+            package = package[:-1]
+        base = package[: len(package) - (level - 1)] if level > 1 else package
+        tail = name.lstrip(".")
+        return ".".join(base + ([tail] if tail else []))
+
     @classmethod
-    def _modules_on_the_cycle(cls) -> list[str]:
+    def _modules_on_the_cycle(cls, root: Path | None = None,
+                              subject_matter_roots: tuple[str, ...] | None = None) -> list[str]:
         """The backend modules that must not import the validator — COMPUTED, not listed.
 
-        Two kinds of root, for the two reasons the docstring gives:
+        Two kinds of root, for the two reasons the class docstring gives:
 
-        * the subject-matter roots above;
+        * the subject-matter roots;
         * every backend module the validator imports, since importing it back is a cycle.
 
         Then everything reachable from those roots by imports WITHIN `tools/backends`, because a
         dependency routed through a sibling is the same dependency — and every parent package on
-        the way, since importing `a.b.c` executes `a/__init__.py` too.
+        the way, since importing `a.b.c` executes `a/__init__.py` too. Relative imports are
+        resolved against the importing module first.
 
         What this deliberately does NOT cover is a backend module no root reaches:
         `structure_differential.py` (a developer harness) imports the validator today and is
         allowed to, and so would a future `build_system/make/` module —
-        `docs/BACKEND_BOUNDARY.md` permits backend -> neutral core. An earlier version of this
-        check walked every file under `tools/backends/` and refused exactly that, with a message
-        claiming a cycle that does not exist; a reviewer constructed the next area of the
-        migration ledger and watched it fail. Computing the closure removes the over-rejection AND
-        the hand-maintained exception list that came with the walk — an exemption a reviewer
-        showed was itself a bypass, since `signatures` could reach the validator THROUGH the
-        exempted module with the suite green.
+        `docs/BACKEND_BOUNDARY.md` permits backend -> neutral core. An earlier version walked every
+        file under `tools/backends/` and refused exactly that.
+
+        RECORDED LIMITS, because a check that overstates itself is worse than one that does not:
+        a dependency routed through a NEUTRAL module (backend -> `tools/some_shim.py` -> validator)
+        is one hop outside the traversal and is not seen; nor is a module name computed at runtime,
+        or a literal handed to a locally-defined import helper. Following arbitrary chains through
+        the neutral core is not a question a source reader at this level can answer, and stating
+        that beats implying coverage.
+
+        `root` and `subject_matter_roots` are parameters so the algorithm can be driven against a
+        SYNTHETIC tree with a known shape. Before that, deleting the transitive step below left the
+        whole suite green — the redesign that introduced it had no witness at all.
         """
+        root = REPO_ROOT if root is None else root
+        roots = cls._SUBJECT_MATTER_ROOTS if subject_matter_roots is None else subject_matter_roots
         seen: set[str] = set()
-        queue: list[str] = list(cls._SUBJECT_MATTER_ROOTS)
-        validator = REPO_ROOT / "tools/validate_pipeline_semantics.py"
-        for _lineno, name in cls._imported_names(validator):
-            if name.startswith("tools.backends"):
-                queue += cls._rel_paths_for(name)
+        queue: list[str] = [rel for rel in roots if (root / rel).is_file()]
+        validator = root / "tools/validate_pipeline_semantics.py"
+        if validator.is_file():
+            for _lineno, name in cls._imported_names(validator):
+                if name.startswith("tools.backends"):
+                    queue += cls._rel_paths_for(name, root)
         while queue:
             rel = queue.pop()
-            if rel in seen or not (REPO_ROOT / rel).is_file():
+            if rel in seen or not (root / rel).is_file():
                 continue
             seen.add(rel)
-            for _lineno, name in cls._imported_names(REPO_ROOT / rel):
+            for _lineno, written in cls._imported_names(root / rel):
+                name = cls._absolute_name(written, rel)
                 if name.startswith("tools.backends"):
-                    queue += cls._rel_paths_for(name)
+                    queue += cls._rel_paths_for(name, root)
         return sorted(seen)
 
     #: The importer callables whose LITERAL first argument the source check reads. Same set, and
@@ -1038,10 +1087,14 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
             if isinstance(node, ast.Import):
                 out += [(node.lineno, alias.name) for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
-                base = node.module or ""
-                out.append((node.lineno, "." * node.level + base))
-                out += [(node.lineno, f"{'.' * node.level}{base}.{alias.name}".strip("."))
-                        for alias in node.names]
+                # The written form is KEPT, dots and all: `.strip(".")` here turned
+                # `from . import keywords` into the bare name `keywords`, which no prefix test
+                # matches and no resolver can place — the relative edge was invisible to the
+                # closure because of this one call.
+                prefix = "." * node.level + (node.module or "")
+                out.append((node.lineno, prefix))
+                sep = "." if node.module else ""
+                out += [(node.lineno, f"{prefix}{sep}{alias.name}") for alias in node.names]
             elif isinstance(node, ast.Call):
                 func = node.func
                 name = getattr(func, "attr", None) or getattr(func, "id", None)
@@ -1073,38 +1126,99 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
                     f"validator imports this module at module level); a lazy one reinstates the "
                     f"dependency on the neutral core that moving the §5.1 layer here removed.")
 
-    def test_a_dependency_routed_through_a_sibling_is_still_covered(self) -> None:
-        # The closure's reason for existing. `structure_differential` imports the validator and is
-        # allowed to; what must not happen is a subject-matter root reaching the validator THROUGH
-        # it. Nothing does today, so the module is outside the closure — and if `signatures` ever
-        # imports it, it enters the closure and its validator import is caught. Asserted as the
-        # property, over the real import graph.
+    @staticmethod
+    def _synthetic_tree(base: Path, files: dict[str, str]) -> None:
+        for rel, body in files.items():
+            path = base / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body, encoding="utf-8")
+
+    #: A backend package with the shapes that matter: a root, a helper reached by an ABSOLUTE
+    #: import, a helper reached by a RELATIVE one, a module no root reaches, and a second axis
+    #: standing in for the migration ledger's next area.
+    _SYNTHETIC = {
+        "tools/validate_pipeline_semantics.py": (
+            "from tools.backends.language.fortran import lines as fortran_lines\n"),
+        "tools/backends/__init__.py": "",
+        "tools/backends/registry.py": "import importlib\n",
+        "tools/backends/language/__init__.py": "",
+        "tools/backends/language/fortran/__init__.py": "",
+        "tools/backends/language/fortran/lines.py": "import re\n",
+        "tools/backends/language/fortran/signatures.py": (
+            "from tools.backends.language.fortran import lines\n"
+            "from . import keywords\n"),
+        "tools/backends/language/fortran/keywords.py": "WORDS = ()\n",
+        "tools/backends/language/fortran/structure_differential.py": (
+            "from tools.validate_pipeline_semantics import anything\n"),
+        "tools/backends/build_system/__init__.py": "",
+        "tools/backends/build_system/make/__init__.py": "",
+        "tools/backends/build_system/make/rules.py": (
+            "from tools.validate_pipeline_semantics import anything\n"),
+    }
+
+    def _closure_of(self, base: Path) -> set[str]:
+        return set(self._modules_on_the_cycle(
+            root=base,
+            subject_matter_roots=("tools/backends/language/fortran/signatures.py",
+                                  "tools/backends/language/fortran/lines.py")))
+
+    def test_the_closure_algorithm_on_a_synthetic_tree(self) -> None:
+        # Drives the COMPUTATION, not today's import graph — the distinction this class had to
+        # learn twice. Measured before this test existed: deleting the transitive expansion, and
+        # reverting wholesale to the previous whole-directory walk plus its exception list, each
+        # left every test in this class green. Both are now observed, and so is the relative-import
+        # resolution that the closure originally lacked.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            self._synthetic_tree(base, self._SYNTHETIC)
+            closure = self._closure_of(base)
+
+            # reached from a root by an absolute import, and by a RELATIVE one
+            self.assertIn("tools/backends/language/fortran/lines.py", closure)
+            self.assertIn("tools/backends/language/fortran/keywords.py", closure,
+                          "a `from . import x` edge was not followed")
+            # every parent package an import executes
+            for pkg in ("tools/backends/__init__.py", "tools/backends/language/__init__.py",
+                        "tools/backends/language/fortran/__init__.py"):
+                self.assertIn(pkg, closure)
+            # reached by nothing: the developer harness and the next migration area, both of which
+            # import the neutral core legally
+            self.assertNotIn("tools/backends/language/fortran/structure_differential.py", closure)
+            self.assertNotIn("tools/backends/build_system/make/rules.py", closure)
+
+    def test_the_closure_follows_a_dependency_routed_through_a_sibling(self) -> None:
+        # The transitive step, witnessed: when a root imports the harness, the harness — and its
+        # validator import — come inside the closure.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            files = dict(self._SYNTHETIC)
+            files["tools/backends/language/fortran/signatures.py"] += (
+                "from tools.backends.language.fortran import structure_differential\n")
+            self._synthetic_tree(base, files)
+            closure = self._closure_of(base)
+            harness = "tools/backends/language/fortran/structure_differential.py"
+            self.assertIn(harness, closure,
+                          "a dependency routed through a sibling escaped the closure")
+            offenders = [
+                rel for rel in closure
+                if any("validate_pipeline_semantics" in name
+                       for _lineno, name in self._imported_names(base / rel))
+            ]
+            self.assertEqual(offenders, [harness])
+
+    def test_the_live_closure_matches_the_property(self) -> None:
+        # The real tree, as the corpus half of the same property.
         scanned = set(self._modules_on_the_cycle())
-        harness = "tools/backends/language/fortran/structure_differential.py"
-        self.assertTrue((REPO_ROOT / harness).is_file())
-        self.assertNotIn(harness, scanned,
+        self.assertNotIn("tools/backends/language/fortran/structure_differential.py", scanned,
                          "nothing on the cycle imports the developer harness, so it should be "
                          "outside the closure")
-        importers = [
-            rel for rel in scanned
-            if any(name.startswith("tools.backends.language.fortran.structure_differential")
-                   for _lineno, name in self._imported_names(REPO_ROOT / rel))
-        ]
-        self.assertEqual(importers, [],
-                         "a module on the cycle imports the developer harness, which imports the "
-                         "validator — the closure must therefore include it")
-
-    def test_a_backend_module_no_root_reaches_is_free_to_import_the_neutral_core(self) -> None:
-        # The over-rejection guard, kept for the whole life of this check rather than run once:
-        # `docs/BACKEND_BOUNDARY.md` permits backend -> neutral core, and the next area of the
-        # migration ledger (`build_system/make`) will exercise it. A version of this check that
-        # walked every file under `tools/backends/` refused that, so the property is pinned.
-        scanned = set(self._modules_on_the_cycle())
-        for outside in ("tools/backends/language/fortran/structure_differential.py",
-                        "tools/backends/build_system/make/rules.py"):
-            self.assertNotIn(outside, scanned,
-                             f"{outside} is not reachable from any root; refusing its imports "
-                             f"would refuse work the boundary rule permits")
+        self.assertIn("tools/backends/language/fortran/bundle.py", scanned,
+                      "bundle is reached only transitively, through the package __init__ — if it "
+                      "dropped out, the transitive step is gone")
 
     def test_an_unparseable_module_on_the_cycle_raises(self) -> None:
         # The reader must not answer "no imports" for a file it could not read: a module that
