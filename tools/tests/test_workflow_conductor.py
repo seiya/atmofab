@@ -12192,12 +12192,15 @@ class WriteRunnerTest(unittest.TestCase):
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
     def _write_consumer_ir(self, repo: Path, refs: wc.NodeRefs, *, infra=1,
-                           bare_string: bool = False, spec_kind: str | None = None) -> None:
+                           bare_string: bool = False, spec_kind: str | None = None,
+                           language: str | None = None) -> None:
         from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
         ir = _boundary_ir()
         if spec_kind is not None:
             ir.setdefault("meta", {})["spec_kind"] = spec_kind
+        if language is not None:
+            ir.setdefault("impl_defaults", {}).setdefault("toolchain", {})["language"] = language
         ids = ["harness_fortran_cpu"] * infra
         if infra == 2:
             ids = ["harness_fortran_cpu", "harness_other_cpu"]
@@ -12301,6 +12304,47 @@ class WriteRunnerTest(unittest.TestCase):
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(_yaml.safe_dump(ir))
             self.assertFalse(self._conductor(repo)._conductor_authors_runner(refs))
+
+    def test_write_runner_renders_through_the_NODE_S_language_backend(self) -> None:
+        """`_write_runner` hands the seam the language it read, and does not assume one.
+
+        Measured before this existed: replacing `language = _ir_language(ir)` with a fixed value
+        left the suite green in any spelling the sampled token ratchet cannot see — and the
+        ratchet is documented as a bound on growth, not a detector. With one language backend
+        the two are indistinguishable, so a second is synthesised: its renderer emits text the
+        real one never would, and its pin accepts anything, so the only thing the assertion can
+        be observing is which backend was dispatched to.
+        """
+        import sys
+        import types
+
+        from tools.backends import registry as backend_registry
+
+        other = types.ModuleType("zz_write_runner_lang")
+        runner = types.ModuleType("zz_write_runner_lang.runner")
+        runner.CHECKS_PUBLIC_NAMES = ("zz_abi",)
+        runner.render_runner = lambda ir, spec_id, harness: f"! rendered by zz for {spec_id}\n"
+        runner.assert_harness_pin = lambda *a, **k: None
+        runner.ir_content_violations = lambda *a, **k: []
+        other.runner = runner
+        record = backend_registry.Backend(
+            "language", "zz_wr", "zz_write_runner_lang",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._write_consumer_ir(repo, refs, infra=1, language="zz_wr")
+            self._seed_harness_pipeline(repo)
+            with mock.patch.dict(sys.modules, {"zz_write_runner_lang": other}), \
+                    mock.patch.dict(
+                        backend_registry._BACKENDS, {("language", "zz_wr"): record}):
+                c = self._conductor(repo)
+                self.assertTrue(c._conductor_authors_runner(refs))
+                c._write_runner(refs)
+            text = (repo / refs.source_dir() / "src"
+                    / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
+        self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
 
     def test_write_runner_renders_and_pins(self) -> None:
         from tools.backends.language.fortran.runner import render_runner

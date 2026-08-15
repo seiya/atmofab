@@ -1849,46 +1849,71 @@ class CapabilityOwnershipTests(unittest.TestCase):
                      "CHECKS_PUBLIC_NAMES"):
             self.assertTrue(hasattr(module, name), name)
 
-    def test_the_seam_refuses_a_capability_the_package_does_not_hold(self) -> None:
-        """The record shape that separates every question this branch introduced, and which
-        nothing used: `runner_render` in `core_provides` on a record that HAS a module.
+    def test_a_migrated_capability_may_not_be_declared_in_the_neutral_core(self) -> None:
+        """The rule that keeps the authorship question and the dispatch question from splitting.
 
-        `_check_declarations` permits it — a capability may be inlined in the neutral core while
-        the package exists for other jobs, which is exactly what `fortran` looks like today for
-        `control_file`. It is also the transitional state of any migration. Three separate
-        defects hid behind the fact that no test built it:
+        `provides` is the UNION, because authorship must not change when an area of the ledger
+        lands. Every seam reaching a MIGRATED capability, though, goes through
+        `capability_module`, which sees only `backend_provides`. A record declaring such a
+        capability in `core_provides` therefore satisfied the authorship predicate and was
+        refused by the seam — approved for host authoring, then fail-closed at the render.
 
-        * the seam's guard asked `provides` (the UNION, the authorship question) while its
-          dispatch asked `capability_module` (the package half), so the guard said "renderable"
-          and the dispatch raised `BackendNotExtracted` — inside a gate that documents it never
-          raises;
-        * replacing the seam's `capability_module` with `load(...)` + `getattr(..., "runner")`
-          left the whole suite green, and that idiom is live elsewhere in the neutral core, so
-          it is what a future migration copies;
-        * widening `capability_module`'s own test from `backend_provides` to `provided` left the
-          whole suite green, so "one job, one owner" was unpinned at the dispatch.
-
-        All three are one assertion: this record must be REFUSED, and refused as a return value
-        rather than an exception class the gates do not catch.
+        Measured, before this rule: `_ir_m3c_language` returned a language while
+        `runner_render_refusal` refused it (making two in-source UNREACHABLE labels false), and
+        `_conductor_authors_runner` answered True while `render_runner` raised
+        `RunnerRenderUnavailable`, which no clause in `_write_runner` catches. Three places, one
+        legal-looking declaration. The declaration is now refused at import instead, so the two
+        questions coincide for a migrated capability BY CHECK rather than by agreement.
         """
         record = registry.Backend(
             "language", "zz_core_inlined", "tools.backends.language.fortran",
             core_provides=frozenset({"runner_render"}))
         with self._patched(record):
-            registry._check_declarations()  # the shape is legal; that is the point
-            self.assertTrue(
-                registry.provides("language", "zz_core_inlined", "runner_render"),
-                "authorship must still say the host does this job — that is the union question")
-            refusal = host_render.runner_render_refusal("zz_core_inlined")
-            self.assertIsNotNone(
-                refusal, "the seam's guard must agree with its own dispatch")
-            self.assertIn("does not implement", refusal)
-            for call in (lambda: host_render.checks_public_names("zz_core_inlined"),
-                         lambda: host_render.render_runner("zz_core_inlined", {}, "bx", "hx")):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("migrated out of the neutral core", str(ctx.exception))
+        # A capability that has NOT migrated is still declarable there — the rule must not
+        # forbid the state the migration ledger is made of.
+        still_inlined = registry.Backend(
+            "language", "zz_inlined", None, core_provides=frozenset({"control_file"}))
+        with self._patched(still_inlined):
+            registry._check_declarations()
+
+    def test_the_seam_refuses_a_package_that_does_not_carry_the_capability(self) -> None:
+        """The seam's own use of `capability_module`, at the seam.
+
+        Everything else about it is checked at the registry. What is only visible here is that
+        the seam does not reach the backend the cheap way: `load(...)` plus
+        `getattr(..., "runner")` is a live idiom elsewhere in the neutral core, so it is what a
+        future migration copies, and under it this record yields `None` and then an
+        `AttributeError` from inside a deterministic gate — the raise-instead-of-violation the
+        seam exists to prevent. Through `capability_module` it is a typed refusal.
+        """
+        record = registry.Backend(
+            "language", "zz_liar", "tools.backends",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            self.assertIsNotNone(host_render.runner_render_refusal("zz_liar"))
+            for call in (lambda: host_render.checks_public_names("zz_liar"),
+                         lambda: host_render.render_runner("zz_liar", {}, "bx", "hx")):
                 with self.assertRaises(host_render.RunnerRenderUnavailable):
                     call()
-            with self.assertRaises(registry.BackendNotExtracted):
-                registry.capability_module("language", "zz_core_inlined", "runner_render")
+
+    def test_the_seam_lets_a_broken_backend_import_escape_as_itself(self) -> None:
+        """`_module` re-types the REGISTRY's two refusals and nothing else.
+
+        Widening that `except` to `except Exception` survives the suite, and it converts any
+        failure inside the backend package — an ImportError, a syntax error, a broken module
+        constant — into a violation string saying this repository does not implement
+        `runner_render` for the value. That is false evidence handed to a leaf: it tells an
+        author to implement what already exists, and it hides a host bug as a node defect.
+        """
+        record = registry.Backend(
+            "language", "zz_broken", "tools.backends.zz_does_not_exist",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(ModuleNotFoundError):
+                host_render.checks_public_names("zz_broken")
 
     def test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given(self) -> None:
         """That the seam is asked the NODE's language, semantically rather than by spelling.
@@ -1919,15 +1944,80 @@ class CapabilityOwnershipTests(unittest.TestCase):
             # by the seam having been broken for everyone.
             self.assertIn("case_setup", host_render.checks_public_names("fortran"))
 
-    def test_capability_module_refuses_an_unextracted_record_by_class(self) -> None:
-        # `require_available` inside `capability_module` survives deletion, because every other
-        # witness uses an EXTRACTED record. Without it the lookup falls to a bare `KeyError` on
-        # the record's `module`, and the registry's own contract is that one input is not two
-        # different kinds of failure at two entry points.
-        record = registry.Backend("language", "zz_declared_only", None)
-        with self._patched(record):
-            with self.assertRaises(registry.BackendNotExtracted):
-                registry.capability_module("language", "zz_declared_only", "runner_render")
+    def test_every_caller_of_the_seam_passes_the_NODE_S_language(self) -> None:
+        """The three call sites, not just the seam — measured, all three were unobserved.
+
+        `test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given` witnesses
+        `host_render`. Its callers each read the language off an artifact and hand it over, and
+        hard-coding the value at any of them was killed ONLY by the token ratchet — which
+        `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector,
+        so in a spelling the ratchet cannot see (`"for" "tran"`) all three survived the suite.
+        This is the "hands a node to the wrong writer" class, and one language backend is not
+        enough to observe it: a second one is synthesised so the answers are distinguishable.
+        """
+        import sys
+        import types
+
+        import tools.codegen_bundle as codegen_bundle
+        import tools.validate_pipeline_semantics as vps
+
+        other = types.ModuleType("zz_second_lang")
+        runner = types.ModuleType("zz_second_lang.runner")
+        runner.CHECKS_PUBLIC_NAMES = ("zz_only_abi_name",)
+        runner.render_runner = lambda ir, spec_id, harness: "! zz_second\n"
+        runner.ir_content_violations = lambda ir, spec_id, harness: ["zz_second says no"]
+        other.runner = runner
+        other.bundle = types.ModuleType("zz_second_lang.bundle")
+        other.bundle.SOURCE_EXTENSIONS = (".zz",)
+        other.bundle.IDENTIFIER_MAX = 63
+        other.bundle.IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,62}(?![\s\S])"
+        record = registry.Backend(
+            "language", "zz_second", "zz_second_lang",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        ir = {
+            "meta": {"spec_kind": "component", "spec_id": "bx"},
+            "impl_defaults": {"toolchain": {"language": "zz_second", "build_system": "make"}},
+            "dependency": {"direct_deps": [
+                {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+        }
+        with mock.patch.dict(sys.modules, {"zz_second_lang": other}), \
+                mock.patch.dict(registry._BACKENDS, {("language", "zz_second"): record}):
+            # (1) the validator's mirror hands the seam the language it read from the IR
+            self.assertEqual("zz_second", vps._ir_m3c_language(ir))
+            self.assertEqual(
+                ["zz_second says no"],
+                list(host_render.ir_content_violations(
+                    vps._ir_m3c_language(ir), ir, "bx", "harness_fortran_cpu")))
+            # (2) the bundle ABI gate asks for the FILE's language, not a fixed one
+            bundle = {
+                "files": [{"logical_path": "bx_checks.f90", "role": "checks",
+                           "language": "zz_second", "member_node_key": "component/bx@0.1.0",
+                           "content": "module bx_checks\nend module bx_checks\n",
+                           "modules": ["bx_checks"]}],
+            }
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+            self.assertIsNotNone(violation)
+            self.assertIn("zz_only_abi_name", violation)
+
+    def test_capability_module_refuses_a_value_with_no_record_by_class(self) -> None:
+        """`require_available` inside `capability_module`, driven on the input that needs it.
+
+        The first version of this test used a DECLARED-but-unextracted record and asserted the
+        class — and it passed with `require_available` deleted, because the record is in
+        `_BACKENDS`, the lookup succeeds, and the `backend_provides` check below raises the same
+        class. It was a test that could not fail for its stated reason.
+
+        The input that reaches the guard is an OPEN-VOCABULARY axis value with no record at all:
+        the membership question answers permissively for it, so the lookup on the next line is
+        what fails, and without the guard it fails as a bare `KeyError`. The registry's contract
+        is that one input is not two different kinds of failure at two entry points.
+        """
+        self.assertTrue(registry.AXES["parallel"].open_vocabulary)
+        self.assertIsNone(registry.unsupported_reason("parallel", "zz_unregistered"))
+        with self.assertRaises(registry.BackendNotExtracted):
+            registry.capability_module(
+                "parallel", "zz_unregistered", "parallel_directives")
 
     def test_the_seam_refuses_a_language_that_declares_no_renderer(self) -> None:
         # W8. The seam must not fall through to whichever backend happens to be extracted, and

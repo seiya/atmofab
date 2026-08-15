@@ -5447,7 +5447,13 @@ class Conductor:
         # the seam that authors cannot disagree about the value — a mismatch would fail-close a
         # render the predicate had just approved. That predicate has already required this value
         # to provide `runner_render`, so the seam's refusal below is a backstop for a caller that
-        # skipped it, not a live branch.
+        # skipped it, not a live branch. The two ask that through DIFFERENT functions — the
+        # predicate asks `provides`, the union of both capability sets, while the seam asks what
+        # it can actually dispatch, the package half — and they agree only because the registry
+        # refuses, at import, a record declaring a MIGRATED capability in `core_provides`.
+        # Without that rule the predicate approved authorship for a shape the seam then refused
+        # with `RunnerRenderUnavailable`, which no clause here catches: a render-kill reached
+        # through a legal declaration.
         language = _ir_language(ir)
         infra = self._infra_direct_deps(ir)
         if len(infra) != 1:

@@ -1072,24 +1072,43 @@ class SpecIdBoundAgreementTest(unittest.TestCase):
 
         source = Path(
             fortran_runner_module.__file__).read_text(encoding="utf-8")  # type: ignore[arg-type]
-        assign = next(
-            (n for n in ast.parse(source).body
-             if isinstance(n, ast.Assign)
-             and any(getattr(t, "id", None) == "MAX_SPEC_ID_LEN" for t in n.targets)),
-            None)
+        tree = ast.parse(source)
+
+        def _binds(node: ast.stmt) -> bool:
+            # `ast.AnnAssign` as well as `ast.Assign`: the annotated spelling is what this
+            # repository uses for module constants elsewhere, and rejecting it would fail a
+            # refactor that changes nothing about the rule.
+            if isinstance(node, ast.Assign):
+                return any(getattr(x, "id", None) == "MAX_SPEC_ID_LEN" for x in node.targets)
+            return (isinstance(node, ast.AnnAssign)
+                    and getattr(node.target, "id", None) == "MAX_SPEC_ID_LEN")
+
+        assign = next((n for n in tree.body if _binds(n)), None)
         self.assertIsNotNone(assign, "the backend's spec_id bound is gone")
         # Either spelling of the same derivation: the module attribute, or the name imported
-        # directly. The rule is that the bound is COMPUTED from the identifier limit, not that
-        # it is reached through a particular module object — pinning the spelling would reject a
-        # `from ...bundle import IDENTIFIER_MAX` refactor that preserves the derivation exactly.
+        # FROM that module. The rule has two halves and each was violable on its own — pinning
+        # the attribute spelling alone rejects a `from ...bundle import IDENTIFIER_MAX` refactor
+        # that preserves the derivation exactly, while accepting a bare name unconditionally
+        # accepts a LOCAL `IDENTIFIER_MAX = 63`, which is the third copy of that number TODO.md
+        # forbids.
         referenced = {
             f"{getattr(n.value, 'id', '')}.{n.attr}"
             for n in ast.walk(assign) if isinstance(n, ast.Attribute)
-        } | {n.id for n in ast.walk(assign) if isinstance(n, ast.Name)}
-        self.assertTrue(
-            {"bundle.IDENTIFIER_MAX", "IDENTIFIER_MAX"} & referenced,
-            "the backend's spec_id bound must be DERIVED from the language identifier limit, "
-            "not restated as a literal: a literal does not move when the limit does")
+        }
+        bare = {n.id for n in ast.walk(assign) if isinstance(n, ast.Name)}
+        if "bundle.IDENTIFIER_MAX" not in referenced:
+            self.assertIn("IDENTIFIER_MAX", bare,
+                          "the backend's spec_id bound must be DERIVED from the language "
+                          "identifier limit, not restated as a literal: a literal does not move "
+                          "when the limit does")
+            self.assertTrue(
+                any(isinstance(n, ast.ImportFrom)
+                    and (n.module or "").endswith("bundle")
+                    and any(al.name == "IDENTIFIER_MAX" for al in n.names)
+                    for n in ast.walk(tree)),
+                "`IDENTIFIER_MAX` is used but not imported from the bundle module — a local "
+                "restatement is another copy of the identifier limit (TODO.md: do not add a "
+                "third)")
 
     def test_the_spec_input_gate_carries_the_same_bound(self) -> None:
         from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND

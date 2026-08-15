@@ -187,6 +187,15 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 #: place naming a backend's internal layout, and a package with two capabilities would have no
 #: single "the module" to return. A capability absent from this table cannot be reached through
 #: `capability_module` at all — which is correct for the ones no dispatch routes through yet.
+#:
+#: A row here also means the capability has FINISHED migrating: the neutral core no longer has an
+#: inlined implementation of it, so `core_provides` may not carry it (`_check_declarations`
+#: refuses that). Without this rule the two questions come apart — `provides`, the authorship
+#: question, is the union, while every seam reaching a migrated capability goes through
+#: `capability_module` and sees only `backend_provides`. A record declaring the capability in
+#: `core_provides` would then be approved for host authorship and refused at the render, which is
+#: the render-kill the union exists to prevent. It was exactly that, for two review rounds, in
+#: three places at once.
 CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "runner_render": "runner",
 }
@@ -297,6 +306,29 @@ def _check_declarations() -> None:
                     f"{backend.axis}/{backend.backend_id} declares '{capability}', which is a "
                     f"question of the {', '.join(axes_for[0])} axis only"
                 )
+        # One job, one owner, and checked FIRST because it is the most specific diagnosis of a
+        # double declaration: the rule below would otherwise catch the same shape and tell the
+        # author to declare it in `backend_provides`, where it already is.
+        both = backend.core_provides & backend.backend_provides
+        if both:
+            raise UnsupportedBackend(
+                f"{backend.axis}/{backend.backend_id} declares {sorted(both)} in BOTH "
+                f"core_provides and backend_provides; a capability has exactly one owner — "
+                f"when it moves into the package, it leaves the neutral core"
+            )
+        # A migrated capability has no inlined implementation left to declare. This is the rule
+        # that keeps the authorship question and the dispatch question from coming apart: for a
+        # capability with a `CAPABILITY_MODULE_ATTR` row, `provided` reduces to
+        # `backend_provides`, which is precisely what every seam reaching it asks. Stated as a
+        # refusal rather than as a convention, because the shape it forbids is legal-looking,
+        # is what a half-finished migration produces, and reads as harmless.
+        for capability in sorted(backend.core_provides & set(CAPABILITY_MODULE_ATTR)):
+            raise UnsupportedBackend(
+                f"{backend.axis}/{backend.backend_id} declares '{capability}' in core_provides, "
+                f"but that capability has migrated out of the neutral core (it has a "
+                f"CAPABILITY_MODULE_ATTR row): there is no inlined implementation left for the "
+                f"declaration to assert. Declare it in backend_provides, or not at all"
+            )
         # A package implementation needs a way to be reached. Declaring one with no
         # `CAPABILITY_MODULE_ATTR` entry would make `capability_module` refuse a value the
         # record says is implemented — a capability that is true and unreachable at once.
@@ -314,16 +346,6 @@ def _check_declarations() -> None:
                 f"{backend.axis}/{backend.backend_id} declares backend_provides "
                 f"{sorted(backend.backend_provides)} but has no backend package (module=None); "
                 f"a capability implemented in the neutral core belongs in core_provides"
-            )
-        # One job, one owner. A capability in both sets would make `provides` true for two
-        # different implementations of the same job, and leave no answer to which one a
-        # dispatch should run — the ambiguity the migration is supposed to remove, not create.
-        both = backend.core_provides & backend.backend_provides
-        if both:
-            raise UnsupportedBackend(
-                f"{backend.axis}/{backend.backend_id} declares {sorted(both)} in BOTH "
-                f"core_provides and backend_provides; a capability has exactly one owner — "
-                f"when it moves into the package, it leaves the neutral core"
             )
 
 
@@ -642,6 +664,10 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
         )
     attr = CAPABILITY_MODULE_ATTR.get(capability)
     if attr is None:
+        # UNREACHABLE while `_check_declarations` holds — it refuses a `backend_provides` entry
+        # with no row, and the check above has already required this capability to be in
+        # `backend_provides`. Kept as the fail-closed shape rather than deleted, and LABELLED so
+        # it does not read as a live guard; measured, deleting it leaves the suite green.
         raise UnsupportedBackend(
             f"capability '{capability}' has no entry in CAPABILITY_MODULE_ATTR, so there is no "
             f"convention for where a backend package re-exports it; add one in "

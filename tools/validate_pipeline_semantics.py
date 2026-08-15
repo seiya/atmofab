@@ -4961,15 +4961,18 @@ def _validate_checks_source_files(
     # `_validate_compile_stage_impl`, where an uncaught raise discards every violation the
     # sibling gates have already collected and replaces an actionable list with a traceback.
     #
-    # UNREACHABLE FROM THE LIVE CALLER, and stated rather than left to look like a live branch:
-    # `language` comes from `_ir_m3c_language`, which returns a value only after
-    # `provides(language, "runner_render")` held, and `runner_render_refusal` is `None` exactly
-    # when that holds — on the same string, since both sides normalize identically. It is kept
-    # as the fail-closed shape for a future caller that has no such predicate in front of it,
-    # NOT because anything can reach it today. It has no witness for that reason. (The sibling
-    # branch in `codegen_bundle.m3c_checks_abi_violation` IS reachable and does have one: its
-    # language comes from bundle file data, constrained only to the languages with a `bundle`
-    # interface, which is a different set from the ones that declare `runner_render`.)
+    # UNREACHABLE FROM THE LIVE CALLER, and the argument is worth stating precisely because an
+    # earlier version of it was WRONG for two review rounds. `language` comes from
+    # `_ir_m3c_language`, which gates on `registry.provides` — the UNION of both capability sets
+    # — while `runner_render_refusal` asks what the seam can actually dispatch, which is the
+    # `backend_provides` half. Those are the same set for `runner_render` only because the
+    # registry REFUSES, at import, a record that declares a migrated capability in
+    # `core_provides` (`CAPABILITY_MODULE_ATTR` marks which ones have migrated). Before that
+    # rule existed the two came apart and this branch was live — so the unreachability rests on
+    # a check, not on a reading. It is kept as the fail-closed shape for a caller with no such
+    # predicate in front of it. (The sibling branch in `codegen_bundle.m3c_checks_abi_violation`
+    # IS reachable and has a witness: its language comes from bundle file data, constrained only
+    # to the languages with a `bundle` interface, a different set from the renderers.)
     abi_refusal = host_render.runner_render_refusal(language)
     if abi_refusal is not None:
         violations.append(
@@ -12365,11 +12368,12 @@ def _validate_harness_render_preconditions(
     if len(infra) != 1:  # defensive; _ir_is_m3c_physics already pins this
         return
     harness_sid = infra[0].partition("@")[0].partition("/")[2]
-    # `_ir_m3c_language` returned a value, so it provides `runner_render` — the seam cannot
-    # refuse it, by the same construction as in `_validate_checks_source_files` (see the note
-    # there). UNREACHABLE, and unwitnessed for that reason; it is kept because the shape a
-    # future caller needs is a VIOLATION rather than a raise — an uncaught exception here
-    # discards every violation the sibling gates already collected.
+    # `_ir_m3c_language` returned a value, so the seam cannot refuse it — by the construction
+    # spelled out in `_validate_checks_source_files`, which rests on the registry refusing a
+    # migrated capability in `core_provides` and NOT on the two predicates happening to agree.
+    # UNREACHABLE for that reason; kept because the shape a future caller needs is a VIOLATION
+    # rather than a raise — an uncaught exception here discards every violation the sibling
+    # gates already collected.
     refusal = host_render.runner_render_refusal(language)
     if refusal is not None:
         violations.append(

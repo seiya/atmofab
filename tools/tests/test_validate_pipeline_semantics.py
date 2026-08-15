@@ -21992,8 +21992,8 @@ class DirectExecutionBootstrapTests(unittest.TestCase):
     An earlier version of this test ran the module as a script from outside the repository and
     asserted it printed usage. That does not observe the rule: the fallback names are referenced
     inside functions, not at import, so dropping one still imports cleanly and prints usage —
-    measured, the mutation survived. Set equality over the two blocks is the instrument that
-    actually fails, and it fails for ANY name, not only the one this change added.
+    measured, the mutation survived. Comparing the two blocks' import sets is the instrument
+    that actually fails, and it fails for ANY name, not only the one this change added.
     """
 
     def test_the_fallback_import_block_redoes_every_primary_import(self) -> None:
