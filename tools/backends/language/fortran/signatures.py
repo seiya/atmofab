@@ -63,12 +63,11 @@ _IFACE_PROC_START = re.compile(
 # ``end\s*`` (space optional) accepts the legal no-space free-form keywords endsubroutine /
 # endfunction / endtype as well as the spaced forms.
 _IFACE_PROC_END = re.compile(r"^\s*end\s*(?:subroutine|function)\b", re.IGNORECASE)
-# A type DEFINITION header: ``type :: name`` or ``type, attrs :: name`` — never a component
-# declaration ``type(...) :: x`` (a ``(`` immediately follows ``type`` there, so ``::`` at the
-# end is preceded by the parenthesized kind, not a bare/attributed ``type``).
-_IFACE_TYPE_START = re.compile(
-    r"^\s*type\s*(?:,\s*[^:()]*?)?::\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE
-)
+# The type DEFINITION header is `_TYPE_HEADER_RE`, defined with the other header patterns below
+# and used here rather than restated: moving the stanza layer into this module put a byte-identical
+# copy of it beside the original, which is the drift shape this file already carries a warning
+# about. The stanza parser and `_parse_type` must agree on what a type header IS — a header the
+# splitter accepts and the parser rejects is a stanza with no lowering — so they read one pattern.
 _IFACE_TYPE_END = re.compile(r"^\s*end\s*type\b", re.IGNORECASE)
 
 _END_STMT_RE = re.compile(r"^\s*end\s*(type|subroutine|function)\b", re.IGNORECASE)
@@ -110,7 +109,7 @@ def parse_interface_stanzas(
         if not line:
             i += 1
             continue
-        m_type = _IFACE_TYPE_START.match(line)
+        m_type = _TYPE_HEADER_RE.match(line)
         m_proc = _IFACE_PROC_START.match(line)
         if m_type:
             name = m_type.group(1)
@@ -124,7 +123,7 @@ def parse_interface_stanzas(
                 # close a type in Fortran), so reaching a header first leaves `closed` False and
                 # the stanza is reported unterminated (fail-closed). Reprocess the header on the
                 # outer loop (do not advance).
-                if cur and (_IFACE_TYPE_START.match(cur) or _IFACE_PROC_START.match(cur)):
+                if cur and (_TYPE_HEADER_RE.match(cur) or _IFACE_PROC_START.match(cur)):
                     break
                 if cur:
                     stanza.append(cur)
@@ -152,7 +151,7 @@ def parse_interface_stanzas(
                     break
                 # A bare `end` (legal for a module procedure) is not matched above; terminate on the
                 # next stanza header so it cannot swallow the following symbol (reprocess it).
-                if cur and (_IFACE_PROC_START.match(cur) or _IFACE_TYPE_START.match(cur)):
+                if cur and (_IFACE_PROC_START.match(cur) or _TYPE_HEADER_RE.match(cur)):
                     closed = True
                     break
                 if cur:
@@ -290,11 +289,17 @@ _INTENT_RE = re.compile(r"^intent\(\s*(in|out|inout)\s*\)$", re.IGNORECASE)
 _MODULE_PARAM_RE = re.compile(
     r"^\s*integer\s*,\s*parameter\s*::\s*([A-Za-z0-9_]+)\s*=\s*(.+?)\s*$", re.IGNORECASE
 )
+# A strict extension of the stanza splitter's `_IFACE_PROC_START`: same prefix rule, plus the
+# argument list and `result(...)`. It cannot be collapsed into one pattern (the group numbering
+# differs), so `test_the_two_procedure_header_patterns_agree` pins that every header one accepts
+# the other accepts.
 _PROC_HEADER_RE = re.compile(
     r"^\s*(?:pure\s+|elemental\s+|recursive\s+)*(subroutine|function)\s+"
     r"([A-Za-z0-9_]+)\s*(?:\((.*?)\))?\s*(?:result\s*\(\s*([A-Za-z0-9_]+)\s*\))?\s*$",
     re.IGNORECASE,
 )
+# Also the stanza splitter's type-header test (see the stanza layer above): one pattern, so the
+# splitter and the parser cannot disagree about what a type header is.
 _TYPE_HEADER_RE = re.compile(
     r"^\s*type\s*(?:,\s*[^:()]*?)?::\s*([A-Za-z0-9_]+)\s*$", re.IGNORECASE
 )

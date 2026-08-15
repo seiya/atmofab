@@ -493,7 +493,7 @@ def split_top_level_commas(text: str) -> list[str]:
       descriptor emitting ``)`` (``'(a,'')'',l1)'``), or a ``)`` inside a double-quoted piece.
       The quote-blind paren depth skews and the format token is cut short, so nothing is
       scanned. gfortran ``-std=f2008`` accepts both forms.
-    * **Fail-closed.** ``_declaration_atoms`` split a BALANCED initializer literal
+    * **Fail-closed.** ``signatures.declaration_atoms`` split a BALANCED initializer literal
       (``:: sep = ',', tail = 'z'``) into a truncated atom plus a phantom one — identically on
       both sides of the §5.1 comparison, so it cancelled and reached no gate. An UNBALANCED
       paren (``:: msg = 'a(b', tail = 'z'``) instead suppressed the split on the combined form

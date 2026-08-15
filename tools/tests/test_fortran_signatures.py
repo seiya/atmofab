@@ -208,6 +208,47 @@ class FortranStanzaParserTests(unittest.TestCase):
         self.assertEqual(canonicalize_end_line("endtype hx__t"), "end type")
         self.assertEqual(canonicalize_end_line("end type hx__t"), "end type")
 
+    def test_the_two_procedure_header_patterns_agree(self) -> None:
+        # `_PROC_HEADER_RE` (which lowers a header) is a strict extension of `_IFACE_PROC_START`
+        # (which finds one). They cannot be collapsed — the group numbering differs — so the
+        # containment is pinned instead: a header the lowering pattern accepts must be one the
+        # splitter finds, or a stanza would be split out and then fail to lower. The type pair had
+        # the same shape and WAS collapsed; this is the half that could not be.
+        #
+        # The prefix ALTERNATION is compared as a set identity, not sampled. The first version of
+        # this test only ran the real §5.1 headers plus three hand-written probes, so adding an
+        # alternative (`impure`) to one pattern and not the other survived it — a witness that
+        # could only see the prefixes someone had already thought of.
+        import re as _re
+
+        from tools.backends.language.fortran.signatures import (
+            _IFACE_PROC_START, _PROC_HEADER_RE)
+
+        def prefixes(pattern: str) -> set[str]:
+            m = _re.search(r"\(\?:((?:[a-z]+\\s\+\|?)+)\)\*", pattern)
+            assert m, f"prefix alternation not found in {pattern!r}"
+            return {alt for alt in m.group(1).split("|") if alt}
+
+        self.assertEqual(prefixes(_PROC_HEADER_RE.pattern), prefixes(_IFACE_PROC_START.pattern),
+                         "the two procedure header patterns accept different prefix sets")
+
+        # ... and the containment holds behaviourally, over every prefix either pattern declares
+        # and over the real §5.1 headers.
+        for prefix in sorted(prefixes(_PROC_HEADER_RE.pattern)):
+            word = prefix.replace("\\s+", " ")
+            for header in (f"{word}subroutine hx__p(a)",
+                           f"{word.upper()}FUNCTION hx__f(a) RESULT(s)"):
+                self.assertIsNotNone(_PROC_HEADER_RE.match(header), header)
+                self.assertIsNotNone(_IFACE_PROC_START.match(header), header)
+
+        headers = [ln for ln in _real_section51_block().splitlines()
+                   if _PROC_HEADER_RE.match(ln)]
+        self.assertTrue(headers, "no procedure headers in the real §5.1 block")
+        for header in headers:
+            self.assertIsNotNone(
+                _IFACE_PROC_START.match(header),
+                f"the stanza splitter does not find a header the parser lowers: {header!r}")
+
     def test_stanza_headers_are_case_insensitive(self) -> None:
         # Fortran identifiers and keywords are case-insensitive, so the stanza headers carry
         # `re.IGNORECASE`. Dropping it from the procedure header left the suite green.
