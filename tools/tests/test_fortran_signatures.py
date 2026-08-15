@@ -431,6 +431,16 @@ class FortranStanzaParserTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(sorted(types), ["hx__t", "hx__u"])
 
+    def test_a_multi_name_type_line_is_not_a_type_header(self) -> None:
+        # `_TYPE_HEADER_RE`'s trailing anchor. Removing it survives the suite, and the harm is a
+        # false stanza OPEN: `type :: a, b` is not a derived-type definition, but an unanchored
+        # pattern reads it as one named `a` and swallows what follows into its stanza. Absent from
+        # the corpus; the anchor is cheap to observe, so it is observed rather than recorded.
+        _ops, types, errors = parse_interface_stanzas(
+            "type :: hx__a, hx__b\n  integer :: x\nend type hx__a\n")
+        self.assertEqual(types, {})
+        self.assertEqual(errors, [])
+
     def test_a_component_declaration_is_not_a_type_header(self) -> None:
         # `_TYPE_HEADER_RE` is now the ONE owner of "what a type header is" — the stanza splitter
         # and `_parse_type` share it — so what it accepts is worth an explicit test: a component

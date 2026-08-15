@@ -1261,8 +1261,15 @@ class HarnessPinTest(unittest.TestCase):
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src)
 
     def test_wrong_harness_id(self) -> None:
-        with self.assertRaises(RenderError):
+        # Assert the MESSAGE, not just the raise. Neutering the `harness_spec_id` guard leaves this
+        # test passing on the exception the symbol lookup raises a few lines later ("renderer
+        # depends on harness symbol ... not present"), so the guard itself had no observer and the
+        # distinct, actionable refusal could have been lost while the test stayed green. A reviewer
+        # measured that: replacing the condition with `False` left the whole suite passing.
+        with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, "harness_other", self.sigs, self.src)
+        self.assertIn("is not the pinned", str(cm.exception))
+        self.assertIn("the renderer only targets that harness", str(cm.exception))
 
     def test_ir_signature_drift(self) -> None:
         bad = copy.deepcopy(self.sigs)
