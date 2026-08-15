@@ -942,14 +942,18 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     neutral core for its own subject matter (TODO.md's blocking sub-item). Nothing observed that:
     the import worked and the suite was green.
 
-    THREE checks, because no two of them cover the property:
+    FOUR checks, because no subset of them covers the property:
 
     * the SOURCE check reads every import in every scanned module, at any nesting depth, in every
       spelling the reader knows — `import`, `from ... import` (module AND alias), relative, and a
       literal `importlib.import_module` / `__import__`. The subprocess probe cannot see a lazy one.
-    * the SCOPE check derives which modules are scanned from the validator's own backend imports,
-      so a newly imported backend module cannot go unscanned. It found `structure.py` on its first
-      run, and `registry.py` after a reviewer showed the prefix filter excluded it.
+    * WHICH modules are scanned is DISCOVERED by walking `tools/backends/`, not enumerated. Four
+      review rounds each found a different file an enumerated version had missed — `structure.py`,
+      `registry.py`, and both package `__init__` modules — which is what an enumeration standing in
+      for a rule looks like. The only hand-maintained part left is the inverse: the modules that
+      legitimately depend on the neutral core, which is a list of exceptions a reader can audit.
+    * the EXCEPTION check holds that list to its justification, so an entry cannot outlive its
+      reason and go on exempting whatever the module grows next.
     * the IMPORT check runs a fresh interpreter, so a module-level import — including one reached
       transitively through a sibling — is an executed fact rather than a reading of the source.
       In-process `sys.modules` says nothing: most of this test run imports the validator anyway.
@@ -959,25 +963,29 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     implied to be covered, the same way `tools/tests/test_backend_boundary.py` records it.
     """
 
-    #: The modules whose imports are scanned. Not hand-picked:
-    #: `test_the_scanned_modules_are_the_ones_the_validator_imports` derives the required set from
-    #: the validator's own backend imports and fails if any of them is missing here.
-    _BACKEND_MODULES = (
-        "tools/backends/language/fortran/signatures.py",
-        "tools/backends/language/fortran/lines.py",
-        # The tree-sitter front end: on the same cycle, and NOT in the hand-written pair this
-        # started as — the derivation found it the first time it ran.
-        "tools/backends/language/fortran/structure.py",
-        # The registry: also imported by the validator at module level, so also on the cycle. The
-        # derivation missed it at first because it filtered on the `language.fortran` prefix; a
-        # reviewer reinstated a back-import here with the whole suite green.
-        "tools/backends/registry.py",
-        # The two package `__init__` modules. They execute on every import of anything below them,
-        # so they are on the cycle path even though no import statement names them directly — and
-        # the derivation could not see them while it mapped a dotted name only to `<name>.py`.
-        "tools/backends/__init__.py",
-        "tools/backends/language/fortran/__init__.py",
-    )
+    #: Modules under `tools/backends/` that legitimately depend on the neutral core, and why.
+    #: This is the ONLY hand-maintained list left, and it is the inverse of the old one: the
+    #: scanned set is now DISCOVERED by walking the package, so a module cannot go unscanned by
+    #: being forgotten. Four rounds of review each found a different file the enumerated version
+    #: had missed — `structure.py`, `registry.py`, and both package `__init__` modules — which is
+    #: the signature of an enumeration standing in for a rule.
+    _NEUTRAL_CORE_DEPENDENTS = {
+        # A developer harness, not a runtime path: it diffs `structure` against a flang oracle and
+        # drives the validator's own helpers to do it. `docs/BACKEND_BOUNDARY.md` permits the
+        # direction; nothing imports this module from the neutral core, so it is off the cycle.
+        "tools/backends/language/fortran/structure_differential.py",
+    }
+
+    @classmethod
+    def _scanned_backend_modules(cls) -> list[str]:
+        """Every module under `tools/backends/`, minus the declared exceptions."""
+        root = REPO_ROOT / "tools/backends"
+        found = sorted(
+            str(path.relative_to(REPO_ROOT))
+            for path in root.rglob("*.py")
+            if "__pycache__" not in path.parts
+        )
+        return [rel for rel in found if rel not in cls._NEUTRAL_CORE_DEPENDENTS]
 
     #: The importer callables whose LITERAL first argument the source check reads. Same set, and
     #: the same limit, as `tools/tests/test_backend_boundary.py`.
@@ -1019,7 +1027,9 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
         return out
 
     def test_no_import_of_the_validator_at_any_nesting_depth(self) -> None:
-        for rel in self._BACKEND_MODULES:
+        scanned = self._scanned_backend_modules()
+        self.assertGreater(len(scanned), 5, "the backend package walk found almost nothing")
+        for rel in scanned:
             for lineno, name in self._imported_names(REPO_ROOT / rel):
                 self.assertNotIn(
                     "validate_pipeline_semantics", name,
@@ -1027,40 +1037,41 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
                     f"validator imports this module at module level); a lazy one reinstates the "
                     f"dependency on the neutral core that moving the §5.1 layer here removed.")
 
-    def test_the_scanned_modules_are_the_ones_the_validator_imports(self) -> None:
-        # The bound of the check above is which files it reads, so derive it from the validator
-        # rather than trusting a hand-written list: every backend module the validator imports is
-        # a module a back-import would cycle through, and must be scanned.
-        #
-        # ANY nesting depth, deliberately — a lazy import in the validator still binds the module,
-        # so the cycle risk is the same and the safe direction is to scan more, not less. An
-        # earlier version filtered on the `tools.backends.language.fortran` prefix and therefore
-        # excluded `tools/backends/registry.py`, which the validator imports at module level.
-        import ast
+    def test_every_declared_exception_still_needs_to_be_one(self) -> None:
+        # The exception list is the only thing that can hide a module from the check above, so it
+        # is held to its own justification: a module listed here must ACTUALLY import the neutral
+        # core. One that stopped doing so would otherwise sit in the list forever, silently
+        # exempting whatever it grows next.
+        for rel in sorted(self._NEUTRAL_CORE_DEPENDENTS):
+            path = REPO_ROOT / rel
+            self.assertTrue(path.is_file(), f"{rel} is listed as an exception but does not exist")
+            imports_neutral_core = any(
+                name.startswith("tools.") and not name.startswith("tools.backends")
+                for _lineno, name in self._imported_names(path))
+            self.assertTrue(
+                imports_neutral_core,
+                f"{rel} no longer imports the neutral core; remove it from "
+                f"_NEUTRAL_CORE_DEPENDENTS so it is scanned like every other backend module")
 
+    def test_the_walk_covers_what_the_validator_imports(self) -> None:
+        # A second reading of the same property, from the other end: whatever the validator
+        # imports out of `tools/backends` must be in the scanned set. The walk makes this true by
+        # construction today; it is asserted so that narrowing the walk — to a prefix, a list, or
+        # a glob that misses `__init__.py` — fails here rather than silently shrinking the check.
         validator = REPO_ROOT / "tools/validate_pipeline_semantics.py"
-        tree = ast.parse(validator.read_text(encoding="utf-8"), filename=str(validator))
-        imported_backend_modules: set[str] = set()
+        scanned = set(self._scanned_backend_modules())
+        required: set[str] = set()
         for _lineno, name in self._imported_names(validator):
             if not name.startswith("tools.backends"):
                 continue
-            # A dotted name is either a module (`x/y.py`) or a PACKAGE (`x/y/__init__.py`).
-            # Mapping only to the first left both `tools/backends/__init__.py` and
-            # `tools/backends/language/fortran/__init__.py` underived and unscanned — and the
-            # validator's own `from tools.backends.language.fortran import lines` contributes
-            # exactly the package name, so the package on the import path this check guards was
-            # invisible to it. A reviewer planted a lazy back-import in each and the suite stayed
-            # green: the same hole this check was written to close, one directory up.
             for rel in (name.replace(".", "/") + ".py",
                         name.replace(".", "/") + "/__init__.py"):
                 if (REPO_ROOT / rel).is_file():
-                    imported_backend_modules.add(rel)
-        del tree
-        self.assertTrue(imported_backend_modules, "the validator imports no backend module at all")
-        self.assertLessEqual(
-            imported_backend_modules, set(self._BACKEND_MODULES),
-            "the validator imports a backend module that the cycle check does not scan; add it "
-            "to _BACKEND_MODULES")
+                    required.add(rel)
+        self.assertTrue(required, "the validator imports no backend module at all")
+        self.assertLessEqual(required, scanned,
+                             "the validator imports a backend module the cycle check does not "
+                             "scan")
 
     def test_importing_this_backend_does_not_execute_the_validator(self) -> None:
         import subprocess
