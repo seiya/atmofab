@@ -7059,12 +7059,12 @@ clean:
         # deliverable set this same list feeds); if a predicate still references it, the
         # metrics-basis matrix reports the missing (test_id, case_id). Either way the run stays
         # in-directory — the dropped case never produces an out-of-bounds write.
-        from tools.runner_renderer import _CASE_ID_TOKEN_RE
+        from tools.spec_input_gates import CASE_ID_TOKEN_RE
         return tuple(sorted(
             tok for c in tcs
             if isinstance(c, dict) and isinstance(c.get("case_id"), str)
             and (tok := c["case_id"].strip())
-            and _CASE_ID_TOKEN_RE.match(tok) and ".." not in tok
+            and CASE_ID_TOKEN_RE.match(tok) and ".." not in tok
         ))
 
     def _read_evidence_artifacts(self, refs: NodeRefs) -> tuple[str, ...]:
@@ -11372,17 +11372,17 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     # compile.static hoist excludes it because a re-author cannot shorten a spec_id) that
     # would otherwise fail-close at conductor render time on a harness-backed node — a
     # workflow-kill. This is the canonical capture point (see
-    # runner_renderer.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
-    # language/phase-agnostic: the 55-char bound reflects the f2008 identifier limit of the
-    # ONLY current backend (fortran), where every >55 spec_id is doomed regardless of phase.
+    # spec_input_gates.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
+    # language/phase-agnostic: the 55-char bound reflects the identifier limit of the ONLY
+    # current language backend, where every >55 spec_id is doomed regardless of phase.
     # It also rejects a >55 spec on a Compile-only run — acceptable while every backend is
     # fortran. When a backend with a different identifier limit is added, move the bound to
     # a language-aware point.
     # (2) infrastructure direct-dependency count (see
-    # runner_renderer.infra_dep_count_violation), checked below once the catalog fixes the
+    # spec_input_gates.infra_dep_count_violation), checked below once the catalog fixes the
     # node's spec_kind. Same rationale: a re-author cannot repair a node's dependency
     # identity, and the non-M3c physical path it used to degrade to has been removed.
-    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
+    from tools.spec_input_gates import infra_dep_count_violation, spec_id_length_violation
     _sid_violation = spec_id_length_violation(spec_id)
     if _sid_violation:
         raise ValueError(

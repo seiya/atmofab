@@ -3987,7 +3987,7 @@ def _resolve_dependency_closure(
         function ALSO applies the two spec-input identity gates to every visited
         spec — the target included, since it is on no edge — because a dependency
         that is already ready is skipped before it ever reaches `resolve_node`:
-        `spec_id_too_long` (runner_renderer.MAX_SPEC_ID_LEN) and
+        `spec_id_too_long` (spec_input_gates.MAX_SPEC_ID_LEN) and
         `infra_dep_count_invalid` (exactly one `infrastructure` direct dep on a
         non-infrastructure spec). An unconfirmable `spec_kind` is reported as
         `spec_catalog_corrupt` rather than as a dep-count violation — see
@@ -4006,7 +4006,7 @@ def _resolve_dependency_closure(
         _read_deps_yaml,
         resolve_spec_ref_for,
     )
-    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
+    from tools.spec_input_gates import infra_dep_count_violation, spec_id_length_violation
 
     # A missing/corrupt registry must not turn an otherwise-launchable leaf workflow into
     # a failure (matching the runtime readiness path, which treats no-deps specs as
@@ -4122,7 +4122,7 @@ def _resolve_dependency_closure(
         # dependency is skipped before it reaches `_run_node` → resolve_node — so gating
         # only there could let an over-length ready dep slip past. Checking every visited
         # spec (target + all deps) here is the closure-level mirror of resolve_node's bound
-        # (runner_renderer.MAX_SPEC_ID_LEN). A >55 fortran node cannot certify (so cannot be
+        # (spec_input_gates.MAX_SPEC_ID_LEN). A >55 node cannot certify (so cannot be
         # ready), but this makes the canonical capture point robust regardless.
         _sid_violation = spec_id_length_violation(Path(spec_ref).name)
         if _sid_violation:

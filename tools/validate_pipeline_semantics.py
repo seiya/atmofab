@@ -5172,7 +5172,7 @@ def _validate_generate_outputs_for_generation(
     # for them to police. NOTE they are NOT a full no-op: the leaf-authored-runner path stays
     # live for the harness self-test. What used to make it live for physics nodes too — a node
     # without an infra dep, or a non-`(fortran, make)` toolchain — is now pinned shut: the
-    # infra-dep count is a spec-input rejection (`runner_renderer.infra_dep_count_violation`)
+    # infra-dep count is a spec-input rejection (`spec_input_gates.infra_dep_count_violation`)
     # and the toolchain is a compile.static violation (`_validate_toolchain_backend_supported`).
     # Removing the heuristics accepts that fabrication in the harness self-test runner is caught
     # by the LLM verify/judge + these deterministic backstops, not by the two deleted ones.)
@@ -11467,7 +11467,7 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
     gate closes the gap uniformly at Compile — a violation routes to ``compile.generate``, and the
     id must match the same ``[A-Za-z0-9._][A-Za-z0-9._-]*`` (no ``..``) grammar the
     renderer pins."""
-    from tools.runner_renderer import _CASE_ID_TOKEN_RE
+    from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
     derived_path = ir_dir / "spec.ir.yaml"
     if not derived_path.exists():
@@ -11490,7 +11490,7 @@ def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:
         if not isinstance(cid, str):
             continue
         token = cid.strip()
-        if token and (not _CASE_ID_TOKEN_RE.match(token) or ".." in token):
+        if token and (not CASE_ID_TOKEN_RE.match(token) or ".." in token):
             unsafe.append(token)
     if unsafe:
         violations.append(
