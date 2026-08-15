@@ -188,14 +188,11 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 #: single "the module" to return. A capability absent from this table cannot be reached through
 #: `capability_module` at all — which is correct for the ones no dispatch routes through yet.
 #:
-#: A row here also means the capability has FINISHED migrating: the neutral core no longer has an
-#: inlined implementation of it, so `core_provides` may not carry it (`_check_declarations`
-#: refuses that). Without this rule the two questions come apart — `provides`, the authorship
-#: question, is the union, while every seam reaching a migrated capability goes through
-#: `capability_module` and sees only `backend_provides`. A record declaring the capability in
-#: `core_provides` would then be approved for host authorship and refused at the render, which is
-#: the render-kill the union exists to prevent. It was exactly that, for two review rounds, in
-#: three places at once.
+#: This table says WHERE a package re-exports a capability. It does NOT say the capability has
+#: finished migrating — that is per AXIS, and asking it of the table was a defect: `control_file`
+#: is a question of both `build_system` and `language`, so the first axis to migrate would have
+#: refused the second axis' still-inlined declaration, with a remedy that leads to another
+#: refusal. `_check_declarations` derives the migration state from the records themselves.
 CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "runner_render": "runner",
 }
@@ -316,19 +313,6 @@ def _check_declarations() -> None:
                 f"core_provides and backend_provides; a capability has exactly one owner — "
                 f"when it moves into the package, it leaves the neutral core"
             )
-        # A migrated capability has no inlined implementation left to declare. This is the rule
-        # that keeps the authorship question and the dispatch question from coming apart: for a
-        # capability with a `CAPABILITY_MODULE_ATTR` row, `provided` reduces to
-        # `backend_provides`, which is precisely what every seam reaching it asks. Stated as a
-        # refusal rather than as a convention, because the shape it forbids is legal-looking,
-        # is what a half-finished migration produces, and reads as harmless.
-        for capability in sorted(backend.core_provides & set(CAPABILITY_MODULE_ATTR)):
-            raise UnsupportedBackend(
-                f"{backend.axis}/{backend.backend_id} declares '{capability}' in core_provides, "
-                f"but that capability has migrated out of the neutral core (it has a "
-                f"CAPABILITY_MODULE_ATTR row): there is no inlined implementation left for the "
-                f"declaration to assert. Declare it in backend_provides, or not at all"
-            )
         # A package implementation needs a way to be reached. Declaring one with no
         # `CAPABILITY_MODULE_ATTR` entry would make `capability_module` refuse a value the
         # record says is implemented — a capability that is true and unreachable at once.
@@ -346,6 +330,42 @@ def _check_declarations() -> None:
                 f"{backend.axis}/{backend.backend_id} declares backend_provides "
                 f"{sorted(backend.backend_provides)} but has no backend package (module=None); "
                 f"a capability implemented in the neutral core belongs in core_provides"
+            )
+
+    # SECOND PASS, and the two passes are separate on purpose. Everything above is a property of
+    # one record and can be judged without looking at any other; the rule below is a property of
+    # the axis as a whole. Interleaved, they answered the wrong question about the wrong record:
+    # a synthetic record with a bad reach declaration made a DIFFERENT record's legitimate
+    # `core_provides` look like the defect, because the first record had already moved the
+    # capability into the "migrated on this axis" set.
+    # Once ONE value of an axis implements a capability in its package, the neutral core no
+    # longer has an inlined implementation of that job FOR THAT AXIS — it moved. A sibling
+    # record still declaring it in `core_provides` asserts code that no longer exists, and
+    # that assertion is what splits the two questions: `provides` (the authorship question,
+    # the union) would answer True while every seam reaching the capability asks
+    # `capability_module`, which sees only `backend_provides`.
+    #
+    # PER AXIS, derived from the records rather than from `CAPABILITY_MODULE_ATTR`. Keyed by
+    # capability alone it refused a legal state: `control_file` is a question of two axes, so
+    # migrating the build-system half would have rejected the language half that is still
+    # inlined — and the message's remedy (declare it in `backend_provides`) leads straight to
+    # the no-package refusal in the first pass. That is the ledger's own next area, blocked by this rule.
+    for backend in _BACKENDS.values():
+        migrated_on_this_axis = {
+            capability
+            for other in _BACKENDS.values() if other.axis == backend.axis
+            for capability in other.backend_provides
+        }
+        for capability in sorted(backend.core_provides & migrated_on_this_axis):
+            owners = ", ".join(sorted(
+                o.backend_id for o in _BACKENDS.values()
+                if o.axis == backend.axis and capability in o.backend_provides))
+            raise UnsupportedBackend(
+                f"{backend.axis}/{backend.backend_id} declares '{capability}' in core_provides, "
+                f"but that capability has already moved into a package on this axis ({owners}): "
+                f"the neutral core has no inlined implementation of it left for {backend.axis}, "
+                f"so the declaration asserts code that does not exist. Implement it in this "
+                f"backend's own package and declare it in backend_provides, or drop it"
             )
 
 

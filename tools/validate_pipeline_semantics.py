@@ -4961,26 +4961,36 @@ def _validate_checks_source_files(
     # `_validate_compile_stage_impl`, where an uncaught raise discards every violation the
     # sibling gates have already collected and replaces an actionable list with a traceback.
     #
-    # UNREACHABLE FROM THE LIVE CALLER, and the argument is worth stating precisely because an
-    # earlier version of it was WRONG for two review rounds. `language` comes from
-    # `_ir_m3c_language`, which gates on `registry.provides` — the UNION of both capability sets
-    # — while `runner_render_refusal` asks what the seam can actually dispatch, which is the
-    # `backend_provides` half. Those are the same set for `runner_render` only because the
-    # registry REFUSES, at import, a record that declares a migrated capability in
-    # `core_provides` (`CAPABILITY_MODULE_ATTR` marks which ones have migrated). Before that
-    # rule existed the two came apart and this branch was live — so the unreachability rests on
-    # a check, not on a reading. It is kept as the fail-closed shape for a caller with no such
-    # predicate in front of it. (The sibling branch in `codegen_bundle.m3c_checks_abi_violation`
-    # IS reachable and has a witness: its language comes from bundle file data, constrained only
-    # to the languages with a `bundle` interface, a different set from the renderers.)
-    abi_refusal = host_render.runner_render_refusal(language)
+    # REACHABLE, and it took three review rounds to stop claiming otherwise. `language` comes
+    # from `_ir_m3c_language`, which gates on `registry.provides` — a DECLARATION question, over
+    # the union of both capability sets. `runner_render_refusal` asks whether the seam can
+    # actually dispatch, which additionally requires the record's package to really carry the
+    # capability. Those two cannot be made identical: the registry must not import a backend at
+    # declaration time (see its module docstring), so nothing can check a declaration against the
+    # tree until something loads it. Twice this comment claimed a rule had closed the gap, and
+    # twice a reviewer built a record that walked through it — the second time a record this
+    # file's own witness had already constructed for another purpose.
+    #
+    # So the gap is HANDLED rather than declared impossible: a declaration that outruns its
+    # package lands here as a violation routed to compile.generate, never as an exception. That
+    # is the whole reason the branch exists, and it has a witness now.
+    try:
+        abi_refusal = host_render.runner_render_refusal(language)
+        checks_public_names: tuple[str, ...] = (
+            () if abi_refusal is not None else host_render.checks_public_names(language))
+    except Exception as exc:  # noqa: BLE001
+        # A backend package that fails to IMPORT is a host fault, not a node defect — but it
+        # must not escape from here. `_validate_compile_stage_impl` has no handler, so an
+        # uncaught exception discards every violation the sibling gates already collected and
+        # replaces an actionable list with a traceback. The seam deliberately lets a broken
+        # import through as itself (re-typing it would tell a leaf to implement what already
+        # exists); converting it HERE keeps both properties.
+        abi_refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
+        checks_public_names = ()
     if abi_refusal is not None:
         violations.append(
             f"{checks_path}: this node is host-rendered, but the checks ABI its runner would "
             f"call cannot be stated for language {language!r}: {abi_refusal}")
-        checks_public_names: tuple[str, ...] = ()
-    else:
-        checks_public_names = host_render.checks_public_names(language)
     missing = [n for n in checks_public_names if n not in published]
     if missing:
         violations.append(
@@ -12368,20 +12378,29 @@ def _validate_harness_render_preconditions(
     if len(infra) != 1:  # defensive; _ir_is_m3c_physics already pins this
         return
     harness_sid = infra[0].partition("@")[0].partition("/")[2]
-    # `_ir_m3c_language` returned a value, so the seam cannot refuse it — by the construction
-    # spelled out in `_validate_checks_source_files`, which rests on the registry refusing a
-    # migrated capability in `core_provides` and NOT on the two predicates happening to agree.
-    # UNREACHABLE for that reason; kept because the shape a future caller needs is a VIOLATION
-    # rather than a raise — an uncaught exception here discards every violation the sibling
-    # gates already collected.
-    refusal = host_render.runner_render_refusal(language)
+    # REACHABLE, for the reason spelled out in `_validate_checks_source_files`: the predicate
+    # asks a DECLARATION question and the seam asks whether it can dispatch, and no rule can
+    # make those identical while the registry declines to import backends at declaration time.
+    # The refusal is a VIOLATION rather than a raise because an uncaught exception here discards
+    # every violation the sibling gates already collected.
+    try:
+        refusal = host_render.runner_render_refusal(language)
+        messages = (
+            [] if refusal is not None
+            else host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid))
+    except Exception as exc:  # noqa: BLE001
+        # See the note in `_validate_checks_source_files`: a backend that cannot be imported is
+        # a host fault, and letting it escape from inside this gate would discard every sibling
+        # gate's violations.
+        refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
+        messages = []
     if refusal is not None:
         violations.append(
             f"{derived_path}: this node is host-rendered, but no backend renders a runner for "
             f"language {language!r}: {refusal}")
         return
 
-    for msg in host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid):
+    for msg in messages:
         violations.append(f"{derived_path}: {msg}")
 
 

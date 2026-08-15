@@ -31,7 +31,6 @@ from tools.backends.language.fortran.runner import (
 )
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
 from tools.host_render import RenderError
-import tools.backends.language.fortran.runner as fortran_runner_module
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -1059,56 +1058,54 @@ class SpecIdBoundAgreementTest(unittest.TestCase):
         for suffix in ("_runner", "_checks", "_model"):
             self.assertLessEqual(BACKEND_BOUND + len(suffix), bundle.IDENTIFIER_MAX)
 
-    def test_the_bound_is_derived_in_the_source_and_not_restated(self) -> None:
-        """The rule, not the number — because today the two are the same number.
+    def test_the_bound_tracks_the_language_identifier_limit(self) -> None:
+        """The DERIVATION, observed by moving the thing it derives from.
 
-        Replacing the derivation with the literal `55` is behaviourally identical at the current
-        identifier limit, so every value comparison in this class survives it. What the
-        derivation buys is the FUTURE change: raise the language's identifier limit and the
-        backend bound must move with it, or a spec_id one character too long renders symbols
-        that breach the limit. Reading the assignment is the only observer of that, the same way
-        the registry's import-time check is pinned by reading its invocation."""
-        import ast
+        Replacing the derivation with today's literal is behaviourally identical at the current
+        limit, so every value comparison in this class survives it. What the derivation buys is
+        the future change: raise the language's identifier limit and the bound must move, or a
+        spec_id one character too long renders symbols that breach it.
 
-        source = Path(
-            fortran_runner_module.__file__).read_text(encoding="utf-8")  # type: ignore[arg-type]
-        tree = ast.parse(source)
+        The first two instruments for this read the SOURCE and pinned a spelling. Both
+        over-rejected — the first refused `from ...bundle import IDENTIFIER_MAX`, the second
+        refused the annotated assignment and then, once widened, accepted a locally restated
+        `IDENTIFIER_MAX = 63` (the extra copy of that number the ledger forbids). A rule that has
+        to be rewritten twice and still rejects legitimate work is the wrong FORM, not the wrong
+        wording. So: move the limit and re-import. Every spelling that derives passes, every
+        spelling that restates fails, and no spelling is named.
+        """
+        import subprocess
+        import sys
 
-        def _binds(node: ast.stmt) -> bool:
-            # `ast.AnnAssign` as well as `ast.Assign`: the annotated spelling is what this
-            # repository uses for module constants elsewhere, and rejecting it would fail a
-            # refactor that changes nothing about the rule.
-            if isinstance(node, ast.Assign):
-                return any(getattr(x, "id", None) == "MAX_SPEC_ID_LEN" for x in node.targets)
-            return (isinstance(node, ast.AnnAssign)
-                    and getattr(node.target, "id", None) == "MAX_SPEC_ID_LEN")
+        from tools.backends.language.fortran import bundle
 
-        assign = next((n for n in tree.body if _binds(n)), None)
-        self.assertIsNotNone(assign, "the backend's spec_id bound is gone")
-        # Either spelling of the same derivation: the module attribute, or the name imported
-        # FROM that module. The rule has two halves and each was violable on its own — pinning
-        # the attribute spelling alone rejects a `from ...bundle import IDENTIFIER_MAX` refactor
-        # that preserves the derivation exactly, while accepting a bare name unconditionally
-        # accepts a LOCAL `IDENTIFIER_MAX = 63`, which is the third copy of that number TODO.md
-        # forbids.
-        referenced = {
-            f"{getattr(n.value, 'id', '')}.{n.attr}"
-            for n in ast.walk(assign) if isinstance(n, ast.Attribute)
-        }
-        bare = {n.id for n in ast.walk(assign) if isinstance(n, ast.Name)}
-        if "bundle.IDENTIFIER_MAX" not in referenced:
-            self.assertIn("IDENTIFIER_MAX", bare,
-                          "the backend's spec_id bound must be DERIVED from the language "
-                          "identifier limit, not restated as a literal: a literal does not move "
-                          "when the limit does")
-            self.assertTrue(
-                any(isinstance(n, ast.ImportFrom)
-                    and (n.module or "").endswith("bundle")
-                    and any(al.name == "IDENTIFIER_MAX" for al in n.names)
-                    for n in ast.walk(tree)),
-                "`IDENTIFIER_MAX` is used but not imported from the bundle module — a local "
-                "restatement is another copy of the identifier limit (TODO.md: do not add a "
-                "third)")
+        moved = bundle.IDENTIFIER_MAX - 23
+        # In a SUBPROCESS, not with an in-process reload: reloading the emitter rebinds the
+        # module every other test in this file holds a reference to, and getting the restore
+        # even slightly wrong leaves the rest of the suite measuring a bound that is not the
+        # real one. Measured — the first attempt did exactly that and failed 12 tests.
+        # The emitter is already in `sys.modules` by the time the limit can be patched — the
+        # package `__init__` re-exports it, and reaching `bundle` imports the package. Dropping
+        # it first is what makes the re-import read the patched value; without that the probe
+        # reports the unpatched bound and the test passes for no reason.
+        probe = (
+            "import importlib, sys\n"
+            "from unittest import mock\n"
+            "from tools.backends.language.fortran import bundle\n"
+            "del sys.modules['tools.backends.language.fortran.runner']\n"
+            f"with mock.patch.object(bundle, 'IDENTIFIER_MAX', {moved}):\n"
+            "    runner = importlib.import_module("
+            "'tools.backends.language.fortran.runner')\n"
+            "    print(runner.MAX_SPEC_ID_LEN)\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe], cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr)
+        self.assertEqual(
+            moved - len("_runner") - 1, int(out.stdout.strip()),
+            "the backend's spec_id bound did not move with the language identifier limit: it is "
+            "restated rather than derived, and a literal does not move")
 
     def test_the_spec_input_gate_carries_the_same_bound(self) -> None:
         from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND

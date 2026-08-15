@@ -73,6 +73,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1871,7 +1872,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         with self._patched(record):
             with self.assertRaises(registry.UnsupportedBackend) as ctx:
                 registry._check_declarations()
-        self.assertIn("migrated out of the neutral core", str(ctx.exception))
+        self.assertIn("already moved into a package on this axis", str(ctx.exception))
         # A capability that has NOT migrated is still declarable there — the rule must not
         # forbid the state the migration ledger is made of.
         still_inlined = registry.Backend(
@@ -1999,6 +2000,102 @@ class CapabilityOwnershipTests(unittest.TestCase):
             violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
             self.assertIsNotNone(violation)
             self.assertIn("zz_only_abi_name", violation)
+
+    def test_a_declaration_that_outruns_its_package_lands_in_the_gates_as_a_violation(self):
+        """The gap that cannot be closed, checked where it lands.
+
+        A record declares `runner_render` in `backend_provides`; its package does not carry the
+        module. `_check_declarations` accepts it — the registry must not import a backend at
+        declaration time — so `provides` answers True and both authorship predicates approve the
+        node, while the seam refuses. Three review rounds were spent claiming a rule had made
+        this impossible; it cannot be made impossible, so what matters is that the two
+        deterministic gates report it as a VIOLATION and never as an exception, since an
+        uncaught raise inside `_validate_compile_stage_impl` discards every violation its
+        sibling gates collected.
+
+        Driven THROUGH the gates, not through the seam: the seam's own refusal has its own
+        witness, and dispatching correctly inside a gate is a different fact from dispatching
+        correctly when called directly.
+        """
+        import sys
+        import tempfile
+        import types
+
+        import tools.validate_pipeline_semantics as vps
+
+        empty_pkg = types.ModuleType("zz_pkg_without_runner")  # no `runner` attribute
+        record = registry.Backend(
+            "language", "zz_hollow", "zz_pkg_without_runner",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(sys.modules, {"zz_pkg_without_runner": empty_pkg}), \
+                self._patched(record):
+            registry._check_declarations()  # accepted: nothing here can see inside the package
+            self.assertTrue(registry.provides("language", "zz_hollow", "runner_render"))
+            self.assertIsNotNone(host_render.runner_render_refusal("zz_hollow"))
+
+            with tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations: list[str] = []
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_hollow", src, [],
+                    violations)
+                self.assertTrue(
+                    any("cannot be stated for language 'zz_hollow'" in v for v in violations),
+                    violations)
+
+    def test_a_backend_that_cannot_be_imported_does_not_empty_the_violation_list(self) -> None:
+        """The seam lets a broken import escape as itself — the GATES must not.
+
+        Re-typing an `ImportError` at the seam would tell a leaf to implement what already
+        exists, so the seam deliberately does not. But inside `_validate_compile_stage_impl`
+        there is no handler, and an escaping exception replaces the sibling gates' actionable
+        list with a traceback. Both properties are wanted; the conversion belongs at the gate.
+        """
+        import tempfile
+
+        import tools.validate_pipeline_semantics as vps
+
+        record = registry.Backend(
+            "language", "zz_missing_pkg", "zz_module_that_does_not_exist",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(ModuleNotFoundError):     # the seam, unchanged
+                host_render.checks_public_names("zz_missing_pkg")
+            with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations = ["a sibling gate already found this"]
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_missing_pkg", src, [],
+                    violations)
+        self.assertIn("a sibling gate already found this", violations)
+        self.assertTrue(any("could not be loaded" in v for v in violations), violations)
+
+    def test_a_capability_may_migrate_one_axis_at_a_time(self) -> None:
+        """The rule above must not block the ledger's own next area.
+
+        `control_file` is a question of BOTH `build_system` and `language`. Keyed by capability
+        alone, the migrated-out-of-the-core rule refused the language half — still legitimately
+        inlined — the moment the build-system half moved, and the remedy its message named led
+        straight to the no-package refusal. That is the next area in `TODO.md`, blocked by a
+        rule written three commits earlier. It is per AXIS for that reason.
+        """
+        migrated_make = registry.Backend(
+            "build_system", "make", "tools.backends.language.fortran",
+            core_provides=frozenset({"build_execute"}),
+            backend_provides=frozenset({"control_file"}))
+        with mock.patch.dict(registry.CAPABILITY_MODULE_ATTR, {"control_file": "runner"}), \
+                self._patched(migrated_make):
+            registry._check_declarations()
+            # the language half is untouched and still answers for authorship
+            self.assertTrue(registry.provides("language", "fortran", "control_file"))
+            self.assertTrue(registry.provides("build_system", "make", "control_file"))
 
     def test_capability_module_refuses_a_value_with_no_record_by_class(self) -> None:
         """`require_available` inside `capability_module`, driven on the input that needs it.

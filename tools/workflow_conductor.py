@@ -5437,7 +5437,8 @@ class Conductor:
         render-error matrix). run_phase routes the raise to transport fail_closed (operator
         `--resume`), NOT a Generate content retry. Mirrors `_write_makefile` (host-authored,
         runtime-owned, before the substeps run so the write is outside the FS-diff window)."""
-        from tools.host_render import render_runner, assert_harness_pin, RenderError
+        from tools.host_render import (
+            render_runner, assert_harness_pin, RenderError, RunnerRenderUnavailable)
         from tools.orchestration_runtime import (
             _certified_binary_meta, _certified_ir_dir, _is_safe_path_token,
             _latest_pipeline_dir, _model_source_from_binary_meta)
@@ -5446,14 +5447,13 @@ class Conductor:
         # helper `_conductor_authors_runner` uses, so the predicate that decided to author and
         # the seam that authors cannot disagree about the value — a mismatch would fail-close a
         # render the predicate had just approved. That predicate has already required this value
-        # to provide `runner_render`, so the seam's refusal below is a backstop for a caller that
-        # skipped it, not a live branch. The two ask that through DIFFERENT functions — the
-        # predicate asks `provides`, the union of both capability sets, while the seam asks what
-        # it can actually dispatch, the package half — and they agree only because the registry
-        # refuses, at import, a record declaring a MIGRATED capability in `core_provides`.
-        # Without that rule the predicate approved authorship for a shape the seam then refused
-        # with `RunnerRenderUnavailable`, which no clause here catches: a render-kill reached
-        # through a legal declaration.
+        # to provide `runner_render` — but that is a DECLARATION question, and the seam asks
+        # whether it can actually dispatch: whether the record's package really carries the
+        # capability. Nothing can make those identical, because the registry must not import a
+        # backend at declaration time, so a declaration that outruns its package is only
+        # discovered when something loads it. This is handled below rather than declared
+        # impossible; two earlier versions of this comment declared it impossible and were
+        # wrong.
         language = _ir_language(ir)
         infra = self._infra_direct_deps(ir)
         if len(infra) != 1:
@@ -5573,7 +5573,25 @@ class Conductor:
                     f"stale-IR false drift, rebuild the harness (run_workflow.py --with-deps) to "
                     f"stamp source_ir_id and bind the pin to the source's origin IR]") from e
             raise
-        runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
+        except RunnerRenderUnavailable as e:
+            # The declaration/tree gap, named where it lands. `_conductor_authors_runner`
+            # approved authorship on a DECLARATION and the seam cannot dispatch on it — a
+            # registry record that outruns its package, which nothing can catch at declaration
+            # time. Routed to transport fail_closed as a build precondition (the operator fixes
+            # the record or the package), NOT to a Generate content retry: no re-authored model
+            # would change the answer. Without this clause it reached the conductor's generic
+            # handler and was reported as a render failure, which points a reader at the IR.
+            raise RuntimeError(
+                f"host render for {refs.node_key}: the registry says this repository renders a "
+                f"runner for language {language!r}, but the backend cannot be dispatched to: "
+                f"{e}") from e
+        try:
+            runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
+        except RunnerRenderUnavailable as e:  # same ground, second call into the seam
+            raise RuntimeError(
+                f"host render for {refs.node_key}: the registry says this repository renders a "
+                f"runner for language {language!r}, but the backend cannot be dispatched to: "
+                f"{e}") from e
         path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
