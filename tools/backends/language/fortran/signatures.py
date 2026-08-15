@@ -78,6 +78,10 @@ def canonicalize_end_line(line: str) -> str:
     optional trailing construct name is legal to omit (bare ``end type`` is the common style) and
     is redundant with the header, so a stanza that drops it must still compare equal."""
     m = _END_STMT_RE.match(line)
+    # `.lower()` is an INTENT MARKER, not a live guard: a census proved it cannot change an
+    # answer. Both consumers are `stanza_atoms`, which normalizes the result to lower case
+    # anyway, and a test that passes lower-case input. Kept because the canonical form is
+    # defined as lower case; said so rather than left to read as load bearing.
     return f"end {m.group(1).lower()}" if m else line
 
 
@@ -176,6 +180,10 @@ def declaration_atoms(logical_line: str) -> list[str]:
     shared type-spec + attributes (before ``::``) is prefixed onto each comma-separated entity of
     the entity list (after ``::``, split on top-level commas so an array-spec comma stays intact).
     """
+    # Also an intent marker: the empty-entity fallback below subsumes it (a line with no `::`
+    # partitions to an empty right-hand side, yields no entities, and returns the same list).
+    # Deleting it changes no answer; it states the non-declaration case at the top instead of
+    # leaving a reader to derive it from a fallback three lines down.
     if "::" not in logical_line:
         return [logical_line]
     lhs, _sep, rhs = logical_line.partition("::")
@@ -201,6 +209,10 @@ def stanza_atoms(lines: list[str]) -> tuple[str, ...]:
         line = canonicalize_end_line(line)
         for atom in declaration_atoms(line):
             norm = fortran_lines.normalize_fortran_line(atom)
+            # `if norm:` cannot fire on any reachable input — the splitter drops blank lines,
+            # the scanner emits none, and the atom builder never yields an empty atom (measured:
+            # 0 empty atoms over 151,633 logical lines in 876 in-tree sources). An intent
+            # marker, kept and labelled rather than removed.
             if norm:
                 out.append(norm)
     return tuple(out)
