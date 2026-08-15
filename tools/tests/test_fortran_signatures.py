@@ -229,71 +229,129 @@ class FortranStanzaParserTests(unittest.TestCase):
     _MUST_LOWER_NAMES = ("hx__foo", "A1_b", "x")
     _HEADER_TAILS = ("(a)", "(a, b) result(s)", "()")
 
-    #: Tokens NEITHER pattern accepts today. They lower nothing now — that is the point: each is a
-    #: shape one pattern could plausibly grow without the other, and on that day it starts
-    #: reaching the containment assertion. `$`/`-`/`.` are identifier shapes; both patterns use the
-    #: byte-identical `[A-Za-z0-9_]+` today, so they CANNOT differ until one is widened. (An
-    #: earlier comment claimed they "differ between the two character classes", which a census
-    #: measured false.) Verified live: adding `$` to the lowering class alone, or `operator`, or
-    #: `impure`, each makes this test fail.
+    #: Tokens NEITHER pattern accepts today. Each is a shape one pattern could plausibly grow
+    #: without the other; while neither has it, the test asserts both REFUSE it, so a one-sided
+    #: widening is caught on the day it happens rather than whenever someone thinks to probe it.
     _DIVERGENCE_PREFIXES = ("impure ", "module ")
     _DIVERGENCE_KEYWORDS = ("operator", "submodule", "interface", "procedure")
-    _DIVERGENCE_NAMES = ("a$b", "a-b", "a.b")
 
-    def _assert_containment(self, header: str) -> bool:
-        """True when the lowering pattern accepted `header`; asserts the two patterns agree."""
+    #: Identifier shapes outside `[A-Za-z0-9_]`. These are NOT symmetric probes, which is measured,
+    #: not assumed: the splitter has no end anchor — it must find a header inside a longer line —
+    #: so `subroutine a$b(a)` matches it, reading the name as `a`, while the anchored lowering
+    #: pattern refuses the whole header. That asymmetry is by design and pre-existing; it is
+    #: asserted below in the shape it actually has, so that either half changing becomes visible.
+    #: (An earlier comment called these "shapes that differ between the two character classes" —
+    #: both classes are byte-identical, so the claim was false; and a later version asserted both
+    #: patterns refuse them, which the measurement above disproves.)
+    _UNANCHORED_ASYMMETRY_NAMES = ("a$b", "a-b", "a.b")
+
+    def _assert_patterns_agree(self, header: str) -> bool:
+        """Assert both patterns answer the same on a WELL-FORMED header; return whether they took it.
+
+        Agreement in BOTH directions, because both disagreements change behaviour:
+
+        * parser-only — a signature the gates lower but the splitter never files as a stanza, so it
+          is never compared;
+        * splitter-only — a stanza with no lowering. Measured: adding `impure` to the splitter
+          alone turns `impure subroutine hx__f(a)` from silently ignored into a hard
+          `SignatureParseError`. An earlier version of this test asserted one-way containment and
+          justified it by calling the splitter-only direction "strictly safe", which a reviewer
+          measured false — while `signatures.py`'s own comment beside `_PROC_HEADER_RE` said the
+          opposite. The one-way version was itself a correction of a set-equality version that
+          compared regex SOURCE TEXT; what was wrong there was the introspection, not the
+          direction.
+
+        The asymmetry the patterns legitimately have — the splitter has no end anchor, so it also
+        matches a malformed tail — is kept out by probing well-formed headers only.
+        """
         from tools.backends.language.fortran.signatures import (
             _IFACE_PROC_START, _PROC_HEADER_RE)
 
         lowered = _PROC_HEADER_RE.match(header)
+        found = _IFACE_PROC_START.match(header)
+        self.assertEqual(
+            lowered is not None, found is not None,
+            f"the two procedure-header patterns disagree on {header!r}: "
+            f"the parser {'accepts' if lowered else 'rejects'} it and the splitter "
+            f"{'accepts' if found else 'rejects'} it. A header only one of them takes is either a "
+            f"signature that is never compared or a stanza that cannot be lowered.")
         if lowered is None:
             return False
-        found = _IFACE_PROC_START.match(header)
-        self.assertIsNotNone(
-            found, f"the parser lowers a header the splitter never finds: {header!r}")
         self.assertEqual(lowered.group(1).lower(), found.group(1).lower(),
                          f"the two patterns read a different keyword out of {header!r}")
         self.assertEqual(lowered.group(2), found.group(2),
                          f"the two patterns read a different symbol name out of {header!r}")
         return True
 
+    #: Tokens that must stay PROBED — in the must-lower lists or the divergence lists, either is
+    #: fine, but not deleted. Without this, emptying the divergence lists and widening one pattern
+    #: is invisible: a census constructed exactly that pair and the suite stayed green. Moving a
+    #: token from one list to the other is the deliberate act this permits; dropping it is not.
+    _MUST_STAY_PROBED_PREFIXES = ("impure ", "module ")
+    _MUST_STAY_PROBED_KEYWORDS = ("operator", "submodule", "interface", "procedure")
+
+    def test_the_probe_vocabulary_keeps_the_tokens_it_was_built_for(self) -> None:
+        prefixes = set(self._MUST_LOWER_PREFIXES) | set(self._DIVERGENCE_PREFIXES)
+        keywords = set(self._MUST_LOWER_KEYWORDS) | set(self._DIVERGENCE_KEYWORDS)
+        for token in self._MUST_STAY_PROBED_PREFIXES:
+            self.assertIn(token, prefixes,
+                          f"{token!r} stopped being probed by the header-pair test; a one-sided "
+                          f"widening on it would now be invisible")
+        for token in self._MUST_STAY_PROBED_KEYWORDS:
+            self.assertIn(token, keywords,
+                          f"{token!r} stopped being probed by the header-pair test; a one-sided "
+                          f"widening on it would now be invisible")
+
     def test_the_two_procedure_header_patterns_agree(self) -> None:
-        # `_PROC_HEADER_RE` (which lowers a header) must accept nothing `_IFACE_PROC_START` (which
-        # finds one) does not, and the two must read the same keyword and the same NAME out of it.
-        # A header the parser lowers but the splitter never finds is a signature that cannot be
-        # compared; a header where they extract different names is a stanza filed under one symbol
-        # and lowered as another.
-        #
-        # Three earlier versions of this test were wrong, each in a way this repository keeps
-        # paying for. The first sampled real §5.1 headers plus three hand probes, so a divergence
-        # in an unsampled alternative survived. The second scraped the prefix alternation out of
-        # the pattern SOURCE and compared for EQUALITY, which refused legitimate rewrites of either
-        # pattern AND refused the strictly-safe direction of widening the splitter alone, while
-        # seeing neither the keyword group nor the identifier class. The third asserted a floor of
-        # 20 against 288 actual, so the vocabulary could be gutted without failing.
-        #
-        # Now: every MUST-LOWER combination is required to lower — that is the bound, stated as a
-        # rule rather than as a count — and the divergence probes ride the same implication.
+        # Every MUST-LOWER combination has to be taken by both patterns — that is the bound,
+        # stated as a rule rather than as a count — and every divergence probe has to be REFUSED
+        # by both. The second half is what gives the divergence vocabulary teeth: an earlier
+        # version only rode them through a one-way implication, so emptying those lists hid a
+        # one-sided widening entirely.
         for prefix in self._MUST_LOWER_PREFIXES:
             for keyword in self._MUST_LOWER_KEYWORDS:
                 for name in self._MUST_LOWER_NAMES:
                     for tail in self._HEADER_TAILS:
                         header = f"{prefix}{keyword} {name}{tail}"
                         self.assertTrue(
-                            self._assert_containment(header),
+                            self._assert_patterns_agree(header),
                             f"a header that must lower does not: {header!r} — either the lowering "
                             f"pattern narrowed, or this vocabulary is stale")
 
-        for prefix in self._MUST_LOWER_PREFIXES + self._DIVERGENCE_PREFIXES:
-            for keyword in self._MUST_LOWER_KEYWORDS + self._DIVERGENCE_KEYWORDS:
-                for name in self._MUST_LOWER_NAMES + self._DIVERGENCE_NAMES:
-                    for tail in self._HEADER_TAILS:
-                        self._assert_containment(f"{prefix}{keyword} {name}{tail}")
+        for prefix in self._DIVERGENCE_PREFIXES:
+            for keyword in self._MUST_LOWER_KEYWORDS:
+                for name in self._MUST_LOWER_NAMES:
+                    self.assertFalse(
+                        self._assert_patterns_agree(f"{prefix}{keyword} {name}(a)"),
+                        f"{prefix!r} is listed as a token NEITHER pattern accepts, but both now do "
+                        f"— move it to _MUST_LOWER_PREFIXES deliberately")
+        for keyword in self._DIVERGENCE_KEYWORDS:
+            for name in self._MUST_LOWER_NAMES:
+                self.assertFalse(self._assert_patterns_agree(f"{keyword} {name}(a)"),
+                                 f"{keyword!r} is listed as accepted by neither pattern, but both "
+                                 f"now accept it")
+        # The one asymmetry the two patterns legitimately have, pinned in the shape it has: the
+        # unanchored splitter takes the leading valid identifier, the anchored parser refuses the
+        # header. If either half changes — the splitter gaining an anchor, or the parser widening
+        # its class — this fails and the change has to be deliberate.
+        from tools.backends.language.fortran.signatures import (
+            _IFACE_PROC_START, _PROC_HEADER_RE)
+
+        for name in self._UNANCHORED_ASYMMETRY_NAMES:
+            for keyword in self._MUST_LOWER_KEYWORDS:
+                header = f"{keyword} {name}(a)"
+                found = _IFACE_PROC_START.match(header)
+                self.assertIsNotNone(found, f"the splitter stopped finding {header!r}")
+                self.assertEqual(found.group(2), name.split(name[1])[0],
+                                 f"the splitter reads a different leading name out of {header!r}")
+                self.assertIsNone(_PROC_HEADER_RE.match(header),
+                                  f"the lowering pattern now accepts {header!r}; if that is "
+                                  f"intended, the splitter must gain the same shape")
 
         # The real §5.1 headers, as the corpus half: whatever the vocabulary above misses, the
-        # published surface still has to satisfy the same implication.
+        # published surface still has to satisfy the same agreement.
         for header in _real_section51_block().splitlines():
-            self._assert_containment(header)
+            self._assert_patterns_agree(header)
 
     def test_stanza_headers_are_case_insensitive(self) -> None:
         # Fortran keywords and identifiers are case-insensitive, so all four stanza patterns carry
@@ -394,6 +452,24 @@ class FortranStanzaParserTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(sorted(types), ["hx__outer"])
         self.assertEqual(len(types["hx__outer"]), 4)
+
+    def test_a_line_of_exotic_blanks_produces_no_atom(self) -> None:
+        # The scanner and the normalizer disagree about what "blank" means, deliberately: the
+        # scanner uses gfortran's blank set (space, tab, form feed) so that a U+00A0 stays CONTENT
+        # the way the compiler reads it, while the normalizer erases Python's `\s`, which is
+        # wider. A line holding only such a character therefore survives the scan and normalizes
+        # to the empty string, and `stanza_atoms` must drop it: an empty atom breaks the ordered
+        # stanza comparison and raises a §5.1 drift violation on source gfortran accepts.
+        #
+        # Recorded as a live guard after a census labelled it unreachable and a reviewer disproved
+        # that by construction. Nothing in the tree contains such a line, so this is the only
+        # observer.
+        for blank in ("\xa0", "\v", "\x85", "\u2028"):
+            with self.subTest(blank=repr(blank)):
+                self.assertEqual(normalize_fortran_line(blank), "")
+                self.assertEqual(
+                    stanza_atoms(["type :: hx__t", blank, "  integer :: a", "end type hx__t"]),
+                    stanza_atoms(["type :: hx__t", "  integer :: a", "end type hx__t"]))
 
     def test_atoms_fold_a_tab_like_any_other_whitespace(self) -> None:
         # `normalize_fortran_line` erases `\s+`, not just spaces. Narrowing it to ` +` left the
@@ -886,6 +962,11 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
         # derivation missed it at first because it filtered on the `language.fortran` prefix; a
         # reviewer reinstated a back-import here with the whole suite green.
         "tools/backends/registry.py",
+        # The two package `__init__` modules. They execute on every import of anything below them,
+        # so they are on the cycle path even though no import statement names them directly — and
+        # the derivation could not see them while it mapped a dotted name only to `<name>.py`.
+        "tools/backends/__init__.py",
+        "tools/backends/language/fortran/__init__.py",
     )
 
     #: The importer callables whose LITERAL first argument the source check reads. Same set, and
@@ -953,9 +1034,17 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
         for _lineno, name in self._imported_names(validator):
             if not name.startswith("tools.backends"):
                 continue
-            rel = name.replace(".", "/") + ".py"
-            if (REPO_ROOT / rel).is_file():
-                imported_backend_modules.add(rel)
+            # A dotted name is either a module (`x/y.py`) or a PACKAGE (`x/y/__init__.py`).
+            # Mapping only to the first left both `tools/backends/__init__.py` and
+            # `tools/backends/language/fortran/__init__.py` underived and unscanned — and the
+            # validator's own `from tools.backends.language.fortran import lines` contributes
+            # exactly the package name, so the package on the import path this check guards was
+            # invisible to it. A reviewer planted a lazy back-import in each and the suite stayed
+            # green: the same hole this check was written to close, one directory up.
+            for rel in (name.replace(".", "/") + ".py",
+                        name.replace(".", "/") + "/__init__.py"):
+                if (REPO_ROOT / rel).is_file():
+                    imported_backend_modules.add(rel)
         del tree
         self.assertTrue(imported_backend_modules, "the validator imports no backend module at all")
         self.assertLessEqual(
