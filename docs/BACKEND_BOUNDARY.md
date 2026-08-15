@@ -125,9 +125,10 @@ the binding. A neutral document must not state the binding itself.
     `tools/validate_pipeline_semantics.py`, and `tools/workflow_conductor.py`'s authorship
     predicates, no longer spell a pair of their own — they ask `provides` for the capability they
     need and carry the registry's clause. They widen when the CAPABILITY is declared, which
-    asserts that inlined code in the neutral core already does that job for the value; until the
-    corresponding ledger area lands, declaring one is how a new backend's host-side work is
-    admitted, and the declaration is the thing to review.
+    asserts that code in this repository already does that job for the value — inlined in the
+    neutral core (`core_provides`) or in the record's own package (`backend_provides`); declaring
+    one is how a new backend's host-side work is admitted, and the declaration is the thing to
+    review.
   - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
     allowlist, the compiler-driver families and the identifier bound are read from the language
     backend through the registry. The bundle SCHEMA (`spec/schema/generate/`) still carries its

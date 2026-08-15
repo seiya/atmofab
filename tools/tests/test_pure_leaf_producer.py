@@ -384,7 +384,7 @@ class PureBundleViolationsTests(unittest.TestCase):
             vps._validate_checks_source_files(execution, "fortran", src, [], v)
             self.assertEqual([s for s in v if "publish the fixed ABI" in s], [], v)
 
-    def test_a_bundle_language_with_no_runner_renderer_is_refused_not_waived(self) -> None:
+    def test_a_bundle_language_with_no_runner_render_capability_is_refused(self) -> None:
         """The refusal branch of the ABI gate, driven — it is corpus-dependent, not unreachable.
 
         The two vps call sites of this seam take their language from `_ir_m3c_language`, which

@@ -44,7 +44,7 @@ from tools.backends.language.fortran import bundle
 # Neutral policy this emitter also enforces at render time.
 #
 # `RenderError` is the seam's class, not this module's, and importing it is what makes the
-# neutral `except RenderError:` clauses at the three call sites work: a class obtained through
+# neutral `except RenderError:` clause in the conductor work: a class obtained through
 # `registry.load` is a different object to the one an `except` in a neutral module names.
 # `CASE_ID_TOKEN_RE` is the safe-token grammar a case_id must obey — it reaches a filesystem
 # path and an argv, neither of which is a language question.

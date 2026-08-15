@@ -12113,8 +12113,9 @@ def _validate_toolchain_backend_supported(
     besides on a physics node) and carries the registry's clause. What it refuses therefore
     follows the registry rather than a pair written here — but note what that does and does not
     mean. Registering a backend does not widen this gate; DECLARING THE CAPABILITY does, and a
-    capability declaration asserts that inlined code in the neutral core already does that job
-    for the value. So the gate cannot be widened past what the host can actually author, which
+    capability declaration asserts that code in this repository already does that job for the
+    value — inlined in the neutral core, or in the backend's own package (docs/BACKEND_BOUNDARY.md
+    §Design Policy; the two are separate declarations and this gate is blind to which). So the gate cannot be widened past what the host can actually author, which
     is the fail-open the previous version of this paragraph would have created had it been
     routed through membership: `_write_makefile` emits GNU make syntax with Fortran compile
     rules, and a predicate that answered "implemented?" would have handed a second build
