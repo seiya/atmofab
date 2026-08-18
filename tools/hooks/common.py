@@ -57,8 +57,9 @@ WRITE_HINT = (
     "output_manifests/<agent_run_id>.json.allowed_file_tool_paths "
     "(guarded-apply-patch is deprecated). The MCP-owned command_log.jsonl is "
     "written only by the build-runtime MCP server and is never file-tool-writable. "
-    "For temp files, write directly under the literal allowed_tmp_root path "
-    "(workspace/tmp/<agent_run_id>/...); do NOT use `export TMPDIR=...`, "
+    "For temp files, use the Edit/Write tool under the literal allowed_tmp_root "
+    "path (workspace/tmp/<agent_run_id>/...); a Bash redirect write matches no "
+    "committed permissions.allow rule. Do NOT use `export TMPDIR=...`, "
     "`jq -er ...`, or any bootstrap Bash (Claude Code session sandbox approval "
     "would stall the workflow). See docs/AGENT_CONTRACT.md "
     "for the tmp-area contract."
@@ -3693,8 +3694,8 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                 action=HookDecisionAction.BLOCK,
                 reason=(
                     f"blocked: command touches {offending!r} which is forbidden. "
-                    "/dev/shm reads/writes are not permitted; write under the literal "
-                    "allowed_tmp_root path (workspace/tmp/<agent_run_id>/) for temporary files. "
+                    "/dev/shm reads/writes are not permitted; use the Edit/Write tool under the "
+                    "literal allowed_tmp_root path (workspace/tmp/<agent_run_id>/) for temporary files. "
                     "See docs/AGENT_CONTRACT.md."
                 ),
                 continue_processing=False,
@@ -4223,7 +4224,7 @@ def validate_write_access(
             "write_under": f"{tmp_root_str}/...",
             "docs_ref": "docs/AGENT_CONTRACT.md",
             "note": (
-                "Write under the literal allowed_tmp_root path "
+                "Write under the literal allowed_tmp_root path with the Edit/Write tool "
                 f"({tmp_root_str}/...). Do not use `export TMPDIR=...`, `jq -er ...`, "
                 "`${TMPDIR:-fallback}` syntax, or hardcoded /tmp//dev/shm paths."
             ),

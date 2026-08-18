@@ -112,7 +112,7 @@ workspace/
 │
 ├── tmp/
 │   └── <agent_run_id>/                            each agent's allowed_tmp_root (referenced directly by literal path)
-│       └── ...                                    (the place for heredoc / mktemp / intermediate scripts)
+│       └── ...                                    (the place for intermediate scripts and scratch files, written with the `Write` tool)
 │       # note: place it directly under workspace/, not under orchestration_id. The
 │       # allowed_tmp_root the manifest declares is "workspace/tmp/<agent_run_id>", and
 │       # writing to workspace/orchestrations/<orch>/tmp/... is rejected by output_manifest_write_guard.

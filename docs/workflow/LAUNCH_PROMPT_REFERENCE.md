@@ -113,17 +113,15 @@ A re-submission with `repair_strategy=reuse` is limited to a diff fix against th
 
 **Correct temporary-file write:**
 
-- **`.json` / `.txt` files**: write `workspace/tmp/<agent_run_id>/<name>.{json,txt}` directly with the `Write` tool. Avoid a Bash heredoc redirect because the quoted form `cat > "path" <<EOF` has the known risk that the hook's file_path parser mis-detects `'\"'` as a path.
-- **`.py` / `.yaml` / `.sh` etc.**: a Bash heredoc is OK.
+- **Every extension alike** (`.py` / `.yaml` / `.sh` / `.json` / `.txt`): write `workspace/tmp/<agent_run_id>/<name>` directly with the `Write` tool. The hook authorizes a write whose target is under `allowed_tmp_root` before any extension logic and raises it to `permissionDecision=allow`, so the write needs no interactive permission. A Bash redirect write (`cat > ... <<EOF`) is not a scratch-write route: it matches no committed `permissions.allow` rule, so it is refused at the permission layer and the refusal costs the agent an attempt.
+- The one Bash redirect that remains correct is a stderr capture appended to an already-permitted command; it rides that command's `permissions.allow` entry rather than standing on its own.
 
 ```bash
-# saving gate stderr (a redirect to a non-.json/.txt path is safe)
+# saving gate stderr (rides the allowlisted `python3 tools/orchestration_runtime.py *` command)
 python3 tools/orchestration_runtime.py run-gate --gate ... 2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt
 
-# a temporary python script
-cat > workspace/tmp/<agent_run_id>/build_patch.py <<'EOF'
-# script body ...
-EOF
+# a temporary python script: create workspace/tmp/<agent_run_id>/build_patch.py with the Write
+# tool, then run it (`Bash(python3 workspace/tmp/*)` is allowlisted)
 python3 workspace/tmp/<agent_run_id>/build_patch.py
 ```
 
