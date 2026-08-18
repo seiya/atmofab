@@ -2883,30 +2883,43 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
 
     # Satisfied by naming the file tool, or by deferring to the canonical document
     # instead of restating the rule (this repository treats a restated rule as a
-    # twin document, so a pointer must remain a legal answer).
-    _NAMES_THE_ROUTE = re.compile(r"(?:Edit\s*/\s*)?`?Write`?\s+tool|AGENT_CONTRACT\.md")
+    # twin document, so a pointer must remain a legal answer). Tolerates the
+    # emphasis spellings a normal doc edit produces: **Write** tool, `Write`-tool.
+    _NAMES_THE_ROUTE = re.compile(
+        r"(?:Edit\s*/\s*)?[`*]*Write[`*]*[-\s]+tool|AGENT_CONTRACT\.md"
+    )
 
-    # A line that marks the form it shows as refused is documenting the rule, not
-    # teaching the route. Without this, the rule could not be illustrated by an NG
-    # example — the natural way to strengthen it.
+    # A span introduced by an explicit refusal marker is an NG example — the natural
+    # way to strengthen the rule — not an instruction. Deliberately NARROW (the 40
+    # characters immediately before the span): a marker anywhere on the line exempts
+    # every other span on it, and on these surfaces every line carrying the tmp rule
+    # also carries the bootstrap-Bash prohibition.
     _MARKS_AS_REFUSED = re.compile(
-        r"\bNG\b|forbidden|blocked|refused|is not a scratch-write route"
-        r"|matches no committed|must not|never",
+        r"(?:\bNG\b|\bnot\b|\bnever\b|forbidden|blocked|refused|instead of)[^`]{0,40}$",
         re.IGNORECASE,
     )
 
     @staticmethod
-    def _allowlisted_bash_prefixes(repo_root: Path) -> list[str]:
-        """The Bash prefixes `.claude/settings.json` permits, from the file itself."""
+    def _allowlisted_bash_matchers(repo_root: Path) -> list[re.Pattern[str]]:
+        """The Bash commands `.claude/settings.json` permits, read from the file.
+
+        A `*` is a wildcard wherever it appears, not only at the end: an earlier
+        version stripped a trailing `*` and prefix-matched the rest, which made
+        `Bash(jq -er * workspace/tmp/*)` unmatchable and refused a genuinely
+        permitted command.
+        """
         settings = json.loads(
             (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
         )
-        prefixes = []
+        matchers = []
         for entry in settings["permissions"]["allow"]:
             if not entry.startswith("Bash(") or not entry.endswith(")"):
                 continue
-            prefixes.append(entry[len("Bash(") : -1].rstrip("*"))
-        return prefixes
+            pattern = entry[len("Bash(") : -1]
+            matchers.append(
+                re.compile("".join(".*" if p == "*" else re.escape(p) for p in re.split(r"(\*)", pattern)))
+            )
+        return matchers
 
     @staticmethod
     def _command_spans(text: str) -> list[tuple[int, str, bool, str]]:
@@ -2922,17 +2935,44 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         lines = text.splitlines()
         fenced = False
         for n, line in enumerate(lines, start=1):
-            if line.lstrip().startswith("```"):
+            if line.lstrip().startswith(("```", "~~~")):
                 fenced = not fenced
                 continue
             if fenced:
-                spans.append((n, line, True, "\n".join(lines[max(0, n - 3) : n])))
+                spans.append((n, line, True, "\n".join(lines[max(0, n - 3) : n - 1])))
                 continue
             for m in re.finditer(r"`([^`]+)`", line):
                 spans.append(
                     (n, m.group(1), False, line[max(0, m.start() - 120) : m.start()])
                 )
         return spans
+
+    def test_tmpdir_env_form_is_not_a_write_path(self) -> None:
+        """PIN: `${TMPDIR}/x` is not the scratch route; only the literal path is.
+
+        docs/workflow/LAUNCH_PROMPT_REFERENCE.md states this as a measured mechanism
+        claim, and the branch's other mechanism claims went unpinned. The guard
+        compares the path it is handed against allowed_tmp_root verbatim; the Write
+        tool takes a path, not a shell word, so nothing expands the variable.
+        """
+        for spelling in ("${TMPDIR}/work.py", "$TMPDIR/work.py"):
+            with self.subTest(spelling=spelling), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                orch = "orch_tmpdir_env_001"
+                run_id = "step_run_tmpdir_env_001"
+                self._setup_orchestration_for_write(
+                    repo_root,
+                    orch=orch,
+                    run_id=run_id,
+                    allowed_output_paths=["workspace/ir/p/spec.ir.yaml"],
+                    allowed_file_tool_paths=["workspace/ir/p/spec.ir.yaml"],
+                    allowed_tmp_root=f"workspace/tmp/{run_id}",
+                )
+                code, body = self._invoke_write_hook(
+                    orch=orch, repo_root=repo_root, file_path=spelling
+                )
+                self.assertEqual(code, 2, f"{spelling} must not be write-eligible")
+                self.assertEqual(body.get("decision"), "block")
 
     def test_instruction_surfaces_admit_only_permitted_redirects_into_the_tmp_root(
         self,
@@ -2950,21 +2990,30 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         legitimate captures and missed `echo`/`printf`; reading the allowlist removes
         the guesswork.
 
-        Sample, not pin, on three counts: it reads an enumerated file list, it only
-        sees commands written inside backticks or a fenced block, and a span whose
-        introducing prose marks it as refused is skipped (otherwise the rule could not
-        be illustrated by an NG example — and the exemption is read from the 120
-        characters before the span, not the line, because these lines always contain
-        the bootstrap-Bash prohibition).
+        SCOPE, stated because three versions of this check were each defeated in a
+        new form. It answers ONE question: does a documented command carry a redirect
+        into the tmp root that the permission layer would refuse? It does NOT answer
+        "does this document teach shell-authored scratch files", which is not decidable
+        from text — `python3 gen.py > work.py` and `cat tpl > work.py` are permitted
+        commands that also author a scratch file, and both are admitted here. That
+        second question has no static instrument in this branch; it is what review of
+        a documentation change is for.
+
+        Further declared limits, each measured: it reads an enumerated file list; it
+        only sees commands inside backticks, a fenced block (``` or ~~~), so a route
+        taught in bare prose or a 4-space-indented block is invisible; a span split
+        across two backtick runs is invisible; and a span introduced by an explicit
+        refusal marker in the 40 characters before it is skipped, so the rule can be
+        shown as an NG example.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        prefixes = self._allowlisted_bash_prefixes(repo_root)
+        matchers = self._allowlisted_bash_matchers(repo_root)
         # `tee PATH` writes PATH with no redirect operator, so it needs its own
         # pattern; it is judged by the same rule (no allow entry names `tee`, so a
         # `| tee workspace/tmp/...` capture is refused as surely as `cat >` is).
         redirect = re.compile(
-            r"\d?>>?\|?\s*[\"\']?(workspace/tmp\S*)"
-            r"|(?<=tee )(?:-\S+ )*[\"\']?(workspace/tmp\S*)"
+            r"\d?>>?\|?\s*[\"\']?(?:\./)?(workspace/tmp\S*)"
+            r"|(?<=tee )(?:-\S+ )*[\"\']?(?:\./)?(workspace/tmp\S*)"
         )
         for rel, _anchor, _scope in self._SCRATCH_SURFACES:
             with self.subTest(surface=rel):
@@ -2976,17 +3025,25 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 ):
                     if self._MARKS_AS_REFUSED.search(intro):
                         continue
+                    continued = is_fenced and intro.rstrip().endswith("\\")
                     for segment in re.split(r"\|\||&&|[;|]", span):
                         m = redirect.search(segment)
                         if not m:
                             continue
                         command = segment[: m.start()].strip()
+                        # A prompt marker and leading `VAR=value` assignments are
+                        # not part of the command the allowlist matches.
+                        command = re.sub(r"^\$\s+", "", command)
+                        command = re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+", "", command)
+                        if not command and continued:
+                            # The command is on the previous line, joined by a `\`.
+                            continue
                         if not command and not is_fenced:
                             # An inline backtick quoting the redirect idiom alone
                             # ("capture it with `2>workspace/tmp/...`") names no
                             # command to judge. Residue: so does a bare redirect.
                             continue
-                        if any(command.startswith(p) for p in prefixes):
+                        if any(m.match(command) for m in matchers):
                             continue
                         offenders.append(f"{rel}:{n}: {segment.strip()}")
                 self.assertEqual(offenders, [], "\n".join(offenders))
@@ -3004,9 +3061,17 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
 
         A pointer to docs/AGENT_CONTRACT.md satisfies it as well as a restatement: the
         rule is that a leaf can reach the route from this surface, not that seven
-        documents repeat it. Declared residue of that choice, measured: a surface that
-        keeps its pointer AND states a different route in prose (no command spelling,
-        so the companion check sees nothing either) passes both halves.
+        documents repeat it.
+
+        SCOPE: this asks whether the statement NAMES the route, never what it says
+        about it. A sentence reading "do NOT use the `Write` tool, use a heredoc"
+        passes, and so does a surface that keeps a pointer while stating a different
+        route in prose. Polarity is a semantic property and no version of this check
+        reached it; four versions were defeated, each in a new form, which is why the
+        limit is written down here instead of being narrowed a fifth time. Rewording
+        an anchor fails the check by design — the statement moved, so it should be
+        re-read — but that also means ordinary rewording of these seven sentences
+        costs a test update.
         """
         repo_root = Path(__file__).resolve().parents[2]
         for rel, anchor, scope in self._SCRATCH_SURFACES:
@@ -3014,22 +3079,31 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 path = repo_root / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
                 stated = []
-                for line in path.read_text(encoding="utf-8").splitlines():
+                doc_lines = path.read_text(encoding="utf-8").splitlines()
+                for n, line in enumerate(doc_lines):
                     if anchor not in line:
                         continue
                     if scope == "row":
                         cells = [c for c in line.split("|") if c.strip()]
                         stated.append(cells[-1])
                     else:
-                        i = line.index(anchor)
-                        stated.append(line[i : i + self._STATEMENT_WINDOW])
+                        # Join the next line first: a reflow that ends the line at the
+                        # anchor would otherwise read an empty statement.
+                        joined = " ".join([line] + doc_lines[n + 1 : n + 2])
+                        i = joined.index(anchor)
+                        stated.append(joined[i : i + self._STATEMENT_WINDOW])
                 self.assertTrue(
                     stated, f"{rel} no longer states the scratch rule ({anchor!r})"
                 )
-                self.assertTrue(
-                    any(self._NAMES_THE_ROUTE.search(s) for s in stated),
+                # every occurrence, not any: a second statement of the same rule is
+                # a second answer to the same question, and the leaf reads whichever
+                # one it lands on.
+                unrouted = [s for s in stated if not self._NAMES_THE_ROUTE.search(s)]
+                self.assertEqual(
+                    unrouted,
+                    [],
                     f"{rel} states the scratch rule without naming the write route: "
-                    + " || ".join(s[:160] for s in stated),
+                    + " || ".join(s[:160] for s in unrouted),
                 )
 
     def test_bash_redirect_to_managed_artifact_is_blocked(self) -> None:

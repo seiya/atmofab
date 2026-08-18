@@ -57,9 +57,10 @@ WRITE_HINT = (
     "output_manifests/<agent_run_id>.json.allowed_file_tool_paths "
     "(guarded-apply-patch is deprecated). The MCP-owned command_log.jsonl is "
     "written only by the build-runtime MCP server and is never file-tool-writable. "
-    "For temp files, use the Edit/Write tool under the literal allowed_tmp_root "
-    "path (workspace/tmp/<agent_run_id>/...); a Bash redirect write matches no "
-    "committed permissions.allow rule. Do NOT use `export TMPDIR=...`, "
+    "For temp files, use the Write tool under the literal allowed_tmp_root "
+    "path (workspace/tmp/<agent_run_id>/...); a Bash redirect that is itself the "
+    "command matches no committed permissions.allow rule. Do NOT use "
+    "`export TMPDIR=...`, "
     "`jq -er ...`, or any bootstrap Bash (Claude Code session sandbox approval "
     "would stall the workflow). See docs/AGENT_CONTRACT.md "
     "for the tmp-area contract."
@@ -3634,7 +3635,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                     hint_next = (
                         "Use the Read tool for the JSON file directly; if Python is "
                         "required, write a script to workspace/tmp/<agent_run_id>/x.py "
-                        "with the Edit/Write tool and run "
+                        "with the Write tool and run "
                         "`python3 workspace/tmp/<agent_run_id>/x.py` "
                         "(literal path, no $TMPDIR env reference needed)."
                     )
@@ -3698,7 +3699,7 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                 action=HookDecisionAction.BLOCK,
                 reason=(
                     f"blocked: command touches {offending!r} which is forbidden. "
-                    "/dev/shm reads/writes are not permitted; use the Edit/Write tool under the "
+                    "/dev/shm reads/writes are not permitted; use the Write tool under the "
                     "literal allowed_tmp_root path (workspace/tmp/<agent_run_id>/) for temporary files. "
                     "See docs/AGENT_CONTRACT.md."
                 ),
@@ -4228,7 +4229,7 @@ def validate_write_access(
             "write_under": f"{tmp_root_str}/...",
             "docs_ref": "docs/AGENT_CONTRACT.md",
             "note": (
-                "Write under the literal allowed_tmp_root path with the Edit/Write tool "
+                "Write under the literal allowed_tmp_root path with the Write tool "
                 f"({tmp_root_str}/...). Do not use `export TMPDIR=...`, `jq -er ...`, "
                 "`${TMPDIR:-fallback}` syntax, or hardcoded /tmp//dev/shm paths."
             ),
@@ -4273,8 +4274,8 @@ def validate_write_access(
                 "artifacts. Write the artifact with the Edit/Write tool to a path in "
                 "output_manifest allowed_file_tool_paths. Scratch files go under "
                 f"allowed_tmp_root (workspace/tmp/{agent_run_id}/...), written with "
-                "the Edit/Write tool too: no committed permissions.allow rule "
-                "matches a Bash redirect write."
+                "the Write tool too: no committed permissions.allow rule matches a "
+                "Bash redirect that is itself the command."
             ),
             continue_processing=False,
             audit_detail={

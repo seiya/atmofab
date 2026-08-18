@@ -2225,7 +2225,7 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         # match no matter what the temp-file half says.
         self.assertIn("For temp files", WRITE_HINT)
         temp_half = WRITE_HINT.split("For temp files", 1)[1]
-        self.assertIn("Edit/Write tool", temp_half)
+        self.assertIn("Write tool", temp_half)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._write_manifest(
@@ -2244,7 +2244,59 @@ class FixHintInAuditDetailTests(unittest.TestCase):
             )
         self.assertEqual(decision.action, HookDecisionAction.BLOCK)
         note = ((decision.audit_detail or {}).get("fix_hint") or {}).get("note", "")
-        self.assertIn("Edit/Write tool", note)
+        self.assertIn("Write tool", note)
+
+    def test_python_inline_write_remedy_names_the_scratch_route(self) -> None:
+        """The json_read remedy tells a leaf to write a script; it must say how.
+
+        Same rule as [the WRITE_HINT / fix_hint / dev-shm pins]: a remedy that names a
+        path but no route leaves the leaf to pick one, and the one it just used is the
+        one that failed. This remedy is the likeliest place to land there — it fires
+        when a leaf reached for `python3 -c` and is being sent to a scratch script.
+        """
+        from tools.hooks.common import evaluate_common_policy
+        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            decision = evaluate_common_policy(
+                HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE,
+                    backend="claude",
+                    payload={"command": "python3 -c \"import json; json.loads(x)\""},
+                    command="python3 -c \"import json; json.loads(x)\"",
+                )
+            )
+        self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+        fix_hint = (decision.audit_detail or {}).get("fix_hint") or {}
+        self.assertIn("workspace/tmp/<agent_run_id>/x.py", fix_hint.get("next_command", ""))
+        self.assertIn("Write tool", fix_hint.get("next_command", ""))
+
+    def test_managed_artifact_refusal_names_the_scratch_route(self) -> None:
+        """The managed-artifact refusal says where scratch goes; it must say how.
+
+        It read "Bash may only write scratch under allowed_tmp_root", which named Bash
+        as the scratch route — the very thing this refusal is turning the leaf away
+        from. Pins that the reason names the Write tool, not the wording around it.
+        """
+        from tools.hooks.common import validate_write_access
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_manifest(
+                repo_root,
+                orchestration_id="orchMA",
+                agent_run_id="runMA",
+                allowed_output_paths=["workspace/ir/p/spec.ir.yaml"],
+                allowed_tmp_root="workspace/tmp/runMA",
+            )
+            decision = validate_write_access(
+                repo_root,
+                "orchMA",
+                "runMA",
+                "workspace/ir/p/spec.ir.yaml",
+                tool_name="Bash",
+            )
+        self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+        self.assertIn("Write tool", decision.reason or "")
 
     def test_bash_redirect_to_tmpdir_is_allowed(self) -> None:
         """Bash redirect into allowed_tmp_root stays ALLOW at the hook layer.
@@ -2326,7 +2378,7 @@ class DevShmWriteBlockTests(unittest.TestCase):
         """
         decision = self._call("cp workspace/outputs/result.json /dev/shm/result.json")
         self.assertEqual(decision.action, HookDecisionAction.BLOCK)
-        self.assertIn("Edit/Write tool", decision.reason or "")
+        self.assertIn("Write tool", decision.reason or "")
 
     def test_blocks_mv_to_dev_shm(self) -> None:
         decision = self._call("mv /tmp/result.json /dev/shm/result.json")
