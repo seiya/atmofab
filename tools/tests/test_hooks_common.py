@@ -2207,8 +2207,14 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         self.assertNotIn("next_command", fix_hint)
 
     def test_bash_redirect_to_tmpdir_is_allowed(self) -> None:
-        """Bash redirect into allowed_tmp_root remains permitted (TMPDIR is the
-        sanctioned scratch area for heredocs and patch staging)."""
+        """Bash redirect into allowed_tmp_root stays ALLOW at the hook layer.
+
+        Defense-in-depth pin, deliberately kept after issue #73 moved the contract's
+        scratch-write route to the Write tool: the write guard authorizes any target
+        under allowed_tmp_root regardless of tool, so a Bash redirect there is not what
+        this layer refuses. What the contract no longer offers a leaf is that ROUTE (no
+        committed permissions.allow rule matches it), which is a permission-layer fact
+        this hook never sees."""
         from tools.hooks.common import validate_write_access
         import tempfile
         from pathlib import Path

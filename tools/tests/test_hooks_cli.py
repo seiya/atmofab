@@ -6,6 +6,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -2648,21 +2649,23 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         run_id: str,
         allowed_output_paths: list[str],
         allowed_file_tool_paths: list[str],
+        allowed_tmp_root: str | None = None,
     ) -> None:
         orch_root = repo_root / "workspace" / "orchestrations" / orch
         (orch_root / "output_manifests").mkdir(parents=True, exist_ok=True)
         (orch_root / "read_manifests").mkdir(parents=True, exist_ok=True)
         (orch_root / "active_child_agent_run_id.txt").write_text(run_id, encoding="utf-8")
+        manifest: dict = {
+            "orchestration_id": orch,
+            "agent_run_id": run_id,
+            "allowed_output_paths": allowed_output_paths,
+            "allowed_file_tool_paths": allowed_file_tool_paths,
+            "write_roots": ["workspace/ir"],
+        }
+        if allowed_tmp_root is not None:
+            manifest["allowed_tmp_root"] = allowed_tmp_root
         (orch_root / "output_manifests" / f"{run_id}.json").write_text(
-            json.dumps(
-                {
-                    "orchestration_id": orch,
-                    "agent_run_id": run_id,
-                    "allowed_output_paths": allowed_output_paths,
-                    "allowed_file_tool_paths": allowed_file_tool_paths,
-                    "write_roots": ["workspace/ir"],
-                }
-            ),
+            json.dumps(manifest),
             encoding="utf-8",
         )
 
@@ -2816,6 +2819,77 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 )
                 self.assertEqual(code, 2)
                 self.assertEqual(body.get("decision"), "block")
+
+    def test_write_tool_auto_approves_scratch_under_allowed_tmp_root(self) -> None:
+        """PIN: a Write under `allowed_tmp_root` is auto-approved for EVERY extension.
+
+        This pins behavior that predates issue #73 (it passes on the parent commit); the
+        issue only changed which route the contract instructs. It is the enforcement-side
+        witness that the contract's single scratch route is admitted without an
+        interactive permission decision, unlike a Bash redirect write, which matches no
+        committed `permissions.allow` rule.
+
+        The extension sweep pins that the tmp-root match precedes every extension rule in
+        `_validate_write_access` — it is NOT a sample of a list of allowed extensions.
+        The path is deliberately absent from `allowed_file_tool_paths`, so only the
+        tmp-root branch can produce the allow.
+        """
+        for ext in ("py", "yaml", "sh", "json", "txt"):
+            with self.subTest(ext=ext), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                orch = "orch_tmp_scratch_001"
+                run_id = "step_run_tmp_scratch_001"
+                tmp_root = f"workspace/tmp/{run_id}"
+                scratch_path = f"{tmp_root}/work.{ext}"
+                self._setup_orchestration_for_write(
+                    repo_root,
+                    orch=orch,
+                    run_id=run_id,
+                    allowed_output_paths=["workspace/ir/p/spec.ir.yaml"],
+                    allowed_file_tool_paths=["workspace/ir/p/spec.ir.yaml"],
+                    allowed_tmp_root=tmp_root,
+                )
+                code, body = self._invoke_write_hook(
+                    orch=orch, repo_root=repo_root, file_path=scratch_path
+                )
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    (body.get("hookSpecificOutput") or {}).get("permissionDecision"),
+                    "allow",
+                    f"Write to {scratch_path} must be auto-approved, not merely allowed",
+                )
+
+    def test_instruction_surfaces_do_not_teach_bash_redirect_scratch_writes(self) -> None:
+        """SAMPLE (not a pin): the named instruction surfaces carry no `cat > workspace/tmp`.
+
+        A regex over an enumerated file list cannot assert the rule "no document instructs
+        a Bash redirect scratch write" — a new file, or a different spelling of the same
+        instruction, is out of its reach. It is a drift tripwire for the surfaces issue #73
+        rewrote. The stderr-capture form (`2>workspace/tmp/...`) is deliberately outside the
+        pattern: it rides an allowlisted command and stays sanctioned.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        surfaces = (
+            "docs/AGENT_CONTRACT.md",
+            "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+            "docs/RUNBOOK.md",
+            "docs/WORKSPACE_LAYOUT.md",
+            "tools/prompt_templates/step_agent.txt",
+            "tools/prompt_templates/substep_agent.txt",
+        )
+        pattern = re.compile(r"(?<![0-9])>\s*[\"\']?workspace/tmp")
+        for rel in surfaces:
+            with self.subTest(surface=rel):
+                path = repo_root / rel
+                self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
+                offenders = [
+                    f"{rel}:{n}: {line.strip()}"
+                    for n, line in enumerate(
+                        path.read_text(encoding="utf-8").splitlines(), start=1
+                    )
+                    if pattern.search(line)
+                ]
+                self.assertEqual(offenders, [], "\n".join(offenders))
 
     def test_bash_redirect_to_managed_artifact_is_blocked(self) -> None:
         """Phase-2: a Bash command that WRITES (file redirect) to a managed
