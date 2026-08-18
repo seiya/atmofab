@@ -173,7 +173,7 @@ never parses the source.
 | `internal_module` | an internal module (shared types, parameters, work arrays) | no |
 
 There is **no runner or glue role**: contract-boundary glue is host-rendered
-(`tools/runner_renderer.py`) and can never be bundle content. There is **no build or
+(host-rendered through `tools/host_render.py`) and can never be bundle content. There is **no build or
 script role**: this is the backbone of the no-arbitrary-command rule.
 
 `member_node_key` is either one of the unit's members or `null`. `null` means the file
@@ -340,7 +340,8 @@ becomes its projection.
 `sync_single_case@1` is defined as exactly the canonical interface block of
 `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`
 rendered `real64`, `case_id_len = 64`). The mechanical enforcer of that definition remains
-`tools/runner_renderer.py:assert_harness_pin`, which compares §5.1 against the certified
+the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
+compares §5.1 against the certified
 harness IR's `public_api.signatures` and the generated harness source; this contract
 adds a name for the ABI, not a second checker of it.
 

@@ -1,7 +1,10 @@
-"""Host-side renderer for a physics node's runner glue (R1/M3c-β).
+"""The Fortran backend's `runner_render` capability: a physics node's host-authored runner glue.
 
-Pure-function module (sibling of ``tools/verdict_evaluator.py`` /
-``tools/dependency_graph.py``): it takes a compiled IR plus the target/harness
+Pure-function module reached through `registry.capability_module("language", <lang>,
+"runner_render")` — the neutral seam is `tools/host_render.py`, which is what the conductor and
+the compile gate call. Nothing outside this package imports it by name.
+
+It takes a compiled IR plus the target/harness
 spec ids and returns the text of ``<spec_id>_runner.f90`` — the deterministic
 "glue" main program that drives the physics node's ``<spec_id>_checks`` callbacks
 and emits the standard runner outputs *through the certified
@@ -34,8 +37,19 @@ the *certified* harness IR signatures + source before rendering.
 
 from __future__ import annotations
 
-import re
 from typing import Any
+
+from tools.backends.language.fortran import bundle
+
+# Neutral policy this emitter also enforces at render time.
+#
+# `RenderError` is the seam's class, not this module's, and importing it is what makes the
+# neutral `except RenderError:` clause in the conductor work: a class obtained through
+# `registry.load` is a different object to the one an `except` in a neutral module names.
+# `CASE_ID_TOKEN_RE` is the safe-token grammar a case_id must obey — it reaches a filesystem
+# path and an argv, neither of which is a language question.
+from tools.host_render import RenderError
+from tools.spec_input_gates import CASE_ID_TOKEN_RE
 
 # The fixed ABI of the leaf-authored `<spec_id>_checks` module (see
 # docs/workflow/CHECKS_MODULE_CONTRACT.md). Non-prefixed public names (module
@@ -70,92 +84,14 @@ CHECK_STATUS_WIDTH = 4
 # bare `case ('<id>')` label only reaches column 100 at ~87 chars), so `_case_ids` bounds it.
 CASE_ID_LEN = 64
 
-# f2008 identifier limit; the longest derived name is `<spec_id>_checks` /
-# `<spec_id>_runner` (spec_id + 7). Keep a margin: cap spec_id at 55.
-MAX_SPEC_ID_LEN = 55
-MAX_IDENTIFIER_LEN = 63
-
-# The character grammar a case_id must obey. The harness builds each per-case snapshot path by
-# concatenating the runtime case_id — `raw/state_snapshots/'//trim(case_id)//'.json'` (harness
-# controlled_spec §3) — so a `case_id` such as `../../evil` traverses OUT of the run directory
-# and the runner (which compiles and runs cleanly) writes an arbitrary file. The compile gates
-# only require a case_id to be a non-empty string, and `_flit` only bars non-printable-ASCII, so
-# `..`/`/` slip through both. Restrict the id to the same safe-token grammar the dependency layer
-# uses for path segments (`orchestration_runtime._is_safe_path_token`): `[A-Za-z0-9._-]`, no `..`,
-# narrowed further below because a case id also reaches the runner's argv.
-# The first character additionally may not be `-`: a case id reaches the runner's argv
-# through `--cases $(SPEC) $(CASES)` and the build-runtime MCP server refuses a leading
-# `-` there, so accepting one here would pass Compile and Build and then fail
-# Validate.execute on an id no gate had objected to.
-_CASE_ID_TOKEN_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]*$")
-
-
-def spec_id_length_violation(spec_id: Any) -> str | None:
-    """Spec-input bound on spec_id length — the M3d mass-opt-in prerequisite gate.
-
-    Returns an actionable violation message when ``spec_id`` exceeds
-    ``MAX_SPEC_ID_LEN``, else ``None``. On a make+fortran node the derived
-    ``<spec_id>_runner``/``_checks``/``_model`` identifiers (spec_id + 7) breach the
-    f2008 ``MAX_IDENTIFIER_LEN``-char limit, and on a harness-backed M3c node the
-    host-rendered runner additionally fail-closes at ``_check_identifier_lengths``
-    (a workflow-kill a compile.generate re-author cannot repair — the spec_id is
-    node IDENTITY, not authored IR content). This helper is the canonical
-    *spec-input* capture point for exactly that identity precondition, which the
-    compile.static hoist deliberately excludes: bounding here — before any phase
-    runs — turns an unrepairable late render-kill into an early, clear rejection.
-    The renderer keeps the same bound as a defense-in-depth backstop."""
-    sid = spec_id.strip() if isinstance(spec_id, str) else ""
-    if len(sid) > MAX_SPEC_ID_LEN:
-        return (
-            f"spec_id {sid!r} is {len(sid)} chars (>{MAX_SPEC_ID_LEN}); the derived "
-            f"`<spec_id>_runner`/`_checks`/`_model` identifiers would breach the f2008 "
-            f"{MAX_IDENTIFIER_LEN}-char limit (and fail-close a harness-backed node's "
-            f"host-render). Rename the spec to ≤{MAX_SPEC_ID_LEN} chars.")
-    return None
-
-
-def infra_dep_count_violation(spec_kind: Any, infra_dep_count: int) -> str | None:
-    """Spec-input bound on the number of ``infrastructure`` direct dependencies.
-
-    Returns an actionable violation message unless the node declares EXACTLY ONE
-    ``infrastructure`` (runner-harness) direct dependency, or is itself an
-    ``infrastructure`` spec (the harness authors its own self-test runner, so it
-    declares none). Sibling of ``spec_id_length_violation``: both are node-IDENTITY
-    preconditions a Compile re-author cannot repair, so both are captured at
-    spec-input rather than hoisted into the compile.static gate (routing an
-    unrepairable defect to a warm-resume retry would only spin).
-
-    Before this gate, a physics node with zero or >1 infrastructure deps silently
-    degraded to the leaf-authored-runner path: ``_conductor_authors_runner`` requires
-    exactly one, so the runner was simply never host-rendered and the failure was a
-    quiet loss of the harness path rather than an error. That non-M3c physical path
-    has been removed — the only live leaf-authored runner is an ``infrastructure``
-    node's own self-test — so the degradation is now a hard rejection."""
-    # `.strip()` and NOTHING else — the exemption must be spelled exactly as every
-    # downstream reader spells it. `_conductor_authors_runner`, `_pure_leaf_substep` and
-    # `_validate_toolchain_backend_supported` all compare `str(...).strip() ==
-    # "infrastructure"` with no case folding, so a `spec_kind: Infrastructure` that this
-    # gate lower-cased into an exemption would be treated as a PHYSICS node by all three —
-    # exempted here and then silently landed on the removed leaf-authored-runner path, with
-    # no gate firing anywhere. Being case-sensitive here makes that shape a spec-input
-    # rejection instead, which is the direction that fails closed.
-    kind = spec_kind.strip() if isinstance(spec_kind, str) else ""
-    if kind == "infrastructure":
-        return None
-    if infra_dep_count == 1:
-        return None
-    remedy = (
-        "Add the single `infrastructure_id` entry" if infra_dep_count < 1
-        else f"Remove {infra_dep_count - 1} of them, keeping the one harness this node "
-             "builds against")
-    return (
-        f"a non-infrastructure spec must declare exactly one `infrastructure` "
-        f"(runner-harness) dependency in deps.yaml; found {infra_dep_count}. The runner "
-        f"glue is host-rendered against exactly that harness, and the former "
-        f"leaf-authored-runner path for a node without it has been removed "
-        f"(docs/workflow/phases/phase_01_compile.md). {remedy} "
-        f"(see spec/problem/dynamics/advection_diffusion/advdiff1d_linear/deps.yaml)."
-    )
+# The bound on a spec_id, DERIVED rather than restated: the longest name generated from a
+# spec_id appends a 7-character role suffix (`_runner` / `_checks`), and `bundle.IDENTIFIER_MAX`
+# is this language's identifier limit — the one place that number is spelled for this backend.
+# The extra character is margin. `tools/spec_input_gates.MAX_SPEC_ID_LEN` carries the same bound
+# as a pre-IR spec-input precondition (it runs before any language is resolved, so it cannot ask
+# for this one); `test_fortran_runner` pins the two equal so they cannot drift, and the render
+# time check below stays as the backstop.
+MAX_SPEC_ID_LEN = bundle.IDENTIFIER_MAX - len("_runner") - 1
 
 
 # The deterministic Generate.gate lint-checker column limit (fortitude S001). The rendered runner must stay
@@ -171,27 +107,6 @@ _HARNESS_CORE_OPS = (
     "parse_cases", "box", "write_snapshot",
     "write_metrics_basis", "write_diagnostics", "write_perf",
 )
-
-
-class RenderError(RuntimeError):
-    """A physics IR that cannot be faithfully rendered into runner glue.
-
-    Raised for a structural impossibility (bad shape_expr, rank>4, reserved-key
-    collision, unsupported verdict.fields, >1 infra dep, over-long identifier).
-    The conductor routes it to transport fail_closed — it is a spec/IR defect,
-    not content a Generate retry could repair by re-authoring the model.
-
-    ``identity=True`` marks the subset whose offending value is the node's IDENTITY
-    (spec_id / a derived module-name length, or >1 infra dep) rather than authored IR
-    *content*. Re-authoring the IR cannot repair an identity defect, so the compile.static
-    mirror (``ir_content_violations``) excludes it — it belongs to spec-input validation,
-    NOT a compile.generate warm-resume retry. Every other RenderError (``identity=False``) is
-    Compile-authored content the compile gate hoists so a defect routes to compile.generate
-    instead of killing the workflow at conductor render time."""
-
-    def __init__(self, message: str, *, identity: bool = False) -> None:
-        super().__init__(message)
-        self.identity = identity
 
 
 # --- IR extraction helpers (all defensive: tolerate missing/mistyped nodes) ---
@@ -272,7 +187,7 @@ def _case_ids(ir: dict[str, Any]) -> list[str]:
     # traverses out of the run directory and the (cleanly compiling) runner writes an arbitrary
     # file. `_flit` only bars non-printable-ASCII and the length gate only bounds size, so both
     # let `../evil` through. Restrict the id to a filesystem-and-Fortran-safe token.
-    unsafe = sorted({c for c in out if not _CASE_ID_TOKEN_RE.match(c) or ".." in c})
+    unsafe = sorted({c for c in out if not CASE_ID_TOKEN_RE.match(c) or ".." in c})
     if unsafe:
         raise RenderError(
             f"case_id(s) {unsafe} are not safe tokens; a case_id is concatenated into the "
@@ -545,17 +460,17 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
         raise RenderError(
             f"spec_id {spec_id!r} is {len(spec_id)} chars (>{MAX_SPEC_ID_LEN}); "
             "the derived `<spec_id>_checks`/`_runner` identifiers would risk the "
-            f"f2008 {MAX_IDENTIFIER_LEN}-char limit", identity=True)
+            f"f2008 {bundle.IDENTIFIER_MAX}-char limit", identity=True)
     for derived in (f"{spec_id}_runner", f"{spec_id}_checks", f"{spec_id}_model"):
-        if len(derived) > MAX_IDENTIFIER_LEN:
+        if len(derived) > bundle.IDENTIFIER_MAX:
             raise RenderError(
-                f"identifier {derived!r} is {len(derived)} chars (>{MAX_IDENTIFIER_LEN})",
+                f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS):
         name = _hname(harness_spec_id, sym)
-        if len(name) > MAX_IDENTIFIER_LEN:
+        if len(name) > bundle.IDENTIFIER_MAX:
             raise RenderError(
-                f"harness identifier {name!r} is {len(name)} chars (>{MAX_IDENTIFIER_LEN})",
+                f"harness identifier {name!r} is {len(name)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
 
 
@@ -1098,7 +1013,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
 _PIN_DRIFT_HINT = (
     "the certified harness interface no longer matches the renderer's pinned "
     "expectation — a harness recert changed its published surface; update the "
-    "runner_renderer pin (_HARNESS_V3_INTERFACE / _HARNESS_V3_PARAMETERS) AND the "
+    "renderer pin (_HARNESS_V3_INTERFACE / _HARNESS_V3_PARAMETERS) AND the "
     "render template together, then re-certify dependent nodes")
 
 

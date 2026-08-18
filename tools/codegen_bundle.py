@@ -331,7 +331,7 @@ CAPABILITY_FOR_CAPTURE: dict[str, str] = {"harness_registration": "state_registr
 # `sync_single_case@1` is defined as exactly the canonical interface block of
 # `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`
 # (rendered `real64`), `case_id_len = 64`). Its mechanical enforcer remains
-# `tools/runner_renderer.py:assert_harness_pin`; this contract names the ABI, it does not
+# the language backend's `assert_harness_pin`; this contract names the ABI, it does not
 # re-check it.
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
     "infrastructure/harness_fortran_cpu@0.7.0": frozenset({"sync_single_case@1"}),
@@ -1533,9 +1533,10 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     """The fixed-ABI constraint on the bundle's checks module, or None.
 
     An M3c node's `<spec_id>_checks` module must publish the SAME fixed set of names for every
-    node — `runner_renderer.CHECKS_PUBLIC_NAMES`, the authority — each as a SUBROUTINE, because
-    the host-rendered runner `call`s them (`runner_renderer.render_runner`'s `checks_syms` imports
-    and the per-case call sites). Two later gates enforce
+    node — the checks ABI the language backend that renders the runner publishes
+    (`host_render.checks_public_names`, the authority) — each as a SUBROUTINE, because the
+    host-rendered runner `call`s them (its `checks_syms` imports and the per-case
+    call sites). Two later gates enforce
     halves of that and this layer pre-empts both, turning what were phase reopens into one
     bounded in-conversation repair (Z2 defect D: sw2d burned its whole retry budget re-guessing
     an ABI it had never been shown):
@@ -1569,7 +1570,7 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     the SAME parser `Generate.gate` static check uses, so the two gates cannot disagree about what a given
     source publishes. (A second implementation is exactly how this layer came to accept output
     `Generate.gate` static check rejected.)"""
-    from tools.runner_renderer import CHECKS_PUBLIC_NAMES
+    from tools.host_render import checks_public_names, runner_render_refusal
     from tools.validate_pipeline_semantics import checks_module_abi_facts
     # `m3c_literal_name_violation` runs first and guarantees this file exists and declares this
     # module. Scope to it: a bundle may legally carry OTHER checks-role files, and reading their
@@ -1580,6 +1581,24 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
                   and str(e.get("logical_path", "")) == want_path), None)
     if match is None:  # unreachable via the ordered contract; fail-closed if ever called alone
         return f"the bundle carries no checks-role file named {want_path!r}"
+    # The ABI belongs to whichever backend renders the runner that calls it, so ask the FILE's
+    # declared language — the same value `_files_schema_violations` already constrained to
+    # `LANGUAGES`. A language with no runner renderer has no checks ABI to hold a bundle to;
+    # that is a violation here rather than a pass, because this gate is what a leaf's output is
+    # accepted on and an unenforced ABI is the defect the whole layer exists to pre-empt.
+    try:
+        refusal = runner_render_refusal(match.get("language"))
+    except Exception as exc:  # noqa: BLE001
+        # The third caller of the seam, and it was the one left without this. A backend package
+        # that cannot be IMPORTED is a host fault; escaping from here reaches
+        # `_pure_bundle_violations`, which has no handler at this call, so the acceptance layer
+        # crashes instead of rejecting — the failure this layer exists to avoid. The two
+        # deterministic gates convert it; so does this one now.
+        refusal = f"the backend for that language could not be loaded ({exc!r})"
+    if refusal is not None:
+        return (f"{want_path} declares language {match.get('language')!r}, whose checks ABI this "
+                f"repository cannot state: {refusal}")
+    CHECKS_PUBLIC_NAMES = checks_public_names(match.get("language"))
     published, subroutines, defined = checks_module_abi_facts(
         str(match.get("content") or ""), spec_id)
     unpublished = [n for n in CHECKS_PUBLIC_NAMES if n not in published]

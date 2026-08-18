@@ -55,7 +55,7 @@ from pathlib import Path
 
 import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
-import tools.runner_renderer as rr
+import tools.backends.language.fortran.runner as rr
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
@@ -78,7 +78,7 @@ _TEMPLATE_FILES = (
 #
 # NOTE — the contract-tuple SCHEMA changed at pure-8: `check_id_width` was dropped from
 # `_contract_tuple` when the runner-driven per-id checks ABI removed the pinned check-id width
-# (`runner_renderer.CHECK_ID_WIDTH` no longer exists). The pure-6 / pure-7 digests below are FROZEN
+# (`CHECK_ID_WIDTH` no longer exists). The pure-6 / pure-7 digests below are FROZEN
 # literals computed under the OLD (wider) schema; they are NOT recomputed from the current tuple and
 # serve ONLY the uniqueness / no-empty-bump check (`test_no_empty_version_bump`). Because they were
 # hashed under a schema the current `_digest()` no longer produces, they can never collide with a
@@ -158,7 +158,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
             + "' here (its digest must differ from every existing pin — else it is an empty bump).\n"
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
             "(the three pure_*.txt templates, PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, or the "
-            "runner_renderer checks-ABI constants)."
+            "language backend runner's checks-ABI constants)."
         )
         self.assertIn(
             PURE_PROMPT_CONTRACT_VERSION, PINNED,

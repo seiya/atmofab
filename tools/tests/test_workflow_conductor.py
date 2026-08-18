@@ -5540,7 +5540,7 @@ class NodeAllocationTest(unittest.TestCase):
         # M3d spec-input gate: a spec_id over MAX_SPEC_ID_LEN is rejected before the
         # catalog lookup (the length check precedes _read_yaml), so this needs no real
         # spec on disk — the message names spec-input and the char count.
-        from tools.runner_renderer import MAX_SPEC_ID_LEN
+        from tools.spec_input_gates import MAX_SPEC_ID_LEN
         overlong = "component/dynamics/" + "z" * (MAX_SPEC_ID_LEN + 3)
         with self.assertRaises(ValueError) as ctx:
             wc.resolve_node(REPO_ROOT, "spec/" + overlong)
@@ -11541,6 +11541,149 @@ class WriteMakefileTest(unittest.TestCase):
                     self.assertFalse(c._conductor_authors_makefile(refs), record)
                     self.assertFalse(c._conductor_authors_runner(refs), record)
 
+    def test_runner_authorship_follows_the_capability_on_the_language_axis_too(self) -> None:
+        """The same property, on the axis the runner renderer is actually a question of.
+
+        The fixture above drives `build_system` only, so the `runner_render` clause of
+        `_conductor_authors_runner` was covered solely by the control-file refusal that precedes
+        it. A LANGUAGE that is a declared, extracted backend and simply does not do this job must
+        still fall to the leaf-authored path — and now that the renderer lives in a package,
+        "extracted" is exactly the state a future second language starts in.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        for record in (
+            # Declared, nothing implements it.
+            backend_registry.Backend("language", "zz_lang", None),
+            # Extracted, and its package even carries a runner — but its record claims neither
+            # capability, so the host must not author for it.
+            backend_registry.Backend(
+                "language", "zz_lang", "tools.backends.language.fortran"),
+            # It can be compiled (the host writes its control file) but not rendered: the
+            # `runner_render` clause alone must decline.
+            backend_registry.Backend(
+                "language", "zz_lang", "tools.backends.language.fortran",
+                core_provides=frozenset({"control_file"})),
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                c = self._conductor(repo)
+                self._write_ir(repo, refs, language="zz_lang",
+                               direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
+                with mock.patch.dict(
+                        backend_registry._BACKENDS, {("language", "zz_lang"): record}):
+                    self.assertIsNone(backend_registry.unsupported_reason("language", "zz_lang"))
+                    self.assertFalse(c._conductor_authors_runner(refs), record)
+
+    def test_the_toolchain_field_shapes_the_two_mirrors_must_read_alike(self) -> None:
+        """The IR SHAPES, not the registry — the other half of the mirror property.
+
+        The registry-moving test below writes a well-formed toolchain every time, so two things
+        it cannot see were unobserved. First, the `"fortran"` DEFAULT: a mutation spelled so the
+        sampled ratchet cannot fire (`str(value or "fortran"[:0])`) left the whole suite green,
+        while `_ir_language`'s own docstring says the defaulting is the part that must not vary —
+        and varying it is exactly a predicate approving authorship that the render then refuses.
+        Second, a NON-DICT `impl_defaults.toolchain`: the language read guarded it while the
+        build-system read beside it dereferenced the same object, so the conductor raised
+        `AttributeError` where the validator's mirror answers `False`.
+        """
+        import tools.validate_pipeline_semantics as vps
+
+        shapes = {
+            "language absent": "impl_defaults:\n  toolchain:\n    build_system: make\n",
+            "toolchain absent": "impl_defaults: {}\n",
+            "impl_defaults absent": "meta:\n  spec_kind: component\n",
+            "toolchain is a list": "impl_defaults:\n  toolchain: [make, fortran]\n",
+            "toolchain is a string": "impl_defaults:\n  toolchain: make\n",
+            "impl_defaults is a string": "impl_defaults: nonsense\n",
+        }
+        for name, block in shapes.items():
+            with tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                ir_dir = repo / refs.ir_ref
+                ir_dir.mkdir(parents=True, exist_ok=True)
+                (ir_dir / "spec.ir.yaml").write_text(
+                    "meta:\n  spec_kind: component\n" + block
+                    + "dependency:\n  direct_deps: "
+                      "[infrastructure/harness_fortran_cpu@0.7.0]\n",
+                    encoding="utf-8")
+                c = self._conductor(repo)
+                ir = wc._read_yaml(ir_dir / "spec.ir.yaml")
+                # Neither reader may raise on a shape the other one survives, and they must
+                # agree on the verdict.
+                self.assertEqual(
+                    c._conductor_authors_runner(refs), vps._ir_is_m3c_physics(ir), name)
+                # ...and the THIRD conductor-side reader, which is the one the writers use.
+                # It kept the unguarded dereference the other two were given guards for, so
+                # `_conductor_authors_makefile` said yes and `_write_makefile` raised.
+                self.assertTrue(c._conductor_authors_makefile(refs) in (True, False), name)
+                toolchain = c._read_toolchain(refs)
+                self.assertEqual(
+                    (toolchain["language"], toolchain["build_system"]),
+                    (wc._ir_language(ir), wc._ir_build_system(ir)), name)
+        # The default itself: with the language field absent the node is STILL host-rendered,
+        # which is what makes the default load bearing rather than cosmetic.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            ir_dir = repo / refs.ir_ref
+            ir_dir.mkdir(parents=True, exist_ok=True)
+            (ir_dir / "spec.ir.yaml").write_text(
+                "meta:\n  spec_kind: component\n"
+                "impl_defaults:\n  toolchain:\n    build_system: make\n"
+                "dependency:\n  direct_deps: [infrastructure/harness_fortran_cpu@0.7.0]\n",
+                encoding="utf-8")
+            c = self._conductor(repo)
+            self.assertTrue(c._conductor_authors_runner(refs))
+            self.assertTrue(c._conductor_authors_makefile(refs))
+
+    def test_the_two_runner_authorship_mirrors_answer_alike_when_the_registry_moves(self) -> None:
+        """`_conductor_authors_runner` and `_ir_is_m3c_physics` are two readers of one question.
+
+        They have diverged before — the mirror kept comparing against the literal `(make,
+        fortran)` pair after the conductor moved to the registry — and a divergence is a wrong
+        verdict either way: the checks-module contract demanded of a node whose runner is
+        leaf-authored, or waived for one the host rendered. Enumerated fixtures cannot see it;
+        the lever is a REGISTRY declaration, so the registry is what moves here.
+        """
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        import tools.validate_pipeline_semantics as vps
+
+        records = [
+            None,  # the live registry, unchanged
+            backend_registry.Backend("language", "zz_lang", None),
+            backend_registry.Backend("language", "zz_lang", "tools.backends.language.fortran"),
+            backend_registry.Backend(
+                "language", "zz_lang", "tools.backends.language.fortran",
+                core_provides=frozenset({"control_file"})),
+            backend_registry.Backend(
+                "language", "zz_lang", "tools.backends.language.fortran",
+                core_provides=frozenset({"control_file"}),
+                backend_provides=frozenset({"runner_render"})),
+        ]
+        for record in records:
+            for language in ("fortran", "zz_lang"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    repo = Path(tmp)
+                    refs = self._refs()
+                    c = self._conductor(repo)
+                    self._write_ir(
+                        repo, refs, language=language,
+                        direct_deps="[infrastructure/harness_fortran_cpu@0.7.0]")
+                    ir = wc._read_yaml(repo / refs.ir_ref / "spec.ir.yaml")
+                    ir.setdefault("meta", {})["spec_kind"] = "component"
+                    patch = {} if record is None else {
+                        (record.axis, record.backend_id): record}
+                    with mock.patch.dict(backend_registry._BACKENDS, patch):
+                        self.assertEqual(
+                            c._conductor_authors_runner(refs), vps._ir_is_m3c_physics(ir),
+                            (record, language))
+
     def test_the_runtime_predicate_refuses_padding_like_the_conductor_does(self) -> None:
         """Driven DIRECTLY, because no indirect path can reach it.
 
@@ -12057,12 +12200,15 @@ class WriteRunnerTest(unittest.TestCase):
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
     def _write_consumer_ir(self, repo: Path, refs: wc.NodeRefs, *, infra=1,
-                           bare_string: bool = False, spec_kind: str | None = None) -> None:
-        from tools.tests.test_runner_renderer import _boundary_ir
+                           bare_string: bool = False, spec_kind: str | None = None,
+                           language: str | None = None) -> None:
+        from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
         ir = _boundary_ir()
         if spec_kind is not None:
             ir.setdefault("meta", {})["spec_kind"] = spec_kind
+        if language is not None:
+            ir.setdefault("impl_defaults", {}).setdefault("toolchain", {})["language"] = language
         ids = ["harness_fortran_cpu"] * infra
         if infra == 2:
             ids = ["harness_fortran_cpu", "harness_other_cpu"]
@@ -12092,7 +12238,7 @@ class WriteRunnerTest(unittest.TestCase):
         `ir_dirname` (the seeded IR dir) may diverge from the pipeline dir name (compile reopen
         re-numbers ir_id independently). `extra_source_meta` merges extra keys into the (still
         ir_ref-free) source_meta to prove they are ignored."""
-        from tools.tests.test_runner_renderer import (
+        from tools.tests.test_fortran_runner import (
             _HARNESS_STUB, _harness_signatures)
         import yaml as _yaml
         safe = "infrastructure__harness_fortran_cpu__0.2.0"
@@ -12157,7 +12303,7 @@ class WriteRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
-            from tools.tests.test_runner_renderer import _boundary_ir
+            from tools.tests.test_fortran_runner import _boundary_ir
             import yaml as _yaml
             ir = _boundary_ir()
             ir["meta"]["spec_kind"] = "infrastructure"
@@ -12167,9 +12313,93 @@ class WriteRunnerTest(unittest.TestCase):
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(_yaml.safe_dump(ir))
             self.assertFalse(self._conductor(repo)._conductor_authors_runner(refs))
 
+    def test_write_runner_renders_through_the_NODE_S_language_backend(self) -> None:
+        """`_write_runner` hands the seam the language it read, and does not assume one.
+
+        Measured before this existed: replacing `language = _ir_language(ir)` with a fixed value
+        left the suite green in any spelling the sampled token ratchet cannot see — and the
+        ratchet is documented as a bound on growth, not a detector. With one language backend
+        the two are indistinguishable, so a second is synthesised: its renderer emits text the
+        real one never would, and its pin accepts anything, so the only thing the assertion can
+        be observing is which backend was dispatched to.
+        """
+        import sys
+        import types
+
+        from tools.backends import registry as backend_registry
+
+        other = types.ModuleType("zz_write_runner_lang")
+        runner = types.ModuleType("zz_write_runner_lang.runner")
+        runner.CHECKS_PUBLIC_NAMES = ("zz_abi",)
+        runner.render_runner = lambda ir, spec_id, harness: f"! rendered by zz for {spec_id}\n"
+        runner.assert_harness_pin = lambda *a, **k: None
+        runner.ir_content_violations = lambda *a, **k: []
+        other.runner = runner
+        record = backend_registry.Backend(
+            "language", "zz_wr", "zz_write_runner_lang",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._write_consumer_ir(repo, refs, infra=1, language="zz_wr")
+            self._seed_harness_pipeline(repo)
+            with mock.patch.dict(sys.modules, {"zz_write_runner_lang": other}), \
+                    mock.patch.dict(
+                        backend_registry._BACKENDS, {("language", "zz_wr"): record}):
+                c = self._conductor(repo)
+                self.assertTrue(c._conductor_authors_runner(refs))
+                c._write_runner(refs)
+            text = (repo / refs.source_dir() / "src"
+                    / f"{self.SID}_runner.f90").read_text(encoding="utf-8")
+        self.assertEqual(f"! rendered by zz for {self.SID}\n", text)
+
+    def test_write_runner_names_a_declaration_that_outruns_its_package(self) -> None:
+        """The clauses added to fix the previous round, which were themselves unobserved.
+
+        A record can declare `runner_render` in `backend_provides` while its package carries no
+        renderer: the registry refuses to import a backend at declaration time, so nothing can
+        catch that until something dispatches. `_conductor_authors_runner` approves the node on
+        the declaration and the seam then refuses it. Both entries into the seam must say so as
+        a build precondition — an operator fixes the record or the package — rather than reaching
+        the conductor's generic handler, which reports it as a render failure and points a reader
+        at the IR.
+
+        ONE clause, at `assert_harness_pin` — which is the unconditional first entry into the
+        seam, so a backend that cannot be dispatched to has already raised by the time the render
+        call is reached. A second clause was written around the render call and measured
+        unreachable; it was deleted rather than given a witness it cannot have.
+        """
+        import sys
+        import types
+
+        from tools.backends import registry as backend_registry
+
+        hollow = types.ModuleType("zz_hollow_runner_pkg")  # declares the job, carries nothing
+        record = backend_registry.Backend(
+            "language", "zz_hollow", "zz_hollow_runner_pkg",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._refs()
+            self._write_consumer_ir(repo, refs, infra=1, language="zz_hollow")
+            self._seed_harness_pipeline(repo)
+            with mock.patch.dict(sys.modules, {"zz_hollow_runner_pkg": hollow}), \
+                    mock.patch.dict(
+                        backend_registry._BACKENDS, {("language", "zz_hollow"): record}):
+                c = self._conductor(repo)
+                # the authorship predicate approves it — that is the premise, not a bug
+                self.assertTrue(c._conductor_authors_runner(refs))
+                with self.assertRaises(RuntimeError) as ctx:
+                    c._write_runner(refs)
+        message = str(ctx.exception)
+        self.assertIn("cannot be dispatched to", message)
+        self.assertIn("zz_hollow", message)
+
     def test_write_runner_renders_and_pins(self) -> None:
-        from tools.runner_renderer import render_runner
-        from tools.tests.test_runner_renderer import _boundary_ir
+        from tools.backends.language.fortran.runner import render_runner
+        from tools.tests.test_fortran_runner import _boundary_ir
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12196,7 +12426,7 @@ class WriteRunnerTest(unittest.TestCase):
                 self._conductor(repo)._write_runner(refs)
 
     def test_write_runner_fail_closed_on_pin_drift(self) -> None:
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12208,8 +12438,8 @@ class WriteRunnerTest(unittest.TestCase):
     def test_write_runner_pins_without_source_meta_ir_ref(self) -> None:
         # Regression for E2E #4: a contract-minimal source_meta.json (no `ir_ref`, as a
         # harness-0.3.0 leaf writes) must still resolve the certified IR structurally and pin.
-        from tools.runner_renderer import render_runner
-        from tools.tests.test_runner_renderer import _boundary_ir
+        from tools.backends.language.fortran.runner import render_runner
+        from tools.tests.test_fortran_runner import _boundary_ir
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12239,7 +12469,7 @@ class WriteRunnerTest(unittest.TestCase):
     def test_write_runner_fail_closed_on_uncertified_harness_ir(self) -> None:
         # ir_meta absent or verification_status != pass -> transport fail_closed (RuntimeError),
         # NOT a RenderError (this is a build precondition, not interface drift).
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         for kwargs in ({"ir_meta_status": "fail"}, {"write_ir_meta": False}):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
@@ -12271,7 +12501,7 @@ class WriteRunnerTest(unittest.TestCase):
         # to binary_meta.source_ir_id (`_002`), NOT the newer `_004` whose TAMPERED signatures
         # would raise a spurious drift even though source+binary are internally consistent.
         import yaml as _yaml
-        from tools.tests.test_runner_renderer import _harness_signatures
+        from tools.tests.test_fortran_runner import _harness_signatures
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12335,7 +12565,7 @@ class WriteRunnerTest(unittest.TestCase):
         # On the legacy-fallback path (no source_ir_id) a pin failure must carry the operator
         # hint (rebuild --with-deps to stamp source_ir_id) so a contract-violation-window drift
         # reads as actionable, not a misdiagnosis. Bound (source_ir_id present) failures do not.
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12350,7 +12580,7 @@ class WriteRunnerTest(unittest.TestCase):
     def test_write_runner_bound_pin_failure_has_no_legacy_hint(self) -> None:
         # The reciprocal: with source_ir_id present the pin drift is NOT annotated with the
         # legacy-rebuild hint (it is already bound to the exact origin IR).
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12365,7 +12595,7 @@ class WriteRunnerTest(unittest.TestCase):
         # lineage: it must fail closed with RuntimeError, NOT silently fall back to the latest IR
         # (which would reintroduce the false-drift the binding exists to prevent). The valid IR
         # dir (`_002`) is seeded to prove the fallback is NOT taken.
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         for bad_id in ("harness-fortran-cpu_20260707_999", "../evil"):
             with tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
@@ -12381,7 +12611,7 @@ class WriteRunnerTest(unittest.TestCase):
         # A PRESENT key with an explicit JSON null is NOT a legacy binary (which lacks the key):
         # it is corrupt lineage and must fail closed, not take the latest-IR fallback. Locks the
         # presence-keyed branch (a value-is-None check would wrongly fall back here).
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = self._refs()
@@ -12404,7 +12634,7 @@ class WriteRunnerTest(unittest.TestCase):
         # (missing list, or a non-empty list of all-malformed entries) -> RuntimeError
         # (re-certify), never a RenderError — so the conductor precondition, not the pin's
         # drift path, classifies an incomplete certified artifact.
-        from tools.runner_renderer import RenderError
+        from tools.host_render import RenderError
         for kwargs in ({"no_public_api_signatures": True},
                        {"signatures": [{"garbage": 1}]},
                        {"signatures": [{"symbol": " ", "signature": {}}]}):
@@ -12554,7 +12784,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
     def test_infrastructure_spec_kind_is_not_pure(self) -> None:
         # (d) an infrastructure node authors its own self-test runner (not glue), so it is non-M3c
         # even with exactly one infra dep.
-        from tools.tests.test_runner_renderer import _boundary_ir
+        from tools.tests.test_fortran_runner import _boundary_ir
         import yaml as _yaml
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

@@ -9,9 +9,6 @@
       "tools.backends.language.fortran",
       "tools.backends.language.fortran.lines"
     ],
-    "tools/runner_renderer.py": [
-      "tools.backends.language.fortran.signatures"
-    ],
     "tools/validate_pipeline_semantics.py": [
       "tools.backends.language.fortran",
       "tools.backends.language.fortran.lines",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for tools/runner_renderer (R1/M3c-β host-rendered runner glue).
+"""Unit tests for the Fortran backend's runner_render capability (R1/M3c-β runner glue).
 
 `render_runner` is a pure function of the IR: these tests pin its rendered shape
 (a boundary-copy IR and a metrics-bearing IR), determinism, the render-error
@@ -19,21 +19,18 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from tools.runner_renderer import (
+from tools.backends.language.fortran.runner import (
     CASE_ID_LEN,
     CHECK_STATUS_WIDTH,
     EXPECTED_HARNESS_SPEC_ID,
     _HARNESS_V3_PARAMETERS,
-    MAX_SPEC_ID_LEN,
-    RenderError,
     _HARNESS_V3_INTERFACE,
     assert_harness_pin,
-    infra_dep_count_violation,
     ir_content_violations,
     render_runner,
-    spec_id_length_violation,
 )
 from tools.backends.language.fortran.signatures import parse_signatures_from_fortran
+from tools.host_render import RenderError
 
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
@@ -1042,94 +1039,100 @@ class IrContentViolationsTest(unittest.TestCase):
             self.assertTrue(v, v)  # non-empty, and no exception escaped
 
 
-class SpecIdLengthGateTest(unittest.TestCase):
-    """M3d spec-input gate: `spec_id_length_violation` bounds spec_id ≤ MAX_SPEC_ID_LEN.
-    This is the canonical capture point for the one node-IDENTITY render precondition the
-    compile.static hoist excludes (a re-author cannot shorten a spec_id); the conductor's
-    resolve_node calls it so a too-long spec_id fails before any phase, not at render-kill."""
+class SpecIdBoundAgreementTest(unittest.TestCase):
+    """The neutral spec-input bound and this backend's render-time bound are one number.
 
-    def test_ok_at_or_below_limit(self) -> None:
-        self.assertIsNone(spec_id_length_violation("shallow_water2d"))
-        self.assertIsNone(spec_id_length_violation("x" * MAX_SPEC_ID_LEN))
-        # 54-char real catalog id (the longest currently-safe one) passes.
-        self.assertIsNone(
-            spec_id_length_violation("dynamics_advection_diffusion_boundary_1d_periodic_copy"))
+    `tools/spec_input_gates.MAX_SPEC_ID_LEN` cannot ask a backend for it — the gate runs on a
+    `spec_ref` before any IR exists, so no language has been resolved — so the number is spelled
+    on both sides. That is the pattern the ledger already accepts for a pre-IR bound, and it is
+    only safe with this comparison: without it, raising the identifier limit in the backend would
+    silently leave the spec-input gate rejecting spec_ids the renderer would now accept, and
+    lowering it would let an unrenderable spec_id through to a render-time workflow-kill."""
 
-    def test_violation_above_limit(self) -> None:
-        # The 61-char id the catalog carried until it was renamed to fit the bound.
-        offender = "dynamics_advection_diffusion_profile_1d_upwind_center2_euler1"
-        msg = spec_id_length_violation(offender)
-        self.assertIsNotNone(msg)
-        self.assertIn(str(len(offender)), msg)
-        self.assertIn(str(MAX_SPEC_ID_LEN), msg)
-        # One char over the limit is already a violation; the limit itself is not.
-        self.assertIsNotNone(spec_id_length_violation("y" * (MAX_SPEC_ID_LEN + 1)))
-        self.assertIsNone(spec_id_length_violation("y" * MAX_SPEC_ID_LEN))
+    def test_the_backend_bound_derives_from_the_language_identifier_limit(self) -> None:
+        from tools.backends.language.fortran import bundle
+        from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND
+        # The longest generated name appends a 7-character role suffix; the extra character is
+        # the declared margin. Restating `55` here would be a third copy of the same number.
+        self.assertEqual(bundle.IDENTIFIER_MAX - len("_runner") - 1, BACKEND_BOUND)
+        for suffix in ("_runner", "_checks", "_model"):
+            self.assertLessEqual(BACKEND_BOUND + len(suffix), bundle.IDENTIFIER_MAX)
 
-    def test_non_string_and_whitespace(self) -> None:
-        self.assertIsNone(spec_id_length_violation(None))
-        self.assertIsNone(spec_id_length_violation(123))
-        # Surrounding whitespace is stripped before measuring.
-        self.assertIsNone(spec_id_length_violation("  short  "))
-        self.assertIsNotNone(spec_id_length_violation("  " + "z" * (MAX_SPEC_ID_LEN + 1) + "  "))
+    def test_the_bound_tracks_the_language_identifier_limit(self) -> None:
+        """The DERIVATION, observed by moving the thing it derives from.
+
+        Replacing the derivation with today's literal is behaviourally identical at the current
+        limit, so every value comparison in this class survives it. What the derivation buys is
+        the future change: raise the language's identifier limit and the bound must move, or a
+        spec_id one character too long renders symbols that breach it.
+
+        The first two instruments for this read the SOURCE and pinned a spelling. Both
+        over-rejected — the first refused `from ...bundle import IDENTIFIER_MAX`, the second
+        refused the annotated assignment and then, once widened, accepted a locally restated
+        `IDENTIFIER_MAX = 63` (the extra copy of that number the ledger forbids). A rule that has
+        to be rewritten twice and still rejects legitimate work is the wrong FORM, not the wrong
+        wording. So: move the limit and re-import. Every spelling that derives passes, every
+        spelling that restates fails, and no spelling is named.
+        """
+        import subprocess
+        import sys
+
+        from tools.backends.language.fortran import bundle
+
+        moved = bundle.IDENTIFIER_MAX - 23
+        # In a SUBPROCESS, not with an in-process reload: reloading the emitter rebinds the
+        # module every other test in this file holds a reference to, and getting the restore
+        # even slightly wrong leaves the rest of the suite measuring a bound that is not the
+        # real one. Measured — the first attempt did exactly that and failed 12 tests.
+        # The emitter is already in `sys.modules` by the time the limit can be patched — the
+        # package `__init__` re-exports it, and reaching `bundle` imports the package. Dropping
+        # it first is what makes the re-import read the patched value; without that the probe
+        # reports the unpatched bound and the test passes for no reason.
+        probe = (
+            "import importlib, sys\n"
+            "from unittest import mock\n"
+            "from tools.backends.language.fortran import bundle\n"
+            "del sys.modules['tools.backends.language.fortran.runner']\n"
+            f"with mock.patch.object(bundle, 'IDENTIFIER_MAX', {moved}):\n"
+            "    runner = importlib.import_module("
+            "'tools.backends.language.fortran.runner')\n"
+            "    print(runner.MAX_SPEC_ID_LEN)\n"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", probe], cwd=str(Path(__file__).resolve().parents[2]),
+            capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr)
+        self.assertEqual(
+            moved - len("_runner") - 1, int(out.stdout.strip()),
+            "the backend's spec_id bound did not move with the language identifier limit: it is "
+            "restated rather than derived, and a literal does not move")
+
+    def test_the_spec_input_gate_carries_the_same_bound(self) -> None:
+        from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND
+        from tools.spec_input_gates import MAX_SPEC_ID_LEN as NEUTRAL_BOUND
+        self.assertEqual(BACKEND_BOUND, NEUTRAL_BOUND)
 
 
-class InfraDepCountGateTest(unittest.TestCase):
-    """Spec-input gate: `infra_dep_count_violation` requires EXACTLY ONE `infrastructure`
-    direct dependency on every non-infrastructure spec. Sibling of the spec_id bound: both
-    are node-IDENTITY preconditions a Compile re-author cannot repair, so both are captured
-    at spec-input. Zero and >1 used to degrade silently to the removed leaf-authored-runner
-    path; they are hard rejections now."""
+class DerivedNameLengthTest(unittest.TestCase):
+    """The per-name loop in `_check_identifier_lengths`, which the spec_id bound hides.
 
-    def test_exactly_one_passes(self) -> None:
-        for kind in ("component", "profile", "problem"):
-            self.assertIsNone(infra_dep_count_violation(kind, 1), kind)
+    The bound leaves a one-character margin, so no spec_id that passes it can produce a derived
+    name over the limit — the loop is unreachable from the bound alone. It is reachable from the
+    HARNESS id, which the bound does not constrain, and that is what drives it here. Measured:
+    without this, replacing `bundle.IDENTIFIER_MAX` in that loop with a much larger number left
+    the whole suite green."""
 
-    def test_zero_and_more_than_one_violate(self) -> None:
-        for kind in ("component", "profile", "problem"):
-            for count in (0, 2, 3):
-                self.assertIsNotNone(infra_dep_count_violation(kind, count), (kind, count))
+    def test_an_over_long_harness_symbol_is_an_identity_error(self) -> None:
+        from tools.backends.language.fortran import bundle
 
-    def test_infrastructure_kind_is_exempt_at_every_count(self) -> None:
-        # The harness authors its own self-test runner, so it declares no harness of its own.
-        for count in (0, 1, 5):
-            self.assertIsNone(infra_dep_count_violation("infrastructure", count), count)
-        self.assertIsNone(infra_dep_count_violation("  infrastructure  ", 0))
-
-    def test_the_exemption_is_case_sensitive_like_every_downstream_reader(self) -> None:
-        # `_conductor_authors_runner` / `_pure_leaf_substep` /
-        # `_validate_toolchain_backend_supported` all compare the stripped value with no case
-        # folding. Lower-casing HERE would exempt `Infrastructure` at spec-input and then let
-        # all three treat it as a physics node — the removed leaf-authored-runner path, with
-        # no gate firing anywhere. It must fail closed instead.
-        for spelling in ("Infrastructure", "INFRASTRUCTURE", "infraStructure"):
-            self.assertIsNotNone(infra_dep_count_violation(spelling, 0), spelling)
-            self.assertIsNone(infra_dep_count_violation(spelling, 1), spelling)
-
-    def test_message_names_the_rule_the_count_and_the_canonical_doc(self) -> None:
-        msg = infra_dep_count_violation("component", 2)
-        self.assertIsNotNone(msg)
-        self.assertIn("exactly one", msg)
-        self.assertIn("infrastructure", msg)
-        self.assertIn("found 2", msg)
-        self.assertIn("docs/workflow/phases/phase_01_compile.md", msg)
-        # A remedy the author can act on, pointing the way the error actually goes: too
-        # many entries must be REMOVED, and telling the author to add one more would be
-        # actively wrong.
-        self.assertIn("Remove 1 of them", msg)
-        self.assertNotIn("Add the single", msg)
-        self.assertIn("advdiff1d_linear/deps.yaml", msg)
-        zero = infra_dep_count_violation("problem", 0)
-        self.assertIn("found 0", zero)
-        self.assertIn("Add the single `infrastructure_id` entry", zero)
-        self.assertIn("Remove 2 of them", infra_dep_count_violation("component", 3))
-
-    def test_unknown_or_non_string_kind_is_not_exempt(self) -> None:
-        # Only the literal `infrastructure` kind is exempt; anything else must declare one.
-        self.assertIsNotNone(infra_dep_count_violation(None, 0))
-        self.assertIsNotNone(infra_dep_count_violation("", 0))
-        self.assertIsNotNone(infra_dep_count_violation(123, 0))
-        self.assertIsNone(infra_dep_count_violation(None, 1))
+        ir = _boundary_ir()
+        long_harness = "h" * (bundle.IDENTIFIER_MAX - len("__write_metrics_basis") + 1)
+        with self.assertRaises(RenderError) as ctx:
+            render_runner(ir, BOUNDARY_SID, long_harness)
+        # `identity=True`: a harness id is node identity, so the compile.static mirror excludes
+        # it rather than routing it to a re-author that cannot change it.
+        self.assertTrue(ctx.exception.identity)
+        self.assertIn(str(bundle.IDENTIFIER_MAX), str(ctx.exception))
 
 
 class LineWidthTest(unittest.TestCase):

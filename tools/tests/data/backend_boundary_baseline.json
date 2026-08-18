@@ -238,7 +238,7 @@
     },
     "tools/backends/registry.py": {
       "compiler-driver": 2,
-      "fortran": 8,
+      "fortran": 10,
       "fortran-subroutine": 1,
       "linter-fortitude": 2
     },
@@ -304,25 +304,15 @@
       "fortran": 1
     },
     "tools/run_workflow.py": {
-      "fortran": 6
+      "fortran": 5
     },
-    "tools/runner_renderer.py": {
-      "compiler-driver": 1,
-      "fortran": 68,
-      "fortran-allocatable": 28,
-      "fortran-implicit-none": 1,
-      "fortran-intent": 40,
-      "fortran-kind": 4,
-      "fortran-standard": 5,
-      "fortran-subroutine": 10,
-      "fortran-suffix": 6,
-      "linter-fortitude": 2,
-      "make-control-file": 2
+    "tools/spec_input_gates.py": {
+      "fortran": 1
     },
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 37,
       "compiler-syntax-only": 8,
-      "fortran": 373,
+      "fortran": 372,
       "fortran-allocatable": 2,
       "fortran-implicit-none": 3,
       "fortran-intent": 42,
@@ -331,7 +321,7 @@
       "fortran-module-procedure": 3,
       "fortran-standard": 31,
       "fortran-subroutine": 77,
-      "fortran-suffix": 43,
+      "fortran-suffix": 41,
       "linter-fortitude": 8,
       "make-control-file": 110,
       "make-variable": 25,
@@ -344,13 +334,13 @@
     "tools/workflow_conductor.py": {
       "compiler-driver": 28,
       "compiler-syntax-only": 2,
-      "fortran": 77,
+      "fortran": 75,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,
-      "fortran-standard": 4,
+      "fortran-standard": 3,
       "fortran-suffix": 57,
-      "make-control-file": 100,
+      "make-control-file": 102,
       "make-variable": 61
     }
   }

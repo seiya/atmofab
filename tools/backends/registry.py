@@ -26,24 +26,31 @@ membership while its callers meant usability.
     unsupported_reason    declared member?                      naming / message building
     unimplemented_reason  declared AND some code exists          node-acceptance gates: may a
                                                                  run carry this value at all
-    provides              the NEUTRAL CORE does <job> for it     host dispatch: may I run MY
-                                                                 inlined writer on this node
+    provides              THIS REPOSITORY does <job> for it      host dispatch: is this node's
+                                                                 <job> the host's or a leaf's
     unavailable_reason    declared AND extracted                 about to RUN backend code
 
 A record with `module=None` and no capabilities — registered, implemented nowhere — answers
 `None` to the first and a refusal to the rest. That is the fail-CLOSED default for a new member.
 
 `provides` is the question every HOST-AUTHORSHIP dispatch has, and getting it wrong is how the
-neutral core would hand a node to the wrong writer. The conductor's control-file writer and its
-runner renderer each emit ONE build system's and ONE language's text. A predicate guarding them
+neutral core would hand a node to the wrong writer. The control-file writer and the runner
+renderer each emit ONE build system's and ONE language's text. A predicate guarding them
 on "is this value implemented" would answer True the day a second build system is implemented AS
 A BACKEND — and route its nodes into the existing writer, which is worse than the hard-coded pair
 it replaced.
-So a capability says which value the NEUTRAL CORE has an inlined implementation of that job for,
-and it is declared per record: a `cmake` backend that does not declare `control_file` gets
-`False`, which is the documented leaf-authored path, not a silent misrender. When an area of the
-migration ledger lands, its capability moves from the record's declaration to real dispatch
-through the backend module, and the capability declaration goes away with it.
+So a capability says which value this repository has an implementation of that job for, and it is
+declared per record: a `cmake` backend that does not declare `control_file` gets `False`, which
+is the documented leaf-authored path, not a silent misrender.
+
+WHERE the implementation lives is a SECOND question, and the two sets answer it separately.
+`core_provides` is the job still inlined in the neutral core — the debt the migration ledger in
+`TODO.md` is paying down. `backend_provides` is the job the record's own package implements, and
+`capability_module` is the only way to reach it: it refuses a value that has not declared the
+job, so a dispatch can never load a backend that did not say it does the work. When an area of
+the ledger lands, its capability moves from the first set to the second and the dispatch site
+starts routing through `capability_module`. `provides` is the union, so the authorship answer —
+which is not about where the code sits — does not move with it.
 
 Stdlib only, and imports no other module of this package at import time, so every site can
 depend on it — including `tools/validate_pipeline_semantics.py`, which may not import
@@ -138,10 +145,10 @@ AXES: dict[str, Axis] = {
 
 
 #: The host-side jobs a value can be implemented FOR, and which axis each is asked of. A
-#: capability names a responsibility the NEUTRAL CORE carries today with code specific to one
-#: value — the debt the migration ledger in `TODO.md` is paying down, written where the dispatch
-#: sites can read it instead of each spelling the value themselves. It is not a feature flag and
-#: not a plan: declaring one asserts the inlined code exists NOW.
+#: capability names a responsibility THIS REPOSITORY carries today with code specific to one
+#: value — written where the dispatch sites can read it instead of each spelling the value
+#: themselves. It is not a feature flag and not a plan: declaring one asserts the code exists
+#: NOW, in the neutral core (`core_provides`) or in the record's package (`backend_provides`).
 CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     "control_file": (
         ("build_system", "language"),
@@ -156,8 +163,8 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     ),
     "runner_render": (
         ("language",),
-        "The host renders the runner glue over the certified harness for this value "
-        "(`tools/runner_renderer.py`), rather than a leaf authoring it.",
+        "The host renders the runner glue over the certified harness for this value, rather "
+        "than a leaf authoring it.",
     ),
     "syntax_check": (
         ("compiler",),
@@ -174,6 +181,26 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 }
 
 
+#: For each capability a backend package can implement, the attribute the package re-exports its
+#: implementation under. This is the ONE convention `capability_module` applies, written here
+#: rather than in each seam: a seam that spelled the submodule name itself would be a second
+#: place naming a backend's internal layout, and a package with two capabilities would have no
+#: single "the module" to return. A capability absent from this table cannot be reached through
+#: `capability_module` at all — which is correct for the ones no dispatch routes through yet.
+#:
+#: This table says WHERE a package re-exports a capability, and NOTHING about who still has an
+#: inlined implementation of it. Two rules were written on the opposite assumption and both were
+#: wrong: keyed by capability, the first axis to migrate `control_file` refused the second axis'
+#: still-inlined declaration; keyed by axis, migrating one `linter` adapter refused the other
+#: three, which are genuinely separate inlined adapters — and that refusal is an ImportError for
+#: a module the whole tree imports. "Does the neutral core still implement this job for THIS
+#: value" is a fact about the tree, per (axis, value), and no other record carries it. It is not
+#: checkable here; see `docs/BACKEND_BOUNDARY.md` §Design Policy for where it IS caught.
+CAPABILITY_MODULE_ATTR: dict[str, str] = {
+    "runner_render": "runner",
+}
+
+
 class Backend(NamedTuple):
     """One declared value of one axis."""
 
@@ -182,12 +209,29 @@ class Backend(NamedTuple):
     #: Dotted module path of the backend package, or ``None`` while its knowledge is still
     #: inlined in the neutral core (see the migration ledger in ``TODO.md``).
     module: str | None
-    #: The `CAPABILITIES` the neutral core carries for this value today. Empty means nothing
-    #: inlined does this value's work — which, for a record with `module=None`, is the honest
-    #: state of a value that was registered and implemented nowhere. That state must not be
-    #: mistaken for a runnable one, which is why it is a declared set rather than something
-    #: inferred from `module`.
+    #: The `CAPABILITIES` still carried for this value by code INLINED IN THE NEUTRAL CORE.
+    #: Empty means nothing inlined does this value's work — which, for a record with
+    #: `module=None`, is the honest state of a value that was registered and implemented
+    #: nowhere. That state must not be mistaken for a runnable one, which is why it is a
+    #: declared set rather than something inferred from `module`.
     core_provides: frozenset[str] = frozenset()
+    #: The `CAPABILITIES` this record's OWN backend package implements. The same jobs, moved:
+    #: as an area of the migration ledger lands, its capability moves from `core_provides` to
+    #: here and the dispatch site starts reaching it through `capability_module` instead of
+    #: running its own inlined writer. A capability may not appear in both sets — one job, one
+    #: owner — and declaring one here requires a `module` to hold it.
+    backend_provides: frozenset[str] = frozenset()
+
+    @property
+    def provided(self) -> frozenset[str]:
+        """Every capability this value has an implementation of, wherever that implementation is.
+
+        The question a host-authorship dispatch asks — "is this node's <job> done by code this
+        repository owns, or does it fall to a leaf" — does not change when the code moves out of
+        the neutral core into the package. `provides` is this set, so a migration does not flip a
+        dispatch.
+        """
+        return self.core_provides | self.backend_provides
 
     @property
     def extracted(self) -> bool:
@@ -196,18 +240,20 @@ class Backend(NamedTuple):
     @property
     def implemented(self) -> bool:
         """The value has code, wherever it lives — an extracted package, or the neutral core."""
-        return self.module is not None or bool(self.core_provides)
+        return self.module is not None or bool(self.provided)
 
 
 _BACKENDS: dict[tuple[str, str], Backend] = {
     (b.axis, b.backend_id): b
     for b in (
-        # This record is extracted for signature parse/render AND carries capabilities, because
+        # This record is extracted AND still carries a `core_provides` capability, because
         # extraction and capability are independent: the neutral core still holds this value's
-        # control-file compile rules and its runner render (two open ledger areas).
+        # control-file compile rules (an open ledger area), while its runner render has moved
+        # into the package and is dispatched through `capability_module`.
         Backend(
             "language", "fortran", "tools.backends.language.fortran",
-            core_provides=frozenset({"control_file", "runner_render"}),
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}),
         ),
         Backend(
             "build_system", "make", None,
@@ -248,7 +294,7 @@ def _check_declarations() -> None:
     and unlike a test it cannot be bypassed by importing the module directly.
     """
     for backend in _BACKENDS.values():
-        for capability in sorted(backend.core_provides):
+        for capability in sorted(backend.provided):
             axes_for = CAPABILITIES.get(capability)
             if axes_for is None:
                 raise UnsupportedBackend(
@@ -260,6 +306,34 @@ def _check_declarations() -> None:
                     f"{backend.axis}/{backend.backend_id} declares '{capability}', which is a "
                     f"question of the {', '.join(axes_for[0])} axis only"
                 )
+        # One job, one owner, and checked FIRST because it is the most specific diagnosis of a
+        # double declaration: the rule below would otherwise catch the same shape and tell the
+        # author to declare it in `backend_provides`, where it already is.
+        both = backend.core_provides & backend.backend_provides
+        if both:
+            raise UnsupportedBackend(
+                f"{backend.axis}/{backend.backend_id} declares {sorted(both)} in BOTH "
+                f"core_provides and backend_provides; a capability has exactly one owner — "
+                f"when it moves into the package, it leaves the neutral core"
+            )
+        # A package implementation needs a way to be reached. Declaring one with no
+        # `CAPABILITY_MODULE_ATTR` entry would make `capability_module` refuse a value the
+        # record says is implemented — a capability that is true and unreachable at once.
+        for capability in sorted(backend.backend_provides - set(CAPABILITY_MODULE_ATTR)):
+            raise UnsupportedBackend(
+                f"{backend.axis}/{backend.backend_id} declares backend_provides "
+                f"'{capability}', which has no CAPABILITY_MODULE_ATTR entry saying where a "
+                f"package re-exports it"
+            )
+        # A package implementation needs a package. Without this, a record could claim a
+        # capability that `capability_module` would then be unable to load — a claim with no
+        # possible implementation, which is exactly what the two sets exist to distinguish.
+        if backend.backend_provides and backend.module is None:
+            raise UnsupportedBackend(
+                f"{backend.axis}/{backend.backend_id} declares backend_provides "
+                f"{sorted(backend.backend_provides)} but has no backend package (module=None); "
+                f"a capability implemented in the neutral core belongs in core_provides"
+            )
 
 
 _check_declarations()
@@ -296,9 +370,12 @@ def _require_capability(axis: str, capability: str) -> None:
 
 
 def provides(axis: str, backend_id: str, capability: str) -> bool:
-    """True when the NEUTRAL CORE carries `capability` for this axis value.
+    """True when THIS REPOSITORY carries `capability` for this axis value, wherever the code is.
 
-    The question a host-authorship dispatch has: may I run my own inlined writer on this node.
+    The question a host-authorship dispatch has: does the HOST do this job for this node, or does
+    it fall to a leaf. Deliberately blind to whether the implementation has been extracted into
+    the backend package yet (`core_provides | backend_provides`), because that is a migration
+    state and the authorship answer must not change when an area of the ledger lands.
     A value with no record — unknown, or an open-vocabulary token — answers False, so the
     dispatch declines rather than writing something for a value it knows nothing about.
 
@@ -316,7 +393,7 @@ def provides(axis: str, backend_id: str, capability: str) -> bool:
     # `"none"`, which is a real backend id on the `parallel` axis, so a caller passing an absent
     # value would get that record's answer instead of a refusal.
     backend = _BACKENDS.get((axis, str(backend_id or "").strip().lower()))
-    return backend is not None and capability in backend.core_provides
+    return backend is not None and capability in backend.provided
 
 
 def missing_capability_reason(axis: str, backend_id: str, capability: str) -> str | None:
@@ -328,7 +405,7 @@ def missing_capability_reason(axis: str, backend_id: str, capability: str) -> st
     if provides(axis, backend_id, capability):
         return None
     able = ", ".join(
-        bid for bid in backend_ids(axis) if capability in _BACKENDS[(axis, bid)].core_provides
+        bid for bid in backend_ids(axis) if capability in _BACKENDS[(axis, bid)].provided
     ) or "no value of this axis"
     # The capability's PROSE is not repeated here. A violation string is read by an author
     # deciding what to re-write, and `CAPABILITIES` is where the job is described; two clauses
@@ -435,7 +512,7 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     """`None` when `backend_id` is declared for `axis` AND this repository implements it.
 
     Implemented means the code exists — in the backend package (`extracted`) or still in the
-    neutral core, which is what a declared `core_provides` capability asserts. This is the
+    neutral core, which is what a declared capability asserts. This is the
     question a NODE-ACCEPTANCE gate has: may a run carry
     this axis value at all. `unavailable_reason` is not that question — it refuses every value
     whose backend has not been extracted yet, which today is most of them, so a gate asking it
@@ -445,7 +522,7 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     this function. Membership answers `None` for a value that was added to `_BACKENDS` and has
     no code anywhere; a gate guarding on membership alone would accept such a node and hand it
     to whichever backend the surrounding module hard-codes. Registering a member is therefore
-    inert here until its `module` or its `core_provides` says where the code is.
+    inert here until its `module` or one of its capability sets says where the code is.
 
     Returned rather than raised for `unsupported_reason`'s reason: the callers are deterministic
     gates that append a violation string rather than raising.
@@ -541,3 +618,69 @@ def load(axis: str, backend_id: str) -> ModuleType:
     module = _BACKENDS[(axis, str(backend_id or "").strip().lower())].module
     assert module is not None  # `require_available` returned, so the record is extracted
     return importlib.import_module(module)
+
+
+def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType:
+    """The backend module that implements `capability` for this value — the dispatch entry point.
+
+    `load` answers "is this value's code extracted"; this answers the narrower question a
+    capability dispatch actually has: "does THIS record's package do THIS job". A record can be
+    extracted for one job and not another (the Fortran backend renders runners but its
+    control-file rules are still inlined), so loading on extraction alone would hand a seam a
+    module that never claimed the work and let it fail on a missing attribute — or, worse, find a
+    same-named one and render the wrong thing.
+
+    `BackendNotExtracted` when the record does not declare `capability` in `backend_provides` —
+    including when the neutral core still carries it, which is a real state with a real answer:
+    the code exists, but not here. `_check_declarations` has already refused, at import, any
+    record that declares a package capability without a package, so a returned module is one the
+    record positively claims.
+    """
+    _require_capability(axis, capability)
+    require_available(axis, backend_id)
+    backend = _BACKENDS[(axis, str(backend_id or "").strip().lower())]
+    # `backend_provides`, not `provided`, and LOAD BEARING — an earlier comment here called it
+    # moot on the strength of a declaration rule that has since been removed as unsound. A
+    # capability can have a `CAPABILITY_MODULE_ATTR` row because it migrated on ONE axis while a
+    # record of another axis still carries it inlined: `control_file` is a question of two axes,
+    # and that is the ledger's next area. Widened to `provided`, this returns the package's
+    # module for a job the record only claims to do in the neutral core — the wrong-module
+    # dispatch the docstring above says this function exists to prevent.
+    if capability not in backend.backend_provides:
+        # BOTH clauses are reachable, and the difference is the whole value of the message: one
+        # sends a reader to a capability that exists elsewhere, the other to a value nothing
+        # implements. `capability_module("language", "fortran", "control_file")` takes the first
+        # on the unmodified tree — a comment here once claimed it was unreachable, which was
+        # wrong by a one-line call.
+        where = (
+            "it is still carried by the neutral core" if capability in backend.core_provides
+            else "nothing in this repository implements it for that value")
+        raise BackendNotExtracted(
+            f"the {axis} backend '{backend.backend_id}' does not implement '{capability}' in "
+            f"its package: {where} (declare it in backend_provides on the record in "
+            f"tools/backends/registry.py once the package implements it — see "
+            f"docs/BACKEND_BOUNDARY.md)"
+        )
+    attr = CAPABILITY_MODULE_ATTR.get(capability)
+    if attr is None:
+        # UNREACHABLE while `_check_declarations` holds — it refuses a `backend_provides` entry
+        # with no row, and the check above has already required this capability to be in
+        # `backend_provides`. Kept as the fail-closed shape rather than deleted, and LABELLED so
+        # it does not read as a live guard; measured, deleting it leaves the suite green.
+        raise UnsupportedBackend(
+            f"capability '{capability}' has no entry in CAPABILITY_MODULE_ATTR, so there is no "
+            f"convention for where a backend package re-exports it; add one in "
+            f"tools/backends/registry.py — see docs/BACKEND_BOUNDARY.md"
+        )
+    package = load(axis, backend_id)
+    module = getattr(package, attr, None)
+    if not isinstance(module, ModuleType):
+        # The record CLAIMED this job. A package that does not carry it is a declaration that
+        # lied, and the only safe reading is a refusal: the alternative is a seam holding some
+        # other object and failing later on a missing function, or finding a same-named one.
+        raise BackendNotExtracted(
+            f"the {axis} backend '{backend.backend_id}' declares '{capability}' but its package "
+            f"{backend.module!r} re-exports no `{attr}` module for it (the declaration in "
+            f"tools/backends/registry.py and the package disagree)"
+        )
+    return module

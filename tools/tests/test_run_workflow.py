@@ -4113,7 +4113,7 @@ class RunWorkflowTests(unittest.TestCase):
 
 
 # Every non-infrastructure spec must declare exactly one `infrastructure` (runner-harness)
-# direct dependency (runner_renderer.infra_dep_count_violation), so a fixture registry is only
+# direct dependency (spec_input_gates.infra_dep_count_violation), so a fixture registry is only
 # usable if the harness node itself is registered and readable. `_write_catalog` seeds it and
 # `_write_deps` declares the edge by default, matching the shipped spec corpus — which means
 # every closure below legitimately contains the harness node.
@@ -4376,8 +4376,8 @@ class DependencyClosureTests(unittest.TestCase):
     def test_overlong_spec_id_dependency_fails_closed(self) -> None:
         # M3d closure-build gate: an over-length dependency spec_id is rejected at closure
         # resolution — before any node runs and before an already-ready dep is skipped, so
-        # it cannot slip the per-node resolve_node gate. Mirrors runner_renderer.MAX_SPEC_ID_LEN.
-        from tools.runner_renderer import MAX_SPEC_ID_LEN
+        # it cannot slip the per-node resolve_node gate. Mirrors spec_input_gates.MAX_SPEC_ID_LEN.
+        from tools.spec_input_gates import MAX_SPEC_ID_LEN
         long_id = "d" * (MAX_SPEC_ID_LEN + 6)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

@@ -39,7 +39,7 @@ _HARNESS_SPEC_ID = "harness_fortran_cpu"
 _SPEC_PATH = "spec/problem/ocean/shallow_water2d"
 
 def _runner_text() -> str:
-    from tools.runner_renderer import render_runner
+    from tools.backends.language.fortran.runner import render_runner
     return render_runner(_node_ir(), _SPEC_ID, _HARNESS_SPEC_ID)
 
 
@@ -73,7 +73,7 @@ def _checks_symbols() -> tuple[str, ...]:
     """The fixed checks ABI — required in FULL of every M3c node, not the subset this node's
     runner imports (`Generate.static` checks all ten). Imported from the renderer, the ABI's
     authority, rather than hand-typed here."""
-    from tools.runner_renderer import CHECKS_PUBLIC_NAMES
+    from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
     return CHECKS_PUBLIC_NAMES
 
 
@@ -381,14 +381,49 @@ class PureBundleViolationsTests(unittest.TestCase):
             (src / checks["logical_path"]).write_text(checks["content"], encoding="utf-8")
             execution = SimpleNamespace(node_key=_NODE)
             v: list[str] = []
-            vps._validate_checks_source_files(execution, src, [], v)
+            vps._validate_checks_source_files(execution, "fortran", src, [], v)
             self.assertEqual([s for s in v if "publish the fixed ABI" in s], [], v)
+
+    def test_a_bundle_language_with_no_runner_render_capability_is_refused(self) -> None:
+        """The refusal branch of the ABI gate, driven — it is corpus-dependent, not unreachable.
+
+        The two vps call sites of this seam take their language from `_ir_m3c_language`, which
+        has already required the value to provide `runner_render`, so their refusal really is
+        dead code. THIS one does not: the language is read off the bundle FILE entry, which the
+        bundle validator constrains only to `LANGUAGES` — the languages whose backend carries a
+        `bundle` interface. That set is computed independently of who declares `runner_render`,
+        so a language can legally reach here with no checks ABI to be held to. Today the two
+        sets happen to be equal (`('fortran',)`), which is why deleting the branch survives the
+        suite; a second language backend with a bundle and no renderer separates them, and then
+        a waiver here would accept a checks module against an ABI nobody defined.
+        """
+        from unittest import mock
+
+        import tools.codegen_bundle as cb
+        from tools.backends import registry as backend_registry
+
+        bundle = _valid_bundle()
+        checks = next(f for f in bundle["files"] if f["role"] == "checks")
+        checks["language"] = "zz_bundle_only"
+        record = backend_registry.Backend(
+            "language", "zz_bundle_only", "tools.backends.language.fortran",
+            core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(
+                backend_registry._BACKENDS,
+                {("language", "zz_bundle_only"): record}):
+            self.assertFalse(
+                backend_registry.provides("language", "zz_bundle_only", "runner_render"))
+            violation = cb.m3c_checks_abi_violation(bundle, _SPEC_ID)
+        self.assertIsNotNone(violation, "a language with no checks ABI must not be waived")
+        self.assertIn("zz_bundle_only", violation)
+        # The registry's own clause, carried rather than re-worded.
+        self.assertIn("runner_render", violation)
 
     def test_runner_imported_subset_is_not_the_required_set(self) -> None:
         # Pins the direction of the Codex P1 fix: the runner here imports 6 of the 10, and a
         # bundle publishing only those 6 must be REJECTED (Generate.static wants all ten).
         c, refs = self._c_refs()
-        from tools.runner_renderer import CHECKS_PUBLIC_NAMES
+        from tools.backends.language.fortran.runner import CHECKS_PUBLIC_NAMES
         imported = cb_runner_imports(_runner_text(), _SPEC_ID)
         self.assertTrue(set(imported) < set(CHECKS_PUBLIC_NAMES), imported)
         bad = _valid_bundle()
@@ -1875,8 +1910,8 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # burned a retry on fortitude C072. The doc-blind producer learns the rule only if the
         # launch template states it. Under the per-id ABI (pure-8) the sole `intent(out)` character
         # dummy is `status`, whose width MUST match the one authority the runner renders against
-        # (runner_renderer.CHECK_STATUS_WIDTH), not a hand-copied number that could drift.
-        from tools.runner_renderer import CHECK_STATUS_WIDTH
+        # (the fortran backend runner's CHECK_STATUS_WIDTH), not a hand-copied number that could drift.
+        from tools.backends.language.fortran.runner import CHECK_STATUS_WIDTH
         template = ort._load_launch_prompt_templates()["pure generate.generate"]
         start = template.index("(1) Style lint")
         end = template.index("\n(2)", start)

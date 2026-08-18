@@ -6,16 +6,16 @@
 > authors **two** Fortran sources: `<spec_id>_model.f90` (the physics kernel +
 > the published `__apply` operation) and `<spec_id>_checks.f90` (this contract).
 > It does **not** author `<spec_id>_runner.f90` or `src/Makefile` — those are
-> host-rendered by the conductor (`tools/runner_renderer.py` /
-> `_write_makefile`) and are outside the leaf's `allowed_output_paths`. This is
+> host-rendered by the conductor (`tools/host_render.py` / `_write_makefile`) and are outside the leaf's `allowed_output_paths`. This is
 > not read by `Validate.judge`.
 >
 > Binds the **agentic** leaf. A `pure` leaf (`Z2`) cannot read this: it is told the ten names and
 > shown the rendered runner, gated by `m3c_checks_abi_violation`; the §2/§3 behavioral contract is
 > distilled into `pure_generate_generate.txt`. (pure-8's runner-driven per-id `checks_compute`
 > takes each id as a literal actual, so a dropped id is impossible — the former
-> `m3c_checks_ids_violation` gate is gone.) All ten bind every node. `tools/runner_renderer.py`
-> owns the ABI — keep it, this doc, and the distilled paragraph in step.
+> `m3c_checks_ids_violation` gate is gone.) All ten bind every node. The language backend that
+> renders the runner owns the ABI (`host_render.checks_public_names`) — keep it, this doc, and
+> the distilled paragraph in step.
 >
 > **§5 (Fortran legality and gate guards) is the one section with a wider
 > scope**: it binds **every** `Generate` leaf that authors Fortran — including the

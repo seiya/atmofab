@@ -380,7 +380,7 @@ VALIDATE_EXECUTE_REASON_PREFIX = "validate_execute_"
 # Categories the table above routes to Generate that a HOST-RENDERED-runner node (M3c, see
 # `_conductor_authors_runner`) cannot repair there. On such a node the leaf authors only
 # `<spec_id>_model.f90` + `<spec_id>_checks.f90`; `src/<spec_id>_runner.f90` is rendered by the
-# conductor from the IR (`runner_renderer.render_runner`), which emits the per-case
+# conductor from the IR (`host_render.render_runner`), which emits the per-case
 # `__write_snapshot` call for every `case.test_case_set[].case_id`. A missing per-case snapshot
 # file is therefore decided entirely by the IR + the renderer — regenerating model/checks cannot
 # add one — so it is attributed to the IR and reopens Compile, instead of burning a Generate
@@ -3453,6 +3453,43 @@ def _classify_leaf_infra_error(stderr: str, stdout: str = "") -> tuple[str, str]
     return (best[1], best[2]) if best is not None else None
 
 
+def _ir_build_system(ir: Any) -> str:
+    """The node's build system, read the same way and with the same guards as `_ir_language`.
+
+    Split out for symmetry, not for reuse: the language read was made robust against a non-dict
+    `impl_defaults.toolchain` while the build-system read beside it kept dereferencing the same
+    object, so one shape (`toolchain:` holding a list or a string) raised `AttributeError` in the
+    conductor where the validator's mirror answers `False`. Two mirrors of one question must not
+    differ on which inputs they can read at all.
+    """
+    return str(_toolchain(ir).get("build_system") or "make").lower()
+
+
+def _toolchain(ir: Any) -> dict[str, Any]:
+    impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
+    tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
+    return tc if isinstance(tc, dict) else {}
+
+
+def _ir_language(ir: Any) -> str:
+    """The node's implementation language, read from the IR the one way every reader must.
+
+    Three places need it — the control-file authorship predicate, the runner authorship
+    predicate, and the runner render that follows the second — and the defaulting is the part
+    that must not vary: a reader that refused an absent `toolchain.language` where another
+    defaulted would fail-close a render its own predicate had just approved. `.lower()` without
+    `.strip()` is the conductor's deliberate normalization (see `_core_authors_control_file`).
+    """
+    value = _toolchain(ir).get("language")
+    # `.lower()` is an INTENT MARKER, not a live guard, and saying so beats leaving a reader to
+    # assume it is load bearing: measured, deleting it leaves the whole suite green because every
+    # consumer re-normalizes. `registry.provides` / `capability_module` apply `.strip().lower()`
+    # internally, and `_core_authors_control_file`'s own guard is about PADDING, not case. It
+    # stays because this function's value is the one both authorship predicates read, and a
+    # future consumer that compares it literally should get the normalized token.
+    return str(value or "fortran").lower()
+
+
 @dataclass
 class Conductor:
     """Holds invariant context and the primitive operations of the loop."""
@@ -5252,13 +5289,22 @@ class Conductor:
         the OPTIONAL `toolchain.compiler` (docs/IMPL_PLAN_SPEC.md) — empty string when the
         spec does not pin one (the environment default, gfortran, is then used)."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        # Through the SAME readers the authorship predicates use. This function is the third
+        # conductor-side reader of `impl_defaults.toolchain`, and it kept the unguarded
+        # dereference the other two were given guards for — so a `toolchain:` holding a list or a
+        # string made `_conductor_authors_makefile` answer True and then `_write_makefile`, its
+        # only consumer, raise `AttributeError`. That is the predicate-approves / writer-refuses
+        # split this file names elsewhere, on the control-file side. A commit message claimed
+        # "both now go through `_toolchain`"; there were three.
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
+        tc = _toolchain(ir)
         target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
+        if not isinstance(target, dict):
+            target = {}
         return {
-            "language": str(tc.get("language") or "fortran").lower(),
+            "language": _ir_language(ir),
             "standard": str(tc.get("standard") or "f2008").lower(),
-            "build_system": str(tc.get("build_system") or "make").lower(),
+            "build_system": _ir_build_system(ir),
             "compiler": str(tc.get("compiler") or "").strip(),
             "backend": str(target.get("backend") or "").lower(),
         }
@@ -5305,12 +5351,7 @@ class Conductor:
         authoring — which since the toolchain gate landed means only an `infrastructure` node
         on a future non-fortran language, every physics node being rejected at compile."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        return self._core_authors_control_file(
-            str(tc.get("build_system") or "make").lower(),
-            str(tc.get("language") or "fortran").lower(),
-        )
+        return self._core_authors_control_file(_ir_build_system(ir), _ir_language(ir))
 
     def _conductor_authors_runner(self, refs: NodeRefs) -> bool:
         """The conductor host-renders `src/<spec_id>_runner.f90` (R1/M3c-β) iff the node is a
@@ -5319,7 +5360,7 @@ class Conductor:
         `_core_authors_control_file`), with exactly one `infrastructure` (runner-harness) direct
         dependency. On such a node the runner is glue over the certified harness plumbing + the
         leaf-authored `<spec_id>_checks.f90`, so it is a pure function of the IR + the harness
-        interface (`tools/runner_renderer.render_runner`) — the leaf authors model+checks, not
+        interface (`tools/host_render.render_runner`) — the leaf authors model+checks, not
         the runner. An `infrastructure` node authors its own self-test runner (not glue), and is
         the only live leaf-authored-runner node: a physics node that is not make+fortran with
         exactly one infra dep is rejected upstream (spec-input for the dep count,
@@ -5330,14 +5371,11 @@ class Conductor:
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         if not isinstance(ir, dict):
             return False
-        impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
-        language = str(tc.get("language") or "fortran").lower()
+        language = _ir_language(ir)
         # The runner is BUILT by the host-authored control file and RENDERED by the host's
         # language-specific renderer, so both capabilities are required — the second is what
         # keeps a language the neutral core can compile but not render out of this path.
-        if not self._core_authors_control_file(
-                str(tc.get("build_system") or "make").lower(), language):
+        if not self._core_authors_control_file(_ir_build_system(ir), language):
             return False
         if not backend_registry.provides("language", language, "runner_render"):
             return False
@@ -5408,11 +5446,24 @@ class Conductor:
         render-error matrix). run_phase routes the raise to transport fail_closed (operator
         `--resume`), NOT a Generate content retry. Mirrors `_write_makefile` (host-authored,
         runtime-owned, before the substeps run so the write is outside the FS-diff window)."""
-        from tools.runner_renderer import render_runner, assert_harness_pin, RenderError
+        from tools.host_render import (
+            render_runner, assert_harness_pin, RenderError, RunnerRenderUnavailable)
         from tools.orchestration_runtime import (
             _certified_binary_meta, _certified_ir_dir, _is_safe_path_token,
             _latest_pipeline_dir, _model_source_from_binary_meta)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        # The node's language decides WHICH backend renders the glue. Read through the SAME
+        # helper `_conductor_authors_runner` uses, so the predicate that decided to author and
+        # the seam that authors cannot disagree about the value — a mismatch would fail-close a
+        # render the predicate had just approved. That predicate has already required this value
+        # to provide `runner_render` — but that is a DECLARATION question, and the seam asks
+        # whether it can actually dispatch: whether the record's package really carries the
+        # capability. Nothing can make those identical, because the registry must not import a
+        # backend at declaration time, so a declaration that outruns its package is only
+        # discovered when something loads it. This is handled below rather than declared
+        # impossible; two earlier versions of this comment declared it impossible and were
+        # wrong.
+        language = _ir_language(ir)
         infra = self._infra_direct_deps(ir)
         if len(infra) != 1:
             raise RuntimeError(
@@ -5516,7 +5567,8 @@ class Conductor:
                 f"{self._rel(harness_ir_dir)} carries no usable public_api.signatures to pin "
                 f"against (re-certify the harness)")
         try:
-            assert_harness_pin(ir, refs.spec_id, harness_sid, harness_signatures, source_text)
+            assert_harness_pin(
+                language, ir, refs.spec_id, harness_sid, harness_signatures, source_text)
         except RenderError as e:
             # A pin failure on the LEGACY-fallback path (no source_ir_id) matched against the
             # latest certified IR, not a provenance-bound one. Per the same-version signature
@@ -5530,7 +5582,24 @@ class Conductor:
                     f"stale-IR false drift, rebuild the harness (run_workflow.py --with-deps) to "
                     f"stamp source_ir_id and bind the pin to the source's origin IR]") from e
             raise
-        runner_text = render_runner(ir, refs.spec_id, harness_sid)
+        except RunnerRenderUnavailable as e:
+            # The declaration/tree gap, named where it lands. `_conductor_authors_runner`
+            # approved authorship on a DECLARATION and the seam cannot dispatch on it — a
+            # registry record that outruns its package, which nothing can catch at declaration
+            # time. Routed to transport fail_closed as a build precondition (the operator fixes
+            # the record or the package), NOT to a Generate content retry: no re-authored model
+            # would change the answer. Without this clause it reached the conductor's generic
+            # handler and was reported as a render failure, which points a reader at the IR.
+            raise RuntimeError(
+                f"host render for {refs.node_key}: the registry says this repository renders a "
+                f"runner for language {language!r}, but the backend cannot be dispatched to: "
+                f"{e}") from e
+        # No `RunnerRenderUnavailable` clause here, deliberately: `assert_harness_pin` above is
+        # the FIRST entry into the seam and is unconditional, so a backend that cannot be
+        # dispatched to has already raised. A second clause was written here and measured
+        # unreachable — deleting it left the suite green — and an unreachable duplicate of an
+        # error path is worse than none: it reads as a second live guard.
+        runner_text = render_runner(language, ir, refs.spec_id, harness_sid)
         path = self.repo_root / refs.source_dir() / "src" / f"{refs.spec_id}_runner.f90"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(runner_text, encoding="utf-8")
@@ -7059,12 +7128,12 @@ clean:
         # deliverable set this same list feeds); if a predicate still references it, the
         # metrics-basis matrix reports the missing (test_id, case_id). Either way the run stays
         # in-directory — the dropped case never produces an out-of-bounds write.
-        from tools.runner_renderer import _CASE_ID_TOKEN_RE
+        from tools.spec_input_gates import CASE_ID_TOKEN_RE
         return tuple(sorted(
             tok for c in tcs
             if isinstance(c, dict) and isinstance(c.get("case_id"), str)
             and (tok := c["case_id"].strip())
-            and _CASE_ID_TOKEN_RE.match(tok) and ".." not in tok
+            and CASE_ID_TOKEN_RE.match(tok) and ".." not in tok
         ))
 
     def _read_evidence_artifacts(self, refs: NodeRefs) -> tuple[str, ...]:
@@ -8233,7 +8302,7 @@ clean:
                     # node source here) yet outside allowed_output_paths. It gets no probe:
                     # it `use`s the leaf-authored checks module, so it is not self-contained
                     # and cannot be compiled alone. It is held clean at the source instead —
-                    # tools/tests/test_runner_renderer.py compiles the rendered runner under
+                    # tools/tests/test_fortran_runner.py compiles the rendered runner under
                     # these exact promoted flags, so a renderer edit that emitted an unused
                     # dummy or local could not ship green.
                     if staged_deps and dep_files:
@@ -11372,17 +11441,17 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     # compile.static hoist excludes it because a re-author cannot shorten a spec_id) that
     # would otherwise fail-close at conductor render time on a harness-backed node — a
     # workflow-kill. This is the canonical capture point (see
-    # runner_renderer.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
-    # language/phase-agnostic: the 55-char bound reflects the f2008 identifier limit of the
-    # ONLY current backend (fortran), where every >55 spec_id is doomed regardless of phase.
+    # spec_input_gates.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
+    # language/phase-agnostic: the 55-char bound reflects the identifier limit of the ONLY
+    # current language backend, where every >55 spec_id is doomed regardless of phase.
     # It also rejects a >55 spec on a Compile-only run — acceptable while every backend is
     # fortran. When a backend with a different identifier limit is added, move the bound to
     # a language-aware point.
     # (2) infrastructure direct-dependency count (see
-    # runner_renderer.infra_dep_count_violation), checked below once the catalog fixes the
+    # spec_input_gates.infra_dep_count_violation), checked below once the catalog fixes the
     # node's spec_kind. Same rationale: a re-author cannot repair a node's dependency
     # identity, and the non-M3c physical path it used to degrade to has been removed.
-    from tools.runner_renderer import infra_dep_count_violation, spec_id_length_violation
+    from tools.spec_input_gates import infra_dep_count_violation, spec_id_length_violation
     _sid_violation = spec_id_length_violation(spec_id)
     if _sid_violation:
         raise ValueError(

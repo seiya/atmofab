@@ -27,7 +27,7 @@
     },
     "backend_overrides": {
       "type": "object",
-      "description": "Per-backend override values. The OpenMP section MUST be keyed by the literal lowercase `openmp` — never by `selected.backend_key` (`cpu_openmp`, `cpu_openmp_x86_64`) — because `tools/runner_renderer.py` looks up that exact key and reads nothing else, so overrides filed under any other section name are silently dropped. Three live IRs file their OpenMP overrides under `cpu_openmp`; two of them request 4 threads and run on 1. Sections for other backends are unconstrained.",
+      "description": "Per-backend override values. The OpenMP section MUST be keyed by the literal lowercase `openmp` — never by `selected.backend_key` (`cpu_openmp`, `cpu_openmp_x86_64`) — because the host-rendered runner looks up that exact key and reads nothing else, so overrides filed under any other section name are silently dropped. Three live IRs file their OpenMP overrides under `cpu_openmp`; two of them request 4 threads and run on 1. Sections for other backends are unconstrained.",
       "additionalProperties": true,
       "properties": {
         "openmp": {
@@ -37,7 +37,7 @@
             "num_threads": {
               "type": "integer",
               "minimum": 1,
-              "description": "Thread count. CANONICAL — `tools/runner_renderer.py` reads exactly this key, so `threads` / `threads_per_rank` are silently ignored and the run degrades to 1 thread."
+              "description": "Thread count. CANONICAL — the host-rendered runner reads exactly this key, so `threads` / `threads_per_rank` are silently ignored and the run degrades to 1 thread."
             },
             "schedule": {
               "type": "string",

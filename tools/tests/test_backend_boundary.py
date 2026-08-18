@@ -73,6 +73,7 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +81,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import tools.validate_pipeline_semantics as vps  # noqa: E402
+from tools import host_render  # noqa: E402
 from tools.backends import registry  # noqa: E402
 
 #: The SAMPLED half. Regenerable: `--write-baseline` rewrites it, and the growth check tells the
@@ -1322,9 +1324,13 @@ class RegistryConsistencyTests(unittest.TestCase):
         an existing capability does not fail this: what fails is a declaration silently
         DISAPPEARING from a record that had it.
         """
+        # `provided`, the UNION: a capability that has moved into a backend package is still
+        # declared for that value, and `provides` — the question this test is about — still
+        # answers True for it. Reading `core_provides` alone would report a capability as
+        # undeclared on the commit that finishes its migration, which is backwards.
         declarers = {
             capability: {f"{b.axis}/{b.backend_id}" for b in registry._BACKENDS.values()
-                         if capability in b.core_provides}
+                         if capability in b.provided}
             for capability in registry.CAPABILITIES
         }
         # Every declared capability has at least one declarer per axis it is a question of,
@@ -1447,7 +1453,7 @@ class RegistryConsistencyTests(unittest.TestCase):
                 node for node in ast.walk(tree)
                 if isinstance(node, ast.Call)
                 and getattr(node.func, "attr", getattr(node.func, "id", None))
-                in ("provides", "missing_capability_reason")
+                in ("provides", "missing_capability_reason", "capability_module")
             ]
             if not calls:
                 continue
@@ -1526,7 +1532,7 @@ class RegistryConsistencyTests(unittest.TestCase):
     def test_every_capability_is_declared_by_a_record_and_described(self) -> None:
         # A capability nothing declares is a question whose answer is always False — a dispatch
         # keyed on it is dead code that reads as a live rule.
-        declared = {c for b in registry._BACKENDS.values() for c in b.core_provides}
+        declared = {c for b in registry._BACKENDS.values() for c in b.provided}
         self.assertEqual(set(registry.CAPABILITIES), declared)
         for capability, (axes, description) in registry.CAPABILITIES.items():
             self.assertTrue(axes, capability)
@@ -1668,6 +1674,717 @@ class RegistryConsistencyTests(unittest.TestCase):
                 if module is None:
                     continue
                 self.assertEqual(module, f"{BACKEND_PACKAGE}.{axis}.{backend_id}")
+
+
+class CapabilityOwnershipTests(unittest.TestCase):
+    """The two capability sets, and the dispatch that reaches the second one.
+
+    `core_provides` says a job is still inlined in the neutral core; `backend_provides` says the
+    record's own package does it. Every guard below was reverted and measured: without it the
+    suite stays green while the registry can describe a state that cannot exist, or hand a seam a
+    backend that never claimed the work.
+    """
+
+    def _patched(self, record: "registry.Backend"):
+        return mock.patch.dict(registry._BACKENDS, {(record.axis, record.backend_id): record})
+
+    def test_a_package_capability_requires_a_package(self) -> None:
+        # W1. `module=None` with `backend_provides` is "the package implementation in the package
+        # that does not exist". Nothing else refuses it: `provides` would answer True and
+        # `capability_module` would then raise on a value the registry called implemented.
+        record = registry.Backend(
+            "language", "zz_no_pkg", None, backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("no backend package", str(ctx.exception))
+
+    def test_a_capability_may_not_be_owned_twice(self) -> None:
+        # W2. Both sets naming one capability leaves no answer to WHICH implementation runs —
+        # the ambiguity the migration removes, reintroduced by a declaration.
+        record = registry.Backend(
+            "language", "zz_both", "tools.backends.language.fortran",
+            core_provides=frozenset({"runner_render"}),
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("BOTH", str(ctx.exception))
+
+    def test_a_package_capability_needs_a_place_to_be_reached(self) -> None:
+        # W1b. A `backend_provides` entry with no `CAPABILITY_MODULE_ATTR` row is a capability
+        # that is declared true and unreachable at the same time.
+        # The capability is SYNTHESISED — declared, of this axis, and deliberately absent from
+        # `CAPABILITY_MODULE_ATTR` — rather than borrowed from the live table. Every live
+        # capability without a row is one the ledger intends to migrate, and migrating it would
+        # turn this probe into a false failure whose message ("UnsupportedBackend not raised")
+        # names nothing for the author who tripped it.
+        record = registry.Backend(
+            "language", "zz_unreachable", "tools.backends.language.fortran",
+            backend_provides=frozenset({"zz_rowless"}))
+        with mock.patch.dict(
+                registry.CAPABILITIES, {"zz_rowless": (("language",), "a synthetic job")}), \
+                self._patched(record):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("CAPABILITY_MODULE_ATTR", str(ctx.exception))
+
+    def test_provides_is_the_union_and_not_extraction(self) -> None:
+        # W3. Two ways to get `provides` wrong, and each needs its own record. Simplifying it to
+        # "the record is extracted" would answer True for a package that does not do this job —
+        # the authorship flip the predicate exists to prevent.
+        pkg_only = registry.Backend(
+            "language", "zz_pkg_only", "tools.backends.language.fortran",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(pkg_only):
+            self.assertTrue(registry.provides("language", "zz_pkg_only", "runner_render"))
+        extracted_mute = registry.Backend(
+            "language", "zz_mute", "tools.backends.language.fortran")
+        with self._patched(extracted_mute):
+            self.assertIsNone(registry.unavailable_reason("language", "zz_mute"))
+            self.assertFalse(registry.provides("language", "zz_mute", "runner_render"))
+
+    def test_capability_module_refuses_a_backend_that_never_claimed_the_job(self) -> None:
+        # W5. Extraction is not a claim. `load` would hand this package straight back — and it
+        # HAS a `runner` module, so the seam would render Fortran for a value whose record says
+        # nothing about rendering.
+        record = registry.Backend("language", "zz_mute", "tools.backends.language.fortran")
+        with self._patched(record):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_mute", "runner_render")
+            self.assertIsNotNone(registry.load("language", "zz_mute"))  # `load` does not refuse
+        self.assertIn("does not implement", str(ctx.exception))
+
+    def test_capability_module_refuses_a_package_that_does_not_carry_it(self) -> None:
+        # W5b. The declaration and the tree disagreeing the other way: the record claims the job,
+        # the package has no such module. Returning the package anyway would defer the failure to
+        # a missing attribute inside a seam, where it reads as a render bug.
+        record = registry.Backend(
+            "language", "zz_liar", "tools.backends", backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_liar", "runner_render")
+        self.assertIn("re-exports no", str(ctx.exception))
+
+    def test_a_package_capability_is_name_and_axis_checked_like_a_core_one(self) -> None:
+        # W1c. `_check_declarations` walked `core_provides` before the two sets existed, and
+        # reverting it to that survives the whole suite: a `backend_provides` entry naming a
+        # capability that does not exist, or one belonging to another axis, reached NO check —
+        # the CAPABILITY_MODULE_ATTR guard below it fires on a different ground and with a
+        # different message, so it LOOKS like coverage. Both grounds are asserted by message.
+        unknown = registry.Backend(
+            "language", "zz_unknown_cap", "tools.backends.language.fortran",
+            backend_provides=frozenset({"zz_not_a_capability"}))
+        with self._patched(unknown):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("unknown capability", str(ctx.exception))
+        # `lint` IS a capability — of the `linter` axis. Declared on a `language` record it must
+        # be refused as a wrong-axis question, not as a missing reach convention.
+        wrong_axis = registry.Backend(
+            "language", "zz_wrong_axis", "tools.backends.language.fortran",
+            backend_provides=frozenset({"lint"}))
+        with self._patched(wrong_axis):
+            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                registry._check_declarations()
+        self.assertIn("axis only", str(ctx.exception))
+
+    def test_the_refusal_names_the_value_that_does_implement_the_capability(self) -> None:
+        # W8b. `missing_capability_reason` builds its "this repository implements it for X" list
+        # from the records, and reverting that read to `core_provides` survives: the clause then
+        # says "no value of this axis" for a capability the Fortran backend demonstrably has.
+        # This string is carried VERBATIM into a leaf-facing violation, so a clause that names no
+        # implementer tells an author to go implement something that already exists.
+        # `zz_no_renderer`, not a real candidate value: `cpp` is a language this repository
+        # names elsewhere as a plausible next member, and registering it — the documented
+        # "Adding a backend" procedure — would turn this probe into a false failure.
+        no_renderer = registry.Backend("language", "zz_no_renderer", None)
+        with self._patched(no_renderer):
+            reason = registry.missing_capability_reason(
+                "language", "zz_no_renderer", "runner_render")
+        self.assertIsNotNone(reason)
+        self.assertIn("fortran", reason)
+        self.assertNotIn("no value of this axis", reason)
+        # And the negative half, so the assertion above cannot pass by naming everything: an
+        # axis where nothing declares the capability really does say so.
+        with mock.patch.dict(
+                registry._BACKENDS,
+                {k: v._replace(core_provides=frozenset(), backend_provides=frozenset())
+                 for k, v in registry._BACKENDS.items() if k[0] == "language"}):
+            bare = registry.missing_capability_reason("language", "zz_probe", "runner_render")
+        self.assertIn("no value of this axis", bare)
+
+    def test_capability_module_classifies_a_caller_typo_as_a_caller_typo(self) -> None:
+        # W5c. `capability_module` validates the capability BEFORE asking about the record, and
+        # deleting that survives — because without it every bad capability still gets refused,
+        # just as `BackendNotExtracted` ("this backend does not implement it") instead of
+        # `UnsupportedBackend` ("there is no such capability"). The registry's own contract is
+        # that one input must not be one kind of failure at one entry point and another kind at
+        # the next, and the second message sends a reader to declare a capability that does not
+        # exist. The class is the assertion; the message would pass either way.
+        for capability, ground in (("lint", "axis"), ("zz_not_a_capability", "unknown")):
+            with self.assertRaises(registry.UnsupportedBackend, msg=capability) as ctx:
+                registry.capability_module("language", "fortran", capability)
+            self.assertIn(ground, str(ctx.exception))
+
+    def test_the_package_reexport_is_what_the_dispatch_actually_reaches(self) -> None:
+        """W7b. Driven in a FRESH interpreter, because in this one the question is already
+        answered by accident.
+
+        `capability_module` reads the capability off the package as an attribute, and importing
+        a submodule anywhere sets that attribute on its parent. Several test modules import
+        `...fortran.runner` directly, so by the time W7 runs the attribute exists whether or not
+        `__init__` re-exports it — measured: deleting the re-export leaves the entire suite
+        green, while a real run (where nothing imports the submodule by name) fail-closes on
+        every M3c node. A subprocess that imports only the registry is the one observer that
+        sees the line.
+        """
+        import subprocess
+        import sys
+        probe = (
+            "from tools.backends import registry as r\n"
+            "m = r.capability_module('language', 'fortran', 'runner_render')\n"
+            "assert 'runner' in m.__name__, m.__name__\n"
+            "assert hasattr(m, 'render_runner')\n"
+            "print('ok')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", probe], cwd=str(REPO_ROOT),
+            capture_output=True, text=True)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertIn("ok", proc.stdout)
+
+    def test_the_fortran_package_carries_what_its_record_claims(self) -> None:
+        # W7. The declaration is a claim about the tree; this is the tree. Without it the record
+        # could name a capability whose implementation had been renamed or deleted, and only a
+        # live workflow would find out.
+        module = registry.capability_module("language", "fortran", "runner_render")
+        for name in ("render_runner", "assert_harness_pin", "ir_content_violations",
+                     "CHECKS_PUBLIC_NAMES"):
+            self.assertTrue(hasattr(module, name), name)
+
+    def test_the_declaration_rules_do_not_block_a_single_value_migrating(self) -> None:
+        """The rule that used to live here, and why there is no rule here now.
+
+        Twice a declaration rule was written to forbid a record claiming a capability the
+        neutral core no longer implements — first keyed by capability, then by axis — and both
+        refused legitimate work. The axis-keyed form was the worse of the two: `linter` has four
+        values whose lint adapters are genuinely separate inlined implementations, so migrating
+        one made the other three illegal and `import tools.backends.registry` raise, for a module
+        the whole tree imports. `parallel` had the same shape, and the `none` record's own
+        comment predicted the state the rule forbade.
+
+        "Does the neutral core still implement this job for THIS value" is a fact about the
+        tree, per (axis, value), and no other record carries it. It is not checkable at
+        declaration time — the registry must not import a backend there — so it is caught where
+        it is knowable: the reachability loop below for the live tree, the seam's refusal, and
+        the gates that report that refusal as a violation.
+        """
+        for axis, backend_id, capability in (("linter", "fortitude", "lint"),
+                                             ("parallel", "openmp", "parallel_directives"),
+                                             ("build_system", "make", "control_file")):
+            migrated = registry.Backend(
+                axis, backend_id, "tools.backends.language.fortran",
+                backend_provides=frozenset({capability}))
+            with mock.patch.dict(
+                    registry.CAPABILITY_MODULE_ATTR, {capability: "runner"}), \
+                    self._patched(migrated):
+                registry._check_declarations()
+                # the siblings that still carry it inlined keep answering for authorship
+                for other in registry.backend_ids(axis):
+                    if other != backend_id:
+                        self.assertTrue(
+                            registry.provides(axis, other, capability)
+                            or capability not in registry._BACKENDS[(axis, other)].provided,
+                            (axis, other, capability))
+
+    def test_capability_module_refuses_a_capability_the_neutral_core_still_owns(self) -> None:
+        """Both halves of a branch a comment here wrongly called unreachable, and a check a
+        comment wrongly called moot. One record separates them.
+
+        `control_file` is a question of two axes. When it migrates on `build_system` it gains a
+        `CAPABILITY_MODULE_ATTR` row while `language/fortran` legitimately still carries it in
+        `core_provides`. In that state, widening `capability_module`'s test from
+        `backend_provides` to `provided` returns the package's module for a job the record only
+        claims to do inlined: the wrong-module dispatch the function exists to prevent.
+
+        And on the UNMODIFIED tree the same call takes the refusal's FIRST clause — the one
+        saying the capability is still carried by the neutral core, rather than that nothing
+        implements it. A comment called that clause unreachable; it is one line away. Both are
+        asserted, because sending a reader to the wrong declaration is all this message does.
+        """
+        # (a) the live tree: the "still inlined" diagnosis, not the "nothing implements it" one
+        with self.assertRaises(registry.BackendNotExtracted) as ctx:
+            registry.capability_module("language", "fortran", "control_file")
+        self.assertIn("still carried by the neutral core", str(ctx.exception))
+
+        # (b) a value that declares it in neither set: the other clause
+        bare = registry.Backend("language", "zz_bare", "tools.backends.language.fortran")
+        with self._patched(bare):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_bare", "control_file")
+        self.assertIn("nothing in this repository implements it", str(ctx.exception))
+
+        # (c) the state the ledger's next area creates: the narrow set is what refuses
+        migrated_make = registry.Backend(
+            "build_system", "make", "tools.backends.language.fortran",
+            core_provides=frozenset({"build_execute"}),
+            backend_provides=frozenset({"control_file"}))
+        with mock.patch.dict(registry.CAPABILITY_MODULE_ATTR, {"control_file": "runner"}), \
+                self._patched(migrated_make):
+            registry._check_declarations()
+            self.assertTrue(registry.provides("language", "fortran", "control_file"))
+            with self.assertRaises(registry.BackendNotExtracted):
+                registry.capability_module("language", "fortran", "control_file")
+
+    def test_the_seam_refuses_a_package_that_does_not_carry_the_capability(self) -> None:
+        """The seam's own use of `capability_module`, at the seam.
+
+        Everything else about it is checked at the registry. What is only visible here is that
+        the seam does not reach the backend the cheap way: `load(...)` plus
+        `getattr(..., "runner")` is a live idiom elsewhere in the neutral core, so it is what a
+        future migration copies, and under it this record yields `None` and then an
+        `AttributeError` from inside a deterministic gate — the raise-instead-of-violation the
+        seam exists to prevent. Through `capability_module` it is a typed refusal.
+        """
+        record = registry.Backend(
+            "language", "zz_liar", "tools.backends",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            self.assertIsNotNone(host_render.runner_render_refusal("zz_liar"))
+            for call in (lambda: host_render.checks_public_names("zz_liar"),
+                         lambda: host_render.render_runner("zz_liar", {}, "bx", "hx")):
+                with self.assertRaises(host_render.RunnerRenderUnavailable):
+                    call()
+
+    def test_the_seam_lets_a_broken_backend_import_escape_as_itself(self) -> None:
+        """`_module` re-types the REGISTRY's two refusals and nothing else.
+
+        Widening that `except` to `except Exception` survives the suite, and it converts any
+        failure inside the backend package — an ImportError, a syntax error, a broken module
+        constant — into a violation string saying this repository does not implement
+        `runner_render` for the value. That is false evidence handed to a leaf: it tells an
+        author to implement what already exists, and it hides a host bug as a node defect.
+        """
+        record = registry.Backend(
+            "language", "zz_broken", "tools.backends.zz_does_not_exist",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(ModuleNotFoundError):
+                host_render.checks_public_names("zz_broken")
+
+    def test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given(self) -> None:
+        """That the seam is asked the NODE's language, semantically rather than by spelling.
+
+        Measured before this existed: hard-coding `"fortran"` at the seam's callers survived the
+        suite, and in the naive spelling was killed only by the token ratchet — which
+        `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector.
+        A second language backend is the only observer that can tell dispatch from coincidence,
+        so one is synthesised here: with two records declaring `runner_render`, asking for one
+        must not return the other's answer.
+        """
+        import sys
+        import types
+
+        other = types.ModuleType("zz_other_lang_backend")
+        other_runner = types.ModuleType("zz_other_lang_backend.runner")
+        other_runner.CHECKS_PUBLIC_NAMES = ("zz_only_name",)
+        other_runner.render_runner = lambda ir, spec_id, harness: "! rendered by zz_other\n"
+        other.runner = other_runner
+        record = registry.Backend(
+            "language", "zz_other", "zz_other_lang_backend",
+            backend_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(sys.modules, {"zz_other_lang_backend": other}), \
+                self._patched(record):
+            self.assertEqual(("zz_only_name",), host_render.checks_public_names("zz_other"))
+            self.assertIn("zz_other", host_render.render_runner("zz_other", {}, "bx", "hx"))
+            # ...and the incumbent still answers for itself, so the assertion above cannot pass
+            # by the seam having been broken for everyone.
+            self.assertIn("case_setup", host_render.checks_public_names("fortran"))
+
+    def test_every_caller_of_the_seam_passes_the_NODE_S_language(self) -> None:
+        """The three call sites, not just the seam — measured, all three were unobserved.
+
+        `test_the_seam_dispatches_to_the_backend_of_the_LANGUAGE_it_is_given` witnesses
+        `host_render`. Its callers each read the language off an artifact and hand it over, and
+        hard-coding the value at any of them was killed ONLY by the token ratchet — which
+        `docs/BACKEND_BOUNDARY.md` §Enforcement states is a bound on growth and not a detector,
+        so in a spelling the ratchet cannot see (`"for" "tran"`) all three survived the suite.
+        This is the "hands a node to the wrong writer" class, and one language backend is not
+        enough to observe it: a second one is synthesised so the answers are distinguishable.
+        """
+        import json
+        import sys
+        import types
+
+        import tools.codegen_bundle as codegen_bundle
+        import tools.validate_pipeline_semantics as vps
+
+        other = types.ModuleType("zz_second_lang")
+        runner = types.ModuleType("zz_second_lang.runner")
+        runner.CHECKS_PUBLIC_NAMES = ("zz_only_abi_name",)
+        runner.render_runner = lambda ir, spec_id, harness: "! zz_second\n"
+        runner.ir_content_violations = lambda ir, spec_id, harness: ["zz_second says no"]
+        other.runner = runner
+        other.bundle = types.ModuleType("zz_second_lang.bundle")
+        other.bundle.SOURCE_EXTENSIONS = (".zz",)
+        other.bundle.IDENTIFIER_MAX = 63
+        other.bundle.IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,62}(?![\s\S])"
+        record = registry.Backend(
+            "language", "zz_second", "zz_second_lang",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        ir = {
+            "meta": {"spec_kind": "component", "spec_id": "bx"},
+            "impl_defaults": {"toolchain": {"language": "zz_second", "build_system": "make"}},
+            "dependency": {"direct_deps": [
+                {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+        }
+        with mock.patch.dict(sys.modules, {"zz_second_lang": other}), \
+                mock.patch.dict(registry._BACKENDS, {("language", "zz_second"): record}):
+            # (1) the validator's mirror hands the seam the language it read from the IR
+            self.assertEqual("zz_second", vps._ir_m3c_language(ir))
+            self.assertEqual(
+                ["zz_second says no"],
+                list(host_render.ir_content_violations(
+                    vps._ir_m3c_language(ir), ir, "bx", "harness_fortran_cpu")))
+            # (2) the checks-source gate holds the leaf to THIS language's ABI. Driven through
+            # the gate body, not through the seam: hard-coding the language inside the gate
+            # survived the whole suite, because the seam's own witness never enters it.
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations: list[str] = []
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_second", src, [],
+                    violations)
+            self.assertTrue(
+                any("zz_only_abi_name" in v for v in violations),
+                f"the gate demanded some other language's ABI: {violations}")
+
+            # (3) the render-precondition gate asks THIS language's renderer for its objections
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                (ir_dir / "spec.ir.yaml").write_text(json.dumps({
+                    **ir, "dependency": {"direct_deps": [
+                        {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]}}),
+                    encoding="utf-8")
+                pre: list[str] = []
+                vps._validate_harness_render_preconditions(ir_dir, ir_dir, pre)
+            self.assertTrue(
+                any("zz_second says no" in v for v in pre),
+                f"the gate consulted some other language's renderer: {pre}")
+
+            # (4) the bundle ABI gate asks for the FILE's language, not a fixed one
+            bundle = {
+                "files": [{"logical_path": "bx_checks.f90", "role": "checks",
+                           "language": "zz_second", "member_node_key": "component/bx@0.1.0",
+                           "content": "module bx_checks\nend module bx_checks\n",
+                           "modules": ["bx_checks"]}],
+            }
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+            self.assertIsNotNone(violation)
+            self.assertIn("zz_only_abi_name", violation)
+
+    @staticmethod
+    def _unreachable_package_capabilities(
+            backends: "dict[tuple[str, str], registry.Backend]") -> list[str]:
+        """Every `backend_provides` declaration in `backends` that cannot actually be reached.
+
+        COMPUTED over the records rather than written out, because a hand-listed check answers
+        only for the records someone remembered — and the one tree check that existed was
+        hard-coded to a single (axis, value, capability) triple, so a second backend declaring a
+        capability its package does not carry would have been accepted by everything.
+        """
+        unreachable = []
+        for (axis, backend_id), record in backends.items():
+            for capability in sorted(record.backend_provides):
+                try:
+                    registry.capability_module(axis, backend_id, capability)
+                except (registry.UnsupportedBackend, registry.BackendNotExtracted) as exc:
+                    unreachable.append(f"{axis}/{backend_id}:{capability} ({exc!r})")
+                except Exception as exc:  # noqa: BLE001
+                    # Reported separately: a package whose `__init__` fails for an environment
+                    # reason (a missing optional dependency) is not a record that overstates
+                    # itself, and calling it one sends a reader to the declaration.
+                    unreachable.append(
+                        f"{axis}/{backend_id}:{capability} FAILED TO LOAD ({exc!r})")
+        return unreachable
+
+    def test_every_declared_package_capability_is_reachable_in_this_tree(self) -> None:
+        # The declaration/tree gap cannot be closed at declaration time — the registry must not
+        # import a backend there — so this is where it is closed for THIS tree: one loop over
+        # every record, asking the question the seam will ask at run time.
+        self.assertEqual(
+            [], self._unreachable_package_capabilities(dict(registry._BACKENDS)),
+            "a record declares a capability in backend_provides that its package does not "
+            "carry; the seam would refuse a node the authorship predicates approved")
+
+    def test_the_reachability_loop_is_observed_against_a_known_bad_tree(self) -> None:
+        """The loop itself, driven — because over the live tree it can only ever pass.
+
+        A check that iterates the real records answers "today's tree is fine" and says nothing
+        about whether the iteration works. Deleting its body, or narrowing it back to one
+        hard-coded triple, leaves it green. So it runs against a synthetic mapping with a known
+        shape instead, the way this file's scanned-set tests do.
+        """
+        import sys
+        import types
+
+        hollow = types.ModuleType("zz_hollow_pkg")  # declares the job, carries nothing
+        good = types.ModuleType("zz_good_pkg")
+        good.runner = types.ModuleType("zz_good_pkg.runner")
+        synthetic = {
+            ("language", "zz_good"): registry.Backend(
+                "language", "zz_good", "zz_good_pkg",
+                backend_provides=frozenset({"runner_render"})),
+            ("language", "zz_hollow"): registry.Backend(
+                "language", "zz_hollow", "zz_hollow_pkg",
+                backend_provides=frozenset({"runner_render"})),
+            ("language", "zz_inlined"): registry.Backend(
+                "language", "zz_inlined", None, core_provides=frozenset({"control_file"})),
+        }
+        with mock.patch.dict(sys.modules, {"zz_hollow_pkg": hollow, "zz_good_pkg": good}), \
+                mock.patch.dict(registry._BACKENDS, synthetic):
+            found = self._unreachable_package_capabilities(synthetic)
+        # Exactly the hollow one: the good record is reached, and the record that declares
+        # nothing in `backend_provides` is not visited at all.
+        self.assertEqual(1, len(found), found)
+        self.assertIn("zz_hollow:runner_render", found[0])
+
+    def test_a_declaration_that_outruns_its_package_lands_in_the_gates_as_a_violation(self):
+        """The gap that cannot be closed, checked where it lands.
+
+        A record declares `runner_render` in `backend_provides`; its package does not carry the
+        module. `_check_declarations` accepts it — the registry must not import a backend at
+        declaration time — so `provides` answers True and both authorship predicates approve the
+        node, while the seam refuses. Three review rounds were spent claiming a rule had made
+        this impossible; it cannot be made impossible, so what matters is that the gate reports
+        it as a VIOLATION and never as an exception, since an uncaught raise inside
+        `_validate_compile_stage_impl` discards every violation its sibling gates collected.
+
+        Driven THROUGH the checks gate, not through the seam: the seam's own refusal has its own
+        witness, and dispatching correctly inside a gate is a different fact from dispatching
+        correctly when called directly. The render-precondition gate shares this branch and is
+        driven for the broken-import input by its own test.
+        """
+        import sys
+        import tempfile
+        import types
+
+        import tools.validate_pipeline_semantics as vps
+
+        empty_pkg = types.ModuleType("zz_pkg_without_runner")  # no `runner` attribute
+        record = registry.Backend(
+            "language", "zz_hollow", "zz_pkg_without_runner",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(sys.modules, {"zz_pkg_without_runner": empty_pkg}), \
+                self._patched(record):
+            registry._check_declarations()  # accepted: nothing here can see inside the package
+            self.assertTrue(registry.provides("language", "zz_hollow", "runner_render"))
+            self.assertIsNotNone(host_render.runner_render_refusal("zz_hollow"))
+
+            with tempfile.TemporaryDirectory() as tmp:
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations: list[str] = []
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_hollow", src, [],
+                    violations)
+                self.assertTrue(
+                    any("cannot be stated for language 'zz_hollow'" in v for v in violations),
+                    violations)
+
+    def test_a_backend_that_cannot_be_imported_does_not_empty_the_violation_list(self) -> None:
+        """The seam lets a broken import escape as itself — the GATES must not.
+
+        Re-typing an `ImportError` at the seam would tell a leaf to implement what already
+        exists, so the seam deliberately does not. But inside `_validate_compile_stage_impl`
+        there is no handler, and an escaping exception replaces the sibling gates' actionable
+        list with a traceback. Both properties are wanted; the conversion belongs at the gate.
+        """
+        import tempfile
+
+        import tools.validate_pipeline_semantics as vps
+
+        record = registry.Backend(
+            "language", "zz_missing_pkg", "zz_module_that_does_not_exist",
+            backend_provides=frozenset({"runner_render"}))
+        with self._patched(record):
+            with self.assertRaises(ModuleNotFoundError):     # the seam, unchanged
+                host_render.checks_public_names("zz_missing_pkg")
+            with tempfile.TemporaryDirectory() as tmp:       # the gate, converted
+                src = Path(tmp) / "src"
+                src.mkdir()
+                (src / "bx_checks.f90").write_text(
+                    "module bx_checks\nend module bx_checks\n", encoding="utf-8")
+                violations = ["a sibling gate already found this"]
+                vps._validate_checks_source_files(
+                    SimpleNamespace(node_key="component/bx@0.1.0"), "zz_missing_pkg", src, [],
+                    violations)
+        self.assertIn("a sibling gate already found this", violations)
+        self.assertTrue(any("could not be loaded" in v for v in violations), violations)
+
+    def test_neither_gate_empties_its_violation_list_on_a_broken_backend(self) -> None:
+        """BOTH gates, because the conversion is written twice and only one copy was driven.
+
+        A backend package that cannot be imported is a host fault. The seam lets it escape as
+        itself — re-typing it would tell a leaf to implement what already exists — so each gate
+        converts it, and `_validate_compile_stage_impl` has no handler of its own: an escape
+        replaces the sibling gates' actionable list with a traceback. The copy in
+        `_validate_harness_render_preconditions` had no witness; its twin did.
+        """
+        import json
+        import tempfile
+
+        import tools.validate_pipeline_semantics as vps
+
+        record = registry.Backend(
+            "language", "zz_no_pkg", "zz_module_that_does_not_exist",
+            core_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"runner_render"}))
+        ir = {
+            "meta": {"spec_kind": "component", "spec_id": "bx"},
+            "impl_defaults": {"toolchain": {"language": "zz_no_pkg", "build_system": "make"}},
+            "dependency": {"node_key": "component/bx@0.1.0", "direct_deps": [
+                {"node_key": "infrastructure/harness_fortran_cpu@0.7.0"}]},
+        }
+        with self._patched(record):
+            with tempfile.TemporaryDirectory() as tmp:
+                ir_dir = Path(tmp)
+                (ir_dir / "spec.ir.yaml").write_text(json.dumps(ir), encoding="utf-8")
+                violations = ["a sibling gate already found this"]
+                vps._validate_harness_render_preconditions(ir_dir, ir_dir, violations)
+        self.assertIn("a sibling gate already found this", violations)
+        self.assertTrue(any("could not be loaded" in v for v in violations), violations)
+
+    def test_implemented_counts_a_package_only_record(self) -> None:
+        # `Backend.implemented` reads `provided`, and reverting it to `module is not None`
+        # survives — every live record with a capability also has a module or lacks both. The
+        # separating shape is a record with a capability and NO module, which is the honest
+        # state of a value whose code is still inlined in the neutral core.
+        record = registry.Backend(
+            "linter", "zz_inlined_only", None, core_provides=frozenset({"lint"}))
+        with self._patched(record):
+            self.assertTrue(record.implemented)
+            self.assertIn("zz_inlined_only", registry.implemented_backend_ids("linter"))
+            self.assertIsNone(registry.unimplemented_reason("linter", "zz_inlined_only"))
+
+    def test_capability_module_normalizes_the_value_like_every_other_entry_point(self) -> None:
+        # `capability_module` lower-cases and strips before the lookup, and dropping that
+        # survives: no test passes it a padded or upper-cased value. Every other entry point
+        # normalizes, and a seam handed `" Fortran "` by a caller that did not would get a
+        # refusal for a value this repository implements.
+        for spelling in (" fortran", "FORTRAN", "Fortran ", " FoRtRaN "):
+            module = registry.capability_module("language", spelling, "runner_render")
+            self.assertTrue(hasattr(module, "render_runner"), spelling)
+
+    def test_the_bundle_gate_is_the_third_caller_and_converts_a_broken_import_too(self) -> None:
+        # `m3c_checks_abi_violation` was enumerated as one of the seam's three callers and was
+        # the one left without the conversion its two siblings got. It escapes into
+        # `_pure_bundle_violations`, which has no handler at that call, so the acceptance layer
+        # crashes rather than rejecting the bundle.
+        import tools.codegen_bundle as codegen_bundle
+
+        record = registry.Backend(
+            "language", "zz_broken_bundle", "zz_module_that_does_not_exist",
+            backend_provides=frozenset({"runner_render"}))
+        bundle = {"files": [{
+            "logical_path": "bx_checks.f90", "role": "checks", "language": "zz_broken_bundle",
+            "member_node_key": "component/bx@0.1.0",
+            "content": "module bx_checks\nend module bx_checks\n", "modules": ["bx_checks"]}]}
+        with self._patched(record):
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+        self.assertIsNotNone(violation)
+        self.assertIn("could not be loaded", violation)
+
+    def test_capability_module_refuses_a_non_module_under_the_convention_name(self) -> None:
+        # The `isinstance(module, ModuleType)` narrowing survives being weakened to `is None`,
+        # because every other witness uses a package with NO attribute at all. The refusal's own
+        # comment describes this input — "a seam holding some other object and failing later on
+        # a missing function" — and nobody supplied it.
+        import sys
+        import types
+
+        impostor = types.ModuleType("zz_impostor_pkg")
+        impostor.runner = "not a module"          # the convention name, wrong kind
+        record = registry.Backend(
+            "language", "zz_impostor", "zz_impostor_pkg",
+            backend_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(sys.modules, {"zz_impostor_pkg": impostor}), self._patched(record):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_impostor", "runner_render")
+        self.assertIn("re-exports no", str(ctx.exception))
+
+    def test_a_capability_may_migrate_one_axis_at_a_time(self) -> None:
+        """The rule above must not block the ledger's own next area.
+
+        `control_file` is a question of BOTH `build_system` and `language`. Keyed by capability
+        alone, the migrated-out-of-the-core rule refused the language half — still legitimately
+        inlined — the moment the build-system half moved, and the remedy its message named led
+        straight to the no-package refusal. That is the next area in `TODO.md`, blocked by a
+        rule written three commits earlier. It is per AXIS for that reason.
+        """
+        migrated_make = registry.Backend(
+            "build_system", "make", "tools.backends.language.fortran",
+            core_provides=frozenset({"build_execute"}),
+            backend_provides=frozenset({"control_file"}))
+        with mock.patch.dict(registry.CAPABILITY_MODULE_ATTR, {"control_file": "runner"}), \
+                self._patched(migrated_make):
+            registry._check_declarations()
+            # the language half is untouched and still answers for authorship
+            self.assertTrue(registry.provides("language", "fortran", "control_file"))
+            self.assertTrue(registry.provides("build_system", "make", "control_file"))
+
+    def test_capability_module_refuses_a_value_with_no_record_by_class(self) -> None:
+        """`require_available` inside `capability_module`, driven on the input that needs it.
+
+        The first version of this test used a DECLARED-but-unextracted record and asserted the
+        class — and it passed with `require_available` deleted, because the record is in
+        `_BACKENDS`, the lookup succeeds, and the `backend_provides` check below raises the same
+        class. It was a test that could not fail for its stated reason.
+
+        The input that reaches the guard is an OPEN-VOCABULARY axis value with no record at all:
+        the membership question answers permissively for it, so the lookup on the next line is
+        what fails, and without the guard it fails as a bare `KeyError`. The registry's contract
+        is that one input is not two different kinds of failure at two entry points.
+        """
+        self.assertTrue(registry.AXES["parallel"].open_vocabulary)
+        self.assertIsNone(registry.unsupported_reason("parallel", "zz_unregistered"))
+        with self.assertRaises(registry.BackendNotExtracted):
+            registry.capability_module(
+                "parallel", "zz_unregistered", "parallel_directives")
+
+    def test_the_seam_refuses_a_language_that_declares_no_renderer(self) -> None:
+        # W8. The seam must not fall through to whichever backend happens to be extracted, and
+        # the refusal must be the REGISTRY's sentence — a second wording here is a second
+        # authority for what a leaf is told to implement.
+        from tools import host_render
+        # A SYNTHETIC value, not `cpp`: this repository names `cpp` elsewhere as a plausible
+        # next language member, and registering one must not make this probe fail for a reason
+        # that has nothing to do with what it checks.
+        probe = registry.Backend("language", "zz_no_renderer", None)
+        with self._patched(probe):
+            expected = registry.missing_capability_reason(
+                "language", "zz_no_renderer", "runner_render")
+            self.assertIsNotNone(expected)
+            self.assertEqual(expected, host_render.runner_render_refusal("zz_no_renderer"))
+            for call in (
+                    lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx"),
+                    lambda: host_render.checks_public_names("zz_no_renderer"),
+                    lambda: host_render.ir_content_violations(
+                        "zz_no_renderer", {}, "bx", "hx"),
+                    lambda: host_render.assert_harness_pin(
+                        "zz_no_renderer", {}, "bx", "hx", [], "")):
+                with self.assertRaises(host_render.RunnerRenderUnavailable) as ctx:
+                    call()
+                self.assertEqual(expected, str(ctx.exception))
 
 
 def _write_baseline() -> None:

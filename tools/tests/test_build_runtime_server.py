@@ -692,16 +692,16 @@ class OrchestratedEnvAllowlistTests(unittest.TestCase):
         # Validate.execute joins the IR's case ids into CASES, so every id the Compile
         # gate accepts must be a word this rule accepts. Otherwise a run passes Compile
         # and Build and fails several phases later on an id no gate objected to.
-        from tools.runner_renderer import _CASE_ID_TOKEN_RE
+        from tools.spec_input_gates import CASE_ID_TOKEN_RE
         for case_id in ("c1", "l0_v1.2-alpha", "A.b_c-d", "9x"):
             with self.subTest(case_id=case_id):
-                self.assertTrue(_CASE_ID_TOKEN_RE.match(case_id))
+                self.assertTrue(CASE_ID_TOKEN_RE.match(case_id))
                 self.assertTrue(self.mod._MAKE_NAME_VALUE_RE.match(case_id))
         # The Compile grammar is the regex plus a separate `..` exclusion; the ids it
         # refuses outright are refused here too.
         for rejected in ("-c1", "a/b", "x y"):
             with self.subTest(rejected=rejected):
-                self.assertIsNone(_CASE_ID_TOKEN_RE.match(rejected))
+                self.assertIsNone(CASE_ID_TOKEN_RE.match(rejected))
                 self.assertIsNone(self.mod._MAKE_NAME_VALUE_RE.match(rejected))
 
     def test_tools_the_workflow_passes_no_env_to_accept_none(self) -> None:
