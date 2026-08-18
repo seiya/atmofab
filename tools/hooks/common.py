@@ -442,9 +442,11 @@ def _blank_heredoc_bodies(command: str) -> str:
 
     A heredoc body is a document the agent is WRITING, not a command it is
     running: `cat > note.md <<EOF` followed by a line reading
-    `diff a.md b.md` performs no read of a.md.  Leaves are explicitly told to
-    write scratch files this way, so scanning the body reports reads that do
-    not happen.  Length is preserved so fragment spans stay aligned with the
+    `diff a.md b.md` performs no read of a.md, so scanning the body reports
+    reads that do not happen.  Leaves are told to author scratch files with
+    the Write tool rather than a heredoc (issue #73), but a heredoc still
+    reaches this module from any command that carries one, and the read side
+    must not fail open on it.  Length is preserved so fragment spans stay aligned with the
     original string.
     """
     # Locate the operator in the QUOTE-STRIPPED string: `grep -n "cout << endl"`
@@ -3632,7 +3634,8 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                     hint_next = (
                         "Use the Read tool for the JSON file directly; if Python is "
                         "required, write a script to workspace/tmp/<agent_run_id>/x.py "
-                        "and run `python3 workspace/tmp/<agent_run_id>/x.py` "
+                        "with the Edit/Write tool and run "
+                        "`python3 workspace/tmp/<agent_run_id>/x.py` "
                         "(literal path, no $TMPDIR env reference needed)."
                     )
                 return HookDecision(
@@ -4268,8 +4271,10 @@ def validate_write_access(
             reason=(
                 "shell writes (redirect / tee / sed -i) are forbidden for managed "
                 "artifacts. Write the artifact with the Edit/Write tool to a path in "
-                "output_manifest allowed_file_tool_paths; Bash may only write scratch "
-                f"under allowed_tmp_root (workspace/tmp/{agent_run_id}/...)."
+                "output_manifest allowed_file_tool_paths. Scratch files go under "
+                f"allowed_tmp_root (workspace/tmp/{agent_run_id}/...), written with "
+                "the Edit/Write tool too: no committed permissions.allow rule "
+                "matches a Bash redirect write."
             ),
             continue_processing=False,
             audit_detail={

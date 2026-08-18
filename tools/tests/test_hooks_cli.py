@@ -2859,69 +2859,177 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                     f"Write to {scratch_path} must be auto-approved, not merely allowed",
                 )
 
-    def test_instruction_surfaces_teach_the_write_tool_scratch_route(self) -> None:
-        """SAMPLE (not a pin): the named instruction surfaces teach the Write route
-        and none of them teaches a Bash redirect that CREATES a scratch file.
+    # (surface, anchor for the sentence that states the scratch rule, scope).
+    # scope "row" reads the last cell of the anchored table row (the remedy column);
+    # scope "sentence" reads _STATEMENT_WINDOW characters from the anchor. Neither
+    # reads the whole line: these surfaces state the ARTIFACT write rule on the same
+    # line, and it names the same tool, so a line-wide match proves nothing.
+    _SCRATCH_SURFACES = (
+        ("docs/AGENT_CONTRACT.md", "When a temporary file is needed", "sentence"),
+        ("docs/workflow/LAUNCH_PROMPT_REFERENCE.md", "Every extension alike", "sentence"),
+        ("docs/RUNBOOK.md", "| `output_manifest_write_guard` |", "row"),
+        ("docs/WORKSPACE_LAYOUT.md", "the place for", "sentence"),
+        ("tools/prompt_templates/step_agent.txt", "For a temporary file", "sentence"),
+        ("tools/prompt_templates/substep_agent.txt", "For a temporary file", "sentence"),
+        # Operator-facing, but it states the same output_manifest_write_guard
+        # remedy as docs/RUNBOOK.md; it drifted into a fourth wording once.
+        ("skills/workflow-audit-claude/SKILL.md", "| output_manifest_write_guard |", "row"),
+    )
 
-        Two halves, because either alone is vacuous. The negative half alone passes
-        once an instruction is deleted outright (measured: deleting the whole tmp-area
-        paragraph from both templates left the suite green before this half existed).
-        The positive half alone says nothing about a surface that teaches both routes.
+    # Long enough for every surface's own statement (measured longest: 132 chars from
+    # anchor to the tool name), short enough to exclude the artifact-write sentence
+    # that follows it on the same line (nearest: 678 chars away, in both templates).
+    _STATEMENT_WINDOW = 200
 
-        Both halves are samples: a regex over an enumerated file list cannot assert
-        "no document instructs a Bash redirect scratch write". A new file, and the
-        spellings listed as out of reach below, escape it. It is a drift tripwire for
-        the surfaces issue #73 rewrote.
+    # Satisfied by naming the file tool, or by deferring to the canonical document
+    # instead of restating the rule (this repository treats a restated rule as a
+    # twin document, so a pointer must remain a legal answer).
+    _NAMES_THE_ROUTE = re.compile(r"(?:Edit\s*/\s*)?`?Write`?\s+tool|AGENT_CONTRACT\.md")
 
-        The negative pattern matches a redirect whose command is `cat` / `tee`, i.e.
-        one that CREATES the file. A redirect appended to an already-permitted command
-        (`... 2>workspace/tmp/...`, `python3 workspace/tmp/x.py >workspace/tmp/out`)
-        rides that command's permissions.allow entry and stays sanctioned, so flagging
-        it would refuse a legitimate instruction. Out of reach, hence sample not pin:
-        `cd workspace/tmp/<arid> && cat > x.py`, and any command name not listed here.
+    # A line that marks the form it shows as refused is documenting the rule, not
+    # teaching the route. Without this, the rule could not be illustrated by an NG
+    # example — the natural way to strengthen it.
+    _MARKS_AS_REFUSED = re.compile(
+        r"\bNG\b|forbidden|blocked|refused|is not a scratch-write route"
+        r"|matches no committed|must not|never",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _allowlisted_bash_prefixes(repo_root: Path) -> list[str]:
+        """The Bash prefixes `.claude/settings.json` permits, from the file itself."""
+        settings = json.loads(
+            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        prefixes = []
+        for entry in settings["permissions"]["allow"]:
+            if not entry.startswith("Bash(") or not entry.endswith(")"):
+                continue
+            prefixes.append(entry[len("Bash(") : -1].rstrip("*"))
+        return prefixes
+
+    @staticmethod
+    def _command_spans(text: str) -> list[tuple[int, str, bool, str]]:
+        """(line number, command text, is_fenced, the prose introducing it).
+
+        The introducing prose is what decides whether a command is being TAUGHT or
+        shown as refused, so it is captured per span, not per line: on these surfaces
+        one line carries several spans, and the tmp paragraph always contains the word
+        "blocked" somewhere (the bootstrap-Bash prohibition), which would exempt the
+        whole line — measured, that left both prompt templates unguarded.
+        """
+        spans: list[tuple[int, str, bool, str]] = []
+        lines = text.splitlines()
+        fenced = False
+        for n, line in enumerate(lines, start=1):
+            if line.lstrip().startswith("```"):
+                fenced = not fenced
+                continue
+            if fenced:
+                spans.append((n, line, True, "\n".join(lines[max(0, n - 3) : n])))
+                continue
+            for m in re.finditer(r"`([^`]+)`", line):
+                spans.append(
+                    (n, m.group(1), False, line[max(0, m.start() - 120) : m.start()])
+                )
+        return spans
+
+    def test_instruction_surfaces_admit_only_permitted_redirects_into_the_tmp_root(
+        self,
+    ) -> None:
+        """SAMPLE (not a pin): no instruction surface shows a redirect into the tmp
+        root whose command `.claude/settings.json` does not already permit.
+
+        The rule, not a spelling: a redirect is authorized only when it is appended to
+        a command an allow entry covers, because the redirect rides that entry — so
+        `... 2>workspace/tmp/<arid>/gate.txt` on the allowlisted run-gate command is
+        correct, `cat workspace/tmp/a 2>workspace/tmp/b` is correct (`Bash(cat
+        workspace/tmp/*)` covers it), and `cat > workspace/tmp/x.py`, `printf ... >`,
+        `| tee workspace/tmp/x` are not, because no entry covers those commands. An
+        earlier version of this test hard-coded `cat`/`tee`, which both flagged
+        legitimate captures and missed `echo`/`printf`; reading the allowlist removes
+        the guesswork.
+
+        Sample, not pin, on three counts: it reads an enumerated file list, it only
+        sees commands written inside backticks or a fenced block, and a span whose
+        introducing prose marks it as refused is skipped (otherwise the rule could not
+        be illustrated by an NG example — and the exemption is read from the 120
+        characters before the span, not the line, because these lines always contain
+        the bootstrap-Bash prohibition).
         """
         repo_root = Path(__file__).resolve().parents[2]
-        surfaces = (
-            "docs/AGENT_CONTRACT.md",
-            "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
-            "docs/RUNBOOK.md",
-            "docs/WORKSPACE_LAYOUT.md",
-            "tools/prompt_templates/step_agent.txt",
-            "tools/prompt_templates/substep_agent.txt",
-            # Operator-facing, but it states the same output_manifest_write_guard
-            # remedy as docs/RUNBOOK.md; it drifted into a fourth wording once.
-            "skills/workflow-audit-claude/SKILL.md",
+        prefixes = self._allowlisted_bash_prefixes(repo_root)
+        # `tee PATH` writes PATH with no redirect operator, so it needs its own
+        # pattern; it is judged by the same rule (no allow entry names `tee`, so a
+        # `| tee workspace/tmp/...` capture is refused as surely as `cat >` is).
+        redirect = re.compile(
+            r"\d?>>?\|?\s*[\"\']?(workspace/tmp\S*)"
+            r"|(?<=tee )(?:-\S+ )*[\"\']?(workspace/tmp\S*)"
         )
-        creates = re.compile(
-            r"\b(?:cat|tee)\b[^\n]{0,80}?\d?>\|?\s*[\"\']?workspace/tmp"
-            r"|\btee\s+[\"\']?workspace/tmp"
-        )
-        for rel in surfaces:
+        for rel, _anchor, _scope in self._SCRATCH_SURFACES:
             with self.subTest(surface=rel):
                 path = repo_root / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
-                lines = path.read_text(encoding="utf-8").splitlines()
-                offenders = [
-                    f"{rel}:{n}: {line.strip()}"
-                    for n, line in enumerate(lines, start=1)
-                    if creates.search(line)
-                ]
+                offenders = []
+                for n, span, is_fenced, intro in self._command_spans(
+                    path.read_text(encoding="utf-8")
+                ):
+                    if self._MARKS_AS_REFUSED.search(intro):
+                        continue
+                    for segment in re.split(r"\|\||&&|[;|]", span):
+                        m = redirect.search(segment)
+                        if not m:
+                            continue
+                        command = segment[: m.start()].strip()
+                        if not command and not is_fenced:
+                            # An inline backtick quoting the redirect idiom alone
+                            # ("capture it with `2>workspace/tmp/...`") names no
+                            # command to judge. Residue: so does a bare redirect.
+                            continue
+                        if any(command.startswith(p) for p in prefixes):
+                            continue
+                        offenders.append(f"{rel}:{n}: {segment.strip()}")
                 self.assertEqual(offenders, [], "\n".join(offenders))
-                # Proximity, not same-line: WORKSPACE_LAYOUT.md states the route in a
-                # tree-diagram comment one line below the path it annotates.
-                teaches = [
-                    n
-                    for n, line in enumerate(lines)
-                    if "`Write` tool" in line
-                    and any(
-                        "workspace/tmp" in near or "allowed_tmp_root" in near
-                        for near in lines[max(0, n - 2) : n + 3]
-                    )
-                ]
+
+    def test_instruction_surfaces_state_the_write_tool_scratch_route(self) -> None:
+        """SAMPLE (not a pin): each surface's scratch sentence names the file tool.
+
+        Read the ANCHORED sentence, not the file and not the line's neighbourhood.
+        Every one of these surfaces also names the `Write` tool for ARTIFACT writes,
+        usually on the same line, so a file-wide or +/-2-line match is satisfied by a
+        sentence about a different rule: measured, the whole tmp-area paragraph could
+        be replaced with `create it with printf > that literal path` in both prompt
+        templates and the earlier version of this test stayed green. This is the same
+        defect the WRITE_HINT pin had, and the same instrument fixes it.
+
+        A pointer to docs/AGENT_CONTRACT.md satisfies it as well as a restatement: the
+        rule is that a leaf can reach the route from this surface, not that seven
+        documents repeat it. Declared residue of that choice, measured: a surface that
+        keeps its pointer AND states a different route in prose (no command spelling,
+        so the companion check sees nothing either) passes both halves.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        for rel, anchor, scope in self._SCRATCH_SURFACES:
+            with self.subTest(surface=rel):
+                path = repo_root / rel
+                self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
+                stated = []
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    if anchor not in line:
+                        continue
+                    if scope == "row":
+                        cells = [c for c in line.split("|") if c.strip()]
+                        stated.append(cells[-1])
+                    else:
+                        i = line.index(anchor)
+                        stated.append(line[i : i + self._STATEMENT_WINDOW])
                 self.assertTrue(
-                    teaches,
-                    f"{rel} no longer tells a leaf to write scratch files under "
-                    "workspace/tmp with the `Write` tool",
+                    stated, f"{rel} no longer states the scratch rule ({anchor!r})"
+                )
+                self.assertTrue(
+                    any(self._NAMES_THE_ROUTE.search(s) for s in stated),
+                    f"{rel} states the scratch rule without naming the write route: "
+                    + " || ".join(s[:160] for s in stated),
                 )
 
     def test_bash_redirect_to_managed_artifact_is_blocked(self) -> None:
