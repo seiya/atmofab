@@ -2888,6 +2888,9 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             "docs/WORKSPACE_LAYOUT.md",
             "tools/prompt_templates/step_agent.txt",
             "tools/prompt_templates/substep_agent.txt",
+            # Operator-facing, but it states the same output_manifest_write_guard
+            # remedy as docs/RUNBOOK.md; it drifted into a fourth wording once.
+            "skills/workflow-audit-claude/SKILL.md",
         )
         creates = re.compile(
             r"\b(?:cat|tee)\b[^\n]{0,80}?\d?>\|?\s*[\"\']?workspace/tmp"
