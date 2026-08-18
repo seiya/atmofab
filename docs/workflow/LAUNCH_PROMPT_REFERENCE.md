@@ -103,7 +103,7 @@ A re-submission with `repair_strategy=reuse` is limited to a diff fix against th
 
 #### Usage contract of `allowed_tmp_root`
 
-`record-launch` creates `workspace/tmp/<agent_run_id>/` and records it in the `allowed_tmp_root` field of `output_manifests/<agent_run_id>.json`. **The agent uses this literal path directly** to pass `output_manifest_write_guard` (it judges only the write-target path and does not reference the `$TMPDIR` env, `tools/hooks/common.py:_validate_write_access`).
+`record-launch` creates `workspace/tmp/<agent_run_id>/` and records it in the `allowed_tmp_root` field of `output_manifests/<agent_run_id>.json`. **The agent uses this literal path directly** to pass `output_manifest_write_guard` (it judges only the write-target path and does not reference the `$TMPDIR` env, `tools/hooks/common.py:validate_write_access`).
 
 **Forbidden bootstrap Bash:**
 
@@ -114,14 +114,15 @@ A re-submission with `repair_strategy=reuse` is limited to a diff fix against th
 **Correct temporary-file write:**
 
 - **Every extension alike** (`.py` / `.yaml` / `.sh` / `.json` / `.txt`): write `workspace/tmp/<agent_run_id>/<name>` directly with the `Write` tool. The hook authorizes a write whose target is under `allowed_tmp_root` before any extension logic and raises it to `permissionDecision=allow`, so the write needs no interactive permission. A Bash redirect write (`cat > ... <<EOF`) is not a scratch-write route: it matches no committed `permissions.allow` rule, so it is refused at the permission layer and the refusal costs the agent an attempt.
-- The one Bash redirect that remains correct is a stderr capture appended to an already-permitted command; it rides that command's `permissions.allow` entry rather than standing on its own.
+- A Bash redirect stays correct only as a capture appended to a command an allowlist entry already permits: it rides that entry rather than standing on its own. The gate stderr capture is the standing example; a stdout capture from the allowlisted `python3 workspace/tmp/*` route has the same shape. A redirect that is itself the whole command creates the file and is refused.
+
+A temporary python script is therefore two steps: **`Write` to `workspace/tmp/<agent_run_id>/build_patch.py`**, then run it.
 
 ```bash
 # saving gate stderr (rides the allowlisted `python3 tools/orchestration_runtime.py *` command)
 python3 tools/orchestration_runtime.py run-gate --gate ... 2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt
 
-# a temporary python script: create workspace/tmp/<agent_run_id>/build_patch.py with the Write
-# tool, then run it (`Bash(python3 workspace/tmp/*)` is allowlisted)
+# running the script written in step 1 (`Bash(python3 workspace/tmp/*)` is allowlisted)
 python3 workspace/tmp/<agent_run_id>/build_patch.py
 ```
 

@@ -1265,9 +1265,10 @@ def extract_bash_read_targets(
     the residue is two classes, not one:
       * a command OUTSIDE that set handed a literal path. Notably
         `python3 workspace/tmp/<arid>/x.py`, which docs/AGENT_CONTRACT.md tells
-        leaves to use and `.claude/settings.json` allowlists, and whose heredoc
-        body this module deliberately blanks — so the paths that script reads
-        are invisible here by construction. Confining that class is the bwrap
+        leaves to use and `.claude/settings.json` allowlists. The script itself
+        is authored with the Write tool, which this function never sees, and a
+        heredoc body attached to any command is deliberately blanked — so the
+        paths that script reads are invisible here by construction. Confining that class is the bwrap
         read-confinement work, not this function.
       * targets that exist only at runtime — `xargs cat`, `find -exec`,
         `$(...)`/backtick substitution, `$VAR`, and a `cd` from an EARLIER Bash

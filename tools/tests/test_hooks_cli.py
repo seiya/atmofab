@@ -2830,7 +2830,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         committed `permissions.allow` rule.
 
         The extension sweep pins that the tmp-root match precedes every extension rule in
-        `_validate_write_access` — it is NOT a sample of a list of allowed extensions.
+        `validate_write_access` — it is NOT a sample of a list of allowed extensions.
         The path is deliberately absent from `allowed_file_tool_paths`, so only the
         tmp-root branch can produce the allow.
         """
@@ -2859,14 +2859,26 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                     f"Write to {scratch_path} must be auto-approved, not merely allowed",
                 )
 
-    def test_instruction_surfaces_do_not_teach_bash_redirect_scratch_writes(self) -> None:
-        """SAMPLE (not a pin): the named instruction surfaces carry no `cat > workspace/tmp`.
+    def test_instruction_surfaces_teach_the_write_tool_scratch_route(self) -> None:
+        """SAMPLE (not a pin): the named instruction surfaces teach the Write route
+        and none of them teaches a Bash redirect that CREATES a scratch file.
 
-        A regex over an enumerated file list cannot assert the rule "no document instructs
-        a Bash redirect scratch write" — a new file, or a different spelling of the same
-        instruction, is out of its reach. It is a drift tripwire for the surfaces issue #73
-        rewrote. The stderr-capture form (`2>workspace/tmp/...`) is deliberately outside the
-        pattern: it rides an allowlisted command and stays sanctioned.
+        Two halves, because either alone is vacuous. The negative half alone passes
+        once an instruction is deleted outright (measured: deleting the whole tmp-area
+        paragraph from both templates left the suite green before this half existed).
+        The positive half alone says nothing about a surface that teaches both routes.
+
+        Both halves are samples: a regex over an enumerated file list cannot assert
+        "no document instructs a Bash redirect scratch write". A new file, and the
+        spellings listed as out of reach below, escape it. It is a drift tripwire for
+        the surfaces issue #73 rewrote.
+
+        The negative pattern matches a redirect whose command is `cat` / `tee`, i.e.
+        one that CREATES the file. A redirect appended to an already-permitted command
+        (`... 2>workspace/tmp/...`, `python3 workspace/tmp/x.py >workspace/tmp/out`)
+        rides that command's permissions.allow entry and stays sanctioned, so flagging
+        it would refuse a legitimate instruction. Out of reach, hence sample not pin:
+        `cd workspace/tmp/<arid> && cat > x.py`, and any command name not listed here.
         """
         repo_root = Path(__file__).resolve().parents[2]
         surfaces = (
@@ -2877,19 +2889,37 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             "tools/prompt_templates/step_agent.txt",
             "tools/prompt_templates/substep_agent.txt",
         )
-        pattern = re.compile(r"(?<![0-9])>\s*[\"\']?workspace/tmp")
+        creates = re.compile(
+            r"\b(?:cat|tee)\b[^\n]{0,80}?\d?>\|?\s*[\"\']?workspace/tmp"
+            r"|\btee\s+[\"\']?workspace/tmp"
+        )
         for rel in surfaces:
             with self.subTest(surface=rel):
                 path = repo_root / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
+                lines = path.read_text(encoding="utf-8").splitlines()
                 offenders = [
                     f"{rel}:{n}: {line.strip()}"
-                    for n, line in enumerate(
-                        path.read_text(encoding="utf-8").splitlines(), start=1
-                    )
-                    if pattern.search(line)
+                    for n, line in enumerate(lines, start=1)
+                    if creates.search(line)
                 ]
                 self.assertEqual(offenders, [], "\n".join(offenders))
+                # Proximity, not same-line: WORKSPACE_LAYOUT.md states the route in a
+                # tree-diagram comment one line below the path it annotates.
+                teaches = [
+                    n
+                    for n, line in enumerate(lines)
+                    if "`Write` tool" in line
+                    and any(
+                        "workspace/tmp" in near or "allowed_tmp_root" in near
+                        for near in lines[max(0, n - 2) : n + 3]
+                    )
+                ]
+                self.assertTrue(
+                    teaches,
+                    f"{rel} no longer tells a leaf to write scratch files under "
+                    "workspace/tmp with the `Write` tool",
+                )
 
     def test_bash_redirect_to_managed_artifact_is_blocked(self) -> None:
         """Phase-2: a Bash command that WRITES (file redirect) to a managed
