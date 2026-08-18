@@ -6754,6 +6754,21 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(
             wc._variadic_values(["c", "--mcp-config", "a.json", "b.json", "--x"],
                                 "--mcp-config"), ["a.json", "b.json"])
+        # EVERY occurrence, in argv order: `--mcp-config` accumulates rather than overriding
+        # (measured), so a second one adds to the set instead of replacing it.
+        self.assertEqual(
+            wc._variadic_values(
+                ["c", "--mcp-config", "a.json", "-p", "--mcp-config", "b.json", "c.json"],
+                "--mcp-config"), ["a.json", "b.json", "c.json"])
+        # ...while an OVERRIDING option reports its last value, not its first.
+        self.assertEqual(
+            wc._effective_option_value(
+                ["c", "--setting-sources", "user", "--setting-sources", "project"],
+                "--setting-sources"), "project")
+        self.assertIsNone(wc._effective_option_value(["c", "-p"], "--setting-sources"))
+        # a trailing flag with no value must not IndexError
+        self.assertIsNone(
+            wc._effective_option_value(["c", "--setting-sources"], "--setting-sources"))
         # a SHORT option terminates it too — the `--`-only rule over-read here
         self.assertEqual(
             wc._variadic_values(["c", "--mcp-config", "a.json", "-p"], "--mcp-config"),
@@ -16989,6 +17004,54 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c.leaf_command = lambda *a, **kw: list(argv)      # type: ignore[assignment]
         response = self._record_launch_response(c, "arid-1", {}, entry)
         self.assertEqual(response["claude_setting_sources"], "user,project")
+
+    def test_a_command_prefix_carrying_the_same_flags_is_recorded_as_the_cli_reads_it(self) -> None:
+        """An entry's `command:` is a wrapper "with any flags", so it can already carry
+        `--setting-sources` / `--mcp-config`; the conductor then appends its own AFTER it and
+        the argv holds two of each. Which one is in force is the CLI's rule, not ours, and it
+        differs per flag — measured on 2.1.234:
+
+          --setting-sources  OVERRIDES. `project` then `nonsense` is rejected for `nonsense`;
+                             `nonsense` then `project` runs. The LAST occurrence wins, so the
+                             conductor's own is always the effective one.
+          --mcp-config       ACCUMULATES. `<ok>` then `<missing>` fails on the missing file,
+                             so BOTH are loaded.
+
+        Reading either with `argv.index()` recorded the operator's occurrence: a setting
+        source that was never in force, and an `mcp_config` list missing the repository's own
+        `.mcp.json` — which also meant the fail-closed read never hashed the file it exists to
+        guarantee. Found by Codex after four subagent rounds missed it."""
+        repo = self._scratch_repo_root()
+        other = repo / "wrapper.mcp.json"
+        other.write_bytes(b'{"mcpServers": {"wrapper": {}}}')
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n"
+                "  command: claude --setting-sources user --mcp-config wrapper.mcp.json\n"))
+        entry = c.entry_for("generate", "generate")
+        argv = c.leaf_command(entry)
+        self.assertEqual(argv.count("--setting-sources"), 2, argv)
+        self.assertEqual(argv.count("--mcp-config"), 2, argv)
+
+        response = self._record_launch_response(
+            c, "arid-1", {"step": "generate", "substep": "generate"}, entry)
+        # the EFFECTIVE source, which is the conductor's trailing one
+        self.assertEqual(response["claude_setting_sources"], "project")
+        # BOTH configurations, in argv order, each hashed from its own bytes
+        self.assertEqual([e["ref"] for e in response["mcp_config"]],
+                         ["wrapper.mcp.json", wc.CLAUDE_LEAF_MCP_CONFIG])
+        self.assertEqual(
+            [e["sha256"] for e in response["mcp_config"]],
+            [hashlib.sha256((repo / n).read_bytes()).hexdigest()
+             for n in ("wrapper.mcp.json", wc.CLAUDE_LEAF_MCP_CONFIG)])
+
+        # ...and the fail-closed read covers the LATER occurrence too, which the
+        # first-occurrence read skipped entirely.
+        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
+        with self.assertRaises(OSError) as caught:
+            c.record_launch("arid-2", {"step": "generate", "substep": "generate"}, entry)
+        self.assertIn(wc.CLAUDE_LEAF_MCP_CONFIG, caught.exception.args[0])
 
     def test_the_recorded_mcp_config_refs_are_the_argv_tokens(self) -> None:
         """The recorded `ref` must be the token the argv carries, not the constant that

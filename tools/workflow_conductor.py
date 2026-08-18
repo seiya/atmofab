@@ -1422,8 +1422,9 @@ CLAUDE_LEAF_MCP_CONFIG = ".mcp.json"
 
 
 def _variadic_values(argv: list[str], flag: str) -> list[str]:
-    """The values a VARIADIC flag consumes on `argv`: everything after it up to the next
-    OPTION token (one starting with `-`) or the end of the list.
+    """Every value a VARIADIC flag consumes on `argv`, across ALL of its occurrences, in
+    argv order. Each occurrence takes the tokens after it up to the next OPTION token (one
+    starting with `-`) or the end of the list.
 
     `-`, not `--`, because that is what the CLI does — measured on 2.1.234:
     `claude --mcp-config <file> -p` parses the `-p` as `--print` rather than as a second
@@ -1431,17 +1432,37 @@ def _variadic_values(argv: list[str], flag: str) -> list[str]:
     file, so the list is genuinely multi-valued and genuinely terminated by any `-` token.
     A `--`-only rule would silently over-read past a short option.
 
-    Reading the values back with the same rule the argv is built under is the point — a
-    single-value read would describe only the first of several, and an index-based read
-    would describe the wrong token the moment a flag moves."""
-    if flag not in argv:
-        return []
+    ALL occurrences, because `--mcp-config` ACCUMULATES rather than overriding — measured:
+    `claude --mcp-config <ok> --mcp-config <missing>` fails on the second file, so both are
+    loaded. An `argv.index()` read sees only the first, and a leaf whose configured
+    `command:` prefix already carries one would then be recorded without the repository's
+    own `.mcp.json` — omitting the mandatory server set from the record AND from the
+    fail-closed read that is supposed to guarantee it."""
     out: list[str] = []
-    for token in argv[argv.index(flag) + 1:]:
-        if token.startswith("-"):
-            break
-        out.append(token)
+    for i, token in enumerate(argv):
+        if token != flag:
+            continue
+        for value in argv[i + 1:]:
+            if value.startswith("-"):
+                break
+            out.append(value)
     return out
+
+
+def _effective_option_value(argv: list[str], flag: str) -> str | None:
+    """The value an OVERRIDING (non-accumulating) option actually takes on `argv`: the LAST
+    occurrence's, or None if the flag is absent.
+
+    Last, not first — measured on 2.1.234: `--setting-sources project --setting-sources
+    nonsense` is rejected for `nonsense` while `--setting-sources nonsense
+    --setting-sources project` runs, so the trailing occurrence is the one in force. The
+    conductor appends its own after any the entry's `command:` prefix carries, so reading
+    the first would record a value that was never in effect."""
+    value: str | None = None
+    for i, token in enumerate(argv):
+        if token == flag and i + 1 < len(argv):
+            value = argv[i + 1]
+    return value
 
 # How long a leaf gets to exit on SIGTERM before the group is SIGKILLed, and how long
 # the whole teardown may take. Both are bounded on purpose: this runs on the driver's
@@ -5269,8 +5290,9 @@ class Conductor:
         # Passing the id spawn_leaf passes keeps the re-derivation on the production path.
         argv = self.leaf_command(entry, session_id=child_arid, pure=pure)
         surface: dict[str, Any] = {}
-        if "--setting-sources" in argv:
-            surface["claude_setting_sources"] = argv[argv.index("--setting-sources") + 1]
+        sources = _effective_option_value(argv, "--setting-sources")
+        if sources is not None:
+            surface["claude_setting_sources"] = sources
         if "--mcp-config" in argv:
             refs = _variadic_values(argv, "--mcp-config")
             entries: list[dict[str, str]] = []
