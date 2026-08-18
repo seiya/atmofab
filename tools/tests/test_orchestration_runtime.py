@@ -1332,6 +1332,24 @@ shell_tool                       stable             true
             by_name["claude_mcp_build_runtime_permission_granted"]["detail"],
         )
 
+    def test_the_permission_remedy_points_at_the_layer_the_gate_reads(self) -> None:
+        """A refusal is only closed if the instruction it gives converges.
+
+        This string is the ONLY guidance an operator gets when
+        `claude_mcp_build_runtime_permission_granted` fails, and the most likely reason it
+        fails is a grant sitting in `.claude/settings.local.json` — the file Claude Code
+        writes on an interactive "always allow". While the gate read that file, naming it was
+        correct; now that neither the gate nor a leaf loads it, naming it as somewhere the
+        grant may live sends the operator to do something that cannot work.
+
+        Pins the PROPERTY, not the wording: the committed file must be named, and the local
+        file may appear only alongside a statement that it is not consulted."""
+        from tools.orchestration_runtime import _CLAUDE_MCP_PERMISSION_REMEDIATION as msg
+        self.assertIn(".claude/settings.json", msg)
+        if "settings.local.json" in msg:
+            self.assertIn("NOT consulted", msg,
+                          "the remedy names the ignored layer without saying it is ignored")
+
     def test_a_local_only_permission_grant_does_not_satisfy_the_gate(self) -> None:
         """A grant that lives ONLY in `.claude/settings.local.json` must FAIL the gate.
 
