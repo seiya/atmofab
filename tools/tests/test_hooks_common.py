@@ -2220,7 +2220,12 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         from tools.hooks.common import WRITE_HINT, validate_write_access
         import tempfile
         from pathlib import Path
-        self.assertIn("Edit/Write tool", WRITE_HINT)
+        # Read the temp-file sentence specifically: WRITE_HINT names the tool for
+        # ARTIFACT writes in an earlier sentence, which would satisfy a whole-string
+        # match no matter what the temp-file half says.
+        self.assertIn("For temp files", WRITE_HINT)
+        temp_half = WRITE_HINT.split("For temp files", 1)[1]
+        self.assertIn("Edit/Write tool", temp_half)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._write_manifest(
@@ -2310,6 +2315,18 @@ class DevShmWriteBlockTests(unittest.TestCase):
         self.assertNotIn("next_command", fix_hint)
         docs_ref = fix_hint.get("docs_ref", "")
         self.assertIn("AGENT_CONTRACT.md", docs_ref)
+
+    def test_dev_shm_block_reason_names_the_admitted_write_route(self) -> None:
+        """Issue #73: the /dev/shm refusal must name the Edit/Write tool.
+
+        The refusal redirects a leaf to allowed_tmp_root, and the only route admitted
+        there is the file tool — a Bash redirect write matches no committed
+        permissions.allow rule. Pins the rule (the reason names the tool), not the
+        sentence around it.
+        """
+        decision = self._call("cp workspace/outputs/result.json /dev/shm/result.json")
+        self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+        self.assertIn("Edit/Write tool", decision.reason or "")
 
     def test_blocks_mv_to_dev_shm(self) -> None:
         decision = self._call("mv /tmp/result.json /dev/shm/result.json")
