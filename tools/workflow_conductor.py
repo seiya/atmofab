@@ -1404,27 +1404,38 @@ CLAUDE_LEAF_DISALLOWED_TOOLS = "Task,WebFetch,WebSearch,NotebookEdit"
 # committed file in both.
 #
 # PLACEMENT RULE for this and the other variadic flags on this argv
-# (`--mcp-config <configs...>`, `--disallowedTools <tools...>`): a variadic flag
-# keeps consuming tokens until one starts with `--`, so each of their values must be
-# followed by a `--`-prefixed token. Here `--mcp-config`'s value is followed by
-# `--disable-slash-commands` and `--disallowedTools`'s by `--output-format`. Nothing
-# variadic may sit immediately before the trailing `-p`, which takes no prompt
-# argument (the prompt rides stdin) and would otherwise be swallowed.
+# (`--mcp-config <configs...>`, `--disallowedTools <tools...>`): a variadic flag keeps
+# consuming tokens until one starts with `-`, so each of their values must be followed
+# by an OPTION token. Here `--mcp-config`'s value is followed by
+# `--disable-slash-commands` and `--disallowedTools`'s by `--output-format`.
+# MEASURED (CLI 2.1.234), because the obvious guess is wrong in the safe direction:
+# `claude --mcp-config <file> -p` does NOT swallow the `-p` — it is a `-` token, so it
+# terminates the list and is parsed as `--print`. A SHORT option therefore terminates a
+# variadic just as a long one does, and the trailing `-p` is safe even directly after a
+# variadic value. What is genuinely unsafe is a bare word: a positional prompt restored
+# after `--disallowedTools` would be eaten by the list, which is one more reason the
+# prompt rides stdin.
 CLAUDE_LEAF_MCP_CONFIG = ".mcp.json"
 
 
 def _variadic_values(argv: list[str], flag: str) -> list[str]:
-    """The values a VARIADIC flag consumes on `argv`: everything after it up to the
-    next `--`-prefixed token (the CLI's own terminator) or the end of the list.
+    """The values a VARIADIC flag consumes on `argv`: everything after it up to the next
+    OPTION token (one starting with `-`) or the end of the list.
 
-    Reading them back with the same rule the argv is built under is the point — a
-    single-value read would silently describe only the first of several, and an
-    index-based read would describe the wrong token the moment a flag moves."""
+    `-`, not `--`, because that is what the CLI does — measured on 2.1.234:
+    `claude --mcp-config <file> -p` parses the `-p` as `--print` rather than as a second
+    config path, and `claude --mcp-config <a> <b> -p` reports `<b>` as a missing config
+    file, so the list is genuinely multi-valued and genuinely terminated by any `-` token.
+    A `--`-only rule would silently over-read past a short option.
+
+    Reading the values back with the same rule the argv is built under is the point — a
+    single-value read would describe only the first of several, and an index-based read
+    would describe the wrong token the moment a flag moves."""
     if flag not in argv:
         return []
     out: list[str] = []
     for token in argv[argv.index(flag) + 1:]:
-        if token.startswith("--"):
+        if token.startswith("-"):
             break
         out.append(token)
     return out

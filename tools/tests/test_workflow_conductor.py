@@ -6706,30 +6706,60 @@ class LeafSpawnTest(unittest.TestCase):
                 self.assertNotIn(flag, other)
 
     def test_every_variadic_flag_on_the_claude_leaf_argv_is_terminated(self) -> None:
-        """`--mcp-config <configs...>` and `--disallowedTools <tools...>` keep consuming
-        tokens until one starts with `--`. A value that is not followed by a `--`-prefixed
-        token is therefore silently swallowed into the previous flag's list — and the
-        trailing `-p` is the worst case, since it does not start with `--`: swallowed, the
-        leaf would run interactively and hang instead of failing.
+        """A variadic flag keeps consuming tokens until an OPTION token, so a value not
+        followed by one is silently absorbed into the previous flag's list — the conductor
+        would then launch with a different server set or a different tool exclusion than the
+        argv reads as, and record the wrong one.
 
-        Derived from the CLI's own variadic set rather than spelled per call, so a new
-        variadic flag added to that set is checked the moment it is named there.
+        MEASURED (CLI 2.1.234): the terminator is any `-` token, not only `--`. The obvious
+        hazard — the trailing `-p` being eaten — does not exist, because `-p` is itself a `-`
+        token; `claude --mcp-config <file> -p` parses it as `--print`. What a variadic DOES
+        eat is a bare word, which is one more reason the prompt rides stdin rather than
+        returning as a positional argument.
+
+        Covers the PURE argv too: `--tools` is variadic as well, and it is the pure branch
+        that carries it (with an empty-string value, which is not an option token).
         """
-        variadic = ("--mcp-config", "--disallowedTools")
-        argvs = [self._c(backend="claude").leaf_command(),
-                 self._c(backend="claude").leaf_command(session_id="a"),
-                 self._c(backend="claude").leaf_command(session_id="a",
-                                                        resume_session_id="b")]
+        variadic = ("--mcp-config", "--disallowedTools", "--tools")
+        c = self._c(backend="claude")
+        argvs = [c.leaf_command(),
+                 c.leaf_command(session_id="a"),
+                 c.leaf_command(session_id="a", resume_session_id="b"),
+                 c.leaf_command(pure=True),
+                 c.leaf_command(session_id="a", resume_session_id="b", pure=True)]
         for argv in argvs:
             self.assertEqual(argv[-1], "-p", msg=argv)
-            self.assertFalse(argv[-2].startswith("-"), msg=argv)
             for flag in variadic:
                 if flag not in argv:
                     continue
                 values = wc._variadic_values(argv, flag)
                 self.assertEqual(len(values), 1, msg=f"{flag} in {argv}")
                 after = argv[argv.index(flag) + 1 + len(values)]
-                self.assertTrue(after.startswith("--"), msg=f"{flag} -> {after} in {argv}")
+                self.assertTrue(after.startswith("-"), msg=f"{flag} -> {after} in {argv}")
+
+    def test_variadic_values_reads_a_list_and_stops_at_any_option_token(self) -> None:
+        """The helper's reason for existing, which the leaf argv cannot exercise because it
+        happens to carry exactly one value per variadic flag today.
+
+        Without this, a single-value read (`argv[index + 1]`) satisfies every other assertion
+        in the suite, and so does a `--`-only terminator — both were surviving mutations. The
+        cases are the CLI's measured behaviour: several values are consumed, ANY `-` token
+        ends the list (including a short option such as `-p`), and running off the end is not
+        an error."""
+        self.assertEqual(
+            wc._variadic_values(["c", "--mcp-config", "a.json", "b.json", "--x"],
+                                "--mcp-config"), ["a.json", "b.json"])
+        # a SHORT option terminates it too — the `--`-only rule over-read here
+        self.assertEqual(
+            wc._variadic_values(["c", "--mcp-config", "a.json", "-p"], "--mcp-config"),
+            ["a.json"])
+        # end of argv is a terminator
+        self.assertEqual(
+            wc._variadic_values(["c", "--mcp-config", "a.json"], "--mcp-config"), ["a.json"])
+        # an absent flag consumes nothing (not the argv's tail)
+        self.assertEqual(wc._variadic_values(["c", "-p"], "--mcp-config"), [])
+        # a flag with no value at all is an empty list, not an IndexError
+        self.assertEqual(wc._variadic_values(["c", "--mcp-config"], "--mcp-config"), [])
 
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
@@ -16932,6 +16962,30 @@ class LeafEntryThreadingTests(unittest.TestCase):
                             agentic["mcp_config"][0]["sha256"])
         self.assertEqual(again["mcp_config"][0]["sha256"],
                          hashlib.sha256(data + b"\n").hexdigest())
+
+    def test_the_recorded_mcp_config_refs_are_the_argv_tokens(self) -> None:
+        """The recorded `ref` must be the token the argv carries, not the constant that
+        happens to be on it today. Hardcoding `.mcp.json` in the record satisfied every other
+        test (a surviving mutation), because the argv and the constant agree in production —
+        so the check has to make them disagree."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        entry = c.entry_for("generate", "generate")
+        (repo / "other.json").write_bytes(b'{"mcpServers": {}}')
+        (repo / "third.json").write_bytes(b'{"mcpServers": {"x": {}}}')
+        argv = [t if t != wc.CLAUDE_LEAF_MCP_CONFIG else "other.json"
+                for t in c.leaf_command(entry)]
+        argv.insert(argv.index("other.json") + 1, "third.json")
+        c.leaf_command = lambda *a, **kw: list(argv)     # type: ignore[assignment]
+        response = self._record_launch_response(c, "arid-1", {}, entry)
+        self.assertEqual([e["ref"] for e in response["mcp_config"]],
+                         ["other.json", "third.json"])
+        self.assertEqual(
+            [e["sha256"] for e in response["mcp_config"]],
+            [hashlib.sha256((repo / n).read_bytes()).hexdigest()
+             for n in ("other.json", "third.json")])
 
     def test_a_deterministic_substep_records_no_argv_it_never_ran(self) -> None:
         """A deterministic substep goes through `record_launch` like any other and then runs
