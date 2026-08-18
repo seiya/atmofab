@@ -16933,6 +16933,62 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(again["mcp_config"][0]["sha256"],
                          hashlib.sha256(data + b"\n").hexdigest())
 
+    def test_a_deterministic_substep_records_no_argv_it_never_ran(self) -> None:
+        """A deterministic substep goes through `record_launch` like any other and then runs
+        IN-PROCESS (`_run_deterministic_substep`), spawning no CLI at all.
+
+        Describing it with the argv a leaf WOULD have had is a record of a launch that did not
+        happen — the one failure this field exists to prevent. The second half matters as much:
+        such a substep must not pay the fail-closed `.mcp.json` read for a file it never uses,
+        so the scratch repo here deliberately has NO `.mcp.json` and the call must still
+        succeed. Driven for every deterministic (phase, substep) the conductor recognises, not
+        a sampled one, so a new deterministic substep cannot be added past this."""
+        repo = self._scratch_repo_root()
+        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        cases = [("build", None), ("validate", "pre_judge"), ("validate", "execute"),
+                 ("validate", "post_judge"), ("generate", "gate"), ("compile", "static")]
+        for phase, substep in cases:
+            self.assertTrue(c._is_deterministic_substep(phase, substep),
+                            msg=f"{phase}.{substep} is not deterministic any more")
+            response = self._record_launch_response(
+                c, f"arid-{phase}-{substep}", {"step": phase, "substep": substep or ""},
+                c.entry_for("generate", "generate"))
+            self.assertNotIn("claude_setting_sources", response, msg=f"{phase}.{substep}")
+            self.assertNotIn("mcp_config", response, msg=f"{phase}.{substep}")
+        # ...and an LLM substep in the same repo still fails closed, so the check above is the
+        # deterministic branch and not the file merely being optional.
+        with self.assertRaises(OSError):
+            c.record_launch("arid-llm", {"step": "generate", "substep": "generate"},
+                            c.entry_for("generate", "generate"))
+
+    def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
+        """Re-deriving the argv must not have side effects of its own.
+
+        `leaf_command` is deterministic in its RESULT but not free of side effects on every
+        branch: the codex pure branch writes its `--output-schema` file, and the path is keyed
+        on the session id. Called without one it fell back to a literal `codex-pure-schema`
+        directory under `workspace/tmp/`, which nothing owns and nothing cleans — a launch
+        record leaving litter outside any agent_run_id. `record_launch` passes the same
+        `session_id` `spawn_leaf` does, so the re-derivation stays on the production path."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"))
+        from tools.pure_leaf import PURE_LEAF_MODE
+        self._record_launch_response(
+            c, "arid-1", {"leaf_mode": PURE_LEAF_MODE, "step": "generate",
+                          "substep": "generate"},
+            c.entry_for("generate", "generate"))
+        stray = repo / "workspace" / "tmp" / "codex-pure-schema"
+        self.assertFalse(stray.exists(), f"stray schema directory: {stray}")
+        tmp_root = repo / "workspace" / "tmp"
+        owned = sorted(p.name for p in tmp_root.iterdir()) if tmp_root.exists() else []
+        self.assertNotIn("codex-pure-schema", owned)
+
     def test_record_launch_fails_closed_when_argv_mcp_config_is_unreadable(self) -> None:
         """Under `--strict-mcp-config` that file is the leaf's ENTIRE MCP server set, so an
         unreadable one launches a leaf with no build-runtime — which cannot compile, run or

@@ -5186,7 +5186,7 @@ class Conductor:
             "backend_command": _provider_command_base(
                 entry or self.entry_for(None, None))[0],
         }
-        response.update(self._launch_setting_surface(request, entry))
+        response.update(self._launch_setting_surface(child_arid, request, entry))
         request_ref = self._write_launch_input_evidence(
             f"{child_arid}.request.input.json", request)
         argv = [
@@ -5200,7 +5200,7 @@ class Conductor:
             argv += ["--expected-codex-home-generation", str(expected_codex_home_generation)]
         return self.runtime(argv)
 
-    def _launch_setting_surface(self, request: dict[str, Any],
+    def _launch_setting_surface(self, child_arid: str, request: dict[str, Any],
                                 entry: ResolvedLeafEntry | None) -> dict[str, Any]:
         """What this leaf's launch closes its CONFIGURATION surface to, for the record.
 
@@ -5218,16 +5218,17 @@ class Conductor:
         a flag cannot leave the record describing the old argv. The same reasoning already
         pins `backend_command` to `leaf_command(entry)[0]`.
 
-        `pure` comes from the REQUEST (`leaf_mode`), the same field the runtime keys the
-        pure transport on. Nothing is special-cased per provider or per mode: a pure leaf,
-        a codex leaf, and an HTTP leaf simply produce an argv without these flags, so they
-        get no fields.
+        `pure` comes from the REQUEST, through the shared `pure_leaf.is_pure_request`
+        predicate. Nothing is special-cased per provider: a pure leaf and a codex leaf simply
+        produce an argv without these flags, so they get no fields. Two launches are declined
+        outright instead, because they have no argv to describe at all — an HTTP leaf (no
+        process) and a deterministic substep (in-process).
 
         Only VALUES are recorded. `--strict-mcp-config` / `--disable-slash-commands` are
         boolean; their presence is a code constant pinned by the argv goldens, and copying
         it here would be a second place to keep in step with no new information in it.
         """
-        from tools.pure_leaf import PURE_LEAF_MODE
+        from tools.pure_leaf import is_pure_request
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.is_http:
             # There is no CLI leaf and no argv: `spawn_leaf` returns on this same predicate
@@ -5235,8 +5236,24 @@ class Conductor:
             # outright. Nothing about CLI settings layers or an MCP configuration file is
             # true of an HTTP leaf, so it is recorded about nothing rather than about "".
             return {}
-        pure = str(request.get("leaf_mode", "")).strip().lower() == PURE_LEAF_MODE
-        argv = self.leaf_command(entry, pure=pure)
+        if self._is_deterministic_substep(str(request.get("step", "")),
+                                          request.get("substep") or None):
+            # A deterministic substep is recorded through `record_launch` like any other, but
+            # it runs IN-PROCESS (`_run_deterministic_substep`) and spawns no CLI at all.
+            # Describing it with the argv a leaf WOULD have had is the very thing this field
+            # exists to prevent — a record of a launch that did not happen — and it would also
+            # make such a substep pay the fail-closed `.mcp.json` read for a file it never uses.
+            return {}
+        # THE shared predicate (`tools/pure_leaf.is_pure_request`), not a second spelling of
+        # it: the runtime and the pipeline validator both delegate there so producer and
+        # validators cannot disagree about what "pure" means, and this is the seam that decides
+        # whether the record describes the pure argv or the agentic one.
+        pure = is_pure_request(request)
+        # `session_id=child_arid` because `leaf_command` is not free of side effects on every
+        # branch: a pure CODEX launch writes its output schema, and with no session id it wrote
+        # one into a stray `workspace/tmp/codex-pure-schema/` that nothing owns or cleans.
+        # Passing the id spawn_leaf passes keeps the re-derivation on the production path.
+        argv = self.leaf_command(entry, session_id=child_arid, pure=pure)
         surface: dict[str, Any] = {}
         if "--setting-sources" in argv:
             surface["claude_setting_sources"] = argv[argv.index("--setting-sources") + 1]
