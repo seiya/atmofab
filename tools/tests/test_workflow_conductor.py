@@ -17040,18 +17040,27 @@ class LeafEntryThreadingTests(unittest.TestCase):
         happen — the one failure this field exists to prevent. The second half matters as much:
         such a substep must not pay the fail-closed `.mcp.json` read for a file it never uses,
         so the scratch repo here deliberately has NO `.mcp.json` and the call must still
-        succeed. Driven for every deterministic (phase, substep) the conductor recognises, not
-        a sampled one, so a new deterministic substep cannot be added past this."""
+        succeed. Driven over the conductor's own `SUBSTEPS` table filtered by the predicate,
+        so a deterministic substep added later is covered without editing this test."""
         repo = self._scratch_repo_root()
         (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        cases = [("build", None), ("validate", "pre_judge"), ("validate", "execute"),
-                 ("validate", "post_judge"), ("generate", "gate"), ("compile", "static")]
+        # DERIVED from the predicate over the conductor's own (phase, substep) universe,
+        # not hand-listed: a hand-written list cannot support the "every one of them" claim
+        # this test makes, and would silently miss a deterministic substep added later.
+        # `SUBSTEPS` is the same table `run_phase` walks.
+        cases = [(phase, substep)
+                 for phase, substeps in sorted(wc.SUBSTEPS.items())
+                 for substep in substeps
+                 if c._is_deterministic_substep(phase, substep)]
+        self.assertEqual(
+            cases,
+            [("build", None), ("compile", "static"), ("generate", "gate"),
+             ("validate", "pre_judge"), ("validate", "execute"), ("validate", "post_judge")],
+            "the deterministic set changed; this test now covers a different set")
         for phase, substep in cases:
-            self.assertTrue(c._is_deterministic_substep(phase, substep),
-                            msg=f"{phase}.{substep} is not deterministic any more")
             response = self._record_launch_response(
                 c, f"arid-{phase}-{substep}", {"step": phase, "substep": substep or ""},
                 c.entry_for("generate", "generate"))

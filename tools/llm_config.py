@@ -298,11 +298,14 @@ class ResolvedLeafEntry:
 
     `model` empty is MEANINGFUL, not missing: for `claude_cli` it means no `--model` is
     passed, so the CLI's own default decides and the recorded label is the spec-side
-    prediction `orchestration_runtime.default_agent_model_for_backend` supplies. For an
-    AGENTIC claude leaf that prediction is also what constrains the outcome, since such a
-    leaf does not see the operator's settings (`--setting-sources project`, issue #63
-    step 1); a PURE leaf carries no `--setting-sources`, so there the operator's settings
-    can still decide and the stamp is a prediction only. For `codex_cli` it is an operator
+    prediction `orchestration_runtime.default_agent_model_for_backend` supplies. That
+    function's docstring is the ONE statement of what the stamp does and does not claim;
+    this sentence deliberately does not restate it. (It has been restated wrongly three
+    times here — first asserting the operator's settings decide, then that a leaf never
+    reads them, then that on the agentic path the prediction constrains the outcome. The
+    last is false too: `--setting-sources project` closes the settings-file channel, not
+    the ENVIRONMENT, and `ANTHROPIC_MODEL` reaches the leaf regardless — measured, issue
+    #63. A fourth wording is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
     omission, caught at run START by `validate_runnable` rather than at load, so that a
     configuration whose codex slug has been blanked still LOADS — and can be tested, and can be
     reported on — instead of failing where the rule cannot be named."""
