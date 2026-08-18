@@ -2296,7 +2296,14 @@ class FixHintInAuditDetailTests(unittest.TestCase):
                 tool_name="Bash",
             )
         self.assertEqual(decision.action, HookDecisionAction.BLOCK)
-        self.assertIn("Write tool", decision.reason or "")
+        # Read the SCRATCH half. The artifact half of this same reason names the
+        # Edit/Write tool, and "Edit/Write tool" contains "Write tool", so a
+        # whole-string match is satisfied by the sentence about the other rule —
+        # measured: it passes against origin/main's wording, which named Bash as
+        # the scratch route.
+        reason = decision.reason or ""
+        self.assertIn("allowed_tmp_root", reason)
+        self.assertIn("Write tool", reason.split("allowed_tmp_root", 1)[1])
 
     def test_bash_redirect_to_tmpdir_is_allowed(self) -> None:
         """Bash redirect into allowed_tmp_root stays ALLOW at the hook layer.
