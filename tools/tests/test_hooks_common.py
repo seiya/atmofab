@@ -2206,6 +2206,41 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         # itself need to clear session-sandbox approval, defeating the purpose.
         self.assertNotIn("next_command", fix_hint)
 
+    def test_tmp_area_remedy_names_the_admitted_write_route(self) -> None:
+        """The remedy a blocked leaf reads must name the route that is admitted.
+
+        Issue #73: the only scratch route the contract offers is the Edit/Write tool,
+        because a Bash redirect write matches no committed permissions.allow rule. A
+        remedy that says only "write under <path>" leaves the leaf to pick the route,
+        and the route it used is the one that just failed.
+
+        This pins the RULE (both remedy surfaces name the tool), not a wording: it
+        matches on the tool name alone, which is the part that carries the rule.
+        """
+        from tools.hooks.common import WRITE_HINT, validate_write_access
+        import tempfile
+        from pathlib import Path
+        self.assertIn("Edit/Write tool", WRITE_HINT)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_manifest(
+                repo_root,
+                orchestration_id="orchRT",
+                agent_run_id="runRT",
+                allowed_output_paths=["workspace/outputs/"],
+                allowed_tmp_root="workspace/tmp/runRT",
+            )
+            decision = validate_write_access(
+                repo_root,
+                "orchRT",
+                "runRT",
+                "workspace/bad/out.json",
+                tool_name="Write",
+            )
+        self.assertEqual(decision.action, HookDecisionAction.BLOCK)
+        note = ((decision.audit_detail or {}).get("fix_hint") or {}).get("note", "")
+        self.assertIn("Edit/Write tool", note)
+
     def test_bash_redirect_to_tmpdir_is_allowed(self) -> None:
         """Bash redirect into allowed_tmp_root stays ALLOW at the hook layer.
 
