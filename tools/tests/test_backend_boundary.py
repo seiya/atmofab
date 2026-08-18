@@ -1850,35 +1850,79 @@ class CapabilityOwnershipTests(unittest.TestCase):
                      "CHECKS_PUBLIC_NAMES"):
             self.assertTrue(hasattr(module, name), name)
 
-    def test_a_migrated_capability_may_not_be_declared_in_the_neutral_core(self) -> None:
-        """The rule that keeps the authorship question and the dispatch question from splitting.
+    def test_the_declaration_rules_do_not_block_a_single_value_migrating(self) -> None:
+        """The rule that used to live here, and why there is no rule here now.
 
-        `provides` is the UNION, because authorship must not change when an area of the ledger
-        lands. Every seam reaching a MIGRATED capability, though, goes through
-        `capability_module`, which sees only `backend_provides`. A record declaring such a
-        capability in `core_provides` therefore satisfied the authorship predicate and was
-        refused by the seam — approved for host authoring, then fail-closed at the render.
+        Twice a declaration rule was written to forbid a record claiming a capability the
+        neutral core no longer implements — first keyed by capability, then by axis — and both
+        refused legitimate work. The axis-keyed form was the worse of the two: `linter` has four
+        values whose lint adapters are genuinely separate inlined implementations, so migrating
+        one made the other three illegal and `import tools.backends.registry` raise, for a module
+        the whole tree imports. `parallel` had the same shape, and the `none` record's own
+        comment predicted the state the rule forbade.
 
-        Measured, before this rule: `_ir_m3c_language` returned a language while
-        `runner_render_refusal` refused it (making two in-source UNREACHABLE labels false), and
-        `_conductor_authors_runner` answered True while `render_runner` raised
-        `RunnerRenderUnavailable`, which no clause in `_write_runner` catches. Three places, one
-        legal-looking declaration. The declaration is now refused at import instead, so the two
-        questions coincide for a migrated capability BY CHECK rather than by agreement.
+        "Does the neutral core still implement this job for THIS value" is a fact about the
+        tree, per (axis, value), and no other record carries it. It is not checkable at
+        declaration time — the registry must not import a backend there — so it is caught where
+        it is knowable: the reachability loop below for the live tree, the seam's refusal, and
+        the gates that report that refusal as a violation.
         """
-        record = registry.Backend(
-            "language", "zz_core_inlined", "tools.backends.language.fortran",
-            core_provides=frozenset({"runner_render"}))
-        with self._patched(record):
-            with self.assertRaises(registry.UnsupportedBackend) as ctx:
+        for axis, backend_id, capability in (("linter", "fortitude", "lint"),
+                                             ("parallel", "openmp", "parallel_directives"),
+                                             ("build_system", "make", "control_file")):
+            migrated = registry.Backend(
+                axis, backend_id, "tools.backends.language.fortran",
+                backend_provides=frozenset({capability}))
+            with mock.patch.dict(
+                    registry.CAPABILITY_MODULE_ATTR, {capability: "runner"}), \
+                    self._patched(migrated):
                 registry._check_declarations()
-        self.assertIn("already moved into a package on this axis", str(ctx.exception))
-        # A capability that has NOT migrated is still declarable there — the rule must not
-        # forbid the state the migration ledger is made of.
-        still_inlined = registry.Backend(
-            "language", "zz_inlined", None, core_provides=frozenset({"control_file"}))
-        with self._patched(still_inlined):
+                # the siblings that still carry it inlined keep answering for authorship
+                for other in registry.backend_ids(axis):
+                    if other != backend_id:
+                        self.assertTrue(
+                            registry.provides(axis, other, capability)
+                            or capability not in registry._BACKENDS[(axis, other)].provided,
+                            (axis, other, capability))
+
+    def test_capability_module_refuses_a_capability_the_neutral_core_still_owns(self) -> None:
+        """Both halves of a branch a comment here wrongly called unreachable, and a check a
+        comment wrongly called moot. One record separates them.
+
+        `control_file` is a question of two axes. When it migrates on `build_system` it gains a
+        `CAPABILITY_MODULE_ATTR` row while `language/fortran` legitimately still carries it in
+        `core_provides`. In that state, widening `capability_module`'s test from
+        `backend_provides` to `provided` returns the package's module for a job the record only
+        claims to do inlined: the wrong-module dispatch the function exists to prevent.
+
+        And on the UNMODIFIED tree the same call takes the refusal's FIRST clause — the one
+        saying the capability is still carried by the neutral core, rather than that nothing
+        implements it. A comment called that clause unreachable; it is one line away. Both are
+        asserted, because sending a reader to the wrong declaration is all this message does.
+        """
+        # (a) the live tree: the "still inlined" diagnosis, not the "nothing implements it" one
+        with self.assertRaises(registry.BackendNotExtracted) as ctx:
+            registry.capability_module("language", "fortran", "control_file")
+        self.assertIn("still carried by the neutral core", str(ctx.exception))
+
+        # (b) a value that declares it in neither set: the other clause
+        bare = registry.Backend("language", "zz_bare", "tools.backends.language.fortran")
+        with self._patched(bare):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_bare", "control_file")
+        self.assertIn("nothing in this repository implements it", str(ctx.exception))
+
+        # (c) the state the ledger's next area creates: the narrow set is what refuses
+        migrated_make = registry.Backend(
+            "build_system", "make", "tools.backends.language.fortran",
+            core_provides=frozenset({"build_execute"}),
+            backend_provides=frozenset({"control_file"}))
+        with mock.patch.dict(registry.CAPABILITY_MODULE_ATTR, {"control_file": "runner"}), \
+                self._patched(migrated_make):
             registry._check_declarations()
+            self.assertTrue(registry.provides("language", "fortran", "control_file"))
+            with self.assertRaises(registry.BackendNotExtracted):
+                registry.capability_module("language", "fortran", "control_file")
 
     def test_the_seam_refuses_a_package_that_does_not_carry_the_capability(self) -> None:
         """The seam's own use of `capability_module`, at the seam.
@@ -2047,8 +2091,14 @@ class CapabilityOwnershipTests(unittest.TestCase):
             for capability in sorted(record.backend_provides):
                 try:
                     registry.capability_module(axis, backend_id, capability)
-                except Exception as exc:  # noqa: BLE001 — any failure is unreachability
+                except (registry.UnsupportedBackend, registry.BackendNotExtracted) as exc:
                     unreachable.append(f"{axis}/{backend_id}:{capability} ({exc!r})")
+                except Exception as exc:  # noqa: BLE001
+                    # Reported separately: a package whose `__init__` fails for an environment
+                    # reason (a missing optional dependency) is not a record that overstates
+                    # itself, and calling it one sends a reader to the declaration.
+                    unreachable.append(
+                        f"{axis}/{backend_id}:{capability} FAILED TO LOAD ({exc!r})")
         return unreachable
 
     def test_every_declared_package_capability_is_reachable_in_this_tree(self) -> None:
@@ -2099,14 +2149,14 @@ class CapabilityOwnershipTests(unittest.TestCase):
         module. `_check_declarations` accepts it — the registry must not import a backend at
         declaration time — so `provides` answers True and both authorship predicates approve the
         node, while the seam refuses. Three review rounds were spent claiming a rule had made
-        this impossible; it cannot be made impossible, so what matters is that the two
-        deterministic gates report it as a VIOLATION and never as an exception, since an
-        uncaught raise inside `_validate_compile_stage_impl` discards every violation its
-        sibling gates collected.
+        this impossible; it cannot be made impossible, so what matters is that the gate reports
+        it as a VIOLATION and never as an exception, since an uncaught raise inside
+        `_validate_compile_stage_impl` discards every violation its sibling gates collected.
 
-        Driven THROUGH the gates, not through the seam: the seam's own refusal has its own
+        Driven THROUGH the checks gate, not through the seam: the seam's own refusal has its own
         witness, and dispatching correctly inside a gate is a different fact from dispatching
-        correctly when called directly.
+        correctly when called directly. The render-precondition gate shares this branch and is
+        driven for the broken-import input by its own test.
         """
         import sys
         import tempfile

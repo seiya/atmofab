@@ -188,11 +188,14 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
 #: single "the module" to return. A capability absent from this table cannot be reached through
 #: `capability_module` at all — which is correct for the ones no dispatch routes through yet.
 #:
-#: This table says WHERE a package re-exports a capability. It does NOT say the capability has
-#: finished migrating — that is per AXIS, and asking it of the table was a defect: `control_file`
-#: is a question of both `build_system` and `language`, so the first axis to migrate would have
-#: refused the second axis' still-inlined declaration, with a remedy that leads to another
-#: refusal. `_check_declarations` derives the migration state from the records themselves.
+#: This table says WHERE a package re-exports a capability, and NOTHING about who still has an
+#: inlined implementation of it. Two rules were written on the opposite assumption and both were
+#: wrong: keyed by capability, the first axis to migrate `control_file` refused the second axis'
+#: still-inlined declaration; keyed by axis, migrating one `linter` adapter refused the other
+#: three, which are genuinely separate inlined adapters — and that refusal is an ImportError for
+#: a module the whole tree imports. "Does the neutral core still implement this job for THIS
+#: value" is a fact about the tree, per (axis, value), and no other record carries it. It is not
+#: checkable here; see `docs/BACKEND_BOUNDARY.md` §Design Policy for where it IS caught.
 CAPABILITY_MODULE_ATTR: dict[str, str] = {
     "runner_render": "runner",
 }
@@ -330,42 +333,6 @@ def _check_declarations() -> None:
                 f"{backend.axis}/{backend.backend_id} declares backend_provides "
                 f"{sorted(backend.backend_provides)} but has no backend package (module=None); "
                 f"a capability implemented in the neutral core belongs in core_provides"
-            )
-
-    # SECOND PASS, and the two passes are separate on purpose. Everything above is a property of
-    # one record and can be judged without looking at any other; the rule below is a property of
-    # the axis as a whole. Interleaved, they answered the wrong question about the wrong record:
-    # a synthetic record with a bad reach declaration made a DIFFERENT record's legitimate
-    # `core_provides` look like the defect, because the first record had already moved the
-    # capability into the "migrated on this axis" set.
-    # Once ONE value of an axis implements a capability in its package, the neutral core no
-    # longer has an inlined implementation of that job FOR THAT AXIS — it moved. A sibling
-    # record still declaring it in `core_provides` asserts code that no longer exists, and
-    # that assertion is what splits the two questions: `provides` (the authorship question,
-    # the union) would answer True while every seam reaching the capability asks
-    # `capability_module`, which sees only `backend_provides`.
-    #
-    # PER AXIS, derived from the records rather than from `CAPABILITY_MODULE_ATTR`. Keyed by
-    # capability alone it refused a legal state: `control_file` is a question of two axes, so
-    # migrating the build-system half would have rejected the language half that is still
-    # inlined — and the message's remedy (declare it in `backend_provides`) leads straight to
-    # the no-package refusal in the first pass. That is the ledger's own next area, blocked by this rule.
-    for backend in _BACKENDS.values():
-        migrated_on_this_axis = {
-            capability
-            for other in _BACKENDS.values() if other.axis == backend.axis
-            for capability in other.backend_provides
-        }
-        for capability in sorted(backend.core_provides & migrated_on_this_axis):
-            owners = ", ".join(sorted(
-                o.backend_id for o in _BACKENDS.values()
-                if o.axis == backend.axis and capability in o.backend_provides))
-            raise UnsupportedBackend(
-                f"{backend.axis}/{backend.backend_id} declares '{capability}' in core_provides, "
-                f"but that capability has already moved into a package on this axis ({owners}): "
-                f"the neutral core has no inlined implementation of it left for {backend.axis}, "
-                f"so the declaration asserts code that does not exist. Implement it in this "
-                f"backend's own package and declare it in backend_provides, or drop it"
             )
 
 
@@ -672,20 +639,19 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
     _require_capability(axis, capability)
     require_available(axis, backend_id)
     backend = _BACKENDS[(axis, str(backend_id or "").strip().lower())]
-    # `backend_provides`, not `provided` — and MOOT for any record `_check_declarations`
-    # accepts, which is why widening it to `provided` leaves the suite green. The second-pass
-    # rule guarantees that once a capability has moved into a package on an axis, no record of
-    # that axis carries it in `core_provides`, so the two sets agree for exactly the
-    # capabilities reached through here. It is spelled as the narrower set because THIS
-    # function's contract is about the package, and a reader should not have to know the
-    # declaration rule to see that.
+    # `backend_provides`, not `provided`, and LOAD BEARING — an earlier comment here called it
+    # moot on the strength of a declaration rule that has since been removed as unsound. A
+    # capability can have a `CAPABILITY_MODULE_ATTR` row because it migrated on ONE axis while a
+    # record of another axis still carries it inlined: `control_file` is a question of two axes,
+    # and that is the ledger's next area. Widened to `provided`, this returns the package's
+    # module for a job the record only claims to do in the neutral core — the wrong-module
+    # dispatch the docstring above says this function exists to prevent.
     if capability not in backend.backend_provides:
-        # Two clauses, and only the second is reachable for a LEGAL record: the first names a
-        # capability in `core_provides`, which the second-pass rule refuses once anything on the
-        # axis has migrated it — and a capability nothing has migrated has no
-        # `CAPABILITY_MODULE_ATTR` row, so `capability_module` is not the way it is reached.
-        # It stays because the ordering above is not a property this function can see, and a
-        # wrong diagnosis here would send a reader to the wrong declaration.
+        # BOTH clauses are reachable, and the difference is the whole value of the message: one
+        # sends a reader to a capability that exists elsewhere, the other to a value nothing
+        # implements. `capability_module("language", "fortran", "control_file")` takes the first
+        # on the unmodified tree — a comment here once claimed it was unreachable, which was
+        # wrong by a one-line call.
         where = (
             "it is still carried by the neutral core" if capability in backend.core_provides
             else "nothing in this repository implements it for that value")

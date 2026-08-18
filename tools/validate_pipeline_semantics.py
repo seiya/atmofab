@@ -4974,6 +4974,11 @@ def _validate_checks_source_files(
     # So the gap is HANDLED rather than declared impossible: a declaration that outruns its
     # package lands here as a violation routed to compile.generate, never as an exception. That
     # is the whole reason the branch exists, and it has a witness now.
+    # The `try` wraps the SEAM ENTRY only — the two calls that reach the registry and import a
+    # backend package. An earlier version also wrapped nothing else by accident of shape, but
+    # the risk it created is worth naming: a content call inside this handler would report an
+    # unrenderable NODE as a host load failure and return without emitting the content
+    # violation, which is a node defect dressed as a host fault.
     try:
         abi_refusal = host_render.runner_render_refusal(language)
         checks_public_names: tuple[str, ...] = (
@@ -12384,16 +12389,20 @@ def _validate_harness_render_preconditions(
     # The refusal is a VIOLATION rather than a raise because an uncaught exception here discards
     # every violation the sibling gates already collected.
     try:
+        # SEAM ENTRY ONLY. `ir_content_violations` is deliberately outside: it reports the NODE's
+        # defects, and catching it here would relabel an unrenderable IR as a host load failure
+        # and return without emitting the content violations the gate exists to hoist. The
+        # backend converts its own internal failures to violations; this handler is for the one
+        # thing it cannot — its package failing to load at all.
         refusal = host_render.runner_render_refusal(language)
-        messages = (
-            [] if refusal is not None
-            else host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid))
     except Exception as exc:  # noqa: BLE001
         # See the note in `_validate_checks_source_files`: a backend that cannot be imported is
         # a host fault, and letting it escape from inside this gate would discard every sibling
         # gate's violations.
         refusal = f"the backend for language {language!r} could not be loaded ({exc!r})"
-        messages = []
+    messages = (
+        [] if refusal is not None
+        else host_render.ir_content_violations(language, ir, spec_id.strip(), harness_sid))
     if refusal is not None:
         violations.append(
             f"{derived_path}: this node is host-rendered, but no backend renders a runner for "

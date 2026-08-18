@@ -17183,7 +17183,10 @@ class ChecksAbiSingleAuthorityTests(unittest.TestCase):
         src = inspect.getsource(vps._validate_checks_source_files)
         self.assertIn("checks_public_names", src)
         for name in CHECKS_PUBLIC_NAMES:
-            self.assertNotIn(f'"{name}"', src, "the ABI names must not be restated here")
+            # BOTH quote styles: scanning for one of them let a restatement in the other pass,
+            # which is the whole failure this class is about.
+            for literal in (f'"{name}"', f"'{name}'"):
+                self.assertNotIn(literal, src, "the ABI names must not be restated here")
 
     def test_bundle_gate_requires_exactly_that_set(self) -> None:
         # The Z2 acceptance layer must key off the same authority, not a restatement.

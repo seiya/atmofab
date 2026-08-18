@@ -1582,7 +1582,7 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     if match is None:  # unreachable via the ordered contract; fail-closed if ever called alone
         return f"the bundle carries no checks-role file named {want_path!r}"
     # The ABI belongs to whichever backend renders the runner that calls it, so ask the FILE's
-    # declared language — the same value `_validate_bundle_files` already constrained to
+    # declared language — the same value `_files_schema_violations` already constrained to
     # `LANGUAGES`. A language with no runner renderer has no checks ABI to hold a bundle to;
     # that is a violation here rather than a pass, because this gate is what a leaf's output is
     # accepted on and an unenforced ABI is the defect the whole layer exists to pre-empt.

@@ -238,7 +238,7 @@
     },
     "tools/backends/registry.py": {
       "compiler-driver": 2,
-      "fortran": 9,
+      "fortran": 10,
       "fortran-subroutine": 1,
       "linter-fortitude": 2
     },
