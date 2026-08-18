@@ -184,7 +184,7 @@ workspace/
 | `child_returns/<arid>.txt` | `record-child-return` | runtime | runtime (consumed by `deactivate-child`) | with Adv-30 token verification |
 | `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result, including the per-leaf `usage` (below) |
 | `agents/<arid>/dialogs/agent.summary.txt` | same as above | runtime | same as above | single-line forbidden, must include the basis |
-| `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr | `2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt` |
+| `gates/<arid>/<gate>.json` | at gate execution | runtime | **self Read forbidden** (internal artifact). obtained via stderr | the gate command's stderr, returned in the command result |
 
 #### `usage` — the per-leaf token record
 

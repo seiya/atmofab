@@ -6488,9 +6488,11 @@ def run_gate(
     # file path (gate_result_ref) is in a gates/<arid>/ directory that is
     # outside most agents' read_manifests, causing read_manifest_read_guard
     # blocks when agents attempt to read it directly (observed in
-    # orch_20260610T130256Z_ebe96a51).  Agents should redirect stderr to a
-    # tmp file (`2>workspace/tmp/<arid>/last_gate_stderr.txt`) and read that
-    # instead — which IS in their allowed_tmp_root and thus read-allowed.
+    # orch_20260610T130256Z_ebe96a51).  Agents read this line out of the
+    # command result, which carries stderr; capturing it to a tmp file with an
+    # appended redirect was the documented route until the permission layer
+    # began refusing every Bash redirect to a file (measured on Claude Code
+    # 2.1.234; it executed on 2.1.223 — docs/HOOKS.md §"Layer boundary").
     _gate_summary = {
         "gate": gate,
         "status": status,
@@ -10824,11 +10826,13 @@ def _build_gate_runbook(request_payload: dict[str, Any]) -> str:
     if arid:
         # Sandbox facts (mirror docs/AGENT_CONTRACT.md so no doc round-trip is needed).
         lines.append(
-            f"- `workspace/tmp/{arid}/` already exists and is writable — redirect gate "
-            f"stderr there (e.g. `2>workspace/tmp/{arid}/last_gate_stderr.txt`), no need "
-            "to create it. `access_logs/` is runtime-managed audit (the read hook appends a "
-            "line per read decision, and `orchestration_read` writes one too) — never read "
-            "or write it yourself."
+            f"- A gate's result JSON is the last line of its stderr, and stderr is "
+            "returned to you in the command result — read it there. Do not append a "
+            "redirect to capture it: the permission layer refuses a Bash redirect to a "
+            f"file. `workspace/tmp/{arid}/` already exists and is writable with the "
+            "`Write` tool, so it needs no creating. `access_logs/` is runtime-managed "
+            "audit (the read hook appends a line per read decision, and "
+            "`orchestration_read` writes one too) — never read or write it yourself."
         )
     return "\n".join(lines)
 

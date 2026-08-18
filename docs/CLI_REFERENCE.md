@@ -460,5 +460,5 @@ Run a validator gate across the capability_token. The canonical path in a contex
 
 The keys are converted into CLI flags (`pipeline_root` → `--pipeline-root`).
 
-The gate result JSON (`status`, `violations`, ...) is output on the last line of stderr. Save and reference it with `2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt` (`<agent_run_id>` is literally substituted).
+The gate result JSON (`status`, `violations`, ...) is output on the last line of stderr, and stderr is returned in the command result; read it there. An appended redirect that captures it to a file is refused by the permission layer.
 

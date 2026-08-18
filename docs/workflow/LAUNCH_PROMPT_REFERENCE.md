@@ -114,17 +114,19 @@ A re-submission with `repair_strategy=reuse` is limited to a diff fix against th
 **Correct temporary-file write:**
 
 - **Every extension alike** (`.py` / `.yaml` / `.sh` / `.json` / `.txt`): write `workspace/tmp/<agent_run_id>/<name>` directly with the `Write` tool. The hook authorizes a write whose target is under `allowed_tmp_root` before any extension logic and raises it to `permissionDecision=allow`, so the write needs no interactive permission. A Bash redirect that is itself the command (`cat > ... <<EOF`) is not a scratch-write route: it matches no committed `permissions.allow` rule, so it is refused at the permission layer and the refusal costs the agent an attempt.
-- A Bash redirect stays correct only as a capture appended to a command an allowlist entry already permits: it rides that entry rather than standing on its own. The gate stderr capture is the standing example; a stdout capture from the allowlisted `python3 workspace/tmp/*` route has the same shape. A redirect that is itself the whole command creates the file and is refused.
-- **Do not quote the redirect target.** `2> "workspace/tmp/<agent_run_id>/e.txt"` is blocked with `unauthorized write: '"' is not in output_manifest allowed_output_paths`, while the unquoted form is allowed: the hook's write-target parser reads the redirect off a quote-blanked copy of the command and keeps the blanked span (issue #74). Measured on both the gate stderr capture and the `python3 workspace/tmp/*` stdout capture.
+- A Bash redirect to a file is refused in every position — as the whole command and as a capture appended to a command an allow entry already permits. Both taught captures were measured refused on Claude Code 2.1.234 (`... 2>workspace/tmp/<agent_run_id>/e.txt` on the allowlisted run-gate command, and a stdout capture on the allowlisted `python3 workspace/tmp/*` route), each with `Output redirection to '<path>' was blocked`, naming as the allowed directory the very root the target sits under. A command's stdout and stderr are returned in the command result, which is where output is read; `2>/dev/null` is unaffected because it discards rather than writes. `docs/HOOKS.md` §"Layer boundary" is canonical for the measurement.
+- The hook's own redirect handling is no longer reachable from a leaf, because the permission layer refuses the redirect first. Recorded for the hook's own sake: a quoted target is blocked by the hook — `2> "workspace/tmp/<agent_run_id>/e.txt"` yields `unauthorized write: '"' is not in output_manifest allowed_output_paths` — while the unquoted form passes it, since the write-target parser reads the redirect off a quote-blanked copy of the command and keeps the blanked span. That asymmetry is a hook defect (issue #74), not a route to prefer.
 
 A temporary python script is therefore two steps: **`Write` to `workspace/tmp/<agent_run_id>/build_patch.py`**, then run it.
 
 ```bash
-# saving gate stderr (rides the allowlisted `python3 tools/orchestration_runtime.py *` command)
-python3 tools/orchestration_runtime.py run-gate --gate ... 2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt
-
-# running the script written in step 1 (`Bash(python3 workspace/tmp/*)` is allowlisted)
+# running the script written in step 1 (`Bash(python3 workspace/tmp/*)` is allowlisted).
+# Its stdout and stderr come back in the command result; a redirect capturing them to a
+# file is refused.
 python3 workspace/tmp/<agent_run_id>/build_patch.py
+
+# reading a gate result: the JSON is the last line of the command's own stderr.
+python3 tools/orchestration_runtime.py run-gate --gate ...
 ```
 
 Managed JSON / `.txt` artifacts are written directly via the `Write` / `Edit` tool (see the "Artifact write — direct `Write` / `Edit` tool procedure" section of [docs/AGENT_CONTRACT.md](../AGENT_CONTRACT.md)).

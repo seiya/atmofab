@@ -18753,6 +18753,33 @@ class GateRunbookTests(unittest.TestCase):
                 if not allowed:
                     self.assertNotIn("validate_pipeline_semantics.py", rb)
 
+    def test_runbook_teaches_reading_stderr_from_the_result_not_a_redirect(self) -> None:
+        """PIN on the RENDERED prompt: the gate hint names no redirect capture.
+
+        The permission layer refuses a Bash redirect to a file (measured on Claude Code
+        2.1.234; `docs/HOOKS.md` §"Layer boundary"), so the hint that used to tell every
+        leaf to write `2>workspace/tmp/<arid>/last_gate_stderr.txt` taught a route that
+        is refused — and this hint is injected into the launch prompt, which is why it
+        is asserted on the rendered text rather than on the source string.
+
+        Asserted on the SPLIT half that governs the gate result, not on the whole
+        runbook: the text states two rules in one line (how to read a gate result, and
+        what `workspace/tmp/<arid>/` is), and the tmp half names that directory for a
+        reason unrelated to redirects.
+        """
+        from tools.orchestration_runtime import _build_gate_runbook
+        import re as _re
+
+        rb = _build_gate_runbook(self._payload("compile", "generate"))
+        self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
+        self.assertIsNone(
+            _re.search(r"\d?>>?\s*[\"']?(?:\./)?workspace/tmp", rb),
+            "the runbook must not teach a redirect into the tmp root",
+        )
+        gate_half = rb.split("`workspace/tmp/")[0]
+        self.assertIn("command result", gate_half)
+        self.assertIn("stderr", gate_half)
+
     def test_runbook_ids_fully_resolved_only_token_symbolic(self) -> None:
         from tools.orchestration_runtime import _build_gate_runbook
         import re as _re
