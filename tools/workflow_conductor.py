@@ -5289,13 +5289,22 @@ class Conductor:
         the OPTIONAL `toolchain.compiler` (docs/IMPL_PLAN_SPEC.md) — empty string when the
         spec does not pin one (the environment default, gfortran, is then used)."""
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
+        # Through the SAME readers the authorship predicates use. This function is the third
+        # conductor-side reader of `impl_defaults.toolchain`, and it kept the unguarded
+        # dereference the other two were given guards for — so a `toolchain:` holding a list or a
+        # string made `_conductor_authors_makefile` answer True and then `_write_makefile`, its
+        # only consumer, raise `AttributeError`. That is the predicate-approves / writer-refuses
+        # split this file names elsewhere, on the control-file side. A commit message claimed
+        # "both now go through `_toolchain`"; there were three.
         impl = (ir.get("impl_defaults") or {}) if isinstance(ir, dict) else {}
-        tc = (impl.get("toolchain") or {}) if isinstance(impl, dict) else {}
+        tc = _toolchain(ir)
         target = (impl.get("target") or {}) if isinstance(impl, dict) else {}
+        if not isinstance(target, dict):
+            target = {}
         return {
-            "language": str(tc.get("language") or "fortran").lower(),
+            "language": _ir_language(ir),
             "standard": str(tc.get("standard") or "f2008").lower(),
-            "build_system": str(tc.get("build_system") or "make").lower(),
+            "build_system": _ir_build_system(ir),
             "compiler": str(tc.get("compiler") or "").strip(),
             "backend": str(target.get("backend") or "").lower(),
         }

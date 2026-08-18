@@ -1714,10 +1714,17 @@ class CapabilityOwnershipTests(unittest.TestCase):
     def test_a_package_capability_needs_a_place_to_be_reached(self) -> None:
         # W1b. A `backend_provides` entry with no `CAPABILITY_MODULE_ATTR` row is a capability
         # that is declared true and unreachable at the same time.
+        # The capability is SYNTHESISED — declared, of this axis, and deliberately absent from
+        # `CAPABILITY_MODULE_ATTR` — rather than borrowed from the live table. Every live
+        # capability without a row is one the ledger intends to migrate, and migrating it would
+        # turn this probe into a false failure whose message ("UnsupportedBackend not raised")
+        # names nothing for the author who tripped it.
         record = registry.Backend(
             "language", "zz_unreachable", "tools.backends.language.fortran",
-            backend_provides=frozenset({"control_file"}))
-        with self._patched(record):
+            backend_provides=frozenset({"zz_rowless"}))
+        with mock.patch.dict(
+                registry.CAPABILITIES, {"zz_rowless": (("language",), "a synthetic job")}), \
+                self._patched(record):
             with self.assertRaises(registry.UnsupportedBackend) as ctx:
                 registry._check_declarations()
         self.assertIn("CAPABILITY_MODULE_ATTR", str(ctx.exception))
@@ -1788,7 +1795,13 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # says "no value of this axis" for a capability the Fortran backend demonstrably has.
         # This string is carried VERBATIM into a leaf-facing violation, so a clause that names no
         # implementer tells an author to go implement something that already exists.
-        reason = registry.missing_capability_reason("language", "cpp", "runner_render")
+        # `zz_no_renderer`, not a real candidate value: `cpp` is a language this repository
+        # names elsewhere as a plausible next member, and registering it — the documented
+        # "Adding a backend" procedure — would turn this probe into a false failure.
+        no_renderer = registry.Backend("language", "zz_no_renderer", None)
+        with self._patched(no_renderer):
+            reason = registry.missing_capability_reason(
+                "language", "zz_no_renderer", "runner_render")
         self.assertIsNotNone(reason)
         self.assertIn("fortran", reason)
         self.assertNotIn("no value of this axis", reason)
@@ -1798,7 +1811,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 registry._BACKENDS,
                 {k: v._replace(core_provides=frozenset(), backend_provides=frozenset())
                  for k, v in registry._BACKENDS.items() if k[0] == "language"}):
-            bare = registry.missing_capability_reason("language", "cpp", "runner_render")
+            bare = registry.missing_capability_reason("language", "zz_probe", "runner_render")
         self.assertIn("no value of this axis", bare)
 
     def test_capability_module_classifies_a_caller_typo_as_a_caller_typo(self) -> None:
@@ -2272,6 +2285,43 @@ class CapabilityOwnershipTests(unittest.TestCase):
             module = registry.capability_module("language", spelling, "runner_render")
             self.assertTrue(hasattr(module, "render_runner"), spelling)
 
+    def test_the_bundle_gate_is_the_third_caller_and_converts_a_broken_import_too(self) -> None:
+        # `m3c_checks_abi_violation` was enumerated as one of the seam's three callers and was
+        # the one left without the conversion its two siblings got. It escapes into
+        # `_pure_bundle_violations`, which has no handler at that call, so the acceptance layer
+        # crashes rather than rejecting the bundle.
+        import tools.codegen_bundle as codegen_bundle
+
+        record = registry.Backend(
+            "language", "zz_broken_bundle", "zz_module_that_does_not_exist",
+            backend_provides=frozenset({"runner_render"}))
+        bundle = {"files": [{
+            "logical_path": "bx_checks.f90", "role": "checks", "language": "zz_broken_bundle",
+            "member_node_key": "component/bx@0.1.0",
+            "content": "module bx_checks\nend module bx_checks\n", "modules": ["bx_checks"]}]}
+        with self._patched(record):
+            violation = codegen_bundle.m3c_checks_abi_violation(bundle, "bx")
+        self.assertIsNotNone(violation)
+        self.assertIn("could not be loaded", violation)
+
+    def test_capability_module_refuses_a_non_module_under_the_convention_name(self) -> None:
+        # The `isinstance(module, ModuleType)` narrowing survives being weakened to `is None`,
+        # because every other witness uses a package with NO attribute at all. The refusal's own
+        # comment describes this input — "a seam holding some other object and failing later on
+        # a missing function" — and nobody supplied it.
+        import sys
+        import types
+
+        impostor = types.ModuleType("zz_impostor_pkg")
+        impostor.runner = "not a module"          # the convention name, wrong kind
+        record = registry.Backend(
+            "language", "zz_impostor", "zz_impostor_pkg",
+            backend_provides=frozenset({"runner_render"}))
+        with mock.patch.dict(sys.modules, {"zz_impostor_pkg": impostor}), self._patched(record):
+            with self.assertRaises(registry.BackendNotExtracted) as ctx:
+                registry.capability_module("language", "zz_impostor", "runner_render")
+        self.assertIn("re-exports no", str(ctx.exception))
+
     def test_a_capability_may_migrate_one_axis_at_a_time(self) -> None:
         """The rule above must not block the ledger's own next area.
 
@@ -2316,16 +2366,25 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # the refusal must be the REGISTRY's sentence — a second wording here is a second
         # authority for what a leaf is told to implement.
         from tools import host_render
-        expected = registry.missing_capability_reason("language", "cpp", "runner_render")
-        self.assertIsNotNone(expected)
-        self.assertEqual(expected, host_render.runner_render_refusal("cpp"))
-        for call in (lambda: host_render.render_runner("cpp", {}, "bx", "hx"),
-                     lambda: host_render.checks_public_names("cpp"),
-                     lambda: host_render.ir_content_violations("cpp", {}, "bx", "hx"),
-                     lambda: host_render.assert_harness_pin("cpp", {}, "bx", "hx", [], "")):
-            with self.assertRaises(host_render.RunnerRenderUnavailable) as ctx:
-                call()
-            self.assertEqual(expected, str(ctx.exception))
+        # A SYNTHETIC value, not `cpp`: this repository names `cpp` elsewhere as a plausible
+        # next language member, and registering one must not make this probe fail for a reason
+        # that has nothing to do with what it checks.
+        probe = registry.Backend("language", "zz_no_renderer", None)
+        with self._patched(probe):
+            expected = registry.missing_capability_reason(
+                "language", "zz_no_renderer", "runner_render")
+            self.assertIsNotNone(expected)
+            self.assertEqual(expected, host_render.runner_render_refusal("zz_no_renderer"))
+            for call in (
+                    lambda: host_render.render_runner("zz_no_renderer", {}, "bx", "hx"),
+                    lambda: host_render.checks_public_names("zz_no_renderer"),
+                    lambda: host_render.ir_content_violations(
+                        "zz_no_renderer", {}, "bx", "hx"),
+                    lambda: host_render.assert_harness_pin(
+                        "zz_no_renderer", {}, "bx", "hx", [], "")):
+                with self.assertRaises(host_render.RunnerRenderUnavailable) as ctx:
+                    call()
+                self.assertEqual(expected, str(ctx.exception))
 
 
 def _write_baseline() -> None:

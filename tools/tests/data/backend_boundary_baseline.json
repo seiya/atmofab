@@ -334,13 +334,13 @@
     "tools/workflow_conductor.py": {
       "compiler-driver": 28,
       "compiler-syntax-only": 2,
-      "fortran": 76,
+      "fortran": 75,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 4,
       "fortran-standard": 3,
       "fortran-suffix": 57,
-      "make-control-file": 100,
+      "make-control-file": 102,
       "make-variable": 61
     }
   }

@@ -1586,7 +1586,15 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str) -> str | None
     # `LANGUAGES`. A language with no runner renderer has no checks ABI to hold a bundle to;
     # that is a violation here rather than a pass, because this gate is what a leaf's output is
     # accepted on and an unenforced ABI is the defect the whole layer exists to pre-empt.
-    refusal = runner_render_refusal(match.get("language"))
+    try:
+        refusal = runner_render_refusal(match.get("language"))
+    except Exception as exc:  # noqa: BLE001
+        # The third caller of the seam, and it was the one left without this. A backend package
+        # that cannot be IMPORTED is a host fault; escaping from here reaches
+        # `_pure_bundle_violations`, which has no handler at this call, so the acceptance layer
+        # crashes instead of rejecting — the failure this layer exists to avoid. The two
+        # deterministic gates convert it; so does this one now.
+        refusal = f"the backend for that language could not be loaded ({exc!r})"
     if refusal is not None:
         return (f"{want_path} declares language {match.get('language')!r}, whose checks ABI this "
                 f"repository cannot state: {refusal}")

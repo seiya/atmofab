@@ -11616,6 +11616,14 @@ class WriteMakefileTest(unittest.TestCase):
                 # agree on the verdict.
                 self.assertEqual(
                     c._conductor_authors_runner(refs), vps._ir_is_m3c_physics(ir), name)
+                # ...and the THIRD conductor-side reader, which is the one the writers use.
+                # It kept the unguarded dereference the other two were given guards for, so
+                # `_conductor_authors_makefile` said yes and `_write_makefile` raised.
+                self.assertTrue(c._conductor_authors_makefile(refs) in (True, False), name)
+                toolchain = c._read_toolchain(refs)
+                self.assertEqual(
+                    (toolchain["language"], toolchain["build_system"]),
+                    (wc._ir_language(ir), wc._ir_build_system(ir)), name)
         # The default itself: with the language field absent the node is STILL host-rendered,
         # which is what makes the default load bearing rather than cosmetic.
         with tempfile.TemporaryDirectory() as tmp:
