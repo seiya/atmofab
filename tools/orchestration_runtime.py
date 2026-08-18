@@ -16349,15 +16349,29 @@ def _read_repo_mcp_tool_permissions(
 ) -> tuple[set[str], set[str], str | None, str]:
     """Read the state of MCP tool permission from the project settings committed to the repo.
 
-    The canonical source is the `permissions` section of `<repo>/.claude/settings.json`.
-    The `permissions.allow` (personal opt-in addition) and `permissions.deny` (personal opt-out)
-    of `.claude/settings.local.json` are also combined/subtracted. `~/.claude.json` is not
-    referenced for the same reason as the enablement check (machine-dependent, reproducibility).
+    THE ONLY SOURCE IS `<repo>/.claude/settings.json`, because that is the only permission
+    layer a workflow leaf loads: since issue #63 step 1 it is launched with
+    `--setting-sources project`, which excludes both `user` and `local`. This function answers
+    "will the leaf be allowed to call the tool", so it must read what the leaf reads.
+
+    `.claude/settings.local.json` is deliberately NOT consulted. It used to be, and that was
+    right while a leaf loaded the `local` source; afterwards it made the gate wrong in both
+    directions — a grant living only in that untracked file kept the gate green while the leaf
+    came up without it and died at its first `mcp__build-runtime__*` call, and a `deny` there
+    failed a run whose leaves would have worked. The registration probe
+    (`_probe_claude_mcp_registry`) still subtracts that file's `disabledMcpjsonServers`: it is
+    a deliberate operator opt-out that stops the RUN at the gate, which is a different question
+    from what a leaf loads. `~/.claude.json` is not referenced, for the same reason as the
+    enablement check (machine-dependent, reproducibility).
+
+    Note this decides only whether the grant is DECLARED. Whether the CLI honours a declared
+    project-layer grant is conditional on workspace trust, which no static read can see
+    (`docs/RUNBOOK.md` §0-2, issue #65).
 
     Return value `(allow_set, deny_set, default_mode, detail)`:
-      - allow_set: the string set of project + local `permissions.allow`
-      - deny_set:  the string set of project + local `permissions.deny`
-      - default_mode: `permissions.defaultMode` (project first, else local, else None)
+      - allow_set: the string set of `permissions.allow`
+      - deny_set:  the string set of `permissions.deny`
+      - default_mode: `permissions.defaultMode` (or None)
       - detail: a diagnostic string
     """
     settings = (
@@ -16395,16 +16409,12 @@ def _read_repo_mcp_tool_permissions(
         mode = perms.get("defaultMode")
         return allow, deny, (mode if isinstance(mode, str) else None)
 
-    proj_allow, proj_deny, proj_mode = _collect(settings)
-    local_allow, local_deny, local_mode = _collect(local_settings)
-
-    allow_set = proj_allow | local_allow
-    deny_set = proj_deny | local_deny
-    default_mode = proj_mode if proj_mode is not None else local_mode
+    allow_set, deny_set, default_mode = _collect(settings)
 
     detail = (
         f"settings={settings}; allow={sorted(allow_set)}; "
-        f"deny={sorted(deny_set)}; default_mode={default_mode}"
+        f"deny={sorted(deny_set)}; default_mode={default_mode}; "
+        f"local_settings_ignored={local_settings}"
     )
     return allow_set, deny_set, default_mode, detail
 

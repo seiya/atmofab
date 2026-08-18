@@ -743,6 +743,7 @@ shell_tool                       stable             true
         default_mode: str | None = None,
         local_allow_permissions: list[str] | None = None,
         local_deny_permissions: list[str] | None = None,
+        local_default_mode: str | None = None,
     ) -> None:
         """Write out the project settings committed to the repo, to temp repo_root.
 
@@ -780,6 +781,7 @@ shell_tool                       stable             true
             local_disabled_mcpjson_servers is not None
             or local_allow_permissions is not None
             or local_deny_permissions is not None
+            or local_default_mode is not None
         ):
             local_data: dict[str, Any] = {}
             if local_disabled_mcpjson_servers is not None:
@@ -789,6 +791,8 @@ shell_tool                       stable             true
                 local_perms["allow"] = local_allow_permissions
             if local_deny_permissions is not None:
                 local_perms["deny"] = local_deny_permissions
+            if local_default_mode is not None:
+                local_perms["defaultMode"] = local_default_mode
             if local_perms:
                 local_data["permissions"] = local_perms
             (claude_dir / "settings.local.json").write_text(
@@ -1328,8 +1332,15 @@ shell_tool                       stable             true
             by_name["claude_mcp_build_runtime_permission_granted"]["detail"],
         )
 
-    def test_probe_claude_mcp_registry_permission_granted_via_local_settings(self) -> None:
-        """The permissions.allow of `.claude/settings.local.json` is also combined as a grant."""
+    def test_a_local_only_permission_grant_does_not_satisfy_the_gate(self) -> None:
+        """A grant that lives ONLY in `.claude/settings.local.json` must FAIL the gate.
+
+        It used to pass, and that was right while a leaf loaded the `local` settings source.
+        Since issue #63 step 1 the leaf is launched with `--setting-sources project`, which
+        excludes `local` — so counting that grant made the gate green for a leaf that would
+        come up without the permission and die at its first `mcp__build-runtime__*` call. The
+        gate has to read what the LEAF reads; this is the direction that used to fail open.
+        """
         with tempfile.TemporaryDirectory() as td:
             repo_root = Path(td)
             self._write_project_settings(
@@ -1342,9 +1353,53 @@ shell_tool                       stable             true
                 backend="claude", runner=runner, repo_root=repo_root
             )
 
+        self.assertEqual(result["status"], "fail")
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertFalse(by_name["claude_mcp_build_runtime_permission_granted"]["pass"])
+
+    def test_a_local_only_deny_does_not_fail_a_run_whose_leaves_would_work(self) -> None:
+        """The mirror direction, which used to fail CLOSED for no reason.
+
+        A `permissions.deny` in the untracked local file no longer subtracts anything from a
+        leaf either, so refusing the run on it stopped a run that would have worked. Kept as a
+        separate test from the allow direction because a single-source read is one change but
+        two distinct wrong verdicts, and only one of them is a fail-open."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            self._write_project_settings(
+                repo_root,
+                enabled_mcpjson_servers=["build-runtime"],
+                allow_permissions=["mcp__build-runtime"],
+                local_deny_permissions=["mcp__build-runtime"],
+            )
+            runner = self._claude_runner_with_mcp("")
+            result = probe_execution_platform(
+                backend="claude", runner=runner, repo_root=repo_root
+            )
+
         self.assertEqual(result["status"], "pass")
         by_name = {c["name"]: c for c in result["checks"]}
         self.assertTrue(by_name["claude_mcp_build_runtime_permission_granted"]["pass"])
+
+    def test_a_local_only_default_mode_does_not_satisfy_the_gate(self) -> None:
+        """The third input the union used to take from the local file. `defaultMode` was read
+        `project first, else local`, so `bypassPermissions` set only in the untracked file
+        granted everything at the gate and nothing at the leaf."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            self._write_project_settings(
+                repo_root,
+                enabled_mcpjson_servers=["build-runtime"],
+                local_default_mode="bypassPermissions",
+            )
+            runner = self._claude_runner_with_mcp("")
+            result = probe_execution_platform(
+                backend="claude", runner=runner, repo_root=repo_root
+            )
+
+        self.assertEqual(result["status"], "fail")
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertFalse(by_name["claude_mcp_build_runtime_permission_granted"]["pass"])
 
     def test_probe_execution_platform_uses_explicit_agent_command(self) -> None:
         seen = {"command": ""}
