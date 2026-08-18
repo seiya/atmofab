@@ -7236,6 +7236,20 @@ clean:
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
+            # AUTO-MEMORY IS NOT A SETTING, so `--setting-sources project` does not close it:
+            # the CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's
+            # FIRST USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
+            # variable, none of which an agentic leaf has (the PURE path is closed by
+            # `--safe-mode`, which is why this was invisible until agentic leaves were looked at).
+            # Measured on CLI 2.1.234 by capturing the leaf's own request: without this the
+            # first message carried the operator's memory index — past runs, merged PRs, open
+            # issues and standing instructions — 25,011 bytes of `messages` against 8,990 with
+            # it. That is ambient context the repository does not declare, the run does not
+            # record and no artifact can reproduce, which is exactly what the launch closure
+            # exists to prevent; it is also a leaf reading `~/.claude`, and a leaf being handed
+            # PAST-RUN state, both of which the workflow forbids outright.
+            # Set here rather than on the argv because the CLI exposes no flag for it.
+            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         elif entry.provider == "codex_cli":
             # METDSL_HOME was the historical private alias.  Pass the canonical
             # variable to the CLI so its state/session directory matches the

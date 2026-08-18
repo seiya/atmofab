@@ -3971,11 +3971,30 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertEqual(env["METDSL_ORCHESTRATION_ID"], "orch_x")
         self.assertTrue(env["TMPDIR"].endswith("/workspace/tmp/child-1"))
 
+    def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
+        """Auto-memory is NOT a settings file, so `--setting-sources project` does not reach it.
+
+        The CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's first
+        user message unless safe-mode, `--bare`, or this variable is in force. A pure leaf
+        passes `--safe-mode` and was therefore always closed; an agentic leaf passes none of
+        them, so it was being handed the operator's memory index — past runs, merged PRs, open
+        issues, standing instructions. That is ambient context the repository does not declare
+        and the run cannot reproduce, it is a leaf reading `~/.claude`, and it is a leaf being
+        given past-run state: three separate things the workflow forbids.
+
+        Pinned in `_child_env` because the CLI exposes no flag for it, so unlike the other four
+        closures it cannot be pinned by the argv goldens."""
+        env = self._conductor("claude")._child_env("child-1")
+        self.assertEqual(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
+
     def test_child_env_does_not_set_leaf_max_output_tokens_for_codex(self) -> None:
         # codex configures its model limits on a different surface; a CLAUDE_* var there is at
         # best inert and at worst confusing.
         env = self._conductor("codex")._child_env("child-1")
         self.assertNotIn("CLAUDE_CODE_MAX_OUTPUT_TOKENS", env)
+        # Same for the auto-memory switch: codex has its own context surface, and a CLAUDE_*
+        # variable there says nothing.
+        self.assertNotIn("CLAUDE_CODE_DISABLE_AUTO_MEMORY", env)
 
 
 class LeafTransientRetryTest(unittest.TestCase):
