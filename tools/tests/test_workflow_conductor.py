@@ -6734,13 +6734,24 @@ class LeafSpawnTest(unittest.TestCase):
                  c.leaf_command(session_id="a", resume_session_id="b", pure=True)]
         for argv in argvs:
             self.assertEqual(argv[-1], "-p", msg=argv)
-            for flag in variadic:
-                if flag not in argv:
+            for i, token in enumerate(argv):
+                if token not in variadic:
                     continue
-                values = wc._variadic_values(argv, flag)
-                self.assertEqual(len(values), 1, msg=f"{flag} in {argv}")
-                after = argv[argv.index(flag) + 1 + len(values)]
-                self.assertTrue(after.startswith("-"), msg=f"{flag} -> {after} in {argv}")
+                # Per OCCURRENCE, and asserting only TERMINATION — not how many values the
+                # flag took. An entry's `command:` prefix may legitimately carry another
+                # `--mcp-config` (they accumulate), so a count would pin today's argv shape
+                # rather than the rule this test is named for.
+                consumed = 0
+                for value in argv[i + 1:]:
+                    if value.startswith("-"):
+                        break
+                    consumed += 1
+                self.assertGreater(consumed, 0, msg=f"{token} takes no value in {argv}")
+                after_index = i + 1 + consumed
+                self.assertLess(after_index, len(argv),
+                                msg=f"{token} runs to the end of {argv}")
+                self.assertTrue(argv[after_index].startswith("-"),
+                                msg=f"{token} -> {argv[after_index]} in {argv}")
 
     def test_variadic_values_reads_a_list_and_stops_at_any_option_token(self) -> None:
         """The helper's reason for existing, which the leaf argv cannot exercise because it
