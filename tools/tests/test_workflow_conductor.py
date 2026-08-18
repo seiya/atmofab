@@ -17018,6 +17018,32 @@ class LeafEntryThreadingTests(unittest.TestCase):
             c.record_launch("arid-llm", {"step": "generate", "substep": "generate"},
                             c.entry_for("generate", "generate"))
 
+    def test_the_fail_closed_read_precedes_every_launch_side_effect(self) -> None:
+        """The unreadable-`.mcp.json` raise has to fire before anything is written down.
+
+        `record_launch` writes an evidence file and then asks the runtime to issue the
+        capability token, the manifests and the sandbox profile. If the read moved after any
+        of that, an environment fault would leave a half-built launch behind for a leaf that
+        never starts. The current order is right and nothing pinned it (a surviving mutation
+        that moved the call after the evidence write kept the suite green).
+
+        Pinned on the OBSERVABLE consequence — no evidence file, no runtime call — rather
+        than on statement order, so a rearrangement that keeps the property passes."""
+        repo = self._scratch_repo_root()
+        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        calls: list[list[str]] = []
+        c.runtime = lambda argv: (calls.append(list(argv)) or {})   # type: ignore[assignment]
+        with self.assertRaises(OSError):
+            c.record_launch("arid-1", {"step": "generate", "substep": "generate"},
+                            c.entry_for("generate", "generate"))
+        self.assertEqual(calls, [], "the runtime was asked to record a launch that failed")
+        launches = repo / "workspace" / "orchestrations" / "o" / "launches"
+        self.assertEqual(sorted(p.name for p in launches.iterdir()) if launches.exists()
+                         else [], [])
+
     def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
         """Re-deriving the argv must not have side effects of its own.
 

@@ -23,12 +23,15 @@
 #            that ran is recovered afterwards from the leaf's own CLI result envelope and recorded on its
 #            `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus`. Delete the `model:` lines and no `--model` is passed,
-#            which hands the choice to the CLI's own default — NOT to the operator's
-#            `~/.claude/settings.json`: since issue #63 step 1 a workflow leaf is launched
-#            with `--setting-sources project` and never reads that file.
+#            which hands the choice to whatever that leaf's launch resolves to. For an
+#            AGENTIC leaf that is the CLI's own default and NOT the operator's
+#            `~/.claude/settings.json`, which it no longer reads (`--setting-sources
+#            project`, issue #63 step 1). The two `generate` leaves below are PURE, and
+#            pure launches carry no `--setting-sources` — so for those two the operator's
+#            settings can still decide, exactly as before.
 #   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
-#            Delete the lines and no `--effort` is passed, leaving the CLI's own default in
-#            force — again not the operator's `effortLevel`, for the same reason.
+#            Delete the lines and no `--effort` is passed; the same agentic/pure split
+#            applies to the operator's `effortLevel`.
 #
 # WHY `medium`. It is what the current model generation is built around: it is this CLI's own
 # default, and Codex ships the same default for every gpt-5.6 model while its PREDECESSOR
