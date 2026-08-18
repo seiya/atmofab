@@ -9153,8 +9153,8 @@ def _cleanup_agent_tmp_root(
 ) -> bool:
     """Remove `workspace/tmp/<agent_run_id>/` recursively at terminal status.
 
-    The per-agent tmp directory accumulates heredoc-staged patches, helper
-    `*.py` scripts, request/reply payloads, etc. Without cleanup the next
+    The per-agent tmp directory accumulates scratch files written with the
+    file tool, helper `*.py` scripts, request/reply payloads, etc. Without cleanup the next
     invocation of `validate_workspace_root` flags every leftover `*.py` as
     "python script under workspace/ is forbidden", failing downstream phases.
 

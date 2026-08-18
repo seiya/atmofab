@@ -103,7 +103,7 @@ A re-submission with `repair_strategy=reuse` is limited to a diff fix against th
 
 #### Usage contract of `allowed_tmp_root`
 
-`record-launch` creates `workspace/tmp/<agent_run_id>/` and records it in the `allowed_tmp_root` field of `output_manifests/<agent_run_id>.json`. **The agent uses this literal path directly** to pass `output_manifest_write_guard` (it judges only the write-target path and does not reference the `$TMPDIR` env, `tools/hooks/common.py:_validate_write_access`).
+`record-launch` creates `workspace/tmp/<agent_run_id>/` and records it in the `allowed_tmp_root` field of `output_manifests/<agent_run_id>.json`. **The agent uses this literal path directly** to pass `output_manifest_write_guard` (it judges only the write-target path and does not reference the `$TMPDIR` env, `tools/hooks/common.py:validate_write_access`).
 
 **Forbidden bootstrap Bash:**
 
@@ -113,20 +113,20 @@ A re-submission with `repair_strategy=reuse` is limited to a diff fix against th
 
 **Correct temporary-file write:**
 
-- **`.json` / `.txt` files**: write `workspace/tmp/<agent_run_id>/<name>.{json,txt}` directly with the `Write` tool. Avoid a Bash heredoc redirect because the quoted form `cat > "path" <<EOF` has the known risk that the hook's file_path parser mis-detects `'\"'` as a path.
-- **`.py` / `.yaml` / `.sh` etc.**: a Bash heredoc is OK.
+- **Every extension alike** (`.py` / `.yaml` / `.sh` / `.json` / `.txt`): write `workspace/tmp/<agent_run_id>/<name>` directly with the `Write` tool. The hook authorizes a write whose target is under `allowed_tmp_root` before any extension logic and raises it to `permissionDecision=allow`, so the write needs no interactive permission. A Bash redirect that is itself the command (`cat > ... <<EOF`) is not a scratch-write route: it matches no committed `permissions.allow` rule, so it is refused at the permission layer and the refusal costs the agent an attempt.
+- A Bash redirect stays correct only as a capture appended to a command an allowlist entry already permits: it rides that entry rather than standing on its own. The gate stderr capture is the standing example; a stdout capture from the allowlisted `python3 workspace/tmp/*` route has the same shape. A redirect that is itself the whole command creates the file and is refused.
+- **Do not quote the redirect target.** `2> "workspace/tmp/<agent_run_id>/e.txt"` is blocked with `unauthorized write: '"' is not in output_manifest allowed_output_paths`, while the unquoted form is allowed: the hook's write-target parser reads the redirect off a quote-blanked copy of the command and keeps the blanked span (issue #74). Measured on both the gate stderr capture and the `python3 workspace/tmp/*` stdout capture.
+
+A temporary python script is therefore two steps: **`Write` to `workspace/tmp/<agent_run_id>/build_patch.py`**, then run it.
 
 ```bash
-# saving gate stderr (a redirect to a non-.json/.txt path is safe)
+# saving gate stderr (rides the allowlisted `python3 tools/orchestration_runtime.py *` command)
 python3 tools/orchestration_runtime.py run-gate --gate ... 2>workspace/tmp/<agent_run_id>/last_gate_stderr.txt
 
-# a temporary python script
-cat > workspace/tmp/<agent_run_id>/build_patch.py <<'EOF'
-# script body ...
-EOF
+# running the script written in step 1 (`Bash(python3 workspace/tmp/*)` is allowlisted)
 python3 workspace/tmp/<agent_run_id>/build_patch.py
 ```
 
 Managed JSON / `.txt` artifacts are written directly via the `Write` / `Edit` tool (see the "Artifact write — direct `Write` / `Edit` tool procedure" section of [docs/AGENT_CONTRACT.md](../AGENT_CONTRACT.md)).
 
-`<agent_run_id>` is literally substituted in the corresponding field of the launch prompt. The `$TMPDIR` env is inherited into the subprocess by `tools/run_workflow.py`, so a `${TMPDIR}/...`-form reference also works as a result, but to minimize env dependence the literal path is canonical. `/tmp/`, `/dev/shm/`, and an argument-less `$(mktemp)` remain blocked by `output_manifest_write_guard`.
+`<agent_run_id>` is literally substituted in the corresponding field of the launch prompt. The `$TMPDIR` env is inherited into the subprocess by `tools/run_workflow.py`, but a `${TMPDIR}/...`-form reference does NOT work on the scratch route: the `Write` tool takes a path, not a shell word, and `output_manifest_write_guard` compares that path against `allowed_tmp_root` verbatim, so `${TMPDIR}/work.py` is blocked. The literal path is the only form. `/tmp/`, `/dev/shm/`, and an argument-less `$(mktemp)` remain blocked by `output_manifest_write_guard`.

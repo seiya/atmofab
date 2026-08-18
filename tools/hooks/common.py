@@ -57,8 +57,10 @@ WRITE_HINT = (
     "output_manifests/<agent_run_id>.json.allowed_file_tool_paths "
     "(guarded-apply-patch is deprecated). The MCP-owned command_log.jsonl is "
     "written only by the build-runtime MCP server and is never file-tool-writable. "
-    "For temp files, write directly under the literal allowed_tmp_root path "
-    "(workspace/tmp/<agent_run_id>/...); do NOT use `export TMPDIR=...`, "
+    "For temp files, use the Write tool under the literal allowed_tmp_root "
+    "path (workspace/tmp/<agent_run_id>/...); a Bash redirect that is itself the "
+    "command matches no committed permissions.allow rule. Do NOT use "
+    "`export TMPDIR=...`, "
     "`jq -er ...`, or any bootstrap Bash (Claude Code session sandbox approval "
     "would stall the workflow). See docs/AGENT_CONTRACT.md "
     "for the tmp-area contract."
@@ -441,9 +443,11 @@ def _blank_heredoc_bodies(command: str) -> str:
 
     A heredoc body is a document the agent is WRITING, not a command it is
     running: `cat > note.md <<EOF` followed by a line reading
-    `diff a.md b.md` performs no read of a.md.  Leaves are explicitly told to
-    write scratch files this way, so scanning the body reports reads that do
-    not happen.  Length is preserved so fragment spans stay aligned with the
+    `diff a.md b.md` performs no read of a.md, so scanning the body reports
+    reads that do not happen.  Leaves are told to author scratch files with
+    the Write tool rather than a heredoc (issue #73), but a heredoc still
+    reaches this module from any command that carries one, and the read side
+    must not fail open on it.  Length is preserved so fragment spans stay aligned with the
     original string.
     """
     # Locate the operator in the QUOTE-STRIPPED string: `grep -n "cout << endl"`
@@ -1264,9 +1268,10 @@ def extract_bash_read_targets(
     the residue is two classes, not one:
       * a command OUTSIDE that set handed a literal path. Notably
         `python3 workspace/tmp/<arid>/x.py`, which docs/AGENT_CONTRACT.md tells
-        leaves to use and `.claude/settings.json` allowlists, and whose heredoc
-        body this module deliberately blanks — so the paths that script reads
-        are invisible here by construction. Confining that class is the bwrap
+        leaves to use and `.claude/settings.json` allowlists. The script itself
+        is authored with the Write tool, which this function never sees, and a
+        heredoc body attached to any command is deliberately blanked — so the
+        paths that script reads are invisible here by construction. Confining that class is the bwrap
         read-confinement work, not this function.
       * targets that exist only at runtime — `xargs cat`, `find -exec`,
         `$(...)`/backtick substitution, `$VAR`, and a `cd` from an EARLIER Bash
@@ -3630,7 +3635,8 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                     hint_next = (
                         "Use the Read tool for the JSON file directly; if Python is "
                         "required, write a script to workspace/tmp/<agent_run_id>/x.py "
-                        "and run `python3 workspace/tmp/<agent_run_id>/x.py` "
+                        "with the Write tool and run "
+                        "`python3 workspace/tmp/<agent_run_id>/x.py` "
                         "(literal path, no $TMPDIR env reference needed)."
                     )
                 return HookDecision(
@@ -3693,8 +3699,8 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
                 action=HookDecisionAction.BLOCK,
                 reason=(
                     f"blocked: command touches {offending!r} which is forbidden. "
-                    "/dev/shm reads/writes are not permitted; write under the literal "
-                    "allowed_tmp_root path (workspace/tmp/<agent_run_id>/) for temporary files. "
+                    "/dev/shm reads/writes are not permitted; use the Write tool under the "
+                    "literal allowed_tmp_root path (workspace/tmp/<agent_run_id>/) for temporary files. "
                     "See docs/AGENT_CONTRACT.md."
                 ),
                 continue_processing=False,
@@ -4223,7 +4229,7 @@ def validate_write_access(
             "write_under": f"{tmp_root_str}/...",
             "docs_ref": "docs/AGENT_CONTRACT.md",
             "note": (
-                "Write under the literal allowed_tmp_root path "
+                "Write under the literal allowed_tmp_root path with the Write tool "
                 f"({tmp_root_str}/...). Do not use `export TMPDIR=...`, `jq -er ...`, "
                 "`${TMPDIR:-fallback}` syntax, or hardcoded /tmp//dev/shm paths."
             ),
@@ -4266,8 +4272,10 @@ def validate_write_access(
             reason=(
                 "shell writes (redirect / tee / sed -i) are forbidden for managed "
                 "artifacts. Write the artifact with the Edit/Write tool to a path in "
-                "output_manifest allowed_file_tool_paths; Bash may only write scratch "
-                f"under allowed_tmp_root (workspace/tmp/{agent_run_id}/...)."
+                "output_manifest allowed_file_tool_paths. Scratch files go under "
+                f"allowed_tmp_root (workspace/tmp/{agent_run_id}/...), written with "
+                "the Write tool too: no committed permissions.allow rule matches a "
+                "Bash redirect that is itself the command."
             ),
             continue_processing=False,
             audit_detail={
