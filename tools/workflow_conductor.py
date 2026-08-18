@@ -5288,6 +5288,23 @@ class Conductor:
                         f"a leaf with no build-runtime tools. Restore the committed file "
                         f"(see mcp_servers/README.md) and re-run."
                     ) from exc
+                # READABLE is not USABLE, and the refusal above argues about usable: an
+                # empty, truncated or malformed file produces exactly the tool-less leaf it
+                # describes, and the CLI itself refuses to start on one ("Invalid MCP
+                # configuration"). So the same raise covers it. Only well-formedness is
+                # checked — NOT that the file defines `build-runtime`, which would pin the
+                # result this repo happens to have rather than the rule, and would refuse a
+                # legitimate future server set.
+                try:
+                    json.loads(data.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise OSError(
+                        f"the MCP configuration this leaf is launched with is not valid "
+                        f"JSON: {ref!r} under {self.repo_root} ({exc}). The CLI refuses to "
+                        f"start on it, so the leaf would die at launch with the failure "
+                        f"attributed to it. Restore the committed file "
+                        f"(see mcp_servers/README.md) and re-run."
+                    ) from exc
                 entries.append({"ref": ref,
                                 "sha256": hashlib.sha256(data).hexdigest()})
             surface["mcp_config"] = entries

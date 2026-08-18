@@ -17044,6 +17044,33 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in launches.iterdir()) if launches.exists()
                          else [], [])
 
+    def test_record_launch_fails_closed_on_a_malformed_mcp_config(self) -> None:
+        """Readable is not usable, and the refusal argues about usable.
+
+        Under `--strict-mcp-config` this file is the leaf's whole server set, and the CLI
+        refuses to start on a malformed one, so a truncated or empty file produces exactly
+        the tool-less leaf the missing-file branch refuses to launch — it was being hashed
+        happily. Well-formedness only: requiring the file to define `build-runtime` would pin
+        the result this repo has rather than the rule, and refuse a legitimate future set."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        entry = c.entry_for("generate", "generate")
+        for bad in (b"", b"{", b'{"mcpServers": ', b"\xff\xfe not utf-8"):
+            (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(bad)
+            c.runtime = lambda argv: {}                          # type: ignore[assignment]
+            with self.assertRaises(OSError, msg=repr(bad)) as caught:
+                c.record_launch("arid-1", {"step": "generate", "substep": "generate"}, entry)
+            self.assertIn(".mcp.json", str(caught.exception))
+        # A well-formed file that simply declares no server is NOT refused here: "which
+        # servers are declared" is the preflight's question, and pinning a name here would
+        # pin today's result instead of the rule.
+        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(b'{"mcpServers": {}}')
+        response = self._record_launch_response(
+            c, "arid-2", {"step": "generate", "substep": "generate"}, entry)
+        self.assertEqual(response["mcp_config"][0]["ref"], ".mcp.json")
+
     def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
         """Re-deriving the argv must not have side effects of its own.
 
