@@ -77,7 +77,7 @@ Every output artifact — managed JSON (`*_meta.json`, `verdict.json`, …), sou
 3. Confirm with the `Read` tool if needed (`python3 -c "import json; ..."` is blocked by `forbid_python_inline_write`).
 
 **Forbidden write means:**
-- A file write via `python3 -c "..."` / `python3 - <<'EOF'` and `subprocess.run` → **unconditionally blocked** by `forbid_python_inline_write` (the regex `python3?\s+-\s*<<` inside `tools/hooks/common.py:_validate_workflow_bash_policy` in workflow mode).
+- A file write via `python3 -c "..."` / `python3 - <<'EOF'` and `subprocess.run` → **unconditionally blocked** by `forbid_python_inline_write` (the regex `python3?\s+-\s*<<` inside `tools/hooks/common.py:evaluate_common_policy` in workflow mode).
 - A heredoc redirect / `tee` / `cat <<EOF >file` / `echo "..." > file` / `sed -i` to an output path → blocked by `output_manifest_write_guard`.
 - A shell var assignment `VAR=$(...)` + command substitution → breaks the `Bash(...)` allowlist match and requires session approval.
 - Any write to a path not in `allowed_output_paths` / `allowed_file_tool_paths`, a path without the `workspace/` prefix, or an absolute path → blocked by `output_manifest_write_guard`.

@@ -2877,17 +2877,24 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
     )
 
     # Long enough for every surface's own statement (measured longest: 132 chars from
-    # anchor to the tool name), short enough to exclude the artifact-write sentence
-    # that follows it on the same line (nearest: 678 chars away, in both templates).
+    # anchor to the start of the tool name; 144 to its end, which is the true lower
+    # bound), short enough to exclude the artifact-write sentence that follows it on
+    # the same line (nearest: 699 chars from the anchor, in both templates).
     _STATEMENT_WINDOW = 200
+
+    # `tee PATH` writes PATH with no redirect operator, so it needs its own
+    # pattern; it is judged by the same rule (no allow entry names `tee`, so a
+    # `| tee workspace/tmp/...` capture is refused as surely as `cat >` is).
+    _REDIRECT = re.compile(
+        r"\d?>>?\|?\s*[\"\']?(?:\./)?(workspace/tmp\S*)"
+        r"|(?<=tee )(?:-\S+ )*[\"\']?(?:\./)?(workspace/tmp\S*)"
+    )
 
     # Satisfied by naming the file tool, or by deferring to the canonical document
     # instead of restating the rule (this repository treats a restated rule as a
     # twin document, so a pointer must remain a legal answer). Tolerates the
     # emphasis spellings a normal doc edit produces: **Write** tool, `Write`-tool.
-    _NAMES_THE_ROUTE = re.compile(
-        r"(?:Edit\s*/\s*)?[`*]*Write[`*]*[-\s]+tool|AGENT_CONTRACT\.md"
-    )
+    _NAMES_THE_ROUTE = re.compile(r"[`*]*Write[`*]*[-\s]+tool|AGENT_CONTRACT\.md")
 
     # A span introduced by an explicit refusal marker is an NG example — the natural
     # way to strengthen the rule — not an instruction. Deliberately NARROW (the 40
@@ -2897,6 +2904,14 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
     _MARKS_AS_REFUSED = re.compile(
         r"(?:\bNG\b|\bnot\b|\bnever\b|forbidden|blocked|refused|instead of)[^`]{0,40}$",
         re.IGNORECASE,
+    )
+
+    # In a fenced block the marker is a comment LINE above the command, and this
+    # repository writes those comments at 80-90 characters, so the 40-character
+    # window above cannot see them: measured, the NG example could not be written
+    # in the block where docs/AGENT_CONTRACT.md keeps its other NG examples.
+    _MARKS_AS_REFUSED_ANYWHERE = re.compile(
+        r"\bNG\b|\bnever\b|forbidden|blocked|refused|instead of", re.IGNORECASE
     )
 
     @staticmethod
@@ -2916,9 +2931,15 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             if not entry.startswith("Bash(") or not entry.endswith(")"):
                 continue
             pattern = entry[len("Bash(") : -1]
-            matchers.append(
-                re.compile("".join(".*" if p == "*" else re.escape(p) for p in re.split(r"(\*)", pattern)))
+            body = "".join(
+                ".*" if part == "*" else re.escape(part)
+                for part in re.split(r"(\*)", pattern)
             )
+            # An entry with no wildcard is an EXACT match, not a prefix: `Bash(python3
+            # tools/new_agent_run_id.py)` does not permit that command with a redirect
+            # appended. Anchoring both ends is what makes the check say what the
+            # permission layer says.
+            matchers.append(re.compile(body if "*" in pattern else body + r"\s*$"))
         return matchers
 
     @staticmethod
@@ -3008,13 +3029,7 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         """
         repo_root = Path(__file__).resolve().parents[2]
         matchers = self._allowlisted_bash_matchers(repo_root)
-        # `tee PATH` writes PATH with no redirect operator, so it needs its own
-        # pattern; it is judged by the same rule (no allow entry names `tee`, so a
-        # `| tee workspace/tmp/...` capture is refused as surely as `cat >` is).
-        redirect = re.compile(
-            r"\d?>>?\|?\s*[\"\']?(?:\./)?(workspace/tmp\S*)"
-            r"|(?<=tee )(?:-\S+ )*[\"\']?(?:\./)?(workspace/tmp\S*)"
-        )
+        redirect = self._REDIRECT
         for rel, _anchor, _scope in self._SCRATCH_SURFACES:
             with self.subTest(surface=rel):
                 path = repo_root / rel
@@ -3023,7 +3038,12 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 for n, span, is_fenced, intro in self._command_spans(
                     path.read_text(encoding="utf-8")
                 ):
-                    if self._MARKS_AS_REFUSED.search(intro):
+                    marked = (
+                        self._MARKS_AS_REFUSED_ANYWHERE.search(intro)
+                        if is_fenced
+                        else self._MARKS_AS_REFUSED.search(intro)
+                    )
+                    if marked:
                         continue
                     continued = is_fenced and intro.rstrip().endswith("\\")
                     for segment in re.split(r"\|\||&&|[;|]", span):
@@ -3031,10 +3051,6 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                         if not m:
                             continue
                         command = segment[: m.start()].strip()
-                        # A prompt marker and leading `VAR=value` assignments are
-                        # not part of the command the allowlist matches.
-                        command = re.sub(r"^\$\s+", "", command)
-                        command = re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+", "", command)
                         if not command and continued:
                             # The command is on the previous line, joined by a `\`.
                             continue
@@ -3043,10 +3059,49 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                             # ("capture it with `2>workspace/tmp/...`") names no
                             # command to judge. Residue: so does a bare redirect.
                             continue
-                        if any(m.match(command) for m in matchers):
+                        # Judge the WHOLE segment, redirect included: that is the
+                        # string the permission layer matches. A wildcard entry
+                        # absorbs the appended redirect; an exact entry does not.
+                        whole = re.sub(r"^\$\s+", "", segment.strip())
+                        whole = re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+", "", whole)
+                        if any(m.match(whole) for m in matchers):
                             continue
                         offenders.append(f"{rel}:{n}: {segment.strip()}")
                 self.assertEqual(offenders, [], "\n".join(offenders))
+
+    def test_redirect_detector_flags_a_refused_command_and_admits_a_permitted_one(
+        self,
+    ) -> None:
+        """SELF-TEST for the check above, which is a negative assertion.
+
+        A negative assertion is green when its detector is broken: replacing the
+        redirect regex with a pattern that never matches leaves the surfaces check
+        passing. Its seven surface witnesses show the detector works on today's tree
+        and say nothing about tomorrow's, so the detector is exercised here directly,
+        on fixtures rather than on the documents.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        matchers = self._allowlisted_bash_matchers(repo_root)
+        redirect = self._REDIRECT
+        cases = (
+            ("cat > workspace/tmp/a/x.py <<'EOF'", True),
+            ("printf 'x' > workspace/tmp/a/x.py", True),
+            ("tee workspace/tmp/a/x.py", True),
+            ("python3 tools/new_agent_run_id.py > workspace/tmp/a/id.txt", True),
+            ("python3 tools/orchestration_runtime.py run-gate --gate g 2>workspace/tmp/a/e.txt", False),
+            ("cat workspace/tmp/a/in.txt 2>workspace/tmp/a/err.txt", False),
+            ("python3 workspace/tmp/a/x.py > workspace/tmp/a/out.txt", False),
+        )
+        for command, expected_offender in cases:
+            with self.subTest(command=command):
+                m = redirect.search(command)
+                self.assertIsNotNone(m, "the detector saw no redirect at all")
+                admitted = any(matcher.match(command) for matcher in matchers)
+                self.assertEqual(
+                    not admitted,
+                    expected_offender,
+                    f"{command!r}: admitted={admitted}",
+                )
 
     def test_instruction_surfaces_state_the_write_tool_scratch_route(self) -> None:
         """SAMPLE (not a pin): each surface's scratch sentence names the file tool.
