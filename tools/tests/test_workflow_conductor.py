@@ -6720,7 +6720,12 @@ class LeafSpawnTest(unittest.TestCase):
         Covers the PURE argv too: `--tools` is variadic as well, and it is the pure branch
         that carries it (with an empty-string value, which is not an option token).
         """
-        variadic = ("--mcp-config", "--disallowedTools", "--tools")
+        # `--setting-sources` is documented as single-valued rather than variadic, and it is
+        # included DELIBERATELY: the hazard this test guards is "a value not followed by an
+        # option token", which is a property of the argv, not of the flag's arity. Leaving it
+        # out left a hole — a bare word inserted after `project` was caught only by the argv
+        # equality goldens, never by the guard written for exactly that hazard.
+        variadic = ("--setting-sources", "--mcp-config", "--disallowedTools", "--tools")
         c = self._c(backend="claude")
         argvs = [c.leaf_command(),
                  c.leaf_command(session_id="a"),
@@ -17009,6 +17014,24 @@ class LeafEntryThreadingTests(unittest.TestCase):
             [hashlib.sha256((repo / n).read_bytes()).hexdigest()
              for n in ("other.json", "third.json")])
 
+    def test_the_defaults_entry_fallback_still_records_the_surface(self) -> None:
+        """`record_launch`'s `entry` is optional, and the helper falls back to the `defaults`
+        entry the same way `spawn_leaf` and `leaf_command` do.
+
+        No production site relies on it — all three bind their own entry — so the fallback had
+        no witness and returning `{}` there kept the suite green. Recorded as a pin of the
+        CURRENT behaviour rather than as a claim that the path is reachable: the census could
+        not show unreachability by construction, only that today's three callers do not take
+        it, and this repository does not delete a defence on that basis."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        response = self._record_launch_response(
+            c, "arid-1", {"step": "generate", "substep": "generate"}, None)
+        self.assertEqual(response["claude_setting_sources"], "project")
+        self.assertEqual(response["mcp_config"][0]["ref"], wc.CLAUDE_LEAF_MCP_CONFIG)
+
     def test_a_deterministic_substep_records_no_argv_it_never_ran(self) -> None:
         """A deterministic substep goes through `record_launch` like any other and then runs
         IN-PROCESS (`_run_deterministic_substep`), spawning no CLI at all.
@@ -17142,8 +17165,14 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c.runtime = lambda argv: {}                                 # type: ignore[assignment]
         with self.assertRaises(OSError) as caught:
             c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
-        self.assertIn(".mcp.json", str(caught.exception))
-        self.assertIn("mcp_servers/README.md", str(caught.exception))
+        # Read the message THIS code composes (`args[0]`), not `str(exception)`: the chained
+        # FileNotFoundError interpolates the full path, which already contains ".mcp.json",
+        # so asserting on the joined text passes even if the composed message never names the
+        # ref. That is an assertion satisfied for a different reason than its name claims.
+        composed = caught.exception.args[0]
+        self.assertNotIsInstance(caught.exception, FileNotFoundError)
+        self.assertIn(wc.CLAUDE_LEAF_MCP_CONFIG, composed)
+        self.assertIn("mcp_servers/README.md", composed)
 
     def test_the_recorded_setting_surface_is_derived_from_the_argv(self) -> None:
         """Not from the constants `leaf_command` used. Re-reading `CLAUDE_LEAF_MCP_CONFIG`

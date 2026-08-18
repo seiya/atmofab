@@ -31610,6 +31610,34 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(default_agent_model_for_backend("codex"), "codex")
         self.assertEqual(default_agent_model_for_backend("other"), "")
 
+    def test_the_spec_side_default_is_an_unpinned_alias(self) -> None:
+        """What DEFAULT_CLAUDE_MODEL_ALIAS must satisfy is a RULE, not a particular value.
+
+        Every other test compares `default_agent_model_for_backend("claude")` against the
+        constant itself — correctly, since writing the literal twice would just pin today's
+        choice — but that leaves the constant free: changing it to any other string kept the
+        whole suite green (a census finding). The rule it actually has to obey is stated
+        where it is defined: an unpinned alias, never a pinned version, because it is
+        recorded before any leaf has run and must not go stale as versions move."""
+        self.assertTrue(DEFAULT_CLAUDE_MODEL_ALIAS.strip())
+        # not a pinned version: no `-<n>-<n>` tail, and no date stamp
+        self.assertNotRegex(DEFAULT_CLAUDE_MODEL_ALIAS, r"-\d+-\d+")
+        self.assertNotRegex(DEFAULT_CLAUDE_MODEL_ALIAS, r"\d{8}")
+        # an alias the CLI accepts for `--model` is a bare token, not a full model name
+        self.assertNotIn("claude-", DEFAULT_CLAUDE_MODEL_ALIAS)
+
+    def test_the_backend_token_is_normalised_before_it_is_matched(self) -> None:
+        """`(backend or "").strip().lower()` had no witness: every caller passes an exact
+        lowercase token today, so dropping the normalisation kept the suite green. It is
+        load-bearing for a caller that does not — the backend token reaches this from
+        recorded provenance, where casing and padding are not guaranteed."""
+        for spelling in ("claude", "Claude", "CLAUDE", " claude", "claude "):
+            self.assertEqual(default_agent_model_for_backend(spelling),
+                             DEFAULT_CLAUDE_MODEL_ALIAS, msg=spelling)
+        for spelling in ("codex", "Codex", " codex "):
+            self.assertEqual(default_agent_model_for_backend(spelling), "codex", msg=spelling)
+        self.assertEqual(default_agent_model_for_backend(None), "")   # type: ignore[arg-type]
+
     def test_the_leaf_label_does_not_read_the_operators_home(self) -> None:
         """Issue #63 step 1 separates the two readers at the function boundary. An agentic
         claude leaf launches with `--setting-sources project` and therefore cannot see the

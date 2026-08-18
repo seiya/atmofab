@@ -1368,8 +1368,11 @@ def build_launch_request(
 # minutes and 128k tokens in the E2E #4 audit. Raising the ceiling does not make a leaf spend
 # more; it only stops a leaf that needed the room from being truncated into nothing.
 #
-# The conductor does NOT pin the leaf model (`leaf_command` passes no `--model`; the leaf runs
-# whatever the operator's claude config resolves to). 128,000 is the ceiling of the Opus 4.8 /
+# The conductor does NOT pin the leaf model (`leaf_command` passes no `--model` unless the
+# configuration file declared one). What the unpinned case then resolves to depends on the
+# launch: an AGENTIC leaf runs the CLI's own default, because `--setting-sources project`
+# means it never reads the operator's configuration (issue #63 step 1); a PURE leaf carries
+# no `--setting-sources`, so there the operator's configuration still decides. 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
 # "message":"max_tokens: 128000 > 64000 ..."}`. That failure is deliberately classified

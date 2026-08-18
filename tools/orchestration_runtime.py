@@ -16239,7 +16239,10 @@ _CLAUDE_MCP_PERMISSION_REMEDIATION = (
     "the server-level token; to grant individually, list "
     "`mcp__build-runtime__run_linter` / `__run_syntax_check` / `__compile_project` / "
     "`__run_program` / `__run_quality_checks`. Ensure no matching `permissions.deny` entry exists in "
-    "`.claude/settings.json` / `.claude/settings.local.json`. Reference: `mcp_servers/README.md`."
+    "`.claude/settings.json`. NOTE: `.claude/settings.local.json` is NOT consulted for this "
+    "check and does not reach a leaf either (a leaf loads `--setting-sources project`), so a "
+    "grant that lives only there must be MOVED into the committed file. "
+    "Reference: `mcp_servers/README.md`."
 )
 
 
