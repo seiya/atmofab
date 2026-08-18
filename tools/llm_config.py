@@ -296,9 +296,16 @@ class ResolvedLeafEntry:
     Frozen: an entry is handed to launch code, recorded in provenance, and compared on resume;
     a mutable one would let a late branch rewrite what was already recorded.
 
-    `model` empty is MEANINGFUL, not missing: for `claude_cli` it selects runtime alias
-    resolution (the operator deliberately does not pin a version — see
-    `orchestration_runtime.default_agent_model_for_backend`). For `codex_cli` it is an operator
+    `model` empty is MEANINGFUL, not missing: for `claude_cli` it means no `--model` is
+    passed, so the CLI's own default decides and the recorded label is the spec-side
+    prediction `orchestration_runtime.default_agent_model_for_backend` supplies. That
+    function's docstring is the ONE statement of what the stamp does and does not claim;
+    this sentence deliberately does not restate it. (It has been restated wrongly three
+    times here — first asserting the operator's settings decide, then that a leaf never
+    reads them, then that on the agentic path the prediction constrains the outcome. The
+    last is false too: `--setting-sources project` closes the settings-file channel, not
+    the ENVIRONMENT, and `ANTHROPIC_MODEL` reaches the leaf regardless — measured, issue
+    #63. A fourth wording is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
     omission, caught at run START by `validate_runnable` rather than at load, so that a
     configuration whose codex slug has been blanked still LOADS — and can be tested, and can be
     reported on — instead of failing where the rule cannot be named."""
@@ -330,10 +337,11 @@ class ResolvedLeafEntry:
     effort: str = ""
     capabilities: frozenset[str] = frozenset()
     # True when a level of the FILE named `model:` for this entry — as opposed to the value
-    # arriving from a run-wide override or from Claude's runtime alias resolution.
+    # arriving from a run-wide override or from the spec-side default label.
     # The conductor pins `--model` on a claude launch only when this is set: an operator who
-    # wrote a model means it, while the alias is deliberately left unpinned (the repo's
-    # long-standing rule, and what keeps every pre-issue-#28 run byte-identical).
+    # wrote a model means it, while an undeclared one is deliberately left unpinned and
+    # decided by the CLI (the repo's long-standing rule, and what keeps every
+    # pre-issue-#28 run byte-identical).
     model_declared: bool = False
     # The field names a level on THIS entry's provider actually wrote, as opposed to inherited.
     # `apply_defaults_overrides` needs it: value equality cannot tell an inherited `opus` from

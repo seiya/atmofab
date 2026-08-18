@@ -13944,15 +13944,18 @@ DEFAULT_CLAUDE_MODEL_ALIAS = "opus"
 
 
 def resolve_claude_model_alias(home: Path | None = None) -> str:
-    """The unpinned Claude model alias the operator configured (e.g. "opus"), read
+    """The unpinned Claude model alias the OPERATOR configured (e.g. "opus"), read
     from the Claude Code settings files. settings.local.json takes precedence over
     settings.json (matching Claude Code's own precedence), so an operator who pins
-    their model only in the local file is still honored. This is the spec-side value,
-    recorded on the launch request / orchestration row before any leaf has run — so
-    it must not pin a version. Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no
-    settings file is present / readable or none carries a `model` key. (Only the
-    spec-side label is affected; the EXACT version is always recovered post-run from
-    the transcript, so a fallback here is cosmetic.)"""
+    their model only in the local file is still honored. This is the spec-side value
+    for the ORCHESTRATION row — the process `tools/run_workflow.py` starts, which does
+    run in the operator's own environment and does read their settings. It is NOT the
+    label for a leaf: an agentic claude leaf is launched with `--setting-sources
+    project` and never reads this home, so `default_agent_model_for_backend` deliberately
+    does not call this. Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
+    present / readable or none carries a `model` key. (Only the spec-side label is
+    affected; the EXACT version is always recovered post-run from the result envelope,
+    so a fallback here is cosmetic.)"""
     base = home if home is not None else Path.home()
     resolved = DEFAULT_CLAUDE_MODEL_ALIAS
     # Highest precedence last: a model key in settings.local.json overrides settings.json.
@@ -13968,15 +13971,28 @@ def resolve_claude_model_alias(home: Path | None = None) -> str:
     return resolved
 
 
-def default_agent_model_for_backend(backend: str, home: Path | None = None) -> str:
-    """The spec-side default agent_model for a backend when the operator gave no
-    explicit --agent-model. For claude this is the unpinned alias from settings;
-    for codex it is the backend's own unpinned alias ("codex"). Other/unknown
-    backends get "" (left to sibling backfill). Never returns a pinned version —
-    the exact version is resolved post-run from the transcript (claude)."""
+def default_agent_model_for_backend(backend: str) -> str:
+    """The spec-side default agent_model stamped on a LEAF launch whose configuration
+    entry declares no `model:`. For claude this is DEFAULT_CLAUDE_MODEL_ALIAS; for codex
+    the backend's own unpinned alias ("codex"). Other/unknown backends get "" (left to
+    sibling backfill). Never returns a pinned version.
+
+    It is a PREDICTED label, not a measurement, on both leaf paths — the conductor
+    passes no `--model` for an undeclared model, so what actually ran is decided by the
+    CLI. The measured value replaces it after the fact from the leaf's own result
+    envelope (`_agent_run_json`), which is the only reading either path can rely on.
+
+    It deliberately does NOT read the operator's `~/.claude` (`resolve_claude_model_alias`,
+    which serves the orchestration row instead). An agentic claude leaf runs with
+    `--setting-sources project` and cannot see that home, so stamping a value read from
+    it would describe a run that did not happen. A PURE claude leaf is asymmetric: its
+    flag set (`pure_leaf_flags`) carries no `--setting-sources`, so operator settings can
+    still decide its model. Predicting per-path would make the stamp claim a precision
+    neither path has; treating both as predictions and letting the envelope correct them
+    is the one consistent reading."""
     b = (backend or "").strip().lower()
     if b == "claude":
-        return resolve_claude_model_alias(home)
+        return DEFAULT_CLAUDE_MODEL_ALIAS
     if b == "codex":
         return "codex"
     return ""
@@ -16223,7 +16239,10 @@ _CLAUDE_MCP_PERMISSION_REMEDIATION = (
     "the server-level token; to grant individually, list "
     "`mcp__build-runtime__run_linter` / `__run_syntax_check` / `__compile_project` / "
     "`__run_program` / `__run_quality_checks`. Ensure no matching `permissions.deny` entry exists in "
-    "`.claude/settings.json` / `.claude/settings.local.json`. Reference: `mcp_servers/README.md`."
+    "`.claude/settings.json`. NOTE: `.claude/settings.local.json` is NOT consulted for this "
+    "check and does not reach a leaf either (a leaf loads `--setting-sources project`), so a "
+    "grant that lives only there must be MOVED into the committed file. "
+    "Reference: `mcp_servers/README.md`."
 )
 
 
@@ -16333,15 +16352,29 @@ def _read_repo_mcp_tool_permissions(
 ) -> tuple[set[str], set[str], str | None, str]:
     """Read the state of MCP tool permission from the project settings committed to the repo.
 
-    The canonical source is the `permissions` section of `<repo>/.claude/settings.json`.
-    The `permissions.allow` (personal opt-in addition) and `permissions.deny` (personal opt-out)
-    of `.claude/settings.local.json` are also combined/subtracted. `~/.claude.json` is not
-    referenced for the same reason as the enablement check (machine-dependent, reproducibility).
+    THE ONLY SOURCE IS `<repo>/.claude/settings.json`, because that is the only permission
+    layer a workflow leaf loads: since issue #63 step 1 it is launched with
+    `--setting-sources project`, which excludes both `user` and `local`. This function answers
+    "will the leaf be allowed to call the tool", so it must read what the leaf reads.
+
+    `.claude/settings.local.json` is deliberately NOT consulted. It used to be, and that was
+    right while a leaf loaded the `local` source; afterwards it made the gate wrong in both
+    directions — a grant living only in that untracked file kept the gate green while the leaf
+    came up without it and died at its first `mcp__build-runtime__*` call, and a `deny` there
+    failed a run whose leaves would have worked. The registration probe
+    (`_probe_claude_mcp_registry`) still subtracts that file's `disabledMcpjsonServers`: it is
+    a deliberate operator opt-out that stops the RUN at the gate, which is a different question
+    from what a leaf loads. `~/.claude.json` is not referenced, for the same reason as the
+    enablement check (machine-dependent, reproducibility).
+
+    Note this decides only whether the grant is DECLARED. Whether the CLI honours a declared
+    project-layer grant is conditional on workspace trust, which no static read can see
+    (`docs/RUNBOOK.md` §0-2, issue #65).
 
     Return value `(allow_set, deny_set, default_mode, detail)`:
-      - allow_set: the string set of project + local `permissions.allow`
-      - deny_set:  the string set of project + local `permissions.deny`
-      - default_mode: `permissions.defaultMode` (project first, else local, else None)
+      - allow_set: the string set of `permissions.allow`
+      - deny_set:  the string set of `permissions.deny`
+      - default_mode: `permissions.defaultMode` (or None)
       - detail: a diagnostic string
     """
     settings = (
@@ -16379,16 +16412,12 @@ def _read_repo_mcp_tool_permissions(
         mode = perms.get("defaultMode")
         return allow, deny, (mode if isinstance(mode, str) else None)
 
-    proj_allow, proj_deny, proj_mode = _collect(settings)
-    local_allow, local_deny, local_mode = _collect(local_settings)
-
-    allow_set = proj_allow | local_allow
-    deny_set = proj_deny | local_deny
-    default_mode = proj_mode if proj_mode is not None else local_mode
+    allow_set, deny_set, default_mode = _collect(settings)
 
     detail = (
         f"settings={settings}; allow={sorted(allow_set)}; "
-        f"deny={sorted(deny_set)}; default_mode={default_mode}"
+        f"deny={sorted(deny_set)}; default_mode={default_mode}; "
+        f"local_settings_ignored={local_settings}"
     )
     return allow_set, deny_set, default_mode, detail
 
@@ -16486,6 +16515,13 @@ def _probe_claude_mcp_registry(
     mcp_json_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Determine whether the Claude session exposes the build-runtime MCP tool in the target repo.
+
+    SCOPE, since issue #63 step 1: this certifies the OPERATOR's checkout as a place where the
+    server is registered and granted. It is no longer the path a workflow LEAF takes — the
+    conductor launches one with `--strict-mcp-config --mcp-config .mcp.json`, so a leaf's
+    server set is that file read directly and no enablement decision applies to it. The
+    predicate is deliberately unchanged here; whether it should instead certify what a leaf
+    will actually get is issue #65.
 
     The canonical signal is the `<repo>/.claude/settings.json` committed to the repo
     (`enabledMcpjsonServers` / `enableAllProjectMcpServers` − `disabledMcpjsonServers`,

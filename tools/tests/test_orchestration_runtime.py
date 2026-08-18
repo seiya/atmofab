@@ -743,6 +743,7 @@ shell_tool                       stable             true
         default_mode: str | None = None,
         local_allow_permissions: list[str] | None = None,
         local_deny_permissions: list[str] | None = None,
+        local_default_mode: str | None = None,
     ) -> None:
         """Write out the project settings committed to the repo, to temp repo_root.
 
@@ -780,6 +781,7 @@ shell_tool                       stable             true
             local_disabled_mcpjson_servers is not None
             or local_allow_permissions is not None
             or local_deny_permissions is not None
+            or local_default_mode is not None
         ):
             local_data: dict[str, Any] = {}
             if local_disabled_mcpjson_servers is not None:
@@ -789,6 +791,8 @@ shell_tool                       stable             true
                 local_perms["allow"] = local_allow_permissions
             if local_deny_permissions is not None:
                 local_perms["deny"] = local_deny_permissions
+            if local_default_mode is not None:
+                local_perms["defaultMode"] = local_default_mode
             if local_perms:
                 local_data["permissions"] = local_perms
             (claude_dir / "settings.local.json").write_text(
@@ -1328,8 +1332,33 @@ shell_tool                       stable             true
             by_name["claude_mcp_build_runtime_permission_granted"]["detail"],
         )
 
-    def test_probe_claude_mcp_registry_permission_granted_via_local_settings(self) -> None:
-        """The permissions.allow of `.claude/settings.local.json` is also combined as a grant."""
+    def test_the_permission_remedy_points_at_the_layer_the_gate_reads(self) -> None:
+        """A refusal is only closed if the instruction it gives converges.
+
+        This string is the ONLY guidance an operator gets when
+        `claude_mcp_build_runtime_permission_granted` fails, and the most likely reason it
+        fails is a grant sitting in `.claude/settings.local.json` — the file Claude Code
+        writes on an interactive "always allow". While the gate read that file, naming it was
+        correct; now that neither the gate nor a leaf loads it, naming it as somewhere the
+        grant may live sends the operator to do something that cannot work.
+
+        Pins the PROPERTY, not the wording: the committed file must be named, and the local
+        file may appear only alongside a statement that it is not consulted."""
+        from tools.orchestration_runtime import _CLAUDE_MCP_PERMISSION_REMEDIATION as msg
+        self.assertIn(".claude/settings.json", msg)
+        if "settings.local.json" in msg:
+            self.assertIn("NOT consulted", msg,
+                          "the remedy names the ignored layer without saying it is ignored")
+
+    def test_a_local_only_permission_grant_does_not_satisfy_the_gate(self) -> None:
+        """A grant that lives ONLY in `.claude/settings.local.json` must FAIL the gate.
+
+        It used to pass, and that was right while a leaf loaded the `local` settings source.
+        Since issue #63 step 1 the leaf is launched with `--setting-sources project`, which
+        excludes `local` — so counting that grant made the gate green for a leaf that would
+        come up without the permission and die at its first `mcp__build-runtime__*` call. The
+        gate has to read what the LEAF reads; this is the direction that used to fail open.
+        """
         with tempfile.TemporaryDirectory() as td:
             repo_root = Path(td)
             self._write_project_settings(
@@ -1342,9 +1371,53 @@ shell_tool                       stable             true
                 backend="claude", runner=runner, repo_root=repo_root
             )
 
+        self.assertEqual(result["status"], "fail")
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertFalse(by_name["claude_mcp_build_runtime_permission_granted"]["pass"])
+
+    def test_a_local_only_deny_does_not_fail_a_run_whose_leaves_would_work(self) -> None:
+        """The mirror direction, which used to fail CLOSED for no reason.
+
+        A `permissions.deny` in the untracked local file no longer subtracts anything from a
+        leaf either, so refusing the run on it stopped a run that would have worked. Kept as a
+        separate test from the allow direction because a single-source read is one change but
+        two distinct wrong verdicts, and only one of them is a fail-open."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            self._write_project_settings(
+                repo_root,
+                enabled_mcpjson_servers=["build-runtime"],
+                allow_permissions=["mcp__build-runtime"],
+                local_deny_permissions=["mcp__build-runtime"],
+            )
+            runner = self._claude_runner_with_mcp("")
+            result = probe_execution_platform(
+                backend="claude", runner=runner, repo_root=repo_root
+            )
+
         self.assertEqual(result["status"], "pass")
         by_name = {c["name"]: c for c in result["checks"]}
         self.assertTrue(by_name["claude_mcp_build_runtime_permission_granted"]["pass"])
+
+    def test_a_local_only_default_mode_does_not_satisfy_the_gate(self) -> None:
+        """The third input the union used to take from the local file. `defaultMode` was read
+        `project first, else local`, so `bypassPermissions` set only in the untracked file
+        granted everything at the gate and nothing at the leaf."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            self._write_project_settings(
+                repo_root,
+                enabled_mcpjson_servers=["build-runtime"],
+                local_default_mode="bypassPermissions",
+            )
+            runner = self._claude_runner_with_mcp("")
+            result = probe_execution_platform(
+                backend="claude", runner=runner, repo_root=repo_root
+            )
+
+        self.assertEqual(result["status"], "fail")
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertFalse(by_name["claude_mcp_build_runtime_permission_granted"]["pass"])
 
     def test_probe_execution_platform_uses_explicit_agent_command(self) -> None:
         seen = {"command": ""}
@@ -20725,8 +20798,12 @@ class PreWriteManifestExtensionPolicyTests(unittest.TestCase):
 class RecordTimeoutTests(unittest.TestCase):
     """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
 
-    def _setup_substep_launch(self, repo_root: Path) -> str:
-        """Initialise an orchestration with a substep launched and return the substep agent_run_id."""
+    def _setup_substep_launch(self, repo_root: Path,
+                              response_extra: dict | None = None) -> str:
+        """Initialise an orchestration with a substep launched and return the substep agent_run_id.
+
+        `response_extra` merges extra keys into the launch response payload, for callers
+        pinning what the runtime does with fields it has no schema for."""
         init_orchestration(
             repo_root=repo_root,
             orchestration_id="orch_to_001",
@@ -20808,6 +20885,7 @@ class RecordTimeoutTests(unittest.TestCase):
                 "backend": "claude",
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(substep_arid),
+                **(response_extra or {}),
             },
         )
         return substep_arid
@@ -22302,6 +22380,51 @@ class RecordTimeoutTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload.get("status"), "timeout")
             self.assertEqual(payload.get("agent_run_id"), arid)
+
+
+class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
+    """Issue #63 step 1: the configuration surface a leaf was launched with must SURVIVE
+    into the launch record, and must not be pushed into the conductor's stdout.
+
+    The conductor composes `claude_setting_sources` / `mcp_config` (see
+    `Conductor._launch_setting_surface`); the runtime has no schema for either. This drives
+    the REAL `record_launch` handler — the two facts it pins are properties of the runtime,
+    not of the conductor, and neither is visible from a conductor-side test:
+
+    (1) the runtime persists keys it does not know, into both copies of the response;
+    (2) `_TERSE_RESULT_FIELDS["record-launch"]` projects them AWAY, because the conductor
+        consumes neither — they are a record, not an instruction, and adding them to the
+        terse set would grow every launch's stdout for nothing.
+    """
+
+    # The launch scaffolding is identical to RecordTimeoutTests'; borrowing the method
+    # rather than subclassing keeps that class's own tests from running twice.
+    _setup_substep_launch = RecordTimeoutTests._setup_substep_launch
+
+    SURFACE = {
+        "claude_setting_sources": "project",
+        "mcp_config": [{"ref": ".mcp.json", "sha256": "a" * 64}],
+    }
+
+    def test_the_setting_surface_is_persisted_in_both_response_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = self._setup_substep_launch(repo_root, response_extra=dict(self.SURFACE))
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            for path in (orch_root / "launches" / f"{arid}.response.json",
+                         orch_root / "agents" / arid / "dialogs" / "child.response.json"):
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(doc["claude_setting_sources"], "project", msg=str(path))
+                self.assertEqual(doc["mcp_config"], self.SURFACE["mcp_config"],
+                                 msg=str(path))
+
+    def test_the_setting_surface_is_not_projected_into_the_terse_result(self) -> None:
+        from tools.orchestration_runtime import _project_terse_result
+        terse = _project_terse_result(
+            "record-launch", {"capability_token": "t", **self.SURFACE})
+        self.assertEqual(terse.get("capability_token"), "t")
+        self.assertNotIn("claude_setting_sources", terse)
+        self.assertNotIn("mcp_config", terse)
 
 
 class SetStatusIdempotencyTests(unittest.TestCase):
@@ -31500,12 +31623,63 @@ class ModelResolutionTests(unittest.TestCase):
             self.assertNotRegex(resolve_claude_model_alias(home), r"-\d+-\d+$")
 
     def test_default_agent_model_per_backend(self) -> None:
+        self.assertEqual(default_agent_model_for_backend("claude"),
+                         DEFAULT_CLAUDE_MODEL_ALIAS)
+        self.assertEqual(default_agent_model_for_backend("codex"), "codex")
+        self.assertEqual(default_agent_model_for_backend("other"), "")
+
+    def test_the_spec_side_default_is_an_unpinned_alias(self) -> None:
+        """What DEFAULT_CLAUDE_MODEL_ALIAS must satisfy is a RULE, not a particular value.
+
+        Every other test compares `default_agent_model_for_backend("claude")` against the
+        constant itself — correctly, since writing the literal twice would just pin today's
+        choice — but that leaves the constant free: changing it to any other string kept the
+        whole suite green (a census finding). The rule it actually has to obey is stated
+        where it is defined: an unpinned alias, never a pinned version, because it is
+        recorded before any leaf has run and must not go stale as versions move."""
+        self.assertTrue(DEFAULT_CLAUDE_MODEL_ALIAS.strip())
+        # not a pinned version: no `-<n>-<n>` tail, and no date stamp
+        self.assertNotRegex(DEFAULT_CLAUDE_MODEL_ALIAS, r"-\d+-\d+")
+        self.assertNotRegex(DEFAULT_CLAUDE_MODEL_ALIAS, r"\d{8}")
+        # an alias the CLI accepts for `--model` is a bare token, not a full model name
+        self.assertNotIn("claude-", DEFAULT_CLAUDE_MODEL_ALIAS)
+
+    def test_the_backend_token_is_normalised_before_it_is_matched(self) -> None:
+        """`(backend or "").strip().lower()` had no witness: every caller passes an exact
+        lowercase token today, so dropping the normalisation kept the suite green. It is
+        load-bearing for a caller that does not — the backend token reaches this from
+        recorded provenance, where casing and padding are not guaranteed."""
+        for spelling in ("claude", "Claude", "CLAUDE", " claude", "claude "):
+            self.assertEqual(default_agent_model_for_backend(spelling),
+                             DEFAULT_CLAUDE_MODEL_ALIAS, msg=spelling)
+        for spelling in ("codex", "Codex", " codex "):
+            self.assertEqual(default_agent_model_for_backend(spelling), "codex", msg=spelling)
+        self.assertEqual(default_agent_model_for_backend(None), "")   # type: ignore[arg-type]
+
+    def test_the_leaf_label_does_not_read_the_operators_home(self) -> None:
+        """Issue #63 step 1 separates the two readers at the function boundary. An agentic
+        claude leaf launches with `--setting-sources project` and therefore cannot see the
+        operator's `~/.claude`; a stamp taken from it would label the launch with a model
+        that could not have run.
+
+        Pinned STRUCTURALLY — `resolve_claude_model_alias` is made to raise — rather than by
+        comparing values. Both functions fall back to DEFAULT_CLAUDE_MODEL_ALIAS, so on the
+        common machine (no `model` key in settings) a call-through and a non-call-through
+        return the same string, and an equality assertion would be green either way."""
+        with patch("tools.orchestration_runtime.resolve_claude_model_alias",
+                   side_effect=AssertionError(
+                       "default_agent_model_for_backend must not read operator settings")):
+            self.assertEqual(default_agent_model_for_backend("claude"),
+                             DEFAULT_CLAUDE_MODEL_ALIAS)
+
+    def test_the_orchestration_row_still_reads_the_operators_home(self) -> None:
+        """The other side of the same separation: `run_workflow.py` runs in the operator's
+        own environment, so the ORCHESTRATION row's label is theirs to set. Removing the
+        leaf's read must not remove this one."""
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            self._write_settings(home, "opus")
-            self.assertEqual(default_agent_model_for_backend("claude", home), "opus")
-            self.assertEqual(default_agent_model_for_backend("codex", home), "codex")
-            self.assertEqual(default_agent_model_for_backend("other", home), "")
+            self._write_settings(home, "sonnet")
+            self.assertEqual(resolve_claude_model_alias(home), "sonnet")
 
 
 class InfrastructureSpecKindTests(unittest.TestCase):
