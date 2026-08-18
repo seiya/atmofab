@@ -496,10 +496,26 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertIn("--fork-session", argv)
         self.assertIn("--output-format", argv)
 
-    def test_non_pure_claude_has_no_pure_flags(self):
+    def test_non_pure_claude_has_no_pure_only_flags(self):
+        """What still distinguishes a pure launch from an agentic one.
+
+        `--strict-mcp-config` and `--disable-slash-commands` USED to be listed here: they
+        were pure-only, so their absence identified an agentic leaf. Issue #63 step 1 gives
+        the agentic branch its own copy of both (plus `--setting-sources` and
+        `--mcp-config`), for its own reason — closing the OPERATOR's configuration out of a
+        leaf that keeps its tools — so they are shared hardening now and no longer
+        discriminate. Asserting their absence here would forbid that hardening rather than
+        pin the pure/agentic split.
+
+        What is still pure-only is the flag set that makes the leaf a pure FUNCTION: no
+        ambient customization at all, a replaced system prompt, and no tools. An agentic
+        leaf must have none of those — it reads files, runs the gates through MCP, and
+        carries the repo's PreToolUse hook.
+        """
         argv = self._conductor("claude").leaf_command(session_id="a")
-        self.assertNotIn("--strict-mcp-config", argv)
-        self.assertNotIn("--disable-slash-commands", argv)
+        self.assertNotIn("--safe-mode", argv)
+        self.assertNotIn("--system-prompt", argv)
+        self.assertNotIn("--tools", argv)
 
     def test_codex_pure_uses_structured_readonly_approximation(self):
         argv = self._conductor("codex").leaf_command(session_id="arid-1", pure=True)

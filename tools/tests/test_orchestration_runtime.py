@@ -20725,8 +20725,12 @@ class PreWriteManifestExtensionPolicyTests(unittest.TestCase):
 class RecordTimeoutTests(unittest.TestCase):
     """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
 
-    def _setup_substep_launch(self, repo_root: Path) -> str:
-        """Initialise an orchestration with a substep launched and return the substep agent_run_id."""
+    def _setup_substep_launch(self, repo_root: Path,
+                              response_extra: dict | None = None) -> str:
+        """Initialise an orchestration with a substep launched and return the substep agent_run_id.
+
+        `response_extra` merges extra keys into the launch response payload, for callers
+        pinning what the runtime does with fields it has no schema for."""
         init_orchestration(
             repo_root=repo_root,
             orchestration_id="orch_to_001",
@@ -20808,6 +20812,7 @@ class RecordTimeoutTests(unittest.TestCase):
                 "backend": "claude",
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(substep_arid),
+                **(response_extra or {}),
             },
         )
         return substep_arid
@@ -22302,6 +22307,51 @@ class RecordTimeoutTests(unittest.TestCase):
             payload = json.loads(stdout.getvalue())
             self.assertEqual(payload.get("status"), "timeout")
             self.assertEqual(payload.get("agent_run_id"), arid)
+
+
+class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
+    """Issue #63 step 1: the configuration surface a leaf was launched with must SURVIVE
+    into the launch record, and must not be pushed into the conductor's stdout.
+
+    The conductor composes `claude_setting_sources` / `mcp_config` (see
+    `Conductor._launch_setting_surface`); the runtime has no schema for either. This drives
+    the REAL `record_launch` handler — the two facts it pins are properties of the runtime,
+    not of the conductor, and neither is visible from a conductor-side test:
+
+    (1) the runtime persists keys it does not know, into both copies of the response;
+    (2) `_TERSE_RESULT_FIELDS["record-launch"]` projects them AWAY, because the conductor
+        consumes neither — they are a record, not an instruction, and adding them to the
+        terse set would grow every launch's stdout for nothing.
+    """
+
+    # The launch scaffolding is identical to RecordTimeoutTests'; borrowing the method
+    # rather than subclassing keeps that class's own tests from running twice.
+    _setup_substep_launch = RecordTimeoutTests._setup_substep_launch
+
+    SURFACE = {
+        "claude_setting_sources": "project",
+        "mcp_config": [{"ref": ".mcp.json", "sha256": "a" * 64}],
+    }
+
+    def test_the_setting_surface_is_persisted_in_both_response_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = self._setup_substep_launch(repo_root, response_extra=dict(self.SURFACE))
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            for path in (orch_root / "launches" / f"{arid}.response.json",
+                         orch_root / "agents" / arid / "dialogs" / "child.response.json"):
+                doc = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(doc["claude_setting_sources"], "project", msg=str(path))
+                self.assertEqual(doc["mcp_config"], self.SURFACE["mcp_config"],
+                                 msg=str(path))
+
+    def test_the_setting_surface_is_not_projected_into_the_terse_result(self) -> None:
+        from tools.orchestration_runtime import _project_terse_result
+        terse = _project_terse_result(
+            "record-launch", {"capability_token": "t", **self.SURFACE})
+        self.assertEqual(terse.get("capability_token"), "t")
+        self.assertNotIn("claude_setting_sources", terse)
+        self.assertNotIn("mcp_config", terse)
 
 
 class SetStatusIdempotencyTests(unittest.TestCase):
@@ -31500,12 +31550,35 @@ class ModelResolutionTests(unittest.TestCase):
             self.assertNotRegex(resolve_claude_model_alias(home), r"-\d+-\d+$")
 
     def test_default_agent_model_per_backend(self) -> None:
+        self.assertEqual(default_agent_model_for_backend("claude"),
+                         DEFAULT_CLAUDE_MODEL_ALIAS)
+        self.assertEqual(default_agent_model_for_backend("codex"), "codex")
+        self.assertEqual(default_agent_model_for_backend("other"), "")
+
+    def test_the_leaf_label_does_not_read_the_operators_home(self) -> None:
+        """Issue #63 step 1 separates the two readers at the function boundary. An agentic
+        claude leaf launches with `--setting-sources project` and therefore cannot see the
+        operator's `~/.claude`; a stamp taken from it would label the launch with a model
+        that could not have run.
+
+        Pinned STRUCTURALLY — `resolve_claude_model_alias` is made to raise — rather than by
+        comparing values. Both functions fall back to DEFAULT_CLAUDE_MODEL_ALIAS, so on the
+        common machine (no `model` key in settings) a call-through and a non-call-through
+        return the same string, and an equality assertion would be green either way."""
+        with patch("tools.orchestration_runtime.resolve_claude_model_alias",
+                   side_effect=AssertionError(
+                       "default_agent_model_for_backend must not read operator settings")):
+            self.assertEqual(default_agent_model_for_backend("claude"),
+                             DEFAULT_CLAUDE_MODEL_ALIAS)
+
+    def test_the_orchestration_row_still_reads_the_operators_home(self) -> None:
+        """The other side of the same separation: `run_workflow.py` runs in the operator's
+        own environment, so the ORCHESTRATION row's label is theirs to set. Removing the
+        leaf's read must not remove this one."""
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            self._write_settings(home, "opus")
-            self.assertEqual(default_agent_model_for_backend("claude", home), "opus")
-            self.assertEqual(default_agent_model_for_backend("codex", home), "codex")
-            self.assertEqual(default_agent_model_for_backend("other", home), "")
+            self._write_settings(home, "sonnet")
+            self.assertEqual(resolve_claude_model_alias(home), "sonnet")
 
 
 class InfrastructureSpecKindTests(unittest.TestCase):

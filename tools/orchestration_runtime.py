@@ -13944,15 +13944,18 @@ DEFAULT_CLAUDE_MODEL_ALIAS = "opus"
 
 
 def resolve_claude_model_alias(home: Path | None = None) -> str:
-    """The unpinned Claude model alias the operator configured (e.g. "opus"), read
+    """The unpinned Claude model alias the OPERATOR configured (e.g. "opus"), read
     from the Claude Code settings files. settings.local.json takes precedence over
     settings.json (matching Claude Code's own precedence), so an operator who pins
-    their model only in the local file is still honored. This is the spec-side value,
-    recorded on the launch request / orchestration row before any leaf has run — so
-    it must not pin a version. Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no
-    settings file is present / readable or none carries a `model` key. (Only the
-    spec-side label is affected; the EXACT version is always recovered post-run from
-    the transcript, so a fallback here is cosmetic.)"""
+    their model only in the local file is still honored. This is the spec-side value
+    for the ORCHESTRATION row — the process `tools/run_workflow.py` starts, which does
+    run in the operator's own environment and does read their settings. It is NOT the
+    label for a leaf: an agentic claude leaf is launched with `--setting-sources
+    project` and never reads this home, so `default_agent_model_for_backend` deliberately
+    does not call this. Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
+    present / readable or none carries a `model` key. (Only the spec-side label is
+    affected; the EXACT version is always recovered post-run from the result envelope,
+    so a fallback here is cosmetic.)"""
     base = home if home is not None else Path.home()
     resolved = DEFAULT_CLAUDE_MODEL_ALIAS
     # Highest precedence last: a model key in settings.local.json overrides settings.json.
@@ -13968,15 +13971,28 @@ def resolve_claude_model_alias(home: Path | None = None) -> str:
     return resolved
 
 
-def default_agent_model_for_backend(backend: str, home: Path | None = None) -> str:
-    """The spec-side default agent_model for a backend when the operator gave no
-    explicit --agent-model. For claude this is the unpinned alias from settings;
-    for codex it is the backend's own unpinned alias ("codex"). Other/unknown
-    backends get "" (left to sibling backfill). Never returns a pinned version —
-    the exact version is resolved post-run from the transcript (claude)."""
+def default_agent_model_for_backend(backend: str) -> str:
+    """The spec-side default agent_model stamped on a LEAF launch whose configuration
+    entry declares no `model:`. For claude this is DEFAULT_CLAUDE_MODEL_ALIAS; for codex
+    the backend's own unpinned alias ("codex"). Other/unknown backends get "" (left to
+    sibling backfill). Never returns a pinned version.
+
+    It is a PREDICTED label, not a measurement, on both leaf paths — the conductor
+    passes no `--model` for an undeclared model, so what actually ran is decided by the
+    CLI. The measured value replaces it after the fact from the leaf's own result
+    envelope (`_agent_run_json`), which is the only reading either path can rely on.
+
+    It deliberately does NOT read the operator's `~/.claude` (`resolve_claude_model_alias`,
+    which serves the orchestration row instead). An agentic claude leaf runs with
+    `--setting-sources project` and cannot see that home, so stamping a value read from
+    it would describe a run that did not happen. A PURE claude leaf is asymmetric: its
+    flag set (`pure_leaf_flags`) carries no `--setting-sources`, so operator settings can
+    still decide its model. Predicting per-path would make the stamp claim a precision
+    neither path has; treating both as predictions and letting the envelope correct them
+    is the one consistent reading."""
     b = (backend or "").strip().lower()
     if b == "claude":
-        return resolve_claude_model_alias(home)
+        return DEFAULT_CLAUDE_MODEL_ALIAS
     if b == "codex":
         return "codex"
     return ""
@@ -16486,6 +16502,13 @@ def _probe_claude_mcp_registry(
     mcp_json_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Determine whether the Claude session exposes the build-runtime MCP tool in the target repo.
+
+    SCOPE, since issue #63 step 1: this certifies the OPERATOR's checkout as a place where the
+    server is registered and granted. It is no longer the path a workflow LEAF takes — the
+    conductor launches one with `--strict-mcp-config --mcp-config .mcp.json`, so a leaf's
+    server set is that file read directly and no enablement decision applies to it. The
+    predicate is deliberately unchanged here; whether it should instead certify what a leaf
+    will actually get is issue #65.
 
     The canonical signal is the `<repo>/.claude/settings.json` committed to the repo
     (`enabledMcpjsonServers` / `enableAllProjectMcpServers` − `disabledMcpjsonServers`,

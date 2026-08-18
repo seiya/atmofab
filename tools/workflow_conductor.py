@@ -26,6 +26,7 @@ real, working request.json artifacts in tools/tests/test_workflow_conductor.py.
 from __future__ import annotations
 
 import codecs
+import hashlib
 import json
 import locale
 import queue
@@ -1392,6 +1393,41 @@ LEAF_MAX_OUTPUT_TOKENS = 128000
 # variadic, so it is emitted immediately before `-p` — the prompt travels on
 # stdin, and restoring a positional prompt would let the list swallow it.
 CLAUDE_LEAF_DISALLOWED_TOOLS = "Task,WebFetch,WebSearch,NotebookEdit"
+
+# The ONLY MCP configuration an agentic claude leaf is launched with, paired with
+# `--strict-mcp-config` (which makes this file the whole server set instead of an
+# addition to whatever the ambient configuration resolves to). Spelled repo-relative
+# because the leaf always starts with the repository as its working directory: the
+# unsandboxed spawn passes `cwd=self.repo_root` (`spawn_leaf`), and under mandatory
+# bwrap the wrapper is rendered with `--chdir <repo_root>` over a read-only bind of
+# the same tree (`render_bwrap_command`), so the relative path resolves to the
+# committed file in both.
+#
+# PLACEMENT RULE for this and the other variadic flags on this argv
+# (`--mcp-config <configs...>`, `--disallowedTools <tools...>`): a variadic flag
+# keeps consuming tokens until one starts with `--`, so each of their values must be
+# followed by a `--`-prefixed token. Here `--mcp-config`'s value is followed by
+# `--disable-slash-commands` and `--disallowedTools`'s by `--output-format`. Nothing
+# variadic may sit immediately before the trailing `-p`, which takes no prompt
+# argument (the prompt rides stdin) and would otherwise be swallowed.
+CLAUDE_LEAF_MCP_CONFIG = ".mcp.json"
+
+
+def _variadic_values(argv: list[str], flag: str) -> list[str]:
+    """The values a VARIADIC flag consumes on `argv`: everything after it up to the
+    next `--`-prefixed token (the CLI's own terminator) or the end of the list.
+
+    Reading them back with the same rule the argv is built under is the point — a
+    single-value read would silently describe only the first of several, and an
+    index-based read would describe the wrong token the moment a flag moves."""
+    if flag not in argv:
+        return []
+    out: list[str] = []
+    for token in argv[argv.index(flag) + 1:]:
+        if token.startswith("--"):
+            break
+        out.append(token)
+    return out
 
 # How long a leaf gets to exit on SIGTERM before the group is SIGKILLed, and how long
 # the whole teardown may take. Both are bounded on purpose: this runs on the driver's
@@ -3534,13 +3570,15 @@ class Conductor:
         return [cfg.defaults, *cfg.entries.values()]
 
     def _resolve_claude_model_aliases(self) -> None:
-        """Fill in the runtime alias for every model-less `claude_cli` entry, ONCE.
+        """Fill in the spec-side alias for every model-less `claude_cli` entry, ONCE.
 
-        A `claude_cli` entry that names no `model:` is taking Claude Code's unpinned alias,
-        resolved from the operator's own settings. That resolution reads the operator's home,
-        so it happens exactly here (at construction) rather than per launch:
-        one read, one value, and every recorded launch of the run agrees about what it asked
-        for."""
+        A `claude_cli` entry that names no `model:` is taking the CLI's own default: the
+        conductor passes no `--model` for it (`leaf_command` keys on `model_declared`, which
+        this fill does not set). What is filled in is therefore the LABEL such a launch is
+        recorded under, not a choice being made — a prediction the leaf's result envelope
+        corrects after the fact (`default_agent_model_for_backend`). Done once at
+        construction rather than per launch so every recorded launch of the run agrees about
+        what it asked for."""
         cfg = self.llm_config
         assert cfg is not None
         if not any(e.provider == "claude_cli" and not e.model for e in self._all_entries()):
@@ -3808,16 +3846,21 @@ class Conductor:
         entry = entry if entry is not None else self.entry_for(None, None)
         base = _provider_command_base(entry)
         if entry.provider == "claude_cli":
-            # `-p` runs non-interactively; the committed .claude/settings.json supplies
-            # MCP build-runtime registration + permission grants (see preflight gate).
+            # `-p` runs non-interactively. The leaf's MCP server set comes from
+            # `--strict-mcp-config --mcp-config .mcp.json` below — read directly from the
+            # committed file, not from an enablement decision recorded elsewhere. The
+            # permission grants that let the leaf CALL those tools still come from the
+            # committed .claude/settings.json via the `project` setting source, and that
+            # source is itself conditional on workspace trust (issue #65; see
+            # docs/RUNBOOK.md).
             flags: list[str] = []
             # `--model` ONLY for a model the configuration FILE names. An operator who wrote
             # `model: haiku` for a substep means that leaf to run haiku, and recording it while
-            # launching the ambient default would be provenance that describes a run that did
-            # not happen. A model arriving from Claude's runtime alias resolution is
-            # deliberately NOT pinned — that is the repo's
-            # long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps every
-            # pre-issue-#28 launch byte-identical.
+            # launching the CLI's own default would be provenance that describes a run that did
+            # not happen. A model the file did not declare is deliberately NOT pinned — that is
+            # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
+            # every pre-issue-#28 launch byte-identical. With `--setting-sources project` the
+            # unpinned case is decided by the CLI itself, not by the operator's `~/.claude`.
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is
@@ -3834,6 +3877,26 @@ class Conductor:
                 from tools.pure_leaf import pure_leaf_flags
                 flags += pure_leaf_flags()
             else:
+                # Issue #63 step 1: close the agentic leaf's configuration surface to
+                # what this repository declares. Without these the leaf inherits the
+                # OPERATOR's `~/.claude` unfiltered — model, effort, permission grants,
+                # skills, plugins, plugin hooks, and any MCP server their configuration
+                # carries (including a claude.ai connector) — none of which the workflow
+                # declares, records, or can reproduce. The pure path has justified the
+                # same closure since Z2 (`pure_leaf_flags`); this extends it to agentic
+                # leaves, which reach it through a different set of flags because they
+                # keep their tools, their skill, and the repo's PreToolUse hook.
+                #
+                # INTERIM (issue #63 step 1): `project` is not the end state. The hooks and
+                # the build-runtime permission grant live only in the repository's project
+                # layer today, so that layer cannot be dropped until they are relocated
+                # into a leaf-only configuration directory copied to a private home
+                # (`--setting-sources user`). Until then `project` also still carries this
+                # checkout's CLAUDE.md/AGENTS.md into the leaf.
+                flags += ["--setting-sources", "project",
+                          "--strict-mcp-config",
+                          "--mcp-config", CLAUDE_LEAF_MCP_CONFIG,
+                          "--disable-slash-commands"]
                 # A tool the PreToolUse hook cannot validate is a hole in the read
                 # boundary, so it must be absent rather than merely discouraged.
                 # A pure leaf already passes `--tools ""` and needs no exclusion.
@@ -5123,6 +5186,7 @@ class Conductor:
             "backend_command": _provider_command_base(
                 entry or self.entry_for(None, None))[0],
         }
+        response.update(self._launch_setting_surface(request, entry))
         request_ref = self._write_launch_input_evidence(
             f"{child_arid}.request.input.json", request)
         argv = [
@@ -5135,6 +5199,84 @@ class Conductor:
         if expected_codex_home_generation is not None:
             argv += ["--expected-codex-home-generation", str(expected_codex_home_generation)]
         return self.runtime(argv)
+
+    def _launch_setting_surface(self, request: dict[str, Any],
+                                entry: ResolvedLeafEntry | None) -> dict[str, Any]:
+        """What this leaf's launch closes its CONFIGURATION surface to, for the record.
+
+        The launch record already names the executable and the sandbox; it said nothing
+        about which settings layers and which MCP servers the leaf would come up with.
+        That is not recoverable from any other artifact: the persisted `sandbox_command`
+        renders `command_argv=[backend_command]` only, so the real spawn argv is written
+        down nowhere, and `orchestration_meta.json#repo_revision` carries `{commit, dirty}`
+        — on a dirty tree the bytes of `.mcp.json` cannot be reconstructed from it. Hence
+        the sha256, on the precedent of `codex_hooks_sha256`.
+
+        DERIVED FROM THE ARGV, by re-deriving it here rather than re-reading the constants
+        `leaf_command` used. `leaf_command` is a deterministic function of (entry, pure),
+        so this is the same list `spawn_leaf` builds, and a future edit that moves or drops
+        a flag cannot leave the record describing the old argv. The same reasoning already
+        pins `backend_command` to `leaf_command(entry)[0]`.
+
+        `pure` comes from the REQUEST (`leaf_mode`), the same field the runtime keys the
+        pure transport on. Nothing is special-cased per provider or per mode: a pure leaf,
+        a codex leaf, and an HTTP leaf simply produce an argv without these flags, so they
+        get no fields.
+
+        Only VALUES are recorded. `--strict-mcp-config` / `--disable-slash-commands` are
+        boolean; their presence is a code constant pinned by the argv goldens, and copying
+        it here would be a second place to keep in step with no new information in it.
+        """
+        from tools.pure_leaf import PURE_LEAF_MODE
+        entry = entry if entry is not None else self.entry_for(None, None)
+        if entry.is_http:
+            # There is no CLI leaf and no argv: `spawn_leaf` returns on this same predicate
+            # before it reaches `leaf_command`, which refuses a non-spawnable provider
+            # outright. Nothing about CLI settings layers or an MCP configuration file is
+            # true of an HTTP leaf, so it is recorded about nothing rather than about "".
+            return {}
+        pure = str(request.get("leaf_mode", "")).strip().lower() == PURE_LEAF_MODE
+        argv = self.leaf_command(entry, pure=pure)
+        surface: dict[str, Any] = {}
+        if "--setting-sources" in argv:
+            surface["claude_setting_sources"] = argv[argv.index("--setting-sources") + 1]
+        if "--mcp-config" in argv:
+            refs = _variadic_values(argv, "--mcp-config")
+            entries: list[dict[str, str]] = []
+            # FAIL CLOSED. Under `--strict-mcp-config` this file is the leaf's entire MCP
+            # server set, so an unreadable one launches a leaf with no build-runtime — which
+            # cannot compile, run, or lint, and dies later having burned its retry budget on
+            # a failure that is the conductor's/environment's, not its own. This is the
+            # earliest point at which the file is certainly needed, and it is before the
+            # child window opens, so the OSError is left to propagate.
+            for ref in refs:
+                try:
+                    data = self._read_launch_config_bytes(ref)
+                except OSError as exc:
+                    raise OSError(
+                        f"the MCP configuration this leaf is launched with is unreadable: "
+                        f"{ref!r} under {self.repo_root} ({exc}). It is the leaf's ENTIRE "
+                        f"MCP server set (`--strict-mcp-config`), so launching would produce "
+                        f"a leaf with no build-runtime tools. Restore the committed file "
+                        f"(see mcp_servers/README.md) and re-run."
+                    ) from exc
+                entries.append({"ref": ref,
+                                "sha256": hashlib.sha256(data).hexdigest()})
+            surface["mcp_config"] = entries
+        return surface
+
+    def _read_launch_config_bytes(self, ref: str) -> bytes:
+        """The bytes of one repo-relative configuration file named on the leaf argv.
+
+        Its own method for the same reason `_write_launch_input_evidence` is one: it is the
+        I/O of `record_launch`, and the offline fakes pin a `repo_root` that does not exist
+        on disk. Stubbing it there leaves the argv derivation and the recorded shape live
+        while only the read is faked; the real read — including the fail-closed OSError —
+        is driven against a real Conductor over a real directory by
+        `test_record_launch_records_setting_surface_and_mcp_config_sha256` and
+        `test_record_launch_fails_closed_when_argv_mcp_config_is_unreadable`.
+        """
+        return (self.repo_root / ref).read_bytes()
 
     def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:

@@ -12,6 +12,7 @@ import copy
 import errno
 import glob
 import io
+import hashlib
 import json
 import os
 import queue
@@ -612,6 +613,24 @@ class _StdinSink:
         return self.written
 
 
+def _seed_leaf_mcp_config(repo_root: Path) -> bytes:
+    """Write the MCP configuration an agentic claude leaf is launched with into a scratch
+    repo, and return its bytes.
+
+    `record_launch` hashes `wc.CLAUDE_LEAF_MCP_CONFIG` (the file the leaf argv names) into
+    the launch record and FAILS CLOSED when it is unreadable, so a real `Conductor` over a
+    bare temporary directory has nothing to hash. The real checkout has this file committed;
+    a scratch repo without it is the fixture that is wrong, not the code. Callers that want
+    the hash assert against the returned bytes rather than a literal digest.
+    """
+    path = repo_root / wc.CLAUDE_LEAF_MCP_CONFIG
+    data = json.dumps({"mcpServers": {"build-runtime": {
+        "command": "python3", "args": ["./mcp_servers/build_runtime_server.py"]}}},
+        indent=2).encode("utf-8")
+    path.write_bytes(data)
+    return data
+
+
 class _FakeConductor(wc.Conductor):
     """Conductor with all I/O (runtime CLI, leaf spawn, artifact reads) stubbed,
     so the happy-path control flow + bookkeeping wiring can be asserted offline."""
@@ -635,6 +654,17 @@ class _FakeConductor(wc.Conductor):
 
     def _resolve_evidence(self, rel):
         return self.__dict__.setdefault("evidence", {})[rel.rsplit("/", 1)[-1]]
+
+    _MCP_CONFIG_BYTES = b'{"mcpServers": {"build-runtime": {}}}'
+
+    def _read_launch_config_bytes(self, ref):  # type: ignore[override]
+        """Serve the launch-config bytes from memory, for the reason above: these
+        fakes pin a `repo_root` that does not exist, so the real read would fail on
+        every launch. The argv derivation and the recorded field shape stay live —
+        only the read is faked. The real read (and its fail-closed OSError) is driven
+        against a real Conductor by `LeafEntryThreadingTests` /
+        `LaunchPayloadFileTransportTests`."""
+        return self._MCP_CONFIG_BYTES
 
     def runtime(self, args, *, input=None):  # type: ignore[override]
         sub = args[0]
@@ -875,13 +905,26 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(completes[0]["result"], "skipped")
         self.assertNotIn("elapsed_seconds", completes[0])
 
-    def test_run_conductor_falls_back_to_claude_alias(self) -> None:
-        """Claude may use its unpinned settings alias when none was supplied.
+    def test_run_conductor_stamps_the_spec_side_alias_not_the_operators_model(self) -> None:
+        """A model-less claude entry is stamped with the SPEC-side default, and that default
+        is not read out of the operator's `~/.claude`.
 
         Since issue #28 the alias is filled into the resolved leaf entries at construction
         (`Conductor._resolve_claude_model_aliases`) rather than passed in as a run-wide
-        `agent_model`, so the assertion reads the entry every leaf will launch with."""
+        `agent_model`, so the assertion reads the entry every leaf will launch with. Since
+        issue #63 step 1 the leaf launches with `--setting-sources project` and never sees
+        that home, so a stamp taken from it would describe a run that did not happen —
+        `resolve_claude_model_alias` is patched to a SENTINEL here, and the assertion is
+        that the stamp is the default and is NOT the sentinel.
+
+        The configuration is built model-LESS rather than taken from the shipped sample: the
+        sample declares a model on every entry, so `_resolve_claude_model_aliases` returns
+        before resolving anything and the sample's own `opus` would satisfy the assertion
+        whichever reader the fill used. (The predecessor of this test did exactly that and
+        was green for that reason.) The sample's per-entry models are pinned by
+        `test_the_sample_defaults_argv_is_a_golden` instead."""
         from unittest.mock import patch
+        SENTINEL = "operator-settings-model-that-must-not-be-stamped"
         seen: dict[str, object] = {}
         orig_init = wc.Conductor.__init__
 
@@ -896,19 +939,21 @@ class ConductHappyPathTest(unittest.TestCase):
                                                    ir_id="x_1", pipeline_id="x_1")), \
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
-             patch("tools.orchestration_runtime.resolve_claude_model_alias", return_value="opus"):
+             patch("tools.orchestration_runtime.resolve_claude_model_alias",
+                   return_value=SENTINEL):
             status = wc.run_conductor(
                 repo_root="/tmp/repo", orchestration_id="o",
                 orchestration_agent_run_id="O", spec_ref="spec/c/x",
                 source_dependency_ref="d", until_phase="compile",
-                llm_config=_cfg("claude"), workflow_mode="dev", env={})
+                llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+                workflow_mode="dev", env={})
         self.assertEqual(status, "pass")
-        self.assertEqual(seen["model"], "opus")
-        # Derived, not spelled out: the sample does not give every leaf the same model
-        # (`compile.verify` is deliberately cheaper), and a literal set here would just have to
-        # be edited each time that choice is revisited.
-        self.assertEqual(seen["leaf_models"],
-                         {e.model for e in _sample_config("claude").entries.values()})
+        from tools.orchestration_runtime import DEFAULT_CLAUDE_MODEL_ALIAS
+        self.assertEqual(seen["model"], DEFAULT_CLAUDE_MODEL_ALIAS)
+        self.assertNotEqual(seen["model"], SENTINEL)
+        self.assertNotIn(SENTINEL, seen["leaf_models"])          # type: ignore[operator]
+        # Every entry inherits the same fill, and none of them is the sentinel.
+        self.assertEqual(seen["leaf_models"], {DEFAULT_CLAUDE_MODEL_ALIAS})
         self.assertNotRegex(str(seen["model"]), r"-\d+-\d+$")
 
     def test_run_conductor_requires_explicit_codex_model(self) -> None:
@@ -6584,12 +6629,12 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
         self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         self.assertEqual(
             self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
             ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
@@ -6616,11 +6661,62 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertNotIn("--disallowedTools", argv)
         self.assertIn("--tools", argv)
 
+    def test_claude_agentic_leaf_argv_closes_user_setting_sources(self) -> None:
+        """Issue #63 step 1. An agentic claude leaf used to inherit the OPERATOR's
+        `~/.claude` whole — model, effort, permission grants, skills, plugins, plugin
+        hooks, and any MCP server their configuration carries. None of that is declared by
+        this repository, recorded by the run, or reproducible from its artifacts.
+
+        Four flags close it, and each is asserted for what it must be, not merely that it
+        is present: the setting sources are exactly `project` (a list that still named
+        `user` would read the operator's home again), and the MCP configuration is the
+        committed file, paired with `--strict-mcp-config` so it REPLACES the ambient server
+        set instead of adding to it.
+        """
+        argv = self._c(backend="claude").leaf_command()
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project")
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertEqual(argv[argv.index("--mcp-config") + 1], wc.CLAUDE_LEAF_MCP_CONFIG)
+        self.assertEqual(wc.CLAUDE_LEAF_MCP_CONFIG, ".mcp.json")
+        self.assertIn("--disable-slash-commands", argv)
+        # Not a codex or a pure property: both have their own closure story
+        # (`--ignore-rules` / an orchestration-private CODEX_HOME; `pure_leaf_flags`).
+        for other in (self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
+                      self._c(backend="claude").leaf_command(pure=True)):
+            for flag in ("--setting-sources", "--mcp-config"):
+                self.assertNotIn(flag, other)
+
+    def test_every_variadic_flag_on_the_claude_leaf_argv_is_terminated(self) -> None:
+        """`--mcp-config <configs...>` and `--disallowedTools <tools...>` keep consuming
+        tokens until one starts with `--`. A value that is not followed by a `--`-prefixed
+        token is therefore silently swallowed into the previous flag's list — and the
+        trailing `-p` is the worst case, since it does not start with `--`: swallowed, the
+        leaf would run interactively and hang instead of failing.
+
+        Derived from the CLI's own variadic set rather than spelled per call, so a new
+        variadic flag added to that set is checked the moment it is named there.
+        """
+        variadic = ("--mcp-config", "--disallowedTools")
+        argvs = [self._c(backend="claude").leaf_command(),
+                 self._c(backend="claude").leaf_command(session_id="a"),
+                 self._c(backend="claude").leaf_command(session_id="a",
+                                                        resume_session_id="b")]
+        for argv in argvs:
+            self.assertEqual(argv[-1], "-p", msg=argv)
+            self.assertFalse(argv[-2].startswith("-"), msg=argv)
+            for flag in variadic:
+                if flag not in argv:
+                    continue
+                values = wc._variadic_values(argv, flag)
+                self.assertEqual(len(values), 1, msg=f"{flag} in {argv}")
+                after = argv[argv.index(flag) + 1 + len(values)]
+                self.assertTrue(after.startswith("--"), msg=f"{flag} -> {after} in {argv}")
+
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
+            ["claude", "--session-id", "arid-1", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
@@ -6633,7 +6729,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(
             c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
             ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
+             "--session-id", "new-arid", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
@@ -7457,6 +7553,17 @@ class LeafSpawnTest(unittest.TestCase):
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("claude", captured["argv"])
                 self.assertIn("--", captured["argv"])
+                # Issue #63 step 1: the configuration-closing flags survive the WRAPPING.
+                # Asserted on what `Popen` is actually handed, not on `leaf_command`'s
+                # return, because that is the only list the CLI ever sees — a wrapper that
+                # reordered or dropped a tail would leave the unit golden green.
+                wrapped = captured["argv"]
+                self.assertEqual(
+                    wrapped[wrapped.index("--setting-sources"):
+                            wrapped.index("--setting-sources") + 6],
+                    ["--setting-sources", "project", "--strict-mcp-config",
+                     "--mcp-config", wc.CLAUDE_LEAF_MCP_CONFIG,
+                     "--disable-slash-commands"])
                 # Own process group, exactly as the codex leaf already had: the timeout
                 # path signals the GROUP, and under bwrap the direct child is the wrapper.
                 self.assertIs(captured["popen_kwargs"].get("start_new_session"), True)
@@ -16472,6 +16579,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
+        # `record_launch` also hashes the leaf's MCP configuration out of this root.
+        _seed_leaf_mcp_config(Path(d))
         return Path(d)
 
     def _config_text(self, text: str) -> lc.LlmConfig:
@@ -16509,7 +16618,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         DECLARE a model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--model", "opus", "--effort", "medium", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         k = self._configured("codex")
         judge = k.leaf_command(k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
@@ -16518,7 +16627,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
 
     def test_a_declared_claude_model_actually_reaches_the_launch(self) -> None:
         """Per-substep model selection is the point of the feature. Recording `model: haiku`
-        while launching the ambient default is provenance describing a run that did not
+        while launching the CLI's own default is provenance describing a run that did not
         happen."""
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
@@ -16526,10 +16635,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(judge, ["claude", "--model", "haiku", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         # ...and only that leaf.
         self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
-                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -16538,7 +16647,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
+                             ["claude", "--model", "haiku", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -16551,7 +16660,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--effort", "xhigh", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
@@ -16578,13 +16687,14 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
-        run-wide override (what the preflight subprocess re-applies), or resolved from Claude's
-        runtime alias — is NOT pinned onto the argv. The operator's own `~/.claude/settings.json`
-        keeps that choice unless a configuration entry deliberately takes it."""
+        run-wide override (what the preflight subprocess re-applies), or filled in as the
+        spec-side label — is NOT pinned onto the argv. Since issue #63 step 1 what such a
+        launch resolves to is the CLI's own default rather than the operator's
+        `~/.claude/settings.json`, which the leaf no longer reads."""
         c = wc.Conductor(
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(
@@ -16592,7 +16702,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command(entry), ["claude", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(entry), ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     # --- capability predicates replace the backend tests --------------------------------
 
@@ -16722,6 +16832,126 @@ class LeafEntryThreadingTests(unittest.TestCase):
                              c.leaf_command(entry)[0], msg=f"{phase}.{substep}")
         self.assertEqual([r["backend_command"] for r in recorded],
                          ["/opt/wrap/claude", "/opt/other/claude"])
+
+    def _record_launch_response(self, c: wc.Conductor, arid: str, request: dict,
+                                entry: "wc.ResolvedLeafEntry | None") -> dict:
+        """Drive the real `record_launch` and return the response payload it sent."""
+        recorded: list[dict] = []
+        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+            recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
+        c.record_launch(arid, request, entry)
+        return recorded[-1]
+
+    def test_record_launch_records_setting_surface_and_mcp_config_sha256(self) -> None:
+        """What a leaf's configuration was closed to is recoverable from no other artifact.
+
+        The persisted `sandbox_command` renders `command_argv=[backend_command]` alone, so
+        the real spawn argv is written down nowhere; and `orchestration_meta.json#
+        repo_revision` carries `{commit, dirty}`, from which the bytes of a dirty-tree
+        `.mcp.json` cannot be reconstructed. Hence the value AND the hash, on the precedent
+        of `codex_hooks_sha256`.
+
+        The expected digest is computed here from the same bytes the fixture wrote, never
+        copied in as a literal: a literal would pin today's file rather than the property
+        that the record describes the file that was actually there.
+        """
+        repo = self._scratch_repo_root()
+        data = _seed_leaf_mcp_config(repo)
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "phases:\n  validate:\n    substeps:\n      judge:\n"
+                "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
+        agentic = self._record_launch_response(
+            c, "arid-1", {}, c.entry_for("generate", "generate"))
+        self.assertEqual(agentic["claude_setting_sources"], "project")
+        self.assertEqual(agentic["mcp_config"],
+                         [{"ref": ".mcp.json",
+                           "sha256": hashlib.sha256(data).hexdigest()}])
+
+        # A codex leaf launches through a different argv, which names neither flag.
+        codex = self._record_launch_response(
+            c, "arid-2", {}, c.entry_for("validate", "judge"))
+        self.assertNotIn("claude_setting_sources", codex)
+        self.assertNotIn("mcp_config", codex)
+
+        # A PURE claude leaf likewise: `pure_leaf_flags` carries no `--setting-sources` and
+        # no `--mcp-config`, and the mode is read off the REQUEST, the same field the
+        # runtime keys the pure transport on.
+        from tools.pure_leaf import PURE_LEAF_MODE
+        pure = self._record_launch_response(
+            c, "arid-3", {"leaf_mode": PURE_LEAF_MODE},
+            c.entry_for("generate", "generate"))
+        self.assertNotIn("claude_setting_sources", pure)
+        self.assertNotIn("mcp_config", pure)
+
+        # An HTTP leaf launches NO CLI and has no argv at all — `leaf_command` refuses a
+        # non-spawnable provider outright, which `spawn_leaf` avoids by returning on the same
+        # predicate. Nothing about settings layers or an MCP configuration file is true of
+        # one, so it is recorded about nothing rather than about "".
+        http = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "phases:\n  generate:\n    substeps:\n      generate:\n"
+                "        provider: openai_compatible\n"
+                "        base_url: http://localhost:8000/v1\n"
+                "        api_key_env: METDSL_TEST_HTTP_KEY\n"
+                "        model: local-coder\n"))
+        http_entry = http.entry_for("generate", "generate")
+        self.assertTrue(http_entry.is_http)
+        response = self._record_launch_response(http, "arid-http", {}, http_entry)
+        self.assertNotIn("claude_setting_sources", response)
+        self.assertNotIn("mcp_config", response)
+
+        # THE point of hashing: different bytes, different record.
+        (repo / ".mcp.json").write_bytes(data + b"\n")
+        again = self._record_launch_response(
+            c, "arid-4", {}, c.entry_for("generate", "generate"))
+        self.assertNotEqual(again["mcp_config"][0]["sha256"],
+                            agentic["mcp_config"][0]["sha256"])
+        self.assertEqual(again["mcp_config"][0]["sha256"],
+                         hashlib.sha256(data + b"\n").hexdigest())
+
+    def test_record_launch_fails_closed_when_argv_mcp_config_is_unreadable(self) -> None:
+        """Under `--strict-mcp-config` that file is the leaf's ENTIRE MCP server set, so an
+        unreadable one launches a leaf with no build-runtime — which cannot compile, run or
+        lint, and dies later having burned its retry budget on a failure that belongs to the
+        conductor/environment, not to it. `record_launch` is the earliest point at which the
+        file is certainly needed and it is before the child window opens, so the read is
+        allowed to raise; the message names the ref and the remedy."""
+        repo = self._scratch_repo_root()
+        (repo / wc.CLAUDE_LEAF_MCP_CONFIG).unlink()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        c.runtime = lambda argv: {}                                 # type: ignore[assignment]
+        with self.assertRaises(OSError) as caught:
+            c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
+        self.assertIn(".mcp.json", str(caught.exception))
+        self.assertIn("mcp_servers/README.md", str(caught.exception))
+
+    def test_the_recorded_setting_surface_is_derived_from_the_argv(self) -> None:
+        """Not from the constants `leaf_command` used. Re-reading `CLAUDE_LEAF_MCP_CONFIG`
+        here would be a second declaration of the same fact, and a launch path that stopped
+        passing the flag would keep recording it — a record of a run that did not happen,
+        which is the whole failure mode this field exists to prevent.
+
+        Pinned by making `leaf_command` return an argv WITHOUT the flags and asserting the
+        fields disappear, which no constant-reading implementation can satisfy."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        entry = c.entry_for("generate", "generate")
+        stripped = [t for t in c.leaf_command(entry)
+                    if t not in ("--setting-sources", "project", "--mcp-config",
+                                 wc.CLAUDE_LEAF_MCP_CONFIG)]
+        c.leaf_command = lambda *a, **kw: list(stripped)            # type: ignore[assignment]
+        response = self._record_launch_response(c, "arid-1", {}, entry)
+        self.assertNotIn("claude_setting_sources", response)
+        self.assertNotIn("mcp_config", response)
 
     def test_the_codex_finalize_row_survives_a_populated_session_index(self) -> None:
         """`_agent_run_json`'s codex branch walks the session index; its loop variable used to
@@ -16923,6 +17153,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
     BIG = "x" * 200_000
 
     def _conductor(self, repo_root: Path) -> wc.Conductor:
+        _seed_leaf_mcp_config(repo_root)
         c = wc.Conductor(repo_root=repo_root, orchestration_id="orch_payload_file",
                          orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
         c.seen: list[tuple[list[str], str | None]] = []                # type: ignore[attr-defined]

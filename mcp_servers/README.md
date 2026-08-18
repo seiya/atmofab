@@ -58,11 +58,13 @@ Claude Code reads `.mcp.json` directly under the project root and defines the se
 
 `.mcp.json` is **the server definition** only, and enabling it (enablement) per project requires separate approval. The approval sources are (a) the workspace trust dialog at interactive `claude` launch (recorded per-user in `~/.claude.json`), and (b) the `enabledMcpjsonServers` / `enableAllProjectMcpServers` of the repository-committed `.claude/settings.json`.
 
+**A workflow leaf does not take that path.** Since issue #63 step 1 the conductor launches an agentic claude leaf with `--strict-mcp-config --mcp-config .mcp.json`, so this file IS the leaf's entire server set, read directly: no enablement decision, and no ambient server from the operator's `~/.claude`, reaches it. The enablement rules below therefore describe the OPERATOR's interactive session and the preflight gate that certifies it, not what a leaf comes up with. `record-launch` hashes the file's bytes into each claude leaf's launch record (`mcp_config`), and an unreadable one fails the launch closed.
+
 The `preflight` of a run whose leaves use the `claude_cli` provider (`tools/run_workflow.py` with a `claude_cli` leaf-LLM configuration) (`tools/orchestration_runtime.py` `_probe_claude_mcp_registry`) verifies the enablement of `build-runtime` using **only the committed `.claude/settings.json` of (b)** as the canonical source, and stops with `status=fail` when not enabled (`~/.claude.json` is not referenced because it harms reproducibility per-machine). `claude mcp list` is displayed only as an advisory diagnostic.
 
 **In addition to enablement, the tool-call permission is also required.** Even if the server is enabled, without the MCP tool-call permission for the child `Agent` session, `run_linter` etc. fail with `Claude requested permissions … but you haven't granted it yet.`, and Generate/Build/Validate stop entirely. Place the server-level grant `mcp__build-runtime` in the `permissions.allow` of the committed `.claude/settings.json` (because Claude Code's permission rule does not interpret the tool-name wildcard `mcp__build-runtime__*`, use the server level). The preflight (`claude_mcp_build_runtime_permission_granted` check) verifies it ANDed with the enablement, and stops with `status=fail` when not granted.
 
-The repository-bundled `.claude/settings.json` includes the following, so everyone who clones it is enabled/permitted without personal settings:
+The repository-bundled `.claude/settings.json` includes the following, so everyone who clones it is enabled/permitted without personal settings — subject to workspace trust, which is the one thing the preflight cannot see (a fresh, untrusted checkout drops these grants with a stderr warning while the gate stays green; `docs/RUNBOOK.md` §0-2 carries the condition and the non-interactive remedy):
 
 ```json
 {
@@ -71,7 +73,7 @@ The repository-bundled `.claude/settings.json` includes the following, so everyo
 }
 ```
 
-To temporarily disable it in a personal environment, place `"disabledMcpjsonServers": ["build-runtime"]` in `.claude/settings.local.json` (the preflight detects this opt-out and makes it `status=fail`).
+To temporarily disable it in a personal environment, place `"disabledMcpjsonServers": ["build-runtime"]` in `.claude/settings.local.json` (the preflight detects this opt-out and makes it `status=fail`). It stops the run at the gate; it does not subtract anything from a leaf, which reads `.mcp.json` directly.
 
 ### Cursor: `.cursor/mcp.json`
 
