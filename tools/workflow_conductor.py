@@ -5288,15 +5288,17 @@ class Conductor:
                         f"a leaf with no build-runtime tools. Restore the committed file "
                         f"(see mcp_servers/README.md) and re-run."
                     ) from exc
-                # READABLE is not USABLE, and the refusal above argues about usable: an
-                # empty, truncated or malformed file produces exactly the tool-less leaf it
-                # describes, and the CLI itself refuses to start on one ("Invalid MCP
-                # configuration"). So the same raise covers it. Only well-formedness is
-                # checked — NOT that the file defines `build-runtime`, which would pin the
-                # result this repo happens to have rather than the rule, and would refuse a
-                # legitimate future server set.
+                # READABLE is not USABLE, and the refusal above argues about usable: a file
+                # the CLI will not start on produces exactly the tool-less leaf it describes,
+                # so the same raise has to cover it. The line drawn is the CLI'S OWN SCHEMA,
+                # measured on 2.1.234 — it rejects a non-object, and an object without an
+                # `mcpServers` record, with "Invalid MCP configuration", and accepts
+                # `{"mcpServers": {}}`. Checking THAT is checking the rule. Checking that the
+                # file defines `build-runtime` would be checking the result this repository
+                # happens to have, would refuse a legitimate future server set, and is the
+                # preflight's question in any case.
                 try:
-                    json.loads(data.decode("utf-8"))
+                    doc = json.loads(data.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise OSError(
                         f"the MCP configuration this leaf is launched with is not valid "
@@ -5305,6 +5307,16 @@ class Conductor:
                         f"attributed to it. Restore the committed file "
                         f"(see mcp_servers/README.md) and re-run."
                     ) from exc
+                if not isinstance(doc, dict) or not isinstance(doc.get("mcpServers"), dict):
+                    raise OSError(
+                        f"the MCP configuration this leaf is launched with is valid JSON but "
+                        f"not an MCP configuration: {ref!r} under {self.repo_root} needs a "
+                        f"top-level object with an `mcpServers` object (an empty one is "
+                        f"allowed). The CLI refuses to start on anything else "
+                        f"(\"Invalid MCP configuration\"), so the leaf would die at launch "
+                        f"with the failure attributed to it. Restore the committed file "
+                        f"(see mcp_servers/README.md) and re-run."
+                    )
                 entries.append({"ref": ref,
                                 "sha256": hashlib.sha256(data).hexdigest()})
             surface["mcp_config"] = entries

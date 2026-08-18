@@ -26,9 +26,12 @@
 #            which hands the choice to whatever that leaf's launch resolves to. For an
 #            AGENTIC leaf that is the CLI's own default and NOT the operator's
 #            `~/.claude/settings.json`, which it no longer reads (`--setting-sources
-#            project`, issue #63 step 1). The two `generate` leaves below are PURE, and
-#            pure launches carry no `--setting-sources` — so for those two the operator's
-#            settings can still decide, exactly as before.
+#            project`, issue #63 step 1). A PURE launch carries no `--setting-sources`, so
+#            there the operator's settings can still decide, exactly as before. Which
+#            launches are pure is a property of the NODE, not of this file: the two
+#            `generate` leaves run pure on an M3c physics node and AGENTIC on an
+#            `infrastructure` node (`Conductor._pure_leaf_substep`), so the same entry can
+#            be either depending on what is being built.
 #   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
 #            Delete the lines and no `--effort` is passed; the same agentic/pure split
 #            applies to the operator's `effortLevel`.

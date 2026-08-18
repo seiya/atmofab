@@ -16963,6 +16963,28 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(again["mcp_config"][0]["sha256"],
                          hashlib.sha256(data + b"\n").hexdigest())
 
+    def test_the_recorded_setting_sources_is_the_argv_token(self) -> None:
+        """The recorded VALUE must be the token the argv carries, not the constant that
+        happens to be on it today.
+
+        Hardcoding `"project"` here satisfied every other test in the suite (a surviving
+        mutation), because the argv and the constant agree in production — and the failure it
+        hides is the precise one this field exists to catch: a leaf launched with `user`
+        still in its setting sources, recorded as if it had not been. So the check has to
+        make argv and constant DISAGREE. Sibling of
+        `test_the_recorded_mcp_config_refs_are_the_argv_tokens`; the ref list was pinned one
+        round earlier and this half was left behind, which is why they now sit together."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+        entry = c.entry_for("generate", "generate")
+        argv = ["user,project" if t == "project" else t for t in c.leaf_command(entry)]
+        self.assertIn("user,project", argv)
+        c.leaf_command = lambda *a, **kw: list(argv)      # type: ignore[assignment]
+        response = self._record_launch_response(c, "arid-1", {}, entry)
+        self.assertEqual(response["claude_setting_sources"], "user,project")
+
     def test_the_recorded_mcp_config_refs_are_the_argv_tokens(self) -> None:
         """The recorded `ref` must be the token the argv carries, not the constant that
         happens to be on it today. Hardcoding `.mcp.json` in the record satisfied every other
@@ -17048,16 +17070,25 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """Readable is not usable, and the refusal argues about usable.
 
         Under `--strict-mcp-config` this file is the leaf's whole server set, and the CLI
-        refuses to start on a malformed one, so a truncated or empty file produces exactly
-        the tool-less leaf the missing-file branch refuses to launch — it was being hashed
-        happily. Well-formedness only: requiring the file to define `build-runtime` would pin
-        the result this repo has rather than the rule, and refuse a legitimate future set."""
+        refuses to start on one it cannot read as a configuration, so such a file produces
+        exactly the tool-less leaf the missing-file branch refuses to launch.
+
+        The line is the CLI'S OWN SCHEMA, measured on 2.1.234: a non-object, and an object
+        without an `mcpServers` record, both give "Invalid MCP configuration"; a well-formed
+        one with NO servers is accepted and must not be refused here. Well-formed JSON alone
+        was not enough — `{}` and `[]` parse and are still rejected by the CLI. Requiring the
+        file to define `build-runtime` would be the other error: pinning the result this repo
+        happens to have rather than the rule, and refusing a legitimate future server set."""
         repo = self._scratch_repo_root()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         entry = c.entry_for("generate", "generate")
-        for bad in (b"", b"{", b'{"mcpServers": ', b"\xff\xfe not utf-8"):
+        for bad in (b"", b"{", b'{"mcpServers": ', b"\xff\xfe not utf-8",
+                    # valid JSON the CLI still refuses: measured on 2.1.234, each of these
+                    # gives "Invalid MCP configuration" rather than starting a leaf.
+                    b"{}", b"[]", b"123", b'"a string"', b'{"mcpServers": []}',
+                    b'{"mcpServers": null}'):
             (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(bad)
             c.runtime = lambda argv: {}                          # type: ignore[assignment]
             with self.assertRaises(OSError, msg=repr(bad)) as caught:
