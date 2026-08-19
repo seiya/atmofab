@@ -21173,6 +21173,85 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertEqual(argv.count("--clearenv"), 1)
             self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
 
+    def test_a_PURE_launch_threads_the_env_into_its_read_only_profile_too(self) -> None:
+        """The `is_pure` branch builds a DIFFERENT profile function, and it was a
+        surviving mutation: reverting its `child_env=` left the suite green, because the
+        threading test above drives only the agentic branch. A pure leaf is confined more
+        tightly than an agentic one, not less, so it is the wrong one to leave inheriting.
+        """
+        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home", "LANG": "C.UTF-8",
+                    "METDSL_ORCHESTRATION_ID": "orch_to_001",
+                    "METDSL_CHILD_AGENT_RUN_ID": "substep_run_to_001"}
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
+            with tempfile.TemporaryDirectory() as td:
+                repo_root = Path(td)
+                arid = self._setup_substep_launch(
+                    repo_root,
+                    child_env=dict(authored),
+                    request_extra={
+                        "leaf_mode": "pure",
+                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                        "allowed_output_paths": [],
+                        "pure_context": {
+                            "harness_capabilities": "{}",
+                            "target_profile": "{}",
+                            "ir_document": "algorithm:\n  state_variables: [h]\n",
+                            "tests_document": "- test: conserves mass",
+                            "runner_document": "program p\nend program p\n",
+                        },
+                    })
+                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                profile = json.loads((orch_root / "sandbox_profiles" /
+                                      f"{arid}.json").read_text(encoding="utf-8"))
+        self.assertTrue(profile.get("readonly"), "expected the pure read-only profile")
+        self.assertEqual({k: v for k, v in profile["env"].items() if k != "TMPDIR"},
+                         authored)
+        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
+
+    def test_the_cli_hands_the_parsed_stdin_env_to_record_launch(self) -> None:
+        """The dispatch's `child_env=child_env_payload` was a surviving mutation: parsing
+        stdin and then dropping it on the floor kept every other test green, because they
+        call `record_launch` directly. That is the shape this seam fails in — the flag is
+        accepted, the payload is validated, and the profile is built from `os.environ`
+        anyway — so it is pinned on the boundary the CLI actually crosses."""
+        from tools.orchestration_runtime import main as runtime_main
+        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home"}
+        seen: dict = {}
+
+        def fake_record_launch(**kwargs):
+            seen.update(kwargs)
+            return {"ok": True}
+
+        buf = io.StringIO()
+        with mock.patch.object(ort, "record_launch", fake_record_launch):
+            with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(authored))):
+                with redirect_stdout(buf):
+                    rc = runtime_main([
+                        "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                        "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                        "--request-json", "{}",
+                        "--response-json", json.dumps({"agent_run_id": "c", "agent_session_id": "c",
+                                             "started_at": "2026-08-20T00:00:00Z",
+                                             "backend": "claude"}),
+                        "--child-env-from-stdin",
+                    ])
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertEqual(seen.get("child_env"), authored)
+        # Control: without the flag the parameter is None, so the assertion above is
+        # about the flag and not about a default that happens to match.
+        seen.clear()
+        with mock.patch.object(ort, "record_launch", fake_record_launch):
+            with redirect_stdout(io.StringIO()):
+                runtime_main([
+                    "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                    "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                    "--request-json", "{}",
+                    "--response-json", json.dumps({"agent_run_id": "c", "agent_session_id": "c",
+                                             "started_at": "2026-08-20T00:00:00Z",
+                                             "backend": "claude"}),
+                ])
+        self.assertIsNone(seen.get("child_env"))
+
     def test_a_launch_without_a_threaded_env_still_excludes_the_host_poison(self) -> None:
         """The `child_env=None` path (a conductor-less caller) must not be a way back in:
         it filters `os.environ` through the same owner constant. Sibling of the assertion

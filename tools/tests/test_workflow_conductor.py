@@ -4247,6 +4247,85 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertNotIn("METDSL_TEST_HTTP_KEY", env)
 
 
+class LeafEnvThreadingSiteTest(unittest.TestCase):
+    """The two seams where the AUTHORED dict has to reach the DELIVERER.
+
+    Both were surviving mutations: reverting `record_launch`'s stdin threading, and
+    reverting `_readonly_sandbox_profile`'s `child_env=`, each left the whole suite
+    green. Neither is visible in a `_child_env` test (the dict is right, it just does
+    not get there) or in a render test (the profile is right, it was built from the
+    wrong source), which is exactly the shape a per-layer test set misses.
+    """
+
+    _HOST = {"PATH": "/host/bin", "HOME": "/host/home",
+             "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+             "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001"}
+
+    def _conductor(self, repo: Path) -> wc.Conductor:
+        return wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                            env=dict(self._HOST))
+
+    def test_record_launch_sends_the_authored_env_on_stdin(self) -> None:
+        """Asserted on the runtime call's `input=`, and on the argv NOT carrying the
+        values: stdin is the point, because argv is readable in `ps` by every process on
+        the host and an HTTP entry's credential can be in this dict."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+            c = self._conductor(repo)
+            seen: dict = {}
+
+            def fake_runtime(argv, *, input=None):
+                seen["argv"], seen["input"] = list(argv), input
+                return {}
+
+            c.runtime = fake_runtime            # type: ignore[assignment]
+            c._write_launch_input_evidence = lambda name, payload: "ref"  # type: ignore[assignment]
+            c.record_launch("child-1", {"step": "generate", "substep": "generate"},
+                            c.entry_for("generate", "generate"))
+        self.assertIn("--child-env-from-stdin", seen["argv"])
+        self.assertIsNotNone(seen["input"])
+        sent = json.loads(seen["input"])
+        # identical to what the spawn will pass — the same deterministic author
+        self.assertEqual(sent, c._child_env("child-1", c.entry_for("generate", "generate")))
+        self.assertEqual(sent["HOME"], "/host/home")
+        self.assertNotIn("ANTHROPIC_BASE_URL", sent)
+        # ...and not on the argv, in any element
+        self.assertNotIn("/host/home", "\x00".join(seen["argv"]))
+
+    def test_the_readonly_diagnostician_profile_is_built_from_the_conductors_env(self) -> None:
+        """The diagnostician is the ONE leaf whose profile is built in-process, so it is
+        the one place where the builder's `os.environ` fallback and `self.env` can differ.
+        Poison only the PROCESS environment: `self.env` is clean, so anything of the
+        process environment appearing in the profile came from the fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "h").mkdir()
+            # OUTSIDE repo_root: a backend home inside the repo is refused outright.
+            home_parent = Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, home_parent, True)
+            home = home_parent / "private-home"
+            home.mkdir()
+            (home / "settings.json").write_text("{}", encoding="utf-8")
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                             env={"PATH": "/conductor/bin", "HOME": str(repo / "h")})
+            # The home PREPARATION is not what is under test — the `child_env=` wiring is
+            # — and preparing a real one needs a whole initialised orchestration.
+            with mock.patch.object(wc_runtime, "_prepare_claude_workflow_home",
+                                   return_value={"home": str(home),
+                                                 "settings": str(home / "settings.json"),
+                                                 "generation": 1, "settings_sha256": "x"}):
+                with mock.patch.dict(os.environ,
+                                     {"ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+                                      "PATH": "/process/bin"}):
+                    profile = c._readonly_sandbox_profile()
+        self.assertEqual(profile["env"]["PATH"], "/conductor/bin")
+        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
+        self.assertEqual(profile["env"]["CLAUDE_CONFIG_DIR"], str(home))
+
+
 class LeafEnvSpawnSiteGuardTest(unittest.TestCase):
     """`_child_env` is the single AUTHOR of a leaf's environment. That is only true while
     every production launch goes through it — a fifth `spawn_leaf(` site that handed
