@@ -7352,10 +7352,39 @@ clean:
 
     # -- substep outcome (deterministic, reads canonical artifacts) -----------
 
+    def _declared_api_key_env_names(self) -> frozenset[str]:
+        """Every environment-variable NAME the loaded configuration declares as holding an
+        API key — across all entries, not just the one being launched. A leaf is entitled
+        to at most its own, so the rest are credentials this launch did not choose."""
+        cfg = self.llm_config
+        names = {(cfg.defaults.api_key_env or "").strip()}
+        names.update((e.api_key_env or "").strip() for e in cfg.entries.values())
+        return frozenset(n for n in names if n)
+
     def _child_env(self, child_arid: str,
                    entry: ResolvedLeafEntry | None = None) -> dict[str, str]:
         entry = entry if entry is not None else self.entry_for(None, None)
-        env = dict(self.env)
+        # RECONSTRUCTED from a declared allowlist, never inherited (issue #63, the
+        # process-environment face). `self.env` is the driver's own environment, and the
+        # driver's environment is the operator's: measured on CLI 2.1.235, an
+        # `ANTHROPIC_BASE_URL` in it sends 100% of the leaf's traffic to the host it
+        # names, and an `ANTHROPIC_MODEL` decides the model of every launch that passes
+        # no `--model` — neither of which any artifact records. `leaf_env_from` is the
+        # single owner of which names survive and why; this method is the single AUTHOR
+        # of a leaf's environment, adding only the per-run values below.
+        from tools.orchestration_runtime import (
+            _BACKEND_HOME_ENV_VARS,
+            leaf_env_from,
+        )
+        env = leaf_env_from(self.env)
+        # A name the configuration DECLARES as an `api_key_env` holds a credential — the
+        # file has said so — and the filter cannot know that: `METDSL_*` is passed by
+        # prefix, so an operator who named their key `METDSL_..._KEY` would have it
+        # forwarded to every leaf and, for a CLI leaf, written verbatim into the persisted
+        # `sandbox_profiles/<arid>.json`. Drop every declared key name here; the ONE entry
+        # that is entitled to its own gets it back in the HTTP branch below.
+        for declared in self._declared_api_key_env_names():
+            env.pop(declared, None)
         env["METDSL_ORCHESTRATION_ID"] = self.orchestration_id
         # Codex assigns a thread id internally, so stdout-based discovery can
         # race its first hook.  The hook command inherits this immutable parent
@@ -7367,8 +7396,10 @@ clean:
         # Lift the claude leaf's output ceiling off the CLI default (see LEAF_MAX_OUTPUT_TOKENS:
         # thinking is billed against it, so the default truncates a hard leaf mid-think). Set
         # here — not in `.claude/settings.json` — so it stays a property of the CONDUCTOR'S leaf
-        # contract and does not leak into the operator's own interactive sessions. bwrap passes
-        # the environment through (no --clearenv), so this reaches the leaf's `claude` process.
+        # contract and does not leak into the operator's own interactive sessions. It reaches
+        # the leaf's `claude` process because the bwrap profile carries this dict and renders
+        # one `--setenv` per entry after `--clearenv` — NOT by inheritance; bwrap clears the
+        # environment now, so a name absent from this dict is absent from the leaf.
         # codex reads a different config surface and is left alone.
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
@@ -7401,15 +7432,38 @@ clean:
             # here could name a different home than the one whose settings were
             # SHA-pinned and bound, and the record would describe neither.
         elif entry.provider == "codex_cli":
-            # METDSL_HOME was the historical private alias.  Pass the canonical
-            # variable to the CLI so its state/session directory matches the
-            # location the preflight and bwrap profile certified.
-            canonical = env.get("CODEX_HOME", "").strip()
-            legacy = env.get("METDSL_HOME", "").strip()
+            # METDSL_HOME was the historical private alias for CODEX_HOME. An operator
+            # who set BOTH to different homes has said two incompatible things, and the
+            # run must not pick one silently — so the conflict still raises. Read from
+            # the HOST environment, not from `env`: neither name survives the allowlist
+            # (both are on the single-route side), so `env` can no longer answer this.
+            canonical = (self.env.get("CODEX_HOME") or "").strip()
+            legacy = (self.env.get("METDSL_HOME") or "").strip()
             if canonical and legacy and Path(canonical).expanduser().resolve() != Path(legacy).expanduser().resolve():
                 raise SandboxEnforcementError("CODEX_HOME and deprecated METDSL_HOME conflict")
-            if not canonical and legacy:
-                env["CODEX_HOME"] = legacy
+            # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
+            # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
+            # (`codex_isolation_profile_kwargs`); a host-side spelling could name a
+            # different home than the one whose settings were SHA-pinned, and no
+            # host-side reader consumes `child_env["CODEX_HOME"]`.
+        elif entry.is_http:
+            # An HTTP leaf's credential is named BY THE ENTRY (`api_key_env`), so the
+            # allowlist cannot enumerate it — the configuration file chooses the name. It
+            # is forwarded under exactly that name and no other, which is why a stranger
+            # `*_API_KEY` sitting in the operator's environment does not travel: only the
+            # declared one does. Absent from the host -> absent here, and
+            # `llm_http_leaf._api_key` already fails closed naming the variable
+            # (`missing_api_key`). It is never rendered into a bwrap profile: an HTTP leaf
+            # has no sandbox profile, so this value is persisted nowhere.
+            key_name = (entry.api_key_env or "").strip()
+            if key_name:
+                key_value = self.env.get(key_name)
+                if isinstance(key_value, str) and key_value:
+                    env[key_name] = key_value
+        # Single-route invariant, enforced not just documented: the two backend-home
+        # names reach a leaf through the profile's `--setenv` alone.
+        for var in _BACKEND_HOME_ENV_VARS:
+            env.pop(var, None)
         return env
 
     def read_case_ids(self, refs: NodeRefs) -> tuple[str, ...]:
@@ -9720,13 +9774,17 @@ clean:
             return None, _meta("backend_unsupported")
         argv = [*_provider_command_base(entry), "--output-format", "json", "-p", "/usage"]
         try:
-            # `env=self.env`, matching every other conductor subprocess: the probe must query the
-            # SAME account/endpoint context the leaf runs under, or its reset instant is for the
-            # wrong quota. `self.env` is the leaf base env (auth, PATH, workflow mode); a bare
-            # `os.environ` would diverge the moment a per-run endpoint/account override lands there
-            # and not in the process environment — and this is the trusted PRIMARY source, so a
-            # confidently-wrong instant here arms a multi-hour wait ahead of the scrape.
-            proc = subprocess.run(argv, cwd=self.repo_root, env=self.env, text=True,
+            # The probe must query the SAME context the leaf runs under, or its reset instant
+            # is for the wrong quota — and this is the trusted PRIMARY source, so a
+            # confidently-wrong instant here arms a multi-hour wait ahead of the scrape. That
+            # invariant used to be spelled `env=self.env`, which was the leaf's environment
+            # while the leaf inherited. It no longer is: a leaf's environment is now
+            # RECONSTRUCTED by `_child_env` from the declared allowlist, so `self.env` would
+            # query the operator's endpoint while the leaf runs on the allowlisted one. The
+            # invariant is kept BY CONSTRUCTION — the probe goes through the same author.
+            proc = subprocess.run(argv, cwd=self.repo_root,
+                                  env=self._child_env(self.orchestration_agent_run_id, entry),
+                                  text=True,
                                   capture_output=True, check=False,
                                   timeout=USAGE_PROBE_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
