@@ -189,9 +189,14 @@ language permits**:
   losing line** — close them all at once by inverting the polarity: do not parse statements
   that start with a keyword; take every identifier that appears in them to the safe side
 
-This checklist documents **measured pre-existing debt** in `validate_pipeline_semantics.py`
-(the source-reading area on the TODO ledger); it migrates out of the neutral core together
-with that area, and this section goes with it.
+This checklist names concrete spellings of one target language, which is knowledge
+`docs/BACKEND_BOUNDARY.md` keeps out of the neutral core. It is here because the gates it warns
+about are in `validate_pipeline_semantics.py`, and it goes when the source-reading area on the
+TODO ledger goes. Two things about that are worth stating rather than implying: nothing measures
+it — `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds this kind
+of growth elsewhere does not read these files at all (measured: 33 occurrences of sampled tokens
+across 5 files in this tree) — and the debt is **new to the repository**, since until this branch
+these files lived in one operator's home directory.
 
 When a rule derives its safety from an enumeration, **write a test that kills each element of
 the enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in
