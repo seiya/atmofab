@@ -33,8 +33,9 @@ The other one is a hunk `git apply -R` refuses (it overlaps a later change, so i
 be reverted alone). Nothing is tested for such a hunk, so it is reported as SKIPPED and
 counted as a failure, never folded into "pinned".
 
-Exit code is 1 when any hunk survives, is inconclusive, or was skipped; 2 when the
-baseline is red.
+Exit code is 1 when an UNANNOTATED hunk survives (a docstring-only survivor is
+expected and does not fail the run), or when any hunk is inconclusive or skipped; 2 when
+the baseline is red or the run cannot be trusted.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from __future__ import annotations
 import argparse
 import ast
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -157,6 +159,10 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> str:
     return proc.stdout
 
 
+#: A `VAR=value` prefix a shell applies to the command — only TMPDIR matters here.
+_TMPDIR_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|]\s*|\s)TMPDIR=")
+
+
 def _split_hunks(diff_text: str) -> list[tuple[str, str]]:
     """(file, one-hunk patch) for every hunk, each patch applying on its own."""
     hunks: list[tuple[str, str]] = []
@@ -250,6 +256,20 @@ def main() -> int:
 
     jobs = args.jobs if args.jobs > 0 else max(1, min((os.cpu_count() or 3) - 2, 4))
     jobs = min(jobs, len(hunks))
+    # `--test-cmd` runs through a shell, so a `TMPDIR=...` prefix in it OVERRIDES the per-job
+    # TMPDIR set below and every job shares one temp root. That is the configuration met-dsl
+    # has already been bitten by: two suite runs on one TMPDIR produce failures that belong to
+    # neither, and here such a failure is recorded as `killed` — a hunk reported pinned that
+    # nothing pins. The canonical suite command in the skill carries exactly that prefix, so
+    # this is ordinary usage, not a corner: refuse it rather than silently mismeasure.
+    if _TMPDIR_ASSIGNMENT_RE.search(args.test_cmd):
+        if jobs > 1:
+            print("--test-cmd sets TMPDIR, which overrides the per-job temp root and makes "
+                  f"{jobs} jobs share one. Drop the TMPDIR= prefix (this script sets it per "
+                  "job, under $TMPDIR), or pass --jobs 1 to accept one shared root.")
+            return 2
+        print("note: --test-cmd sets TMPDIR, overriding the per-job temp root. Harmless at "
+              "--jobs 1.")
     if "pytest" in args.test_cmd and not any(
             flag in args.test_cmd.split() for flag in ("-x", "--exitfirst")):
         print("hint: only the exit code is read — adding -x to --test-cmd ends each "

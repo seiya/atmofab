@@ -98,7 +98,10 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 
 **Pass `-x`.** Only the exit code is read, so a killed hunk may stop at the first failure. Hunks
 run 4-way parallel in separate worktrees by default (`--jobs`); 4 hunks × 805 tests measured
-5m52s → 43s. **Run the un-mutated baseline once first**: an already-red suite makes every hunk
+5m52s → 43s. **Do not put a `TMPDIR=` prefix in `--test-cmd`**: the script gives each job its own
+temp root, a prefix overrides it and puts every job back on one, and that is the shape that
+produces failures belonging to no hunk — recorded as `killed`, i.e. a false pin. It refuses the
+combination rather than mismeasuring. **Run the un-mutated baseline once first**: an already-red suite makes every hunk
 look "killed", and a red baseline exits 2 (`--skip-baseline` removes the check — write down why
 if you use it).
 
@@ -120,8 +123,9 @@ came from, and the reasoning you need when a rule does not obviously apply.
   Test-file and comment-only hunks are excluded by default (`--include-tests` /
   `--include-comments`); one half of a code move is expected to survive, so read the pair together
 - **Docstring-only hunks are annotated, not excluded** (`[docstring-only — expected]`): docstrings
-  are string literals and real tests pin prompt templates and contract text. **Zero unannotated
-  survivors exits 0; one or more exits 1.** In PR #67, 2 of 5 survivors were docstrings listed
+  are string literals and real tests pin prompt templates and contract text. **An unannotated survivor exits 1, and so
+  does any inconclusive or skipped hunk; only a clean run, or one whose sole survivors are
+  docstring-only, exits 0.** In PR #67, 2 of 5 survivors were docstrings listed
   beside 3 real defects.
   The annotation is decided mechanically by AST comparison (blank the docstring, is it
   isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
@@ -228,7 +232,8 @@ correctness+regression+doc-truth).
     them by PID.** All three were written explicitly in the prompt and broken anyway, in the shape
     this skill gives as its example (`until ! pgrep -f mut5.py` matching its own zsh command line).
     Pick them up with `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID
-    — `pkill -f` re-enacts the first accident
+    — `pkill -f` re-enacts the first accident. **Before killing anything, confirm no process doing
+    real work is alive at the same time**: the orphan and the work it was waiting for look alike
   - **The symptom disguises itself as "the subagent is running and never returns".** I once waited
     on the precedent that long runs happen, when there was no work to wait for. When `ListAgents`
     shows running, suspect that agent's child processes
@@ -500,8 +505,8 @@ out of scope", stop at that round.** More rounds produce the same layer, and fix
 diff away from the purpose. State the out-of-scope breakdown and why you declared the scope.
 
 **The superior condition (stop there if you reach it)**: the security axis produces **nothing new
-for two consecutive rounds**. It has **never been achieved in any of the 8 recorded loops** (PR #51
-/ L128 / PR #53 / PR #55 / PR #57 / PR #58 / PR #67 / issue #63). **Run assuming you will not reach
+for two consecutive rounds**. It has **never been achieved in any recorded loop** — the
+nine histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
 it** — do not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
@@ -599,6 +604,10 @@ finding was a future form an adversarial reviewer wrote to break it, present now
 and I dutifully kept closing them for three rounds. The right response was **declaring the scope**
 ("regression prevention for ordinary spelling, not enforcement against circumvention") and stopping.
 Each round, measure the count per finding class with one `grep`.
+
+**Look at `ListAgents` before judging a round finished** — as part of the stopping decision, not
+only as orphan hygiene. I once issued a "merge recommended" without checking which reviewers were
+still running, and the report that arrived afterwards carried a real defect.
 
 In every case, **finish with one convergence judgment**. The question is not "any new findings" but
 **"is any finding left that would change code, tests, or a description a reader relies on?"** If

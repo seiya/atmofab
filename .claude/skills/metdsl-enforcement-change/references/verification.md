@@ -30,9 +30,12 @@ TMPDIR=/dev/shm python3 -m pytest tools/tests/ -q -p no:randomly
   and one corrected my claim with its own measurement. Writing it down settles it. Conversely,
   **hand over a stale count and reviewers take it for the baseline and miss a real failure**
 - **Skips: measure, do not assume.** On 2026-08-19 the suite reported 4877 passed and **0
-  skipped**; every skip in `tools/tests/` is conditional (gfortran, bwrap, `/proc`), so what you see
-  depends on the machine. An earlier version of this line claimed one permanent calibration skip
-  and sent a reader hunting a test that does not exist
+  skipped**; every skip in `tools/tests/` is conditional on the host (gfortran, bwrap, `/proc` and
+  eight more conditions, all declared in `tools/tests/test_skip_reasons_are_declared.py`), so what
+  you see depends on the machine. **If a skip appears, find out which condition produced it** —
+  that is the reason to look, and it is the same reason whether the count is 0 or 3. An earlier
+  version of this line claimed one permanent calibration skip and sent a reader hunting a test that
+  does not exist
 
 ## Whole-tree diff (mandatory whenever you change a gate)
 
@@ -45,10 +48,11 @@ independently. **It shows "nothing is broken" as a diff instead of an argument.*
 # 1. write a scanner that calls the gate directly and dump JSON (file -> violation list)
 #    fix the gate's premises explicitly (node_key, dep_spec_ids, …)
 python3 corpus_scan.py > after.json
-# 2. run the SAME scanner against the baseline in a throwaway worktree
+# 2. run the SAME scanner against the baseline in a throwaway worktree. Feed the scanner in
+#    on stdin rather than copying it: a copied file is untracked, and `git worktree remove`
+#    then refuses (exit 128) and leaves both the directory and its registration behind.
 git worktree add -q --detach ~/.cache/corpus-base origin/main
-cp corpus_scan.py ~/.cache/corpus-base/
-(cd ~/.cache/corpus-base && python3 corpus_scan.py) > before.json
+(cd ~/.cache/corpus-base && python3 - ) < corpus_scan.py > before.json
 git worktree remove ~/.cache/corpus-base
 # 3. report which violation in which file moved, not the counts
 ```
@@ -57,8 +61,8 @@ git worktree remove ~/.cache/corpus-base
 requires before you measure anything — `git stash` is a **silent no-op**: it exits 0, creates no
 entry, and both scans read the same bytes, so the diff is empty and the check reports that nothing
 changed verdict. A trailing `git stash pop` then pops whatever unrelated entry was already on the
-stack into your checkout. Copying the scanner into the worktree is not incidental either: the same
-harness has to run on both sides, or what you measure includes the harness.
+stack into your checkout. Running the same scanner on both sides is not incidental either: the
+harness has to be identical, or what you measure includes the harness.
 
 - **Always record the harness.** Changing how dep_spec_ids are derived changes the absolute
   numbers (29→27 / 31→29 / 35→33 on the same tree). **The diff reproduces; the absolute values are
@@ -77,9 +81,18 @@ added, and was wrong.
 ```bash
 for f in <touched files>; do echo -n "$f: "; ruff check "$f" 2>&1 | tail -1; done
 git worktree add -q --detach ~/.cache/ruff-base origin/main
-for f in <touched files>; do echo -n "$f: "; ruff check ~/.cache/ruff-base/"$f" 2>&1 | tail -1; done
+for f in <touched files>; do
+  # a file the branch ADDS does not exist on the baseline, and ruff answers `E902 No such file`
+  # + `Found 1 error.` — which reads as "the branch fixed a lint error" if you skip this test
+  [ -f ~/.cache/ruff-base/"$f" ] || { echo "$f: (new on this branch — no baseline)"; continue; }
+  echo -n "$f: "; ruff check ~/.cache/ruff-base/"$f" 2>&1 | tail -1
+done
 git worktree remove ~/.cache/ruff-base
 ```
+
+`tail -1` is a summary, not a verdict: a file whose findings all carry fixes ends with
+`No fixes available (1 hidden fix …)` and no count at all. Read the full output whenever the last
+lines differ.
 
 Same reason as above, and one of this loop's own rules besides: the earlier form used `git stash`
 plus `git checkout -- .`, and `metdsl-review-loop` forbids `git checkout -- <path>` by name for

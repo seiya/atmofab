@@ -121,8 +121,10 @@ there would have handed over as unresolved something bounded and fixable.
 
 ## PR #67 — the census reproduces, and the only Codex clean so far
 
-233 decisions (production 112 / test assertions 115 / doc rules 6), 111 mutants: witnessed 86 /
-corpus-dependent 22 / vacuous 3 / **killed only by the token ratchet 1**. That fourth class is why
+233 decisions (production 112 / test assertions 115 / doc rules 6): witnessed 86 /
+corpus-dependent 22 / vacuous 3 / **killed only by the token ratchet 1**. The record also says
+111 mutants, which does not match that sum of 112 — one of the two was miscounted at the time,
+and the classification is the half worth carrying. That fourth class is why
 it must be separated — an abandoned mirror was hiding there (a spelling that does not increase the
 token count passes straight through).
 
