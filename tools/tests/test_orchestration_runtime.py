@@ -117,6 +117,10 @@ from tools.tests.leaf_config_fixture import (
     seed_codex_hooks,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+# ONE answer to "can bwrap actually run here", shared with test_bwrap_simulation.py:
+# `shutil.which` alone says the binary exists, not that unprivileged user namespaces
+# are permitted, and the two would drift into disagreeing about the same host.
+from tools.tests.test_bwrap_simulation import _bwrap_usable
 
 # Every synthetic repo an orchestration is initialised in also gets this
 # repository's committed leaf configuration.
@@ -35539,7 +35543,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(profile["env"]["HOME"], str(fake_home))
 
 
-@unittest.skipUnless(shutil.which("bwrap"), "bwrap not installed")
+@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
 class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
     """The one measurement that is not an argv assertion: RUN the rendered command and
     read the child's actual environment.
@@ -35576,8 +35580,11 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
                   "HTTPS_PROXY": "http://user:pw@proxy:3128"}
         proc = subprocess.run(argv, env={**os.environ, **poison}, text=True,
                               capture_output=True, check=False, timeout=60)
-        if proc.returncode != 0:
-            self.skipTest(f"bwrap could not run here: {proc.stderr.strip()[:200]}")
+        # Not skipped on a nonzero exit: the class guard already established that bwrap
+        # runs on this host, so a failure here is this profile's argv being wrong, which
+        # is exactly what the witness exists to catch. Skipping it would turn the one
+        # measurement in the file into the one that never runs.
+        self.assertEqual(proc.returncode, 0, proc.stderr.strip()[:400])
         child = {}
         for line in proc.stdout.splitlines():
             if "=" in line:
