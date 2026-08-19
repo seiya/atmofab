@@ -62,7 +62,7 @@ it is unpushed you can fix it by squashing — and say in the message that you d
 and split the history into two afterwards. The review target is `origin/main...HEAD` = **the
 whole stack**, so splitting later **misaligns the review unit from the PR unit**.
 
-L174 did exactly this: the plan said "PR A = swap the front end (semantics unchanged), PR B =
+L174 (2026-08-14) did exactly this: the plan said "PR A = swap the front end (semantics unchanged), PR B =
 visibility (moves verdicts)", and I implemented A and B back to back, split them with `git
 branch` + `git reset --hard`, then ran four rounds against the whole stack. **Most defects the
 review found were in A's code, and every fix commit landed on B**, so PR A's tip was
@@ -117,12 +117,16 @@ came from, and the reasoning you need when a rule does not obviously apply.
   `--include-comments`); one half of a code move is expected to survive, so read the pair together
 - **Docstring-only hunks are annotated, not excluded** (`[docstring-only — expected]`): docstrings
   are string literals and real tests pin prompt templates and contract text. **Zero unannotated
-  survivors exits 0.** In PR #67, 2 of 5 survivors were docstrings listed beside 3 real defects
+  survivors exits 0.** In PR #67, 2 of 5 survivors were docstrings listed beside 3 real defects.
+  The annotation is decided mechanically by AST comparison (blank the docstring, is it
+  isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
+  unmarked SURVIVED — the absence of the annotation is not evidence that a hunk is code
 - **Get `--range`'s base wrong and "no hunks in range" looks green.** Check the output states a
   hunk count — after a merge or rebase `origin/main..HEAD` is empty
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply.** "Nothing to
-  check" with a correct base is **not applicable, not a pass** (PR #58). Build mutants that kill
-  each decision of the new machinery one at a time
+  check" with a correct base is **not applicable, not a pass** (PR #58). `--include-tests` does not
+  rescue it: reverting a test hunk deletes an assertion, so it always survives and reading it is
+  worthless. Build mutants that kill each decision of the new machinery one at a time
 - **Do not handwrite a mutation harness.** PR #53's produced three real harms, the worst being
   `str.replace` rewriting all occurrences at once so 2 of 3 reachable fail-opens survived per-site
   mutation. If you must, **count the occurrences and hit them one at a time**, and **assert the
@@ -263,7 +267,7 @@ correctness+regression+doc-truth).
   in the reviewer instructions through the final round** (not once), (c) if over-refusals persist
   after two rewrites, conclude **the rule is not an invariant** and change its shape, (d) **build
   probes from the project's own "what we do next", not from imagination** — in PR #68, widening the
-  scan to the whole backend directory refused **the very area the migration ledger names as next**,
+  scan to the whole backend directory refused **the very area the migration ledger names as next** (`build_system/make`),
   and a reviewer produced it just by reading the ledger. Implementing the next TODO / plan item is
   the cheapest over-refusal probe there is (PR #67 landed on "a census that constrains nobody's
   registration" = moving the target from a rule to **checking the declaration**)
@@ -289,6 +293,10 @@ cheap, so run more" does not hold — **use it only to free up a slot**.
 Run one via `Agent` with `model: "sonnet"`, **in parallel** with the up-model reviewers. It adds
 an axis, so add it to the default two rather than replacing them.
 
+**This stays an experiment: add a data point each time you use it, and delete this section if it
+stops paying.** Three of the four data points were confounded, and the conclusion above rests on
+the fourth.
+
 **Work you may delegate (verifiable = running it settles the truth)**:
 
 - **re-measure every number in the diff** and report mismatches (counts, byte counts, suite
@@ -304,7 +312,9 @@ an axis, so add it to the default two rather than replacing them.
 
 - open-ended "find bugs" — plausible noise grows and triage gets expensive. Since every finding
   is reproduced by me, low-precision search consumes **my** time
-- layers needing a hypothesis → mutate → run cycle: gate semantics, parsers, offset arithmetic
+- layers needing a hypothesis → mutate → run cycle: gate semantics, parsers, offset arithmetic.
+  L174's three findings of that kind all needed the round trip — the unobserved offset-translation
+  layer, an exemption granted by `result`, and the label family
 
 **Make the prompt a checklist** (not free-form). Hand over the same ground rules as above: do not
 modify the checkout / a dedicated scratchpad / `grep` is aliased to ripgrep / report only what you
@@ -532,27 +542,29 @@ and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
 > unwitnessed ones, construct a violating input yourself and report whether the suite notices.
 
 What comes back turns "the remainder is bounded" from a feeling into a list, and the instrument
-reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Four practical
-notes (the numbers and transitions are in `references/class-descent-log.md`):
+reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Practical notes,
+learned one per loop (the numbers and transitions are in `references/class-descent-log.md`):
 
 - **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
   "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
   on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
-- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable,
-  and the right response was a comment saying "a marker of intent, not a live guard". The problem
+- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable —
+  `_require_axis` inside `provides`, and `LANGUAGES`'s `implemented_backend_ids`, which the
+  following filter subsumes — and the right response was a comment saying "a marker of intent, not a live guard". The problem
   is not the redundant call; it is that it **reads as a live guard**
 - **The census makes you doubt your own instrument too** — the verification test built from PR #67's
   census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
   instrument as well
 - **A corpus measurement does not prove vacuity.** In PR #68 a guard labelled unreachable from
-  "0 empty atoms / 151,633 logical lines" did fire, because the scanner and the normalizer
+  "0 empty atoms / 151,633 logical lines / 876 files" did fire, because the scanner and the normalizer
   **disagreed on the definition of blank** (gfortran's space/tab/FF vs Python's wider `\s`), so a
   line of only U+00A0 survived. Vacuous may be claimed **only when unreachability is shown by
   construction**; "not in today's tree" is corpus-dependent — and because the label invites
   deletion, a wrong vacuous is worse than no label
 - **A census conclusion rots in one round; re-run it the round after you consume it** (PR #68's
   "zero ratchet-only decisions" was falsified the next round). Record conclusions that survive
-  re-measurement, not the numeric breakdown — numbers always rot
+  re-measurement, not the numeric breakdown — numbers always rot (the suite count was wrong four
+  times on that PR alone)
 - **When you replace an enumeration with a computation, witness the computation on a synthetic
   tree.** In PR #68 the scan target became a reachability closure, and deleting the transitive
   expansion entirely stayed all green: a test against real data confirms "today's graph happens to

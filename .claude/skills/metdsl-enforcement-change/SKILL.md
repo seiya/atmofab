@@ -30,7 +30,8 @@ caller can forge a capability by naming its own `repo_root`) had been found by t
 yet was accepted for five rounds on the **unverified premise** that exploiting it needed a
 primitive the file-tool hook refuses. The actual primitive was one the contract hands over
 explicitly: `workspace/tmp/<agent_run_id>` (a bwrap rw bind) plus `Bash(python3
-workspace/tmp/*)` (committed in the settings file). **Decide by what you ran, not by who said
+workspace/tmp/*)` (committed, at the time, in `.claude/settings.json`; a leaf's grants now live in
+`leaf_config/claude/settings.json`). **Decide by what you ran, not by who said
 it.**
 
 **1-b. Deleting a defense is also a classification.** Rule 1 is not only about triaging
@@ -429,9 +430,9 @@ cannot converge in principle**, handed back to the leaf (flagged two rounds runn
 
 ### 5. Run the mutation check before committing
 
-Revert your fix one hunk at a time and confirm the tests **fail**. In PR #51 I learned about
-surviving mutants and tests passing for the wrong reason only when a later round pointed them
-out.
+Revert your fix one hunk at a time and confirm the tests **fail**. In PR #51 the survivors among
+**42 mutants**, and the tests passing for the wrong reason, were things I learned only when a later
+round pointed them out.
 
 The procedure and the script are **owned by `metdsl-review-loop`** (`scripts/mutation_check.py`).
 The same thing runs before review, so read its "Before you hand it over (round 0)".
