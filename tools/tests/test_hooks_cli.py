@@ -3466,11 +3466,39 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         change nothing.
         """
         return [
-            para[:200]
-            for para in text.split("\n\n")
-            if re.search(r"itself the command|the whole command", para)
-            and not cls._STATES_THE_GENERAL_RULE.search(para)
+            unit[:200]
+            for unit in cls._statement_units(text)
+            if re.search(r"itself the command|the whole command", unit)
+            and not cls._STATES_THE_GENERAL_RULE.search(unit)
         ]
+
+    @staticmethod
+    def _statement_units(text: str) -> list[str]:
+        """Split into units a reader would take as one statement.
+
+        A blank line is not the boundary on these surfaces: a consecutive bullet
+        list or a table is ONE `\n\n`-paragraph — measured 9637 characters in
+        docs/AGENT_CONTRACT.md, 6952 in docs/RUNBOOK.md, 2335 in
+        docs/workflow/LAUNCH_PROMPT_REFERENCE.md — so splitting on it collapsed the
+        per-statement rule into the file-wide check that the caller's docstring
+        says is insufficient. Demonstrated: the retired premise placed in a
+        DIFFERENT row of the docs/RUNBOOK.md remedy table, with the general clause
+        left in its own row, passed. A list item and a table row each start a
+        statement of their own.
+        """
+        units: list[str] = []
+        current: list[str] = []
+        for line in text.splitlines():
+            starts_item = bool(re.match(r"\s*(?:[-*+]\s|\d+[.)]\s|\||#)", line))
+            if not line.strip() or starts_item:
+                if current:
+                    units.append("\n".join(current))
+                current = []
+            if line.strip():
+                current.append(line)
+        if current:
+            units.append("\n".join(current))
+        return units
 
     def test_narrow_clause_alone_is_detected_per_paragraph(self) -> None:
         """SELF-TEST for the paragraph rule, which no real surface exercises."""
@@ -3484,6 +3512,21 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         )
         self.assertEqual(self._narrow_clause_alone(good), [])
         self.assertEqual(len(self._narrow_clause_alone(bad)), 1)
+        # A markdown list or table is ONE blank-line paragraph, so the boundary
+        # that matters is the item, not the blank line: with a `\n\n` split the
+        # premise below hides behind the general clause in the row above it.
+        table = (
+            "| `output_manifest_write_guard` | wrote /tmp | a Bash redirect is not "
+            "a write route in any position |\n"
+            "| `forbid_git_reset_hard` | ran it | a redirect that is itself the "
+            "command matches no committed rule |\n"
+        )
+        self.assertEqual(len(self._narrow_clause_alone(table)), 1)
+        bullets = (
+            "- A Bash redirect is not a write route in any position.\n"
+            "- A redirect that is itself the command matches no committed rule.\n"
+        )
+        self.assertEqual(len(self._narrow_clause_alone(bullets)), 1)
 
     def test_general_rule_phrase_accepts_the_current_form_and_rejects_the_retired(
         self,
