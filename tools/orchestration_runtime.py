@@ -7956,12 +7956,13 @@ def _backend_runtime_bind_paths(
         # and a codex leaf `{<private home>}`. So the guarded set is a superset of
         # what such a leaf can actually write — never a subset, which is the direction
         # that would matter — and the one credential file still bound writable stays
-        # inside the guarded `~/.claude`. The private homes themselves are NOT read-
-        # guarded, for either backend: they hold this repository's own committed
-        # settings, a feature-flag cache, and the leaf's own session transcript, not
-        # operator credentials. Documented as residue in `docs/HOOKS.md` rather than
-        # closed here, so both backends keep one story; issue #64 owns relocating
-        # those homes and revisits it there.
+        # inside the guarded `~/.claude`. The private homes are guarded too, through
+        # `tools/hooks/common.py::workflow_private_backend_homes`: the credential file
+        # is BOUND into them (so inside the sandbox that path is the operator's secret,
+        # writably) and one home carries every earlier leaf's transcript. The first
+        # version of this change left them unguarded and wrote prose asserting they
+        # held "not operator credentials"; both halves of that were false.
+        # `docs/HOOKS.md` §"Layer boundary" is canonical.
         cred_dirs, cred_files = _backend_credential_home_paths(btype)
         for cred_dir in cred_dirs:  # config dir (creatable if absent)
             rw.add(str(cred_dir))

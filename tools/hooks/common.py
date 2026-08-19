@@ -1618,19 +1618,76 @@ def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], 
     return (), ()
 
 
-def protected_host_read_roots() -> tuple[Path, ...]:
+def workflow_private_backend_homes(repo_root: Path | None,
+                                   orchestration_id: str | None) -> tuple[Path, ...]:
+    """The isolated per-orchestration backend homes, as recorded by the HOST.
+
+    Issue #63 (claude) and its codex predecessor move a leaf's backend home out of
+    the operator's `~/.claude` / `~/.codex` into a private directory under /tmp.
+    Two things a leaf must not read live there, and BOTH arrive by a BIND rather
+    than by being copied, so inspecting the directory's contents on the host shows
+    neither:
+
+      * the operator's real credential file, bound over the home's empty
+        placeholder so the CLI can refresh its OAuth token — inside the sandbox
+        that path IS the operator's secret, and the bind is writable;
+      * every EARLIER leaf's session transcript of the same orchestration, since
+        one home serves all of a run's leaves. A `validate.judge` or `*.verify`
+        leaf reading the producing leaf's transcript is exactly the past-run state
+        the workflow forbids, and it would leave no trace in any artifact.
+
+    The orchestration id is taken from the environment the HOST set through the
+    sandbox (`METDSL_ORCHESTRATION_ID` via bwrap `--setenv`), never from the hook
+    payload: `tools/hooks/cli.py::_extract_orchestration_id` prefers the payload,
+    which a caller can influence, and here the value decides WHICH home is guarded
+    — naming another orchestration would unguard the leaf's own. A leaf's Bash
+    command cannot alter the environment of the hook process the CLI spawns.
+
+    Bounded, and deliberately so: this guards the CURRENT orchestration's homes.
+    Another orchestration's home is a `mkdtemp` name a leaf has no way to learn.
+    """
+    root = repo_root if repo_root is not None else Path.cwd()
+    oid = (orchestration_id or "").strip()
+    if not oid:
+        return ()
+    homes: list[Path] = []
+    home = claude_workflow_home(root, oid)
+    if home is not None:
+        homes.append(home)
+    meta_path = root / "workspace" / "orchestrations" / oid / "orchestration_meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        meta = None
+    if isinstance(meta, dict):
+        raw = meta.get("codex_workflow_home")
+        if isinstance(raw, str) and raw.strip():
+            homes.append(Path(raw.strip()))
+    return tuple(homes)
+
+
+def protected_host_read_roots(repo_root: Path | None = None,
+                              orchestration_id: str | None = None) -> tuple[Path, ...]:
     """Out-of-repo host paths a Bash command in workflow mode may never read.
 
-    Two classes, one rule: the operator-secret root (dismiss-violation tokens)
-    and every backend credential home the sandbox rw-binds (OAuth credentials +
-    session transcripts).  The Read tool reaches neither — the read manifest's
-    allowed_read_roots are repo-relative — so this closes the Bash-only route.
+    Three classes, one rule: the operator-secret root (dismiss-violation tokens),
+    every backend credential home the sandbox rw-binds (OAuth credentials +
+    session transcripts), and — when the caller can name the orchestration — the
+    isolated per-orchestration backend homes, which hold the SAME credential by
+    bind plus every earlier leaf's transcript. The Read tool reaches none of them
+    — the read manifest's allowed_read_roots are repo-relative — so this closes
+    the Bash-only route.
+
+    The isolated homes are omitted when no orchestration id is supplied. That is
+    the pre-issue-#63 answer and is right for callers outside a run; inside a run
+    the conductor always sets `METDSL_ORCHESTRATION_ID`.
     """
     roots: list[Path] = [operator_secret_root()]
     for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
         dirs, files = backend_credential_home_paths(btype)
         roots.extend(dirs)
         roots.extend(files)
+    roots.extend(workflow_private_backend_homes(repo_root, orchestration_id))
     seen: set[str] = set()
     unique: list[Path] = []
     for root in roots:
@@ -3420,8 +3477,15 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # excludes all of them (allowed_read_roots is repo-relative); this closes
         # the Bash path, which is the only other route.
         met_dsl_root = operator_secret_root()
+        # The orchestration id comes from the environment the HOST set through the
+        # sandbox, not from the payload: the payload's copy is caller-influenced
+        # (`tools/hooks/cli.py::_extract_orchestration_id` prefers it), and here it
+        # decides WHICH private home is guarded — naming another orchestration
+        # would unguard the leaf's own.
         matched_root = _command_reads_protected_host_path(
-            command, cmd_tokens, repo_root, protected_host_read_roots()
+            command, cmd_tokens, repo_root,
+            protected_host_read_roots(
+                repo_root, os.environ.get("METDSL_ORCHESTRATION_ID"))
         )
         if matched_root is not None:
             if matched_root == met_dsl_root:

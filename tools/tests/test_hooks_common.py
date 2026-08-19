@@ -3720,6 +3720,105 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 self.assertIn(
                     Path(path).resolve(), roots, msg=f"{backend_type}: {path} bound rw but unguarded")
 
+    def test_the_isolated_private_home_is_guarded_for_both_backends(self) -> None:
+        """The secret moved; the guard has to move with it.
+
+        Issue #63 binds the operator's REAL `~/.claude/.credentials.json` over a
+        placeholder inside a private `/tmp` home, and the codex twin binds
+        `auth.json` the same way. Inside the sandbox those paths ARE the operator's
+        credentials, so a guard that only knows `~/.claude` / `~/.codex` leaves the
+        same secret readable — and writable — under a different name. Measured
+        before the fix: `cat <home>/.credentials.json` was ALLOWED while
+        `cat ~/.claude/.credentials.json` was blocked.
+
+        The second class is the reason this is not merely credential hygiene: ONE
+        home serves every leaf of an orchestration, so `<home>/projects/<slug>/
+        <arid>.jsonl` is every earlier leaf's full transcript. A verify/judge leaf
+        reading the producing leaf's transcript is the past-run state the workflow
+        forbids, and it would leave no trace in any artifact.
+        """
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            claude_home = Path(homes) / "metdsl-claude-t"
+            codex_home = Path(homes) / "metdsl-codex-t"
+            claude_home.mkdir()
+            codex_home.mkdir()
+            meta = repo / "workspace" / "orchestrations" / "o"
+            meta.mkdir(parents=True)
+            (meta / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(claude_home),
+                            "codex_workflow_home": str(codex_home)}),
+                encoding="utf-8")
+
+            def policy(command: str, backend: str = "claude") -> str:
+                env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+                with patch.dict(os.environ, env, clear=False):
+                    decision = evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command))
+                return (decision.audit_detail or {}).get("policy", "")
+
+            for command, backend in (
+                (f"cat {claude_home}/.credentials.json", "claude"),
+                (f"cat {claude_home}/projects/-slug/other-arid.jsonl", "claude"),
+                (f"ls {claude_home}", "claude"),
+                (f"cat {codex_home}/auth.json", "codex"),
+            ):
+                self.assertEqual(policy(command, backend),
+                                 "forbid_backend_credential_direct_read", msg=command)
+
+            # CONTROLS — the guard must not have become "block everything outside
+            # the repo", which would pass the assertions above for the wrong reason.
+            # Asserted against THIS policy rather than against "no policy at all":
+            # an unrelated /tmp read is answered by a different pre-existing rule,
+            # and demanding silence here would pin that rule instead of this one.
+            self.assertEqual(policy("cat README.md"), "")
+            self.assertNotEqual(policy(f"cat {Path(homes)}/unrelated/file.txt"),
+                                "forbid_backend_credential_direct_read")
+            sibling = Path(homes) / "metdsl-claude-t-notmine"
+            sibling.mkdir()
+            self.assertNotEqual(policy(f"cat {sibling}/.credentials.json"),
+                                "forbid_backend_credential_direct_read",
+                                "only the home this orchestration RECORDED is guarded; "
+                                "a name-alike sibling is not, and claiming otherwise "
+                                "would overstate what the resolver closes")
+
+    def test_the_guarded_home_is_the_one_the_host_recorded_not_the_one_a_caller_names(self) -> None:
+        """The orchestration id is read from the environment, not the hook payload.
+
+        `tools/hooks/cli.py::_extract_orchestration_id` prefers the payload's copy,
+        which a caller can influence. Here that value decides WHICH private home is
+        guarded, so honouring the payload would let a leaf name some other
+        orchestration and leave its own home unguarded. The environment is set by
+        the conductor through bwrap `--setenv` and a leaf's Bash command cannot
+        change the hook process's copy of it.
+        """
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            real_home = Path(homes) / "metdsl-claude-real"
+            real_home.mkdir()
+            for oid, home in (("o", real_home),):
+                meta = repo / "workspace" / "orchestrations" / oid
+                meta.mkdir(parents=True)
+                (meta / "orchestration_meta.json").write_text(
+                    json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            (repo / "workspace" / "orchestrations" / "decoy").mkdir(parents=True)
+            (repo / "workspace" / "orchestrations" / "decoy"
+             / "orchestration_meta.json").write_text(json.dumps({}), encoding="utf-8")
+
+            command = f"cat {real_home}/.credentials.json"
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                decision = evaluate_common_policy(HookInput(
+                    event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                    # the payload names a DIFFERENT orchestration, which has no home
+                    payload={"command": command, "repo_root": str(repo),
+                             "orchestration_id": "decoy"},
+                    command=command))
+            self.assertEqual((decision.audit_detail or {}).get("policy", ""),
+                             "forbid_backend_credential_direct_read")
+
     def test_codex_home_follows_codex_home_env(self) -> None:
         """A relocated CODEX_HOME is what the profile binds, so it is guarded."""
         from tools.hooks.common import backend_credential_home_paths, protected_host_read_roots
