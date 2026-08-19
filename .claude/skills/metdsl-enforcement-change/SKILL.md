@@ -1,400 +1,481 @@
 ---
 name: metdsl-enforcement-change
-description: met-dsl リポジトリ (/home/seiya/work/met-dsl) の強制機構 — MCP capability gate、validator、hook、capability/write_root、gate の入力検証 — を変更するとき、およびレビュー指摘を「残余」「到達不能」「対象外」と分類しようとするときに使う。fail-open の修正、allowlist/denylist の追加、`mcp_servers/build_runtime_server.py` / `tools/orchestration_runtime.py` の gate 系関数、`tools/hooks/`、`validate_pipeline_semantics.py` のゲートを触る作業、監査 finding の修正、subagent や Codex のレビュー指摘のトリアージで必ず参照すること。met-dsl 以外のリポジトリでは使わない。
+description: Use when changing this repository's enforcement machinery — the MCP capability gate, validators, hooks, capability / write_root derivation, and the input validation a gate performs — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `mcp_servers/build_runtime_server.py` / `tools/orchestration_runtime.py`, `tools/hooks/`, or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
-# met-dsl の強制機構を変更する
+# Changing met-dsl's enforcement machinery
 
-この skill が持つのは**強制機構ドメイン固有の罠**(二重読みペア、失敗の帰属、確認コマンド、
-外せない判断規則)。**レビューの回し方**(ラウンド構成・除外リスト・Codex の時期・収束判定・
-変異チェック)は `metdsl-review-loop` が正典なので、レビュー段階に入ったらそちらも起動する。
+What this skill holds is the **traps specific to the enforcement domain**: dual-read pairs,
+failure attribution, verification commands, and the judgment rules you never drop. **How to
+run a review** — round structure, exclusion lists, when Codex enters, convergence, mutation
+checking — is owned by `metdsl-review-loop`, so start that one too once you reach the review
+stage.
 
-このリポジトリで強制機構を直す作業は、**修正そのものが次の欠陥を持ち込む**確率が高い。PR #51
-(監査 high 2件)では subagent レビュー17ラウンド + Codex 3回で、修正が持ち込んだ欠陥が
-15件出た。以下はその再発型に対する手順で、規則の内容そのものは書いていない
-(正典は `mcp_servers/README.md` / `docs/HOOKS.md` / `docs/AGENT_SKILLS.md`。ここに写すと
-twin document を1枚増やすことになり、それ自体が今回潰した欠陥クラス)。
+Fixing enforcement machinery in this repository carries a high probability that **the fix
+itself introduces the next defect**. In PR #51 (two high audit findings), 17 subagent review
+rounds plus 3 Codex passes surfaced 15 defects that the fixes had introduced. What follows is
+a procedure against those recurring shapes; it does not restate the rules themselves (the
+canonical sources are `mcp_servers/README.md` / `docs/HOOKS.md` / `docs/AGENT_SKILLS.md` —
+copying them here would add one more twin document, which is itself the defect class this
+skill exists to kill).
 
-まず `git -C /home/seiya/work/met-dsl rev-parse --show-toplevel` でこのチェックアウトが
-met-dsl であることを確認する。違うなら以下は当てはまらない。
+## Judgment rules you never drop
 
-## 外してはいけない判断規則
+These three hold everywhere in the procedure. Finish reading them before you open any
+reference file.
 
-この3つは手順のどこにいても効かせる。参照ファイルを開く前に読み終わっている必要がある。
+**1. Before classifying anything as residual or unreachable, run the attack.** Nothing goes
+into the residual bucket without a record of an attempt that failed. PR #51's only P1 (a
+caller can forge a capability by naming its own `repo_root`) had been found by two reviewers,
+yet was accepted for five rounds on the **unverified premise** that exploiting it needed a
+primitive the file-tool hook refuses. The actual primitive was one the contract hands over
+explicitly: `workspace/tmp/<agent_run_id>` (a bwrap rw bind) plus `Bash(python3
+workspace/tmp/*)` (committed in the settings file). **Decide by what you ran, not by who said
+it.**
 
-**1. 「残余」「到達不能」に分類する前に、攻撃を実行する。** 実行して失敗した記録がないものを
-残余に落とさない。PR #51 唯一の P1(caller が名乗る `repo_root` で偽の capability を自作できる)
-は、2人のレビュアが見つけていたのに「file-tool hook が拒否する primitive が要る」という
-**未検証の前提**で5ラウンド受容され続けた。実際の primitive は契約が明示的に与えている
-`workspace/tmp/<agent_run_id>`(bwrap rw bind)+ `Bash(python3 workspace/tmp/*)`
-(`.claude/settings.json` にコミット済み)だった。**誰が言ったかではなく、自分で実行したか**で決める。
+**1-b. Deleting a defense is also a classification.** Rule 1 is not only about triaging
+someone else's finding. **When you delete a defense you wrote**, the reason is always "this
+shape cannot occur", and that is the classification itself. In PR #53 I deleted a derived-type
+guard I had added in that very round, judging that "F2008 forbids this arrangement", and
+shipped a fail-open — the evidence was **one** gfortran probe (a host-associated binding),
+while `nopass` plus **use association** makes the compiler accept the same arrangement. One
+probe means "I tried one", not "I tried".
 
-**1-b. 守りを削除することも「到達不能」の分類である。** 規則1は他人の指摘をトリアージする場面
-だけの話ではない。**自分が書いた守りを消すとき**、消してよい理由は必ず「この形は起こり得ない」で、
-それは分類そのもの。PR #53 では自分がそのラウンドで足した derived-type ガードを
-「F2008 がこの配置を禁じている」と判断して削除し、fail-open を出荷した — 根拠は gfortran の
-プローブ**1本**(host 結合の binding)で、`nopass` + **use 結合**なら同じ配置をコンパイラが
-受理する。プローブが1本なら、それは「試した」ではなく「1つ試した」。
+- **Do not conclude impossibility from a single counterexample.** Try at least one more
+  **different spelling or different association path** for the same construct
+- **"The mutation survives" is not grounds for deletion.** "There is no test" and "the code is
+  unnecessary" are different claims. If it survives, the default is: keep it, and write in the
+  docstring that it is not pinned
+- This repo pushes the other way too ("delete dead defenses", e.g.
+  `_validate_apply_patch_gate_coverage`), and that collided head-on here. **How the tug-of-war
+  settles**: you may delete only when there is **an execution record of an attempt to reach it
+  that failed**. "No caller exists" (dead code) counts as such a record; "the language spec
+  makes it impossible" does not
+- **The moment you write "the language spec makes this impossible" is the most dangerous one.
+  If you write it, execute one case from that spec and confirm.** This is the second time in
+  this repo. In PR #66 the import reader did not read relative imports, and the docstring
+  justified it as "a relative import cannot leave its package, so the neutral core cannot
+  reach a backend". In fact `tools/` **contains** `tools/backends/` as a PEP 420 namespace
+  package, so `from .backends.build_system.make import RULE` **crosses the boundary without
+  leaving the package** — confirmed by running it. Same shape as PR #53's `nopass` plus use
+  association: what breaks these claims is always the language's **special form** (namespace
+  packages, use association, implicit association rules). Any "impossible" about package
+  structure, scope, or visibility gets one run the moment you write it
 
-- **1つの反例で不可能性を結論しない。** 同じ構文の**別の綴り・別の結合経路**を最低もう1つ試す
-- **「変異が生存する」は削除の根拠にならない。** テストが無いこととコードが不要なことは別の主張。
-  生存したら既定は「残して、pin できていないと docstring に書く」
-- この repo には「dead defense は消せ」(`_validate_apply_patch_gate_coverage` 等)という逆向きの
-  圧力があり、今回それと正面衝突した。**綱引きの決着**: 削除してよいのは**到達を試みて失敗した
-  実行記録があるとき**だけ。呼び出し元が無い(dead code)は実行記録に相当するが、
-  「言語仕様上あり得ない」は相当しない
-- **「言語仕様上あり得ない」と書く瞬間が最も危ない。書くなら、その仕様の該当箇所を1つ実行して
-  確かめる。** この repo で2度目。PR #66 では import reader が相対 import を読まず、根拠を
-  「相対 import はパッケージを出られないので、中立コアが backend に到達することはあり得ない」と
-  docstring に書いていた。実際には `tools/` は `tools/backends/` を**含む** PEP 420 名前空間
-  パッケージなので、`from .backends.build_system.make import RULE` は**パッケージを出ずに境界を
-  越える** — 実行して動くことを確認した。PR #53 の `nopass` + use 結合と同型で、破るのはいつも
-  **その言語の特殊形**(名前空間パッケージ、use 結合、暗黙の結合規則)。パッケージ構造・スコープ・
-  可視性についての「あり得ない」は、書いた瞬間に1本走らせる
+**1-c. Severity is a classification too. Do not decide it from one reproduction.** Rule 1 says
+decide "does it happen" by execution; it says **nothing about how far it happens**. The moment
+you can reproduce the hole in one layer is the most dangerous one — write the verdict there
+and the remaining layers are necessarily inference. The procedure is: **enumerate every place
+that reads that fact, then open each layer**. Skip the enumeration and each layer you open
+raises your confidence while the unopened ones fall out of view.
 
-**1-c. 重篤度も分類である。再現1本で決めない。** 規則1は「起こるか」を実行で決めろという話で、
-**「どこまで起こるか」には答えていない**。穴を1層で再現できた時点が最も危ない — そこで判定を書くと、
-残りの層は必ず推論になる。手順は「その事実を読む箇所を**全部列挙してから、各層を開く**」。
-列挙を先にやらないと、開いた層の数だけ確信が上がって、開いていない層が見えなくなる。
+- **Do not use a layer you have not executed in the verdict; say explicitly that you have not
+  executed it**
+- In PR #55 I got the severity of the `agent_role` hole wrong **three times** (medium → high →
+  medium → high). Each time "I ran the reproduction", so the letter of rule 1 was satisfied —
+  and I missed anyway. Opening only the producer (the manifest) gave high; opening the hook
+  gave medium; opening `build_bwrap_profile` and `_validate_actual_write_paths` last showed
+  **the answer was neither** — the sandbox rw-binds it, and the audit that
+  `docs/AGENT_CONTRACT.md` calls authoritative never runs because of an early return
+- In the same round I cited a **function that does not exist** (`_build_capability_payload`;
+  the real one is `build_capability_document`). Enumerating the readers first would have kept
+  that out of the first draft
+- Finding the counterparts: `references/dual-read-pairs.md`. **When a fact is not in that
+  table, that is exactly when you write the enumeration out**
+- **Once every reader is open, enumerate what the other layers already cover before writing
+  the severity.** The number of readers alone does not justify high. In PR #57 I had six
+  readers open and still needed a **fourth correction**, this time toward the **safe** side:
+  counting every place bwrap rw-binds showed that inside `write_roots` FS-diff containment
+  permits the write **for every role**, and every rw-bind outside it was exempted as runtime
+  bookkeeping ⇒ **with the sandbox active, no write became newly undetectable under an unknown
+  role**. The defense is still silently dead, so the fix ships — but **do not write "this is
+  exploitable"**. Conversely, skip this enumeration and the reader count alone reads as high
+- **But never turn "another layer catches it" into a reason not to fix** (as with the
+  `feedback_no_redundant_persistence` family, this repo does not accept leaving something
+  because of a second layer). The enumeration exists to **make the severity description
+  accurate**, not to decide whether to fix
 
-- **実行していない層は判定に使わず、「実行していない」と明記する**
-- PR #55 では `agent_role` の穴の重篤度を**3回間違えた**(medium → high → medium → high)。
-  毎回「再現は実行した」ので規則1の文面は満たしていて、満たした上で外した。producer(manifest)
-  だけ開いて high、hook を開いて medium、最後に `build_bwrap_profile` と
-  `_validate_actual_write_paths` を開いたら**答えはどちらでもなかった** — sandbox は rw-bind し、
-  `docs/AGENT_CONTRACT.md` が権威と呼ぶ監査は早期 return で走らない
-- 同じラウンドで**存在しない関数**を根拠に挙げた(`_build_capability_payload`、実物は
-  `build_capability_document`)。読み手の列挙を先にしていれば最初の版で出ていない
-- 列挙の相方探しは `references/dual-read-pairs.md`。**表に無い事実こそ列挙を書き起こす**
-- **読み手を全部開いたら、次に「他の層が既に覆っている範囲」も列挙してから重篤度を書く。**
-  読み手の数だけでは high の根拠にならない。PR #57 では読み手6つを開いた上で **4回目の訂正**が
-  必要になり、今度は**安全側**へ振れた: bwrap が rw-bind する場所を全部数えると、
-  `write_roots` の内側は**どの role でも** FS-diff containment が許可し、外側の rw-bind は
-  全て runtime bookkeeping として免除されていた ⇒ **sandbox 有効下では、未知 role で新たに
-  検出不能になる書き込みは見つからなかった**。守りが黙って死んでいる事実は変わらないので修正は
-  出すが、**「悪用できる」とは書かない**。逆に、この列挙を省くと読み手の数だけで high と書ける
-- **ただし「他の層が捕まえる」を修正しない理由にはしない**(memory の
-  `feedback_no_redundant_persistence` 系と同じく、この repo は二層目を根拠にした放置を認めない)。
-  列挙の用途は**重篤度の記述を正確にすること**であって、修正の要否ではない
+**1-d. The premises of a fix you have not written yet are also a classification.** Rules 1
+through 1-c are about things that **already exist** — someone else's finding, a defense you
+are deleting, the severity of a hole — and say nothing about **the facts an unwritten fix
+assumes**. That is where it costs most: if the premise is false, the plan, the implementation,
+the tests, and the prose are all wasted at once.
 
-**1-d. これから作る修正の「前提」も分類である。** 規則1〜1-c は**既にある物**(他人の指摘・自分が
-消す守り・穴の重篤度)の話で、**まだ書いていない修正が前提にしている事実**には触れていない。そこが
-一番高くつく — 前提が偽なら、計画・実装・テスト・散文の全部が同時に無駄になる。
+- **The moment your plan says "today this shape is handled like so", execute that one
+  sentence before implementing.** Docs, old logs, and issue bodies are not sources for a
+  premise (each describes one observation moment, and layers change with versions)
+- Hit in issue #75: on the premise that "a post-#72 leaf silently loses read commands that do
+  not match the committed `permissions.allow`", I wrote a plan complete with six phases, test
+  families, and mutation targets. At the start of the work, **one unbilled observation** showed
+  that CLI 2.1.234 applies **its own read-only command analysis ahead of the allowlist** and
+  every target form passed. No implementation was needed. **Observation costs two orders of
+  magnitude less than implementation**
+- **"It was not refused" cannot be shown from refusal logs.** In a layer where refusals leave
+  no event, **count the traces on the success side** — here the decider was whether each
+  `pre_command_execute` had a matching `post_command_execute` (evidence that it ran). The issue
+  body itself proposed that cross-check, and nobody had run it
+- When a premise collapses, **keep the measurements**. The plan dies; the measured facts, and
+  any other hole found along the way (here, a real refusal in the opposite direction), stay
 
-- **計画に「この形は今こう扱われている」と書いたら、実装の前にその1文を実行する。**
-  doc・過去ログ・issue 本文は前提の出典にならない(どれも観測時点の話で、層は版で変わる)
-- issue #75 で踏んだ: 「post-#72 の leaf は committed `permissions.allow` に一致しない読み取り
-  コマンドを黙って失っている」を前提に、6 phase・テスト族・変異対象まで揃った計画を書いた。着手時に
-  **無課金で1本観測**したら、CLI 2.1.234 は**独自の read-only コマンド解析を allowlist の前に適用**
-  していて、対象の全形が通っていた。実装は不要。**観測のコストは実装のコストより2桁小さい**
-- **「拒否されなかった」は、拒否のログでは示せない。** refusal がイベントを残さない層では、
-  **成功の側の痕跡を数える** — 今回の決め手は `pre_command_execute` に対応する
-  `post_command_execute` が有るか(=実行された証拠)だった。issue 本文自身がその突合を提案していて、
-  誰も実行していなかった
-- 前提が崩れても**測定は捨てずに記録する**。計画は消えるが、測った事実と、その過程で見つかった
-  別の穴(今回は逆向きの本物の refusal)は残す
+**2. Do not close an environment-dependent finding with a mock on the test side.** When told
+"this test fails on a machine without gfortran", first ask **what happens in production on
+that machine**. In PR #51, mocking `which` removed the environment dependence and capped a
+hole where the validation rule itself was inert on machines with no compiler installed (Codex
+later picked it up as a P2).
 
-**2. 環境依存の指摘を、テスト側のモックで閉じない。** 「このテストは gfortran の無い環境で落ちる」
-と言われたら、先に **「本番でその環境だと何が起きるか」** を問う。PR #51 では which をモックして
-環境依存だけ消した結果、コンパイラ未インストール環境で検証規則自体が効いていない穴に蓋をした
-(Codex が後で P2 として拾った)。
+**3. Changing a rule is not done until you have swept the prose that cites that rule as
+grounds.** Three rounds running, I fixed a docstring while **the violation message actually
+emitted** 40 lines below stayed stale. Worse, the "measured value" I cited as grounds had been
+inverted by an implementation change (the consequence of `language: " fortran"`). Use the grep
+procedure in `references/verification.md`.
 
-**3. 規則を変えたら、その規則を根拠として引用している散文を洗うまで完了ではない。**
-docstring を直して 40 行下の**実際に出力される違反メッセージ**が古いまま、を3ラウンド連続で
-やった。しかも根拠に書いた「実測値」が実装変更で反転していた(`language: " fortran"` の帰結)。
-`references/verification.md` の grep 手順を使う。
+**The flip side of 3: prose you newly write in that same commit is also unverified until you
+run it.** Read rule 3 as being about old text and you keep only half of it. In L128 I got
+**four newly written measurements or citations wrong inside the fix itself**:
 
-**3の裏面: そのコミットで新しく書いた散文も、実行するまで未検証。** 古い記述を洗う話だと思うと
-半分しか守れない。L128 では**修正の中で新しく書いた実測値・引用を4回間違えた**:
+- The suite count three times (the first written blind; the second still off by one after I
+  wrote "re-measured")
+- A perf ratio twice (off by 3.5x against the raw baseline, then quoting a single point while
+  ignoring directory dependence — **write a range when the number varies**)
+- A lint rule id (the one that enforces `implicit none` is C001; **C003 is the rule the phase
+  doc has the leaf suppress**, so the citation pointed at a check that never fires)
+- **Numbers that were right rot when the branch moves.** In PR #53 I got the suite count wrong
+  twice; the second time it was **correct when written** and was obsoleted by a later round
+  adding tests. **Keep a list of every place you wrote a number and re-measure them together at
+  the end** (a commit message cannot be fixed, so either mark the number in TODO.md or the
+  docstring as "measured at this point" or rewrite it in the final round)
+- Attribution of the residue (I put all three candidates on the producer side; one was on the
+  consumption side, which would have sent the next person at half the problem)
+- **Do not write someone else's measurement as your own.** This flip side is about "prose I
+  wrote is unverified until run", but the path most often missed is **a number sourced from a
+  reviewer**. In PR #55, commit `0d444c2` reproduced a reviewer's "30 commits, 26 of them DONE"
+  verbatim; measuring it myself gave **71 / 42 / 6** — all wrong. Cite the source explicitly,
+  or re-measure before writing
 
-- スイート数を3回(1回目は書きっぱなし、2回目は「再測定した」と書いた上でまだ1ずれていた)
-- perf の倍率を2回(生の baseline を3.5倍間違え、次はディレクトリ依存を無視して1点だけ引用 —
-  **ばらつく数値は範囲で書く**)
-- fortitude の規則番号(`implicit none` を強制するのは C001。**C003 は phase doc が leaf に
-  抑止させている規則**で、引用先が一度も動かない check になっていた)
-- **ブランチが動くと、正しかった数値も腐る。** PR #53 ではスイート数を2回間違えたが、2回目は
-  **書いた時点では正しく**、後のラウンドがテストを足したせいで陳腐化した。**数値を書いた場所の
-  一覧を持ち、最後にまとめて測り直す**(commit message は直せないので、TODO.md / docstring 側に
-  「この数字はこの時点の測定」と分かる形で残すか、最終ラウンドで書き直す)
-- 残余の帰属(3つの候補を全部 producer 側と書いたが、1つは consumption 側。次にその項目を
-  拾う人を半分の問題に向かわせるところだった)
-- **他人の測定を自分の測定として書かない。** この裏面は「自分が書いた散文は実行するまで未検証」
-  だが、**出典がレビュアの数値**という経路が最も見落とされる。PR #55 の commit `0d444c2` では
-  レビュアの「30 commits / うち 26 が DONE」をそのまま書き、自分で測ったら **71 / 42 / 6** で
-  全部違った。引用するなら出典を明記するか、自分で測り直してから書く
+**Right after you write a sentence, execute it.** Numbers, rule ids, compiler diagnostics, and
+"X catches this" are all executable claims. If you have not run it, do not write it.
 
-**書いた直後に、その文を実行して確かめる。** 数値・規則番号・コンパイラ診断・「〜が捕まえる」は
-全て実行可能な主張。実行していないなら書かない。
+## Procedure
 
-## 手順
+### 1. Inventory the surface before fixing
 
-### 1. 面を棚卸ししてから直す
+Enumerate, at the argument-name level, every caller-supplied input that reaches **exec / env /
+argv / the filesystem / the paths from which the gate reads its evidence**. "Plugged one, the
+neighbour was open" is the most frequent recurrence (env allowlisted → argv was open → the
+value was open → the auto-discovery path was open: four in a row).
 
-caller が与える入力のうち **exec / env / argv / ファイルシステム / gate が読む証拠のパス** に
-届くものを、引数名レベルで列挙する。1つ塞いで隣が開いている、が最頻の再発型
-(env を allowlist にした → argv が開いていた → 値が開いていた → 自動探索の経路が開いていた、で4回)。
+Leave the enumeration in the commit message or TODO.md. The next round's reviewer will come
+looking to break it.
 
-列挙した一覧は commit message か TODO.md に残す。次のラウンドのレビュアがそれを潰しにくる。
+**When the gate reads the source text rather than the meaning of an input (validators and
+parsers), the surface is a different one.** The exec/env/argv surface above is the MCP
+capability gate's and barely applies to the Fortran-reading gates in
+`validate_pipeline_semantics.py`. What you inventory there is **the spelling variation the
+language permits**:
 
-**gate が「入力の意味」でなく「ソースの文面」を読む場合(validator / parser 系)は、面が違う。**
-上の exec/env/argv は MCP capability gate の面で、`validate_pipeline_semantics.py` の
-Fortran 読み取りゲートにはほぼ当たらない。そちらで棚卸しすべきは**言語仕様が許す綴りの揺れ**:
+- **Keywords are not reserved words.** A variable may be named `module` / `parameter` /
+  `contains` / `endmodule`. Every rule that treats "a statement starting with a keyword" as
+  structure breaks on this
+- **The space in a two-word keyword is sometimes optional** (F2008 Table 3.1). `selecttype` /
+  `endsubroutine` / `doubleprecision` are legal as one word. Sweep every `\s+` you wrote (some
+  forms such as `abstractinterface` are not legal, so **ask the compiler** to settle each one)
+- **`::` may be omitted** (`integer ncomp`, `public ncomp`, `enumerator red`). Check that the
+  two spellings of one statement are not treated differently
+- **A statement label may precede any statement** (`10 contains`, `100 use m`, `20 subroutine
+  f(x)`)
+- Attribute-bearing statements have 18 forms without `::` (`common` / `dimension` /
+  `equivalence` / `data` / `namelist` / bare `pointer` …). **Writing out each grammar is the
+  losing line** — close them all at once by inverting the polarity: do not parse statements
+  that start with a keyword; take every identifier that appears in them to the safe side
 
-- **キーワードは予約語でない。** 変数を `module` / `parameter` / `contains` / `endmodule` と
-  名付けられる。「キーワードで始まる文」を構造として扱う規則は全部これで破れる
-- **2語キーワードの空白は任意なことがある**(F2008 Table 3.1)。`selecttype` / `endsubroutine` /
-  `doubleprecision` は1語で合法。`\s+` を書いた箇所を全部洗う(`abstractinterface` のように
-  合法でないものもあるので**コンパイラに聞いて**確定する)
-- **`::` は省略できる**(`integer ncomp`、`public ncomp`、`enumerator red`)。
-  同じ文の2綴りが違う扱いになっていないか
-- **文ラベルが任意の文の前に付く**(`10 contains`、`100 use m`、`20 subroutine f(x)`)
-- 属性を付ける文は `::` なしの形が18種ある(`common` / `dimension` / `equivalence` / `data` /
-  `namelist` / bare `pointer` …)。**個々の文法を書くのは負け筋** — キーワードで始まる文は
-  解析せず登場する識別子を全部安全側に倒す、という極性の反転で一括して閉じる
+This checklist documents **measured pre-existing debt** in `validate_pipeline_semantics.py`
+(the source-reading area on the TODO ledger); it migrates out of the neutral core together
+with that area, and this section goes with it.
 
-列挙で安全性を作る規則になったら、**列挙の各要素を1つずつ変異で殺すテスト**を書く
-(`metdsl-review-loop` のラウンド0)。1要素の欠落は他のどのテストにも映らない。
+When a rule derives its safety from an enumeration, **write a test that kills each element of
+the enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in
+no other test.
 
-**第5の面: 判定が読む「分類チャネル」に caller 由来のデータが混ざっていないか。**
-上の exec / env / argv / FS / 証拠のパス、綴りの揺れ、のどれでもない面が1つある。
-**gate の失敗を分類・ルーティングする値**(marker 文字列、failure_category、reason、excerpt)を
-**どこから読んでいるか**。それが「出力テキストの走査」で、そのテキストに caller が内容を決められる
-データ(**leaf が命名したファイル名・識別子・パス**)が埋め込まれるなら、分類は偽造可能。
+**Surface 5: whether caller-controlled data is mixed into the classification channel the
+verdict reads.** There is one surface that is none of exec / env / argv / FS / evidence paths,
+and none of the spelling variation. **The values that classify and route a gate failure**
+(marker strings, failure_category, reason, excerpt) — **where are they read from**? If they
+come from scanning output text, and that text embeds data whose content a caller decides
+(**file names, identifiers, or paths the leaf chose**), the classification is forgeable.
 
-L174 で3ラウンド連続で破られた。gate は validator の stdout を走査して
-`[fortran-structure-unavailable]` を探し、それを見つけると「この機械にパーサが無い」= terminal と
-分類していた。ところが violation は `f"{model_file}: ..."` の形で **leaf が決めたファイル名**を
-埋め込む。結果、`[fortran-structure-unavailable]_model.f90` という名前のモデルを書くだけで、
-ただの命名ミスが「機械の故障」に化け、**warm retry されるべき失敗が run ごと terminal に**なった。
+L174 was broken three rounds running. The gate scanned the validator's stdout for
+`[fortran-structure-unavailable]` and, on finding it, classified the failure as "this machine
+has no parser" = terminal. But violations embed **a file name the leaf chose**, in the form
+`f"{model_file}: ..."`. Writing a model named `[fortran-structure-unavailable]_model.f90` was
+therefore enough to turn a naming slip into "machine failure", and **a failure that should have
+been warm-retried killed the whole run**.
 
-修正のたびに走査を狭めたが、**毎回1バイトで破られた**:
+Each fix narrowed the scan, and **each was broken by one byte**:
 
-| 版 | 判定 | 破り方 |
+| Version | Test | How it broke |
 |---|---|---|
-| 1 | 出力のどこかに marker | `[marker]_model.f90` |
-| 2 | 行頭が marker | `x\n[marker]_model.f90`(パスに改行) |
-| 3 | 行頭が `- ` + marker | `x\n- [marker]_model.f90` |
-| 4 | **exit code** | 破れない(leaf は書けない) |
+| 1 | marker anywhere in the output | `[marker]_model.f90` |
+| 2 | marker at start of line | `x\n[marker]_model.f90` (newline in the path) |
+| 3 | `- ` + marker at start of line | `x\n- [marker]_model.f90` |
+| 4 | **exit code** | unbreakable (the leaf cannot write it) |
 
-**規則**: 分類が「テキストの走査」なら、そのテキストに caller 由来のデータが入るかを確かめる。
-入るなら、**サンプルを狭めるのではなくチャネルを変える** — exit code、例外型、専用フィールド、
-sidecar。どれも「知っている側が書き、caller が書けない」。これは `metdsl-review-loop` の
-「pin が毎回違う形で破られたら定義を1箇所に寄せる」の、分類チャネル版。
+**Rule**: if a classification comes from scanning text, check whether caller-derived data
+enters that text. If it does, **change the channel rather than narrowing the sample** — exit
+code, exception type, a dedicated field, a sidecar. Each of these is written by the side that
+knows and cannot be written by the caller. This is the classification-channel version of
+`metdsl-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
+one place".
 
-同じ形の穴が同じリポジトリに複数あることが多い(L174 では `[stale-dependency-ir]` に同型が残り、
-さらに post_execute / pre_judge の2箇所は**どちらの marker も走査していない**)。1つ見つけたら
-**同じ判定をする箇所を全部数える**。数が3以上なら、個別修正ではなくチャネルの設計を変える。
+The same shape usually exists several times in the same repository (in L174 the twin survived
+on `[stale-dependency-ir]`, and two further sites — post_execute and pre_judge — **scanned
+neither marker**). Once you find one, **count every site that makes the same decision**. At
+three or more, change the channel design instead of fixing them individually.
 
-**第6の面: その検査に「こうしろ」という救済手順があるなら、その手順が他に何を書き換えるか。**
-上の第5の面が**読み取り側**の問いなら、これは**書き込み側**の同型。ratchet / baseline / allowlist
-のように「失敗したらこのコマンドで更新せよ」と案内する機構は、案内された側が pin まで
-書き換えていないかを確かめる。
+**Surface 6: if the check tells the reader "do this to fix it", what else does that remedy
+rewrite?** If surface 5 is the read-side question, this is its write-side twin. Wherever a
+ratchet, baseline, or allowlist says "on failure, run this command to update", check that the
+command does not also rewrite the pin.
 
-PR #66 では、サンプル(トークン数の baseline)の失敗メッセージが `--write-baseline` の実行を
-指示し、そのコマンドが**サンプル側と pin 側(bypass import の allowlist)の両方**を書いていた。
-「外した module は黙って戻れない」と3箇所で称した pin が、**指示どおりに操作すると再生成される**。
-regenerate は稀ではない — トークンを1つ減らすだけのコミットが要求するので、通常運用で踏む。
+In PR #66 the failure message for a sample (a token-count baseline) instructed the reader to
+run `--write-baseline`, and that command wrote **both the sample and the pin** (the bypass
+import allowlist). A pin described in three places as "a module removed from the list cannot
+quietly come back" **was regenerated by following the instructions**. Regeneration is not rare:
+a commit that removes a single token demands it, so normal operation hits it.
 
-さらにこれは**3段階で再発**した: allowlist を別ファイルへ分離 → 今度は**走査範囲**が同じ経路で
-洗える(範囲は baseline 越しにしか見えなかった) → 範囲とクラス**名**を pin したら、今度は
-クラスの**分岐**が洗える(`\bgcc\b` を probe ごと落として13出現が消え、1回 regenerate で緑)。
+It then **recurred in three stages**: separating the allowlist into its own file → now the
+**scan range** was washed by the same path (the range was only visible through the baseline) →
+pinning the range and the class **name** → now the class's **branches** were washable (dropping
+`\bgcc\b` together with its probe removed 13 occurrences and went green after one regenerate).
 
-**規則**: pin と、pin を緩める権限を持つコマンドを、**同じファイル・同じ手順に同居させない**。
-そして pin する対象は「規則」であって「規則が生んだ結果」ではない(結果を pin すると通常作業が
-落ち、規則を読まずに regenerate する習慣を教える)。
+**Rule**: never let a pin and the command with authority to loosen it **live in the same file
+or the same procedure**. And pin the rule, not the result the rule produced (pinning results
+makes ordinary work fail and teaches the habit of regenerating without reading the rule).
 
-**第7の面: 「その設定面を閉じた」と言うとき、そのツールが設定ファイル以外から読むもの。**
-上の6面は「入力が gate に届く経路」の話だが、これは**外部ツールを起動する側**の面。
-`--setting-sources` / `--config` のような**設定ソースを絞るフラグは、設定ファイルしか支配しない**。
-そのツールが他に読むもの — 自動注入されるメモリ、環境変数、cwd から自動発見されるファイル、
-起動時に取りに行くリモート設定 — はフラグの外に残る。
+**Surface 7: when you say you closed a configuration surface, what else does that tool read
+besides configuration files?** The six above are about inputs reaching a gate; this one is
+about **the side that launches an external tool**. **A flag that narrows configuration sources
+(`--setting-sources`, `--config`) governs configuration files and nothing else.** Whatever else
+the tool reads — auto-injected memory, environment variables, files auto-discovered from the
+cwd, remote configuration fetched at startup — stays outside the flag.
 
-PR #72 で実際に踏んだ: `claude --setting-sources project` で leaf の設定面を閉じたと書いたが、
-**auto-memory は設定ファイルではない**ので、operator の `~/.claude/.../memory/MEMORY.md` が
-leaf の**最初の user message に注入され続けていた**(過去 PR・open issue・運用者への恒久指示)。
-同じく環境変数(`ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`)も素通りで、フラグ全部付けても
-別モデルを走らせられる。**閉じたと書いた doc は、閉じていないものについて閉じたと読ませていた。**
+Hit for real in PR #72: I wrote that `claude --setting-sources project` closed the leaf's
+configuration surface, but **auto-memory is not a configuration file**, so the operator's
+`~/.claude/.../memory/MEMORY.md` **kept being injected into the leaf's first user message**
+(past PRs, open issues, standing instructions to the operator). Environment variables
+(`ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`) passed through just as freely, so a different model
+can be run with every flag set. **The doc that said "closed" made the reader read closure over
+things that were not closed.**
 
-- **フラグを読んで結論しない。プロセスが実際に受け取ったものを捕獲して数える。**
-  LLM CLI なら `ANTHROPIC_BASE_URL` をローカルの HTTP サーバに向け、request body を保存して
-  400 を返せばよい(**無課金**で、注入されている文字列も差分バイト数も出る)。
-  「フラグの意味から言って届かないはず」は規則1の「あり得ない」と同じ形の推論
-- **既に閉じている経路だけ見ると永久に見えない。** この穴が長く見えなかったのは、pure leaf が
-  **別のフラグ**(`--safe-mode`)で最初から閉じていたから。**閉鎖を主張する経路が複数あるなら、
-  経路ごとに観測する** — 片方が別の理由で閉じていると、もう片方の穴が構造的に隠れる
-- **観測に使う checkout 自身が交絡する。対照を取るまで、どちらに転ぶかは分からない。**
-  開発用 checkout には非コミットの `.claude/settings.local.json` が居る(git 管理外。global
-  gitignore に書かれていると `git status` にも出ない)ので、権限層を観測するなら **`git worktree` の
-  clean checkout を対照に取る**。今回は両方で同一判定になり、さらに local にしか無い3 entry
-  (`Bash(patch *)` / `Bash(jq --version)` / `Bash(fortitude --version)`)が開発用 checkout でも
-  3つとも `This command requires approval` になったので、**`--setting-sources project` は
-  `settings.local.json` を読んでいない**と書ける。**観測を始めた時点の推論は逆だった** —
-  「local が効いているから allow されたのだ」と読んでいた。対照が無ければ、その誤りが
-  そのまま結論になっていた。**1 entry では決めない**: 1本だけだと「その綴りが prefix rule に
-  一致しなかっただけ」と区別できない
-- **同じハーネスは注入だけでなく「判定」も測れる。** 1回目の response で合成 `tool_use` を返し、
-  2回目の request body の `tool_result` を読むと、**permission layer の実際の verdict** が
-  無課金で出る。**絶対に拒否される形を対照に1本混ぜて、層が生きていることを先に示す** —
-  それが無いと「全部通った」が「層が死んでいた」と区別できない
-- **閉鎖の主張は、閉鎖した面の名前まで書く。**「設定面を閉じた」ではなく
-  「**設定ファイル**の面を閉じた。環境と auto-memory は別で、こちらは開いている」。
-  面の名前を落とすと、読み手は一番広い意味で読む
+- **Do not conclude from the flag. Capture what the process actually received and count it.**
+  For an LLM CLI, point `ANTHROPIC_BASE_URL` at a local HTTP server, save the request body and
+  return 400 (**unbilled**, and it yields both the injected strings and the byte delta).
+  "Given what the flag means, that cannot reach it" is the same inference shape as rule 1's
+  "impossible"
+- **Look only at paths that are already closed and you will never see it.** This hole stayed
+  invisible for so long because the pure leaf was closed from the start **by a different flag**
+  (`--safe-mode`). **When several paths claim closure, observe each path** — one being closed
+  for another reason structurally hides the hole in the other
+- **The checkout you observe from is itself a confounder. Until you take a control, you cannot
+  say which way it falls.** A development checkout carries an uncommitted
+  `.claude/settings.local.json` (untracked; if it is in a global gitignore it does not even show
+  in `git status`), so when observing the permission layer **take a clean `git worktree`
+  checkout as a control**. Here both gave the same verdict, and the three entries that exist
+  only locally (`Bash(patch *)` / `Bash(jq --version)` / `Bash(fortitude --version)`) all three
+  came back `This command requires approval` even in the development checkout, which lets me
+  write that **`--setting-sources project` does not read `settings.local.json`**. **The
+  inference at the start of the observation was the opposite** — I read it as "it was allowed
+  because local is in effect". Without the control, that error would have become the
+  conclusion. **Do not decide from one entry**: with a single probe you cannot distinguish it
+  from "that spelling simply did not match a prefix rule"
+- **The same harness measures verdicts, not just injection.** Return a synthetic `tool_use` in
+  the first response and read the `tool_result` in the second request body: that is **the
+  permission layer's actual verdict**, unbilled. **Mix in one control that must be refused, to
+  show first that the layer is alive** — without it, "everything passed" is indistinguishable
+  from "the layer was dead"
+- **A closure claim names the surface it closed.** Not "closed the configuration surface" but
+  "**closed the configuration-file surface**; environment and auto-memory are separate and
+  remain open". Drop the surface name and the reader takes the widest meaning
 
-**第8の面: 隔離のために自分が用意した置き場が、そのツールにとっては入力である。**
-第7の面が「フラグの外に残るもの」なら、これは**フラグを効かせるために自分が作ったもの**が
-新しい入力面になる形。ツールを閉じ込めるために private な設定 dir を作って書き込み可能に
-すると、**そのツールがその dir から読む物**が丸ごと新設の注入面になる。
+**Surface 8: the place you created for isolation is an input to that tool.** If surface 7 is
+"what stays outside the flag", this is the shape where **what you built to make the flag
+effective** becomes a new input surface. Create a private configuration dir to confine a tool,
+make it writable, and **everything that tool reads from that dir** is a wholly new injection
+surface.
 
-issue #63 で踏んだ。leaf を operator の `~/.claude` から切り離すため、per-orchestration の
-private `CLAUDE_CONFIG_DIR` を作って rw で bind した。ところが `--setting-sources user` 下では
-その dir の `CLAUDE.md` が「ユーザーの個人的な global 指示」として注入され、`agents/*.md` が
-subagent roster に入る(どちらも実測)。しかも **1つの home を run 中の全 leaf が共有**する。
-結果、`generate` leaf が `<home>/CLAUDE.md` を書けば、後続の `validate.judge` leaf がそれを
-指示として読む — **artifact に痕跡ゼロの偽の認証**。`--setting-sources project` の頃は同じ
-ファイルが不活性だったので、**閉じるための変更が新しい経路を開いた**。
+Hit in issue #63. To cut the leaf off from the operator's `~/.claude`, I created a
+per-orchestration private `CLAUDE_CONFIG_DIR` and bound it rw. But under `--setting-sources
+user` that dir's `CLAUDE.md` is injected as "the user's personal global instructions", and its
+`agents/*.md` join the subagent roster (both measured). Worse, **one home is shared by every
+leaf in the run**. So a `generate` leaf that writes `<home>/CLAUDE.md` has the later
+`validate.judge` leaf read it as instructions — **a forged certification with zero trace in the
+artifacts**. Under `--setting-sources project` the same file was inert, so **the change made to
+close a path opened a new one**.
 
-- **チェック**: 隔離先を作ったら、「このツールはこの dir から**何を読む**か」を、
-  「何を**書く**か」とは別に列挙する。書く物の列挙(state の allowlist)は availability の話で、
-  読む物の列挙は security の話。両方要る
-- **極性**: 読む物を denylist で塞ぐと、次の版でツールが増やした名前が黙って穴になる。
-  **dir を ro で bind し、書ける場所だけを allowlist にする**方が、知らない名前が不活性側に
-  倒れる。issue #63 の allowlist は**実測**で作った(agentic leaf を1本走らせて tree を差分)。
-  最初に tool 無しの leaf で測った版は 6 個中 2 個を取りこぼしており、**測る leaf の種類まで
-  合わせないと allowlist は足りない**
-- **極性の代償も測って書く**: ro にすると、そのツールが原子的に書く物(lock dir + tmp file を
-  home 直下に作る類)が失敗する。issue #63 では `.claude.json` の更新が落ちるが、
-  transcript / resume / MCP 呼び出しは無事だと**実測して**受容した。「壊れないはず」で済ませない
-- **共有か専有かを先に決める**: 上の重篤度は「1つの home を全 leaf が共有する」ことから来る。
-  leaf ごとに分ければ注入面は自分自身に閉じる。共有を選ぶなら、**共有物への書き込みが
-  他 leaf の入力になる**という一文を設計に書く
+- **Check**: once you create an isolation target, enumerate what the tool **reads** from that
+  dir, separately from what it **writes**. The write enumeration (a state allowlist) is about
+  availability; the read enumeration is about security. You need both
+- **Polarity**: block the read side with a denylist and any name the tool adds in its next
+  version becomes a silent hole. **Bind the dir ro and allowlist only the writable places**, so
+  unknown names fall on the inert side. Issue #63's allowlist was built **by measurement** (run
+  one agentic leaf and diff the tree). The first version, measured with a tool-less leaf, missed
+  2 of 6 — **the allowlist is short unless the kind of leaf you measure matches production too**
+- **Measure and state the cost of the polarity**: going ro breaks whatever the tool writes
+  atomically (the lock-dir plus temp-file pattern directly under the home). In issue #63 the
+  `.claude.json` update fails while transcript, resume, and MCP calls survive — **measured**, then
+  accepted. Do not settle for "it should not break"
+- **Decide shared vs per-leaf first**: the severity above comes entirely from one home being
+  shared by every leaf. Split per leaf and the injection surface closes on itself. If you choose
+  sharing, write into the design the sentence that **a write to the shared object is an input to
+  the other leaves**
 
-### 2. 本番が実際に通る経路を確認する
+### 2. Confirm the path production actually takes
 
-規則を書いた引数を、**本番が渡しているとは限らない**。PR #51 では `run_syntax_check` の
-`sources` 引数に規則を書いたが、workflow は `sources` を一度も渡さない(自動探索側が素通しだった)。
+**Production does not necessarily pass the argument you wrote the rule on.** In PR #51 the rule
+went on `run_syntax_check`'s `sources` argument, and the workflow never passes `sources` (the
+auto-discovery side went straight through).
 
-- conductor の in-process 呼び出しを実際に読む(`_build_inproc` / `_gate_lint_check` /
+- Read the conductor's in-process calls for real (`_build_inproc` / `_gate_lint_check` /
   `_gate_syntax_check` / `_execute_inproc`)
-- 検証の**位置**も確認する。skip や早期 return の後ろに置くと、その条件下では効かない
-- 同じ事実を2箇所が読んでいないか `references/dual-read-pairs.md` で確認する
+- Confirm the **position** of the check too. Placed after a skip or an early return, it is inert
+  under that condition
+- Check whether two places read the same fact, via `references/dual-read-pairs.md`
 
-**位置には2種類ある。関数内の制御フローだけ見ると外す。**
+**There are two kinds of position. Look only at control flow inside the function and you miss
+one.**
 
-- **関数内**: skip / 早期 return より後ろか(上記)
-- **パイプライン内**: **その値を読む側より前に実行されるか**。PR #57 は正規化を「正しい関数」に
-  置いたが、`record_launch` は `prepare_launch_request_payload`(ここで prompt を**描画**し、
-  描画が `agent_role` を読む)を**先に**呼んでいた。正規化は15行あとに走り、**症状は直らず**、
-  しかも「永続化された request は正規化済み / 隣の prompt は未正規化で描画済み」という
-  **監査証跡の食い違いを新たに作った**。直す前より悪い
-- **見つけ方は1つ。ユニットで validator を叩かず、本番のエントリポイントを端から端まで駆動して、
-  最終成果物(描画された prompt / 永続化された JSON)を assert する。** PR #57 の最初のテストは
-  `_build_task_card` を自分で呼んでいたので緑になり、実際に出荷される prompt は誰も見ていなかった
+- **Inside the function**: is it after the skip / early return (above)
+- **Inside the pipeline**: **does it run before the side that reads the value?** PR #57 put the
+  normalization in the "right function", but `record_launch` called
+  `prepare_launch_request_payload` (which **renders** the prompt, and the rendering reads
+  `agent_role`) **first**. The normalization ran 15 lines later, **the symptom did not go away**,
+  and it newly created an **audit-trail mismatch**: the persisted request normalized, the prompt
+  next to it rendered un-normalized. Worse than before the fix
+- **There is one way to find this. Do not poke the validator in a unit test; drive the
+  production entry point end to end and assert on the final product** (the rendered prompt, the
+  persisted JSON). PR #57's first test called `_build_task_card` itself, so it went green while
+  nobody looked at the prompt that actually ships
 
-### 3. 失敗の帰属を決める
+### 3. Decide the failure's attribution
 
-拒否を足したら、それが誰の落ち度として routing されるかを決める。判断基準と既知の分岐は
-`references/failure-routing.md`。要点だけ: **leaf が直せるものは content failure、
-conductor / IR / 環境が原因のものは transport fail_closed**。例外は型で名指しし、
-`except ValueError` のような幅で拾わない(拾うと conductor 側の不備まで leaf の retry 予算を焼く)。
+Every refusal you add gets routed to someone as their fault. The criteria and the known
+branches are in `references/failure-routing.md`. The essentials: **what the leaf can fix is a
+content failure; what the conductor, the IR, or the environment caused is a transport
+fail_closed**. Name exceptions by type; do not catch at the width of `except ValueError` (that
+burns the leaf's retry budget on the conductor's own defects).
 
-**帰属を決めたら、次に「いつ表面化すべきか」を決める。** 帰属が正しくても**時点**が間違って
-いることがあり、これは帰属の議論だけでは出てこない。L174 では新しいパーサ依存(2つの Python
-パッケージ)が無い機械で、gate が fail-closed で terminal になる — 帰属は operator で正しい。
-だが露見するのは**最初の Generate ノードの gate、lint と syntax が通った後、billed run の途中**
-だった。**正しい失敗で、間違った時点。**
+**Once attribution is decided, decide when it should surface.** Attribution can be right while
+the **moment** is wrong, and the attribution discussion alone never surfaces that. In L174 a new
+parser dependency (two Python packages) missing from a machine makes the gate fail closed and
+go terminal — attribution "operator" is correct. But it surfaces **at the first Generate node's
+gate, after lint and syntax passed, in the middle of a billed run**. **The right failure at the
+wrong moment.**
 
-- **launch で検出できるものを実行中に落とさない。** 起動時チェックの前例はすでにある
-  (`tools/run_workflow.py` の `REQUIRED_CLI_TOOLS`。コメントに理由まで書いてある —
-  「Missing any one fails the run before init, so agents never hit a partial-failure state」)
-- 判定の順: **(a) 誰の落ち度か → (b) 最も早く確実に検出できる場所はどこか**。(b) が gate より
-  前にあるなら、gate の fail-closed は**保険として残したまま**、前段にも置く
-- この指摘は subagent 8本が4ラウンドかけて一度も出さず、**Codex が1回目で出した**。
-  依存・preflight・運用の面は subagent が構造的に見ない(`metdsl-review-loop` の Codex 節)
+- **Do not fail mid-run on something detectable at launch.** The precedent exists
+  (`REQUIRED_CLI_TOOLS` in `tools/run_workflow.py`, whose comment even states the reason:
+  "Missing any one fails the run before init, so agents never hit a partial-failure state")
+- Order of decisions: **(a) whose fault is it → (b) where is the earliest place it can be
+  detected reliably**. If (b) is earlier than the gate, **keep the gate's fail-closed as a
+  backstop** and add the earlier check as well
+- Eight subagents across four rounds never raised this; **Codex raised it on its first pass**.
+  Dependencies, preflight, and operations are surfaces subagents structurally do not look at (see
+  the Codex section of `metdsl-review-loop`)
 
-**拒否メッセージが名指しする原因は、実際の原因集合と一致していなければならない。**
-fail-closed は「正しく落ちる」だけでは足りない。落ちた相手が leaf なら、**warm retry が収束する
-指示**になっていて初めて閉じたことになる。L174 の refusal は「原因は keyword で名付けられた変数、
-rename せよ」と**単一の原因を断定**していたが、後からラベル起因の拒否が加わり、その入力では
-rename する対象が存在しない = **原理的に収束しない指示**を leaf に返していた(2ラウンド連続で
-指摘された)。
+**The cause a refusal message names must match the actual set of causes.** For a fail-closed,
+failing correctly is not enough. If the party that failed is a leaf, it is closed only once the
+message is **an instruction under which a warm retry converges**. L174's refusal asserted **a
+single cause** ("the cause is a variable named with a keyword; rename it"), and once a
+label-induced refusal was added, that input had no rename target at all = **an instruction that
+cannot converge in principle**, handed back to the leaf (flagged two rounds running).
 
-- 原因が増えたら**メッセージも増やす**。「the measured cause is X」と単数で断定しない
-- パーサ系では**報告位置がずれる**ことも書く(エラー回復のせいで、実際の原因ではなく
-  program unit の先頭が報告される)。「ここが原因」と読ませない
-- 列挙が閉じないなら、**閉じないと明記して探すべき形を書く**(「識別子やラベルが、パーサが
-  構造を期待する位置に居る」)
+- When the causes grow, **grow the message**. Do not assert "the measured cause is X" in the
+  singular
+- For parsers, say that **the reported position drifts** (error recovery reports the head of the
+  program unit rather than the actual cause). Do not let it read as "the cause is here"
+- If the enumeration does not close, **say so and describe the shape to look for** ("an
+  identifier or label sits where the parser expects structure")
 
-### 4. テストは性質を pin する
+### 4. Tests pin properties
 
-- **測定値を書き写さない。** 「`language: null` は二重所有になる」と書いたテストが、実装を
-  構造読みに変えた瞬間に**正しい修正を落とす pin** になった。測定値を使うなら、その値を
-  テスト内でコードから計算する
-- **helper ではなく handler で pin する。** 呼び出し側の配線を消しても緑、が実際に起きた
-  (5箇所中4箇所)
-- **本番ペイロードを実バリデータに通すテストを1本**置く。conductor のテストは tool 関数ごと
-  mock するので、検証層を一度も通らない
-- **サンプルを pin と呼ばない。** 集合を定義している場所の**外**に置いたテストは、集合同一性を
-  主張できない — 棄却をサンプルできるだけ。**docstring に「何を pin し、何をサンプルしているか」
-  を書く。** PR #55 では3ラウンドとも「pin した」と書いて3ラウンドとも破られた
-  (名前3つの denylist → 部分文字列 → 「ファイルであってディレクトリでない」)。
-  述語に分岐が複数あるなら(`==` / `startswith` / 末尾スラッシュ)、**分岐ごとにプローブが要る**
+- **Do not transcribe measured values.** A test asserting "`language: null` results in dual
+  ownership" became **a pin that rejected the correct fix** the moment the implementation moved
+  to structural reading. If you use a measured value, compute it from the code inside the test
+- **Pin at the handler, not the helper.** Deleting the caller's wiring and staying green
+  actually happened (4 of 5 sites)
+- **Keep one test that pushes a production payload through the real validator.** The conductor's
+  tests mock each tool function, so they never traverse the validation layer
+- **Do not call a sample a pin.** A test placed **outside** the place that defines the set
+  cannot claim set identity — it can only sample rejections. **Write in the docstring what is
+  pinned and what is sampled.** In PR #55 all three rounds said "pinned" and all three were
+  broken (a three-name denylist → a substring → "a file, not a directory"). If the predicate has
+  several branches (`==` / `startswith` / trailing slash), **each branch needs its own probe**
 
-- **1つの文字列が2つの規則を述べているなら、部分文字列 pin は必ずもう片方で真になる。**
-  この repo の remedy / hint / 契約文は「artifact はこう書け、scratch はこう書け」のように
-  **2規則を1つのメッセージに畳む**。そこに `assertIn("Write tool", reason)` を当てると、
-  規則Aの文が規則Bの pin を満たす。PR #76 では**同一ブランチで4回**踏んだ:
-  `WRITE_HINT`(artifact 文にも "Edit/Write tool" があり、temp 文を空にしても緑)/
-  文書検査テストの positive 半分(**同一行の 699 字先**に artifact 文)/
-  managed-artifact refusal(`origin/main` の「Bash may only write scratch」の版で緑)/ もう1件。
-  4回とも「直した」と書いた次のラウンドで別の形で再発した
-  - **対策は毎回同じ: 規則が支配する「半分」で split してから読む**
+- **If one string states two rules, a substring pin is necessarily true via the other one.**
+  This repo's remedy, hint, and contract texts fold **two rules into one message** ("write
+  artifacts like this, write scratch like that"). Aim `assertIn("Write tool", reason)` at that
+  and rule A's sentence satisfies rule B's pin. PR #76 hit this **four times on one branch**:
+  `WRITE_HINT` (the artifact sentence also contains "Edit/Write tool", so emptying the temp
+  sentence stayed green) / the positive half of the document-inspection test (**699 characters
+  later on the same line**, the artifact sentence) / the managed-artifact refusal (green against
+  `origin/main`'s "Bash may only write scratch" wording) / one more. All four times I wrote
+  "fixed" and it recurred in a different shape the next round
+  - **The remedy is the same every time: split on the half the rule governs, then read**
     (`WRITE_HINT.split("For temp files")[1]` / `reason.split("allowed_tmp_root")[1]`)
-  - **判定手順**: pin を書く前に、そのメッセージ全文を読んで**同じ語が別の規則の説明で
-    使われていないか**を数える。1回でも使われていたら、部分文字列 pin は成立しない
-  - **確認は「変異を当てて落ちること」まで。** ここでも `origin/main` の版に対して
-    実際に落ちるかを走らせる — 「新しい文言を assert したから pin できている」は推論
+  - **Decision procedure**: before writing a pin, read the whole message and count whether the
+    same word is used in the explanation of another rule. One use and the substring pin does not
+    hold
+  - **Confirmation runs to "the mutation makes it fail".** Here too, run it against
+    `origin/main`'s wording and see it actually fail — "I asserted the new wording, so it is
+    pinned" is inference
 
-### 5. 変異チェックを回してからコミットする
+### 5. Run the mutation check before committing
 
-修正を1 hunk ずつ戻してテストが**落ちること**を確認する。PR #51 では 42変異中の生存や
-「理由違いで通っている」テストを、後のラウンドで指摘されて初めて知った。
+Revert your fix one hunk at a time and confirm the tests **fail**. In PR #51 I learned about
+surviving mutants and tests passing for the wrong reason only when a later round pointed them
+out.
 
-手順とスクリプトは **`metdsl-review-loop` が正典**(`scripts/mutation_check.py`)。
-レビューに出す前にも同じものを回すので、そちらの「出す前(ラウンド0)」を見る。
+The procedure and the script are **owned by `metdsl-review-loop`** (`scripts/mutation_check.py`).
+The same thing runs before review, so read its "Before you hand it over (round 0)".
 
-### 6. 確認と記録
+### 6. Verify and record
 
-`references/verification.md` の手順(スイート基準線、ruff の origin/main 差分照合、
-doc サイズ上限、実サーバプロセス経由の end-to-end、散文の grep)を実行し、
-実測値を commit / TODO.md に書く。**測っていない断言を書かない。**
+Run the procedures in `references/verification.md` (suite baseline, ruff diff against
+origin/main, doc size ceilings, end-to-end through a real server process, the prose grep) and
+write the measured values into the commit or TODO.md. **Do not write an assertion you have not
+measured.**
 
-### 7. この skill 自身を更新すべきか判断する
+### 7. Decide whether this skill itself needs updating
 
-作業の最後に、**今回の経験がこの skill の内容を古くしたか / 埋めるべき欠けを露呈したか**を判断する。
-判断だけで終わらせず、必要だと判断したら**ユーザーに伝える**(黙って書き換えない — 何を
-なぜ変えるかはユーザーの判断材料)。
+At the end of the work, judge whether **this session made this skill's content stale, or exposed
+a gap it should fill**. Do not stop at the judgment: when you decide something is needed, **tell
+the user** (do not rewrite silently — what changes and why is material for their decision).
 
-見るべき兆候:
+Signs to look for:
 
-- **新しい二重読みのペアを作った / 既存のペアを解消した** → `references/dual-read-pairs.md` の表
-- **失敗の帰属で迷った、または既存の分類に当てはまらなかった** → `references/failure-routing.md`
-- **確認手順が足りなかった / コマンドが古くなっていた** → `references/verification.md`
-- **変異チェックが誤検知した、または見逃した** → `scripts/mutation_check.py`
-- **この skill が起動すべき場面で起動しなかった / 不要な場面で起動した** → `description`
-- **判断規則3つのどれかを、手順に従っていたのに破ってしまった** → SKILL.md 本体。規則が
-  抜けているのか、規則はあったが発動点が違ったのかを区別して伝える
-- **skill に書いていない罠で時間を溶かした** → 追加候補。ただし**正典の複製にならないか**を
-  確認する(規則の内容は repo の doc が正典。ここには手順と、どこにも書かれていない罠だけ)
-- **memory**(`feedback_enforcement_change_skill.md`)はポインタのみ。内容を足したくなったら
-  それは skill 側の更新
+- **You created a new dual-read pair, or resolved an existing one** → the table in
+  `references/dual-read-pairs.md`
+- **You hesitated over failure attribution, or it fit no existing category** →
+  `references/failure-routing.md`
+- **A verification step was missing, or a command had gone stale** → `references/verification.md`
+- **The mutation check gave a false positive, or missed something** → `scripts/mutation_check.py`
+- **The skill did not fire when it should have, or fired when it should not** → `description`
+- **You broke one of the three judgment rules while following the procedure** → SKILL.md itself.
+  Distinguish "the rule was missing" from "the rule was there but its trigger point was
+  elsewhere"
+- **A trap not written here consumed your time** → a candidate for addition. But check that it
+  **is not a copy of a canonical source** (rule content belongs to the repo's docs; only the
+  procedure and traps written nowhere else belong here)
+- **Memory** (`feedback_enforcement_change_skill.md`) is a pointer only. Wanting to add content
+  there means the skill is what needs updating
 
-「更新不要」と判断した場合もその旨を一言伝える。判断したこと自体が情報になる。
+If you judge that no update is needed, say so in one line. The judgment itself is information.
 
-## レビュー指摘をトリアージするとき
+## When triaging review findings
 
-コードを触っていなくてもこの skill を使う。判断規則1が効くのはこの瞬間。
+Use this skill even when you have not touched code. Judgment rule 1 is what matters at this
+moment.
 
-- 指摘を **本物 / 偽陽性 / 残余** に分ける前に、まず再現を実行する
-- 「実装は正しいがテストが弱い」も本物として扱う(PR #51 の生存変異はここから出た)
-- 指摘が前ラウンドの修正の中にある場合、それは偶然ではない。**直したファイルを次のラウンドで
-  重点的に見る**
+- Before sorting a finding into real / false positive / residual, run the reproduction
+- Treat "the implementation is right but the test is weak" as real (PR #51's surviving mutants
+  came from here)
+- When a finding lands inside the previous round's fix, that is not a coincidence. **Look
+  hardest at the files you just fixed in the next round**
