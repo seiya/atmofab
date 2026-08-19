@@ -42,11 +42,21 @@ hunks in ONE file to exercise the tracked-file restore — the version with two 
 witnessed only half of it. Every mechanism claimed here was confirmed by reverting it and
 watching a named test fail.
 
-What these tests do NOT cover, stated so nobody reads the file as more than it is: timing,
-`--jobs` above 2, `--keep`, `--skip-baseline`, the `git apply -R` refusal path, mode-change and
-empty-file hunkless shapes, symlinks, and every message's wording beyond the substrings
-asserted. A green run here means the defects listed above stay fixed and the exit-code contract
-holds — not that the instrument is correct.
+What these tests do NOT cover, from a census of 187 mutations run against them by an
+independent reviewer (96 killed, 91 survived, and every survivor below was demonstrated to be a
+real behaviour change rather than an equivalent mutant): the `git apply -R` refusal branch of
+SKIP — no scenario was found that produces it at HEAD; `--keep`, `--skip-baseline`, `--workdir`
+placement and the per-job temp roots; a range whose right side is not HEAD; the mode-change and
+empty-new-file hunkless shapes; symlinks; a repo-local `diff.noprefix`; the individual members
+of the TMPDIR lookbehind class and of the diff-header prefix list; the SKIPPED and INCONCLUSIVE
+summary paragraphs (the tests read the per-hunk verdict line instead); and every message's
+wording beyond the substrings asserted. Two known behaviours are also unwitnessed and left
+deliberately: a prose-only change in a NEW file is reported as an unexplained survivor rather
+than labelled, and a comment-only change in a non-UTF-8 module is too, because neither side of
+the AST comparison parses. Both over-report, which is the safe direction.
+
+A green run here means the defects listed above stay fixed and the exit-code contract holds —
+not that the instrument is correct.
 """
 
 from __future__ import annotations
@@ -218,21 +228,26 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.assertNotIn("every hunk is pinned", run.out, msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
 
-    def test_two_hunks_are_judged_independently_in_parallel_too(self) -> None:
-        """`--jobs 2` recycles worktrees between hunks, and the carry-over bug's defining
-        symptom was that the verdict depended on how many jobs the machine chose."""
+    def test_hunks_are_judged_independently_when_a_worktree_is_recycled(self) -> None:
+        """The carry-over bug's defining symptom was a verdict that changed with the job count,
+        so the parallel case needs MORE hunks than jobs — three at `--jobs 2`, which forces one
+        worktree to take a second hunk. The first version used two hunks at two jobs, where
+        nothing is ever recycled, and both carry-over mutations survived it."""
         filler = "".join(f"pad_{n} = {n}\n" for n in range(30))
-        self.repo.write("a.py", f"first = 1\n{filler}second = 1\n")
+        self.repo.write("a.py", f"first = 1\n{filler}second = 1\n{filler}third = 1\n")
         self.repo.commit("base")
-        self.repo.write("a.py", f"first = 2\n{filler}second = 2\n")
-        self.repo.commit("two hunks, one pinned")
+        self.repo.write("a.py", f"first = 2\n{filler}second = 2\n{filler}third = 2\n")
+        self.repo.commit("three hunks, one pinned")
         proc = subprocess.run(
             [sys.executable, str(SCRIPT), "--range", "HEAD~1..HEAD", "--jobs", "2",
              "--workdir", str(self.workdir), "--test-cmd", _pins("a.py", "first = 2")],
             cwd=self.repo.root, text=True, capture_output=True,
             env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
         run = _Run(proc)
-        self.assertIn("SURVIVED", run.out, msg=str(run))
+        # BOTH unpinned hunks must survive. Asserting that one of them did is what let the
+        # carry-over mutations through: whichever hunk inherited the recycled worktree came
+        # back `killed`, and the other one's SURVIVED satisfied the assertion.
+        self.assertEqual(2, run.out.count("SURVIVED"), msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
 
     def test_a_hunk_that_times_out_is_inconclusive_not_killed(self) -> None:
@@ -246,8 +261,63 @@ class MutationCheckScenarioTests(unittest.TestCase):
         cmd = (f"{sys.executable} -c \"import pathlib,time,sys;"
                f"time.sleep(30) if 'x = 1' in pathlib.Path('k.py').read_text() else sys.exit(0)\"")
         run = self.run_check("--timeout", "2", test_cmd=cmd)
+        # Read the per-hunk verdict line, not the summary paragraph below it: the paragraph
+        # names `--timeout` in its remedy, so asserting on the word alone passed even with the
+        # word removed from the verdict.
+        verdict = next(line for line in run.out.splitlines() if "INCONCLUSIVE" in line)
+        self.assertIn("--timeout", verdict, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_deleted_directory_does_not_carry_into_the_next_hunk(self) -> None:
+        """`git clean -qfdx`, one flag at a time: without `-d` the DIRECTORY a revert recreates
+        stays, and the next hunk's command fails for it — the file-level version of this test
+        passes with `-fx`, so the `-d` had no witness."""
+        self.repo.write("pkg/legacy.py", "old = 1\n")
+        self.repo.write("z_target.py", "x = 1\n")
+        self.repo.commit("base")
+        (self.repo.root / "pkg" / "legacy.py").unlink()
+        (self.repo.root / "pkg").rmdir()
+        self.repo.commit("delete the package")
+        self.repo.write("z_target.py", "x = 2\n")
+        self.repo.commit("unpinned change")
+        run = self.run_check(
+            rng="HEAD~2..HEAD",
+            test_cmd=f"{sys.executable} -c \"import pathlib,sys;"
+                     f"sys.exit(1 if pathlib.Path('pkg').exists() else 0)\"")
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertNotIn("every hunk is pinned", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_skipped_hunk_fails_the_run_beside_a_prose_survivor(self) -> None:
+        """The survivor branch has its own exit expression, and `skipped` in it was unwitnessed:
+        a SKIP beside a prose-only survivor exited 0 with "NOTHING was tested" printed."""
+        body = "".join(f"value_{n} = {n}\n" for n in range(20))
+        self.repo.write("src/a.py", f'"""doc a."""\n{body}')
+        self.repo.write("m.py", '"""doc."""\nx = 1\n')
+        self.repo.commit("base")
+        self.repo.git("mv", "src/a.py", "src/b.py")
+        self.repo.write("src/b.py", f'"""doc b."""\n{body}')
+        self.repo.write("m.py", '"""doc changed."""\nx = 1\n')
+        self.repo.commit("rename plus a docstring")
+        run = self.run_check()
+        self.assertIn("SKIP", run.out, msg=str(run))
+        self.assertIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_an_inconclusive_hunk_fails_the_run_beside_a_prose_survivor(self) -> None:
+        """Same branch, the `inconclusive` term."""
+        self.repo.write("m.py", '"""doc."""\nx = 1\n')
+        self.repo.write("z.py", "y = 1\n")
+        self.repo.commit("base")
+        self.repo.write("m.py", '"""doc changed."""\nx = 1\n')
+        self.repo.write("z.py", "y = 2\n")
+        self.repo.commit("a docstring and a change")
+        cmd = (f"{sys.executable} -c \"import pathlib,sys;"
+               f"print('ERROR collecting z.py');"
+               f"sys.exit(2 if 'y = 1' in pathlib.Path('z.py').read_text() else 0)\"")
+        run = self.run_check(test_cmd=cmd)
         self.assertIn("INCONCLUSIVE", run.out, msg=str(run))
-        self.assertIn("--timeout", run.out, msg=str(run))
+        self.assertIn("prose-only", run.out, msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
 
     # --- changes with nothing to revert ------------------------------------------------------
@@ -276,6 +346,50 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.assertIn("no revertible hunk", run.out, msg=str(run))
         self.assertIn("blob.bin", run.out, msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
+
+    def test_reported_failures_outrank_a_collection_marker(self) -> None:
+        """A run that reports failures observed something, whatever else went wrong beside it.
+
+        Reading the marker alone made the remedy this script prints useless: with
+        `--continue-on-collection-errors` pytest keeps the same `ERROR collecting` line AND runs
+        the rest, so a hunk its tests really killed came back INCONCLUSIVE however many times
+        the reader followed the advice.
+        """
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        cmd = (f"{sys.executable} -c \"import pathlib,sys;"
+               f"reverted = 'x = 1' in pathlib.Path('k.py').read_text();"
+               f"print('ERROR collecting other.py');"
+               f"print('== 3 failed, 41 passed in 2s ==') if reverted else None;"
+               f"sys.exit(1 if reverted else 0)\"")
+        run = self.run_check("--skip-baseline", test_cmd=cmd)
+        self.assertIn("killed", run.out, msg=str(run))
+        self.assertNotIn("INCONCLUSIVE", run.out, msg=str(run))
+
+    def test_each_marker_of_a_suite_that_never_ran_is_recognised(self) -> None:
+        """Five markers, each its own decision: only one was witnessed, and dropping any of the
+        other four turned "nothing ran" into `killed` — the false green this detector exists
+        for. The last case also proves the markers are read from stderr, not stdout alone."""
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        cases = [("stdout", "ERROR collecting tools/tests/x.py"),
+                 ("stdout", "2 errors during collection"),
+                 ("stdout", "1 error during collection"),
+                 ("stdout", "!!!!! Interrupted: 1 error !!!!!"),
+                 ("stdout", "no tests ran in 0.01s"),
+                 ("stderr", "ERROR collecting tools/tests/x.py")]
+        for stream, marker in cases:
+            with self.subTest(stream=stream, marker=marker):
+                target = "sys.stderr" if stream == "stderr" else "sys.stdout"
+                cmd = (f"{sys.executable} -c \"import sys;"
+                       f"print({marker!r}, file={target});sys.exit(2)\"")
+                run = self.run_check("--skip-baseline", test_cmd=cmd)
+                self.assertIn("INCONCLUSIVE", run.out, msg=str(run))
+                self.assertEqual(1, run.code, msg=str(run))
 
     # --- what counts as prose ----------------------------------------------------------------
 
@@ -343,6 +457,44 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.repo.commit("shebang")
         run = self.run_check(test_cmd=_pins("s.sh", "env bash"))
         self.assertIn("killed", run.out, msg=str(run))
+        self.assertEqual(0, run.code, msg=str(run))
+
+    def test_a_file_python_cannot_parse_is_not_labelled_prose(self) -> None:
+        """`_stripped` returns None for an unparseable module, and both sides must be checked:
+        a version returning "" made the two compare equal, so a real change in a file Python
+        cannot parse was labelled expected prose and the run exited 0."""
+        self.repo.write("broken.py", "VALUE = 1\ndef (:\n")
+        self.repo.commit("base")
+        self.repo.write("broken.py", "VALUE = 2\ndef (:\n")
+        self.repo.commit("change nobody pins")
+        run = self.run_check()
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertNotIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_deleted_python_file_is_not_labelled_prose(self) -> None:
+        """The file is not at head, so `git show` fails; treating that as prose labelled a
+        whole deleted module "expected" and exited 0."""
+        self.repo.write("doomed.py", '"""doc."""\nx = 1\n')
+        self.repo.commit("base")
+        (self.repo.root / "doomed.py").unlink()
+        self.repo.commit("delete it")
+        run = self.run_check()
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertNotIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_docstring_inside_a_function_is_prose_too(self) -> None:
+        """Every fixture used a MODULE docstring, so the class and function arms of the AST
+        blanking had no witness — and those are the commonest prose hunks there are."""
+        self.repo.write("m.py", 'class C:\n    """old class doc."""\n\n'
+                                'def f():\n    """old doc."""\n    return 1\n')
+        self.repo.commit("base")
+        self.repo.write("m.py", 'class C:\n    """new class doc."""\n\n'
+                                'def f():\n    """new doc."""\n    return 1\n')
+        self.repo.commit("docstrings")
+        run = self.run_check()
+        self.assertIn("prose-only", run.out, msg=str(run))
         self.assertEqual(0, run.code, msg=str(run))
 
     # --- encodings ---------------------------------------------------------------------------

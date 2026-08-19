@@ -94,8 +94,12 @@ _SUITE_DID_NOT_RUN = (
 )
 
 
+#: A run that reports failures observed something, whatever else went wrong beside it.
+_TESTS_DID_FAIL_RE = re.compile(r"^=+ .*\b\d+ failed\b|\b\d+ failed[,\s]", re.MULTILINE)
+
+
 def _suite_did_not_run(output: str) -> bool:
-    """True when pytest exited nonzero WITHOUT observing the code under test.
+    """True when the test command exited nonzero WITHOUT observing the code under test.
 
     A reverted hunk can break collection — an import that no longer resolves, a fixture built at
     class-body scope, a syntax error — and pytest then exits nonzero having run nothing. Scored on
@@ -103,7 +107,15 @@ def _suite_did_not_run(output: str) -> bool:
     test noticed the change when no test ran at all. A witness census on met-dsl PR #68 hit exactly
     this on three mutations; re-run with `--continue-on-collection-errors` they showed 41-47 real
     failures each, so the verdict was right by accident and would not have been on a fourth.
+
+    A collection marker alone is not the question, though, and reading it as one made the remedy
+    this script prints useless: with `--continue-on-collection-errors` pytest keeps the same
+    `ERROR collecting` line AND runs the rest, so a hunk its tests really killed came back
+    INCONCLUSIVE however many times the reader followed the advice. Reported failures settle it —
+    something ran and noticed — so they win over the marker.
     """
+    if _TESTS_DID_FAIL_RE.search(output):
+        return False
     return any(marker in output for marker in _SUITE_DID_NOT_RUN)
 
 
@@ -130,9 +142,10 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
             tree = ast.parse(source)
         except SyntaxError:
             return None
-        except (UnicodeEncodeError, ValueError):
+        except ValueError:
             # A non-UTF-8 file arrives here carrying surrogates from `surrogateescape`, and
-            # `compile()` refuses those with UnicodeEncodeError, not SyntaxError. Uncaught it
+            # `compile()` refuses those with UnicodeEncodeError — a ValueError subclass, which
+            # is why this arm is spelled at that width — not SyntaxError. Uncaught it
             # was a traceback and exit 1 — the code that means "hunks survived" — AFTER the
             # verdicts had been printed. Unclassifiable is the honest answer: not prose.
             return None
@@ -150,7 +163,7 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
     try:
         current = _run(["git", "show", f"{head}:{path}"], cwd=repo)
     except RuntimeError:
-        return False
+        return False  # the file is not at head (the change deleted it): not classifiable
     # Reverted in a scratch tree, never against the checkout: the caller's working tree is not
     # guaranteed to be at `head`, and this must not touch it in any case. `git apply` edits the
     # file in place (it has no `--stdout`), so the scratch copy is what gets read back.
@@ -166,13 +179,18 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
         try:
             after_source = target.read_bytes().decode("utf-8", "surrogateescape")
         except OSError:
-            # A rename hunk reverts the file to its OLD path, so nothing is at `path` any
-            # more. That is a code move, never a docstring-only change; before this guard
-            # the FileNotFoundError escaped as a traceback and the process exited 1 with no
-            # summary — indistinguishable, to a caller reading the exit code, from survivors.
+            # Nothing is at `path` after the revert. The reachable case is a hunk that ADDS a
+            # file: reverting it deletes the file. (A rename would do the same, but those are
+            # SKIPped in `check()` before any classification, so that case cannot arrive here —
+            # an earlier version of this comment named it as the reason.) Either way it is not
+            # a prose change, and without this the OSError escaped as an exit-2 `cannot run:`
+            # after the verdicts had already printed.
             return False
     before, after = _stripped(current), _stripped(after_source)
-    return before is not None and before == after
+    # `is not None` on BOTH sides: a version of this that returned "" for an unparseable file
+    # made the two sides compare equal, so a real change in a file Python cannot parse — or in
+    # a non-UTF-8 module — was labelled expected prose and the run exited 0.
+    return before is not None and after is not None and before == after
 
 
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> str:
@@ -284,12 +302,11 @@ def _split_hunks(diff_text: str) -> list[tuple[str, str]]:
 
 def _run_tests(cmd: str, worktree: Path, tmpdir: Path,
                timeout: int) -> subprocess.CompletedProcess[str] | None:
-    """Run the test command in `worktree`; only its exit code decides a verdict.
+    """Run the test command in `worktree`; its exit code decides the verdict.
 
     Each worker gets its own TMPDIR: jobs run concurrently, and tests that write to a
     fixed name under the temp root would otherwise fight over it.
     """
-    tmpdir.mkdir(parents=True, exist_ok=True)
     try:
         return subprocess.run(
             cmd, cwd=worktree, shell=True, text=True, capture_output=True,
@@ -308,8 +325,9 @@ def main() -> int:
                 help="git range, two-dot or three-dot: HEAD~1..HEAD, origin/main...HEAD")
     ap.add_argument("--paths", nargs="*", default=[], help="restrict to these paths")
     ap.add_argument("--test-cmd", required=True,
-                    help="run inside the worktree; only its exit code is read, so pass "
-                         "-x (pytest) to stop at the first failure")
+                    help="run inside the worktree; its exit code decides the verdict and its "
+                         "output is read only to tell a real failure from a suite that never "
+                         "ran, so pass -x (pytest) to stop at the first failure")
     ap.add_argument("--repo", default=".", help="repository (default: cwd)")
     ap.add_argument("--workdir", default=str(Path.home() / ".cache" / "mutation-check"))
     ap.add_argument("--timeout", type=int, default=1800)
@@ -369,15 +387,16 @@ def main() -> int:
               "--jobs 1.")
     if "pytest" in args.test_cmd and not re.search(r"(?<![\w-])(-x|--exitfirst)(?![\w-])",
                                                    args.test_cmd):
-        print("hint: only the exit code is read — adding -x to --test-cmd ends each "
+        print("hint: the exit code decides the verdict — adding -x to --test-cmd ends each "
               "killed hunk at its first failing test")
 
-    # `rsplit`, and strip the dot a THREE-dot range leaves behind: `origin/main...HEAD` is the
-    # spelling the skill names as the review target, and `split("..")[-1]` turns it into `.HEAD`,
-    # which `rev-parse` refuses. Resolved here, before any worktree or temp dir exists, so a bad
+    # `rsplit`, not `split`: `origin/main...HEAD` is the spelling the skill names as the review
+    # target, and `split("..")[-1]` turns it into `.HEAD`, which `rev-parse` refuses. `rsplit`
+    # on the two-dot separator leaves the third dot on the LEFT half, so nothing needs stripping
+    # (an earlier version added a `.lstrip(".")` that a census proved could never fire). Resolved here, before any worktree or temp dir exists, so a bad
     # range fails with nothing to clean up (it used to raise between the mkdtemps and the `try`
     # that owns cleanup, leaving both behind).
-    head = _run(["git", "rev-parse", args.range.rsplit("..", 1)[-1].lstrip(".") or "HEAD"],
+    head = _run(["git", "rev-parse", args.range.rsplit("..", 1)[-1] or "HEAD"],
                 cwd=repo).strip()
 
     Path(args.workdir).mkdir(parents=True, exist_ok=True)

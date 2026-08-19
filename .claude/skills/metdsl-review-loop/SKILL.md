@@ -165,8 +165,9 @@ Test-file hunks are excluded by default (`--include-tests`
   up at line granularity when one rule lives in N places**
 - **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too** (done
   twice on the issue #63 PR, once losing an uncommitted P1 fix). Use a separate worktree (the
-  script's default; with `--keep` those worktrees stay REGISTERED in your repository, so
-  `git worktree prune` once you have read them) or a `cp` backup
+  script's default; with `--keep` those worktrees stay REGISTERED in your repository, and
+  `git worktree prune` will NOT unregister one whose directory still exists — `git worktree remove
+  <path>` does) or a `cp` backup
 - **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk looks
   like a pass (L128: deleting the scope mechanism outright kept everything green and all 5 tests
   meant to pin it were inert). The countermeasures, each with its episode in the reference file:
@@ -477,8 +478,10 @@ something there, **write one line of justification and do not carry the list int
 (same reason as exclusion lists — and if reachability is unverified, do not drop it, run the
 reproduction).
 
-**What this repository is** (README §Scope is canonical): a **single-operator research workflow
-platform** that generates and certifies weather and climate kernels from a `spec`. What is defended
+**What this repository is**: a **single-operator research workflow platform** that generates and
+certifies weather and climate kernels from a `spec` — `README.md` §Scope is canonical for what it
+builds, while the threat model below is this skill's own framing and is written in no other
+document. What is defended
 against is **a deviating `LLM` leaf and defects my own changes introduce**, not a malicious third
 party and not an unknown user population. It is neither a distributed artifact nor a long-lived API.
 
@@ -717,7 +720,8 @@ as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fi
   "the call site writes the expected value" test are different things**, and the latter can only be
   written by reading the artifact (payload / artifact / file)
 - **A change has "mirrors of the same predicate" and you fixed one** → there can be three mirrors.
-  PR #67 had `_ir_is_m3c_physics` in the conductor, `orchestration_runtime`, and the validator;
+  PR #67 found `_ir_is_m3c_physics` mirrored across the conductor, `orchestration_runtime` and
+  the validator (today the live copies have moved — grep before quoting this);
   moving one to the registry and abandoning two makes one declared line doubly own an artifact and
   silently disables another gate. **`grep` first for prose saying "mirrors", "cannot disagree",
   "same decision"** — mirrors usually announce themselves in a comment
