@@ -1126,9 +1126,14 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertFalse(log_path.exists())
 
     def test_claude_backend_settings_json_command_works(self) -> None:
+        # The LEAF's settings file is the owner of the hook wiring (issue #63); the
+        # dev layer mirrors it. The sync test asserts leaf hooks are a SUBSET of dev,
+        # so a hook deleted on the leaf side would not show up there — reading the
+        # owner here is what makes that direction observable.
+        from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         repo_root = Path(__file__).resolve().parents[2]
         settings_doc = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            (repo_root / CLAUDE_LEAF_CONFIG_REL).read_text(encoding="utf-8")
         )
         with tempfile.TemporaryDirectory() as tmp:
             command = (
@@ -3178,14 +3183,21 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
 
     @staticmethod
     def _allowlisted_bash_matchers(repo_root: Path) -> list[re.Pattern[str]]:
-        """The Bash commands `.claude/settings.json` permits, read from the file.
+        """The Bash commands the LEAF's settings file permits, read from the file.
+
+        `leaf_config/claude/settings.json`, not `.claude/settings.json`: since issue
+        #63's final form that is the only permission layer a leaf loads, and this
+        pin followed the layer. Left pointing at the dev file, stripping all sixteen
+        `Bash(...)` entries from the leaf file left the entire suite green — the very
+        defect this test was written to prevent, one file over.
 
         A `*` is a wildcard wherever it appears, not only at the end: an earlier
         version stripped a trailing `*` and prefix-matched the rest, which made
         `Bash(jq -er * workspace/tmp/*)` unmatchable.
         """
+        from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         settings = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            (repo_root / CLAUDE_LEAF_CONFIG_REL).read_text(encoding="utf-8")
         )
         matchers = []
         for entry in settings["permissions"]["allow"]:
@@ -3265,13 +3277,137 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 return False
         return True
 
+    def test_a_private_home_tool_result_is_auto_approved_not_merely_unblocked(self) -> None:
+        """The carve-out has to reach the AUTO-APPROVE path, not only the block path.
+
+        Two layers decide this read. The common policy stopped BLOCKING it once the
+        exemption learned about the private home — but auto-approval is a separate
+        call, and its callers here did not pass the orchestration id, so it kept
+        searching `~/.claude` only. The read then fell through to the committed leaf
+        permissions, which grant no `cat /tmp/...`, and the file the harness had just
+        told the agent to read stayed unavailable through Bash. Fixing the block and
+        declaring victory is exactly what happened; this asserts the end state.
+        """
+        from tools.hooks.cli import _is_auto_approvable_readonly_bash
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            meta = repo / "workspace" / "orchestrations" / "o"
+            meta.mkdir(parents=True)
+            (meta / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            results = home / "projects" / slug / "sess-1" / "tool-results"
+            results.mkdir(parents=True)
+            target = results / "abc.txt"
+            target.write_text("oversized gate output", encoding="utf-8")
+
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                self.assertTrue(
+                    _is_auto_approvable_readonly_bash(f"cat {target}", repo))
+                # CONTROL — auto-approval bypasses the harness allowlist, so it must
+                # not have become "any out-of-repo file".
+                other = Path(homes) / "unrelated.txt"
+                other.write_text("x", encoding="utf-8")
+                self.assertFalse(
+                    _is_auto_approvable_readonly_bash(f"cat {other}", repo))
+            # CONTROL — without the host-set orchestration id there is no private
+            # home to recognise, so the pre-issue-#63 answer stands.
+            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+                os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+                self.assertFalse(
+                    _is_auto_approvable_readonly_bash(f"cat {target}", repo))
+
+    def test_the_read_tool_also_exempts_a_private_home_tool_result(self) -> None:
+        """The Read half of the carve-out, which had no witness at all.
+
+        Two tools reach the same file: `Read` goes through
+        `_is_persisted_tool_result_read` and Bash through the shape check plus
+        auto-approval. Only the Bash halves were observed, so re-pointing the Read
+        half at `~/.claude` left the suite green while the Read tool refused the
+        file the harness had just told the agent to read — for every agentic leaf.
+        """
+        from tools.hooks.common import _is_persisted_tool_result_read
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            meta = repo / "workspace" / "orchestrations" / "o"
+            meta.mkdir(parents=True)
+            (meta / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            arid = "child-1"
+            results = home / "projects" / slug / arid / "tool-results"
+            results.mkdir(parents=True)
+            target = results / "abc.txt"
+            target.write_text("oversized gate output", encoding="utf-8")
+
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                self.assertTrue(_is_persisted_tool_result_read(
+                    repo, "substep", arid, str(target)))
+                # CONTROL — the exemption is bound to the agent's OWN session, so a
+                # sibling leaf's persisted output is not readable through it.
+                other = home / "projects" / slug / "child-2" / "tool-results"
+                other.mkdir(parents=True)
+                (other / "abc.txt").write_text("x", encoding="utf-8")
+                self.assertFalse(_is_persisted_tool_result_read(
+                    repo, "substep", arid, str(other / "abc.txt")))
+
+    def test_the_bash_read_policy_auto_approves_a_private_home_tool_result(self) -> None:
+        """The SECOND Bash call site, through the real hook decision.
+
+        `_is_auto_approvable_readonly_bash` is one of two places the id had to
+        reach; `_evaluate_bash_read_manifest_policy` is the other, and it was
+        unobserved — the commit that fixed both named both and witnessed one.
+        Asserted on the decision the hook actually returns.
+        """
+        from tools.hooks.cli import _evaluate_bash_read_manifest_policy
+        from tools.hooks.common import HookEventName, HookInput
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            orch = repo / "workspace" / "orchestrations" / "o"
+            (orch / "read_manifests").mkdir(parents=True)
+            (orch / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            (orch / "read_manifests" / "child-1.json").write_text(
+                json.dumps({"agent_run_id": "child-1", "allowed_read_roots": ["docs/"]}),
+                encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            results = home / "projects" / slug / "child-1" / "tool-results"
+            results.mkdir(parents=True)
+            target = results / "abc.txt"
+            target.write_text("oversized gate output", encoding="utf-8")
+
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                decision, _run_id, out_of_repo = _evaluate_bash_read_manifest_policy(
+                    decoded=HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": f"cat {target}", "repo_root": str(repo)},
+                        command=f"cat {target}", tool_name="Bash"),
+                    repo_root=repo, orchestration_id="o", backend="claude",
+                    resolved_run_id="child-1")
+            # The exemption's job is to keep this target OUT of the out-of-repo set,
+            # which is what later costs it the auto-approve; and the manifest grants
+            # only `docs/`, so a guard decision here would be the refusal it exempts.
+            policy = (getattr(decision, "audit_detail", None) or {}).get("policy", "") \
+                if decision is not None else ""
+            self.assertNotEqual(policy, "read_manifest_read_guard")
+            self.assertNotIn(str(target), out_of_repo)
+
     def test_committed_allowlist_covers_the_commands_the_repository_instructs(
         self,
     ) -> None:
         """PIN: every command a leaf is TOLD to run is matched by a committed entry.
 
-        Since PR #72 the committed `.claude/settings.json` is an agentic leaf's whole
-        permission layer, so an entry deleted or misspelled costs every leaf an
+        Since issue #63's final form the committed `leaf_config/claude/settings.json`
+        is an agentic leaf's whole permission layer, so an entry deleted or misspelled costs every leaf an
         interactive approval that cannot be answered — the workflow stalls. Nothing
         read that file after the redirect admission was removed: measured, stripping
         all sixteen `Bash(...)` entries left the entire suite green.
@@ -3858,9 +3994,11 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         ]
 
     def test_settings_json_registers_grep_and_glob_with_bash_first(self) -> None:
+        """Read from the LEAF's settings file, the owner of the hook wiring."""
+        from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         repo_root = Path(__file__).resolve().parents[2]
         settings_doc = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            (repo_root / CLAUDE_LEAF_CONFIG_REL).read_text(encoding="utf-8")
         )
         entries = settings_doc["hooks"]["PreToolUse"]
         matchers = [entry["matcher"] for entry in entries]

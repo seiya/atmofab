@@ -1618,19 +1618,84 @@ def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], 
     return (), ()
 
 
-def protected_host_read_roots() -> tuple[Path, ...]:
+def workflow_private_backend_homes(repo_root: Path | None,
+                                   orchestration_id: str | None) -> tuple[Path, ...]:
+    """The isolated per-orchestration backend homes, as recorded by the HOST.
+
+    Issue #63 (claude) and its codex predecessor move a leaf's backend home out of
+    the operator's `~/.claude` / `~/.codex` into a private directory under /tmp.
+    Two things a leaf must not read live there, and BOTH arrive by a BIND rather
+    than by being copied, so inspecting the directory's contents on the host shows
+    neither:
+
+      * the operator's real credential file, bound over the home's empty
+        placeholder so the CLI can refresh its OAuth token — inside the sandbox
+        that path IS the operator's secret, and the bind is writable;
+      * every EARLIER leaf's session transcript of the same orchestration, since
+        one home serves all of a run's leaves. A `validate.judge` or `*.verify`
+        leaf reading the producing leaf's transcript is exactly the past-run state
+        the workflow forbids, and it would leave no trace in any artifact.
+
+    The orchestration id is taken from the environment the HOST set through the
+    sandbox (`METDSL_ORCHESTRATION_ID`, set by `workflow_conductor._child_env` and
+    inherited through bwrap, which does not `--clearenv`), never from the hook
+    payload: `tools/hooks/cli.py::_extract_orchestration_id` prefers the payload,
+    which a caller can influence, and here the value decides WHICH home is guarded
+    — naming another orchestration would unguard the leaf's own. A leaf's Bash
+    command cannot alter the environment of the hook process the CLI spawns.
+
+    Bounded, and deliberately so: this guards the CURRENT orchestration's homes.
+    RESIDUE, stated accurately rather than as "a leaf cannot learn the name": a leaf
+    need not learn it. `leaf_config/claude/settings.json` grants
+    `Bash(python3 tools/audit_orchestration.py *)`, and that tool resolves ANY
+    orchestration's private home out of `orchestration_meta.json` itself, so no path
+    token ever reaches this guard. What it can surface from another run is bounded by
+    what the auditor prints — a dangling leaf's last tool name, an input preview and
+    an interrupt excerpt, or token counts — not the producing leaf's reasoning, and
+    the same route existed against `~/.claude` before this change.
+    """
+    root = repo_root if repo_root is not None else Path.cwd()
+    oid = (orchestration_id or "").strip()
+    if not oid:
+        return ()
+    homes: list[Path] = []
+    home = claude_workflow_home(root, oid)
+    if home is not None:
+        homes.append(home)
+    meta_path = root / "workspace" / "orchestrations" / oid / "orchestration_meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        meta = None
+    if isinstance(meta, dict):
+        raw = meta.get("codex_workflow_home")
+        if isinstance(raw, str) and raw.strip():
+            homes.append(Path(raw.strip()))
+    return tuple(homes)
+
+
+def protected_host_read_roots(repo_root: Path | None = None,
+                              orchestration_id: str | None = None) -> tuple[Path, ...]:
     """Out-of-repo host paths a Bash command in workflow mode may never read.
 
-    Two classes, one rule: the operator-secret root (dismiss-violation tokens)
-    and every backend credential home the sandbox rw-binds (OAuth credentials +
-    session transcripts).  The Read tool reaches neither — the read manifest's
-    allowed_read_roots are repo-relative — so this closes the Bash-only route.
+    Three classes, one rule: the operator-secret root (dismiss-violation tokens),
+    every backend credential home the sandbox rw-binds (OAuth credentials +
+    session transcripts), and — when the caller can name the orchestration — the
+    isolated per-orchestration backend homes, which hold the SAME credential by
+    bind plus every earlier leaf's transcript. The Read tool reaches none of them
+    — the read manifest's allowed_read_roots are repo-relative — so this closes
+    the Bash-only route.
+
+    The isolated homes are omitted when no orchestration id is supplied. That is
+    the pre-issue-#63 answer and is right for callers outside a run; inside a run
+    the conductor always sets `METDSL_ORCHESTRATION_ID`.
     """
     roots: list[Path] = [operator_secret_root()]
     for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
         dirs, files = backend_credential_home_paths(btype)
         roots.extend(dirs)
         roots.extend(files)
+    roots.extend(workflow_private_backend_homes(repo_root, orchestration_id))
     seen: set[str] = set()
     unique: list[Path] = []
     for root in roots:
@@ -2425,22 +2490,31 @@ def _shell_expansion_variants(
     return variants + expanded
 
 
-def _blank_persisted_tool_results(command: str, repo_root: Path) -> str:
-    """`command` with any persisted tool-result path replaced by a placeholder."""
+def _blank_persisted_tool_results(command: str, repo_root: Path,
+                                  orchestration_id: str | None = None) -> str:
+    """`command` with any persisted tool-result path replaced by a placeholder.
+
+    Every projects root, not just the operator's: the directory follows
+    `CLAUDE_CONFIG_DIR`, so since issue #63 an agentic leaf's persisted output is in
+    the orchestration's private home. Blanking only `~/.claude` left the private-home
+    spelling reaching the marker scan, where the home is now a protected root — so
+    the file the harness had just told the agent to read came back as a credential
+    block.
+    """
     try:
-        prefix = str(
-            _home_dir() / _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL
-            / _claude_project_slug(repo_root.resolve())
-        )
+        prefixes = [str(root / _claude_project_slug(repo_root.resolve()))
+                    for root in claude_leaf_projects_roots(repo_root, orchestration_id)]
     except (OSError, RuntimeError, ValueError):
         return command
     home = str(_home_dir()).rstrip("/")
-    tail = prefix[len(home) + 1 :] if prefix.startswith(home + "/") else None
-    heads = [re.escape(prefix)]
-    if tail:
-        # The same file is spelled `~/…`, `$HOME/…` and `${HOME}/…` too; blanking
-        # only the absolute form left those reaching the marker scan.
-        heads.append(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(tail))
+    heads = []
+    for prefix in prefixes:
+        heads.append(re.escape(prefix))
+        if prefix.startswith(home + "/"):
+            # The same file is spelled `~/…`, `$HOME/…` and `${HOME}/…` too; blanking
+            # only the absolute form left those reaching the marker scan. Only a root
+            # UNDER the home has such spellings; a private home under /tmp has none.
+            heads.append(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(prefix[len(home) + 1:]))
     if not any(re.search(head, command) for head in heads):
         return command
     # Components, not "anything": `[^\s'\"]+` can swallow slashes, and the
@@ -2453,14 +2527,35 @@ def _blank_persisted_tool_results(command: str, repo_root: Path) -> str:
     return command
 
 
-def _is_persisted_tool_result_shape(repo_root: Path, target: Path) -> bool:
+def _workflow_orchestration_id() -> str | None:
+    """The orchestration id the HOST set through the sandbox, or None.
+
+    `METDSL_ORCHESTRATION_ID` only — never the hook payload's copy, which
+    `tools/hooks/cli.py::_extract_orchestration_id` prefers and a caller can
+    influence. Everything reading this uses it to decide WHICH private home's paths
+    get special treatment, so a caller-named orchestration would either unguard its
+    own home or exempt someone else's.
+    """
+    raw = os.environ.get("METDSL_ORCHESTRATION_ID")
+    return raw.strip() if isinstance(raw, str) and raw.strip() else None
+
+
+def _is_persisted_tool_result_shape(repo_root: Path, target: Path,
+                                    orchestration_id: str | None = None) -> bool:
     """Whether `target` is a persisted tool-result of THIS repo's project.
 
-    `~/.claude/projects/<repo-slug>/<session>/tool-results/<id>.txt` is where the
+    `<projects-root>/<repo-slug>/<session>/tool-results/<id>.txt` is where the
     harness saves an oversized tool output and then tells the agent to read it —
     the Read tool has always permitted it (`_is_persisted_tool_result_read`), and
     blocking it for Bash made that mechanism unreachable from a shell. Three real
     commands in this repository's own hook logs are of this shape.
+
+    The roots come from `claude_leaf_projects_roots`, the canonical resolver, because
+    the directory FOLLOWS `CLAUDE_CONFIG_DIR`: since issue #63 an agentic leaf's
+    persisted output lands in the private home, not in `~/.claude`. Anchoring on the
+    operator home alone made the exemption miss every leaf — and, once the private
+    home became a protected read root, turned "unreachable" into a hard credential
+    BLOCK on the one file the harness had just told the agent to read.
 
     Shape-and-slug only: the per-session check the Read path makes needs an
     agent_run_id this guard does not have. What it exempts is a tool output, not
@@ -2469,11 +2564,14 @@ def _is_persisted_tool_result_shape(repo_root: Path, target: Path) -> bool:
     try:
         if target.suffix != ".txt" or target.parent.name != _AUTO_READ_PROJECT_TOOL_RESULTS_DIR_COMPONENT:
             return False
-        project_root = (
-            _home_dir() / _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL
-            / _claude_project_slug(repo_root.resolve())
-        )
-        if len(target.relative_to(project_root).parts) != 3:
+        slug = _claude_project_slug(repo_root.resolve())
+        for projects_root in claude_leaf_projects_roots(repo_root, orchestration_id):
+            try:
+                if len(target.relative_to(projects_root / slug).parts) == 3:
+                    break
+            except ValueError:
+                continue
+        else:
             return False
         # A hardlink resolves to ITSELF, so resolution cannot tell one from the
         # credential file it points at. A persisted output has one link.
@@ -2660,7 +2758,7 @@ def _glob_matches_stay_exempt(repo_root: Path, pattern: str) -> bool:
             resolved = Path(match).resolve()
         except (OSError, ValueError, RuntimeError):
             return False
-        if not _is_persisted_tool_result_shape(repo_root, resolved):
+        if not _is_persisted_tool_result_shape(repo_root, resolved, _workflow_orchestration_id()):
             return False
     return len(matches) <= _GLOB_EXEMPT_MATCH_MAX
 
@@ -2680,7 +2778,8 @@ def _glob_pattern_reaches_root(
     if (
         literal_prefix
         and ".." not in pattern.split("/")
-        and _is_persisted_tool_result_shape(repo_root, Path(literal_prefix + "x.txt"))
+        and _is_persisted_tool_result_shape(repo_root, Path(literal_prefix + "x.txt"),
+                                       _workflow_orchestration_id())
         and _glob_matches_stay_exempt(repo_root, pattern)
     ):
         # A glob over the persisted tool-results directory is the same read the
@@ -2831,7 +2930,8 @@ def _command_reads_protected_host_path(
     # what the "Full output saved to …" mechanism tells the agent to do (the Read
     # tool has always permitted it). Three real commands in this repository's
     # hook logs are of this shape.
-    command = _blank_persisted_tool_results(command, repo_root)
+    command = _blank_persisted_tool_results(
+        command, repo_root, _workflow_orchestration_id())
     marker_res = [(root, _protected_root_marker_regex(root)) for root in roots]
     for root, marker_re in marker_res:
         if marker_re.search(command):
@@ -2997,7 +3097,7 @@ def _command_reads_protected_host_path(
                     lexical = Path(os.path.normpath(joined))
                 except (OSError, ValueError):
                     continue
-                if _is_persisted_tool_result_shape(repo_root, lexical):
+                if _is_persisted_tool_result_shape(repo_root, lexical, _workflow_orchestration_id()):
                     # After resolution, not before: `~/.claude` is an rw bind, so
                     # a leaf can plant a symlink at an exempt-shaped path and
                     # read the credential file through it.
@@ -3005,7 +3105,8 @@ def _command_reads_protected_host_path(
                         resolved_exempt = lexical.resolve()
                     except (OSError, ValueError, RuntimeError):
                         resolved_exempt = lexical
-                    if _is_persisted_tool_result_shape(repo_root, resolved_exempt):
+                    if _is_persisted_tool_result_shape(repo_root, resolved_exempt,
+                                                   _workflow_orchestration_id()):
                         continue
                 for root in roots:
                     if _is_path_under_root(lexical, root):
@@ -3420,8 +3521,15 @@ def evaluate_common_policy(hook_input: HookInput) -> HookDecision:
         # excludes all of them (allowed_read_roots is repo-relative); this closes
         # the Bash path, which is the only other route.
         met_dsl_root = operator_secret_root()
+        # The orchestration id comes from the environment the HOST set through the
+        # sandbox, not from the payload: the payload's copy is caller-influenced
+        # (`tools/hooks/cli.py::_extract_orchestration_id` prefers it), and here it
+        # decides WHICH private home is guarded — naming another orchestration
+        # would unguard the leaf's own.
         matched_root = _command_reads_protected_host_path(
-            command, cmd_tokens, repo_root, protected_host_read_roots()
+            command, cmd_tokens, repo_root,
+            protected_host_read_roots(
+                repo_root, os.environ.get("METDSL_ORCHESTRATION_ID"))
         )
         if matched_root is not None:
             if matched_root == met_dsl_root:
@@ -4368,14 +4476,24 @@ def _is_persisted_tool_result_read(
     if not _path_has_no_symlink_redirect(abs_target):
         return False
     try:
-        home_abs = Path.home()
         slug = _claude_project_slug(repo_root_abs)
-        project_root = home_abs / _AUTO_READ_PROJECT_TOOL_RESULTS_PARENT_TAIL / slug
-        if (
+        # Every projects root, not just the operator's: the directory follows
+        # `CLAUDE_CONFIG_DIR`, so an agentic leaf's persisted output lives in the
+        # orchestration's private home (issue #63). Anchored on `~/.claude` alone,
+        # this exemption stopped firing for every leaf and the Read tool refused the
+        # file the harness had just told the agent to read.
+        rel = None
+        for projects_root in claude_leaf_projects_roots(
+                repo_root_abs, _workflow_orchestration_id()):
+            try:
+                rel = abs_target.relative_to(projects_root / slug)
+                break
+            except ValueError:
+                continue
+        if rel is not None and (
             abs_target.name.endswith(".txt")
             and abs_target.parent.name == _AUTO_READ_PROJECT_TOOL_RESULTS_DIR_COMPONENT
         ):
-            rel = abs_target.relative_to(project_root)
             parts = rel.parts
             # parts = (session_dir, "tool-results", filename)
             if (
@@ -4521,6 +4639,64 @@ def _claude_project_slug(repo_root: Path) -> str:
     """
     abs_str = str(repo_root)
     return abs_str.replace("/", "-")
+
+
+def claude_workflow_home(repo_root: Path, orchestration_id: str) -> Path | None:
+    """The private ``CLAUDE_CONFIG_DIR`` the HOST prepared for this orchestration.
+
+    Read from host-authored ``orchestration_meta.json``, never from the environment:
+    a leaf can set an environment variable for anything it spawns, so env would be a
+    caller-writable channel deciding where trusted state is looked for. Returns None
+    for an orchestration that has none — a codex-only run, a run recorded before
+    issue #63, or a call made before the first claude launch prepared one.
+    """
+    meta_path = (
+        repo_root / "workspace" / "orchestrations" / orchestration_id
+        / "orchestration_meta.json"
+    )
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("claude_workflow_home")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(raw.strip())
+
+
+def claude_leaf_projects_roots(repo_root: Path,
+                               orchestration_id: str | None = None) -> tuple[Path, ...]:
+    """Every directory a Claude leaf's per-project state may live under.
+
+    CANONICAL for the consumers that must not drift apart, all of which locate a
+    leaf's own session by ``<projects-root>/<slug>/<session-id>.jsonl``:
+      * `workflow_conductor._claude_session_resumable` (is a warm `--resume` viable);
+      * `orchestration_diagnostics._leaf_transcript_path` / `_claude_projects_dir`
+        (post-mortem of a dangling leaf);
+      * the persisted-tool-result shape exemptions in this module.
+
+    Issue #63 moved a leaf's state from the operator's `~/.claude` into a private
+    per-orchestration home, so BOTH are returned, private home first: a resume or an
+    audit may legitimately reach back to a session recorded before that move, and the
+    operator's own dev sessions still live in `~/.claude`. Callers that only need to
+    know whether a session exists search all of them.
+    """
+    roots: list[Path] = []
+    if orchestration_id and str(orchestration_id).strip():
+        home = claude_workflow_home(repo_root, str(orchestration_id).strip())
+        if home is not None:
+            roots.append(home / "projects")
+    roots.append(_home_dir() / ".claude" / "projects")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return tuple(unique)
 
 
 def _auto_reads_seen_path(repo_root: Path, orchestration_id: str, agent_run_id: str) -> Path:

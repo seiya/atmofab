@@ -37,6 +37,7 @@ import pytest
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
+from tools.tests.leaf_config_fixture import seed_claude_leaf_config
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
 
@@ -299,13 +300,13 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
     def test_resolve_reuse_resume_returns_target_when_resumable(self) -> None:
         # Warm resume is always active for a reuse repair (no env gate).
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
         self.assertEqual(c._resolve_reuse_resume(repair, "generate", "generate"), "child-1")
 
     def test_resolve_reuse_resume_falls_back_cold_when_unresumable(self) -> None:
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: False  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: False  # type: ignore[assignment]
         emitted: list[str] = []
         c.emit = lambda ev, **k: emitted.append(ev)  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
@@ -339,12 +340,78 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
             self.assertIn("resume_session_unavailable", emitted)
 
+    def test_a_leaf_session_is_looked_for_in_the_orchestrations_private_home(self) -> None:
+        """Warm resume must follow the transcript, which issue #63 moved.
+
+        The transcript of an agentic claude leaf is written under the private
+        CLAUDE_CONFIG_DIR, not the operator's `~/.claude`. A probe still pointing at
+        the operator home finds nothing and answers False for every session — which is
+        not an error anywhere, just a silent, permanent downgrade of every reuse repair
+        to a cold launch. The control half (an operator-home-only session) is what
+        distinguishes "searches the private home" from "searches everything".
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            private_home = Path(td) / "private_home"
+            operator_home = Path(td) / "operator_home"
+            meta_dir = repo / "workspace" / "orchestrations" / "o"
+            meta_dir.mkdir(parents=True)
+            (meta_dir / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(private_home)}), encoding="utf-8")
+
+            in_private = private_home / "projects" / "-some-slug"
+            in_private.mkdir(parents=True)
+            (in_private / "sess-private.jsonl").write_text("{}\n", encoding="utf-8")
+            in_operator = operator_home / ".claude" / "projects" / "-some-slug"
+            in_operator.mkdir(parents=True)
+            (in_operator / "sess-operator.jsonl").write_text("{}\n", encoding="utf-8")
+
+            c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH",
+                               llm_config=_cfg("claude"), env={})
+            with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
+                # AGENTIC: the private home is the one its launch will use.
+                self.assertTrue(c._claude_session_resumable("sess-private", pure=False))
+                # ...and a session in the OPERATOR's home is not resumable BY AN
+                # AGENTIC launch, which sets CLAUDE_CONFIG_DIR to the private home
+                # and would resume at a home that never held it.
+                self.assertFalse(c._claude_session_resumable("sess-operator", pure=False))
+                self.assertFalse(c._claude_session_resumable("sess-absent", pure=False))
+
+                # PURE is the mirror image, and getting it wrong is the expensive
+                # direction: a pure leaf is given NO private home, so it writes and
+                # resumes in the operator's. Asserting the agentic answer for both
+                # shapes silently retired warm resume for every pure repair turn.
+                self.assertTrue(c._claude_session_resumable("sess-operator", pure=True))
+                self.assertFalse(c._claude_session_resumable("sess-private", pure=True))
+
+    def test_no_private_home_means_nothing_is_resumable(self) -> None:
+        """Before any claude leaf has launched there is no home to resume into."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+            (repo / "workspace" / "orchestrations" / "o"
+             / "orchestration_meta.json").write_text("{}", encoding="utf-8")
+            operator_home = Path(td) / "operator_home"
+            proj = operator_home / ".claude" / "projects" / "-slug"
+            proj.mkdir(parents=True)
+            (proj / "sess-old.jsonl").write_text("{}\n", encoding="utf-8")
+            c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH",
+                               llm_config=_cfg("claude"), env={})
+            with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
+                self.assertFalse(c._claude_session_resumable("sess-old", pure=False))
+                # A PURE launch never wanted a private home, so the same session is
+                # resumable for it — "no private home" is not "nothing is resumable".
+                self.assertTrue(c._claude_session_resumable("sess-old", pure=True))
+
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
         # strategy-driven warm/cold selection is preserved (LLM verify-attributed restarts stay
         # cold; only reuse repairs warm-resume).
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "restart", "repair_target_agent_run_id": "child-1"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
 
@@ -354,19 +421,19 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"), env={})
         c.calls = []
         c.emit = lambda *a, **k: None  # type: ignore[assignment]
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
 
     def test_resolve_reuse_resume_none_when_no_repair(self) -> None:
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         self.assertIsNone(c._resolve_reuse_resume(None, "generate", "generate"))
 
     def test_resolve_reuse_resume_none_when_target_placeholder(self) -> None:
         # A reuse repair with no concrete producer arid (literal "none") cannot resume.
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "none"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
 
@@ -912,7 +979,8 @@ class ConductHappyPathTest(unittest.TestCase):
         Since issue #28 the alias is filled into the resolved leaf entries at construction
         (`Conductor._resolve_claude_model_aliases`) rather than passed in as a run-wide
         `agent_model`, so the assertion reads the entry every leaf will launch with. Since
-        issue #63 step 1 the leaf launches with `--setting-sources project` and never sees
+        issue #63 the leaf launches with `--setting-sources user` against a private
+        CLAUDE_CONFIG_DIR and never sees
         that home, so a stamp taken from it would describe a run that did not happen —
         `resolve_claude_model_alias` is patched to a SENTINEL here, and the assertion is
         that the stamp is the default and is NOT the sentinel.
@@ -1383,7 +1451,7 @@ class ConductRoutingTest(unittest.TestCase):
         # read BEFORE reopen-phase, while refs still names the failed run.
         c = self._conductor()
         c.workflow_mode = "prod"  # cross-phase reopen is prod-only (dev fail_closes; see F1)
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         state = {"execute_failed": False}
 
         def status_fn(phase, substep, n):
@@ -3972,13 +4040,16 @@ class LeafChildEnvTest(unittest.TestCase):
         self.assertTrue(env["TMPDIR"].endswith("/workspace/tmp/child-1"))
 
     def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
-        """Auto-memory is NOT a settings file, so `--setting-sources project` does not reach it.
+        """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
 
         The CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's first
         user message unless safe-mode, `--bare`, or this variable is in force. A pure leaf
         passes `--safe-mode` and was therefore always closed; an agentic leaf passes none of
         them, so it was being handed the operator's memory index — past runs, merged PRs, open
-        issues, standing instructions. That is ambient context the repository does not declare
+        issues, standing instructions. Issue #63's private home closes the same hole from the
+        other side (a fresh home has no memory file), and this variable is deliberately kept:
+        the two close it for different reasons, and a CLI that relocated the memory file
+        without relocating the home would reopen it. That is ambient context the repository does not declare
         and the run cannot reproduce, it is a leaf reading `~/.claude`, and it is a leaf being
         given past-run state: three separate things the workflow forbids.
 
@@ -4018,7 +4089,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         def _write_lineage(self, refs):  # type: ignore[override]
             return []
 
-        def _resolve_reuse_resume(self, repair, phase, substep):  # type: ignore[override]
+        def _resolve_reuse_resume(self, repair, phase, substep, pure=False):  # type: ignore[override]
             return self.resume_target
 
         def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
@@ -4144,6 +4215,25 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertNotIn("llm_transport_flake", oc.decision.reason)
         self.assertIn("[attempts=2]", oc.decision.reason)     # ...and the launch count is honest
         self.assertLessEqual(len(oc.decision.reason), 200)
+
+    def test_run_substep_resolves_its_resume_as_an_agentic_launch(self) -> None:
+        """Driven through the REAL `run_substep`, on the value that arrives.
+
+        A pure substep has already returned above this point, so the agentic
+        constant is the correct one — but it is still a live decision: flip it and
+        the resolver looks in the operator's home instead of the private one, and
+        every agentic reuse repair silently goes cold. Nothing observed it
+        (measured: that mutation survived), and the test that claimed to had
+        computed the argument itself instead of driving the production path.
+        """
+        seen: list[bool] = []
+        c = self._conductor([wc.ProcResult(0, "ok", "")])
+        c._resolve_reuse_resume = (  # type: ignore[assignment]
+            lambda repair, phase, substep, pure=None: seen.append(pure))
+        c.run_substep(self._refs(), "compile", "verify",
+                      repair={"repair_strategy": "reuse",
+                              "repair_target_agent_run_id": "child-1"})
+        self.assertEqual(seen, [False])
 
     def test_usage_limit_is_never_retried(self) -> None:
         """A usage limit is a HARD STOP lasting hours. Retrying it burns the budget in seconds
@@ -5786,9 +5876,29 @@ class NodeAllocationTest(unittest.TestCase):
 class DiagnosticianTest(unittest.TestCase):
     """M4: LLM diagnostician escalation for unclassifiable failures."""
 
+    def _repo_root(self) -> Path:
+        """A real, per-test repo root carrying this repository's leaf configuration.
+
+        The diagnostician builds a REAL read-only sandbox profile, which since issue
+        #63 prepares the claude private home from `leaf_config/claude/settings.json`
+        and fails closed without it. A literal `/tmp/repo` cannot carry that file, and
+        seeding a hand-written one would stop tracking the committed config.
+        """
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        seed_claude_leaf_config(root)
+        # The private-home preparation records the home in orchestration metadata
+        # under that file's own lock, exactly as the codex twin does, so the
+        # orchestration directory has to exist for a diagnostician to launch at all.
+        meta_dir = root / "workspace" / "orchestrations" / "o"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        (meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
+        return root
+
     def _conductor(self) -> _FakeConductor:
         c = _FakeConductor(
-            repo_root=Path("/tmp/repo"), orchestration_id="o",
+            repo_root=self._repo_root(), orchestration_id="o",
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
@@ -6035,7 +6145,7 @@ class DiagnosticianTest(unittest.TestCase):
         would emit two empty strings: this issue's own blindness, on the one launch with no
         `agent_runs.jsonl` row to fall back to."""
         events: list = []
-        c = _FakeConductor(repo_root=Path("/tmp/repo"), orchestration_id="o",
+        c = _FakeConductor(repo_root=self._repo_root(), orchestration_id="o",
                            orchestration_agent_run_id="ORCH",
                            llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
         c.calls = []
@@ -6127,12 +6237,53 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(d.action, "fail_closed")
         self.assertIn("sandbox_unavailable", d.reason or "")
 
+    def test_the_diagnosticians_profile_actually_carries_the_claude_isolation(self) -> None:
+        """The diagnostician re-derives its own isolation; nothing observed that.
+
+        It never reaches `record_launch`, so it is the one claude launch whose
+        isolation is wired in a second place — the commit message's own surface
+        inventory calls it out. Measured: turning its `elif entry.provider ==
+        "claude_cli":` into `elif False:` left the whole suite green, and under that
+        the diagnostician comes up on the OPERATOR's `~/.claude`.
+
+        Asserted on the profile the REAL method returns, not on the kwargs helper.
+        """
+        repo = self._repo_root()
+        c = _FakeConductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+            llm_config=_cfg("claude"), env={})
+        profile = c._readonly_sandbox_profile()
+        meta = json.loads(
+            (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json")
+            .read_text(encoding="utf-8"))
+        home = meta["claude_workflow_home"]
+        self.addCleanup(shutil.rmtree, Path(home), True)
+
+        from tools.orchestration_runtime import CLAUDE_HOME_WRITABLE_RELPATHS
+        self.assertEqual((profile.get("env") or {}).get("CLAUDE_CONFIG_DIR"), home)
+        self.assertIn(home, profile.get("runtime_ro_bind_paths") or [])
+        self.assertEqual(
+            {b for b in (profile.get("runtime_rw_bind_paths") or []) if b.startswith(home)},
+            {str(Path(home) / rel) for rel in CLAUDE_HOME_WRITABLE_RELPATHS},
+        )
+        operator_home = Path(os.environ.get("HOME") or Path.home())
+        self.assertNotIn(str(operator_home / ".claude"),
+                         profile.get("runtime_rw_bind_paths") or [])
+        settings = str(Path(home) / "settings.json")
+        self.assertIn([settings, settings], profile.get("runtime_ro_bind_mappings") or [])
+
     def test_escalate_spawns_diagnostician_with_readonly_profile(self) -> None:
         # P2-4b: under bwrap-enforced mode the diagnostician runs sandboxed with a
         # dedicated read-only profile (no write_roots) instead of fail-closing.
         # Uses a TemporaryDirectory repo_root because this exercises the REAL
-        # _readonly_sandbox_profile() (which mkdir's sandbox/tmp/hooks/audit dirs).
+        # _readonly_sandbox_profile() (which mkdir's sandbox/tmp/hooks/audit dirs,
+        # and since issue #63 also prepares the claude private home from the
+        # committed leaf configuration).
         with tempfile.TemporaryDirectory() as tmp:
+            seed_claude_leaf_config(Path(tmp))
+            _meta_dir = Path(tmp) / "workspace" / "orchestrations" / "o"
+            _meta_dir.mkdir(parents=True, exist_ok=True)
+            (_meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
             c = _FakeConductor(
                 repo_root=Path(tmp), orchestration_id="o",
                 orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
@@ -6648,12 +6799,12 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
         self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         self.assertEqual(
             self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
             ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
@@ -6693,7 +6844,7 @@ class LeafSpawnTest(unittest.TestCase):
         set instead of adding to it.
         """
         argv = self._c(backend="claude").leaf_command()
-        self.assertEqual(argv[argv.index("--setting-sources") + 1], "project")
+        self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
         self.assertIn("--strict-mcp-config", argv)
         self.assertEqual(argv[argv.index("--mcp-config") + 1], wc.CLAUDE_LEAF_MCP_CONFIG)
         self.assertEqual(wc.CLAUDE_LEAF_MCP_CONFIG, ".mcp.json")
@@ -6796,7 +6947,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
+            ["claude", "--session-id", "arid-1", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
@@ -6809,7 +6960,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(
             c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
             ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
+             "--session-id", "new-arid", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
@@ -7543,7 +7694,7 @@ class LeafSpawnTest(unittest.TestCase):
                 c.spawn_leaf = spawn  # type: ignore[assignment]
                 # The producer session transcript is assumed resumable here; the
                 # cold-fallback-when-missing case is covered separately below.
-                c._claude_session_resumable = lambda sid: True  # type: ignore[assignment]
+                c._claude_session_resumable = lambda sid, **kw: True  # type: ignore[assignment]
                 c.run_substep(refs, "generate", "generate", repair=repair)
             return cap
 
@@ -7574,7 +7725,7 @@ class LeafSpawnTest(unittest.TestCase):
                 return wc.ProcResult(0, "", "")
 
             c.spawn_leaf = spawn  # type: ignore[assignment]
-            c._claude_session_resumable = lambda sid: False  # type: ignore[assignment]
+            c._claude_session_resumable = lambda sid, **kw: False  # type: ignore[assignment]
             c.run_substep(refs, "generate", "generate", repair=reuse)
         self.assertEqual(cap.get("session_id"), "child-1")
         self.assertIsNone(cap.get("resume_session_id"))
@@ -7641,7 +7792,7 @@ class LeafSpawnTest(unittest.TestCase):
                 self.assertEqual(
                     wrapped[wrapped.index("--setting-sources"):
                             wrapped.index("--setting-sources") + 6],
-                    ["--setting-sources", "project", "--strict-mcp-config",
+                    ["--setting-sources", "user", "--strict-mcp-config",
                      "--mcp-config", wc.CLAUDE_LEAF_MCP_CONFIG,
                      "--disable-slash-commands"])
                 # Own process group, exactly as the codex leaf already had: the timeout
@@ -16228,7 +16379,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             # The real precondition (a claude session transcript on disk for the failed verify
             # leaf) cannot hold for a fake arid; the loop's resumability guard is pinned
             # separately by test_no_warm_session_skips_loop_and_escalates.
-            def _verify_session_resumable(self, verify_arid, phase="generate"):  # type: ignore[override]
+            def _verify_session_resumable(self, verify_arid, phase="generate", **kw):  # type: ignore[override]
                 return True
 
             def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
@@ -16521,7 +16672,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
             self._write_meta(repo, refs, "generate", bad)
             c = self._conductor(repo, refs, "generate", [bad, _conformant_stage_meta("pass")])
-            c._verify_session_resumable = lambda arid, phase="generate": False  # type: ignore[assignment]
+            c._verify_session_resumable = lambda arid, phase="generate", **kw: False  # type: ignore[assignment]
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(c.verify_runs["verify_runs"], 1)  # the original verify only
@@ -16541,7 +16692,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             # Only the ORIGINAL verify leaf's session survives; the repair turn's does not.
             original_verify_arid = f"child-{len(wc.SUBSTEPS['generate'])}"
             c._verify_session_resumable = (  # type: ignore[assignment]
-                lambda arid, phase="generate": arid == original_verify_arid)
+                lambda arid, phase="generate", **kw: arid == original_verify_arid)
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(len(self._repair_requests(c)), 1)  # one turn, then stop
@@ -16618,13 +16769,13 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
                                     llm_config=_cfg(backend), env={})
 
             claude = _conductor("claude")
-            claude._claude_session_resumable = lambda arid: arid == "live-arid"  # type: ignore[assignment]
+            claude._claude_session_resumable = lambda arid, **kw: arid == "live-arid"  # type: ignore[assignment]
             self.assertTrue(claude._verify_session_resumable("live-arid"))
             self.assertFalse(claude._verify_session_resumable("gc-ed-arid"))
 
             # codex has no session-resume primitive at all -> never warm.
             codex = _conductor("codex")
-            codex._claude_session_resumable = lambda arid: True  # type: ignore[assignment]
+            codex._claude_session_resumable = lambda arid, **kw: True  # type: ignore[assignment]
             self.assertFalse(codex._verify_session_resumable("live-arid"))
 
     def test_build_launch_request_narrows_a_normal_verify_launch_too(self) -> None:
@@ -16698,7 +16849,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         DECLARE a model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--model", "opus", "--effort", "medium", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         k = self._configured("codex")
         judge = k.leaf_command(k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
@@ -16715,10 +16866,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(judge, ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         # ...and only that leaf.
         self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
-                         ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -16727,7 +16878,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
+                             ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -16740,7 +16891,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--effort", "xhigh", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
         judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
@@ -16767,12 +16918,12 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
         run-wide override (what the preflight subprocess re-applies), or filled in as the
-        spec-side label — is NOT pinned onto the argv. Since issue #63 step 1 what such a
+        spec-side label — is NOT pinned onto the argv. Since issue #63 what such a
         launch resolves to is the CLI's own default rather than the operator's
         `~/.claude/settings.json`, which the leaf no longer reads."""
         c = wc.Conductor(
@@ -16782,7 +16933,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command(entry), ["claude", "--setting-sources", "project", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(entry), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
 
     # --- capability predicates replace the backend tests --------------------------------
 
@@ -16945,7 +17096,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
         agentic = self._record_launch_response(
             c, "arid-1", {}, c.entry_for("generate", "generate"))
-        self.assertEqual(agentic["claude_setting_sources"], "project")
+        self.assertEqual(agentic["claude_setting_sources"], "user")
         self.assertEqual(agentic["mcp_config"],
                          [{"ref": ".mcp.json",
                            "sha256": hashlib.sha256(data).hexdigest()}])
@@ -17010,7 +17161,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         entry = c.entry_for("generate", "generate")
-        argv = ["user,project" if t == "project" else t for t in c.leaf_command(entry)]
+        argv = ["user,project" if t == "user" else t for t in c.leaf_command(entry)]
         self.assertIn("user,project", argv)
         c.leaf_command = lambda *a, **kw: list(argv)      # type: ignore[assignment]
         response = self._record_launch_response(c, "arid-1", {}, entry)
@@ -17048,7 +17199,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         response = self._record_launch_response(
             c, "arid-1", {"step": "generate", "substep": "generate"}, entry)
         # the EFFECTIVE source, which is the conductor's trailing one
-        self.assertEqual(response["claude_setting_sources"], "project")
+        self.assertEqual(response["claude_setting_sources"], "user")
         # BOTH configurations, in argv order, each hashed from its own bytes
         self.assertEqual([e["ref"] for e in response["mcp_config"]],
                          ["wrapper.mcp.json", wc.CLAUDE_LEAF_MCP_CONFIG])
@@ -17103,7 +17254,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         response = self._record_launch_response(
             c, "arid-1", {"step": "generate", "substep": "generate"}, None)
-        self.assertEqual(response["claude_setting_sources"], "project")
+        self.assertEqual(response["claude_setting_sources"], "user")
         self.assertEqual(response["mcp_config"][0]["ref"], wc.CLAUDE_LEAF_MCP_CONFIG)
 
     def test_a_deterministic_substep_records_no_argv_it_never_ran(self) -> None:
@@ -17271,7 +17422,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         entry = c.entry_for("generate", "generate")
         stripped = [t for t in c.leaf_command(entry)
-                    if t not in ("--setting-sources", "project", "--mcp-config",
+                    if t not in ("--setting-sources", "user", "--mcp-config",
                                  wc.CLAUDE_LEAF_MCP_CONFIG)]
         c.leaf_command = lambda *a, **kw: list(stripped)            # type: ignore[assignment]
         response = self._record_launch_response(c, "arid-1", {}, entry)
@@ -17312,7 +17463,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  generate:\n    substeps:\n      verify:\n"
                 "        capabilities: [agentic, pure]\n"))
-        c._claude_session_resumable = lambda arid: True   # type: ignore[assignment]
+        c._claude_session_resumable = lambda arid, **kw: True   # type: ignore[assignment]
         self.assertTrue(c._verify_session_resumable("arid", "compile"))
         self.assertFalse(c._verify_session_resumable("arid", "generate"))
 

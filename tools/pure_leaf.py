@@ -132,7 +132,7 @@ def pure_leaf_flags() -> list[str]:
 
     - `--safe-mode`        disables ALL ambient customizations — `CLAUDE.md`, skills,
                             plugins, MCP servers, custom commands/agents, and crucially the
-                            repo's `.claude/settings.json` HOOKS (the `UserPromptSubmit`
+                            configured HOOKS (the `UserPromptSubmit`
                             hook would otherwise fire on the `-p` prompt and inject context
                             or run side effects). This is what makes the context CLOSED (A2):
                             without it, `claude -p` loads `CLAUDE.md` and runs the configured
@@ -156,6 +156,15 @@ def pure_leaf_flags() -> list[str]:
     - `--output-format json` the answer arrives in a machine-parseable result envelope,
                             which is how the host reads `result` / `model` / `usage`
                             without touching the session transcript (~/.claude is not read).
+
+    ASYMMETRY WITH THE AGENTIC PATH, deliberate and unchanged by issue #63: a pure leaf
+    takes NO `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. It does not need
+    one — `--safe-mode` already refuses every settings layer, and preparing a home would
+    record a configuration surface the leaf never reads. The consequence is that an
+    operator's `~/.claude` can still decide an UNPINNED pure leaf's model, which the
+    agentic path closed; that asymmetry is recorded in
+    `orchestration_runtime.default_agent_model_for_backend` and is why both paths treat
+    the model stamp as a prediction the result envelope corrects.
 
     `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
     are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:

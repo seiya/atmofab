@@ -14,7 +14,8 @@ is left mid-launch:
 The conductor is a plain Python process with no host/parent session, but each
 leaf is launched with its ``agent_run_id`` pinned as the Claude session id
 (``claude --session-id <arid>``), so the dangling child's OWN transcript is
-directly addressable as the **ephemeral** ``~/.claude/projects/<slug>/<arid>.jsonl``
+directly addressable as the **ephemeral** ``<projects-root>/<slug>/<arid>.jsonl`` — since
+issue #63 the orchestration's private home first, then the operator's ``~/.claude``
 (which ``~/.claude`` cleanup can delete). Its last activity, the dead-air before
 the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
@@ -404,28 +405,40 @@ def summarize_transcript_tail(path: Path, *, n: int = 40) -> dict[str, Any]:
     }
 
 
-def _leaf_transcript_path(child_arid: str) -> Path | None:
+def _leaf_transcript_path(child_arid: str, repo_root: Path,
+                          orchestration_id: str | None = None) -> Path | None:
     """Locate a conductor-spawned leaf's OWN transcript, or ``None``.
 
     The conductor pins each leaf's Claude session id to its ``agent_run_id``
     (``claude --session-id <arid>``, workflow_conductor.spawn_leaf), so the leaf's
-    transcript is directly addressable as ``~/.claude/projects/<slug>/<arid>.jsonl``
+    transcript is directly addressable as ``<projects-root>/<slug>/<arid>.jsonl``
     — no host/parent session is involved. Mirrors the wildcard-slug lookup in
     ``workflow_conductor._claude_session_resumable`` so a leaf that ran under a
     slightly different cwd slug is still found; the arid (a uuid) is unique, so the
-    wildcard cannot collide across projects.
+    wildcard cannot collide across projects. Both the orchestration's private home
+    (issue #63) and the operator's ``~/.claude`` are searched, through the canonical
+    ``claude_leaf_projects_roots`` resolver — a run that predates the private home
+    must stay auditable.
     """
     arid = str(child_arid or "").strip()
     if not arid:
         return None
+    from tools.hooks.common import claude_leaf_projects_roots
     try:
-        matches = sorted((Path.home() / ".claude" / "projects").glob(f"*/{arid}.jsonl"))
-    except OSError:
+        roots = claude_leaf_projects_roots(repo_root, orchestration_id)
+    except (OSError, ValueError):
         return None
-    return matches[0] if matches else None
+    for projects in roots:
+        try:
+            matches = sorted(projects.glob(f"*/{arid}.jsonl"))
+        except OSError:
+            continue
+        if matches:
+            return matches[0]
+    return None
 
 
-def _claude_projects_dir(repo_root: Path) -> Path:
+def _claude_projects_dir(repo_root: Path, orchestration_id: str | None = None) -> Path:
     # Claude Code derives the project slug from the absolute cwd, with every "/"
     # replaced by "-" (e.g. /home/seiya/work/met-dsl -> -home-seiya-work-met-dsl).
     # Resolve first so a relative repo_root (e.g. Path(".")) still maps correctly.
@@ -434,7 +447,10 @@ def _claude_projects_dir(repo_root: Path) -> Path:
     except OSError:
         abs_root = repo_root
     slug = str(abs_root).replace("/", "-")
-    return Path.home() / ".claude" / "projects" / slug
+    from tools.hooks.common import claude_leaf_projects_roots
+    # First root wins: the orchestration's private home when it has one, else the
+    # operator's `~/.claude`. Same resolver as every other transcript consumer.
+    return claude_leaf_projects_roots(repo_root, orchestration_id)[0] / slug
 
 
 def summarize_jsonl_usage(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -866,11 +882,13 @@ def build_launch_incident(
     if dangling is None:
         return None
 
-    transcript_path = _leaf_transcript_path(dangling["agent_run_id"])
+    transcript_path = _leaf_transcript_path(
+        dangling["agent_run_id"], repo_root, orchestration_id)
     if transcript_path is not None:
         child = summarize_transcript_tail(transcript_path)
     else:
-        child = {"found": False, "reason": "no leaf transcript located (~/.claude ephemeral/cleaned)"}
+        child = {"found": False,
+                 "reason": "no leaf transcript located (private home / ~/.claude ephemeral/cleaned)"}
 
     abort_marker = None
     if child.get("found"):

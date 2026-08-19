@@ -1370,8 +1370,9 @@ def build_launch_request(
 #
 # The conductor does NOT pin the leaf model (`leaf_command` passes no `--model` unless the
 # configuration file declared one). What the unpinned case then resolves to depends on the
-# launch: an AGENTIC leaf runs the CLI's own default, because `--setting-sources project`
-# means it never reads the operator's configuration (issue #63 step 1); a PURE leaf carries
+# launch: an AGENTIC leaf runs the CLI's own default, because `--setting-sources user`
+# against a private CLAUDE_CONFIG_DIR means it never reads the operator's configuration
+# (issue #63); a PURE leaf carries
 # no `--setting-sources`, so there the operator's configuration still decides. 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
@@ -1453,9 +1454,9 @@ def _effective_option_value(argv: list[str], flag: str) -> str | None:
     """The value an OVERRIDING (non-accumulating) option actually takes on `argv`: the LAST
     occurrence's, or None if the flag is absent.
 
-    Last, not first — measured on 2.1.234: `--setting-sources project --setting-sources
+    Last, not first — measured on 2.1.234: `--setting-sources user --setting-sources
     nonsense` is rejected for `nonsense` while `--setting-sources nonsense
-    --setting-sources project` runs, so the trailing occurrence is the one in force. The
+    --setting-sources user` runs, so the trailing occurrence is the one in force. The
     conductor appends its own after any the entry's `command:` prefix carries, so reading
     the first would record a value that was never in effect."""
     value: str | None = None
@@ -3679,7 +3680,8 @@ class Conductor:
         return proc.stdout.strip()
 
     def _resolve_reuse_resume(self, repair: dict[str, str] | None,
-                              phase: str, substep: str | None) -> str | None:
+                              phase: str, substep: str | None,
+                              pure: bool = False) -> str | None:
         """The producer session id to warm-`--resume`, or None for a cold launch.
 
         Resolved BEFORE building the launch request (not after) so the slim-vs-full prompt
@@ -3708,7 +3710,8 @@ class Conductor:
             self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
                       target=target)
             return None
-        if entry.provider == "claude_cli" and self._claude_session_resumable(target):
+        if entry.provider == "claude_cli" and self._claude_session_resumable(
+                target, pure=pure):
             return target
         if entry.provider == "codex_cli":
             from tools.orchestration_runtime import (
@@ -3743,18 +3746,58 @@ class Conductor:
         self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
         return None
 
-    def _claude_session_resumable(self, session_id: str) -> bool:
+    def _claude_session_resumable(self, session_id: str, *, pure: bool) -> bool:
         """True if a claude session transcript for `session_id` still exists under
-        ~/.claude/projects/*/<session_id>.jsonl. Used to decide whether a warm
+        `<projects-root>/*/<session_id>.jsonl`. Used to decide whether a warm
         `--resume` is viable or must fall back to a cold launch (the session may have
-        been expired/GC'd by Claude Code)."""
+        been expired/GC'd by Claude Code).
+
+        THE HOME THIS LAUNCH WILL USE, and only that one — which is why `pure` is a
+        required argument rather than something inferred here.
+
+        `--resume` is served from the launching process's `CLAUDE_CONFIG_DIR`, and the
+        two leaf shapes set it differently:
+
+        * an AGENTIC leaf gets this orchestration's private home (issue #63), so a
+          transcript anywhere else is unreachable however findable it is. Searching
+          the operator's `~/.claude/projects` too answered True for a session recorded
+          before the move and sent `--resume <id>` at a home that never held it — a
+          reviewer and an independent Codex pass both found that;
+        * a PURE leaf gets NO private home at all (`record_launch` prepares one only
+          for the agentic shape), so it launches with no `CLAUDE_CONFIG_DIR` and its
+          `--session-id` transcript is written to, and served from, the operator's
+          `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus
+          `--session-id` does write `<config-home>/projects/<slug>/<sid>.jsonl`.
+
+        Narrowing this to the private home for BOTH shapes silently retired warm
+        resume for every pure leaf — every reuse repair and every inner repair turn of
+        `generate.generate`, the repo's largest token consumer, re-inlining
+        `pure_context` and `prior_document` on a cold launch. A test asserted that
+        wrong answer, so the suite defended it.
+
+        For the agentic shape, no private home recorded means no claude leaf has
+        launched under this orchestration yet, so anything findable is pre-move and
+        equally unreachable: False is right there too."""
         if not isinstance(session_id, str) or not session_id.strip():
             return False
-        try:
-            proj = Path.home() / ".claude" / "projects"
-            return bool(sorted(proj.glob(f"*/{session_id.strip()}.jsonl")))
-        except OSError:
-            return False
+        from tools.hooks.common import claude_workflow_home
+        if pure:
+            roots = [Path.home() / ".claude" / "projects"]
+        else:
+            try:
+                home = claude_workflow_home(self.repo_root, self.orchestration_id)
+            except (OSError, ValueError):
+                return False
+            if home is None:
+                return False
+            roots = [home / "projects"]
+        for root in roots:
+            try:
+                if sorted(root.glob(f"*/{session_id.strip()}.jsonl")):
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _pure_session_resumable(self, session_id: str,
                                 entry: ResolvedLeafEntry | None = None,
@@ -3777,7 +3820,8 @@ class Conductor:
         if not entry.supports(CAP_WARM_RESUME):
             return False
         if entry.provider == "claude_cli":
-            return self._claude_session_resumable(session_id)
+            # This predicate serves the PURE loops, so the pure home is the right one.
+            return self._claude_session_resumable(session_id, pure=True)
         # Codex exposes no safe local transcript-presence probe.  A thread id
         # emitted by this process is authoritative; `codex exec resume` remains
         # the final capability check and its failure is handled as transport.
@@ -3884,18 +3928,24 @@ class Conductor:
             # `-p` runs non-interactively. The leaf's MCP server set comes from
             # `--strict-mcp-config --mcp-config .mcp.json` below — read directly from the
             # committed file, not from an enablement decision recorded elsewhere. The
-            # permission grants that let the leaf CALL those tools still come from the
-            # committed .claude/settings.json via the `project` setting source, and that
-            # source is itself conditional on workspace trust (issue #65; see
-            # docs/RUNBOOK.md).
+            # permission grants that let the leaf CALL those tools come from the
+            # committed `leaf_config/claude/settings.json`, copied into the private
+            # home and read as the `user` layer (issue #63). Not `.claude/settings.json`
+            # — no leaf loads that — and not conditional on workspace trust: a user-tier
+            # grant was measured to be honoured with no trust seed present, while the
+            # trust conditionality of issue #65 applied to the `project` layer this
+            # launch no longer uses. (All three of those claims were the opposite here
+            # until R3 caught it, at the very comment someone debugging a refused MCP
+            # call would read.)
             flags: list[str] = []
             # `--model` ONLY for a model the configuration FILE names. An operator who wrote
             # `model: haiku` for a substep means that leaf to run haiku, and recording it while
             # launching the CLI's own default would be provenance that describes a run that did
             # not happen. A model the file did not declare is deliberately NOT pinned — that is
             # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
-            # every pre-issue-#28 launch byte-identical. With `--setting-sources project` the
-            # unpinned case is decided by the CLI itself, not by the operator's `~/.claude`.
+            # every pre-issue-#28 launch byte-identical. With `--setting-sources user` against
+            # a private home, the unpinned case is decided by the CLI itself, not by the
+            # operator's `~/.claude`.
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is
@@ -3922,13 +3972,15 @@ class Conductor:
                 # leaves, which reach it through a different set of flags because they
                 # keep their tools, their skill, and the repo's PreToolUse hook.
                 #
-                # INTERIM (issue #63 step 1): `project` is not the end state. The hooks and
-                # the build-runtime permission grant live only in the repository's project
-                # layer today, so that layer cannot be dropped until they are relocated
-                # into a leaf-only configuration directory copied to a private home
-                # (`--setting-sources user`). Until then `project` also still carries this
-                # checkout's CLAUDE.md/AGENTS.md into the leaf.
-                flags += ["--setting-sources", "project",
+                # `user`, paired with `CLAUDE_CONFIG_DIR=<private home>` (issue #63 final
+                # form): the ONLY settings layer the leaf loads is the SHA-pinned copy of
+                # this repository's `leaf_config/claude/settings.json`, which carries the
+                # hooks and the build-runtime grant. The operator's `~/.claude` and this
+                # checkout's dev-only `.claude/` are both out of reach. MEASURED on CLI
+                # 2.1.235: `user` also stops the repo's CLAUDE.md — and the AGENTS.md it
+                # `@`-imports — from being injected into the leaf's first message, which
+                # `project` did.
+                flags += ["--setting-sources", "user",
                           "--strict-mcp-config",
                           "--mcp-config", CLAUDE_LEAF_MCP_CONFIG,
                           "--disable-slash-commands"]
@@ -4208,8 +4260,11 @@ class Conductor:
         SandboxEnforcementError if the host cannot build the profile (so the caller can
         fail closed instead of crashing or launching unconfined)."""
         from tools.orchestration_runtime import (
+            _prepare_claude_workflow_home,
             _prepare_codex_workflow_home,
             build_readonly_bwrap_profile,
+            claude_isolation_profile_kwargs,
+            codex_isolation_profile_kwargs,
         )
         # The diagnostician carries no phase/substep, so it runs on `defaults` — the same
         # entry `escalate` launches through.
@@ -4224,15 +4279,15 @@ class Conductor:
                 # preserves Codex state without admitting ambient user hooks.
                 codex_isolation = _prepare_codex_workflow_home(
                     self.repo_root, self.orchestration_id)
-                profile_kwargs = {
-                    "backend_ro_mappings": [
-                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
-                        (codex_isolation["hooks"], codex_isolation["hooks"]),
-                        (codex_isolation["config"], codex_isolation["config"]),
-                    ],
-                    "backend_rw_override": [codex_isolation["home"]],
-                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
-                }
+                profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
+            elif entry.provider == "claude_cli":
+                # Same reasoning for the Claude leaf's private home (issue #63): this
+                # launch re-derives its own isolation because it never reaches
+                # record_launch, and without it the diagnostician would be the ONE
+                # claude leaf still coming up on the operator's `~/.claude`.
+                claude_isolation = _prepare_claude_workflow_home(
+                    self.repo_root, self.orchestration_id)
+                profile_kwargs = claude_isolation_profile_kwargs(claude_isolation)
             return build_readonly_bwrap_profile(
                 repo_root=self.repo_root,
                 orchestration_id=self.orchestration_id,
@@ -6390,7 +6445,7 @@ clean:
         # resume_session_id stays None and the first attempt is a cold launch (findings dropped,
         # the safe degradation the pure launch template has no slot for).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
-            target = self._resolve_reuse_resume(repair, phase, substep)
+            target = self._resolve_reuse_resume(repair, phase, substep, pure=True)
             if target and self._pure_session_resumable(target, entry, phase, substep):
                 resume_session_id = target
                 # The outer-reopen excerpt is threaded into the first repair turn's
@@ -7318,7 +7373,7 @@ clean:
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
-            # AUTO-MEMORY IS NOT A SETTING, so `--setting-sources project` does not close it:
+            # AUTO-MEMORY IS NOT A SETTING, so no `--setting-sources` value closes it:
             # the CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's
             # FIRST USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
             # variable, none of which an agentic leaf has (the PURE path is closed by
@@ -7331,7 +7386,20 @@ clean:
             # exists to prevent; it is also a leaf reading `~/.claude`, and a leaf being handed
             # PAST-RUN state, both of which the workflow forbids outright.
             # Set here rather than on the argv because the CLI exposes no flag for it.
+            # LOAD-BEARING, not redundant. An earlier version of this comment said
+            # issue #63's private home "independently empties the directory the memory
+            # would be read from"; that is FALSE, and measured so: the home's
+            # `projects/` stays writable (a leaf needs to write its own transcript),
+            # so `<home>/projects/<slug>/memory/MEMORY.md` can exist, and with this
+            # variable unset it IS injected. This variable is the only thing closing
+            # that path.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+            # CLAUDE_CONFIG_DIR is deliberately NOT set here. The private home reaches
+            # the leaf through exactly ONE route — the bwrap profile's `--setenv`,
+            # built from the home that `record_launch` prepared and recorded — which is
+            # the same single-route story codex's CODEX_HOME follows. A second spelling
+            # here could name a different home than the one whose settings were
+            # SHA-pinned and bound, and the record would describe neither.
         elif entry.provider == "codex_cli":
             # METDSL_HOME was the historical private alias.  Pass the canonical
             # variable to the CLI so its state/session directory matches the
@@ -7458,7 +7526,8 @@ clean:
         except OSError:
             return False
 
-    def _verify_session_resumable(self, verify_arid: str, phase: str = "generate") -> bool:
+    def _verify_session_resumable(self, verify_arid: str, phase: str = "generate",
+                                  pure: bool = False) -> bool:
         """True if the failed verify leaf's session can actually be warm-resumed. Mirrors the
         preconditions `_resolve_reuse_resume` applies at launch (a warm-resumable claude
         provider + a surviving session transcript), consulted BEFORE the repair turn so the
@@ -7468,7 +7537,7 @@ clean:
         # provider — consulting the wrong one would refuse a repair the session can serve.
         entry = self.entry_for(phase, "verify")
         return (entry.supports(CAP_WARM_RESUME) and entry.provider == "claude_cli"
-                and self._claude_session_resumable(verify_arid))
+                and self._claude_session_resumable(verify_arid, pure=pure))
 
     def determine_substep_status(self, refs: NodeRefs, phase: str, substep: str | None,
                                  allowed_output_paths: list[str],
@@ -9253,8 +9322,15 @@ clean:
         # session-transcript glob and the `resume_session_unavailable` emit side-effect-free
         # for them even if a reuse repair ever reaches one.
         deterministic = self._is_deterministic_substep(phase, substep)
+        # `pure=False` because a PURE substep has already returned above, through
+        # `_run_pure_generate_substep` / `_run_pure_verify_substep`, which resolve
+        # their own resume. Calling `_pure_leaf_substep` again here would read as
+        # though this line could see a pure node and would always answer False —
+        # a mutation replacing it with the constant survived, which is what showed
+        # the two are the same thing.
         resume_session_id = (None if deterministic
-                             else self._resolve_reuse_resume(repair, phase, substep))
+                             else self._resolve_reuse_resume(
+                                 repair, phase, substep, pure=False))
         # Slim repair turn is always used when a warm resume actually fires (build_launch_request
         # further requires a findings excerpt to be present, so in practice slim is scoped to the
         # deterministic-gate reopens — lint/static/compile_static — which carry one; a warm reuse
@@ -10517,7 +10593,12 @@ clean:
             # carries NO findings (the full template has no findings placeholder) — the leaf
             # would re-verify blind and escalate anyway. Re-checked every iteration, not just on
             # entry: each repair turn is a new session that may itself not be resumable.
-            if not self._verify_session_resumable(verify_arid, phase):
+            # `pure=False`: a pure verify has already returned through
+            # `_run_pure_verify_substep` above, so `_pure_leaf_substep` here could
+            # only ever answer False. Calling it would present a decision that is
+            # none — a mutation constant-folding it survived, which is what showed
+            # the two are the same.
+            if not self._verify_session_resumable(verify_arid, phase, pure=False):
                 self.emit("verify_meta_schema_no_warm_session", node_key=refs.node_key,
                           phase=phase, attempt=attempt + 1,
                           detail="; ".join(findings)[:200])

@@ -21,8 +21,11 @@ Usage:
   orchestration_id  Target under workspace/orchestrations/. Omit to auto-pick
                     the most recent orch_* directory.
   --json            Emit machine-readable JSON instead of the text report.
-  --project-dir     Claude transcript dir (default: ~/.claude/projects/<slug>
-                    where <slug> is the repo abs-path with '/' -> '-').
+  --project-dir     Claude transcript dir. Default: the orchestration's private
+                    home (orchestration_meta.json#claude_workflow_home +
+                    /projects/<slug>, issue #63) when it exists, else
+                    ~/.claude/projects/<slug>, where <slug> is the repo abs-path
+                    with '/' -> '-'.
 
 MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
   1) One model API response is written to the session transcript as SEVERAL
@@ -426,9 +429,32 @@ def main():
     orch_id = pick_orch(orch_dir, requested)
     orch_path = os.path.join(orch_dir, orch_id)
 
+    project_dirs = [project_dir] if project_dir else []
     if project_dir is None:
         slug = repo_root.replace("/", "-")
-        project_dir = os.path.expanduser(os.path.join("~/.claude/projects", slug))
+        # Since issue #63 a workflow leaf writes its transcript into the
+        # orchestration's PRIVATE home, recorded host-side in orchestration_meta.json.
+        # Fall back to the operator's `~/.claude` for a run recorded before that, and
+        # for a home that has been cleaned (it lives under /tmp; issue #64).
+        private = None
+        try:
+            with open(os.path.join(orch_path, "orchestration_meta.json"),
+                      encoding="utf-8") as handle:
+                raw = json.load(handle).get("claude_workflow_home")
+            if isinstance(raw, str) and raw.strip():
+                candidate = os.path.join(raw.strip(), "projects", slug)
+                if os.path.isdir(candidate):
+                    private = candidate
+        except (OSError, ValueError):
+            private = None
+        # BOTH, private first. An orchestration resumed across the issue-#63
+        # migration has its older leaves under `~/.claude` and its newer ones in the
+        # private home; taking only the private directory whenever it exists made
+        # every older leaf look non-LLM below, silently undercounting the run's time
+        # and tokens. Resolved per run id, not per directory.
+        project_dirs = [d for d in (private, os.path.expanduser(
+            os.path.join("~/.claude/projects", slug))) if d]
+        project_dir = project_dirs[0]
 
     durations = load_leaf_durations(orch_path)
     labels = load_labels(orch_path)
@@ -439,8 +465,12 @@ def main():
     # to the leaf that first produced it, which is the earlier-launched one.
     raws = {}
     for row in durations:
-        tpath = os.path.join(project_dir, row["run_id"] + ".jsonl")
-        raws[row["run_id"]] = read_transcript(tpath) if os.path.exists(tpath) else None
+        raws[row["run_id"]] = None
+        for candidate_dir in project_dirs:
+            tpath = os.path.join(candidate_dir, row["run_id"] + ".jsonl")
+            if os.path.exists(tpath):
+                raws[row["run_id"]] = read_transcript(tpath)
+                break
 
     seen_ids = set()
     summaries = {}

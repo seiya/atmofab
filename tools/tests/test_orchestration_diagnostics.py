@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -336,7 +337,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             (proj / f"{CHILD_ARID}.jsonl").write_text(
                 "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
             )
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 incident = diag.build_launch_incident(repo, ORCH_ID)
             self.assertIsNotNone(incident)
             assert incident is not None
@@ -358,7 +359,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             empty_home = Path(tmp) / "home"
             empty_home.mkdir()
             _open_dangling_window(_orch_root(repo))
-            with mock.patch.object(diag.Path, "home", return_value=empty_home):
+            with mock.patch.dict(os.environ, {"HOME": str(empty_home)}, clear=False):
                 incident = diag.build_launch_incident(repo, ORCH_ID)
             self.assertIsNotNone(incident)
             assert incident is not None
@@ -435,6 +436,75 @@ class OwnAridDisambiguationTests(unittest.TestCase):
         self.assertIsNone(diag._own_arid_of_transcript("nothing here", {"x"}))
 
 
+class LeafTranscriptRootTests(unittest.TestCase):
+    """The post-mortem readers follow the transcript into the private home.
+
+    Issue #63 moved an agentic leaf's transcript out of `~/.claude/projects`. The
+    code was already correct when this was written, but NOTHING observed it:
+    re-pointing either reader at the operator home left the whole suite green.
+    Regress it and `build_launch_incident` answers "no leaf transcript located"
+    for every post-#63 dangling leaf — a false record about the very leaf that
+    failed, on the one path an operator uses to diagnose a hung run.
+    """
+
+    def _repo_with_private_home(self, td: str) -> tuple[Path, Path, str]:
+        repo = Path(td) / "repo"
+        repo.mkdir()
+        home = Path(td) / "metdsl-claude-diag"
+        home.mkdir()
+        meta = repo / "workspace" / "orchestrations" / "o"
+        meta.mkdir(parents=True)
+        (meta / "orchestration_meta.json").write_text(
+            json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+        slug = str(repo.resolve()).replace("/", "-")
+        return repo, home, slug
+
+    def test_the_leaf_transcript_is_found_in_the_private_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo, home, slug = self._repo_with_private_home(td)
+            proj = home / "projects" / slug
+            proj.mkdir(parents=True)
+            (proj / "arid-1.jsonl").write_text("{}\n", encoding="utf-8")
+            found = diag._leaf_transcript_path("arid-1", repo, "o")
+            self.assertEqual(found, proj / "arid-1.jsonl")
+
+    def test_a_pre_move_transcript_in_the_operator_home_is_still_found(self) -> None:
+        """A run recorded before the move must stay auditable."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, _home, slug = self._repo_with_private_home(td)
+            operator = Path(td) / "operator"
+            proj = operator / ".claude" / "projects" / slug
+            proj.mkdir(parents=True)
+            (proj / "arid-old.jsonl").write_text("{}\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
+                found = diag._leaf_transcript_path("arid-old", repo, "o")
+            self.assertEqual(found, proj / "arid-old.jsonl")
+
+    def test_the_projects_dir_prefers_the_private_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo, home, slug = self._repo_with_private_home(td)
+            self.assertEqual(diag._claude_projects_dir(repo, "o"), home / "projects" / slug)
+
+    def test_without_an_orchestration_the_operator_home_answers(self) -> None:
+        """The parent/host agent is not a leaf, so its callers pass no id."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, _home, slug = self._repo_with_private_home(td)
+            operator = Path(td) / "operator"
+            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
+                self.assertEqual(diag._claude_projects_dir(repo),
+                                 operator / ".claude" / "projects" / slug)
+
+    def test_the_private_home_is_searched_before_the_operator_home(self) -> None:
+        """Order is load-bearing: `_claude_projects_dir` takes the FIRST root, and
+        flipping it silently sends every post-#63 audit to the operator's home."""
+        from tools.hooks.common import claude_leaf_projects_roots
+        with tempfile.TemporaryDirectory() as td:
+            repo, home, _slug = self._repo_with_private_home(td)
+            roots = claude_leaf_projects_roots(repo, "o")
+            self.assertEqual(roots[0], home / "projects")
+            self.assertEqual(len(roots), 2)
+
+
 class AggregateChildUsageTests(unittest.TestCase):
     def _write_child(self, subagents: Path, fname: str, arid: str, parent: str, records: list) -> None:
         body_head = (
@@ -458,7 +528,7 @@ class AggregateChildUsageTests(unittest.TestCase):
             child_b = "bbbb2222-2222-4222-8222-222222222222"
             self._write_child(subagents, "agent-a.jsonl", child_a, parent, [_usage_record(10, 10, 1000, 0)])
             self._write_child(subagents, "agent-b.jsonl", child_b, parent, [_usage_record(5, 5, 500, 0)])
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 # parent arid is in the target set but must NOT capture a child file.
                 agg = diag.aggregate_child_usage(repo, [child_a, child_b, parent])
             self.assertTrue(agg["available"])
@@ -476,7 +546,7 @@ class AggregateChildUsageTests(unittest.TestCase):
             repo.mkdir()
             empty_home = Path(tmp) / "home"
             empty_home.mkdir()
-            with mock.patch.object(diag.Path, "home", return_value=empty_home):
+            with mock.patch.dict(os.environ, {"HOME": str(empty_home)}, clear=False):
                 agg = diag.aggregate_child_usage(repo, ["aaaa1111-1111-4111-8111-111111111111"])
             self.assertFalse(agg["available"])
             self.assertIn("reason", agg)
@@ -499,7 +569,7 @@ class AggregateChildUsageTests(unittest.TestCase):
                 d = base / sess / "subagents"
                 d.mkdir(parents=True, exist_ok=True)
                 self._write_child(d, "agent-x.jsonl", child, parent, [_usage_record(1, 1, 100, 0)])
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 # Every host session's subagents dir is scanned; the child is found
                 # regardless of which session ran it.
                 agg_all = diag.aggregate_child_usage(repo, [child])
@@ -546,7 +616,7 @@ class AggregateParentUsageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 agg = diag.aggregate_parent_usage(repo, arid)
             self.assertTrue(agg["available"])
             self.assertEqual(agg["session_count"], 2)
@@ -558,7 +628,7 @@ class AggregateParentUsageTests(unittest.TestCase):
             repo.mkdir()
             home = Path(tmp) / "home"
             (home / ".claude" / "projects").mkdir(parents=True)
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 agg = diag.aggregate_parent_usage(repo, "nope-arid")
             self.assertFalse(agg["available"])
 

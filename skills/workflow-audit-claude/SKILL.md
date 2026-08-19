@@ -24,7 +24,7 @@ Investigate the logs of a completed or interrupted workflow execution across the
 | sandbox violations | `workspace/orchestrations/<orch_id>/violations/*.json` |
 | access logs | `workspace/orchestrations/<orch_id>/access_logs/<agent_run_id>.jsonl` |
 | failure analysis | `workspace/orchestrations/<orch_id>/failure_analysis.json` |
-| session conversation log | `~/.claude/projects/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`) |
+| session conversation log | `<projects-root>/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`). Since issue #63 a workflow LEAF writes into the orchestration's private home: `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` when that key is present, else `~/.claude/projects` (the operator's own sessions, and any run recorded before that change). The private home lives under `/tmp` and is not durable — issue #64. |
 
 > **Operator context only.** The `~/.claude` read in the row above is of the backend CLI's
 > credential/session home, which the Bash read guard rejects fail-closed whenever
@@ -46,7 +46,7 @@ To investigate a specific orchestration, use the instructed `orchestration_id`.
 ### Step 2 — Auto-detect the session_id
 
 Read the `payload_summary.session_id` recorded in `native_hook_events.jsonl`, and
-identify the corresponding `.jsonl` file under `~/.claude/projects/<cwd-slug>/`.
+identify the corresponding `.jsonl` file under `<projects-root>/<cwd-slug>/` (resolved as in the table above).
 `<cwd-slug>` is the repo's absolute path with `/` replaced by `-` (e.g. `/home/alice/work/met-dsl` → `-home-alice-work-met-dsl`).
 
 ```bash

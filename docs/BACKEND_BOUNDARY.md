@@ -15,6 +15,9 @@ rule that keeps it out of everything else.
 - Every document and script under `skills/`.
 - Every document under `docs/`, recursively.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`.
+- `leaf_config/`, the committed configuration a workflow leaf is launched with. It names
+  hook events, tool names and permission tokens of the LLM CLI that runs a leaf — an
+  `agent` axis concern, not a target-stack one — and no `axis` value appears in it.
 
 Out of scope, each for a stated reason:
 - `spec/`. A `spec` is required to be language-neutral by `docs/CONTROLLED_SPEC.md`, and that
