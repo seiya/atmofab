@@ -43,9 +43,14 @@ hunks in ONE file to exercise the tracked-file restore — the version with two 
 witnessed only half of it. Every mechanism claimed here was confirmed by reverting it and
 watching a named test fail.
 
-What these tests do NOT cover, from a census of 187 mutations run against them by an
-independent reviewer (96 killed, 91 survived, and every survivor below was demonstrated to be a
-real behaviour change rather than an equivalent mutant): the `ast.AsyncFunctionDef` arm of the
+What these tests do NOT cover, from two censuses run against them by independent reviewers —
+187 mutations (96 killed) and then 248 (152 killed), with every survivor below demonstrated to be
+a real behaviour change rather than an equivalent mutant. Three decisions added AFTER those
+censuses are unwitnessed too, and all three fail toward over-reporting: the VALUE of
+`_SUMMARY_TAIL_LINES` (1 and 2 both pass the suite — real pytest puts its counts on the last
+line, so the margin is a margin and not a mechanism), the loosening of `_TESTS_DID_FAIL_RE` that
+went with it, and the TMPDIR lookbehind as a whole class rather than member by member. The
+censused list: the `ast.AsyncFunctionDef` arm of the
 docstring blanking; the `git apply -R` refusal branch of
 SKIP — no scenario was found that produces it at HEAD; `--keep`, `--skip-baseline`, `--workdir`
 placement and the per-job temp roots; a range whose right side is not HEAD; the mode-change and

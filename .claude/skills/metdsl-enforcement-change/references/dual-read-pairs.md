@@ -68,8 +68,8 @@ failed in a way I could not explain.
 - `tools/validate_pipeline_semantics.py` is over 14,000 lines. **Look the name up before adding a
   new module constant**
 - Use the existing constant if it fits. If the meaning differs, **put the difference in the name**
-  (`_FORTRAN_UNIT_OPEN` also covers `subroutine`; if you want host units only, use
-  `_FORTRAN_HOST_UNIT_OPEN`)
+  (`_FORTRAN_UNIT_OPEN` also covers `subroutine`, so a constant for host units only would be named
+  something like `_FORTRAN_HOST_UNIT_OPEN` — a name that does not exist today)
 - Symptoms: "I fixed the pattern and nothing changed", "I reverted the mutation and no test
   failed" → **print the compiled value and look** (`print(vps._FOO.pattern)`)
 

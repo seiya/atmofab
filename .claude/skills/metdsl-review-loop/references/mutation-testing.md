@@ -66,7 +66,8 @@ back. It nearly became "this pin works" in the prose — the pin was in fact fal
 against `origin/main`'s wording, which only replacing the whole file revealed.
 
 - Count the occurrences before substituting and **exit non-zero on zero matches**.
-  `scripts/mutation_check.py` does this for the case that matches it — a hunk it cannot revert is
+  `.claude/skills/metdsl-review-loop/scripts/mutation_check.py` does this for the case that
+  matches it — a hunk it cannot revert is
   reported as SKIPPED and exits 1 (witnessed for the rename cause; no scenario has yet produced a
   bare `git apply -R` refusal, so that half is asserted from the code, not measured) (until 2026-08-19 it was counted as neither a survivor
   nor inconclusive, so a run where every hunk skipped printed "every hunk is pinned" and exited 0).

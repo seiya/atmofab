@@ -16,7 +16,7 @@ defects had been introduced by the fixes themselves**. What follows was derived 
 that breakdown.
 
 `L128` and `L174` below name entries of `TODO.md` by the line they sat on when the work happened
-(as do `L118` and `L242` in the sibling skill); the lines have moved since, so search TODO.md for
+(as does `L118` in the sibling skill); the lines have moved since, so search TODO.md for
 the subject rather than the number.
 
 Reference files, loaded when you need them:
@@ -215,8 +215,8 @@ Test-file hunks are excluded by default (`--include-tests`
 
 3. **Run the verification set** and record the measurements. The commands are in
    `.claude/skills/metdsl-enforcement-change/references/verification.md` (suite baseline, ruff
-   diff against origin/main, doc size ceilings; the `mcp_call` end-to-end at the end is for
-   enforcement machinery).
+   diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for enforcement
+   machinery).
 
 4. **Leave the list of surfaces you touched** in the commit message or TODO.md. That is where
    reviewers attack from.
@@ -360,7 +360,8 @@ stops paying.**
   layer, an exemption granted by `result`, and the label family
 
 **Make the prompt a checklist** (not free-form). Hand over the same ground rules as above: do not
-modify the checkout / a dedicated scratchpad / `grep` is aliased to ripgrep / report only what you
+modify the checkout / a dedicated scratchpad / `grep` may be shadowed and respect `.gitignore` /
+report only what you
 ran / HEAD moves.
 
 **Numbers to collect**: real findings / total findings, elapsed time, and the **overlap count**

@@ -444,7 +444,8 @@ Revert your fix one hunk at a time and confirm the tests **fail**. In PR #51 the
 **42 mutants**, and the tests passing for the wrong reason, were things I learned only when a later
 round pointed them out.
 
-The procedure and the script are **owned by `metdsl-review-loop`** (`scripts/mutation_check.py`).
+The procedure and the script are **owned by `metdsl-review-loop`**
+(`.claude/skills/metdsl-review-loop/scripts/mutation_check.py`).
 The same thing runs before review, so read its "Before you hand it over (round 0)".
 
 ### 6. Verify and record
