@@ -9,4 +9,6 @@ The shared / cross-backend conventions are imported from `AGENTS.md` above. This
 Claude-specific operator / maintenance references (not needed by a running sub-agent):
 - Claude backend preflight requirements (build-runtime MCP registration + permission): [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-2.
 - Hook implementation, the matcher rule, and the dev-layer / leaf-layer split: [docs/HOOKS.md](docs/HOOKS.md).
+- How a review loop over your own change is run — rounds, exclusion lists, when Codex enters, how convergence is judged: the `metdsl-review-loop` skill in `.claude/skills/`.
+- The traps specific to changing enforcement machinery, and the rules for classifying a review finding as residual or out of scope: the `metdsl-enforcement-change` skill in `.claude/skills/`.
 - The leaf's own configuration is `leaf_config/claude/settings.json` (hooks + permission grants). This file's sibling `.claude/settings.json` is the DEV layer, for an operator's interactive session; a sync test keeps their hook commands identical.
