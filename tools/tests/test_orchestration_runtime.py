@@ -18768,14 +18768,25 @@ class GateRunbookTests(unittest.TestCase):
         reason unrelated to redirects.
         """
         from tools.orchestration_runtime import _build_gate_runbook
-        import re as _re
+        from tools.tests.test_hooks_cli import WriteToolExtensionPolicyTests
 
+        # The SAME pattern the documentation surfaces are judged by, not a second
+        # spelling of it: an inline regex written here missed `tee`, so a hint that
+        # captured with `| tee workspace/tmp/<arid>/e.txt` shipped green.
+        redirect = WriteToolExtensionPolicyTests._REDIRECT
         rb = _build_gate_runbook(self._payload("compile", "generate"))
         self.assertTrue(rb.strip(), "compile.generate must emit a runbook")
         self.assertIsNone(
-            _re.search(r"\d?>>?\s*[\"']?(?:\./)?workspace/tmp", rb),
+            redirect.search(rb),
             "the runbook must not teach a redirect into the tmp root",
         )
+        # Witness for the detector itself: a negative assertion is green when its
+        # pattern is broken, and this one is imported rather than defined here.
+        for shape in (
+            "run-gate --gate g 2>workspace/tmp/arid-1/e.txt",
+            "run-gate --gate g | tee workspace/tmp/arid-1/e.txt",
+        ):
+            self.assertIsNotNone(redirect.search(shape), shape)
         gate_half = rb.split("`workspace/tmp/")[0]
         self.assertIn("command result", gate_half)
         self.assertIn("stderr", gate_half)

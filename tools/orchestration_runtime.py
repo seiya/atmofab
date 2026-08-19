@@ -6491,8 +6491,11 @@ def run_gate(
     # orch_20260610T130256Z_ebe96a51).  Agents read this line out of the
     # command result, which carries stderr; capturing it to a tmp file with an
     # appended redirect was the documented route until the permission layer
-    # began refusing every Bash redirect to a file (measured on Claude Code
-    # 2.1.234; it executed on 2.1.223 — docs/HOOKS.md §"Layer boundary").
+    # began refusing it. What was measured on Claude Code 2.1.234 is a redirect
+    # into the repository's own `workspace/tmp/<arid>/` in the `2>`, `>` and
+    # `>>` spellings, to a new and to an existing target; `2>/dev/null` is
+    # unaffected and no out-of-repo target was tested. It executed on 2.1.223
+    # (docs/HOOKS.md §"Layer boundary").
     _gate_summary = {
         "gate": gate,
         "status": status,

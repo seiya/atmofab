@@ -58,8 +58,10 @@ WRITE_HINT = (
     "(guarded-apply-patch is deprecated). The MCP-owned command_log.jsonl is "
     "written only by the build-runtime MCP server and is never file-tool-writable. "
     "For temp files, use the Write tool under the literal allowed_tmp_root "
-    "path (workspace/tmp/<agent_run_id>/...); a Bash redirect that is itself the "
-    "command matches no committed permissions.allow rule. Do NOT use "
+    "path (workspace/tmp/<agent_run_id>/...); a Bash redirect is not a write "
+    "route in any position — the permission layer refuses a redirect to a file, "
+    "and one that is itself the command matches no committed permissions.allow "
+    "rule either. Do NOT use "
     "`export TMPDIR=...`, "
     "`jq -er ...`, or any bootstrap Bash (Claude Code session sandbox approval "
     "would stall the workflow). See docs/AGENT_CONTRACT.md "
@@ -4274,8 +4276,9 @@ def validate_write_access(
                 "artifacts. Write the artifact with the Edit/Write tool to a path in "
                 "output_manifest allowed_file_tool_paths. Scratch files go under "
                 f"allowed_tmp_root (workspace/tmp/{agent_run_id}/...), written with "
-                "the Write tool too: no committed permissions.allow rule matches a "
-                "Bash redirect that is itself the command."
+                "the Write tool too: the permission layer refuses a Bash redirect to a "
+                "file in any position, and one that is itself the command matches no "
+                "committed permissions.allow rule either."
             ),
             continue_processing=False,
             audit_detail={
