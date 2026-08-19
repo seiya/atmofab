@@ -35172,3 +35172,93 @@ class ClaudeLeafConfigSyncTests(unittest.TestCase):
         dev_allow = set((dev.get("permissions") or {}).get("allow") or [])
         self.assertIn("mcp__build-runtime", leaf_allow)
         self.assertLessEqual(leaf_allow, dev_allow)
+
+
+class LeafEnvAllowlistHygieneTests(unittest.TestCase):
+    """The owner constants for the leaf's declared environment (issue #63, PR-B).
+
+    These are the *hygiene* pins — that the list is data with a written reason per
+    entry, and that the dangerous names are outside it by construction. The behaviour
+    pins (what `_child_env` produces, what bwrap renders) live with their layers.
+    """
+
+    def test_every_entry_carries_a_non_empty_justification(self) -> None:
+        """The dict's value IS the justification, so an entry cannot be added without
+        writing down why. A one-word value is not a reason; require a sentence."""
+        self.assertTrue(ort.LEAF_ENV_ALLOWLIST)
+        for name, why in ort.LEAF_ENV_ALLOWLIST.items():
+            with self.subTest(name=name):
+                self.assertIsInstance(why, str)
+                self.assertGreaterEqual(
+                    len(why.split()), 5,
+                    f"{name} needs a written justification, not {why!r}")
+
+    def test_the_names_that_redirect_a_leaf_are_outside_the_list(self) -> None:
+        """The measured holes (CLI 2.1.235): `ANTHROPIC_BASE_URL` redirects 100% of a
+        leaf's traffic, `ANTHROPIC_MODEL` decides the model of every launch that passes
+        no `--model`. Neither may become allowlisted by an edit that does not also
+        rewrite this test."""
+        for name in (
+            "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+            "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+            "AWS_PROFILE", "AWS_SECRET_ACCESS_KEY", "LD_PRELOAD", "LD_LIBRARY_PATH",
+            "NODE_OPTIONS", "SHELL", "PYTHONSTARTUP",
+        ):
+            with self.subTest(name=name):
+                self.assertNotIn(name, ort.LEAF_ENV_ALLOWLIST)
+                self.assertFalse(
+                    any(name.startswith(p) for p in ort.LEAF_ENV_ALLOWED_PREFIXES),
+                    f"{name} would be admitted by a prefix")
+
+    def test_the_named_exclusions_are_a_decision_not_an_oversight(self) -> None:
+        """Decision 2 (2026-08-20): the proxy/TLS families are excluded. The tuple is
+        what makes that reviewable — if someone adds one to the allowlist, the two
+        collections disagree and this fails."""
+        self.assertTrue(ort.LEAF_ENV_NAMED_EXCLUSIONS)
+        for name in ort.LEAF_ENV_NAMED_EXCLUSIONS:
+            with self.subTest(name=name):
+                self.assertNotIn(name, ort.LEAF_ENV_ALLOWLIST)
+                self.assertFalse(any(name.startswith(p)
+                                     for p in ort.LEAF_ENV_ALLOWED_PREFIXES))
+
+    def test_backend_home_vars_are_not_host_passthrough(self) -> None:
+        """Single-route rule: the config home reaches a leaf through the bwrap
+        profile's `--setenv` alone, so the filter must never forward a host copy."""
+        poisoned = {var: "/host/leak" for var in ort._BACKEND_HOME_ENV_VARS}
+        poisoned["METDSL_HOME"] = "/host/leak"
+        got = ort.leaf_env_from({**poisoned, "PATH": "/usr/bin"})
+        self.assertEqual(set(got), {"PATH"})
+
+    def test_the_filter_drops_strangers_and_keeps_the_declared_verbatim(self) -> None:
+        host = {
+            "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
+            "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:9", "ANTHROPIC_MODEL": "haiku",
+            "HTTPS_PROXY": "http://user:pw@proxy:3128", "LD_PRELOAD": "/evil.so",
+            "EMPTY": "",
+        }
+        got = ort.leaf_env_from(host)
+        self.assertEqual(got, {
+            "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
+            "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
+        })
+
+    def test_path_falls_back_when_the_host_has_none(self) -> None:
+        """Kept verbatim from the absorbed `_safe_host_env_for_child`: a PATH-less host
+        env must not produce a leaf that cannot find its own CLI."""
+        self.assertEqual(ort.leaf_env_from({})["PATH"], ort.LEAF_ENV_PATH_DEFAULT)
+        self.assertEqual(ort.LEAF_ENV_PATH_DEFAULT, "/usr/bin:/bin")
+
+    def test_each_allowlist_entry_is_load_bearing(self) -> None:
+        """Per-element probe: deleting any one entry must change the filter's output.
+        Without this the list could grow dead names that no one notices."""
+        host = {name: f"v-{name}" for name in ort.LEAF_ENV_ALLOWLIST}
+        full = ort.leaf_env_from(host)
+        for name in list(ort.LEAF_ENV_ALLOWLIST):
+            with self.subTest(name=name):
+                trimmed = dict(ort.LEAF_ENV_ALLOWLIST)
+                trimmed.pop(name)
+                with mock.patch.object(ort, "LEAF_ENV_ALLOWLIST", trimmed):
+                    got = ort.leaf_env_from(host)
+                self.assertNotEqual(got, full)
+                self.assertNotIn(name, got if name != "PATH" else {})

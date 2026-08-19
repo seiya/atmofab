@@ -6838,10 +6838,12 @@ class LeafSpawnTest(unittest.TestCase):
         this repository, recorded by the run, or reproducible from its artifacts.
 
         Four flags close it, and each is asserted for what it must be, not merely that it
-        is present: the setting sources are exactly `project` (a list that still named
-        `user` would read the operator's home again), and the MCP configuration is the
-        committed file, paired with `--strict-mcp-config` so it REPLACES the ambient server
-        set instead of adding to it.
+        is present: the setting source is exactly `user` — which under the private
+        `CLAUDE_CONFIG_DIR` the profile sets means the repo's own SHA-pinned
+        `leaf_config/claude/settings.json`, NOT the operator's `~/.claude` — and the MCP
+        configuration is the committed file, paired with `--strict-mcp-config` so it
+        REPLACES the ambient server set instead of adding to it. (This docstring said
+        `project` while the assertion below said `user`; the assertion was right.)
         """
         argv = self._c(backend="claude").leaf_command()
         self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")

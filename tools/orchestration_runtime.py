@@ -7879,21 +7879,120 @@ def _runtime_ro_bind_paths() -> list[str]:
     return paths
 
 
-def _safe_host_env_for_child() -> dict[str, str]:
-    allowed = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME")
+# --- the leaf's declared environment (issue #63, the process-environment face) -------
+#
+# A leaf's environment is a DECLARED ALLOWLIST, not an inheritance. The host's process
+# environment decides things the launch record cannot describe: measured on CLI 2.1.235,
+# `ANTHROPIC_BASE_URL` redirects 100% of a leaf's traffic to whatever host it names, and
+# `ANTHROPIC_MODEL` decides the model for every launch that does not pass `--model` —
+# which is the repo's default launch, since `--model` is passed only for a model the
+# configuration FILE declares. Neither appears in any artifact. So the rule is the same
+# one the configuration surface already follows: what the leaf gets is what this file
+# names, and a name absent here is absent from the child.
+#
+# Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
+# a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
+# profile / `render_bwrap_command` layer is the single DELIVERER and the single RECORD
+# (`--clearenv` then one `--setenv` per entry, and `profile["env"]` persisted). The two
+# names only the deliverer adds are `_BACKEND_HOME_ENV_VARS`.
+
+# name -> why this name is on the list. The value is the justification, so an entry
+# cannot be added without writing one down (a test pins that every value is non-empty).
+LEAF_ENV_ALLOWLIST: dict[str, str] = {
+    "PATH": (
+        "resolves the backend CLI, the `sh -lc` hook commands' git/python3, and every "
+        "subprocess a leaf runs. Absent from the host env -> the default below."
+    ),
+    "HOME": (
+        "the CLI's own non-config fallbacks, `sh -lc`, and git (the hooks run "
+        "`git rev-parse --show-toplevel`). NOT the config home: that is CLAUDE_CONFIG_DIR."
+    ),
+    "LANG": (
+        "text-I/O encoding for the leaf and its subprocesses. Passed together with "
+        "LC_ALL — forwarding one and dropping the other changes the resolved locale."
+    ),
+    "LC_ALL": "the LANG pair; see LANG.",
+    "TERM": "the CLI's terminal-capability probe; kept from the pre-allowlist set.",
+    "USER": "identity the CLI and git may read; kept from the pre-allowlist set.",
+    "LOGNAME": "the USER pair; kept from the pre-allowlist set.",
+    "PYTHONPATH": (
+        "`run_workflow.py` prepends repo_root so a leaf's `python3 tools/...` and the "
+        "hook modules import THIS checkout rather than an installed copy."
+    ),
+    "PYTHONDONTWRITEBYTECODE": (
+        "a grandchild python writing __pycache__ under tools/ trips the terminal "
+        "unauthorized-write validation (issue #5)."
+    ),
+}
+
+# The default applied when the host environment has no PATH at all. Same value the
+# pre-allowlist `_safe_host_env_for_child` used.
+LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
+
+# `METDSL_*` is passed by PREFIX, not by enumeration. The namespace is repo-owned and
+# every member has an in-tree reader, so an enumeration would be a list that grows by one
+# every time a variable is added and fails closed on the day someone forgets — the same
+# allowlist-polarity argument `mcp_servers/README.md` §24 makes for the gate's inputs.
+# The dangerous direction (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`, `AWS_*`, `LD_*`) is
+# outside the prefix by construction, so the prefix does not weaken the closure.
+LEAF_ENV_ALLOWED_PREFIXES = ("METDSL_",)
+
+# Inside the prefix but deliberately dropped. `METDSL_HOME` is the deprecated alias for
+# codex's configuration home; like `CODEX_HOME` it must reach the leaf through the bwrap
+# profile's `--setenv` alone, so that the home the leaf reads is the home whose settings
+# were SHA-pinned. The conductor still READS it (to raise on a conflict with CODEX_HOME)
+# — it just does not forward it.
+LEAF_ENV_PREFIX_EXCEPTIONS = ("METDSL_HOME",)
+
+# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling and
+# the auto-memory closure. Named here so the render-time name validation accepts them.
+CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY")
+
+# NAMED EXCLUSIONS — decided, not overlooked (2026-08-20). The proxy / TLS families
+# (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` in both cases, `SSL_CERT_FILE`,
+# `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`) are NOT forwarded. Two reasons: a proxy URL
+# routinely carries credentials, and this list's values are persisted verbatim into
+# `sandbox_profiles/<arid>.json` and the rendered argv; and their absence fails LOUDLY at
+# egress (the leaf cannot reach the API at all) rather than silently redirecting, which is
+# the failure mode the whole closure exists to prevent. An operator on a proxied host adds
+# them here with a justification — this comment is the record that the decision was made
+# and what it costs, which is what TODO.md's "proxy variables included" asks for.
+LEAF_ENV_NAMED_EXCLUSIONS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+)
+
+
+def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
+    """THE filter: the declared subset of ``host_env`` a leaf may inherit.
+
+    Both layers call this — the conductor's `_child_env` to AUTHOR the child environment,
+    and the bwrap profile builders to stay allowlist-true for conductor-less callers. It
+    returns only host passthrough; the per-run values (ids, TMPDIR, the backend home, the
+    claude extras) are added by the caller that owns them.
+    """
     body: dict[str, str] = {}
-    for key in allowed:
-        value = os.environ.get(key)
-        if isinstance(value, str) and value:
+    for key, value in host_env.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not value:
+            continue
+        if key in LEAF_ENV_ALLOWLIST:
             body[key] = value
-    body.setdefault("PATH", "/usr/bin:/bin")
+            continue
+        if key in LEAF_ENV_PREFIX_EXCEPTIONS:
+            continue
+        if any(key.startswith(prefix) for prefix in LEAF_ENV_ALLOWED_PREFIXES):
+            body[key] = value
+    body.setdefault("PATH", LEAF_ENV_PATH_DEFAULT)
     return body
 
 
 # The environment variables that relocate a backend CLI's configuration home.
-# ONE reader: `render_bwrap_command`, which declares them through the sandbox.
-# The conductor's `_child_env` deliberately does not set them — a second spelling
-# could name a different home than the one whose settings were SHA-pinned.
+# TWO roles. (1) `render_bwrap_command` declares them through the sandbox — that
+# `--setenv` is the ONLY route by which a prepared home reaches a leaf. (2) the same
+# tuple is the exclusion set the conductor's `_child_env` enforces: it deliberately does
+# not set them, because a second spelling could name a different home than the one whose
+# settings were SHA-pinned, and the record would then describe neither.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 
 
@@ -8052,7 +8151,7 @@ def build_readonly_bwrap_profile(
     tmp_root.mkdir(parents=True, exist_ok=True)
     workspace_tmp_host = (repo_root / "workspace" / "tmp" / agent_run_id).resolve()
     workspace_tmp_host.mkdir(parents=True, exist_ok=True)
-    child_env = _safe_host_env_for_child()
+    child_env = leaf_env_from(os.environ)
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
@@ -8185,7 +8284,7 @@ def build_bwrap_profile(
     tmp_root.mkdir(parents=True, exist_ok=True)
     workspace_tmp_host = (repo_root / "workspace" / "tmp" / agent_run_id).resolve()
     workspace_tmp_host.mkdir(parents=True, exist_ok=True)
-    child_env = _safe_host_env_for_child()
+    child_env = leaf_env_from(os.environ)
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
