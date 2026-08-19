@@ -1,888 +1,686 @@
 ---
 name: metdsl-review-loop
-description: met-dsl リポジトリ (/home/seiya/work/met-dsl) で実装が一段落してレビューに入るとき、subagent や Codex のレビューを回すとき、指摘を修正して次のラウンドに進むとき、もう収束したか判断するときに使う。レビューして / レビュー回して / 指摘を直して / codex review / この PR merge していい？ / まだ見るべきところある？ といった場面、および監査 finding や issue の実装が終わった直後に必ず参照すること。対象は「自分が加えた変更のレビュー」で、既存の spec / doc / 実装の内容が妥当かを読むだけの作業(変更を伴わないレビュー)には使わない。met-dsl 以外のリポジトリでは使わない。
+description: Use when implementation in this repository reaches a pause and review begins, when running subagent or Codex review rounds, when fixing findings and moving to the next round, and when judging whether the loop has converged. Required reading for 「レビューして」「レビュー回して」「指摘を直して」「codex review」「この PR merge していい?」「まだ見るべきところある?」 and immediately after finishing the implementation of an audit finding or an issue. The subject is **review of changes you made**; do not use it for reading existing spec, docs, or implementation to judge whether they are sound (review without a change).
 ---
 
-# met-dsl のレビュー収束ループ
+# The review convergence loop
 
-この skill が持つのは**レビューの回し方**(ラウンド構成・レビュアへの指示・収束判定・変異チェック)。
-変更が強制機構(gate / validator / hook / capability)に触るなら、**`metdsl-enforcement-change`
-も併せて起動する** — そちらがドメイン固有の罠(二重読みペア、失敗の帰属、確認コマンド)の正典で、
-ここには複製しない。
+What this skill holds is **how to run a review**: round structure, what to tell reviewers,
+convergence criteria, mutation checking. If the change touches enforcement machinery (a gate,
+validator, hook, or capability), **start `metdsl-enforcement-change` as well** — it owns the
+domain-specific traps (dual-read pairs, failure attribution, verification commands) and they
+are not duplicated here.
 
-実績: PR #51 は subagent 17ラウンド + Codex 3回で収束したが、**修正が持ち込んだ欠陥が15件**出た。
-以下はその内訳から逆算した手順。
+Track record: PR #51 converged after 17 subagent rounds plus 3 Codex passes, and **15 of the
+defects had been introduced by the fixes themselves**. What follows was derived backwards from
+that breakdown.
 
-## レビュー対象と commit の粒度
+Reference files, loaded when you need them:
 
-**対象は `git diff origin/main...HEAD`**(ブランチが main から積んだ全体)。直近の commit だけを
-見せると、前のラウンドの修正が持ち込んだ欠陥を見逃す — 実績では**指摘の多くが前ラウンドの修正の
-中**にあった。
+- `references/mutation-testing.md` — the episodes behind the round-0 rules
+- `references/codex-episodes.md` — the stall / filter case log and the launch mechanics
+- `references/sonnet-delegation.md` — the four-data-point experiment log
+- `references/class-descent-log.md` — the per-PR stopping-condition histories
 
-**作業ツリーが commit と一致していることを確認してから出す**(`git status --porcelain` が空)。
-未コミットの変更を残すと、レビュアが読む diff と実物がずれる。
+## Review target and commit granularity
 
-**修正は1件ずつ commit するのが既定。** 理由は3つ:
+**The target is `git diff origin/main...HEAD`** (everything the branch has stacked on main).
+Show only the most recent commit and you miss the defects the previous round's fix introduced —
+in practice **most findings sat inside the previous round's fix**.
 
-- 変異チェックが `--range HEAD~1..HEAD` でそのまま効く
-- どの指摘にどの修正が対応するか、後から追える(commit message に指摘の要旨を書く)
-- 次ラウンドで「直したファイルを重点的に見よ」と指定できる
+**Confirm the working tree matches the commits before handing it over** (`git status
+--porcelain` empty). Leave uncommitted changes and the diff the reviewer reads is not the
+thing.
 
-commit しない方が良いと判断したときはしなくてよい(同一箇所の複数指摘で分割が不自然、
-実験的な確認、直後に revert する見込み など)。その場合は**なぜ分けないかを一言述べる**。
+**One commit per finding is the default.** Three reasons:
 
-**1ラウンド分をまとめて1 commit にするなら、message は commit の中身**全部**を述べること。**
-PR #67 では「分割が不自然」と判断して `git add -A` でまとめたのに、message は最初に直した
-2件しか書いておらず、**同じ commit に入っている残り6件を述べていなかった**。これは
-「証拠の虚偽」側の欠陥(message が実物と食い違う)で、レビュアではなく自分で気づいた。
-まとめると決めた時点で **`git show --stat` を読んでから message を書く**。
-なお index が空なら `--amend` で message だけ直すのは安全(上の注意どおり確認してから)。
+- the mutation check works as-is with `--range HEAD~1..HEAD`
+- which fix answers which finding stays traceable afterwards (put the gist of the finding in
+  the commit message)
+- the next round can be told to look hardest at the files you just fixed
 
-**message だけ直す `git commit --amend` は、index が空であることを確かめてから**(または
-`--only` を付ける)。`--amend` は staged 済みの変更を黙って吸収する。PR #58 では、虚偽の一文を
-直すつもりの `--amend` が、その時点で staged だったファイル差し替えを巻き込み、**その commit が
-`git log -S` で見つからない作業を主張する**状態になった。レビュアが high として指摘するまで
-気づかなかった。未 push なら squash で直せるが、直した事実を message に書くこと。
+Not committing separately is allowed when you judge it better (several findings in one place
+where splitting is unnatural, an experimental check, something you expect to revert
+immediately). When you do that, **say in one line why you are not splitting**.
 
-## 計画が PR を段階分けしていたら、段ごとに閉じてから次へ
+**If you fold a whole round into one commit, the message must describe everything in it.** In
+PR #67 I judged splitting unnatural, ran `git add -A`, and wrote a message covering only the
+first two fixes — **saying nothing about the other six in the same commit**. That is a defect on
+the "false evidence" side (the message disagrees with the artifact), and I caught it myself
+rather than a reviewer. Once you decide to fold, **read `git show --stat` before writing the
+message**.
 
-**段A を実装 → レビュー → 修正 → merge → その上で段B を実装。** 両方実装してから履歴を2本に
-割ってはいけない。レビュー対象は上記のとおり `origin/main...HEAD` = **スタック全体**なので、
-後から割っても**レビュー単位と PR 単位がずれる**。
+**`git commit --amend` for a message-only fix requires an empty index** (or pass `--only`).
+`--amend` silently absorbs whatever is staged. In PR #58 an `--amend` meant to fix one false
+sentence swallowed a file replacement that happened to be staged, leaving **a commit that
+claims work `git log -S` cannot find**. I did not notice until a reviewer raised it as high. If
+it is unpushed you can fix it by squashing — and say in the message that you did.
 
-L174(2026-08-14)でこれをやった。計画は「PR A = フロントエンド交換(意味論不変)/ PR B =
-可視化(verdict を動かす)」と2段を指示していたのに、A と B を続けて実装し、`git branch` +
-`git reset --hard` で2本に割ってから、スタック全体に対して4ラウンド回した。結果:
+## If the plan staged the PRs, close each stage before starting the next
 
-- レビューで出た欠陥の**大半は A 側のコードのもの**(再帰クラッシュ、分類チャネルの偽造、
-  ラベル起因の誤拒否、grammar rename の沈黙)だったが、**修正 commit は全部 B 側に積まれた**
-- したがって PR A の tip は「レビュー前の A」で、**単独 merge すると直っていない状態が main に入る**
-- open した PR A を close し、スタック全体で1本に畳み直した。2段に割った意味は消えた
+**Implement stage A → review → fix → merge → then implement stage B.** Do not implement both
+and split the history into two afterwards. The review target is `origin/main...HEAD` = **the
+whole stack**, so splitting later **misaligns the review unit from the PR unit**.
 
-**判定**: 段階分けの目的は「意味論不変の交換」と「意味を変える変更」を別々に読める/戻せるように
-することなので、**段A が単独で正しくない時点でその目的は失われている**。復旧は (1) 1本に畳む、
-(2) A 側の修正を A に前送りして rebase、(3) stack のまま順に merge、のいずれか。(2) は履歴の
-作り直しと両ブランチでの再測定が要るので、**最初から順序を守るほうが常に安い**。
+L174 did exactly this: the plan said "PR A = swap the front end (semantics unchanged), PR B =
+visibility (moves verdicts)", and I implemented A and B back to back, split them with `git
+branch` + `git reset --hard`, then ran four rounds against the whole stack. **Most defects the
+review found were in A's code, and every fix commit landed on B**, so PR A's tip was
+"A before review" and **merging it alone would have put the unbroken-nothing state on main**. I
+closed PR A and folded the stack back into one; the point of staging was gone.
 
-なお段A を merge してから段B に着手すると、段B のレビュー対象が自動的に段B だけになる
-(`origin/main...HEAD` が段B の差分と一致する)。これが本来の狙いどおりの形。
+**The judgment**: staging exists so that "a semantics-preserving swap" and "a change that moves
+meaning" can be read and reverted separately, so **the moment stage A is not correct on its own,
+that purpose is lost**. Recovery is (1) fold into one, (2) move A's fixes forward onto A and
+rebase, or (3) merge the stack in order. (2) needs history rebuilt and re-measurement on both
+branches, so **keeping the order from the start is always cheaper**.
 
-## 出す前(ラウンド0)
+Merge stage A before starting stage B and stage B's review target is automatically stage B
+alone (`origin/main...HEAD` equals stage B's diff). That is the shape the staging was for.
 
-1. **変異チェックを通す。** レビュアに「テストが弱い」と言われて1ラウンド使うのは無駄。
+## Before you hand it over (round 0)
+
+1. **Pass the mutation check.** Spending a round on a reviewer telling you the tests are weak is
+   waste.
 
 ```bash
-# 修正 commit の直後(既定)
-python3 ~/.claude/skills/metdsl-review-loop/scripts/mutation_check.py \
-  --range HEAD~1..HEAD --paths <触ったソース> \
-  --test-cmd "python3 -m pytest tools/tests/<関連ファイル> -q -p no:randomly -x"
-# ブランチ全体をまとめて見るとき
+# right after a fix commit (the default)
+python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
+  --range HEAD~1..HEAD --paths <sources you touched> \
+  --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x"
+# to look at the whole branch at once
 #   --range origin/main..HEAD
 ```
 
-**`-x` を付ける。** 読まれるのは終了コードだけなので、殺された hunk は最初の失敗で止めてよい。
-hunk は既定で4並列(別 worktree)で回る(`--jobs`)。4 hunk × 805 テストの実測で 5分52秒 → 43秒。
-最初に**変異なしの baseline** を1回流す。既に赤い suite は全 hunk が「killed」に見える偽の緑で、
-baseline が赤なら exit 2 で止まる(`--skip-baseline` で外せるが、外す理由を書くこと)。
+**Pass `-x`.** Only the exit code is read, so a killed hunk may stop at the first failure. Hunks
+run 4-way parallel in separate worktrees by default (`--jobs`); 4 hunks × 805 tests measured
+5m52s → 43s. **Run the un-mutated baseline once first**: an already-red suite makes every hunk
+look "killed", and a red baseline exits 2 (`--skip-baseline` removes the check — write down why
+if you use it).
 
-**変異が pytest を collection 段階で落とすことがある。`--continue-on-collection-errors` を
-付けないと、`FAILED` 行だけを読むスコアラーはそれを緑と記録する。** PR #68 の国勢調査で3つの変異が
-これに当たった(テストがクラス本体で §5.1 fixture を組むため、壊すと収集ごと落ちる)。付け直したら
-41〜47件の実 failure が出た。**自分のスコアラーにも、レビュアへの指示にも入れる。**
+The rules below are compact; `references/mutation-testing.md` carries the episodes each one
+came from, and the reasoning you need when a rule does not obviously apply.
 
-**手書きの sweep を worktree で回すときも、baseline を先に流す。** スクリプトは強制するが
-手書きは強制しない。PR #67 では worktree に**古いコピー**が残ったまま回し、baseline が赤なので
-**全変異が「killed」に見えた**(実際は1件も殺せていない)。特に危ないのが
-**タイムアウトで中断した sweep**: 変異を書き戻す前に殺されるので、worktree は変異したまま残る。
-**毎回 worktree を作り直すか、baseline 行を必ず出力させる**こと。
+- **Pass `--continue-on-collection-errors`.** A mutation can kill pytest during collection, and a
+  scorer reading only `FAILED` lines records that as green (PR #68: 3 mutants hid 41-47 real
+  failures). Put it in your scorer **and** in the reviewer's instructions
+- **Run the baseline for handwritten sweeps too.** A stale worktree makes a red baseline look like
+  every mutant was killed (PR #67). A sweep interrupted by a timeout never writes the mutation
+  back, so rebuild the worktree or always print the baseline line
+- **If the change is a move, hunk mutation answers almost nothing.** `--range` cannot reach code
+  that moved without changing (PR #68: my 39 mutants had 0 unexpected survivors; a reviewer's
+  independent sweep found 11 real unwitnessed decisions). For move / rename / extract PRs, build
+  **mechanism-level mutants over every mechanism in the files you touched**
+- **Past 50 lines, a hunk hides the decisions inside it** — re-target each judgment individually
+- **Survivors** mean no pin, or a neighbouring check killing it. Fix them or write down why not.
+  Test-file and comment-only hunks are excluded by default (`--include-tests` /
+  `--include-comments`); one half of a code move is expected to survive, so read the pair together
+- **Docstring-only hunks are annotated, not excluded** (`[docstring-only — expected]`): docstrings
+  are string literals and real tests pin prompt templates and contract text. **Zero unannotated
+  survivors exits 0.** In PR #67, 2 of 5 survivors were docstrings listed beside 3 real defects
+- **Get `--range`'s base wrong and "no hunks in range" looks green.** Check the output states a
+  hunk count — after a merge or rebase `origin/main..HEAD` is empty
+- **If the change's mechanism lives inside a test file, hunk mutation does not apply.** "Nothing to
+  check" with a correct base is **not applicable, not a pass** (PR #58). Build mutants that kill
+  each decision of the new machinery one at a time
+- **Do not handwrite a mutation harness.** PR #53's produced three real harms, the worst being
+  `str.replace` rewriting all occurrences at once so 2 of 3 reachable fail-opens survived per-site
+  mutation. If you must, **count the occurrences and hit them one at a time**, and **assert the
+  patch applied** — a mutation that did not apply is indistinguishable from green (PR #76). The
+  script is not universal either: one hunk can bundle a pinned and an unpinned change, so **follow
+  up at line granularity when one rule lives in N places**
+- **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too** (done
+  twice on the issue #63 PR, once losing an uncommitted P1 fix). Use a separate worktree (the
+  script's default) or a `cp` backup
+- **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk looks
+  like a pass (L128: deleting the scope mechanism outright kept everything green and all 5 tests
+  meant to pin it were inert). The countermeasures, each with its episode in the reference file:
+  - **run one mutation that deletes a whole mechanism** (pass-through `return`, constant condition)
+  - **a mutation list you build carries your own blind spots** — a layer you did not recognize as a
+    mechanism is never mutated (L174: an offset-translation layer replaced by the identity kept 825
+    tests green). Hence the standing instruction to reviewers to build their own; **do not hand
+    over your list**
+  - **doubt once why a test passed**, especially when it felt obvious: until every other path in
+    the fixture that could produce the expected violation is removed, it does not pin its name
+  - **a negative assertion is green when the detector breaks — self-test the detector** by feeding
+    it one string that must be flagged and one that must be admitted, with the rule defined once
+    and called from both sides (PR #76)
+  - **when a mutant dies, read why**: a kill from a setup error is worth exactly as much as green
+    (PR #57, twice)
+  - **when you rewrite a test, diff what the old version observed** — PR #57 deleted the only
+    witness of a mechanism it deliberately kept
+  - **a test that reproduces the wiring does not observe the wiring**: if it does not call the
+    production entry point, it pins "the argument is forwarded", not "that value is chosen" (issue
+    #63). **And that shape lies in its docstring easily** — grep the body for the function names
+    the docstring claims to drive
+  - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
+    together, a missing element goes unnoticed
+  - **one test per occurrence of a rule, not per rule** (PR #53: the same line in three gates, two
+    of them surviving as reachable fail-opens)
+  - **for stateful code, match the fixture to the lifetime of the state**, and always include a
+    version with one level of syntactic nesting (PR #53: the round after the flat version was
+    fixed, the nested version ate the fix)
 
-**変更が「移動」なら、hunk 変異はほとんど何も答えない。** `--range` は diff の中しか変異でき
-ないので、**動かしたが変えていないコード**は原理的に届かない。PR #68(§5.1 layer の backend 移設)
-の実測: 私の hunk 変異 31 + 機構変異 8 は**予期せぬ生存 0**、一方レビュアの独立 sweep は**実在の
-未証人 11 件**を出し、その多くは diff に1行も現れない既存パターン(`_MODULE_PARAM_RE` /
-`_INTENT_RE` の `re.IGNORECASE` など)だった。移動・リネーム・抽出の PR では、
-**`--range` ではなく「触ったファイルの中の全機構」を対象に、機構レベル変異を自分で組む**。
-hunk 変異は「移動の片割れが対で生きているか」しか答えない。
+2. **Do not type measured values by hand; generate them from the artifact you measured.** Keeping
+   "a list of every place you wrote a number, re-measured at the end" is not enough — in PR #66 I
+   **mistyped it immediately after measuring** (measured suite 4679, wrote 4680). Seven numeric
+   errors appeared on that one branch, the last of them in the PR body's disclosure section. What
+   worked was **a script that substitutes the numbers in TODO / docs from the measurement
+   artifacts**, run and diffed. Leave no path where a human transcribes.
 
-**大きい hunk は中の決定を隠す。** 同 PR で `closed = True` という1つの決定は
-`@@ -36,11 +40,200 @@` = **200行を1塊にした hunk** の中にあり、hunk 単位で戻せば200行のどれかで
-必ず死ぬ。hunk が 50 行を超えたら、その中の判断を1つずつ当て直す。
+3. **Run the verification set** and record the measurements. The commands are in
+   `.claude/skills/metdsl-enforcement-change/references/verification.md` (suite baseline, ruff
+   diff against origin/main, doc size ceilings; the `mcp_call` end-to-end at the end is for
+   enforcement machinery).
 
-生存(戻しても緑)は、pin が無いか隣のチェックに殺されているか。潰すか、潰さない理由を書く。
-テストファイルの hunk と**コメントだけの hunk**は既定で除外(どちらも構造的に必ず生存するので、
-生存リストに混ぜると読まれなくなる。`--include-tests` / `--include-comments` で戻せる)。
-コード移動の片割れは生存が正常なので対で読む。
+4. **Leave the list of surfaces you touched** in the commit message or TODO.md. That is where
+   reviewers attack from.
 
-**docstring だけの hunk は除外されない — `[docstring-only — expected]` と注記されて出る。**
-`#` コメントと違い docstring は文字列リテラルで、prompt template や契約文を pin するテストが
-実在するので検査からは外せない。だが誰も pin していなければ必ず生存する。PR #67 では
-**生存5件中2件が docstring** で、隣の実欠陥3件と同じ書式で並んでいた。注記は AST 比較
-(docstring を空にして同型か)で機械判定しており、コード移動を含む hunk は注記されず無印の
-SURVIVED のまま残る。**無印の生存がゼロなら exit 0**、1件でもあれば exit 1。
+## Running a round
 
-**`--range` の base を間違えると「no hunks in range — nothing to check」が緑に見える。**
-merge 後や rebase 後は `origin/main..HEAD` が空になる。**出力に hunk 数が出ているか**を毎回見る。
+**One round = two subagents in parallel**, on separate axes (security-bypass /
+correctness+regression+doc-truth).
 
-**変更の機構がテストファイルの中にあるなら、hunk 変異は適用外。機構レベル変異へ直行する。**
-新しい検査機構(ガード・meta-test)を足す変更は、本体ソースを1行も持たないことがある。
-スクリプトは既定でテストファイルの hunk を除外するので、この場合は base が正しくても
-「nothing to check」が出る — これは合格ではなく**適用外**。PR #58 で実際に出た。
-`--include-tests` で戻しても、テストの hunk を戻すことは assertion を消すことなので必ず生存し、
-読む価値がない。**判定機構(判定関数・条件・表の各エントリ)を1つずつ潰す変異を自分で組む**こと。
+- **Do not edit until both results are in.** Touch a file while one is running and its findings
+  go stale (this happened). But in PR #53 one ran for **78 minutes** and I broke this rule twice.
+  **Do not rely on the prohibition; absorb it in the launch prompt**:
 
-**手書きの変異ハーネスを使わない。** PR #53 では手書きに逃げ、3つの実害を出した:
+  > "**HEAD may advance while you run. Re-verify each finding against the current HEAD before
+  > reporting, and state which revision you measured on.**"
 
-- `str.replace` が**同一文字列を全箇所まとめて**書き換えるので、3ゲートに同じ規則が3箇所ある
-  ケースで「1箇所同時変異なら死ぬ」= 十分に見えた。**1箇所ずつ当てると3箇所中2箇所が生存**し、
-  どちらも到達可能な fail-open だった。この3箇所は実際には**別 hunk**(#3 / #5 / #7 — 確認済)
-  なのでスクリプトなら個別に当たっていた。ただし**スクリプトも万能ではない**: hunk は周辺の
-  変更を束ねるので、pin 済みの変更と未 pin の変更が同じ hunk に居ると、hunk は死んで未 pin 側が
-  隠れる。**同じ規則が N 箇所にある/1 hunk が複数の判断を含むときは、行単位の追い打ちを1回**
-- **作業ツリーを直接書き換えた**(スクリプトは `~/.cache/mutation-check` の別 worktree で回す)。
-  レビュアに「チェックアウトを変更するな」と指示しながら自分が破っていた
-- レビュア側が同名ファイルを scratchpad に書き、ハーネスが上書きされて壊れた
+  The one report that did this unprompted was the most useful of that round. If you do start
+  editing, **write the fact and the time into the next round's prompt**.
+- Always in the prompt: **the target is `git diff origin/main...HEAD`**, and **"do not modify the
+  checkout; run mutation tests against a `git archive` snapshot or a separate worktree"** (one
+  agent left the working tree mutated and invalidated another review's results)
+- **A scratchpad per agent.** Spell out: "**create your own subdirectory; do not reuse or
+  overwrite existing paths**" (one agent wrote a file with the same name as mine, `mutate.py`,
+  and broke the harness). Put your own working files in a subdirectory the same way
+- **Hand over this environment's trap**: in an interactive shell `grep` is **aliased to ripgrep
+  and respects `.gitignore`**. Have corpus measurements enumerate with `find` / `os.walk` (1 of
+  365 files was visible, and I nearly designed on the false premise that "`interface` occurs 0
+  times")
+- Write "report only what you ran. Give reproduction steps and file:line. **State explicitly if
+  you found nothing**" — this prevents filler
+- **What you may hand over to reduce duplication is the axis, not the list.** Saying "hunk
+  mutation over the diff range is done and green" moves budget to *sibling rules outside the
+  diff* and *mechanism level*; handing over my mutation list breaks independence, naming which
+  axes are covered does not. In PR #68 most of the reviewer's sweep was a re-run of my mutants
+  (the yield was concentrated outside the diff)
+- **Spell out the process and shared-resource rules.** Three accidents happened for real, each
+  spilling into other sessions: an unscoped `pkill -f "pytest tools/tests/"` took out my run and
+  another session's; a `until ! kill -0 $(pgrep -f "pytest tools/tests")` wait **matched its own
+  cmdline** and left four orphans spinning for 45 minutes; agents left 4.6GB in `/tmp` and 14.7GB in
+  `~/.cache`, and the next reviewer hit `0 bytes free`. So the prompt says: no unscoped `pkill`;
+  **create only waits whose exit condition can be satisfied, and no background polling**; `/tmp` is
+  a shared tmpfs, delete the trees you create.
+  - **Handing over the rules is not enough. At the end of the round, check for orphans and kill
+    them by PID.** All three were written explicitly in the prompt and broken anyway, in the shape
+    this skill gives as its example (`until ! pgrep -f mut5.py` matching its own zsh command line).
+    Pick them up with `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID
+    — `pkill -f` re-enacts the first accident
+  - **The symptom disguises itself as "the subagent is running and never returns".** I once waited
+    on the precedent that long runs happen, when there was no work to wait for. When `ListAgents`
+    shows running, suspect that agent's child processes
+  - **This trap catches me too.** On the issue #63 PR I forbade the shape to three reviewers,
+    killed the one that broke it, and ran four of my own waits in the same shape for 5.7 hours
+    (`until ! pgrep -f "mutation_check.py"` matching itself; the real run had finished hours
+    earlier). The user noticed. My end-of-round check was `ListAgents` only — **I never looked at
+    my own background shells**
+  - **A wait must not carry the name of what it waits for in its own command line.** Safe forms:
+    (a) for work the harness tracks, **do not poll — the completion notification arrives**, (b)
+    **wait on the PID** (`while kill -0 <pid> 2>/dev/null; do sleep N; done`), (c) split the
+    matching string. **The end-of-round check is `ListAgents` and `ps`, both**
+- **Include "build your own mutants that delete one mechanism at a time, run them, and report
+  survivors".** Do not hand over your mutation list — independence is the point (see L174 above)
+- **If the reported HEAD is a hash you do not recognize, find out what commit it is first.** Even
+  when you have not edited, the user or another session can commit to the same branch (L174: a
+  reviewer reported `d24a7bb`, which was not my commit). That is concurrency, not staleness — read
+  it and judge whether it collides with your scope
+- **Hand over the threat model and the purpose in one paragraph** (the first half of "Fix or out
+  of scope" below): "a single-operator research workflow platform; what is defended against is a
+  deviating `LLM` leaf and the defects my own changes introduce; hardening paths only the operator
+  can reach, and handling constructs that exist nowhere in the real corpus, are out of scope."
+  **Without it the report fills with future forms of details.** But **do not name individual
+  findings as excluded** — that is an exclusion list, subject to the three-round rule below
 
-どうしても手書きするなら、**同一文字列の出現箇所を数え、1箇所ずつ当てる**こと。
+- **For a change that adds checking machinery, include "construct legitimate work that this check
+  wrongly refuses".** Ask only for misses and the over-refusals stay. PR #66 hit this twice:
+  pinning the **list** of scanned files made **adding one ordinary new module a scope violation**,
+  and moving a migration doc to the location the rule specifies reported "knowledge grew in the
+  neutral core". Both harm the same way — **they teach the habit of regenerating without reading
+  the rule, and destroy the value of the pin**. The criterion is whether the pin is on **the rule**
+  or on **the result the rule produced**; pinning results makes ordinary work fail
+- **Over-refusal is not a one-off trap; it is my default error direction. Put a probe in every
+  round.** Twice in PR #66 and **three more times in PR #67** (five total), and PR #67's three
+  **recurred each time I rewrote the same rule**: ① "every record should be implemented" refused
+  registering before writing the backend (a state the docs call the default) → ② "every axis has
+  one implemented member" **refused the docs' three-step "Adding an axis" outright** (a new axis
+  has neither an implementation nor a declarable capability) → ③ extending the duplicate-definition
+  guard to dict values flagged a legitimate mapping. **Miss-direction bugs come one per round;
+  over-refusal comes in a new shape with every rewrite.** Four countermeasures: (a) for each check
+  you write, construct one piece of correct work that violates it, (b) **keep the over-refusal probe
+  in the reviewer instructions through the final round** (not once), (c) if over-refusals persist
+  after two rewrites, conclude **the rule is not an invariant** and change its shape, (d) **build
+  probes from the project's own "what we do next", not from imagination** — in PR #68, widening the
+  scan to the whole backend directory refused **the very area the migration ledger names as next**,
+  and a reviewer produced it just by reading the ledger. Implementing the next TODO / plan item is
+  the cheapest over-refusal probe there is (PR #67 landed on "a census that constrains nobody's
+  registration" = moving the target from a rule to **checking the declaration**)
 
-**変異を戻すのに `git checkout -- <file>` を使うな。未コミットの作業ごと消える。**
-issue #63 の PR で**2回**やった。1回目は P1 の修正(まだ commit していない)を丸ごと失い、
-気づいたのは同じファイルへの次の編集が anchor 不一致で落ちたとき。2回目は同じ手が別ファイルで
-再発した。`git checkout` は「変異だけ」ではなく **HEAD との差分全部**を捨てるので、
-変異と自分の作業が同じファイルに同居していると必ずこうなる。
+**Reproduce a finding yourself before classifying it.** Real / false positive / residual /
+**real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
+"the implementation is right but the test is weak" as real.
 
-- 戻し方は **(a) 別 worktree で回す**(スクリプトの既定)、**(b) 変異の前に
-  `cp <file> <scratchpad>/<file>.bak` を取り、`cp` で戻す**、のどちらか
-- **手書き変異の直前に必ず commit する**のも有効。commit してあれば `git checkout` は安全だが、
-  「commit してあるはず」を毎回確認するより backup を取るほうが速い
+**Verify a reviewer's negative claims the same way.** This is the flip side of "verify agent
+findings by execution" and is easy to miss. In PR #66 a sweep reported "only the token ratchet
+kills this hunk (= the pin is weak)"; checking showed **a test in another file caught it
+correctly** — that file was simply not in the sweep's narrow gate. **When told "only X caught
+it", check whether the files holding the other guards were inside that reviewer's test command.**
+If not, it is a report about the measurement scope, not a measurement.
 
-**手書きで変異を当てるなら、パッチが当たったことを assert する。当たらなかった変異は緑と
-区別がつかない。** PR #76 で踏んだ: 文字列を差し替えるスクリプトの `assert old in t` が落ちて
-変異が**適用されないまま**テストが走り、`1 passed` が返った。危うく「この pin は効いている」と
-書くところだった(実際にはその pin は `origin/main` の文言で緑になる偽 pin で、ファイルごと
-差し替えて測り直して初めて分かった)。
+## Delegate verifiable work to sonnet
 
-- 置換は**出現数を数えてから**当て、0件なら**異常終了**させる(`scripts/mutation_check.py` は
-  そうしている。手書きだけがこの防御を失う)
-- 一発で確実なのは、**そのファイルを `git show origin/main:<path>` で丸ごと差し替える**こと。
-  文字列の同定に失敗しようがない
-- レビュアへの起動プロンプトにも入れる。PR #76 のレビュア2体は自発的に
-  「patch-failed なら中断する」ハーネスを組み、実際に2件の適用失敗を検出した
+**Operational conclusion (4 data points, the confound resolved in PR #72 by giving both models
+the same checklist): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
+permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
+cheap, so run more" does not hold — **use it only to free up a slot**.
 
-**変異チェックは「テストの空回り」を検出できない。** hunk 単位で戻すので、hunk が生きていて
-ただ観測されていない状態は合格に見える。L128 では scope 解析を `return joined_masked`(**機構ごと
-削除**)にしても全緑で、その機構を pin するつもりで書いた5本が全部無効だった。原因は fixture が
-別経路(別の宣言)でも同じ違反を出していたこと。だから hunk 変異に加えて:
+Run one via `Agent` with `model: "sonnet"`, **in parallel** with the up-model reviewers. It adds
+an axis, so add it to the default two rather than replacing them.
 
-- **機構ごと削除する変異**を1つ回す(関数を素通し `return` にする、条件を定数にする)。
-  hunk より粗い粒度でしか見えない空回りがある
-- **自分で組んだ変異リストは、自分のテストと同じ盲点を持つ。** リストは「自分が機構だと思って
-  いるもの」の列挙なので、機構だと認識していなかった層は変異されず、テストも無いまま通る。
-  L174 では新規の**オフセット翻訳層**(2つの読みのうち fallback 側を使ったときだけ効く、唯一の
-  変換)が私の機構変異リストに入っておらず、**丸ごと恒等関数に置き換えても 825 テストが全部緑**
-  だった。見つけたのは**レビュア側が独自に組んだ sweep**。だから ラウンドの回し方 の起動
-  プロンプトに「機構を1つずつ消す変異を自分で組んで回し、生存を報告せよ」を定型で入れる —
-  独立に組ませることが目的で、こちらのリストを渡してはいけない
-- **テストが通った理由を1回疑う。** 特に「通って当然」と思った直後。fixture から
-  **期待する違反を出しうる他の経路を全部消す**まで、そのテストは名前どおりのものを pin していない
-- **否定の assertion(「〜が無いこと」)は、検出器が壊れたときも緑。検出器そのものに
-  self-test を書く。** 「この文書は禁じた綴りを含まない」型のテストは、走査する正規表現を
-  **絶対マッチしない形に置き換えても緑**になる。PR #76 では文書検査テストが7つの surface を
-  witness に持っていたが、それが証明するのは「今日のツリーで動く」ことだけで、**検出器が
-  明日も検出する**ことは誰も見ていなかった(変異1件が黙って生存した)。
-  対策は6行: **flag されるべき文字列と、admit されるべき文字列を fixture で直接食わせる**。
-  規則の定義を1箇所(クラス属性の regex)に置いて、本体と self-test の両方から呼ぶ
-- **殺せたときは「なぜ死んだか」を読む。赤いだけでは足りない。** PR #57 で2回踏んだ最頻の偽陽性:
-  変異を戻すとテストは落ちるが、落ちた理由が**そのテストの名乗る理由ではない**。1例目は fixture が
-  未整備で `_write_json_transaction` が `FileNotFoundError` で死んでおり、
-  `assertRaisesRegex(RuntimeError, ...)` に一致しないという理由だけで赤かった — 本命の fail-open
-  (guess した role が durable に書かれる)は**一度も観測されていなかった**。
-  **変異を当てたら失敗メッセージを見て、そのテストが主張する失敗かを確かめる。**
-  setup エラーによる kill は緑と同じ価値しかない
-- **テストを書き直したら、古い版が観測していたものを新しい版が観測しているか差分で確認する。**
-  PR #57 のラウンド3は、テストをより良い形に置き換えた結果、**自分が意図的に残した機構
-  (validator 側の backstop)を観測する唯一のテストを消した**。機構は生きたまま、変異が全緑で
-  通るようになった。「helper でなく handler で pin」の兄弟形で、**機構を残したまま証人を消す**
-- **配線を「再現する」テストは、配線を「観測する」テストではない。** 呼び出し点を pin する
-  つもりで、テストの中で**同じ引数を自分で計算して**被呼び出し側に渡し、「転送されたこと」を
-  assert すると、呼び出し点をどう変えても緑のまま。issue #63 の PR で踏んだ:
-  `run_substep` が `pure=` に何を渡すかを pin したつもりのテストが、`pure` をテスト側で
-  計算して `_resolve_reuse_resume` に直接渡しており、**production の行を書き換えても死ななかった**。
-  判定は1つ — **そのテストは production のエントリポイントを呼んでいるか**。呼んでいないなら
-  pin しているのは「引数が転送されること」であって、「その値が選ばれること」ではない
-- **その形のテストは docstring で嘘をつきやすい。** 同じテストの docstring に
-  「ここで assert しているのは各 production 経路で実際に probe に届く値だ」と書いていた —
-  body は production 経路を一度も呼んでいない。**「〜を駆動して」「実際に届く値を」と書いたら、
-  その関数名が body にあるか grep する。** 無ければ docstring が偽で、これは
-  「証拠の虚偽」側の欠陥(レビュアに指摘されるまで気づかなかった)
-- **列挙(regex の alternative、キーワード表)は1要素ずつ落として殺す。** まとめて1本の
-  テストで確認すると、1要素の欠落が誰にも気づかれない(`logical` を1つ落とすと
-  `logical flux_ok` が全部素通りする、を実際に踏んだ)
-- **同じ規則が複数箇所にあるなら、テストも「規則ごと」でなく「規則の出現ごと」に1本。**
-  PR #53 の `out_scope` は3ゲートに同じ1行があり、テストを1本書いて満足したところ、
-  残り2箇所は変異が生存し、どちらも到達可能な fail-open だった
-- **状態を持つコード(walk / カウンタ / スタック)は、状態の寿命に fixture を合わせる。**
-  カウンタがファイル全体で生きるなら、**1手続きの fixture では pin できない**。PR #53 の
-  `select` 漏れは2手続きの fixture でしか再現せず、その入れ子版はさらに「内側の別種 select ＋
-  後続のガード」を要した。**構文を1段だけ入れ子にした版も必ず1本置く**(1段版を直した翌ラウンドに
-  入れ子版がその修正を食う、が実際に起きた)
+**Work you may delegate (verifiable = running it settles the truth)**:
 
-2. **測定値は手で打たない。測った成果物から生成する。** 「数値を書いた場所の一覧を持ち、
-最後に測り直せ」を守っても足りない — PR #66 では**測った直後に打ち間違えた**(スイート 4679 と
-測って 4680 と記入)。同一ブランチで数値の誤りが7回出て、うち最後の1回は PR 本文の
-disclosure 節だった。有効だったのは、TODO / doc の数値を**測定成果物から置換するスクリプト**を
-書き、それを走らせて差分を確認すること。人手で転記する経路を残さない。
+- **re-measure every number in the diff** and report mismatches (counts, byte counts, suite
+  counts, "M of N")
+- **back-checking claims** of the form "recorded in X", "pinned by Y", "covered by Z" (grep for
+  existence; delete the test and see it fail)
+- **a correspondence table of whether each new failure class has a test**
+- **counting the call sites that make the same decision** (marker scans, category classification,
+  early returns)
+- contradictions between prose and implementation (docstring / doc / SKILL behaviour vs the code)
 
-3. **確認一式**を実行して実測値を控える。コマンドは
-`~/.claude/skills/metdsl-enforcement-change/references/verification.md`(スイート基準線、
-ruff の origin/main 差分照合、doc サイズ上限。末尾の `mcp_call` 経由 end-to-end は強制機構向け)。
+**Work you must not delegate**:
 
-4. **触った面の一覧**を commit message か TODO.md に残す。レビュアはそこから攻める。
+- open-ended "find bugs" — plausible noise grows and triage gets expensive. Since every finding
+  is reproduced by me, low-precision search consumes **my** time
+- layers needing a hypothesis → mutate → run cycle: gate semantics, parsers, offset arithmetic
 
-## ラウンドの回し方
+**Make the prompt a checklist** (not free-form). Hand over the same ground rules as above: do not
+modify the checkout / a dedicated scratchpad / `grep` is aliased to ripgrep / report only what you
+ran / HEAD moves.
 
-**1ラウンド = subagent 2本を並列**。観点を分ける(security-bypass / correctness+regression+doc-truth)。
+**Numbers to collect**: real findings / total findings, elapsed time, and the **overlap count**
+with the up-model. One up-model plus one sonnet against the same HEAD in parallel gets this for
+free.
 
-- **両方の結果が揃うまで編集しない。** 片方が走っている間にファイルを触ると、その findings が
-  stale になる(実際に発生した)。ただし PR #53 では1本が **78分** 走り、この規則を2回破った。
-  **禁止に頼らず、起動プロンプト側で吸収する**:
+**How to read overlap — high overlap does not mean "no point adding", it means "replaceable".**
+Look only at the adding axis and forget the removing axis and you misread it (the first version of
+this section did exactly that, and was wrong).
 
-  > 「**HEAD はあなたの実行中に進む可能性がある。報告前に各 finding を現在の HEAD で再検証し、
-  > どちらのリビジョンで測ったかを明記せよ**」
-
-  指示していないのに自発的にそうした1本の report が、そのラウンドで最も使えた。
-  編集を始めるなら、**開始した事実と時刻を次ラウンドのプロンプトに書く**。
-- プロンプトに必ず入れる: **対象は `git diff origin/main...HEAD`**、そして
-  **「チェックアウトを変更するな。変異テストは `git archive` スナップショットか別 worktree で」**。
-  1体が作業ツリーを変異させたまま走り、別レビューの結果を無効化した
-- **scratchpad はエージェントごとに分ける。** 「**自分専用のサブディレクトリを作れ。既存パスを
-  再利用・上書きするな**」を明記する。1体が私と同名のファイル(`mutate.py`)を書いてハーネスを
-  壊した。自分の作業ファイルも同様にサブディレクトリへ置く
-- **この環境の罠を渡す**: 対話シェルの `grep` が **ripgrep 別名で `.gitignore` を尊重する**。
-  corpus 測定は `find` / `os.walk` で列挙させる(365 ファイル中 1 件しか見えず、
-  「`interface` は0件」という誤った前提で設計しかけた)
-- 「実行して確かめたことだけ報告せよ。再現手順とファイル:行を付けよ。何も無ければ**無いと明示**せよ」
-  と書く。埋め草を防ぐ
-- **重複を減らすのに渡してよいのは「リスト」ではなく「軸」。** 「diff 範囲の hunk 変異は済んで
-  緑だ」とだけ伝えると、予算が *diff 外の兄弟規則* と *機構レベル* に寄る。私の変異リストを渡すと
-  独立性が壊れるが、どの軸が埋まっているかを言うだけなら壊れない。PR #68 でレビュアの sweep の
-  大半は私の変異の再実行だった(収穫は diff 外に集中)
-- **プロセスと共有資源の規則を明記する。** 実際に起きた事故が3つあり、どれも他セッションに波及した:
-  - 「範囲を絞らない `pkill` を使うな」。1体が `pkill -f "pytest tools/tests/"` を打ち、
-    **私のテスト実行と別セッションの実行を巻き込んだ**
-  - 「**終了条件が満たされうる待ち受けだけを作れ。バックグラウンドのポーリングを残すな**」。
-    `until ! kill -0 $(pgrep -f "pytest tools/tests")` は **自分自身の cmdline に一致する**ので
-    永久に抜けない。死んだ sweep のログを待つ孤児が4本、45分回り続けていた
-  - 「**`/tmp` は共有 tmpfs。作ったツリーは使うたびに消せ**」。1体が 4.6GB、別の1体が
-    `~/.cache` に 14.7GB を残し、後続のレビュアが `0 bytes free` で実行不能になった
-  - **規則は渡すだけでは足りない。ラウンドの終わりに `ps` で孤児を確認して、名指しで殺す。**
-    上の3つは起動プロンプトに**明示的に書いていたのに破られた**。しかも破り方は、この skill が
-    例として載せているものと**同型**だった: レビュアが
-    `until ! pgrep -f mut5.py; do sleep 6; done` を background に残し、`pgrep -f mut5.py` が
-    **そのループ自身の zsh コマンドライン**(文字列 "mut5.py" を含む)に一致するので永久に抜けない。
-    実作業はとうに終わっていて、空回りだけが1時間続いていた。
-    - **症状は「subagent が running のまま返らない」に化ける。** 私は「長時間実行は実績がある」と
-      判断して待ったが、根拠は誤りだった — 待つべき作業は存在しなかった。
-      `ListAgents` が running を示したら、まず **その agent の子プロセス**を疑う
-    - 手順: `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` で拾い、
-      **PID を名指しで `kill`**(`pkill -f` は上の事故の再演)。実作業のプロセスが同時に
-      生きていないかを先に確認する
-    - **ユーザーに指摘されて初めて気づいた。** 走っている subagent を確認せずに
-      「merge 推奨」を出しており、その後に返ったレポートは実在の欠陥を1件含んでいた。
-      **ラウンドの終了判定の前に `ListAgents` を見る**
-    - **この罠は自分にも当たる。孤児の確認対象は subagent だけではない。**
-      issue #63 の PR で、レビュア3体にこの形を明示的に禁じ、破った1体を kill した上で、
-      **自分の待ち受けを4本、同じ形で5.7時間回していた**:
-      `until ! pgrep -f "mutation_check.py"; do sleep N; done` — zsh のコマンドラインに
-      文字列 `mutation_check.py` が入るので `pgrep -f` が自分自身に一致する。実体の
-      `mutation_check.py` は数時間前に終わっていた。気づいたのはユーザーの指摘。
-      私のラウンド終了時の確認は `ListAgents` だけで、**自分のバックグラウンド shell を
-      一度も見ていなかった**
-    - **待ち受けは、待つ相手の名前を自分のコマンドラインに書かない。** 安全な形は
-      (a) ハーネスが追跡している仕事なら**ポーリングせず完了通知に任せる**(既定。
-      `run_in_background` で起動した仕事は完了時に通知が来る)、(b) どうしても待つなら
-      **PID を待つ**(`while kill -0 <pid> 2>/dev/null; do sleep N; done`)、
-      (c) 一致文字列をコマンドラインに現れない形に分割する。
-      **ラウンドの終わりの確認は `ListAgents` と `ps` の両方**
-- **「機構を1つずつ消す変異を自分で組んで回し、生存を報告せよ」を入れる。** こちらの変異リストは
-  渡さない — 独立に組ませることが目的。ラウンド0 の変異リストは私の機構認識の写しなので、
-  認識していない層(L174 のオフセット翻訳層)はそこに載らず、825 テストが緑のまま素通りした。
-  実際に見つけたのはこの指示で組ませた sweep
-- **報告された HEAD が自分の知らない hash なら、まず何の commit か確認する。** 自分が編集して
-  いなくても、ユーザーや別セッションが同じブランチに commit することがある(L174 で発生:
-  レビュアが `d24a7bb` を報告し、それは私の commit ではなかった)。stale ではなく**併走**なので、
-  内容を見て自分の対象範囲と衝突するかを判断する
-- **脅威モデルと目的を1段落で渡す**(下の「指摘を直すかどうか」の前半)。
-  「単一運用者の研究用ワークフロー基盤で、守る相手は逸脱する `LLM` leaf と自分の変更が
-  持ち込む欠陥。運用者自身しか到達できない経路の強化と、実コーパスに存在しない構成物への
-  対処は対象外」。**渡さないと、細部の将来形で report が埋まる。**
-  ただし**個別の指摘を名指しで除外しない** — それは除外リストで、上の3ラウンド規則の対象
-
-- **検査機構を足す変更なら「正当な作業のうち、この検査が誤って拒否するものを構成せよ」を
-  入れる。** 見逃しだけを探させると誤拒否が残る。PR #66 では2回踏んだ:走査ファイル**一覧**を
-  pin したせいで**普通に新モジュールを1本足すだけで scope 違反**になり、移行 doc を規則が
-  指定する場所へ移すと「中立コアで知識が増えた」と出た。どちらも実害は同じ方向 —
-  **規則を読まずに regenerate する習慣を教え、pin の価値そのものを壊す**。
-  判断基準は「pin しているのは**規則**か、規則が**生んだ結果**か」。結果を pin すると通常作業で落ちる
-- **過剰拒否は「1回踏む罠」ではなく、私の既定の誤り方向。毎ラウンド probe を入れる。**
-  PR #66 で2回、PR #67 で**さらに3回**踏んだ(通算5回)。しかも PR #67 の3回は
-  **同じ規則を書き直すたびに再発**した: ①「全 record は実装済みであるべき」→ backend を書く前に
-  登録する(doc が既定と明記する状態)を拒否 → ②「全 axis は実装済み member を1つ持つ」→
-  **doc の「Adding an axis」3手順を丸ごと拒否**(新設 axis には実装も宣言できる capability も無い)
-  → ③ 二重定義ガードを dict values へ広げる → 正当な mapping を flag。
-  **見逃し方向のバグは1ラウンドで1件ずつ出るが、過剰拒否は書き直しのたびに新しい形で出る。**
-  対策は3つ: (a) 検査を1つ書くたびに「この規則に違反するが正しい作業」を自分で1つ構成する、
-  (b) レビュアへの指示から誤拒否 probe を**最終ラウンドまで外さない**(1回で済ませない)、
-  (c) 2回書き直しても誤拒否が出るなら、**その規則は不変条件ではない**と結論して形を変える。
-  そして (d) **probe は空想で作らず、そのプロジェクト自身の「次にやると書いてある作業」で作る。**
-  PR #68 で走査を backend ディレクトリ全体に広げたとき、それが拒否したのは
-  **移行台帳が次の area として名指ししている `build_system/make`** だった。レビュアが台帳を読んで
-  その構成を作っただけで出た。TODO / plan の次項目を1つ実装してみるのが最も安い誤拒否 probe
-  (PR #67 の着地は「誰の登録も制約しない census」= 対象を規則から**宣言の照合**へ移した)
-
-**指摘は自分で再現してから分類する。** 本物 / 偽陽性 / 残余 / **本物だが範囲外**
-(下の「指摘を直すかどうか」)の判断は、再現を実行した記録があるものだけ。
-「実装は正しいがテストが弱い」も本物として扱う。
-
-**レビュアの否定的な主張も同じく検証する。** 「agent の findings を実行で検証せよ」の裏面で、
-見落としやすい。PR #66 では sweep が「この hunk は token ratchet だけが殺している(= pin が
-弱い)」と報告したので確認したら、**別ファイルのテストが正しく捕まえていた** — sweep の
-narrow gate にそのファイルが入っていなかっただけ。**「X だけが捕まえた」と報告されたら、
-他のガードが在るファイルがそのレビュアのテストコマンドに含まれていたかを確かめる。**
-含まれていなければ、それは測定ではなく測定範囲の報告。
-
-## 検証可能な作業は sonnet に投げる(実験中・2データ点、どちらも交絡)
-
-**ほぼ未検証の運用**。2回測った(下記)。使ったら数値を取り足し、効かないと分かったら
-この節を消す。
-
-> **交絡は PR #72 で解消した(4データ点目)。同じチェックリストを sonnet と opus の両方に渡した。**
-> 結果は **sonnet ⊂ opus で、実質的な取りこぼしあり**:
->
-> | | sonnet | opus |
-> |---|---|---|
-> | FALSE と報告 | **0件** | **2件**(散文の射程誤り) |
-> | 構造的欠陥 | 0件 | 1件(単一述語の重複実装) |
-> | コスト | 159k tok / 20分 | 159k tok / 23分 |
->
-> **決定的なのは、sonnet が opus の出した2件と同じチェックリスト項目を「clean」と明記して
-> 返したこと** — 見落としではなく、見た上で通した。落としたのは**算術ではなく判断**の側:
-> 数値の再測定・「X が pin している」の裏取り・呼び出し点の数え上げは正確だったが、
-> 「この主張の**射程**は正しいか」(pure leaf にも当てはまるか / 全 leaf を指す docstring か)は
-> 拾えなかった。**チェックリストの中にも判断項目は混ざる**というのがこの回の学び。
->
-> 運用: 上の表の「sonnet ⊂ opus(取りこぼしあり)」の行に従い、**機械的検算の軸だけを sonnet に
-> 恒久移管し、射程・整合の判定は上位モデルに残す**。コストがほぼ同じだったので、
-> 「安いから増やす」という理由づけは成立しない — **枠を空けるためだけに使う**。
-
-**実測 3件目(PR #68 ラウンド1)。3点とも同じ方向・同じ交絡で、もう「軸を固定して測る」以外に
-足す情報が無い。** sonnet のチェックリスト agent が拾った実在の欠陥は1件(「移動した定義は twelve」が
-実は13)で、**opus 側の correctness レビュアも独立に同じものを拾った** = 独立発見ゼロ。所要
-105k tokens / 7.5分に対し opus 側は 152k・178k / 27分・29分。**12項目のチェックリストのうち11項目を
-正確に検算し、`--collect-only` での前後比較や witness テストの削除→復元まで自分でやった** —
-機械的検算の軸が安いことは3点とも再現している。判断を要する指摘(過剰拒否、証人の無い機構、
-記述と実装のずれ)は3点とも opus 側からのみ。**次に測るなら同じチェックリストを両方に渡すこと**
-(3回とも破っている)。
-
-**実測 2件目(PR #67 ラウンド1・本 skill 実施)。1件目と同じ結論・同じ交絡。**
-sonnet の checklist agent が拾った実在の欠陥は1件(台帳の `74 -> 51` が実測 54)で、
-**opus 側も独立に同じものを拾った**= 独立発見ゼロ。所要 68k tokens / 11分に対し
-opus 側は 157-225k tokens / 26-59分。**数値の再測定と「X が pin している」の裏取りは
-網羅的で正確**だったが、判断を要する指摘(証人の無い機構、過剰拒否、鏡の置き去り)は
-すべて opus 側からのみ。**2点とも同じ方向なので、少なくとも「数値検算の軸は安い」は
-再現している** — ただし上記のとおり軸を固定した比較ではない。
-
-**実測 1件目(PR #66 ラウンド1)。結論: sonnet ⊂ opus、独立発見ゼロ。ただし交絡あり。**
-拾ったのは数値の検算クラス(台帳の per-area 図が 801 実は 799)と、環境依存のスイート数だけ。
-**判断を要する指摘は1件も出していない** — 「doc の手順に従うと動かない backend ができる」
-「台帳の記述が canonical doc と矛盾している」はどちらも opus 側からのみ。一方、裏取り作業
-(9テストを個別に変異し、**そのテストが名乗る理由で落ちたか**まで確認)は網羅的で有用だった。
-**ただしこの比較は交絡している**: sonnet にチェックリスト、opus に自由記述を渡したので、
-「代替可能か」も「別観点か」も結論できない — 下の「比較を交絡させない」を私自身が破った。
-次に測るときは同じチェックリストを両方に渡す。
-
-根拠になっている観測(L174、findings 約20件の内訳): **かなりの割合が「深さ」ではなく
-「律儀に測り直したか」で決まる層**だった — 「44 of 48」が実は 38(引き算で出した数を検算する
-だけ)、byte 数と suite 数の陳腐化、「TODO に記録した」と書いてあるのに記録が無い、同じ判定を
-している呼び出し箇所が3つ未走査。**この層に上位モデルは要らない。**
-
-`Agent` の `model: "sonnet"` で1本、上位モデルのレビュアと**並列**に回す。観点は増えるので、
-既定の2本を置き換えるのではなく足す。
-
-**投げてよい作業(verifiable = 実行すれば真偽が確定する)**:
-
-- diff 中の**数値を全部再測定**して食い違いを報告(件数・byte 数・suite 数・「N 個中 M 個」)
-- 「〜に記録した」「〜が pin している」「〜でカバーされる」という**主張の裏取り**
-  (grep して存在するか、そのテストを消して落ちるか)
-- **新しい失敗クラスごとにテストが在るか**の対応表
-- **同じ判定をしている呼び出し箇所の数え上げ**(marker 走査、カテゴリ分類、早期 return)
-- 散文と実装の矛盾(docstring / doc / SKILL が言う挙動とコードの突き合わせ)
-
-**投げてはいけない作業**:
-
-- 開放的な「バグを探せ」 — もっともらしい noise が増え、triage が高くつく。findings は全部
-  自分で再現する運用なので、精度の低い探索は**私の時間**を食う
-- ゲート意味論・パーサ・オフセット計算のような、**仮説→変異→実行の往復が要る層**。L174 で
-  そこで出た3件(offset 翻訳層の未観測、result による免除、ラベル族)はいずれも往復が要った
-
-**プロンプトはチェックリスト形式にする**(自由記述にしない)。ground rules は上と同じものを
-そのまま渡す — チェックアウトを変更しない / 専用 scratchpad / `grep` は ripgrep 別名 /
-実行したことだけ報告 / HEAD が動く。
-
-**取る数値**: 実在した findings / 総 findings、所要時間、上位モデル側との**重複件数**。
-上位1本 + sonnet 1本を同じ HEAD に並列で当てれば副作用なく取れる。
-
-**重複の読み方 — 高い重複は「足す意味が無い」ではなく「置き換えられる」。** 増やす軸だけを見て
-減らす軸を忘れると読み違える(初版のこの節は実際そう書いていて、間違いだった)。4通りある:
-
-| 結果 | 意味 | 次の運用 |
+| Result | Meaning | What to do |
 |---|---|---|
-| sonnet ⊇ opus | この軸は安いモデルで足りる | **その軸を sonnet に恒久移管**。空いた上位枠を深い層に回す |
-| sonnet ⊂ opus(取りこぼしあり) | 部分的な代替 | 落とした findings の性質を見る。機械的なのに落としたなら不採用、判断が要るものなら軸の切り方が悪い |
-| sonnet ∖ opus ≠ ∅ | 独立した目として働いている | 両方残す |
-| ほぼ偽陽性 | triage コストが上回る | 不採用 |
-
-**比較を交絡させない。** 代替可能性(上の1行目)を測りたいなら、**同じチェックリストを両方に渡す**。
-別観点として使えるかを測りたいなら別プロンプトにする。片方だけチェックリスト、片方は自由記述、
-という比較からはどちらの結論も出ない。
-
-**この結論は委譲した軸の中でしか使えない。** 「数値の検算で sonnet が opus に並んだ」から
-「パーサ意味論でも並ぶ」は導けない。軸ごとに測る。
-
-**逆向きは実験ではない。** 実装が sonnet / fable のときにレビューを opus にするのは単なる品質の
-エスカレーションで、迷わずやってよい。「欠陥を見つける」ほうが「コードを書く」より難しいことが
-多い(L174 の offset 翻訳層がその例 — 書くのは 10 行、見つけるには変異を組む必要があった)。
-
-## 除外リストの扱い(最重要)
-
-ラウンドを重ねると「既出だから再報告するな」「これは受容残余」というリストを渡したくなる。
-トークンは減るが、**自分の誤りごと伝播する**。PR #51 唯一の P1 は、そのリストの中で
-5ラウンド生き延びた(2人のレビュアが見つけていたのに、未検証の前提で残余に落ちていた)。
-
-- 除外リストを渡すのは**3ラウンドまで**
-- 4ラウンド目以降は、**最低1本を除外なし**で回す。「これまでの経緯は伝えない。白紙で攻撃せよ」
-- 特に **residue / 到達不能と判断したものは除外リストに書かない**。そこが最も危ない
-
-## Codex を入れる時期(予算: 1ブランチ 1回が既定)
-
-**Codex のトークン予算は乏しい。1ブランチにつき起動は原則1回、多くても2回。**
-ラウンド1では起動しない — ラウンド1の指摘は subagent でも出る粗い層で、そこに1回を使うと
-**視点の独立性が最も効くタイミング(自分の修正が積み上がった後)に残らない**。
-
-**ラウンド2〜3のうち1回**だけ入れる(最後まで取っておかない)。視点が独立している。
-
-**起動しない方が良いケース**(予算を使わず subagent の白紙レビューで代替する):
-
-- **新しい検査機構を足す変更** — 下記のとおり Codex は構造的にほぼ必ず何か見つけるので、
-  clean が返らず収束 signal にならない。1回だけテストケース供給として使うか、使わない
-- diff が散文 / doc 中心で、機構の挙動を変えていない
-- 直前ラウンドの指摘がまだ未修正 — 修正後の HEAD に1回を当てる
-
-**`/codex:review` と `/codex:adversarial-review` は `disable-model-invocation: true` — 
-私からは起動できない**(ユーザーが打つ専用)。コマンドの中身は companion script の1行なので、
-**そちらを直接叩く**。両コマンドの `.md` を読んで確認済み、下記は実行して job が立つことを確認した:
-
-```bash
-P=~/.claude/plugins/cache/openai-codex/codex/1.0.6   # バージョンは ls で確認する
-# focus text を渡せるのは adversarial-review だけ(review は native のみで追加指示を取らない)
-node "$P/scripts/codex-companion.mjs" adversarial-review --background --base origin/main \
-  "<工学寄りの focus text。対象ファイルを明示的に限定する>"
-node "$P/scripts/codex-companion.mjs" status <job-id>   # 進捗(phase / elapsed)
-node "$P/scripts/codex-companion.mjs" result <job-id>   # 完了後の全文
-```
-
-- 120秒でシェルがバックグラウンドへ回すので、**`--background` を付けて job-id を控える**
-  (実測: 11分28秒 / 3分台 / 12分の3例)。`codex:codex-rescue` エージェント経由でも起動できるが、
-  返るのは job-id だけで、結局 `status` / `result` を叩くことになる
-- **`timeout` で包むな。`--background` は detach しない。** ランチャは進捗をストリームしたまま
-  残るので、**ランチャを殺すと codex の子プロセスごと死ぬ**。しかも job 記録は `running` の
-  まま残るので、外から見ると stall と区別がつかない。issue #63 の PR で
-  `timeout 110 node ...codex-companion.mjs review --background` と書いて実際に踏んだ:
-  job は t+0 から t+103 秒まで5秒おきに調査コマンドを実行し、**t+103 でぴたりと停止**した
-  (ランチャ起動は job の最初のログより約7秒早いので job 時刻 t+103 ≒ ランチャ 110 秒)。
-  同じ branch で `timeout` を外して回したら**約12分で完走し、P1/P2 を1件ずつ返した**
-- **待ち受けはハーネスのバックグラウンド実行に任せる**(`run_in_background`)。自分で
-  `timeout` やポーリングを足さない。`--background` の意味を「即座に返る」と**推測して**
-  timeout を被せたのが上の事故で、推測の前に1回観測すれば出ていた
-- **base を間違えると空の diff をレビューする。** merge 済みブランチでは `origin/main` が
-  自分の merge commit を指す。起動前に `git diff --shortstat <base>...HEAD` を見る
-
-**stall を疑う前に、自分が殺していないかを見る。** issue #63 の PR で stall と判断した1件は
-**上の `timeout` による自殺**だった。判別は**ログの最終行の時刻**: 調査コマンドが等間隔で並んで
-いて、ある瞬間に途切れているなら stall ではなく外部からの kill。真の stall は `phase` が進まない
-まま**コマンドも積まれない**。ログは
-`~/.claude/plugins/data/codex-openai-codex/state/<repo>/jobs/<job-id>.log`。
-
-**stall する(落ちるのとは別の壊れ方)。** PR #57 では2回起動して**2回とも報告が返らなかった** —
-`phase: running` で46分、focus を絞って再試行しても `phase: verifying` で28分。上の実測
-(11分/3分)を大きく外れる。PR #72 でも native `review` が2回 stall(`running` のまま20分・61分、
-**部分出力ゼロ**・`result` は `No job found`)。
-
-- **stall は間欠。「この branch では Codex が使えない」と結論しない。** PR #72 は2回 stall した
-  あと**3回目が約2分で完走し、そこで出た1件が subagent 4ラウンド(census と収束判定を含む)が
-  全部見落としていた唯一の欠陥**だった。2回で打ち切っていれば取り逃していた
-- したがって**起動2回上限は「予算」であって「品質の証拠」ではない**。予算を使い切った時点で
-  諦めるか3回目を引くかは、**残りの疑いの大きさ**で決める。判断材料: stall は起動直後の
-  数コマンドで止まるので、**ログに調査コマンドが積まれているか**を見る(完走した回は
-  `Review output captured.` まで進む)
-
-- **15分を超えて同じ phase なら stall とみなして cancel する。** 待ち続けると
-  「両方揃うまで編集しない」規則ごと崩れる
-- `result <job-id>` は**完了前だと `No job found` を返す**(status とは別系統)。
-  進行中の情報は status の `Progress:` と、**起動コマンドの stdout** から取る
-- **起動時の stdout に部分的な verdict が出ることがある。** PR #57 の2回目は stall する数分前に
-  `Assistant message captured: {"verdict":"needs-attention", ...}` を吐いており、その要旨は
-  subagent が独立に見つけた欠陥と一致していた。**stall しても、そこまでの出力は読む**
-- **stall を clean と数えない**(filter 落ちと同じ)。ただし**再起動は予算を消費する** —
-  stall / filter 落ちを含めて**起動は1ブランチ2回まで**。2回目も駄目なら
-  **「この branch は Codex を収束signalに使えなかった」と PR / TODO に明記して進む**
-
-subagent とは失敗の仕方が違う。今回は subagent が17ラウンド素通りしたものを1回目で拾った。
-理由は能力差ではなく、**私が渡した前提を共有していなかった**こと。だから Codex にも
-経緯を渡しすぎない。
-
-**native `review` を既定にする。`adversarial-review` は stall しやすい(実測)。**
-L174 では `adversarial-review` が1回目で stall(22分で phase 進まず・報告返らず)、一方
-ユーザーが打った **native `/codex:review` は約3分で返り、4ラウンド × 2 subagent の誰も
-出さなかった P1 を出した**。focus text を渡せるのは adversarial だけだが、その利点より
-返ってくる確率のほうが重い。focus を絞りたいときも、まず native を1回。
-
-**subagent が「与えられた前提」を疑わない面で強い(PR #72 の実例)。** Codex が出した唯一の指摘は
-「operator が `command:` prefix に同じフラグを書いていたら、conductor が後ろに足すので argv に2つ並び、
-`argv.index()` は operator 側を読む」というもの。**subagent 4ラウンドは argv を「conductor が組む
-もの」として受け取り、prefix との相互作用を誰も見なかった**。しかも実害は記録の誤りだけでなく、
-**その PR が追加した fail-closed チェック自体の fail-open**(prefix 由来の config を hash して
-`.mcp.json` を素通り)だった。**「自分が組んだ入力」以外から来る要素との相互作用**は、
-diff と脅威モデルを渡された subagent の死角になりやすい。
-
-**観点が違うことがある。ただし1事例の一般化として読むな — PR #66 では再現しなかった。**
-L174 の内訳は下記のとおり Codex=環境・運用面 / subagent=差分の内部ロジック と綺麗に割れたが、
-PR #66 の Codex 2回はどちらも**差分の内部ロジック**(未抽出 backend の素通り、パス分類の抜け)
-で、しかも1件は白紙 subagent の発見と**完全に重複**した。予算1回の使い所を「別軸の網」と
-信じて配分すると外す。**観点が割れることを期待せず、独立した1本として使う。** L174 の内訳:
-
-- **Codex**: 新規依存が未宣言で、**起動時チェックが無いため billed run の途中でしか露見しない**
-  (P1)/ 開発用ハーネスが MCP を介さず compiler を叩いている(P2、実際は適用外と判定)
-- **subagent 8本**: 全て**差分の内部ロジック**(fail-open、offset、pin の空回り、散文の真偽)
-
-つまり Codex は**収束 signal ではなく別軸の網**として使うのが正しい。「clean が返るまで回す」の
-ではなく、「subagent が構造的に見ない面(依存・preflight・実行ポリシー・リポジトリ規約との
-整合)を1回だけ通す」ために使う。この非対称性は能力差ではなく、**subagent には diff と脅威
-モデルを渡し、Codex にはリポジトリ規約(`AGENTS.md`)しか渡していない**ことの帰結でもある。
-
-**新しい検査機構を足す変更では、Codex は収束 signal にならない — 使うならテストケースの供給源
-として1回だけ。** 静的解析器やパーサを新設する変更に対しては、Codex は構造的にほぼ必ず
-「もう1つの構成物」を見つける。PR #58 では3回起動して**3回とも `needs-attention`**、うち2回は
-直前ラウンドの修正の中を指した(content filter ではなく、単に毎回何か見つけた)。指摘そのものは
-有用で、そのまま回帰テストになる。だが**「Codex が clean」を待つとラウンドが止まらない**ので、
-この種の変更では上位条件から外し、上の「実コーパスに存在するか」で判断する。
-**同じ理由で2回目・3回目の起動は予算の無駄** — 2本目以降は白紙 subagent で代替する。
-
-**content filter で落ちることがある。** L128 では4回起動して**3回中断**した(security 寄りの
-語彙 + レビュー対象外のコードへ逸脱したのが引き金。1回は検証済み反例を出した直後に落ちた)。
-
-- **filter 落ちを clean と数えない。** 出力ゼロは「指摘なし」ではない
-- 通りやすい書き方: **工学寄りの言い回し**(「fail-open を探せ」ではなく
-  「この静的解析器のパース正当性を評価せよ」)、**対象ファイルを明示的に限定**して逸脱させない、
-  攻撃ではなく**反例の構築**として依頼する
-- 落ちたら**書き換えての再試行は1回まで**(これが2回目の起動枠を消費する)。それでも駄目なら
-  **Codex 抜きで判定する**と明言して進む
-
-## 指摘を直すかどうか(このリポジトリの目的で切る)
-
-**レビュアは必ず細部まで出す。全部直すのが正しいのではない。** 分類は
-「本物 / 偽陽性 / 残余」の3つに加えて、**「本物だが範囲外」**を明示的に持つ。
-範囲外に落とすときは**1行で理由を書き、リストごと次ラウンドに渡さない**
-(「除外リストの扱い」と同じ理由 — 特に到達可能性が未検証なら範囲外に落とさず再現を実行する)。
-
-**このリポジトリが何であるか**(README §Scope が正典): `spec` から気象・気候カーネルを生成し
-認証する、**単一運用者の研究用ワークフロー基盤**。守るべき相手は**逸脱する `LLM` leaf と
-自分の変更が持ち込む欠陥**であって、悪意ある第三者でも不特定多数の利用者でもない。
-配布物でも長期 API でもない。
-
-**直す(目的に直結する):**
-
-- **判定が誤る** — 違反を pass にする / 正しい成果物を fail にする。`gate` / `validator` /
-  `judge` の fail-open はここ
-- **artifact 契約の破れ** — IR・`verdict.json`・sidecar のスキーマや不変式が守られない
-- **証拠の虚偽** — 実行していないものを実行したと記録する、監査証跡を壊す、
-  commit message / PR / doc が実物と食い違う
-- **再現性の喪失** — `--resume` が壊れる、非決定性が判定に入る
-- **`LLM` leaf が通常の書き方で踏む穴** — 実コーパス(この tree の spec / 生成物)に存在する形
-
-**直さない(範囲外と宣言して止める):**
-
-- **運用者本人しか到達できない経路への防御** — 手で不正な argv を組む、gate を回避する意図で
-  ファイルを書き換える等。これは脅威モデルの外
-- **実コーパスに1件も存在しない構成物への対処** — 敵対的レビュアが規則を破るために書いた将来形。
-  「通常の綴りに対する回帰防止であって、迂回しようとする者への強制ではない」と範囲を宣言する
-  (下の代理指標と同じ判断)
-- **将来の拡張に備えた一般化** — 現に2つ目の呼び出し元がないなら不要
-- **実測で律速でない最適化** — 律速は thinking であって Python ではない
-- **好みのスタイル・言い回し** — ただし**読み手が依拠する記述の誤り**は「証拠の虚偽」側で直す
-- **既存の(この PR が触っていない)挙動の粗** — TODO.md に項目として立てて渡す。
-  PR に取り込むと「修正が修正を呼ぶ」複利になる
-
-**判定に迷ったら1問**: 「これを直さないまま `workflow` を1本流したとき、**誤った認証**か
-**虚偽の記録**が出るか?」 出ないなら範囲外でよい。範囲外に落とした件数と内訳は
-PR 本文 / ユーザーへの報告に書く — 黙って落とさない。
-
-## 停止条件
-
-**主条件は「クラス降下 + 残りが有界だと示せたこと」。** 発見の重篤度クラスが下がり、かつ
-残りが有界だと**示せた**時点で止める(下に推移の実例)。
-
-**主条件と並ぶもう1つの停止形: 1ラウンドの発見が全て「本物だが範囲外」に落ちたら、
-そのラウンドで止める。** ラウンドを足しても出るのは同じ層で、直せば diff が目的から離れる。
-止めるときは範囲外の内訳と、範囲を宣言した理由を渡す。
-
-**上位条件(達成できたらそこで止めてよい)**: security 観点が**2ラウンド連続で新規なし**。
-ただし**記録のある8ループ全てで一度も達成されていない**
-(PR #51 / L128 / PR #53 / PR #55 / PR #57 / PR #58 / PR #67 / issue #63)。
-**到達しない前提で回す** — 到達を待ってラウンドを足さない。
-
-**代理指標2つが初めて同時に満たされた例(issue #63、R4)。** これは「白紙レビュアが機能欠陥ゼロ」
-+「独立変異 sweep が全数 kill」の実例で、下の代理指標が**事後でなく其の場で**使えることを示す。
-推移: R1「元設計の機構穴(認証情報の露出 / leaf 間の transcript 読み)+ 空回りテスト」→
-R2「元設計の機構穴(leaf 間 prompt injection)+ R1 修正由来の過剰拒否」→
-R3「R2 修正由来の回帰1件 + 散文」(独立 sweep 27/27 kill)→
-**R4「機能欠陥ゼロ。未証人の決定4件と散文だけ」**。R4 の残余は列挙可能だったので、
-潰して終了した。**クラスが下がったかは「件数」ではなく「元設計の穴か / 自分の修正の穴か /
-証人の穴か」で読む** — 件数は R3→R4 でほとんど減っていない。
-
-**「Codex が clean」を停止条件に入れない。** 条件に置くと**予算のない Codex を再起動し続ける
-動機**になる。Codex は1回分の独立視点として使い、その結果を分類したら終わり。
-**PR #67 で初めて clean が返った**(native `review`・約3分・「変更された production 経路に
-actionable な correctness regression 無し」)。**7ループ目にして1件目**なので、
-「Codex は必ず何か見つける」という前提も外れる — が、**同ラウンドの subagent 2本は
-未証人の機構・過剰拒否・鏡の置き去りを出しており、clean は収束の証拠にならなかった**。
-clean が返っても扱いは同じ: 1つの独立信号として記録し、2回目は起動しない。
-
-**issue #63 は逆のデータ点: 完走2回とも実在の欠陥を返し、2回とも subagent の死角だった。**
-1回目は warm resume の home 取り違え(白紙 subagent も独立に発見)、2回目は
-**「2つの層のうち片方だけ直して検証も片方だけした」**箇所 — 私が block 経路を直して
-auto-approve 経路を見ていなかった。前者は重複だが後者は Codex 単独。予算2回を
-「1回目=粗い層に使わない」で運用した結果なので、**ラウンド2〜3に当てる既定は有効**。
-
-**「残りが有界」の実務的な代理指標(主条件をいつ満たしたか、事後でなく其の場で言えるようにする)。**
-PR #57 では毎ラウンド「前ラウンドの修正の中に欠陥」が出続け、ラウンド3(重篤度が上がった)と
-ラウンド4(有界)を**その場では区別できなかった**。実際に境目を告げたのはこの2つの同時成立:
-
-- **除外なしの(白紙の)レビュアが機能欠陥ゼロを返す** — 散文・一貫性の指摘だけになる
-- **独立した変異 sweep が全数 kill される**(こちらが回したものではなく、レビュア側が組んだもの)
-
-この2つが揃った回は、残りが「列挙できる有限の記述修正」に落ちている。片方だけなら未達。
-
-**ただしこの2つは同格ではない。変更の種類で使い分ける。**
-
-- **既存機構を直す変更**(fail-open を塞ぐ、gate を厳しくする): 両方有効。sweep は「直した箇所が
-  pin されているか」を測り、それがまさに問われていること
-- **新しい検査機構を足す変更**(ガード・validator・meta-test を新設する): **sweep は停止根拠に
-  ならない。** sweep が答えるのは「作ったものが pin されているか」で、「作ったものが十分か」
-  ではない。**存在する機構しか変異できないので、欠けている機構は構造的に見えない。**
-  PR #58 では sweep がラウンド4(193変異)とラウンド6(170変異)で「停止推奨」を返したが、
-  **同ラウンドの白紙レビュアはどちらも end-to-end 再現つきの live route を返した** —
-  そのループでラウンド3以降に出た指摘は、1件残らず「欠けている機構」だった。
-  この場合の代理指標は**白紙レビューが2ラウンド連続で機能欠陥ゼロ**に置き換える。
-  sweep は回してよいが、「未 pin だが正しい挙動」の一覧を得るための道具として読む
-
-**新しい検査機構を足す変更では、否定形の代理指標だけでなく「証人の国勢調査」を1回回す。**
-上の「sweep は停止根拠にならない」は何を使うなという話でしかなく、何を使えばよいかを言って
-いなかった。PR #66 では R3-R5 が「同じクラスが再発し続ける」という感触だけで止め時が分からず、
-R6 でこれを回した瞬間に決着した。専任のレビュアに、こう指示する:
-
-> 検査機構の**全決定**(述語・定数・表の各要素・regex の各分岐・glob・除外・ファイル形式前提・
-> 追加された全アサーション)を列挙し、各々を **witnessed(構成入力で証人がある)/
-> corpus-dependent(たまたま今のツリーに違反が無いから緑)/ vacuous(既に何も見ていない)** に
-> **実行で**分類せよ。読みで分類してはならない。未証人のものは違反入力を自分で構成して、
-> スイートが気づくかを報告せよ。
-
-これが返ると、「残りが有界」が**感触でなく一覧**になる。PR #66 では70決定が分類され、
-**構造的に観測不能な5件**(アサーションは自分自身の弱体化を観測できない — `assertEqual` を
-包含に緩めても走るのは緩めた側。外部変異テストの領分)と、**単に書いていない21件(うち16件は
-入力まで構成済み)**に分離された。後者を書き切った時点が停止点。
-
-**2例目(PR #67・R4)も同じ形で決着した = この器具は再現している。** 233決定(production 112 /
-テストのアサーション 115 / doc 規則 6)、変異111本、witnessed 86 / corpus-dependent 22 /
-vacuous 3 / **token ratchet だけが殺している 1**。実施上の注意が3つ増えた:
-
-- **`ratchet だけが殺した` を第4のクラスとして分けさせる。** 「killed」に混ぜると、
-  `docs/BACKEND_BOUNDARY.md` §Enforcement が「増加の上限であって検出器ではない」と
-  明言しているものを証人として数えてしまう。PR #67 では実際に**鏡の預け去りがこれで隠れていた**
-  (トークンを増やさない綴りに変えると素通り)
-- **vacuous の指摘は「消す」ではなく「印を付ける」で閉じてよい。** PR #67 で
-  「`provides` 内の `_require_axis` はどの入力でも到達不能」「`LANGUAGES` の
-  `implemented_backend_ids` は後続 filter に包含される」と証明されたが、消すより
-  **「意図の標識であって生きたガードではない」とコメントする**方が正しい。
-  問題は冗長な呼び出しではなく、**生きたガードとして読めてしまうこと**
-- **census は自分の器具も疑わせる。** PR #67 では census の指摘で作った照合テストが
-  構築中に2回誤った(tuple 経由の値を見落とす → 無関係な dict key を拾う)。
-  **器具にも「正当な作業を誤って拒否するか」を当てる**
-- **corpus 測定は vacuous の証明にならない。** PR #68 で「0 empty atoms / 151,633 logical lines /
-  876 files」を根拠に unreachable と label したガードが、実際には発火した — scanner と normalizer が
-  **blank の定義で食い違っていた**(前者は gfortran の space/tab/FF、後者は Python の `\s` でより
-  広い)ため、U+00A0 だけの行が生き残って空文字に正規化される。vacuous と言えるのは
-  **到達不能を構成で示せたときだけ**で、「今のツリーに無い」は corpus-dependent。しかも
-  **label が削除を誘う**分だけ、誤った vacuous は無印より有害
-- **census の結論は1ラウンドで腐る。それを消費した次のラウンドで回し直す。** PR #68 の
-  「ratchet だけが殺している決定はゼロ」は、翌ラウンドに反例が出て偽になった。台帳に書くなら
-  **数の内訳ではなく、再測定に耐える結論だけ**にする(数は必ず腐る — 同 PR で suite 数を4回間違えた)
-- **列挙を「計算」に置き換えたら、その計算に合成ツリーの証人を付ける。** PR #68 で走査対象を
-  到達閉包の計算に変えたところ、**推移展開を丸ごと削除しても、前の設計に戻しても全緑**だった。
-  実データに対するテストは「今日のグラフがたまたまそう」を確かめるだけで、アルゴリズムを観測しない。
-  `test_backend_boundary.py::ScannedSetTests` と同じく、**既知の形を持つ合成ツリーに対して計算を
-  走らせる**
-
-**再発を「規則の形が悪い」と結論する前に、継承した決定と、直前の修正が追加した決定を
-分けて測る。** 下の「器具そのものを作り替えたのに2つ目も同じ振る舞い → 3つ目を作らない」は、
-そのまま従うと**誤った判断になることがある**。PR #66 の R6 開始時点は文面上その条件に該当して
-いたが、実測すると:
-
-| | 証人あり | 証人なし |
-|---|---|---|
-| 両版に共通の50決定(作り替え前 → 後) | 20 → 28 | 20 → **11** |
-| 作り替えが**追加した**20決定 | 2 | **15 (75%)** |
-
-既存部分は明確に改善し、**再発は追加分だけに局在**していた。規則の形は正しく、問題は
-「修正は書いたが、その証人を書いていない」という習慣。範囲宣言して止めていたら、有界で潰せる
-ものを未解決として引き渡していた。**判別**: 継承した決定が悪化 → 形の問題(止めて引き渡す)。
-直前の修正が追加した決定に集中 → 習慣の問題(証人を書けば閉じる)。
-
-**もう1つの代理指標: 指摘が実コーパスに存在するか。** これは安く測れて、判断を数ラウンド早める。
-**1ラウンドの発見が全て「実コーパスに1件も存在しない構成物」だったら、残っているのは実装ではなく
-範囲の明文化。** PR #58 のガードは skip 宣言を静的に読むもので、対象コーパスの skip は23箇所・
-2綴りのみだった。ラウンド4以降の発見は全て、敵対的レビュアがそれを破るために書いた将来形で、
-ツリーには1件も存在しなかった。にもかかわらず3ラウンド律儀に塞ぎ続けた。正しい対応は、
-**「これは通常の綴りに対する回帰防止であって、迂回しようとする者への強制ではない」と範囲を
-宣言して止める**ことだった。各ラウンド、発見の分類ごとに `grep` 一発で件数を測る。
-
-いずれの場合も、最後に**収束判定を1本**立てる。問いは「新規発見」ではなく
-**「コード・テスト・読み手が依拠する記述のいずれかを変える指摘が残っているか」**。
-残りが好みの問題だけなら明示的に停止を推奨させる。
-
-L128 は9ラウンドで空が1回だけ・Codex 使用不可、PR #53 は3ラウンドで空ゼロ・Codex は clean に
-ならず(1回目で穴を拾った)、PR #55 は3ラウンド目に subagent と Codex の両方が新規を出した。
-**クラス降下で判断する:**
-
-- L128 の推移: 「scope 機構そのものの穴(無限に湧く)」→ 再設計 → 「宣言の綴り漏れ(有界)」
-  → 列挙を1つずつ pin。**クラスが下がって、かつ残りが有界だと示せた**時点が打ち切り点
-- PR #53 の推移: 「機構そのものの穴・削除した守りが到達可能」→「綴りと文脈の取りこぼし
-  (構文名 / タブ / 入れ子 interface / `type is`)」→「**内部状態の漏れ1件と pin の漏れ**」。
-  最終ラウンドで挙動を変える指摘は1件だけで、残りは散文とテストだった
-- PR #55 の推移: 「3読み手が食い違う契約そのもの」→「pin が**毎回違う形**で破られる
-  (名前 → 部分文字列 → ディレクトリ分岐)」。**クラスは下がらず、形だけが変わった** =
-  有界だと示せていない。ここで止めたのは収束したからではなく、**閉じ方がこのブランチの外**
-  (契約の定義を1箇所に寄せる)だと確定したから。**その場合は「何をすれば有界になるか」を
-  名指しして渡す** — 残った逃げ道を3つ列挙し、追わない理由を書いた
-- PR #57 の推移: 「1つのフィールドに6読み手・4種の fallback」→「読み手の取りこぼしと
-  未 pin の mirror」→「**修正が守るはずの読み手より後に実行されていた**(重篤度が上がった)」→
-  「証人の消失と、同一関数の隣の枝に残った同型」。**ラウンド1-3は毎回「前ラウンドの修正の中」**で、
-  3で一度**悪化**している(散文の誤りではなく、監査証跡を壊す変更を出荷した)。有界だと言えたのは
-  上の代理指標2つが揃ったラウンド4。**「前ラウンドの修正の中に出続ける」こと自体は収束の否定でも
-  肯定でもない — 重篤度が上がったか下がったかで読む**
-- PR #68 の推移(移設 PR・6ラウンド): 「台帳の偽 + 過剰拒否 + 証人の無い分岐5」→
-  「**自分の新 witness の fail-open** + 証人6 + パターン一致テストの3欠陥」→
-  「未証人の穴3(うち2件はまた自分の witness)」→「同(1件)+ 記述4」→
-  「**走査の一般化が次の移行領域を拒否** + 迂回路」→「相対 import + **再設計に証人が無い**」。
-  **件数は下がらないが、破られる範囲は毎ラウンド狭くなった**(エッジ全体の復活 → 綴り1つ → 1行)。
-  停止できたのは件数でも「新規ゼロ」でもなく、**国勢調査で残余が一覧になり、器具の証人を
-  合成ツリーで作れた**時点。カウントではなく「次に破られる余地を列挙できるか」で判断する
-- PR #58 の推移: 「器具の問いが答えられない(パス式の綴りが無限)」→ **器具を作り替え** →
-  「検出面が同じ誤りの縮小版」→「reason をどこから読むかが全て未 pin」→「2経路 + **any route
-  という過大主張**」→「述語のスコープ誤り + 綴り4」→「同・入れ子で破れる + 綴り2」→「綴り4 +
-  偽陽性2」。**ラウンド5-7でクラスが下がらず、decision で停止**。停止を決めたのは件数ではなく、
-  **その3ラウンドの発見が全て実コーパスに1件も存在しない構成物だった**こと。
-  引き渡し時に「静的解析でなく実行時照合が正しい器具」と名指しし、TODO 項目に立てた
-- クラスが下がっていないのに5ラウンド以上続くなら、それは規則の形が間違っている合図
-  (下の「サイン」参照)。ラウンドを足すのではなく設計を変える。**既に一度設計を変えた後なら、
-  3つ目を作らず範囲を宣言して止める**
-- 打ち切るときは**達成できなかった条件を明示して**ユーザーに渡す。「収束した」と言わない。
-  **PR 本文にもクラスの推移と、自分の修正が持ち込んだ欠陥を disclosure として書く**
-  (PR #53 は fail-open 5件 + 偽陽性1件が自分の修正由来だった)
-
-## 途中で気づくべきサイン
-
-- **指摘が前ラウンドの修正の中にある** → 偶然ではない。次ラウンドのプロンプトで
-  **直したファイルを重点指定**する。PR #51 では3ラウンド連続でこれが起きた。PR #68 では
-  **6ラウンド全部**で、移設したコード自体の欠陥はゼロ・全部が修正と散文の中だった。
-  移設・リネームのように「本体が正しいと分かっている」変更ほど、レビューの対象は
-  **自分の修正**に寄る — 起動プロンプトの重点指定を最初のラウンドから入れてよい
-- **同じ文字列を3回書き直している** → 規則ではなく「規則を引用している散文」の問題。
-  grep で洗う手順に切り替える(`verification.md`)
-- **散文が「コード上の実体」を数え上げている**(テスト名の一覧、呼び出し箇所の数、読み手の数)
-  → **測り直す運用では負ける。検査に変える。** 一度測れば済む数値と違い、この種の散文は
-  **rename / 追加のたびに黙って腐る**。PR #57 のテストクラスの内訳(「どれが定義を iterate し、
-  どれが sample か」)は散文で3回書いて3回とも誤り — 「7本全部が iterate」(実際は5本)→
-  rename で消えたテスト名を参照 → 「8本」(実際は9本)。4回目の修正は**数を直すのをやめて**、
-  `_DEFINITION_DRIVEN` / `_SAMPLE_DRIVEN` をデータで持ち、クラスの実メソッドと突き合わせる
-  テストを1本置くことだった(rename して落ちることを確認済み)。
-  **判定基準: その散文は、テストを1本 rename したら壊れるべきか? なら検査にする**
-- **修正が規則の形を変えた**(denylist → allowlist のような) → そこから先は別 PR に切る。
-  1本に25コミット積むと、修正が修正を呼ぶ複利になる。切らずに続けるなら**ユーザーに選択肢を
-  出して判断を仰ぐ**(L128 は再設計をその場でやったが、それは判断を仰いだ上での逸脱)
-- **器具そのものを作り替えたのに、2つ目も同じ振る舞いをした** → **3つ目を作らない。**
-  1度目の作り替えは正しい対応(「問いが答えられない」と分かった)。だが2つ目が同じ形で破られ
-  続けるなら、**問いのレベル自体が違う**合図で、器具を並べても解決しない。範囲を明記して
-  引き渡す。PR #58 はパス式を読むガード(綴りが無限)→ skip 理由の台帳(領域は閉じているが
-  Python の束縛形の尾が長い)と作り替え、2つ目もラウンド5-7で毎回3-6件の同型を出した。
-  7ラウンド目にユーザー判断で止めたが、**この規則があれば6で止まっていた**。
-  引き渡すときは「何を作れば強い主張ができるか」を名指しする(この件では、静的解析でなく
-  **実行時に runner が報告した skip を台帳と照合する**器具 — Python 意味論が不要で、
-  7ラウンド分の逃げ道が一度に閉じる)
-
-  **ただし「3つ目の器具」と「2つ目の器具の欠陥」を取り違えないこと。** 判別は「破られた原因は
-  *形* か、*実装バグ / 証人の不在* か」。PR #68 は列挙 → 全走査 → 到達閉包と2回作り替えたあと
-  6回目に破られたが、原因は閉包の設計ではなく **相対 import を解決していない1行**と、
-  **再設計に証人が無かったこと**だった。ここで「3つ目を作らない」を機械的に適用していたら、
-  1行で直る穴を残余として引き渡していた。形の問題なら止める、バグと証人の問題なら直す
-- **同じファミリが2ラウンド連続で出た** → 3ラウンド待たずに形を変える合図。PR #53 では
-  「キーワードは予約語でない」が `=`(変数への代入)→ `:`(構文名)と連続で出た。3つ目のガードを
-  足すのではなく、**構造判定の前に文を正規化する段**(ラベル剥がし・構文名剥がし・代入判定)へ
-  移して閉じた。**新しい規則を後から足しても自動的に守られる位置に置けたか**が判定基準
-- **pin が毎回「違う形」で破られた** → 同一ファミリのサインとは**閉じ方が違う。正規化では
-  閉じない。** これは pin の**位置**が悪い合図で、規則の定義が1箇所に無いことを意味する。
-  PR #55 は3ラウンドで3回、全部違う形だった: 名前3つの denylist → 部分文字列 →
-  「ファイルであって**ディレクトリではない**」(述語に別分岐があった)。判定基準は
-  **「そのテストは集合の同一性を主張できるか、棄却サンプルしか出せないか」**。サンプルしか
-  出せないなら、サンプルを足すのをやめて**定義を1箇所に寄せる作業へ切り替える** —
-  ラウンドを足すと、形の種類だけ発見が続く。PR #55 でラウンド3に残った逃げ道3つ
-  (別の literal 名 / 部分木の接頭辞 / 拡張子ファミリ)を追わなかったのはこの理由で、
-  **4つ目のサンプルは同じ間違いの4回目**だった
-- **自分が1ラウンド前に直した機構が、その修正ごと食われる** → 直し方の粒度が細かすぎる。
-  PR #53 は `select` 漏れの1段版を直しテストまで書いた翌ラウンドに、入れ子版がその decrement を
-  食う形で出た。カウンタ2本 → **構文の種類のスタック**に変えて閉じた
-- **同じ機構が3ラウンド以上破られ続ける** → 個々の穴ではなく**規則が答えようとしている問い**が
-  この解析レベルで答えられない可能性を疑う。L128 は「この名前はここで定数か」を regex で
-  判定しようとして16通り破られ、**より弱いが答えられる問い**(ファイル全体で一度も他の宣言が
-  ないか)に変えて解決した。**単純版と複雑版で実測差分が同一なら、複雑さは何も買っていない** —
-  それを確かめる差分を先に取る
-- **レビュアが「環境依存だ」と言った** → テスト側のモックで閉じない。先に
-  「本番でその環境だと何が起きるか」を問う
-- **設計を作り替えたのに、古い機構の名前を持つテストが残っている** → テスト名は
-  「その機構が今も守られている証拠」として読まれる。L128 では削除済み scope 機構の名前を持つ
-  10本が、実際には共通の1変異でしか死なない behavioural regression だった。**消さずに、
-  何を pin していて何を pin していないかを群の先頭に注記する**
-- **述語を1箇所から抽出して共有化した** → **呼び出し点は別に pin が要る。**
-  関数に証人を付けても、その関数を**呼んでいること**は誰も見ていない。PR #67 では
-  `record_launch` の `_resolved_makefile_host_authored` を**定数 `True` にハードコードしても
-  4718 テストが全部緑**だった(True 側の assert しか無かったため)。
-  **述語のテストと「呼び出し点が期待値を書き込む」テストは別物**で、後者は成果物
-  (payload / artifact / ファイル)を読む形でしか書けない
-- **「同じ述語の鏡」がある変更で、1つだけ直した** → 鏡は3箇所あることがある。
-  PR #67 は conductor / `orchestration_runtime` / validator の `_ir_is_m3c_physics` の3つで、
-  1つを registry 化して2つを置き去りにすると、宣言1行で成果物が二重所有になり、
-  別ゲートが黙って無効化される。**`grep` で「mirrors」「cannot disagree」「同じ判定」と
-  書いてある散文を先に全部拾う** — 鏡は大抵コメントで自称している
-- **その鏡の一致テストが「実物の再構築コピー」で書かれている** → **食い違いを構造的に見られない。**
-  PR #67 の一致テストは片側をテスト内で再実装しており、本体が registry 化された後も
-  古い綴りのまま緑だった。**実物を関数として切り出し、本体とテストの両方から呼ばせる**
-- **証人テストの probe 値が、実装済みの値を部分文字列として含む** → そのアサーションは
-  他の節から自動的に真になる。PR #67 では `missing_capability_reason(..., "cmake", ...)` の
-  メッセージに実装済み `make` が現れることを assert していたが、**`"cmake"` が `"make"` を
-  含む**ため常に真だった(レビュア2名が独立に発見)。**probe が必要な性質を持つことを
-  テスト内で assert する**(`assertNotIn(実装済みid, probe)`)
-
-## 最後に
-
-この skill 自身・`scripts/mutation_check.py`・memory を更新すべきかを判断する。
-今回のループで**手順が足りなかった / 誤検知した / 発火すべきなのにしなかった**なら、
-黙って書き換えず**ユーザーに伝える**。不要と判断したならその旨を一言。
+| sonnet ⊇ opus | this axis is fine on the cheap model | **move the axis to sonnet permanently**; spend the freed up-model slot on deep layers |
+| sonnet ⊂ opus (with misses) | partial substitute | look at what it dropped: mechanical → reject; judgment-requiring → the axis is cut wrong |
+| sonnet ∖ opus ≠ ∅ | it works as an independent eye | keep both |
+| mostly false positives | triage costs more than it yields | reject |
+
+**Do not confound the comparison.** To measure substitutability (row 1), **give both the same
+checklist**. To measure whether it works as a different axis, use different prompts. A comparison
+with a checklist on one side and free-form on the other yields neither conclusion.
+
+**This conclusion holds only inside the axis delegated.** "sonnet matched opus at recomputing
+numbers" does not give "it matches on parser semantics". Measure per axis.
+
+**The reverse is not an experiment.** When the implementation was sonnet or fable, reviewing with
+opus is plain quality escalation — do it without hesitating. Finding a defect is often harder than
+writing the code (L174's offset-translation layer: 10 lines to write, a purpose-built mutant to
+find).
+
+The experiment log for all four data points is in `references/sonnet-delegation.md`.
+
+## Exclusion lists (the most important section)
+
+As rounds accumulate, it gets tempting to hand over a list of "already reported, do not repeat"
+and "accepted residual". It saves tokens and **propagates your own errors with it**. PR #51's only
+P1 survived five rounds inside that list (two reviewers had found it, and an unverified premise
+had dropped it into residual).
+
+- Hand over an exclusion list **for at most three rounds**
+- From round four, **run at least one reviewer with no exclusions**: "you get no history — attack
+  from scratch"
+- Above all, **never put anything you classified as residual or unreachable into the exclusion
+  list**. That is exactly the dangerous part
+
+## When to bring in Codex (budget: once per branch by default)
+
+**Codex's token budget is scarce. One launch per branch as a rule, two at the most.** Do not launch
+in round 1 — round 1 findings are the coarse layer subagents also produce, and spending the launch
+there **leaves nothing for the moment independence pays most: after your own fixes have piled up**.
+
+Launch once **in round 2 or 3** (do not save it for the end). Its perspective is independent.
+
+**Cases where not launching is better** (spend a blank-slate subagent review instead):
+
+- **a change that adds checking machinery** — Codex structurally almost always finds "one more
+  construct", so clean never comes back and it is not a convergence signal. Use it once as a source
+  of test cases, or not at all
+- the diff is prose / doc centred and changes no mechanism behaviour
+- the previous round's findings are still unfixed — spend the launch on the fixed HEAD
+
+**`/codex:review` and `/codex:adversarial-review` are `disable-model-invocation: true` — I cannot
+launch them** (they are for the user to type). The command bodies are one line of the companion
+script, so **call that directly**; the mechanics, the flags, and the failure modes are in
+`references/codex-episodes.md`. The operating rules that decide what you do:
+
+- **Prefer native `review`. `adversarial-review` stalls more often** (measured). Only adversarial
+  takes focus text, but the probability of getting an answer back outweighs that. Run native once
+  first even when you want to narrow the focus
+- **Never wrap it in `timeout`. `--background` does not detach** — killing the launcher kills the
+  codex child, and the job record stays `running`, indistinguishable from a stall. **Let the
+  harness's background execution do the waiting** (`run_in_background`); do not add your own
+  timeout or polling
+- **Check the base before launching.** On a merged branch `origin/main` points at your own merge
+  commit and you review an empty diff: look at `git diff --shortstat <base>...HEAD`
+- **Before suspecting a stall, check whether you killed it.** The tell is the timestamp of the
+  log's last line: investigation commands at even intervals that cut off at one instant means an
+  external kill, not a stall. A true stall shows `phase` not advancing **and no commands
+  accumulating**
+- **Treat the same phase for more than 15 minutes as a stall and cancel.** Waiting collapses the
+  "do not edit until both are in" rule with it
+- **`result <job-id>` returns `No job found` before completion** (a different channel from status).
+  Take in-flight information from status's `Progress:` and **the launch command's stdout** — a
+  partial verdict sometimes appears there (PR #57's second run emitted
+  `Assistant message captured: {"verdict":"needs-attention", ...}` minutes before stalling, and its
+  gist matched what a subagent found independently). **Read the output up to the stall**
+- **Do not count a stall as clean** (same for a filter drop). **Stalls are intermittent, though:
+  do not conclude "Codex cannot be used on this branch"** — PR #72 stalled twice and **the third
+  run finished in about 2 minutes with the one defect that four subagent rounds, census and
+  convergence judgment included, had all missed**. So **the two-launch cap is a budget, not
+  evidence of quality**: whether to stop or draw a third is decided by **how large the remaining
+  doubt is**, with the log's command accumulation as the evidence. If you stop, **write in the PR /
+  TODO that this branch could not use Codex as a convergence signal**
+- **It can be dropped by the content filter.** Engineering-flavoured phrasing gets through
+  ("evaluate this static analyser's parsing soundness", not "find the fail-opens"); **limit the
+  target files explicitly** so it does not wander; ask for **counterexample construction** rather
+  than attack. **One rewrite-and-retry at most** (which consumes the second launch)
+
+It fails differently from a subagent. In PR #51 it caught in one pass what 17 subagent rounds had
+walked past — not from capability but because **it did not share the premises I had handed over**.
+So do not over-brief Codex on history either.
+
+**Subagents are weak where the premise was handed to them (PR #72).** Codex's single finding was
+"if the operator writes the same flag in the `command:` prefix, the conductor appends its own, two
+appear in argv, and `argv.index()` reads the operator's". **Four subagent rounds took argv as
+"something the conductor builds" and nobody looked at the interaction with the prefix.** The harm
+was not only a mis-record but **a fail-open in the very fail-closed check that PR added**.
+**Interaction with elements that come from anywhere other than "the input I built"** is a blind
+spot for a subagent handed the diff and the threat model.
+
+**The axes sometimes differ — but do not generalize from one case; PR #66 did not reproduce it.**
+L174 split cleanly (Codex = environment and operations, subagents = the diff's internal logic),
+while PR #66's two Codex runs were both **internal logic** and one **fully duplicated** a
+blank-slate subagent's finding. Allocate the single launch believing it is "a net on another axis"
+and you will miss. **Expect no split; use it as one independent pass.** The right framing is Codex
+as **a net on a different axis, not a convergence signal**: not "run until clean" but "pass once
+over the surfaces subagents structurally do not look at" (dependencies, preflight, execution
+policy, consistency with repository conventions). That asymmetry also follows from what each is
+given — **subagents get the diff and the threat model, Codex gets only `AGENTS.md`**.
+
+## Fix or out of scope (cut by this repository's purpose)
+
+**Reviewers always report down to the details. Fixing everything is not correct.** Beyond real /
+false positive / residual, keep an explicit fourth class: **real but out of scope**. When you drop
+something there, **write one line of justification and do not carry the list into the next round**
+(same reason as exclusion lists — and if reachability is unverified, do not drop it, run the
+reproduction).
+
+**What this repository is** (README §Scope is canonical): a **single-operator research workflow
+platform** that generates and certifies weather and climate kernels from a `spec`. What is defended
+against is **a deviating `LLM` leaf and defects my own changes introduce**, not a malicious third
+party and not an unknown user population. It is neither a distributed artifact nor a long-lived API.
+
+**Fix (directly serves the purpose):**
+
+- **a wrong verdict** — a violation passed, or a correct artifact failed. `gate` / `validator` /
+  `judge` fail-opens are here
+- **a broken artifact contract** — a schema or invariant of the IR, `verdict.json`, or a sidecar
+  not upheld
+- **false evidence** — recording something as run that was not, breaking the audit trail, a commit
+  message / PR / doc disagreeing with the artifact
+- **loss of reproducibility** — `--resume` breaks, non-determinism enters a verdict
+- **a hole an `LLM` leaf hits with ordinary spelling** — a shape that exists in the real corpus
+  (this tree's spec and generated artifacts)
+
+**Do not fix (declare out of scope and stop):**
+
+- **defenses against paths only the operator can reach** — hand-crafting invalid argv, editing
+  files to bypass a gate. Outside the threat model
+- **handling constructs that occur zero times in the real corpus** — future forms an adversarial
+  reviewer wrote to break the rule. Declare the scope: "this is regression prevention for ordinary
+  spelling, not enforcement against someone trying to circumvent it"
+- **generalization for future extension** — unnecessary while there is no second caller
+- **optimization that measurement shows is not the bottleneck** — the bottleneck is thinking, not
+  Python
+- **style and wording preferences** — but **errors in descriptions a reader relies on** get fixed,
+  on the "false evidence" side
+- **rough edges in existing behaviour this PR does not touch** — file them in TODO.md and hand
+  them over. Pulling them in compounds "fixes calling for fixes"
+
+**One question when in doubt**: "if this stays unfixed and one `workflow` runs, does a **wrong
+certification** or a **false record** come out?" If not, out of scope is fine. Write the count and
+the breakdown of what you dropped into the PR body / your report to the user — never drop silently.
+
+## Stopping conditions
+
+**The main condition is "class descent plus a demonstration that the remainder is bounded".** Stop
+once the severity class of the findings has dropped **and** you can show the remainder is bounded.
+Per-PR transition histories are in `references/class-descent-log.md`; read class descent as **"is
+it a hole in the original design / a hole in my fix / a hole in the witnesses"**, not as a count —
+in issue #63 the count barely fell between the last two rounds.
+
+**A second stopping shape, equal in standing: if every finding in one round falls into "real but
+out of scope", stop at that round.** More rounds produce the same layer, and fixing them moves the
+diff away from the purpose. State the out-of-scope breakdown and why you declared the scope.
+
+**The superior condition (stop there if you reach it)**: the security axis produces **nothing new
+for two consecutive rounds**. It has **never been achieved in any of the 8 recorded loops** (PR #51
+/ L128 / PR #53 / PR #55 / PR #57 / PR #58 / PR #67 / issue #63). **Run assuming you will not reach
+it** — do not add rounds waiting for it.
+
+**Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
+relaunch a Codex you have no budget for**. Use Codex as one independent pass and finish once you
+have classified the result. Clean did come back once (PR #67, the seventh loop), and **the same
+round's two subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror — so
+clean was not evidence of convergence**. Issue #63 is the opposite data point: both completed runs
+returned real defects, both in subagent blind spots.
+
+**Practical proxies for "the remainder is bounded"** (so you can say it on the spot, not in
+hindsight). In PR #57 defects kept appearing inside the previous round's fix and **round 3 (severity
+rose) was indistinguishable in the moment from round 4 (bounded)**. What actually marked the
+boundary was these two holding together:
+
+- **a reviewer with no exclusions returns zero functional defects** — only prose and consistency
+  findings remain
+- **an independent mutation sweep is fully killed** (one the reviewer built, not one you ran)
+
+When both hold, the remainder has fallen to "an enumerable, finite set of descriptive fixes". One
+alone is not enough.
+
+**But the two are not equal in standing. Use them by change type.**
+
+- **changes that fix existing machinery** (closing a fail-open, tightening a gate): both apply. The
+  sweep measures "is what I fixed pinned", which is exactly what is being asked
+- **changes that add checking machinery** (a new guard, validator, meta-test): **the sweep is not
+  grounds for stopping.** It answers "is what I built pinned", not "is what I built enough" —
+  **it can only mutate mechanisms that exist, so a missing mechanism is structurally invisible**. In
+  PR #58 the sweep recommended stopping at round 4 (193 mutants) and round 6 (170 mutants), while
+  **the same rounds' blank-slate reviewer returned live routes with end-to-end reproductions**, and
+  every finding from round 3 on was a missing mechanism. Here the proxy becomes **a blank-slate
+  review with zero functional defects for two consecutive rounds**. Still run the sweep, but read it
+  as a list of "unpinned but correct behaviour"
+
+**For a change that adds checking machinery, run a witness census once**, rather than only the
+negative proxies. In PR #66, rounds R3-R5 had only the feeling of "the same class keeps recurring",
+and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
+
+> Enumerate **every decision** in the checking machinery (predicates, constants, each table entry,
+> each regex branch, globs, exclusions, file-format assumptions, every assertion added), and
+> classify each **by execution** as **witnessed** (a constructed input witnesses it) /
+> **corpus-dependent** (green only because today's tree happens to contain no violation) /
+> **vacuous** (already observing nothing). Classification by reading is not allowed. For the
+> unwitnessed ones, construct a violating input yourself and report whether the suite notices.
+
+What comes back turns "the remainder is bounded" from a feeling into a list, and the instrument
+reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Four practical
+notes (the numbers and transitions are in `references/class-descent-log.md`):
+
+- **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
+  "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
+  on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
+- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable,
+  and the right response was a comment saying "a marker of intent, not a live guard". The problem
+  is not the redundant call; it is that it **reads as a live guard**
+- **The census makes you doubt your own instrument too** — the verification test built from PR #67's
+  census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
+  instrument as well
+- **A corpus measurement does not prove vacuity.** In PR #68 a guard labelled unreachable from
+  "0 empty atoms / 151,633 logical lines" did fire, because the scanner and the normalizer
+  **disagreed on the definition of blank** (gfortran's space/tab/FF vs Python's wider `\s`), so a
+  line of only U+00A0 survived. Vacuous may be claimed **only when unreachability is shown by
+  construction**; "not in today's tree" is corpus-dependent — and because the label invites
+  deletion, a wrong vacuous is worse than no label
+- **A census conclusion rots in one round; re-run it the round after you consume it** (PR #68's
+  "zero ratchet-only decisions" was falsified the next round). Record conclusions that survive
+  re-measurement, not the numeric breakdown — numbers always rot
+- **When you replace an enumeration with a computation, witness the computation on a synthetic
+  tree.** In PR #68 the scan target became a reachability closure, and deleting the transitive
+  expansion entirely stayed all green: a test against real data confirms "today's graph happens to
+  be like this" and never observes the algorithm (cf.
+  `test_backend_boundary.py::ScannedSetTests`)
+
+**Before concluding "the shape of the rule is wrong" from recurrence, measure inherited decisions
+separately from decisions the last fix added.** The sign below ("you rebuilt the instrument and the
+second behaved the same → do not build a third") **can produce a wrong judgment if followed
+literally**. PR #66 at the start of R6 matched that condition on its face; measured, the decisions
+common to both versions had improved (20 → 28 witnessed) while **75% of the decisions the rebuild
+added were unwitnessed** — the recurrence was localized to the additions, the shape of the rule was
+right, and the problem was the habit of writing a fix without its witness. Stopping there would
+have handed over as unresolved something bounded and fixable. **The test**: inherited decisions got
+worse → a problem of shape (stop and hand over); concentrated in what the last fix added → a
+problem of habit (write the witnesses and it closes). The full table is in
+`references/class-descent-log.md`.
+
+**Another proxy: does the finding exist in the real corpus?** This is cheap to measure and saves
+several rounds. **If every finding in a round is a construct that occurs zero times in the real
+corpus, what remains is not implementation but a written scope declaration.** PR #58's guard read
+skip declarations statically, and the corpus had 23 skips in 2 spellings; from round 4 on every
+finding was a future form an adversarial reviewer wrote to break it, present nowhere in the tree —
+and I dutifully kept closing them for three rounds. The right response was **declaring the scope**
+("regression prevention for ordinary spelling, not enforcement against circumvention") and stopping.
+Each round, measure the count per finding class with one `grep`.
+
+In every case, **finish with one convergence judgment**. The question is not "any new findings" but
+**"is any finding left that would change code, tests, or a description a reader relies on?"** If
+only preferences remain, have it recommend stopping explicitly.
+
+When you stop short, **state the condition you did not meet** and hand it to the user. Do not say
+"converged". **Put the class transitions and the defects your own fixes introduced into the PR body
+as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fixes).
+
+## Signs to catch mid-loop
+
+- **A finding sits inside the previous round's fix** → not a coincidence. **Name the fixed files as
+  the focus** in the next round's prompt (PR #51: three rounds running; PR #68: **all six rounds**,
+  with zero defects in the moved code itself and everything in the fixes and the prose). The more
+  a change is a move or rename where the body is known correct, the more the review is really about
+  **your own fixes** — put the focus instruction in from the first round
+- **You have rewritten the same string three times** → the problem is not the rule but the prose
+  citing it. Switch to the grep sweep (`verification.md`)
+- **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
+  numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
+  this kind of prose **rots silently on every rename or addition**. PR #57's breakdown of test
+  classes ("which iterate the definition, which sample") was written in prose three times and wrong
+  three times — "all 7 iterate" (5) → a test name that a rename had removed → "8" (9). The fourth
+  fix **stopped fixing the number** and put `_DEFINITION_DRIVEN` / `_SAMPLE_DRIVEN` in data with one
+  test cross-checking them against the class's real methods (confirmed to fail on rename).
+  **Criterion: should this prose break if one test is renamed? Then make it a check**
+- **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
+  after that into another PR. Stacking 25 commits on one branch compounds fixes calling for fixes.
+  If you continue without splitting, **give the user the options and ask** (L128 redesigned in
+  place, but that was a deviation taken after asking)
+- **You rebuilt the instrument itself and the second one behaved the same** → **do not build a
+  third.** The first rebuild was right (the question could not be answered). If the second keeps
+  breaking the same way, the sign is that **the question is at the wrong level**, and lining up
+  instruments will not fix it. Declare the scope and hand it over. PR #58 went from a guard reading
+  path expressions (infinite spellings) to a ledger of skip reasons (a closed domain, but Python's
+  binding forms have a long tail), and the second produced 3-6 isomorphic findings every round from
+  5 to 7. The user stopped it at round 7; **this rule would have stopped it at 6.** When handing
+  over, name what would have to be built to make a strong claim (here: **cross-check the skips the
+  runner reported at runtime against the ledger**, which needs no Python semantics and closes all
+  seven rounds' escape routes at once)
+
+  **But do not confuse "a third instrument" with "a defect in the second".** The test is whether
+  what broke it was **the shape** or **an implementation bug / a missing witness**. PR #68 rebuilt
+  twice (enumeration → full scan → reachability closure) and broke on the sixth round, but the cause
+  was **one line not resolving relative imports** plus **the redesign having no witness**, not the
+  closure design. Applying "do not build a third" mechanically there would have handed over as
+  residual a hole that a single line fixed. Shape → stop; bug and witness → fix
+- **The same family appeared two rounds running** → the sign to change shape, without waiting for a
+  third. In PR #53 "keywords are not reserved words" came back as `=` (assignment to a variable)
+  then `:` (a construct name). Rather than adding a third guard, it closed by **moving to a
+  normalization stage ahead of the structural decision** (strip labels, strip construct names,
+  detect assignment). The criterion is whether you placed it **where a rule added later is protected
+  automatically**
+- **The pin was broken in a different shape every time** → this looks like the family sign but
+  **closes differently: normalization will not close it.** It means the pin is in the wrong
+  **place** — the rule has no single definition. PR #55 was broken three times in three rounds, all
+  differently: a three-name denylist → a substring → "a file and **not a directory**" (the predicate
+  had another branch). The criterion is **"can this test claim set identity, or can it only produce
+  rejection samples?"** If only samples, stop adding samples and **switch to the work of moving the
+  definition to one place** — adding rounds just yields one finding per shape. The three escape
+  routes left in PR #55's round 3 (another literal name / a subtree prefix / an extension family)
+  went unchased for this reason: **a fourth sample was the same mistake for the fourth time**
+- **A mechanism you fixed one round ago is eaten together with the fix** → your fix granularity is
+  too fine. PR #53 fixed the flat version of the `select` leak with a test, and the next round the
+  nested version came back eating that decrement. Closed by moving from two counters to **a stack of
+  construct kinds**
+- **The same mechanism keeps being broken for three rounds or more** → suspect that **the question
+  the rule is trying to answer** cannot be answered at this level of analysis. L128 tried to decide
+  "is this name a constant here" by regex and was broken 16 ways; it was solved by changing to **a
+  weaker question that can be answered** (is there no other declaration anywhere in the file).
+  **If the simple and the complex version give identical measured diffs, the complexity bought
+  nothing** — take that diff first
+- **A reviewer said "it is environment-dependent"** → do not close it with a mock on the test side.
+  Ask first what happens in production on that environment
+- **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are
+  read as evidence that the mechanism is still protected. In L128, 10 tests named after a deleted
+  scope mechanism were in fact a behavioural regression that only one shared mutation killed.
+  **Do not delete them; annotate at the head of the group what they pin and what they do not**
+- **You extracted a predicate to one place and shared it** → **the call sites need their own pin.**
+  Give the function a witness and still nobody observes that it is **called**. In PR #67,
+  hardcoding `record_launch`'s `_resolved_makefile_host_authored` to the constant `True` left
+  **all 4718 tests green** (only the True-side assertion existed). **The predicate's test and the
+  "the call site writes the expected value" test are different things**, and the latter can only be
+  written by reading the artifact (payload / artifact / file)
+- **A change has "mirrors of the same predicate" and you fixed one** → there can be three mirrors.
+  PR #67 had `_ir_is_m3c_physics` in the conductor, `orchestration_runtime`, and the validator;
+  moving one to the registry and abandoning two makes one declared line doubly own an artifact and
+  silently disables another gate. **`grep` first for prose saying "mirrors", "cannot disagree",
+  "same decision"** — mirrors usually announce themselves in a comment
+- **That mirror's agreement test is written as a reconstructed copy of the real thing** → **it
+  cannot see a disagreement structurally.** PR #67's agreement test reimplemented one side inside
+  the test and stayed green with the old spelling after the body moved to the registry. **Extract
+  the real thing as a function and call it from both the body and the test**
+- **A witness test's probe value contains the implemented value as a substring** → the assertion is
+  automatically true via another clause. PR #67 asserted that `missing_capability_reason(...,
+  "cmake", ...)`'s message contains the implemented `make`, which is always true because **`"cmake"`
+  contains `"make"`** (found independently by two reviewers). **Assert inside the test that the
+  probe has the property it needs** (`assertNotIn(implemented_id, probe)`)
+
+## Finally
+
+Judge whether this skill itself, `scripts/mutation_check.py`, or memory needs updating. If this
+loop showed a procedure was missing, gave a false positive, or failed to fire when it should have,
+**tell the user** rather than rewriting silently. If you judge no update is needed, say so in one
+line.

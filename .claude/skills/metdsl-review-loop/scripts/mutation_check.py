@@ -9,7 +9,7 @@ green without them.
 Known blind spot: a hunk can be killed and the test still be worthless, if the test passes
 for a different reason than its name claims. Hunk-level reverting cannot see that — pair
 this with a mechanism-level deletion and with checking that each fixture has only one path
-to the outcome it asserts. See the skill's "出す前(ラウンド0)".
+to the outcome it asserts. See the skill's "Before you hand it over (round 0)".
 
 The checkout is never touched: every mutation happens in a `git worktree` under
 `--workdir` (default `~/.cache/mutation-check`). Keeping it under $HOME matters for
