@@ -31,9 +31,11 @@ reads most like success.
 
 The other one is a hunk nothing can be tested for: one carrying a rename (reverting it
 reverses the rename, so the suite answers about the file's absence), or one `git apply -R`
-refuses — a symlink whose target changed, or a patch this script mangled. Those are reported
-as SKIPPED and counted as a failure, never folded into "pinned". A change with no revertible
-hunk at all — a pure rename, a binary file, a mode change — is listed the same way.
+refuses. Those are reported as SKIPPED and counted as a failure, never folded into "pinned".
+A change with no revertible hunk at all — a pure rename, a binary file, a mode change, an
+empty new file — is listed by name and fails the run the same way, even when every hunk
+beside it is pinned. (A symlink whose target changes is NOT such a case: it produces an
+ordinary hunk and is scored normally.)
 
 Exit code is 1 when an UNANNOTATED hunk survives (a docstring-only survivor is
 expected and does not fail the run), or when any hunk is inconclusive or skipped; 2 when
@@ -72,36 +74,15 @@ def _is_test_file(path: str) -> bool:
     return "/tests/" in f"/{path}" or name.startswith("test_") or name.endswith("_test.py")
 
 
-#: Suffixes where a leading `#` starts a comment. Everywhere else it means something that
-#: DOES change behaviour, and this repository has both kinds: `#` opens a heading in Markdown
-#: (`test_cli_reference_sync.py` and `test_readme_sync.py` both read `##` sections out of
-#: committed documents), and a preprocessor directive in the c/cpp families this toolchain
-#: builds. Measured before this list existed: a heading-only change and an
-#: `#include`/`#define`-only change were both dropped as "cannot change behaviour", leaving
-#: `no hunks in range — nothing to check` and exit 0 for a round that was in fact pinned.
-_HASH_COMMENT_SUFFIXES = frozenset({
-    ".py", ".pyi", ".sh", ".bash", ".zsh", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".mk",
-})
-
-
-def _is_comment_only(path: str, patch: str) -> bool:
-    """True when every line this hunk adds or removes is a `#` comment or blank.
-
-    Such a hunk cannot change behaviour, so it is a GUARANTEED survivor — the same argument
-    that excludes test files, and worth applying for the same reason: a survivor list whose
-    entries are all expected is one nobody reads. Only `#` comments count, and only in the
-    file types where `#` IS a comment; a docstring is a string literal and stays in the check,
-    since a test may assert on one.
-    """
-    name = Path(path).name
-    if Path(path).suffix not in _HASH_COMMENT_SUFFIXES and name not in ("Makefile", "makefile"):
-        return False
-    changed = [
-        line[1:].strip()
-        for line in patch.splitlines()
-        if line[:1] in "+-" and not line.startswith(("+++", "---"))
-    ]
-    return bool(changed) and all(not text or text.startswith("#") for text in changed)
+#: Suffixes whose comments this script can recognise EXACTLY, by comparing parsed code rather
+#: than by looking at the line. `#` is not a reliable marker on its own: it opens a heading in
+#: Markdown (this repository pins `##` sections out of committed documents), a preprocessor
+#: directive in the c/cpp families, a shebang in a shell script, a lint pragma such as
+#: `noqa` or `type: ignore` — and inside a Python string literal or a YAML block scalar it is just text, which is
+#: exactly the prompt-template and contract text met-dsl pins. Two review rounds broke a
+#: line-shaped predicate in two different shapes, so the predicate is not line-shaped any more:
+#: only Python is classified, and only through its AST.
+_PARSEABLE_SUFFIXES = frozenset({".py", ".pyi"})
 
 
 _SUITE_DID_NOT_RUN = (
@@ -127,17 +108,19 @@ def _suite_did_not_run(output: str) -> bool:
 
 
 def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
-    """True when reverting this hunk changes only DOCSTRINGS of a Python module.
+    """True when reverting this hunk changes only PROSE of a Python module: comments, docstrings.
 
-    Docstrings deliberately stay in the check (`_is_comment_only` excludes `#` comments only),
-    because a test may assert on one — met-dsl pins prompt-template and contract text. But when
-    nothing does, such a hunk is a guaranteed survivor, and an unlabelled guaranteed survivor is
-    how a survivor list stops being read: measured on PR #67, 2 of 5 survivors were docstring
-    edits reported exactly like the three real gaps beside them.
+    Prose stays in the check rather than being filtered out, because a test may assert on it —
+    met-dsl pins prompt-template and contract text. But when nothing does, such a hunk is a
+    guaranteed survivor, and an unlabelled guaranteed survivor is how a survivor list stops being
+    read: measured on PR #67, 2 of 5 survivors were docstring edits reported exactly like the
+    three real gaps beside them.
 
     So: still checked, still reported — labelled. Compared as ASTs with every docstring node
-    emptied, which is exact rather than heuristic; a hunk that also moves code fails the compare
-    and keeps its unqualified SURVIVED.
+    emptied, which is exact rather than heuristic: comments are absent from an AST, so a
+    comment-only edit compares equal, while a `#` line added INSIDE a string literal changes a
+    Constant and does not. A hunk that also moves code fails the compare and keeps its
+    unqualified SURVIVED.
     """
     if not path.endswith(".py"):
         return False
@@ -158,6 +141,8 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
                 body[0].value.value = ""
         return ast.dump(tree)
 
+    if Path(path).suffix not in _PARSEABLE_SUFFIXES:
+        return False
     try:
         current = _run(["git", "show", f"{head}:{path}"], cwd=repo)
     except RuntimeError:
@@ -168,14 +153,14 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
     with tempfile.TemporaryDirectory() as scratch:
         target = Path(scratch) / path
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(current, encoding="utf-8")
+        target.write_bytes(current.encode("utf-8", "surrogateescape"))
         reverted = subprocess.run(
-            ["git", "apply", "-R", "--recount", "-"],
-            cwd=scratch, input=patch, text=True, capture_output=True)
+            ["git", "apply", "-R", "--recount", "-"], cwd=scratch,
+            input=patch.encode("utf-8", "surrogateescape"), capture_output=True)
         if reverted.returncode != 0:
             return False  # not provably prose; keep the unqualified SURVIVED
         try:
-            after_source = target.read_text(encoding="utf-8")
+            after_source = target.read_bytes().decode("utf-8", "surrogateescape")
         except OSError:
             # A rename hunk reverts the file to its OLD path, so nothing is at `path` any
             # more. That is a code move, never a docstring-only change; before this guard
@@ -195,9 +180,12 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> str:
     """
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True)
     if check and proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
         raise RuntimeError(f"{' '.join(cmd)} failed: "
-                           f"{proc.stderr.decode('utf-8', 'replace').strip()}")
-    return proc.stdout.decode("utf-8", "replace")
+                           f"{detail[0] if detail else '(no message)'}")
+    # `surrogateescape`, not `replace`: a latin-1 source file must survive the round trip back
+    # into `git apply`, which otherwise refuses the patch and every hunk of that file SKIPs.
+    return proc.stdout.decode("utf-8", "surrogateescape")
 
 
 #: A `VAR=value` assignment a shell applies to the command — only TMPDIR matters here.
@@ -211,6 +199,31 @@ _TMPDIR_ASSIGNMENT_RE = re.compile(r"(?<![\w=/:.\-])TMPDIR=")
 _RENAME_HEADER_RE = re.compile(r"^rename (from|to) ", re.MULTILINE)
 
 
+def _diff_entry_path(header_line: str) -> str:
+    """The post-image path of a `diff --git` line, for the paths git actually produces.
+
+    Splitting on `" b/"` — the obvious reading — takes the LAST occurrence, so a file under a
+    directory named `pkg b` came out as `lib.py b/pkg b/lib.py`: the test-file filter, the
+    prose annotation and the printed name were all wrong for it, and the annotation failure
+    surfaced as a false "unexplained survivor". A path with a space, a quote or a non-ASCII
+    byte is quoted by git (`diff --git "a/…" "b/…"`), where `" b/"` does not appear at all.
+    """
+    rest = header_line[len("diff --git "):].strip()
+    if rest.startswith('"'):
+        # Two C-quoted paths; the post-image is the second. Escapes are git's own (\t, \337).
+        parts = re.findall(r'"((?:[^"\\]|\\.)*)"', rest)
+        if len(parts) == 2:
+            raw = (parts[1].encode("latin-1", "backslashreplace")
+                   .decode("unicode_escape").encode("latin-1")
+                   .decode("utf-8", "surrogateescape"))
+            return raw[2:] if raw.startswith("b/") else raw
+    half = len(rest) // 2
+    if rest[half:half + 1] == " " and rest[:half].startswith("a/") and rest[half + 1:].startswith("b/"):
+        # Equal-length halves is what git emits for an ordinary path: `a/<p> b/<p>`.
+        return rest[half + 3:]
+    return rest.split(" b/", 1)[-1]
+
+
 def _hunkless_files(diff_text: str) -> list[str]:
     """Files the diff names but gives no `@@` body for: pure renames, binaries, mode changes.
 
@@ -220,12 +233,12 @@ def _hunkless_files(diff_text: str) -> list[str]:
     """
     named: list[str] = []
     current = ""
-    saw_hunk = True
+    saw_hunk = False
     for line in diff_text.splitlines():
         if line.startswith("diff --git "):
             if current and not saw_hunk:
                 named.append(current)
-            current = line.split(" b/", 1)[-1].strip()
+            current = _diff_entry_path(line)
             saw_hunk = False
         elif line.startswith(_HUNK_START):
             saw_hunk = True
@@ -250,7 +263,7 @@ def _split_hunks(diff_text: str) -> list[tuple[str, str]]:
             flush()
             body = []
             header = [line]
-            current_file = line.split(" b/", 1)[-1].strip()
+            current_file = _diff_entry_path(line)
         elif not body and (
             line.startswith(("index ", "--- ", "+++ ", "old mode", "new mode",
                              "new file", "deleted file", "similarity", "rename "))
@@ -305,16 +318,14 @@ def main() -> int:
     ap.add_argument("--include-tests", action="store_true",
                     help="also revert hunks in test files (reverting a test can only "
                          "remove assertions, so these always survive — off by default)")
-    ap.add_argument("--include-comments", action="store_true",
-                    help="also revert hunks whose changed lines are all `#` comments "
-                         "(they cannot change behaviour, so these always survive)")
     ap.add_argument("--keep", action="store_true", help="keep the worktrees for inspection")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
     # `-c diff.noprefix=false` because with the caller's `diff.noprefix=true` the `--- `
-    # header stops matching and EVERY hunk skips; `--no-ext-diff`/`--no-color` for the same
-    # reason — the instrument's parsing must not depend on the operator's git config.
+    # header stops matching and EVERY hunk skips — measured. `--no-ext-diff`/`--no-color` are
+    # belt and braces for the same class (a configured external differ, a forced color): git
+    # emits no color through a pipe, so neither is witnessed by a scenario I could build.
     diff = _run(["git", "-c", "diff.noprefix=false", "diff", "--no-ext-diff", "--no-color",
                  args.range, "--", *args.paths], cwd=repo)
     hunks = _split_hunks(diff)
@@ -325,16 +336,9 @@ def main() -> int:
             print(f"ignoring {len(hunks) - len(kept)} hunk(s) in test files "
                   f"(reverting a test only removes assertions); --include-tests to keep")
         hunks = kept
-    if not args.include_comments:
-        kept = [(f, p) for f, p in hunks if not _is_comment_only(f, p)]
-        if len(kept) != len(hunks):
-            print(f"ignoring {len(hunks) - len(kept)} comment-only hunk(s) "
-                  f"(they cannot change behaviour, so they always survive); "
-                  f"--include-comments to keep")
-        hunks = kept
     if hunkless:
         print(f"{len(hunkless)} change(s) with no revertible hunk — a pure rename, a binary "
-              f"file or a mode change. NOTHING was tested for these:")
+              f"file, a mode change, an empty new file. NOTHING was tested for these:")
         for name in hunkless:
             print(f"  {name}")
     if not hunks:
@@ -384,9 +388,6 @@ def main() -> int:
     # that carries a temp path, and a long temp root alone can fail it.
     tmp_base = os.environ.get("TMPDIR", "/dev/shm")
     tmpdirs = {wt: Path(tempfile.mkdtemp(prefix="m", dir=tmp_base)) for wt in worktrees}
-    for wt in worktrees:
-        _run(["git", "worktree", "add", "--detach", str(wt), head], cwd=repo)
-
     free: list[Path] = list(worktrees)
     lock = threading.Lock()
     results: dict[int, tuple[str, str, str]] = {}
@@ -420,7 +421,7 @@ def main() -> int:
             else:
                 revert = subprocess.run(
                     ["git", "apply", "-R", "--recount", "-"], cwd=wt,
-                    input=patch, text=True, capture_output=True)
+                    input=patch.encode("utf-8", "surrogateescape"), capture_output=True)
                 if revert.returncode != 0:
                     verdict = "SKIP (cannot revert in isolation)"
                 else:
@@ -448,11 +449,21 @@ def main() -> int:
     skipped: list[tuple[str, str]] = []
     baseline_failed = False
     try:
+        # Inside the block that owns cleanup, not before it: a failure part-way through this
+        # loop used to leave the earlier worktrees REGISTERED in the caller's repository
+        # (`git worktree list` showed them) with only a tidy "cannot run:" line to go on.
+        for wt in worktrees:
+            _run(["git", "worktree", "add", "--detach", str(wt), head], cwd=repo)
         print(f"{len(hunks)} hunk(s); {jobs} job(s) in {args.workdir}\n")
         if not args.skip_baseline:
             base = _run_tests(args.test_cmd, worktrees[0], tmpdirs[worktrees[0]],
                               args.timeout)
-            if base.returncode:
+            if base is None:
+                print(f"BASELINE TIMED OUT after {args.timeout}s with nothing reverted. Every "
+                      f"hunk would time out the same way, so nothing could be measured. Raise "
+                      f"--timeout or narrow --test-cmd.")
+                baseline_failed = True
+            elif base.returncode:
                 print("BASELINE RED — the suite fails with nothing reverted, so every "
                       "hunk would report 'killed' for a reason that is not the hunk.\n"
                       "Fix the suite (or narrow --test-cmd) and rerun. A suite that is "
@@ -495,31 +506,40 @@ def main() -> int:
         for path, first in skipped:
             print(f"  {path} {first[:70]}")
     if inconclusive:
-        print(f"{len(inconclusive)} INCONCLUSIVE hunk(s) — the suite exited nonzero without "
-              f"running, so nothing observed them. Add `--continue-on-collection-errors` to "
-              f"--test-cmd and rerun; do NOT read these as killed:")
+        print(f"{len(inconclusive)} INCONCLUSIVE hunk(s) — nothing observed them, for the reason "
+              f"each line gives. A collection error wants `--continue-on-collection-errors` on "
+              f"--test-cmd; a timeout wants a longer --timeout or a narrower --test-cmd. Do NOT "
+              f"read these as killed:")
         for path, first in inconclusive:
             print(f"  {path} {first[:70]}")
     if survivors:
         real = [s for s in survivors if s[0] not in prose]
         print(f"{len(survivors)} surviving hunk(s)"
-              + (f", {len(prose)} of them docstring-only:" if prose else ":"))
+              + (f", {len(prose)} of them prose-only:" if prose else ":"))
         for i, path, first in survivors:
-            tag = "  [docstring-only — expected]" if i in prose else ""
+            tag = "  [prose-only (comment/docstring) — expected]" if i in prose else ""
             print(f"  {path} {first[:70]}{tag}")
+        if hunkless:
+            print(f"\nAnd {len(hunkless)} change(s) listed at the top had no revertible hunk, "
+                  f"so nothing above is a verdict about them.")
         if prose:
-            print("\nA docstring-only hunk changes no behaviour, so it ALWAYS survives. It is "
-                  "still checked (a test may pin prose) and it is labelled so it does not read "
-                  "as a finding: on met-dsl PR #67, 2 of 5 survivors were docstrings printed "
-                  "identically to the three real gaps beside them.")
+            print("\nA prose-only hunk — comments, docstrings — changes no behaviour, so it "
+                  "ALWAYS survives. It is still checked (a test may pin prose, and this repo "
+                  "does) and it is labelled so it does not read as a finding: on met-dsl PR #67, "
+                  "2 of 5 survivors were docstrings printed identically to the three real gaps "
+                  "beside them. Only Python is classified this way, by comparing ASTs; in any "
+                  "other file type a prose hunk is reported unlabelled.")
         if real:
             print(f"\n{len(real)} unexplained survivor(s). Either the behavior has no pin, or "
                   "an existing test kills it for a different reason. Both are worth knowing "
                   "before committing.\nOne expected survivor: half of a code MOTION. Reverting "
                   "the deletion while the moved copy remains changes nothing — read the pair "
                   "together.")
-        return 1 if (real or inconclusive or skipped) else 0
-    if inconclusive or skipped:
+        return 1 if (real or inconclusive or skipped or hunkless) else 0
+    if inconclusive or skipped or hunkless:
+        if hunkless and not (inconclusive or skipped):
+            print(f"\nEvery hunk is pinned, but {len(hunkless)} change(s) listed at the top had "
+                  f"no revertible hunk and were never tested — this is not a clean run.")
         return 1
     print("every hunk is pinned")
     print("NOT the same as 'the tests are adequate'. Reverting a hunk cannot detect a test\n"

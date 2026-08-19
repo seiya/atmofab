@@ -123,14 +123,19 @@ came from, and the reasoning you need when a rule does not obviously apply.
   **mechanism-level mutants over every mechanism in the files you touched**
 - **Past 50 lines, a hunk hides the decisions inside it** — re-target each judgment individually
 - **Survivors** mean no pin, or a neighbouring check killing it. Fix them or write down why not.
-  Test-file and comment-only hunks are excluded by default (`--include-tests` /
-  `--include-comments`). "Comment-only" means a leading `#` in a file type where `#` starts a
-  comment — not Markdown, where it is a heading this repository pins, and not the c/cpp families,
-  where it is a preprocessor directive. One half of a code move is expected to survive, so read
-  the pair together — though a move between Python modules usually reports INCONCLUSIVE for the
-  halves whose import breaks at collection, so pass `--continue-on-collection-errors` first
-- **Docstring-only hunks are annotated, not excluded** (`[docstring-only — expected]`): docstrings
-  are string literals and real tests pin prompt templates and contract text. **An unannotated survivor exits 1, and so
+Test-file hunks are excluded by default (`--include-tests`
+  keeps them). **Nothing else is excluded on a guess about `#`**: it opens a heading in Markdown
+  (which this repository pins), a preprocessor directive in the c/cpp families, a shebang, a lint
+  pragma, and inside a Python string or a YAML block scalar it is the prompt-template text met-dsl
+  pins. Prose hunks are checked and, for Python only, LABELLED by comparing ASTs. One half of a
+  code move is expected to survive, so read the pair together — though a move between Python
+  modules usually reports INCONCLUSIVE for the halves whose import breaks at collection, so pass
+  `--continue-on-collection-errors` first
+- **Prose-only hunks are annotated, not excluded** (`[prose-only (comment/docstring) —
+  expected]`): comments and docstrings alike are checked, because real tests pin prompt templates
+  and contract text. The classification is an AST comparison over Python files, so a `#` line
+  added inside a string literal is NOT prose — it changes a constant — and a prose hunk in any
+  other file type is reported unlabelled. **An unannotated survivor exits 1, and so
   does any inconclusive or skipped hunk, or a change with no revertible hunk; only a clean run, or
   one whose sole survivors are docstring-only, exits 0. Exit 2 means the run itself cannot be
   trusted** — a red baseline, a range that does not resolve, a `--repo` that is not one, or a
@@ -143,8 +148,9 @@ came from, and the reasoning you need when a rule does not obviously apply.
   range that resolves to nothing is not a failure. Check that the output states a hunk count. The
   causes: a base that resolves but is wrong (after a MERGE `origin/main..HEAD` is empty; after a
   REBASE it is not — it is your own commits, replayed), a `--paths` that matches nothing, and a
-  round whose diff is all tests and comments. A pure rename, a binary file or a mode change is
-  listed separately and exits 1, because nothing was tested for those either
+  round whose diff is all test files. A change with no revertible hunk — a pure rename, a binary
+  file, a mode change, an empty new file — is listed by name and exits 1 whatever else the run
+  found, because nothing was tested for it
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply.** "Nothing to
   check" with a correct base is **not applicable, not a pass** (PR #58). `--include-tests` does not
   rescue it: reverting an ADDED test hunk deletes an assertion, so it always survives. (A hunk

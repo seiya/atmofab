@@ -71,9 +71,11 @@ against `origin/main`'s wording, which only replacing the whole file revealed.
   It does **not** do it for a range that produced no hunks at all: that prints "nothing to check"
   and exits 0, which is why the rule above is to read the hunk count rather than the exit code.
   What it will not miss any more, each measured while fixing it: a change with no revertible hunk
-  (a pure rename, a binary file, a mode change) is listed and exits 1; a hunk carrying a rename is
-  SKIPPED rather than judged by the reversed rename; a CRLF file is no longer skipped wholesale;
-  and `#` counts as a comment only where `#` starts one
+  (a pure rename, a binary file, a mode change, an empty new file) is listed by name and exits 1
+  even when other hunks are pinned; a hunk carrying a rename is SKIPPED rather than judged by the
+  reversed rename; CRLF and non-UTF-8 files are no longer skipped wholesale; and no hunk is
+  excluded on the guess that a `#` line is a comment — prose is CHECKED, and labelled by AST
+  comparison where the file is Python
 - The certain method is **replacing the whole file with `git show origin/main:<path>`** — string
   identification cannot fail
 - Put it in the reviewer launch prompt as well: PR #76's two reviewers built harnesses that abort
