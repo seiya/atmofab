@@ -110,8 +110,33 @@ from tools.orchestration_runtime import (
     resolve_claude_model_alias,
     default_agent_model_for_backend,
 )
-from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+from tools.tests.leaf_config_fixture import (
+    seed_claude_leaf_config,
+    seed_codex_hooks,
+)
 from tools.tests.llm_samples import sample_config_with as _cfg
+
+# Every synthetic repo an orchestration is initialised in also gets this
+# repository's committed leaf configuration.
+#
+# Production checkouts always carry `leaf_config/claude/settings.json`, and since
+# issue #63 any claude-shaped launch prepares its private home from that file and
+# fails closed without it (`record_launch` turns the failure into
+# `sandbox_enforcement_violation`). Fixtures that drive `record_launch` only as
+# setup for something else — run gates, plan guards, manifest injection — would
+# otherwise each have to know that. Seeding at this ONE choke point keeps the
+# knowledge in one place; the requirement itself is pinned deliberately elsewhere
+# (`ClaudeLeafConfigPreflightTests`, `ClaudeWorkflowHomeTests`), by fixtures that
+# build their repo WITHOUT this wrapper and assert the absent/invalid cases.
+_real_init_orchestration = init_orchestration
+
+
+def init_orchestration(*args, **kwargs):  # type: ignore[no-redef]
+    root = kwargs.get("repo_root") if "repo_root" in kwargs else (args[0] if args else None)
+    if root is not None:
+        seed_claude_leaf_config(Path(root))
+    return _real_init_orchestration(*args, **kwargs)
+
 
 _FIX_IR_REF = "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
 _FIX_PIPE_REF = "workspace/pipelines/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001"
@@ -335,6 +360,17 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         os.environ["METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
         os.environ["METDSL_ORCHESTRATION_ASSUME_BWRAP"] = "1"
         os.environ["METDSL_HOME"] = "/tmp/codex-orchestration-test-home"
+        # `_prepare_codex_workflow_home` binds the operator's real `auth.json` into
+        # the isolated home read-only and refuses to launch without it. This class's
+        # codex launches began reaching that code once the isolation branch keyed on
+        # the family the PROFILE resolves rather than on the response's `backend`
+        # field — before that, a launch whose response omitted the field silently
+        # skipped isolation on BOTH backends, which is the hole that change closed.
+        codex_home = Path("/tmp/codex-orchestration-test-home")
+        codex_home.mkdir(parents=True, exist_ok=True)
+        auth = codex_home / "auth.json"
+        if not auth.is_file():
+            auth.write_text("{}", encoding="utf-8")
 
     def tearDown(self) -> None:
         if self._old_live_preflight is None:
@@ -2487,6 +2523,10 @@ shell_tool                       stable             true
     def test_writes_orchestration_artifacts_in_canonical_layout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            # This launch is CODEX-backed: since the isolation branch keys on the
+            # family the profile resolves, a codex-commanded launch prepares its
+            # isolated home and fails closed without the committed hook source.
+            seed_codex_hooks(repo_root)
             init_orchestration(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2950,6 +2990,11 @@ shell_tool                       stable             true
         # workspace/ is gitignored in the real repo, so orchestration artifacts
         # init writes there must not flip the dirty flag.
         (repo_root / ".gitignore").write_text("workspace/\n", encoding="utf-8")
+        # The launch-configuration sources are TRACKED files in a real checkout, so
+        # they belong in the seed commit. Written afterwards they would land in the
+        # working tree and flip `dirty`, which is what these two tests measure.
+        seed_claude_leaf_config(repo_root)
+        seed_codex_hooks(repo_root)
         self._git(repo_root, "add", "-A")
         self._git(repo_root, "commit", "-m", "seed")
         return self._git(repo_root, "rev-parse", "HEAD")
@@ -13416,6 +13461,10 @@ class OrchestrationMetaAndJudgeHookTests(unittest.TestCase):
             os.environ, {"METDSL_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0"}
         ):
             repo = Path(tmp)
+            # This launch is CODEX-backed: since the isolation branch keys on the
+            # family the profile resolves, a codex-commanded launch prepares its
+            # isolated home and fails closed without the committed hook source.
+            seed_codex_hooks(repo)
             orch = "orch_session_index_launch_001"
             parent = "orch_parent_001"
             child = "step_run_session_index_001"
@@ -14029,6 +14078,10 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
     def test_record_launch_skips_probe_on_second_call_within_ttl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
+            # This launch is CODEX-backed: since the isolation branch keys on the
+            # family the profile resolves, a codex-commanded launch prepares its
+            # isolated home and fails closed without the committed hook source.
+            seed_codex_hooks(repo)
             init_orchestration(repo_root=repo, orchestration_id="orch_001")
             _mark_dependencies_ready(repo, "orch_001")
             path = repo / "workspace/orchestrations/orch_001/preflight.json"
@@ -14118,6 +14171,10 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
     def test_record_launch_re_probes_after_ttl_expiry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
+            # This launch is CODEX-backed: since the isolation branch keys on the
+            # family the profile resolves, a codex-commanded launch prepares its
+            # isolated home and fails closed without the committed hook source.
+            seed_codex_hooks(repo)
             init_orchestration(repo_root=repo, orchestration_id="orch_001")
             _mark_dependencies_ready(repo, "orch_001")
             path = repo / "workspace/orchestrations/orch_001/preflight.json"
@@ -20993,6 +21050,49 @@ class RecordTimeoutTests(unittest.TestCase):
                 _hashlib.sha256(
                     (repo_root / "leaf_config" / "claude" / "settings.json").read_bytes()
                 ).hexdigest())
+
+    def test_the_launched_profile_actually_carries_the_isolation(self) -> None:
+        """Driven through `record_launch`, asserted on the PERSISTED argv.
+
+        `ClaudeIsolationProfileTests` calls `claude_isolation_profile_kwargs` and the
+        profile builders directly, so it cannot see whether `record_launch` passes
+        them. Measured: `elif claude_isolation is not None:` -> `... and False`
+        leaves the whole suite green, and under it the leaf comes up
+        `--setting-sources user` against the OPERATOR's `~/.claude` — the exact hole
+        issue #63 exists to close — while the launch record still names a
+        `claude_workflow_home` the leaf never read. False isolation and a false
+        record in one run.
+
+        The assertion is on `sandbox_profiles/<arid>.json#rendered_command`, the
+        bwrap argv that is actually handed to the process, because that is the only
+        artifact that reflects the wiring rather than restating it.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            arid = self._setup_substep_launch(repo_root)
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            meta = json.loads(
+                (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            home = meta["claude_workflow_home"]
+            self.addCleanup(shutil.rmtree, Path(home), True)
+            profile = json.loads(
+                (orch_root / "sandbox_profiles" / f"{arid}.json").read_text(encoding="utf-8"))
+            argv = profile["rendered_command"]
+
+            setenv = {argv[i + 1]: argv[i + 2]
+                      for i, tok in enumerate(argv) if tok == "--setenv"}
+            self.assertEqual(setenv.get("CLAUDE_CONFIG_DIR"), home)
+
+            rw_binds = {argv[i + 1] for i, tok in enumerate(argv) if tok == "--bind"}
+            self.assertIn(home, rw_binds)
+            operator_home = Path(os.environ.get("HOME") or Path.home())
+            self.assertNotIn(str(operator_home / ".claude"), rw_binds)
+            self.assertNotIn(str(operator_home / ".claude.json"), rw_binds)
+
+            ro_pairs = {(argv[i + 1], argv[i + 2])
+                        for i, tok in enumerate(argv) if tok == "--ro-bind"}
+            settings = str(Path(home) / "settings.json")
+            self.assertIn((settings, settings), ro_pairs)
 
     def _deactivate(self, repo_root: Path, arid: str) -> None:
         """Helper: record child return ack (Adv-20/Adv-30) and clear the
@@ -34331,6 +34431,39 @@ class ClaudeLeafConfigProbeTests(unittest.TestCase):
             probe = _probe_claude_leaf_config(Path(td))
         self.assertIs(probe["pass"], False)
         self.assertIn("cannot parse", probe["detail"])
+
+    def test_the_coverage_table_and_the_committed_file_define_the_same_set(self) -> None:
+        """The table is pinned to the FILE, in both directions.
+
+        The two "each element is load-bearing" tests below iterate the table itself,
+        so they are vacuous under SHRINKAGE: reducing the table to
+        `{"PreToolUse"}` / `{"Bash", "Glob"}` left the whole suite green (measured),
+        and the probe would then green-light a leaf configuration with no
+        `UserPromptSubmit`, no `Stop`, no `PostToolUse` and no PreToolUse hook for
+        `Write`/`Edit`/`Read`/`Grep` — the read boundary and the write boundary both
+        gone, gate reporting pass. Sampling the table's own members cannot see that;
+        only an equality against an independent source can, and the committed file
+        is that source.
+
+        Both directions matter and they fail differently: table ⊇ file catches a
+        matcher deleted from the file, table ⊆ file catches the table being shrunk
+        to match a weakened file.
+        """
+        from tools.orchestration_runtime import (
+            _CLAUDE_HOOK_MATCHER_COVERAGE, _CLAUDE_REQUIRED_HOOK_EVENTS)
+        payload = self._config()
+        file_events = set(payload["hooks"])
+        self.assertEqual(_CLAUDE_REQUIRED_HOOK_EVENTS, file_events)
+        self.assertEqual(set(_CLAUDE_HOOK_MATCHER_COVERAGE), file_events)
+        for event, blocks in payload["hooks"].items():
+            matchers = {block.get("matcher") for block in blocks}
+            if matchers & {"*", "", None}:
+                # A match-all block covers whatever the table names; there is no
+                # independent set to compare against, so assert only that the table
+                # names something.
+                self.assertTrue(_CLAUDE_HOOK_MATCHER_COVERAGE[event], event)
+                continue
+            self.assertEqual(_CLAUDE_HOOK_MATCHER_COVERAGE[event], matchers, event)
 
     def test_each_required_hook_event_is_load_bearing(self) -> None:
         """Drop ONE event at a time: each removal alone must be caught.

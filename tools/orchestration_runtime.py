@@ -15906,11 +15906,17 @@ def _probe_claude_leaf_config(repo_root: Path | None) -> dict[str, Any]:
             if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
                 continue
             matcher = entry.get("matcher")
-            if not isinstance(matcher, str):
+            if matcher is not None and not isinstance(matcher, str):
                 continue
             if not any(_claude_hook_invokes_event(hook, event) for hook in entry["hooks"]):
                 continue
-            if matcher == "*":
+            # MATCH-ALL spellings, measured on CLI 2.1.235 by launching a hook with
+            # each one and watching it fire for `Bash`: `*`, the EMPTY string, and an
+            # OMITTED `matcher` key. The first version of this probe accepted only
+            # `*` and refused the other two with "workflow hook command missing",
+            # which is a refusal of a configuration that enforces the policy fully —
+            # the failure direction this repository keeps paying for.
+            if matcher is None or matcher in {"*", ""}:
                 covered.update(_CLAUDE_HOOK_MATCHER_COVERAGE[event])
                 continue
             try:
@@ -18423,8 +18429,19 @@ def record_launch(
         else:
             try:
                 _resp_backend = response_payload.get("backend")
-                _backend_family = (_resp_backend.strip().lower()
-                                   if isinstance(_resp_backend, str) else "")
+                # THE SAME resolver the profile builder uses on the next lines, not
+                # a second reading of the raw field: `build_*_bwrap_profile` resolves
+                # the family with `_resolve_backend_type(backend_type, backend_command)`,
+                # which falls back to the COMMAND when the response omits `backend`.
+                # Reading the raw field here meant such a payload built a claude-shaped
+                # profile — `~/.claude` rw-bound, no CLAUDE_CONFIG_DIR — with no
+                # private home, i.e. a leaf on the operator's home, while the record
+                # described one it never read. Keying both off one function is what
+                # makes "the profile is claude-shaped" and "the claude isolation was
+                # prepared" the same question.
+                _backend_family = _resolve_backend_type(
+                    _resp_backend if isinstance(_resp_backend, str) else "",
+                    backend_command)
                 if _backend_family == "codex":
                     # Prepared before any launch-side durable mutations above.  Do not
                     # re-prepare here: doing so would reopen the generation race that

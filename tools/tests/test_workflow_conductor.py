@@ -6189,6 +6189,36 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(d.action, "fail_closed")
         self.assertIn("sandbox_unavailable", d.reason or "")
 
+    def test_the_diagnosticians_profile_actually_carries_the_claude_isolation(self) -> None:
+        """The diagnostician re-derives its own isolation; nothing observed that.
+
+        It never reaches `record_launch`, so it is the one claude launch whose
+        isolation is wired in a second place — the commit message's own surface
+        inventory calls it out. Measured: turning its `elif entry.provider ==
+        "claude_cli":` into `elif False:` left the whole suite green, and under that
+        the diagnostician comes up on the OPERATOR's `~/.claude`.
+
+        Asserted on the profile the REAL method returns, not on the kwargs helper.
+        """
+        repo = self._repo_root()
+        c = _FakeConductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+            llm_config=_cfg("claude"), env={})
+        profile = c._readonly_sandbox_profile()
+        meta = json.loads(
+            (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json")
+            .read_text(encoding="utf-8"))
+        home = meta["claude_workflow_home"]
+        self.addCleanup(shutil.rmtree, Path(home), True)
+
+        self.assertEqual((profile.get("env") or {}).get("CLAUDE_CONFIG_DIR"), home)
+        self.assertIn(home, profile.get("runtime_rw_bind_paths") or [])
+        operator_home = Path(os.environ.get("HOME") or Path.home())
+        self.assertNotIn(str(operator_home / ".claude"),
+                         profile.get("runtime_rw_bind_paths") or [])
+        settings = str(Path(home) / "settings.json")
+        self.assertIn([settings, settings], profile.get("runtime_ro_bind_mappings") or [])
+
     def test_escalate_spawns_diagnostician_with_readonly_profile(self) -> None:
         # P2-4b: under bwrap-enforced mode the diagnostician runs sandboxed with a
         # dedicated read-only profile (no write_roots) instead of fail-closing.
