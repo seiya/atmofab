@@ -1637,7 +1637,8 @@ def workflow_private_backend_homes(repo_root: Path | None,
         the workflow forbids, and it would leave no trace in any artifact.
 
     The orchestration id is taken from the environment the HOST set through the
-    sandbox (`METDSL_ORCHESTRATION_ID` via bwrap `--setenv`), never from the hook
+    sandbox (`METDSL_ORCHESTRATION_ID`, set by `workflow_conductor._child_env` and
+    inherited through bwrap, which does not `--clearenv`), never from the hook
     payload: `tools/hooks/cli.py::_extract_orchestration_id` prefers the payload,
     which a caller can influence, and here the value decides WHICH home is guarded
     — naming another orchestration would unguard the leaf's own. A leaf's Bash

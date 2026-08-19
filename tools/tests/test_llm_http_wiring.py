@@ -171,6 +171,27 @@ class HttpPureLeafWiringTests(unittest.TestCase):
         self.assertTrue((base / "src" / f"{_SPEC_ID}_model.f90").exists())
         self.assertTrue((base / "src" / "Makefile").exists())
 
+    def test_the_pure_loop_resolves_its_resume_as_a_pure_launch(self) -> None:
+        """The pure loop must tell the resume resolver which home its launch uses.
+
+        A pure leaf is given no private `CLAUDE_CONFIG_DIR`, so its transcript is
+        written to — and served from — the operator's `~/.claude`. If this call site
+        says `pure=False`, the resolver looks in the orchestration's private home,
+        finds nothing, and every pure reuse repair silently goes cold, re-inlining
+        `pure_context` on the branch's most expensive substep. Measured: that
+        mutation survived a pin placed on the resolver alone, so it is asserted here
+        at the CALL SITE, on the value that actually arrives.
+        """
+        self._serve([json.dumps(_valid_bundle())])
+        c = self._conductor()
+        seen: list[bool] = []
+        c._resolve_reuse_resume = (  # type: ignore[assignment]
+            lambda repair, phase, substep, pure=False: seen.append(pure))
+        c._run_pure_generate_substep(
+            self.refs, "generate", "generate",
+            {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}, ())
+        self.assertEqual(seen, [True])
+
     def test_the_provenance_names_the_http_provider_and_its_resolved_model(self) -> None:
         self._serve([json.dumps(_valid_bundle())])
         c = self._conductor()

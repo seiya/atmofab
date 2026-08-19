@@ -3680,7 +3680,8 @@ class Conductor:
         return proc.stdout.strip()
 
     def _resolve_reuse_resume(self, repair: dict[str, str] | None,
-                              phase: str, substep: str | None) -> str | None:
+                              phase: str, substep: str | None,
+                              pure: bool = False) -> str | None:
         """The producer session id to warm-`--resume`, or None for a cold launch.
 
         Resolved BEFORE building the launch request (not after) so the slim-vs-full prompt
@@ -3709,7 +3710,8 @@ class Conductor:
             self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
                       target=target)
             return None
-        if entry.provider == "claude_cli" and self._claude_session_resumable(target):
+        if entry.provider == "claude_cli" and self._claude_session_resumable(
+                target, pure=pure):
             return target
         if entry.provider == "codex_cli":
             from tools.orchestration_runtime import (
@@ -3744,38 +3746,58 @@ class Conductor:
         self.emit("resume_session_unavailable", phase=phase, substep=substep or "", target=target)
         return None
 
-    def _claude_session_resumable(self, session_id: str) -> bool:
+    def _claude_session_resumable(self, session_id: str, *, pure: bool) -> bool:
         """True if a claude session transcript for `session_id` still exists under
         `<projects-root>/*/<session_id>.jsonl`. Used to decide whether a warm
         `--resume` is viable or must fall back to a cold launch (the session may have
         been expired/GC'd by Claude Code).
 
-        THE HOME THE LAUNCH WILL USE, and only that one. Issue #63 moved an agentic
-        leaf's transcript into this orchestration's private home, and `--resume` is
-        served from `CLAUDE_CONFIG_DIR`, so a transcript anywhere else is not
-        resumable no matter how findable it is. Searching the operator's
-        `~/.claude/projects` as well — which the shared resolver does, correctly, for
-        AUDIT consumers — answered True for a session recorded before the move and
-        sent `--resume <id>` at a home that has never held it. The same mismatch
-        follows a rotation. Both a reviewer and an independent Codex pass found this;
-        the safe answer is cold, which is what the repair loop already handles.
+        THE HOME THIS LAUNCH WILL USE, and only that one — which is why `pure` is a
+        required argument rather than something inferred here.
 
-        No private home recorded means no claude leaf has launched under this
-        orchestration yet, so anything findable is pre-move and equally unreachable:
-        False is right there too."""
+        `--resume` is served from the launching process's `CLAUDE_CONFIG_DIR`, and the
+        two leaf shapes set it differently:
+
+        * an AGENTIC leaf gets this orchestration's private home (issue #63), so a
+          transcript anywhere else is unreachable however findable it is. Searching
+          the operator's `~/.claude/projects` too answered True for a session recorded
+          before the move and sent `--resume <id>` at a home that never held it — a
+          reviewer and an independent Codex pass both found that;
+        * a PURE leaf gets NO private home at all (`record_launch` prepares one only
+          for the agentic shape), so it launches with no `CLAUDE_CONFIG_DIR` and its
+          `--session-id` transcript is written to, and served from, the operator's
+          `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus
+          `--session-id` does write `<config-home>/projects/<slug>/<sid>.jsonl`.
+
+        Narrowing this to the private home for BOTH shapes silently retired warm
+        resume for every pure leaf — every reuse repair and every inner repair turn of
+        `generate.generate`, the repo's largest token consumer, re-inlining
+        `pure_context` and `prior_document` on a cold launch. A test asserted that
+        wrong answer, so the suite defended it.
+
+        For the agentic shape, no private home recorded means no claude leaf has
+        launched under this orchestration yet, so anything findable is pre-move and
+        equally unreachable: False is right there too."""
         if not isinstance(session_id, str) or not session_id.strip():
             return False
         from tools.hooks.common import claude_workflow_home
-        try:
-            home = claude_workflow_home(self.repo_root, self.orchestration_id)
-        except (OSError, ValueError):
-            return False
-        if home is None:
-            return False
-        try:
-            return bool(sorted((home / "projects").glob(f"*/{session_id.strip()}.jsonl")))
-        except OSError:
-            return False
+        if pure:
+            roots = [Path.home() / ".claude" / "projects"]
+        else:
+            try:
+                home = claude_workflow_home(self.repo_root, self.orchestration_id)
+            except (OSError, ValueError):
+                return False
+            if home is None:
+                return False
+            roots = [home / "projects"]
+        for root in roots:
+            try:
+                if sorted(root.glob(f"*/{session_id.strip()}.jsonl")):
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _pure_session_resumable(self, session_id: str,
                                 entry: ResolvedLeafEntry | None = None,
@@ -3798,7 +3820,8 @@ class Conductor:
         if not entry.supports(CAP_WARM_RESUME):
             return False
         if entry.provider == "claude_cli":
-            return self._claude_session_resumable(session_id)
+            # This predicate serves the PURE loops, so the pure home is the right one.
+            return self._claude_session_resumable(session_id, pure=True)
         # Codex exposes no safe local transcript-presence probe.  A thread id
         # emitted by this process is authoritative; `codex exec resume` remains
         # the final capability check and its failure is handled as transport.
@@ -3905,10 +3928,15 @@ class Conductor:
             # `-p` runs non-interactively. The leaf's MCP server set comes from
             # `--strict-mcp-config --mcp-config .mcp.json` below — read directly from the
             # committed file, not from an enablement decision recorded elsewhere. The
-            # permission grants that let the leaf CALL those tools still come from the
-            # committed .claude/settings.json via the `project` setting source, and that
-            # source is itself conditional on workspace trust (issue #65; see
-            # docs/RUNBOOK.md).
+            # permission grants that let the leaf CALL those tools come from the
+            # committed `leaf_config/claude/settings.json`, copied into the private
+            # home and read as the `user` layer (issue #63). Not `.claude/settings.json`
+            # — no leaf loads that — and not conditional on workspace trust: a user-tier
+            # grant was measured to be honoured with no trust seed present, while the
+            # trust conditionality of issue #65 applied to the `project` layer this
+            # launch no longer uses. (All three of those claims were the opposite here
+            # until R3 caught it, at the very comment someone debugging a refused MCP
+            # call would read.)
             flags: list[str] = []
             # `--model` ONLY for a model the configuration FILE names. An operator who wrote
             # `model: haiku` for a substep means that leaf to run haiku, and recording it while
@@ -6417,7 +6445,7 @@ clean:
         # resume_session_id stays None and the first attempt is a cold launch (findings dropped,
         # the safe degradation the pure launch template has no slot for).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
-            target = self._resolve_reuse_resume(repair, phase, substep)
+            target = self._resolve_reuse_resume(repair, phase, substep, pure=True)
             if target and self._pure_session_resumable(target, entry, phase, substep):
                 resume_session_id = target
                 # The outer-reopen excerpt is threaded into the first repair turn's
@@ -7498,7 +7526,8 @@ clean:
         except OSError:
             return False
 
-    def _verify_session_resumable(self, verify_arid: str, phase: str = "generate") -> bool:
+    def _verify_session_resumable(self, verify_arid: str, phase: str = "generate",
+                                  pure: bool = False) -> bool:
         """True if the failed verify leaf's session can actually be warm-resumed. Mirrors the
         preconditions `_resolve_reuse_resume` applies at launch (a warm-resumable claude
         provider + a surviving session transcript), consulted BEFORE the repair turn so the
@@ -7508,7 +7537,7 @@ clean:
         # provider — consulting the wrong one would refuse a repair the session can serve.
         entry = self.entry_for(phase, "verify")
         return (entry.supports(CAP_WARM_RESUME) and entry.provider == "claude_cli"
-                and self._claude_session_resumable(verify_arid))
+                and self._claude_session_resumable(verify_arid, pure=pure))
 
     def determine_substep_status(self, refs: NodeRefs, phase: str, substep: str | None,
                                  allowed_output_paths: list[str],
@@ -9293,8 +9322,15 @@ clean:
         # session-transcript glob and the `resume_session_unavailable` emit side-effect-free
         # for them even if a reuse repair ever reaches one.
         deterministic = self._is_deterministic_substep(phase, substep)
+        # `pure=False` because a PURE substep has already returned above, through
+        # `_run_pure_generate_substep` / `_run_pure_verify_substep`, which resolve
+        # their own resume. Calling `_pure_leaf_substep` again here would read as
+        # though this line could see a pure node and would always answer False —
+        # a mutation replacing it with the constant survived, which is what showed
+        # the two are the same thing.
         resume_session_id = (None if deterministic
-                             else self._resolve_reuse_resume(repair, phase, substep))
+                             else self._resolve_reuse_resume(
+                                 repair, phase, substep, pure=False))
         # Slim repair turn is always used when a warm resume actually fires (build_launch_request
         # further requires a findings excerpt to be present, so in practice slim is scoped to the
         # deterministic-gate reopens — lint/static/compile_static — which carry one; a warm reuse
@@ -10557,7 +10593,9 @@ clean:
             # carries NO findings (the full template has no findings placeholder) — the leaf
             # would re-verify blind and escalate anyway. Re-checked every iteration, not just on
             # entry: each repair turn is a new session that may itself not be resumable.
-            if not self._verify_session_resumable(verify_arid, phase):
+            if not self._verify_session_resumable(
+                    verify_arid, phase,
+                    pure=self._pure_leaf_substep(refs, phase, "verify")):
                 self.emit("verify_meta_schema_no_warm_session", node_key=refs.node_key,
                           phase=phase, attempt=attempt + 1,
                           detail="; ".join(findings)[:200])

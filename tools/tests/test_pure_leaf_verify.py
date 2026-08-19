@@ -498,7 +498,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
         # prior_document is echoed into the repair prompt that record_launch writes as UTF-8. It
         # must be normalized so the write does not raise UnicodeEncodeError mid-repair.
         class _C(_PureFakeConductor):
-            def _claude_session_resumable(self, arid):  # type: ignore[override]
+            def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
                 return False  # force the cold-fallback repair branch on every turn
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 # Emulate the real record_launch's UTF-8 prompt persistence to surface any

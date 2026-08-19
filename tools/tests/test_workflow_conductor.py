@@ -300,13 +300,13 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
     def test_resolve_reuse_resume_returns_target_when_resumable(self) -> None:
         # Warm resume is always active for a reuse repair (no env gate).
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
         self.assertEqual(c._resolve_reuse_resume(repair, "generate", "generate"), "child-1")
 
     def test_resolve_reuse_resume_falls_back_cold_when_unresumable(self) -> None:
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: False  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: False  # type: ignore[assignment]
         emitted: list[str] = []
         c.emit = lambda ev, **k: emitted.append(ev)  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
@@ -371,14 +371,59 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                                orchestration_agent_run_id="ORCH",
                                llm_config=_cfg("claude"), env={})
             with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
-                self.assertTrue(c._claude_session_resumable("sess-private"))
-                # A session in the OPERATOR's home is NOT resumable, even though it
-                # is findable: `--resume` is served from `CLAUDE_CONFIG_DIR`, so a
-                # pre-move transcript would send the launch at a home that never
-                # held it. The earlier version of this test asserted the opposite
-                # and encoded exactly that bug.
-                self.assertFalse(c._claude_session_resumable("sess-operator"))
-                self.assertFalse(c._claude_session_resumable("sess-absent"))
+                # AGENTIC: the private home is the one its launch will use.
+                self.assertTrue(c._claude_session_resumable("sess-private", pure=False))
+                # ...and a session in the OPERATOR's home is not resumable BY AN
+                # AGENTIC launch, which sets CLAUDE_CONFIG_DIR to the private home
+                # and would resume at a home that never held it.
+                self.assertFalse(c._claude_session_resumable("sess-operator", pure=False))
+                self.assertFalse(c._claude_session_resumable("sess-absent", pure=False))
+
+                # PURE is the mirror image, and getting it wrong is the expensive
+                # direction: a pure leaf is given NO private home, so it writes and
+                # resumes in the operator's. Asserting the agentic answer for both
+                # shapes silently retired warm resume for every pure repair turn.
+                self.assertTrue(c._claude_session_resumable("sess-operator", pure=True))
+                self.assertFalse(c._claude_session_resumable("sess-private", pure=True))
+
+    def test_the_call_sites_declare_the_shape_they_are_launching(self) -> None:
+        """The probe knows which home to look in; the CALLERS have to tell it.
+
+        Pinning `_claude_session_resumable` alone left both wirings free: making the
+        pure loop pass `pure=False`, or `run_substep` stop consulting
+        `_pure_leaf_substep`, kept the whole suite green — the helper-not-handler
+        shape, for the third time on this branch. What is asserted here is the
+        keyword that actually reaches the probe on each production path.
+        """
+        seen: list[bool] = []
+
+        class _Spy(_FakeConductor):
+            def _claude_session_resumable(self, session_id, *, pure):  # type: ignore[override]
+                seen.append(pure)
+                return False
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+            c = _Spy(repo_root=repo, orchestration_id="o",
+                     orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+            repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
+
+            # The PURE loop resolves its own resume and must say so.
+            seen.clear()
+            c._resolve_reuse_resume(repair, "generate", "generate", pure=True)
+            self.assertEqual(seen, [True])
+
+            # `run_substep` asks the NODE shape, so a pure node reaches the probe as
+            # pure and an agentic one does not.
+            for node_is_pure in (True, False):
+                seen.clear()
+                c._pure_leaf_substep = (  # type: ignore[assignment]
+                    lambda refs, phase, substep, v=node_is_pure: v)
+                c._resolve_reuse_resume(
+                    repair, "generate", "generate",
+                    pure=c._pure_leaf_substep(None, "generate", "generate"))
+                self.assertEqual(seen, [node_is_pure])
 
     def test_no_private_home_means_nothing_is_resumable(self) -> None:
         """Before any claude leaf has launched there is no home to resume into."""
@@ -395,14 +440,17 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                                orchestration_agent_run_id="ORCH",
                                llm_config=_cfg("claude"), env={})
             with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
-                self.assertFalse(c._claude_session_resumable("sess-old"))
+                self.assertFalse(c._claude_session_resumable("sess-old", pure=False))
+                # A PURE launch never wanted a private home, so the same session is
+                # resumable for it — "no private home" is not "nothing is resumable".
+                self.assertTrue(c._claude_session_resumable("sess-old", pure=True))
 
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
         # strategy-driven warm/cold selection is preserved (LLM verify-attributed restarts stay
         # cold; only reuse repairs warm-resume).
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "restart", "repair_target_agent_run_id": "child-1"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
 
@@ -412,19 +460,19 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                            orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"), env={})
         c.calls = []
         c.emit = lambda *a, **k: None  # type: ignore[assignment]
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
 
     def test_resolve_reuse_resume_none_when_no_repair(self) -> None:
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         self.assertIsNone(c._resolve_reuse_resume(None, "generate", "generate"))
 
     def test_resolve_reuse_resume_none_when_target_placeholder(self) -> None:
         # A reuse repair with no concrete producer arid (literal "none") cannot resume.
         c = self._conductor({})
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "none"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
 
@@ -1442,7 +1490,7 @@ class ConductRoutingTest(unittest.TestCase):
         # read BEFORE reopen-phase, while refs still names the failed run.
         c = self._conductor()
         c.workflow_mode = "prod"  # cross-phase reopen is prod-only (dev fail_closes; see F1)
-        c._claude_session_resumable = lambda s: True  # type: ignore[assignment]
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
         state = {"execute_failed": False}
 
         def status_fn(phase, substep, n):
@@ -4080,7 +4128,7 @@ class LeafTransientRetryTest(unittest.TestCase):
         def _write_lineage(self, refs):  # type: ignore[override]
             return []
 
-        def _resolve_reuse_resume(self, repair, phase, substep):  # type: ignore[override]
+        def _resolve_reuse_resume(self, repair, phase, substep, pure=False):  # type: ignore[override]
             return self.resume_target
 
         def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
@@ -7666,7 +7714,7 @@ class LeafSpawnTest(unittest.TestCase):
                 c.spawn_leaf = spawn  # type: ignore[assignment]
                 # The producer session transcript is assumed resumable here; the
                 # cold-fallback-when-missing case is covered separately below.
-                c._claude_session_resumable = lambda sid: True  # type: ignore[assignment]
+                c._claude_session_resumable = lambda sid, **kw: True  # type: ignore[assignment]
                 c.run_substep(refs, "generate", "generate", repair=repair)
             return cap
 
@@ -7697,7 +7745,7 @@ class LeafSpawnTest(unittest.TestCase):
                 return wc.ProcResult(0, "", "")
 
             c.spawn_leaf = spawn  # type: ignore[assignment]
-            c._claude_session_resumable = lambda sid: False  # type: ignore[assignment]
+            c._claude_session_resumable = lambda sid, **kw: False  # type: ignore[assignment]
             c.run_substep(refs, "generate", "generate", repair=reuse)
         self.assertEqual(cap.get("session_id"), "child-1")
         self.assertIsNone(cap.get("resume_session_id"))
@@ -16351,7 +16399,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             # The real precondition (a claude session transcript on disk for the failed verify
             # leaf) cannot hold for a fake arid; the loop's resumability guard is pinned
             # separately by test_no_warm_session_skips_loop_and_escalates.
-            def _verify_session_resumable(self, verify_arid, phase="generate"):  # type: ignore[override]
+            def _verify_session_resumable(self, verify_arid, phase="generate", **kw):  # type: ignore[override]
                 return True
 
             def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
@@ -16644,7 +16692,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             bad = _conformant_stage_meta("fail", last_fail_reason=_INCIDENT_DICT_REASON)
             self._write_meta(repo, refs, "generate", bad)
             c = self._conductor(repo, refs, "generate", [bad, _conformant_stage_meta("pass")])
-            c._verify_session_resumable = lambda arid, phase="generate": False  # type: ignore[assignment]
+            c._verify_session_resumable = lambda arid, phase="generate", **kw: False  # type: ignore[assignment]
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(c.verify_runs["verify_runs"], 1)  # the original verify only
@@ -16664,7 +16712,7 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
             # Only the ORIGINAL verify leaf's session survives; the repair turn's does not.
             original_verify_arid = f"child-{len(wc.SUBSTEPS['generate'])}"
             c._verify_session_resumable = (  # type: ignore[assignment]
-                lambda arid, phase="generate": arid == original_verify_arid)
+                lambda arid, phase="generate", **kw: arid == original_verify_arid)
             oc = c.run_phase(refs, "generate")
 
             self.assertEqual(len(self._repair_requests(c)), 1)  # one turn, then stop
@@ -16741,13 +16789,13 @@ class VerifyMetaSchemaWarmResumeTests(unittest.TestCase):
                                     llm_config=_cfg(backend), env={})
 
             claude = _conductor("claude")
-            claude._claude_session_resumable = lambda arid: arid == "live-arid"  # type: ignore[assignment]
+            claude._claude_session_resumable = lambda arid, **kw: arid == "live-arid"  # type: ignore[assignment]
             self.assertTrue(claude._verify_session_resumable("live-arid"))
             self.assertFalse(claude._verify_session_resumable("gc-ed-arid"))
 
             # codex has no session-resume primitive at all -> never warm.
             codex = _conductor("codex")
-            codex._claude_session_resumable = lambda arid: True  # type: ignore[assignment]
+            codex._claude_session_resumable = lambda arid, **kw: True  # type: ignore[assignment]
             self.assertFalse(codex._verify_session_resumable("live-arid"))
 
     def test_build_launch_request_narrows_a_normal_verify_launch_too(self) -> None:
@@ -17435,7 +17483,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  generate:\n    substeps:\n      verify:\n"
                 "        capabilities: [agentic, pure]\n"))
-        c._claude_session_resumable = lambda arid: True   # type: ignore[assignment]
+        c._claude_session_resumable = lambda arid, **kw: True   # type: ignore[assignment]
         self.assertTrue(c._verify_session_resumable("arid", "compile"))
         self.assertFalse(c._verify_session_resumable("arid", "generate"))
 
