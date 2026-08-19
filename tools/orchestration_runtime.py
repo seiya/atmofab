@@ -7891,8 +7891,9 @@ def _safe_host_env_for_child() -> dict[str, str]:
 
 
 # The environment variables that relocate a backend CLI's configuration home.
-# Read by `render_bwrap_command` (which must re-declare them through the sandbox)
-# and by the conductor's child environment, so the two routes cannot disagree.
+# ONE reader: `render_bwrap_command`, which declares them through the sandbox.
+# The conductor's `_child_env` deliberately does not set them — a second spelling
+# could name a different home than the one whose settings were SHA-pinned.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 
 
@@ -8523,12 +8524,13 @@ def render_bwrap_command(
     cmd.extend(["--setenv", "TMPDIR", ws_abs])
     profile_env = profile.get("env")
     if isinstance(profile_env, dict):
-        # The backend-home variables the profile may override. bwrap clears the
-        # environment, so a variable the child needs must be re-declared here; a
-        # backend home that is prepared but not announced would leave the leaf
-        # reading the OPERATOR's home instead, which is the whole point of the
-        # isolation. Both backends are listed in one place so adding a third
-        # cannot be forgotten on this side.
+        # The backend-home variables the profile may override. bwrap does NOT clear
+        # the environment here (no `--clearenv`; `workflow_conductor._child_env`
+        # says the same), so the child would otherwise inherit the OPERATOR's value
+        # — or none. `--setenv` is what makes the prepared home the one the leaf
+        # actually reads, and it is the ONLY route: `_child_env` deliberately does
+        # not set these, so there is no second spelling to disagree with. Both
+        # backends are listed together so adding a third cannot be forgotten here.
         for var in _BACKEND_HOME_ENV_VARS:
             value = profile_env.get(var)
             if isinstance(value, str) and value.strip():
@@ -15935,6 +15937,35 @@ def _probe_claude_leaf_config(repo_root: Path | None) -> dict[str, Any]:
             "detail": f"validated leaf configuration source: {path}"}
 
 
+def _claude_trust_key(repo_root: Path) -> str:
+    """The key Claude Code files workspace trust under for `repo_root`.
+
+    The MAIN repository root, not the run's `repo_root`. `docs/RUNBOOK.md` §0-2
+    records the measurement (CLI 2.1.234): a run whose cwd is a git worktree is
+    still keyed on the main checkout, so seeding the worktree path silently does
+    nothing — and a fresh clone / CI workspace / worktree is the ORDINARY case that
+    section is about. Seeding `repo_root` would have made this defence inert in
+    exactly the shape it exists for.
+
+    `--git-common-dir` returns the main checkout's `.git` from inside a worktree and
+    this checkout's own otherwise, so one command covers both. Falls back to
+    `repo_root` when git cannot answer (a non-git checkout has no worktree case to
+    get wrong).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse",
+             "--path-format=absolute", "--git-common-dir"],
+            text=True, capture_output=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return str(repo_root.resolve())
+    common = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not common:
+        return str(repo_root.resolve())
+    return str(Path(common).parent.resolve())
+
+
 def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
     """Create the only configuration-bearing Claude home for one orchestration.
 
@@ -15955,7 +15986,10 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
         different home.
     The trust seed is written anyway: it was measured unnecessary AND harmless, and
     writing it means a future CLI that does gate grants on trust cannot silently drop
-    the build-runtime grant. It is deliberately NOT SHA-pinned or remounted read-only,
+    the build-runtime grant. It is keyed on the MAIN repository root
+    (`_claude_trust_key`), not on `repo_root`: `docs/RUNBOOK.md` §0-2 measures that a
+    run whose cwd is a git worktree is still keyed on the main checkout, so the first
+    version of this seed was inert in exactly the checkout shape it exists for. It is deliberately NOT SHA-pinned or remounted read-only,
     because the CLI rewrites `.claude.json` itself (cached feature flags, machine id).
 
     Credentials are never copied. An empty 0600 placeholder is created for the bwrap
@@ -15985,8 +16019,15 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
             except FileNotFoundError:
                 # /tmp is intentionally non-durable (issue #64 owns relocating it for
                 # BOTH backends). A host restart therefore rotates the home instead of
-                # making --resume permanently unlaunchable; the generation below stops
-                # any thread recorded against the vanished home from warm-resuming.
+                # making --resume permanently unlaunchable.
+                #
+                # What actually stops a thread recorded against the vanished home from
+                # warm-resuming is `_claude_session_resumable`: it answers from the
+                # TRANSCRIPT, and a freshly rotated home has none, so the reuse repair
+                # degrades to a cold launch. Unlike codex there is deliberately no
+                # `expected_claude_home_generation` transaction; the generation below is
+                # recorded for the launch record and for audit, and is NOT read as a
+                # guard. (An earlier version of this comment said it was.)
                 rotate_missing_home = True
             else:
                 _require_secure_backend_home(home, "Claude")
@@ -16013,7 +16054,7 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
         if hashlib.sha256(settings_path.read_bytes()).hexdigest() != digest:
             raise ValueError("isolated Claude settings SHA-256 verification failed")
         trust = json.dumps(
-            {"projects": {str(repo_root.resolve()): {"hasTrustDialogAccepted": True}}},
+            {"projects": {_claude_trust_key(repo_root): {"hasTrustDialogAccepted": True}}},
             sort_keys=True,
         ).encode("utf-8")
         trust_path = home / ".claude.json"

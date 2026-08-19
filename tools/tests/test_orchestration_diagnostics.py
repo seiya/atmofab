@@ -436,6 +436,75 @@ class OwnAridDisambiguationTests(unittest.TestCase):
         self.assertIsNone(diag._own_arid_of_transcript("nothing here", {"x"}))
 
 
+class LeafTranscriptRootTests(unittest.TestCase):
+    """The post-mortem readers follow the transcript into the private home.
+
+    Issue #63 moved an agentic leaf's transcript out of `~/.claude/projects`. The
+    code was already correct when this was written, but NOTHING observed it:
+    re-pointing either reader at the operator home left the whole suite green.
+    Regress it and `build_launch_incident` answers "no leaf transcript located"
+    for every post-#63 dangling leaf — a false record about the very leaf that
+    failed, on the one path an operator uses to diagnose a hung run.
+    """
+
+    def _repo_with_private_home(self, td: str) -> tuple[Path, Path, str]:
+        repo = Path(td) / "repo"
+        repo.mkdir()
+        home = Path(td) / "metdsl-claude-diag"
+        home.mkdir()
+        meta = repo / "workspace" / "orchestrations" / "o"
+        meta.mkdir(parents=True)
+        (meta / "orchestration_meta.json").write_text(
+            json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+        slug = str(repo.resolve()).replace("/", "-")
+        return repo, home, slug
+
+    def test_the_leaf_transcript_is_found_in_the_private_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo, home, slug = self._repo_with_private_home(td)
+            proj = home / "projects" / slug
+            proj.mkdir(parents=True)
+            (proj / "arid-1.jsonl").write_text("{}\n", encoding="utf-8")
+            found = diag._leaf_transcript_path("arid-1", repo, "o")
+            self.assertEqual(found, proj / "arid-1.jsonl")
+
+    def test_a_pre_move_transcript_in_the_operator_home_is_still_found(self) -> None:
+        """A run recorded before the move must stay auditable."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, _home, slug = self._repo_with_private_home(td)
+            operator = Path(td) / "operator"
+            proj = operator / ".claude" / "projects" / slug
+            proj.mkdir(parents=True)
+            (proj / "arid-old.jsonl").write_text("{}\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
+                found = diag._leaf_transcript_path("arid-old", repo, "o")
+            self.assertEqual(found, proj / "arid-old.jsonl")
+
+    def test_the_projects_dir_prefers_the_private_home(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo, home, slug = self._repo_with_private_home(td)
+            self.assertEqual(diag._claude_projects_dir(repo, "o"), home / "projects" / slug)
+
+    def test_without_an_orchestration_the_operator_home_answers(self) -> None:
+        """The parent/host agent is not a leaf, so its callers pass no id."""
+        with tempfile.TemporaryDirectory() as td:
+            repo, _home, slug = self._repo_with_private_home(td)
+            operator = Path(td) / "operator"
+            with mock.patch.dict(os.environ, {"HOME": str(operator)}, clear=False):
+                self.assertEqual(diag._claude_projects_dir(repo),
+                                 operator / ".claude" / "projects" / slug)
+
+    def test_the_private_home_is_searched_before_the_operator_home(self) -> None:
+        """Order is load-bearing: `_claude_projects_dir` takes the FIRST root, and
+        flipping it silently sends every post-#63 audit to the operator's home."""
+        from tools.hooks.common import claude_leaf_projects_roots
+        with tempfile.TemporaryDirectory() as td:
+            repo, home, _slug = self._repo_with_private_home(td)
+            roots = claude_leaf_projects_roots(repo, "o")
+            self.assertEqual(roots[0], home / "projects")
+            self.assertEqual(len(roots), 2)
+
+
 class AggregateChildUsageTests(unittest.TestCase):
     def _write_child(self, subagents: Path, fname: str, arid: str, parent: str, records: list) -> None:
         body_head = (

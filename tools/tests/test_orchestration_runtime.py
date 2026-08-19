@@ -110,6 +110,7 @@ from tools.orchestration_runtime import (
     resolve_claude_model_alias,
     default_agent_model_for_backend,
 )
+from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.leaf_config_fixture import (
     seed_claude_leaf_config,
     seed_codex_hooks,
@@ -20927,7 +20928,8 @@ class RecordTimeoutTests(unittest.TestCase):
     """Fix 5: record-timeout is the canonical recovery for child Agent stream timeouts."""
 
     def _setup_substep_launch(self, repo_root: Path,
-                              response_extra: dict | None = None) -> str:
+                              response_extra: dict | None = None,
+                              request_extra: dict | None = None) -> str:
         """Initialise an orchestration with a substep launched and return the substep agent_run_id.
 
         `response_extra` merges extra keys into the launch response payload, for callers
@@ -21010,6 +21012,7 @@ class RecordTimeoutTests(unittest.TestCase):
                     "repair_target_agent_run_id": "none",
                     "repair_reason": "none",
                 }),
+                **(request_extra or {}),
             },
             response_payload={
                 "agent_run_id": substep_arid,
@@ -21020,6 +21023,49 @@ class RecordTimeoutTests(unittest.TestCase):
             },
         )
         return substep_arid
+
+    def test_a_pure_claude_launch_gets_no_private_home(self) -> None:
+        """The pure path takes NO settings layer, so it must not acquire one.
+
+        A pure leaf runs `--safe-mode` with no tools and no hooks; preparing a
+        private home for it would record a configuration surface it never reads and
+        stamp `claude_workflow_home` on a launch that has none. The `and not
+        is_pure` guard was previously unwitnessed: dropping it LOOKED killed, but
+        only because the affected fixtures had no `leaf_config/` at all — with the
+        configuration seeded, dropping it left the suite green (measured by R1).
+        This asserts the property directly, at the record.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            # `pure` is a property of the REQUEST (`leaf_mode`), read through the
+            # shared `pure_leaf.is_pure_request` predicate — the same seam the
+            # runtime and the pipeline validator delegate to.
+            arid = self._setup_substep_launch(
+                repo_root,
+                request_extra={
+                    "leaf_mode": "pure",
+                    "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                    # A pure leaf writes nothing: the host writes after the child
+                    # window closes, and the launch validator refuses any other shape.
+                    "allowed_output_paths": [],
+                    "pure_context": {
+                        "harness_capabilities": "{}",
+                        "target_profile": "{}",
+                        "ir_document": "algorithm:\n  state_variables: [h]\n",
+                        "tests_document": "- test: conserves mass",
+                        "runner_document": "program p\nend program p\n",
+                    },
+                })
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            recorded = json.loads(
+                (orch_root / "launches" / f"{arid}.response.json").read_text(encoding="utf-8"))
+            meta = json.loads(
+                (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            home = meta.get("claude_workflow_home")
+            if home:
+                self.addCleanup(shutil.rmtree, Path(home), True)
+            self.assertNotIn("claude_workflow_home", recorded)
+            self.assertNotIn("claude_settings_sha256", recorded)
 
     def test_a_claude_launch_records_the_private_home_it_prepared(self) -> None:
         """The configuration a leaf came up with must be recoverable from the record.
@@ -34647,6 +34693,70 @@ class ClaudeWorkflowHomeTests(unittest.TestCase):
             again = _prepare_claude_workflow_home(root, "orch_h")
             self.assertEqual(again["home"], iso["home"])
 
+    def test_the_trust_seed_is_keyed_on_the_main_repository_root(self) -> None:
+        """A worktree must seed the MAIN checkout's path, not its own.
+
+        `docs/RUNBOOK.md` §0-2 measures (CLI 2.1.234) that a run whose cwd is a git
+        worktree is still keyed on the main checkout, so seeding the worktree path
+        does nothing — and a worktree / fresh clone / CI workspace is the ordinary
+        case that section is about. The first version of this seed used
+        `repo_root.resolve()`, which is inert in exactly the shape the seed exists
+        for, while the same branch's RUNBOOK edit stated the rule.
+        """
+        from tools.orchestration_runtime import _claude_trust_key
+        with tempfile.TemporaryDirectory() as td:
+            main = Path(td) / "main"
+            main.mkdir()
+            subprocess.run(["git", "init", "-q", str(main)], check=True)
+            subprocess.run(["git", "-C", str(main), "config", "user.email", "t@e.com"], check=True)
+            subprocess.run(["git", "-C", str(main), "config", "user.name", "T"], check=True)
+            (main / "f.txt").write_text("x", encoding="utf-8")
+            subprocess.run(["git", "-C", str(main), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(main), "commit", "-qm", "seed"], check=True)
+            tree = Path(td) / "wt"
+            subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach",
+                            str(tree)], check=True)
+            self.addCleanup(subprocess.run,
+                            ["git", "-C", str(main), "worktree", "remove", "--force", str(tree)])
+            self.assertEqual(_claude_trust_key(main), str(main.resolve()))
+            # THE point of the test: from inside the worktree the key is still main.
+            self.assertEqual(_claude_trust_key(tree), str(main.resolve()))
+
+    def test_a_non_git_checkout_still_gets_a_seed(self) -> None:
+        """No git, no worktree case to get wrong — fall back rather than fail."""
+        from tools.orchestration_runtime import _claude_trust_key
+        with tempfile.TemporaryDirectory() as td:
+            plain = Path(td) / "plain"
+            plain.mkdir()
+            self.assertEqual(_claude_trust_key(plain), str(plain.resolve()))
+
+    def test_an_insecure_recorded_home_is_refused(self) -> None:
+        """The SHA pin means nothing if the directory holding it is not private.
+
+        `_require_secure_backend_home` is what makes "the bytes I pinned are the
+        bytes the leaf loads" true; a world-writable or symlinked home lets another
+        process substitute the settings between the pin and the launch. Measured:
+        stubbing the mode check left the suite green, so it had no witness.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            loose = Path(td) / "loose_home"
+            loose.mkdir(mode=0o755)
+            meta_path = (root / "workspace" / "orchestrations" / "orch_h"
+                         / "orchestration_meta.json")
+            meta_path.write_text(json.dumps({"claude_workflow_home": str(loose)}),
+                                 encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "mode 0700"):
+                _prepare_claude_workflow_home(root, "orch_h")
+
+            symlinked = Path(td) / "symlinked_home"
+            symlinked.symlink_to(loose)
+            meta_path.write_text(json.dumps({"claude_workflow_home": str(symlinked)}),
+                                 encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "real directory"):
+                _prepare_claude_workflow_home(root, "orch_h")
+
     def test_a_tampered_settings_copy_fails_closed(self) -> None:
         """The pin is worth nothing if a changed copy is accepted on the next launch."""
         from tools.orchestration_runtime import _prepare_claude_workflow_home
@@ -34867,22 +34977,52 @@ class ClaudeLeafConfigSyncTests(unittest.TestCase):
     would be a third place to keep in step.
     """
 
-    def test_the_dev_layer_carries_the_same_hook_commands(self) -> None:
-        from tools.orchestration_runtime import _canonical_claude_hook_command
+    @staticmethod
+    def _coverage(payload: dict) -> set:
+        return {
+            (event, block.get("matcher"), hook.get("command"))
+            for event, blocks in payload.get("hooks", {}).items()
+            for block in blocks
+            for hook in block.get("hooks", [])
+        }
+
+    def _layers(self) -> tuple[dict, dict]:
         from tools.tests.leaf_config_fixture import REPO_ROOT, LEAF_CONFIG_REL
-        leaf = json.loads((REPO_ROOT / LEAF_CONFIG_REL).read_text(encoding="utf-8"))
-        dev = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        return (
+            json.loads((REPO_ROOT / LEAF_CONFIG_REL).read_text(encoding="utf-8")),
+            json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8")),
+        )
 
-        def coverage(payload: dict) -> set[tuple[str, str, str]]:
-            return {
-                (event, block.get("matcher"), hook.get("command"))
-                for event, blocks in payload.get("hooks", {}).items()
-                for block in blocks
-                for hook in block.get("hooks", [])
-            }
+    def test_the_dev_layer_carries_the_same_hook_commands(self) -> None:
+        """SUBSET, not equality: the leaf's policy hooks must all be mirrored into
+        the dev layer, but the dev layer may carry hooks of its own.
 
-        self.assertEqual(coverage(dev), coverage(leaf))
-        # ...and every command is the ONE canonical spelling, so "identical" cannot
-        # mean "identically wrong".
-        for event, _matcher, command in coverage(leaf):
+        Equality forbade adding any operator-convenience hook to the file this
+        repository's own documentation calls "the DEV layer for an operator's
+        interactive session" — a rule that refuses the file's stated purpose. What
+        must hold is that an operator's session enforces at least the policy a leaf
+        does.
+        """
+        from tools.orchestration_runtime import _canonical_claude_hook_command
+        leaf, dev = self._layers()
+        self.assertTrue(self._coverage(leaf))
+        self.assertLessEqual(self._coverage(leaf), self._coverage(dev))
+        # ...and every leaf command is the ONE canonical spelling, so "mirrored"
+        # cannot mean "identically wrong".
+        for event, _matcher, command in self._coverage(leaf):
             self.assertEqual(command, _canonical_claude_hook_command(event))
+
+    def test_the_dev_layer_carries_the_same_build_runtime_grant(self) -> None:
+        """`mcp_servers/README.md` says a sync test enforces the GRANT parity too.
+
+        It did not: this class compared only hook coverage, so deleting
+        `mcp__build-runtime` from `.claude/settings.json` left the suite green while
+        the documentation asserted otherwise. Either the claim or the test had to
+        change; the claim is the useful one, because an operator whose own session
+        lacks the grant cannot reproduce what a leaf does.
+        """
+        leaf, dev = self._layers()
+        leaf_allow = set((leaf.get("permissions") or {}).get("allow") or [])
+        dev_allow = set((dev.get("permissions") or {}).get("allow") or [])
+        self.assertIn("mcp__build-runtime", leaf_allow)
+        self.assertLessEqual(leaf_allow, dev_allow)
