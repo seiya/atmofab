@@ -194,6 +194,13 @@ whether `--resume` works, the matcher semantics, and what gets written into the 
   (`Found 0 total hooks in registry` is about **plugins** and is unrelated to settings hooks)
 - Put the cwd and `CLAUDE_CONFIG_DIR` in scratch. **Make the repo your cwd and the real hooks run
   and write into `workspace/orchestrations/`** (this actually happened)
+- **Launch the CLI BY HAND, never through the conductor.** Since the leaf's environment became a
+  declared allowlist, `_child_env` strips `ANTHROPIC_BASE_URL` — the conductor would send the leaf
+  to the real API and bill it, and the harness would capture nothing. Every capture to date was
+  hand-launched, so no past measurement is invalidated; what changed is that the shortcut is now
+  closed rather than merely unused. To measure the environment a leaf really gets, render a real
+  bwrap profile and swap the leaf command for `/usr/bin/env` (that is a witness, not a capture,
+  and it is free)
 
 ## Sweeping the prose (whenever you change a rule)
 
