@@ -26,10 +26,15 @@ the tests that could plausibly see the change. Measured on a 4-hunk met-dsl rang
 an 805-test file: 5m52s serially without `-x`, 43s with both (21s of that the baseline).
 
 A baseline run (nothing reverted) goes first. Without it a suite that is already red
-reports every hunk as "killed" — a false green, and the one failure mode of this script
-that reads as success.
+reports every hunk as "killed" — a false green, and the failure mode of this script that
+reads most like success.
 
-Exit code is 1 when any hunk survives, 2 when the baseline is red.
+The other one is a hunk `git apply -R` refuses (it overlaps a later change, so it cannot
+be reverted alone). Nothing is tested for such a hunk, so it is reported as SKIPPED and
+counted as a failure, never folded into "pinned".
+
+Exit code is 1 when any hunk survives, is inconclusive, or was skipped; 2 when the
+baseline is red.
 """
 
 from __future__ import annotations
@@ -199,7 +204,8 @@ def _run_tests(cmd: str, worktree: Path, tmpdir: Path,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--range", required=True, help="git range, e.g. HEAD~1..HEAD")
+    ap.add_argument("--range", required=True,
+                help="git range, two-dot or three-dot: HEAD~1..HEAD, origin/main...HEAD")
     ap.add_argument("--paths", nargs="*", default=[], help="restrict to these paths")
     ap.add_argument("--test-cmd", required=True,
                     help="run inside the worktree; only its exit code is read, so pass "
@@ -249,6 +255,14 @@ def main() -> int:
         print("hint: only the exit code is read — adding -x to --test-cmd ends each "
               "killed hunk at its first failing test")
 
+    # `rsplit`, and strip the dot a THREE-dot range leaves behind: `origin/main...HEAD` is the
+    # spelling the skill names as the review target, and `split("..")[-1]` turns it into `.HEAD`,
+    # which `rev-parse` refuses. Resolved here, before any worktree or temp dir exists, so a bad
+    # range fails with nothing to clean up (it used to raise between the mkdtemps and the `try`
+    # that owns cleanup, leaving both behind).
+    head = _run(["git", "rev-parse", args.range.rsplit("..", 1)[-1].lstrip(".") or "HEAD"],
+                cwd=repo).strip()
+
     Path(args.workdir).mkdir(parents=True, exist_ok=True)
     # Siblings, not `<root>/wt0` — a nested layout makes every checkout path a few
     # characters longer, and met-dsl has at least one test whose budget the checkout
@@ -261,7 +275,6 @@ def main() -> int:
     # that carries a temp path, and a long temp root alone can fail it.
     tmp_base = os.environ.get("TMPDIR", "/dev/shm")
     tmpdirs = {wt: Path(tempfile.mkdtemp(prefix="m", dir=tmp_base)) for wt in worktrees}
-    head = _run(["git", "rev-parse", args.range.split("..")[-1] or "HEAD"], cwd=repo).strip()
     for wt in worktrees:
         _run(["git", "worktree", "add", "--detach", str(wt), head], cwd=repo)
 
@@ -301,6 +314,7 @@ def main() -> int:
 
     survivors: list[tuple[int, str, str]] = []
     inconclusive: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
     baseline_failed = False
     try:
         print(f"{len(hunks)} hunk(s); {jobs} job(s) in {args.workdir}\n")
@@ -326,6 +340,8 @@ def main() -> int:
                          sorted(results.items()) if verdict.startswith("SURVIVED")]
             inconclusive = [(path, first) for _i, (path, first, verdict) in
                             sorted(results.items()) if verdict.startswith("INCONCLUSIVE")]
+            skipped = [(path, first) for _i, (path, first, verdict) in
+                       sorted(results.items()) if verdict.startswith("SKIP")]
             prose = {i for i, path, _first in survivors
                      if _docstring_only(repo, head, path, hunks[i - 1][1])}
     finally:
@@ -341,6 +357,12 @@ def main() -> int:
     if baseline_failed:
         return 2
     print(f"\n{len(hunks)} hunk(s) in {time.monotonic() - started:.0f}s")
+    if skipped:
+        print(f"{len(skipped)} SKIPPED hunk(s) — `git apply -R` refused them, so NOTHING was "
+              f"tested for these. Not a pass: revert them by hand, or narrow --range so they "
+              f"apply in isolation:")
+        for path, first in skipped:
+            print(f"  {path} {first[:70]}")
     if inconclusive:
         print(f"{len(inconclusive)} INCONCLUSIVE hunk(s) — the suite exited nonzero without "
               f"running, so nothing observed them. Add `--continue-on-collection-errors` to "
@@ -365,8 +387,8 @@ def main() -> int:
                   "before committing.\nOne expected survivor: half of a code MOTION. Reverting "
                   "the deletion while the moved copy remains changes nothing — read the pair "
                   "together.")
-        return 1 if (real or inconclusive) else 0
-    if inconclusive:
+        return 1 if (real or inconclusive or skipped) else 0
+    if inconclusive or skipped:
         return 1
     print("every hunk is pinned")
     print("NOT the same as 'the tests are adequate'. Reverting a hunk cannot detect a test\n"
