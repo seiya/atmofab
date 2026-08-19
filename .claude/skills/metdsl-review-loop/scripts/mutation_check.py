@@ -40,10 +40,10 @@ ordinary hunk and is scored normally.)
 Exit code is 1 when an UNANNOTATED hunk survives (a docstring-only survivor is
 expected and does not fail the run), or when any hunk is inconclusive or skipped; 2 when
 the baseline is red, or when `--test-cmd` sets TMPDIR while several jobs run, which would
-put them on one temp root.
+put them on one temp root, or the BASELINE hits `--timeout`.
 
 A range with no hunks left to check — a wrong base that still resolves, `--paths` that
-matches nothing, or everything filtered out as a test file or a comment — prints that and
+matches nothing, or everything filtered out as a test file — prints that and
 exits 0. It is not a pass: nothing was tested. Read the hunk count the run prints, never the
 exit code alone. A base that does not resolve at all, or a `--repo` that is not one, exits 2.
 
@@ -94,8 +94,13 @@ _SUITE_DID_NOT_RUN = (
 )
 
 
-#: A run that reports failures observed something, whatever else went wrong beside it.
-_TESTS_DID_FAIL_RE = re.compile(r"^=+ .*\b\d+ failed\b|\b\d+ failed[,\s]", re.MULTILINE)
+#: A run that reports failures observed something, whatever else went wrong beside it. Matched
+#: against the TAIL of the output only: pytest puts its counts in the last lines, while the body
+#: carries whatever the tests printed — an assertion message, a captured subprocess log — and a
+#: `3 failed,` anywhere in that body used to outrank a collection marker and score the hunk
+#: `killed` although nothing had run.
+_TESTS_DID_FAIL_RE = re.compile(r"\b\d+ failed\b")
+_SUMMARY_TAIL_LINES = 6
 
 
 def _suite_did_not_run(output: str) -> bool:
@@ -113,8 +118,15 @@ def _suite_did_not_run(output: str) -> bool:
     `ERROR collecting` line AND runs the rest, so a hunk its tests really killed came back
     INCONCLUSIVE however many times the reader followed the advice. Reported failures settle it —
     something ran and noticed — so they win over the marker.
+
+    Two limits, both measured. The counts are read from the TAIL of the output, because a test
+    that prints `3 failed,` (a captured log, an assertion message) would otherwise decide the
+    verdict from the body. And `-x` cancels `--continue-on-collection-errors`: pytest stops at
+    the first error, so a collection error can end the run with nothing else attempted, and the
+    remedy this prints only works if the reader drops `-x` as well.
     """
-    if _TESTS_DID_FAIL_RE.search(output):
+    tail = "\n".join(output.strip().splitlines()[-_SUMMARY_TAIL_LINES:])
+    if _TESTS_DID_FAIL_RE.search(tail):
         return False
     return any(marker in output for marker in _SUITE_DID_NOT_RUN)
 
@@ -533,8 +545,9 @@ def main() -> int:
     if inconclusive:
         print(f"{len(inconclusive)} INCONCLUSIVE hunk(s) — nothing observed them, for the reason "
               f"each line gives. A collection error wants `--continue-on-collection-errors` on "
-              f"--test-cmd; a timeout wants a longer --timeout or a narrower --test-cmd. Do NOT "
-              f"read these as killed:")
+              f"--test-cmd AND `-x` removed from it (they cancel: -x stops at the first error); "
+              f"a timeout wants a longer --timeout or a narrower --test-cmd. Do NOT read these "
+              f"as killed:")
         for path, first in inconclusive:
             print(f"  {path} {first[:70]}")
     if survivors:

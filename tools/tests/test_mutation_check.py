@@ -370,6 +370,36 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.assertIn("killed", run.out, msg=str(run))
         self.assertNotIn("INCONCLUSIVE", run.out, msg=str(run))
 
+    def test_a_failure_count_in_the_body_does_not_outrank_the_marker(self) -> None:
+        """The counts are read from the tail. A test that PRINTS a failure count — a captured
+        log, an assertion message quoting one — decided the verdict from the body before that,
+        so a hunk nothing ran for came back `killed`."""
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        cmd = (f"{sys.executable} -c \"import sys;"
+               f"print('captured log: 3 failed, 41 passed in 2s');"
+               f"[print('collecting ...') for _ in range(8)];"
+               f"print('ERROR collecting tools/tests/x.py');"
+               f"print('1 error in 0.1s');sys.exit(2)\"")
+        run = self.run_check("--skip-baseline", test_cmd=cmd)
+        self.assertIn("INCONCLUSIVE", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_new_file_hunk_is_measured(self) -> None:
+        """No test added a file, so reverting an addition — which DELETES the file, the case the
+        classifier's `OSError` arm exists for — was never driven end to end."""
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("added.py", "y = 1\n")
+        self.repo.commit("add a module nobody imports")
+        run = self.run_check()
+        self.assertIn("added.py", run.out, msg=str(run))
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertNotIn("Traceback", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
     def test_each_marker_of_a_suite_that_never_ran_is_recognised(self) -> None:
         """Five markers, each its own decision: only one was witnessed, and dropping any of the
         other four turned "nothing ran" into `killed` — the false green this detector exists
@@ -412,8 +442,10 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.repo.write("m.py", 'TEMPLATE = """\nrule\n# Rule: never\n"""\n')
         self.repo.commit("add a line to the template")
         run = self.run_check(test_cmd=_pins("m.py", "# Rule: never"))
+        # Only the "it is checked at all" half is assertable here: the hunk is pinned, so there
+        # are no survivors and the classifier never runs. Its labelling is witnessed by the
+        # unpinned sibling below.
         self.assertIn("killed", run.out, msg=str(run))
-        self.assertNotIn("prose-only", run.out, msg=str(run))
         self.assertEqual(0, run.code, msg=str(run))
 
     def test_a_markdown_heading_change_is_checked(self) -> None:
@@ -619,6 +651,9 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.assertIn("cannot run:", run.out, msg=str(run))
         self.assertNotIn("Traceback", run.out, msg=str(run))
         self.assertEqual(2, run.code, msg=str(run))
+        # The failure here is the `git diff` at the top, before any directory is made — not the
+        # `rev-parse` further down. Nothing constructed a range `git diff` accepts and
+        # `rev-parse` rejects, so the ordering of that call is unwitnessed.
         self.assertFalse(self.workdir.exists() and any(self.workdir.iterdir()),
                          msg="a failure before any test ran must leave nothing behind")
 

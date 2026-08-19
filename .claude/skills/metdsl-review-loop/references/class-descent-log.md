@@ -133,7 +133,7 @@ and the classification is the half worth carrying. That fourth class is why
 it must be separated — an abandoned mirror was hiding there (a spelling that does not increase the
 token count passes straight through).
 
-This is also the seventh loop and **the first time Codex returned clean** (native `review`, about 3
+This is also the loop in which **Codex returned clean for the first time** (native `review`, about 3
 minutes, "no actionable correctness regression on the changed production paths"), which breaks the
 premise that Codex always finds something. **But the same round's two subagents produced
 unwitnessed mechanisms, over-refusals, and the abandoned mirror, so clean was not evidence of

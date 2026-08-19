@@ -15,9 +15,9 @@ Track record: PR #51 converged after 17 subagent rounds plus 3 Codex passes, and
 defects had been introduced by the fixes themselves**. What follows was derived backwards from
 that breakdown.
 
-`L118`, `L128`, `L174` and `L242` below name entries of the migration ledger in `TODO.md` by the
-line they sat on when the work happened; the lines have moved since, so search the ledger for the
-subject rather than the number.
+`L128` and `L174` below name entries of `TODO.md` by the line they sat on when the work happened
+(as do `L118` and `L242` in the sibling skill); the lines have moved since, so search TODO.md for
+the subject rather than the number.
 
 Reference files, loaded when you need them:
 
@@ -95,8 +95,7 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
 # right after a fix commit (the default)
 python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
   --range HEAD~1..HEAD --paths <sources you touched> \
-  --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x \
-                --continue-on-collection-errors"
+  --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x"
 # to look at the whole branch at once (three-dot, like the review target: it excludes the
 # commits main gained after you branched)
 #   --range origin/main...HEAD
@@ -116,9 +115,12 @@ if you use it).
 The rules below are compact; `references/mutation-testing.md` carries the episodes each one
 came from, and the reasoning you need when a rule does not obviously apply.
 
-- **Pass `--continue-on-collection-errors`.** A mutation can kill pytest during collection, and a
-  scorer reading only `FAILED` lines records that as green (PR #68: 3 mutants hid 41-47 real
-  failures). Put it in your scorer **and** in the reviewer's instructions
+- **Pass `--continue-on-collection-errors` when a hunk comes back INCONCLUSIVE, and drop `-x`
+  when you do.** A mutation can kill pytest during collection, and a scorer reading only `FAILED`
+  lines records that as green (PR #68: 3 mutants hid 41-47 real failures). The two flags cancel:
+  measured, `-x` stops at the first error, so a collection error can end the run with nothing else
+  attempted and the same INCONCLUSIVE comes back. Put both facts in your scorer **and** in the
+  reviewer's instructions
 - **Run the baseline for handwritten sweeps too.** A stale worktree makes a red baseline look like
   every mutant was killed (PR #67). A sweep interrupted by a timeout never writes the mutation
   back, so rebuild the worktree or always print the baseline line
@@ -141,8 +143,9 @@ Test-file hunks are excluded by default (`--include-tests`
   and contract text. The classification is an AST comparison over Python files, so a `#` line
   added inside a string literal is NOT prose — it changes a constant — and a prose hunk in any
   other file type is reported unlabelled. **An unannotated survivor exits 1, and so
-  does any inconclusive or skipped hunk, or a change with no revertible hunk; only a clean run, or
-  one whose sole survivors are prose-only (comments or docstrings), exits 0. Exit 2 means the run
+  does any inconclusive or skipped hunk, or a change with no revertible hunk. Exit 0 means a clean
+  run, or one whose sole survivors are prose-only (comments or docstrings) — and also a range with
+  nothing left to check, which is why the hunk count is what you read. Exit 2 means the run
   itself cannot be trusted** — a red baseline, a baseline that hits `--timeout` (1800s default), a
   range that does not resolve, a `--repo` that is not one, or a `TMPDIR=` in `--test-cmd` with
   several jobs. In PR #67, 2 of 5 survivors were docstrings listed
@@ -238,8 +241,9 @@ correctness+regression+doc-truth).
 - **A scratchpad per agent.** Spell out: "**create your own subdirectory; do not reuse or
   overwrite existing paths**" (one agent wrote a file with the same name as mine, `mutate.py`,
   and broke the harness). Put your own working files in a subdirectory the same way
-- **Hand over this environment's trap**: in an interactive shell `grep` is **aliased to ripgrep
-  and respects `.gitignore`**. Have corpus measurements enumerate with `find` / `os.walk` (1 of
+- **Hand over this environment's trap**: in an agent session `grep` may be shadowed — measured
+  here, a shell function that execs `ugrep` with `--ignore-files`, so it **respects `.gitignore`**
+  (a plain interactive shell has the real `grep`; check with `type grep`). Have corpus measurements enumerate with `find` / `os.walk` (1 of
   365 files was visible, and I nearly designed on the false premise that "`interface` occurs 0
   times")
 - Write "report only what you ran. Give reproduction steps and file:line. **State explicitly if
@@ -486,8 +490,9 @@ reproduction).
 
 **What this repository is**: a **single-operator research workflow platform** that generates and
 certifies weather and climate kernels from a `spec` — `README.md` §Scope is canonical for what it
-builds, while the threat model below is this skill's own framing and is written in no other
-document. What is defended
+builds, while the threat model below is this skill's framing of it —
+`docs/design/zero_base_architecture.md` states the leaf half, and the "defects my own changes
+introduce" half appears nowhere else. What is defended
 against is **a deviating `LLM` leaf and defects my own changes introduce**, not a malicious third
 party and not an unknown user population. It is neither a distributed artifact nor a long-lived API.
 
@@ -541,7 +546,7 @@ it** — do not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
 relaunch a Codex you have no budget for**. Use Codex as one independent pass and finish once you
-have classified the result. Clean did come back once (PR #67, the seventh loop), and **the same
+have classified the result. Clean did come back once (PR #67), and **the same
 round's two subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror — so
 clean was not evidence of convergence**. Issue #63 is the opposite data point: both completed runs
 returned real defects, both in subagent blind spots.
@@ -618,8 +623,8 @@ transitions are in `references/class-descent-log.md`):
 separately from decisions the last fix added.** The sign below ("you rebuilt the instrument and the
 second behaved the same → do not build a third") **can produce a wrong judgment if followed
 literally**. PR #66 at the start of R6 matched that condition on its face; measured, the decisions
-common to both versions had improved (20 → 28 witnessed) while **75% of the decisions the rebuild
-added were unwitnessed** — the recurrence was localized to the additions, the shape of the rule was
+common to both versions had improved (20 → 28 witnessed) while **15 of the decisions the rebuild added were
+unwitnessed** — the recurrence was localized to the additions, the shape of the rule was
 right, and the problem was the habit of writing a fix without its witness. Stopping there would
 have handed over as unresolved something bounded and fixable. **The test**: inherited decisions got
 worse → a problem of shape (stop and hand over); concentrated in what the last fix added → a

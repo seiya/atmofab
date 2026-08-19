@@ -56,9 +56,11 @@ probe means "I tried one", not "I tried".
   If you write it, execute one case from that spec and confirm.** This is the second time in
   this repo. In PR #66 the import reader did not read relative imports, and the docstring
   justified it as "a relative import cannot leave its package, so the neutral core cannot
-  reach a backend". In fact `tools/` **contains** `tools/backends/` as a PEP 420 namespace
-  package, so `from .backends.build_system.make import RULE` **crosses the boundary without
-  leaving the package** — confirmed by running it. Same shape as PR #53's `nopass` plus use
+  reach a backend". In fact `tools/` is a PEP 420 namespace package
+  **containing** `tools/backends/`, so a relative import such as
+  `from .backends.language.fortran import signatures` **crosses the boundary without leaving the
+  package** — confirmed by running it. (An earlier version of this note named a `build_system`
+  module that does not exist yet, so the import that proves the point could not be executed.) Same shape as PR #53's `nopass` plus use
   association: what breaks these claims is always the language's **special form** (namespace
   packages, use association, implicit association rules). Any "impossible" about package
   structure, scope, or visibility gets one run the moment you write it

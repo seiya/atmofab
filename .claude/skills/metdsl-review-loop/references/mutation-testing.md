@@ -66,8 +66,9 @@ back. It nearly became "this pin works" in the prose — the pin was in fact fal
 against `origin/main`'s wording, which only replacing the whole file revealed.
 
 - Count the occurrences before substituting and **exit non-zero on zero matches**.
-  `scripts/mutation_check.py` does this for the case that matches it — a hunk `git apply -R`
-  refuses is reported as SKIPPED and exits 1 (until 2026-08-19 it was counted as neither a survivor
+  `scripts/mutation_check.py` does this for the case that matches it — a hunk it cannot revert is
+  reported as SKIPPED and exits 1 (witnessed for the rename cause; no scenario has yet produced a
+  bare `git apply -R` refusal, so that half is asserted from the code, not measured) (until 2026-08-19 it was counted as neither a survivor
   nor inconclusive, so a run where every hunk skipped printed "every hunk is pinned" and exited 0).
   It does **not** do it for a range that produced no hunks at all: that prints "nothing to check"
   and exits 0, which is why the rule above is to read the hunk count rather than the exit code.

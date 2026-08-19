@@ -24,8 +24,10 @@ TMPDIR=/dev/shm python3 -m pytest tools/tests/ -q -p no:randomly
 - **This count rots. Re-measure before handing anything over.** Three measurements of the same
   suite: 5 failures on 2026-08-13; 2 failed + 1 skipped on 2026-08-18
   (`test_blocks_bash_only_tilde_prefixes` / `test_directory_options_anchor_like_cd`, both since
-  fixed); 4923 passed and 0 skipped on 2026-08-20. Under parallel load a timing-budget test in
-  `test_hooks_common.py` fails and passes again when run alone. **Do not quote this line's numbers
+  fixed); 4924 passed and 0 skipped on 2026-08-20, in a full sequential run. `test_hooks_common.py`
+  has timing-budget tests (`process_time` under 5s) that depend on the machine: one of them failed
+  standalone here at 16.9s while the full run was clean, so **running a suspect test alone is not
+  a way to tell load from defect** — compare against `origin/main` instead. **Do not quote this line's numbers
   — measure once yourself**
 - **Put it in the prose you hand reviewers, too.** In PR #57 three reviewers each re-derived it,
   and one corrected my claim with its own measurement. Writing it down settles it. Conversely,
@@ -118,8 +120,9 @@ discarding uncommitted work along with whatever it was meant to revert.
 
 ## Doc size ceilings
 
-Docs that enter a leaf's context have ceiling tests. After touching
-`docs/workflow/phases/*.md`:
+Docs that enter a leaf's context have ceiling tests — but only the nine in the `_CEILINGS` table
+below, which includes `phase_01_compile.md` and none of the other phase docs. **Check membership
+first**: editing a doc that is not in the table and running the command measures nothing.
 
 ```bash
 TMPDIR=/dev/shm python3 -m pytest tools/tests/test_orchestration_runtime.py -q -p no:randomly -k child_context_docs
