@@ -15,6 +15,10 @@ Track record: PR #51 converged after 17 subagent rounds plus 3 Codex passes, and
 defects had been introduced by the fixes themselves**. What follows was derived backwards from
 that breakdown.
 
+`L118`, `L128`, `L174` and `L242` below name entries of the migration ledger in `TODO.md` by the
+line they sat on when the work happened; the lines have moved since, so search the ledger for the
+subject rather than the number.
+
 Reference files, loaded when you need them:
 
 - `references/mutation-testing.md` — the episodes behind the round-0 rules
@@ -98,7 +102,8 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 #   --range origin/main...HEAD
 ```
 
-**Pass `-x`.** Only the exit code is read, so a killed hunk may stop at the first failure. Hunks run in
+**Pass `-x`.** The exit code decides the verdict — the output is read only to tell a real
+failure from a suite that never ran — so a killed hunk may stop at the first failure. Hunks run in
 separate worktrees, `min(cores - 2, 4)` at a time by default and never more than the hunk count
 (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in `--test-cmd`**: the script gives each job its own
 temp root, a prefix overrides it and puts every job back on one, and that is the shape that
@@ -137,9 +142,10 @@ Test-file hunks are excluded by default (`--include-tests`
   added inside a string literal is NOT prose — it changes a constant — and a prose hunk in any
   other file type is reported unlabelled. **An unannotated survivor exits 1, and so
   does any inconclusive or skipped hunk, or a change with no revertible hunk; only a clean run, or
-  one whose sole survivors are docstring-only, exits 0. Exit 2 means the run itself cannot be
-  trusted** — a red baseline, a range that does not resolve, a `--repo` that is not one, or a
-  `TMPDIR=` in `--test-cmd` with several jobs. In PR #67, 2 of 5 survivors were docstrings listed
+  one whose sole survivors are prose-only (comments or docstrings), exits 0. Exit 2 means the run
+  itself cannot be trusted** — a red baseline, a baseline that hits `--timeout` (1800s default), a
+  range that does not resolve, a `--repo` that is not one, or a `TMPDIR=` in `--test-cmd` with
+  several jobs. In PR #67, 2 of 5 survivors were docstrings listed
   beside 3 real defects.
   The annotation is decided mechanically by AST comparison (blank the docstring, is it
   isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
@@ -649,7 +655,8 @@ as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fi
   a change is a move or rename where the body is known correct, the more the review is really about
   **your own fixes** — put the focus instruction in from the first round
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
-  citing it. Switch to the grep sweep (`verification.md`)
+  citing it. Switch to the grep sweep
+  (`.claude/skills/metdsl-enforcement-change/references/verification.md`)
 - **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
   numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
   this kind of prose **rots silently on every rename or addition**. PR #57's breakdown of test

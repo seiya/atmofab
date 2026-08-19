@@ -187,9 +187,11 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
             # after the verdicts had already printed.
             return False
     before, after = _stripped(current), _stripped(after_source)
-    # `is not None` on BOTH sides: a version of this that returned "" for an unparseable file
-    # made the two sides compare equal, so a real change in a file Python cannot parse — or in
-    # a non-UTF-8 module — was labelled expected prose and the run exited 0.
+    # `is not None` on BOTH sides. The left one has always been there; the right one is
+    # defensive, not a fix — with `_stripped` returning None for an unparseable or non-UTF-8
+    # file, the equality alone was already False. It is spelled out because the failure it
+    # guards against is silent: any future `_stripped` that returns a falsy value instead of
+    # None would make both sides compare equal and label a real change as expected prose.
     return before is not None and after is not None and before == after
 
 

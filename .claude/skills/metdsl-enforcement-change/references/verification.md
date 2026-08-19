@@ -21,11 +21,12 @@ TMPDIR=/dev/shm python3 -m pytest tools/tests/ -q -p no:randomly
   `test_hooks_common.py::ForbidBackendCredentialReadTests` fail (it assumes `../..` / `~`
   resolve inside home; a path-depth-dependent pre-existing behaviour, identical on `main` and on
   a branch). **Compare the DELTA, not absolute values**
-- **This count rots. Re-measure before handing anything over.** On 2026-08-13 it was 5; the
-  **2026-08-18 measurement was 2 failed + 1 skipped**
-  (`test_blocks_bash_only_tilde_prefixes` / `test_directory_options_anchor_like_cd`, identical on
-  `origin/main`). It changes whenever tests are added or removed, so **do not quote this line's
-  numbers — measure once yourself**
+- **This count rots. Re-measure before handing anything over.** Three measurements of the same
+  suite: 5 failures on 2026-08-13; 2 failed + 1 skipped on 2026-08-18
+  (`test_blocks_bash_only_tilde_prefixes` / `test_directory_options_anchor_like_cd`, both since
+  fixed); 4923 passed and 0 skipped on 2026-08-20. Under parallel load a timing-budget test in
+  `test_hooks_common.py` fails and passes again when run alone. **Do not quote this line's numbers
+  — measure once yourself**
 - **Put it in the prose you hand reviewers, too.** In PR #57 three reviewers each re-derived it,
   and one corrected my claim with its own measurement. Writing it down settles it. Conversely,
   **hand over a stale count and reviewers take it for the baseline and miss a real failure**
@@ -65,14 +66,14 @@ requires before you measure anything — `git stash` is a **silent no-op**: it e
 entry, and both scans read the same bytes, so the diff is empty and the check reports that nothing
 changed verdict. A trailing `git stash pop` then pops whatever unrelated entry was already on the
 stack into your checkout. Running the same scanner on both sides is not incidental either: the
-harness has to be identical, or what you measure includes the harness. (`python3 -` gives the same
-`sys.path[0]` — the cwd — as running the file, so repo-relative imports behave identically; what
-differs is `__file__`, which is `<stdin>`. A scanner that reads its own source, or that needs a
+harness has to be identical, or what you measure includes the harness. (`python3 -` puts `''` on `sys.path[0]`, which resolves
+to the cwd — the worktree — so repo-relative imports behave as they do on the branch side, where
+`sys.path[0]` is the scanner's own directory. What differs is `__file__`, which is `<stdin>`. A scanner that reads its own source, or that needs a
 helper module beside it, wants a path outside the worktree instead.)
 
-**A reused worktree path is the same silent no-op in different clothes.** If the directory already
-exists, `git worktree add` fails, an unguarded script walks on, and the scan reads whatever
-revision that leftover tree is at — an empty diff again, from the population most likely to have a
+**A reused worktree path is the same silent no-op in different clothes.** If a previous run's tree
+is still there, `git worktree add` fails (an EMPTY directory it accepts), an unguarded script walks
+on, and the scan reads whatever revision that leftover tree is at — an empty diff again, from the population most likely to have a
 leftover: whoever ran the earlier version of this recipe. That is what `mktemp` and the `|| exit`
 above are for.
 
@@ -106,9 +107,10 @@ for f in <touched files>; do
 done
 ```
 
-`tail -1` is a summary, not a verdict: a file whose findings all carry fixes ends with
-`No fixes available (1 hidden fix …)` and no count at all. Read the full output whenever the last
-lines differ.
+`tail -1` is a summary, not a verdict. On ruff 0.15.20 a file whose findings carry SAFE fixes ends
+`[*] 1 fixable with the --fix option.` and one whose fixes are unsafe or hidden ends `No fixes
+available (1 hidden fix can be enabled with the --unsafe-fixes option).` — in both cases the count
+is on the line above. Read the full output whenever the last lines differ.
 
 Same reason as above, and one of this loop's own rules besides: the earlier form used `git stash`
 plus `git checkout -- .`, and `metdsl-review-loop` forbids `git checkout -- <path>` by name for
@@ -144,9 +146,12 @@ PY
 ```
 
 In PR #55, headroom fell to **1 byte** during work that was shortening a SKILL and went unnoticed
-for several rounds (it ended at 37). **As measured on 2026-08-13, 4 of the 9 docs had headroom
-of 50 or less** (`workflow-generate-generate` +6, `workflow-generate-verify` +5, `AGENT_CONTRACT` +47,
-`phase_01_compile` +50). **One added sentence fails those.** Measure before touching them.
+for several rounds (it ended at 37). **Run the snippet; do not read a list from here.** Measured
+2026-08-20, 4 of the 9 are at 50 or less — `workflow-validate-judge` +22, `phase_01_compile` +34,
+`workflow-compile-generate` +37, `AGENT_CONTRACT` +44 — and the set moves: a 2026-08-13 version of
+this line named `workflow-generate-generate` (+6) and `workflow-generate-verify` (+5) as the
+tightest, and today they are the roomiest at +125 and +230. It also named 4 of 9 while 6 were at
+or under 50, because it listed what someone had looked at rather than what the snippet printed.
 
 ## End to end through a real server process
 

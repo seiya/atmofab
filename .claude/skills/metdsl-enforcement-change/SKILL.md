@@ -30,8 +30,8 @@ caller can forge a capability by naming its own `repo_root`) had been found by t
 yet was accepted for five rounds on the **unverified premise** that exploiting it needed a
 primitive the file-tool hook refuses. The actual primitive was one the contract hands over
 explicitly: `workspace/tmp/<agent_run_id>` (a bwrap rw bind) plus `Bash(python3
-workspace/tmp/*)` (committed, at the time, in `.claude/settings.json`; a leaf's grants now live in
-`leaf_config/claude/settings.json`). **Decide by what you ran, not by who said
+workspace/tmp/*)` (committed in `.claude/settings.json`, the dev layer, and since issue #63 in
+`leaf_config/claude/settings.json`, the layer a leaf actually loads — both carry it today). **Decide by what you ran, not by who said
 it.**
 
 **1-b. Deleting a defense is also a classification.** Rule 1 is not only about triaging

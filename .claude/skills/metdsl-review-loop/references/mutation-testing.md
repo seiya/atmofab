@@ -13,7 +13,8 @@ scorer and in the reviewer's instructions.
 
 ## A stale worktree makes every mutant look killed (PR #67)
 
-The script forces a baseline run; handwriting does not. In PR #67 a handwritten sweep ran in a
+The script runs a baseline unless you pass `--skip-baseline`; handwriting has no baseline at all.
+In PR #67 a handwritten sweep ran in a
 worktree that still held an **old copy** of the tree, so the baseline was already red and every
 mutant "failed" = looked killed. Nothing was killed at all.
 

@@ -32,7 +32,8 @@ the only way to observe what it reports; asserting on its helpers would reproduc
 defect it keeps having, where a helper is correct and the run is not. The exception is
 `DiffEntryPathTests`, four unit tests over one pure parser whose inputs — git's quoting of a
 non-ASCII path, a directory named `pkg b` — are laborious to build as repositories and trivial
-to state as strings; the shapes it covers are exercised end to end as well.
+to state as strings. Both shapes it covers are exercised end to end as well — that sentence was
+false for the quoted non-ASCII path until a scenario was added for it.
 
 **Writing a scenario is not the same as witnessing a mechanism, and this file has been wrong
 about that twice.** A test that PINS the change under test can never reach the prose classifier,
@@ -44,7 +45,8 @@ watching a named test fail.
 
 What these tests do NOT cover, from a census of 187 mutations run against them by an
 independent reviewer (96 killed, 91 survived, and every survivor below was demonstrated to be a
-real behaviour change rather than an equivalent mutant): the `git apply -R` refusal branch of
+real behaviour change rather than an equivalent mutant): the `ast.AsyncFunctionDef` arm of the
+docstring blanking; the `git apply -R` refusal branch of
 SKIP — no scenario was found that produces it at HEAD; `--keep`, `--skip-baseline`, `--workdir`
 placement and the per-job temp roots; a range whose right side is not HEAD; the mode-change and
 empty-new-file hunkless shapes; symlinks; a repo-local `diff.noprefix`; the individual members
@@ -521,6 +523,19 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.assertIn("SURVIVED", run.out, msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
 
+    def test_a_quoted_non_ascii_path_is_handled_end_to_end(self) -> None:
+        """git quotes such a path in the `diff --git` header, so there is no ` b/` to split on
+        at all and every filter silently stops applying to it. The unit test over the parser
+        covers the header; this covers the run."""
+        self.repo.write("日.py", '"""doc."""\nx = 1\n')
+        self.repo.commit("base")
+        self.repo.write("日.py", '"""doc changed."""\nx = 1\n')
+        self.repo.commit("docstring")
+        run = self.run_check()
+        self.assertIn("日.py", run.out, msg=str(run))
+        self.assertIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(0, run.code, msg=str(run))
+
     def test_a_path_containing_the_b_separator_is_named_correctly(self) -> None:
         """`split(" b/")` took the last occurrence, so this file was reported under a garbled
         name and its prose classification failed, surfacing as a false unexplained survivor."""
@@ -756,7 +771,13 @@ class DiffEntryPathTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("mutation_check_under_test", SCRIPT)
         assert spec and spec.loader
         cls.module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.module)
+        # Import without leaving a `__pycache__` beside the script: `.claude/` is not a place a
+        # test in this suite should write into, gitignored or not.
+        previous, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+        try:
+            spec.loader.exec_module(cls.module)
+        finally:
+            sys.dont_write_bytecode = previous
 
     def test_ordinary_path(self) -> None:
         self.assertEqual("lib.py", self.module._diff_entry_path("diff --git a/lib.py b/lib.py"))

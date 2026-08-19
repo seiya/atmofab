@@ -4,7 +4,8 @@ SKILL.md's stopping conditions are read as **class descent plus a bounded remain
 the transitions each recorded loop actually went through, and what ended it. Read them for the
 shape, not the counts.
 
-Headline shape: L128 ran 9 rounds with one empty round and no Codex available; PR #53 ran 3 rounds
+Headline shape: L128 ran 9 rounds with one empty round and no usable Codex signal (four launches, three lost
+to the content filter — `codex-episodes.md` has them); PR #53 ran 3 rounds
 with none empty and Codex never clean (it found a hole on the first pass); in PR #55 round 3 both
 a subagent and Codex produced new findings.
 
@@ -112,8 +113,12 @@ build a third". Measured, it did not:
 
 | | witnessed | unwitnessed |
 |---|---|---|
-| the 50 decisions common to both versions (before → after the rebuild) | 20 → 28 | 20 → **11** |
-| the 20 decisions the rebuild **added** | 2 | **15 (75%)** |
+| the decisions common to both versions (before → after the rebuild) | 20 → 28 | 20 → **11** |
+| the decisions the rebuild **added** | 2 | **15** |
+
+(The recorded totals — 50 common, 20 added — do not match those rows, which sum to 40/39 and 17.
+The rows are what the census produced; the totals came from the round's prose and one of the two
+was miscounted, as with the 111-vs-112 above.)
 
 The existing part improved clearly and the recurrence was **localized to the additions**: the shape
 of the rule was right, and the problem was the habit of writing a fix without its witness. Stopping
