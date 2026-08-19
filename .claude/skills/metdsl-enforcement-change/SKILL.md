@@ -462,7 +462,8 @@ Signs to look for:
 - **You hesitated over failure attribution, or it fit no existing category** →
   `references/failure-routing.md`
 - **A verification step was missing, or a command had gone stale** → `references/verification.md`
-- **The mutation check gave a false positive, or missed something** → `scripts/mutation_check.py`
+- **The mutation check gave a false positive, or missed something** →
+  `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`
 - **The skill did not fire when it should have, or fired when it should not** → `description`
 - **You broke one of the three judgment rules while following the procedure** → SKILL.md itself.
   Distinguish "the rule was missing" from "the rule was there but its trigger point was
