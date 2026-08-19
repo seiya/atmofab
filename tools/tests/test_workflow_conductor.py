@@ -386,45 +386,6 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 self.assertTrue(c._claude_session_resumable("sess-operator", pure=True))
                 self.assertFalse(c._claude_session_resumable("sess-private", pure=True))
 
-    def test_the_call_sites_declare_the_shape_they_are_launching(self) -> None:
-        """The probe knows which home to look in; the CALLERS have to tell it.
-
-        Pinning `_claude_session_resumable` alone left both wirings free: making the
-        pure loop pass `pure=False`, or `run_substep` stop consulting
-        `_pure_leaf_substep`, kept the whole suite green — the helper-not-handler
-        shape, for the third time on this branch. What is asserted here is the
-        keyword that actually reaches the probe on each production path.
-        """
-        seen: list[bool] = []
-
-        class _Spy(_FakeConductor):
-            def _claude_session_resumable(self, session_id, *, pure):  # type: ignore[override]
-                seen.append(pure)
-                return False
-
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
-            c = _Spy(repo_root=repo, orchestration_id="o",
-                     orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
-            repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "child-1"}
-
-            # The PURE loop resolves its own resume and must say so.
-            seen.clear()
-            c._resolve_reuse_resume(repair, "generate", "generate", pure=True)
-            self.assertEqual(seen, [True])
-
-            # `run_substep` asks the NODE shape, so a pure node reaches the probe as
-            # pure and an agentic one does not.
-            for node_is_pure in (True, False):
-                seen.clear()
-                c._pure_leaf_substep = (  # type: ignore[assignment]
-                    lambda refs, phase, substep, v=node_is_pure: v)
-                c._resolve_reuse_resume(
-                    repair, "generate", "generate",
-                    pure=c._pure_leaf_substep(None, "generate", "generate"))
-                self.assertEqual(seen, [node_is_pure])
-
     def test_no_private_home_means_nothing_is_resumable(self) -> None:
         """Before any claude leaf has launched there is no home to resume into."""
         with tempfile.TemporaryDirectory() as td:
@@ -4254,6 +4215,25 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertNotIn("llm_transport_flake", oc.decision.reason)
         self.assertIn("[attempts=2]", oc.decision.reason)     # ...and the launch count is honest
         self.assertLessEqual(len(oc.decision.reason), 200)
+
+    def test_run_substep_resolves_its_resume_as_an_agentic_launch(self) -> None:
+        """Driven through the REAL `run_substep`, on the value that arrives.
+
+        A pure substep has already returned above this point, so the agentic
+        constant is the correct one — but it is still a live decision: flip it and
+        the resolver looks in the operator's home instead of the private one, and
+        every agentic reuse repair silently goes cold. Nothing observed it
+        (measured: that mutation survived), and the test that claimed to had
+        computed the argument itself instead of driving the production path.
+        """
+        seen: list[bool] = []
+        c = self._conductor([wc.ProcResult(0, "ok", "")])
+        c._resolve_reuse_resume = (  # type: ignore[assignment]
+            lambda repair, phase, substep, pure=None: seen.append(pure))
+        c.run_substep(self._refs(), "compile", "verify",
+                      repair={"repair_strategy": "reuse",
+                              "repair_target_agent_run_id": "child-1"})
+        self.assertEqual(seen, [False])
 
     def test_usage_limit_is_never_retried(self) -> None:
         """A usage limit is a HARD STOP lasting hours. Retrying it burns the budget in seconds

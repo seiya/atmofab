@@ -10593,9 +10593,12 @@ clean:
             # carries NO findings (the full template has no findings placeholder) — the leaf
             # would re-verify blind and escalate anyway. Re-checked every iteration, not just on
             # entry: each repair turn is a new session that may itself not be resumable.
-            if not self._verify_session_resumable(
-                    verify_arid, phase,
-                    pure=self._pure_leaf_substep(refs, phase, "verify")):
+            # `pure=False`: a pure verify has already returned through
+            # `_run_pure_verify_substep` above, so `_pure_leaf_substep` here could
+            # only ever answer False. Calling it would present a decision that is
+            # none — a mutation constant-folding it survived, which is what showed
+            # the two are the same.
+            if not self._verify_session_resumable(verify_arid, phase, pure=False):
                 self.emit("verify_meta_schema_no_warm_session", node_key=refs.node_key,
                           phase=phase, attempt=attempt + 1,
                           detail="; ".join(findings)[:200])

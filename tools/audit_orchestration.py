@@ -11,10 +11,11 @@ Collects and aggregates:
 - phase_state_log fail/fail_closed entries
 - agent_runs.jsonl completion status
 - Dangling launch (open active_child window with no child return / terminal run),
-  correlated with the ephemeral ~/.claude transcript tail (see
+  correlated with the ephemeral leaf transcript tail (since issue #63 the
+  orchestration's private home first, then the operator's ~/.claude; see
   orchestration_diagnostics.build_launch_incident), AND any persisted
   launch_incident.runtime.*.json snapshots (which survive after --resume clears the
-  window or ~/.claude cleanup removes the transcript)
+  window or the transcript's home is cleaned)
 """
 from __future__ import annotations
 

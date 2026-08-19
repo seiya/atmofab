@@ -3320,6 +3320,87 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 self.assertFalse(
                     _is_auto_approvable_readonly_bash(f"cat {target}", repo))
 
+    def test_the_read_tool_also_exempts_a_private_home_tool_result(self) -> None:
+        """The Read half of the carve-out, which had no witness at all.
+
+        Two tools reach the same file: `Read` goes through
+        `_is_persisted_tool_result_read` and Bash through the shape check plus
+        auto-approval. Only the Bash halves were observed, so re-pointing the Read
+        half at `~/.claude` left the suite green while the Read tool refused the
+        file the harness had just told the agent to read — for every agentic leaf.
+        """
+        from tools.hooks.common import _is_persisted_tool_result_read
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            meta = repo / "workspace" / "orchestrations" / "o"
+            meta.mkdir(parents=True)
+            (meta / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            arid = "child-1"
+            results = home / "projects" / slug / arid / "tool-results"
+            results.mkdir(parents=True)
+            target = results / "abc.txt"
+            target.write_text("oversized gate output", encoding="utf-8")
+
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                self.assertTrue(_is_persisted_tool_result_read(
+                    repo, "substep", arid, str(target)))
+                # CONTROL — the exemption is bound to the agent's OWN session, so a
+                # sibling leaf's persisted output is not readable through it.
+                other = home / "projects" / slug / "child-2" / "tool-results"
+                other.mkdir(parents=True)
+                (other / "abc.txt").write_text("x", encoding="utf-8")
+                self.assertFalse(_is_persisted_tool_result_read(
+                    repo, "substep", arid, str(other / "abc.txt")))
+
+    def test_the_bash_read_policy_auto_approves_a_private_home_tool_result(self) -> None:
+        """The SECOND Bash call site, through the real hook decision.
+
+        `_is_auto_approvable_readonly_bash` is one of two places the id had to
+        reach; `_evaluate_bash_read_manifest_policy` is the other, and it was
+        unobserved — the commit that fixed both named both and witnessed one.
+        Asserted on the decision the hook actually returns.
+        """
+        from tools.hooks.cli import _evaluate_bash_read_manifest_policy
+        from tools.hooks.common import HookEventName, HookInput
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            orch = repo / "workspace" / "orchestrations" / "o"
+            (orch / "read_manifests").mkdir(parents=True)
+            (orch / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            (orch / "read_manifests" / "child-1.json").write_text(
+                json.dumps({"agent_run_id": "child-1", "allowed_read_roots": ["docs/"]}),
+                encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            results = home / "projects" / slug / "child-1" / "tool-results"
+            results.mkdir(parents=True)
+            target = results / "abc.txt"
+            target.write_text("oversized gate output", encoding="utf-8")
+
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                decision, _run_id, out_of_repo = _evaluate_bash_read_manifest_policy(
+                    decoded=HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": f"cat {target}", "repo_root": str(repo)},
+                        command=f"cat {target}", tool_name="Bash"),
+                    repo_root=repo, orchestration_id="o", backend="claude",
+                    resolved_run_id="child-1")
+            # The exemption's job is to keep this target OUT of the out-of-repo set,
+            # which is what later costs it the auto-approve; and the manifest grants
+            # only `docs/`, so a guard decision here would be the refusal it exempts.
+            policy = (getattr(decision, "audit_detail", None) or {}).get("policy", "") \
+                if decision is not None else ""
+            self.assertNotEqual(policy, "read_manifest_read_guard")
+            self.assertNotIn(str(target), out_of_repo)
+
     def test_committed_allowlist_covers_the_commands_the_repository_instructs(
         self,
     ) -> None:
