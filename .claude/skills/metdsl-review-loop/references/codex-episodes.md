@@ -34,7 +34,7 @@ node "$P/scripts/codex-companion.mjs" result <job-id>   # the full text, after c
   immediately"; one observation before guessing would have shown it
 - **Get the base wrong and you review an empty diff.** On a merged branch `origin/main` points at
   your own merge commit. Check `git diff --shortstat <base>...HEAD` before launching
-- Job logs: `~/.claude/plugins/data/codex-openai-codex/state/<repo>/jobs/<job-id>.log`
+- Job logs: `~/.claude/plugins/data/codex-openai-codex/state/<repo>-<hash>/jobs/<job-id>.log`
 
 ## Stalls
 

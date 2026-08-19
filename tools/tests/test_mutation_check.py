@@ -27,15 +27,26 @@ scenario by hand:
 
 Each is a test below. The point is not the eight instances: it is that the script had no
 witness, and this repository's own rule is that a mechanism with no witness gets broken again.
-Every test drives the script as a subprocess over a real git repository built in `tmp_path`,
-because that is the only way to observe what it actually reports; asserting on its functions
-in isolation would reproduce the shape of defect it keeps having, where a helper is correct and
-the run is not.
+Nearly every test drives the script as a subprocess over a real git repository, because that is
+the only way to observe what it reports; asserting on its helpers would reproduce the shape of
+defect it keeps having, where a helper is correct and the run is not. The exception is
+`DiffEntryPathTests`, four unit tests over one pure parser whose inputs — git's quoting of a
+non-ASCII path, a directory named `pkg b` — are laborious to build as repositories and trivial
+to state as strings; the shapes it covers are exercised end to end as well.
+
+**Writing a scenario is not the same as witnessing a mechanism, and this file has been wrong
+about that twice.** A test that PINS the change under test can never reach the prose classifier,
+because only survivors are classified: three "`#` is not a comment" tests were structurally
+incapable of failing until an unpinned variant was added. And the carry-over pair needs two
+hunks in ONE file to exercise the tracked-file restore — the version with two separate files
+witnessed only half of it. Every mechanism claimed here was confirmed by reverting it and
+watching a named test fail.
 
 What these tests do NOT cover, stated so nobody reads the file as more than it is: timing,
-`--jobs` above 2, the docstring/AST classification for anything but the cases below, and every
-message's wording beyond the substrings asserted. A green run here means the eight defects
-above stay fixed and the exit-code contract holds — not that the instrument is correct.
+`--jobs` above 2, `--keep`, `--skip-baseline`, the `git apply -R` refusal path, mode-change and
+empty-file hunkless shapes, symlinks, and every message's wording beyond the substrings
+asserted. A green run here means the defects listed above stay fixed and the exit-code contract
+holds — not that the instrument is correct.
 """
 
 from __future__ import annotations
@@ -49,6 +60,15 @@ from tempfile import TemporaryDirectory
 
 SCRIPT = (Path(__file__).resolve().parents[2]
           / ".claude" / "skills" / "metdsl-review-loop" / "scripts" / "mutation_check.py")
+
+#: Neutralise the operator's git configuration for every git this file runs, its own and the
+#: script's. Measured on one developer machine's plausible settings: `commit.gpgsign=true` fails
+#: 23 of these tests in `git commit`, a `core.excludesFile` listing `*.py` fails 19 in `git add`,
+#: `diff.renames=false` fails both rename tests, and `core.autocrlf=true` makes the CRLF test
+#: pass while measuring nothing, because git normalises the file on commit. A witness that
+#: depends on whose machine it runs on is not one.
+_NO_GIT_CONFIG = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull,
+                  "GIT_CONFIG_NOSYSTEM": "1"}
 
 #: A `--test-cmd` that passes only while the given text is present in the given file. Simpler
 #: than running pytest inside pytest, and it makes "pinned" mean exactly one thing.
@@ -71,7 +91,8 @@ class _Repo:
     def git(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
-            cwd=self.root, text=True, capture_output=True, check=True)
+            cwd=self.root, text=True, capture_output=True, check=True,
+            env={**os.environ, **_NO_GIT_CONFIG})
 
     def write(self, rel: str, data: str | bytes) -> None:
         target = self.root / rel
@@ -116,7 +137,7 @@ class MutationCheckScenarioTests(unittest.TestCase):
             [sys.executable, str(SCRIPT), "--range", rng, "--test-cmd", test_cmd,
              "--jobs", "1", "--workdir", str(self.workdir), *extra],
             cwd=self.repo.root, text=True, capture_output=True,
-            env={**os.environ, "TMPDIR": str(self.tmp)})
+            env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
         return _Run(proc)
 
     # --- the verdicts themselves -------------------------------------------------------------
@@ -175,6 +196,58 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.repo.commit("rename and edit")
         run = self.run_check()
         self.assertIn("SKIP (carries a rename", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_two_hunks_in_one_file_are_judged_independently(self) -> None:
+        """The other half of the carry-over fix, and the half that had no witness.
+
+        `git clean` removes what a revert CREATED; `git checkout -- .` restores what it
+        MODIFIED. Only the first was tested, and deleting the second reproduced the original
+        false green verbatim: the first hunk's revert stayed in the tree, the second hunk's
+        command failed for it, and an unpinned change was scored `killed` with a clean exit.
+        Two hunks in one file is the most common change shape there is.
+        """
+        filler = "".join(f"pad_{n} = {n}\n" for n in range(30))
+        self.repo.write("a.py", f"first = 1\n{filler}second = 1\n")
+        self.repo.commit("base")
+        self.repo.write("a.py", f"first = 2\n{filler}second = 2\n")
+        self.repo.commit("two hunks, one pinned")
+        run = self.run_check(test_cmd=_pins("a.py", "first = 2"))
+        self.assertIn("killed", run.out, msg=str(run))
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertNotIn("every hunk is pinned", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_two_hunks_are_judged_independently_in_parallel_too(self) -> None:
+        """`--jobs 2` recycles worktrees between hunks, and the carry-over bug's defining
+        symptom was that the verdict depended on how many jobs the machine chose."""
+        filler = "".join(f"pad_{n} = {n}\n" for n in range(30))
+        self.repo.write("a.py", f"first = 1\n{filler}second = 1\n")
+        self.repo.commit("base")
+        self.repo.write("a.py", f"first = 2\n{filler}second = 2\n")
+        self.repo.commit("two hunks, one pinned")
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--range", "HEAD~1..HEAD", "--jobs", "2",
+             "--workdir", str(self.workdir), "--test-cmd", _pins("a.py", "first = 2")],
+            cwd=self.repo.root, text=True, capture_output=True,
+            env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
+        run = _Run(proc)
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_hunk_that_times_out_is_inconclusive_not_killed(self) -> None:
+        """Only the baseline timeout was witnessed; a hunk that times out was free to be
+        scored `killed`, which says a test noticed a change while nothing ran."""
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        # The baseline passes fast; only the reverted state sleeps past the timeout.
+        cmd = (f"{sys.executable} -c \"import pathlib,time,sys;"
+               f"time.sleep(30) if 'x = 1' in pathlib.Path('k.py').read_text() else sys.exit(0)\"")
+        run = self.run_check("--timeout", "2", test_cmd=cmd)
+        self.assertIn("INCONCLUSIVE", run.out, msg=str(run))
+        self.assertIn("--timeout", run.out, msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
 
     # --- changes with nothing to revert ------------------------------------------------------
@@ -281,7 +354,9 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.repo.commit("crlf change")
         run = self.run_check()
         self.assertNotIn("SKIP", run.out, msg=str(run))
+        self.assertNotIn("Traceback", run.out, msg=str(run))
         self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
 
     def test_a_non_utf8_file_is_measured_rather_than_skipped(self) -> None:
         self.repo.write("m.py", b"# caf\xe9\nx = 1\n")
@@ -290,7 +365,9 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.repo.commit("latin-1 change")
         run = self.run_check()
         self.assertNotIn("SKIP", run.out, msg=str(run))
+        self.assertNotIn("Traceback", run.out, msg=str(run))
         self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
 
     def test_a_path_containing_the_b_separator_is_named_correctly(self) -> None:
         """`split(" b/")` took the last occurrence, so this file was reported under a garbled
@@ -303,6 +380,48 @@ class MutationCheckScenarioTests(unittest.TestCase):
         self.assertIn("pkg b/lib.py", run.out, msg=str(run))
         self.assertIn("prose-only", run.out, msg=str(run))
         self.assertEqual(0, run.code, msg=str(run))
+
+    def test_an_unpinned_hash_line_inside_a_string_is_not_labelled_prose(self) -> None:
+        """The classifier only runs on SURVIVORS, so the pinned version of this scenario can
+        never reach it: that test asserts the hunk was killed, which it would be either way.
+        This one leaves the change unpinned, so the label — or its absence — is the verdict.
+        Measured: with `_stripped` emptying every string constant, this test fails and the
+        pinned one stays green.
+        """
+        self.repo.write("m.py", 'TEMPLATE = """\nrule\n"""\n')
+        self.repo.commit("base")
+        self.repo.write("m.py", 'TEMPLATE = """\nrule\n# Rule: never\n"""\n')
+        self.repo.commit("add a line nobody pins")
+        run = self.run_check()
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertNotIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_python_interface_stub_is_classified_like_a_module(self) -> None:
+        """`.pyi` reaches the classifier because the suffix set says so — a live behaviour
+        change from the `endswith(".py")` the script used to carry, and one no test made."""
+        self.repo.write("m.pyi", '"""doc."""\nx: int\n')
+        self.repo.commit("base")
+        self.repo.write("m.pyi", '"""doc changed."""\nx: int\n')
+        self.repo.commit("stub docstring")
+        run = self.run_check()
+        self.assertIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(0, run.code, msg=str(run))
+
+    def test_an_untested_change_fails_the_run_beside_a_prose_survivor(self) -> None:
+        """The hunkless term has two arms in the exit expression and only one was witnessed:
+        the arm reached when the surviving hunks are all prose, where the run would otherwise
+        exit 0 with the untested change printed at the top and forgotten."""
+        self.repo.write("old.py", "f = 1\n")
+        self.repo.write("m.py", '"""doc."""\nx = 1\n')
+        self.repo.commit("base")
+        self.repo.git("mv", "old.py", "new.py")
+        self.repo.write("m.py", '"""doc changed."""\nx = 1\n')
+        self.repo.commit("rename plus a docstring")
+        run = self.run_check()
+        self.assertIn("no revertible hunk", run.out, msg=str(run))
+        self.assertIn("prose-only", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
 
     # --- the exit-code contract --------------------------------------------------------------
 
@@ -349,7 +468,7 @@ class MutationCheckScenarioTests(unittest.TestCase):
              "--workdir", str(self.workdir),
              "--test-cmd", f"TMPDIR=/dev/shm {_ALWAYS_PASSES}"],
             cwd=self.repo.root, text=True, capture_output=True,
-            env={**os.environ, "TMPDIR": str(self.tmp)})
+            env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
         run = _Run(proc)
         self.assertIn("sets TMPDIR", run.out, msg=str(run))
         self.assertEqual(2, run.code, msg=str(run))
@@ -385,6 +504,81 @@ class MutationCheckScenarioTests(unittest.TestCase):
                      f"raise SystemExit(2)\"")
         self.assertIn("INCONCLUSIVE", run.out, msg=str(run))
         self.assertEqual(1, run.code, msg=str(run))
+
+    def test_a_resolving_three_dot_range_is_measured(self) -> None:
+        """`origin/main...HEAD` is the spelling both the skill and this script's own comment
+        name as the review target, and no test resolved one: the range-parsing fix could be
+        reverted to `split("..")[-1]` with the suite green."""
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.git("branch", "mainline")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        run = self.run_check(rng="mainline...HEAD", test_cmd=_pins("k.py", "x = 2"))
+        self.assertIn("killed", run.out, msg=str(run))
+        self.assertEqual(0, run.code, msg=str(run))
+
+    def test_a_quoted_tmpdir_prefix_is_refused_too(self) -> None:
+        """The refusal must see what the SHELL sees: an earlier version anchored on whitespace
+        and `;&|` read straight past `sh -c "TMPDIR=… …"`, and the suite could not tell."""
+        filler = "".join(f"pad_{n} = {n}\n" for n in range(30))
+        self.repo.write("a.py", f"x = 1\n{filler}z = 1\n")
+        self.repo.commit("base")
+        self.repo.write("a.py", f"x = 2\n{filler}z = 2\n")
+        self.repo.commit("two hunks")
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--range", "HEAD~1..HEAD", "--jobs", "2",
+             "--workdir", str(self.workdir),
+             "--test-cmd", f"sh -c \"TMPDIR=/dev/shm {_ALWAYS_PASSES}\""],
+            cwd=self.repo.root, text=True, capture_output=True,
+            env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
+        run = _Run(proc)
+        self.assertIn("sets TMPDIR", run.out, msg=str(run))
+        self.assertEqual(2, run.code, msg=str(run))
+
+    def test_a_repo_that_is_not_one_exits_two(self) -> None:
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--range", "HEAD", "--test-cmd", _ALWAYS_PASSES,
+             "--repo", str(self.tmp / "not-a-repo"), "--workdir", str(self.workdir)],
+            cwd=self.repo.root, text=True, capture_output=True,
+            env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
+        run = _Run(proc)
+        self.assertIn("cannot run:", run.out, msg=str(run))
+        self.assertNotIn("Traceback", run.out, msg=str(run))
+        self.assertEqual(2, run.code, msg=str(run))
+
+    def test_include_tests_puts_the_excluded_hunks_back(self) -> None:
+        self.repo.write("tests/test_x.py", "def test_a():\n    assert True\n")
+        self.repo.commit("base")
+        self.repo.write("tests/test_x.py", "def test_a():\n    assert 1 == 1\n")
+        self.repo.commit("test change")
+        run = self.run_check("--include-tests")
+        self.assertNotIn("nothing to check", run.out, msg=str(run))
+        self.assertIn("SURVIVED", run.out, msg=str(run))
+        self.assertEqual(1, run.code, msg=str(run))
+
+    def test_each_spelling_of_a_test_file_is_excluded(self) -> None:
+        """Three independent clauses decide this, and one fixture satisfying two of them
+        leaves the third free to be deleted."""
+        for rel in ("pkg/tests/helper.py", "pkg/test_thing.py", "pkg/thing_test.py"):
+            with self.subTest(rel=rel):
+                root = self.tmp / f"r{rel.replace('/', '_')}"
+                root.mkdir()
+                repo = _Repo(root)
+                repo.write(rel, "x = 1\n")
+                repo.commit("base")
+                repo.write(rel, "x = 2\n")
+                repo.commit("change")
+                proc = subprocess.run(
+                    [sys.executable, str(SCRIPT), "--range", "HEAD~1..HEAD", "--jobs", "1",
+                     "--workdir", str(self.tmp / "wd2"), "--test-cmd", _ALWAYS_PASSES],
+                    cwd=repo.root, text=True, capture_output=True,
+                    env={**os.environ, **_NO_GIT_CONFIG, "TMPDIR": str(self.tmp)})
+                run = _Run(proc)
+                self.assertIn("hunk(s) in test files", run.out, msg=str(run))
+                self.assertEqual(0, run.code, msg=str(run))
 
     # --- the checkout it runs against --------------------------------------------------------
 

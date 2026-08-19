@@ -130,6 +130,12 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
             tree = ast.parse(source)
         except SyntaxError:
             return None
+        except (UnicodeEncodeError, ValueError):
+            # A non-UTF-8 file arrives here carrying surrogates from `surrogateescape`, and
+            # `compile()` refuses those with UnicodeEncodeError, not SyntaxError. Uncaught it
+            # was a traceback and exit 1 — the code that means "hunks survived" — AFTER the
+            # verdicts had been printed. Unclassifiable is the honest answer: not prose.
+            return None
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Module, ast.ClassDef,
                                      ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -552,10 +558,11 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         # A git invocation this script depends on failed: a range whose base does not resolve
-        # (a stale `origin/main` is the common one), a `--repo` that is not a repository. That
-        # is the instrument failing, not a finding, so it exits 2 like a red baseline — exit 1
-        # is documented as "hunks survived" and a traceback there reads as findings.
+        # (a stale `origin/main` is the common one), a `--repo` that is not a repository or
+        # does not exist (that one surfaces as OSError from the spawn itself, not from git).
+        # That is the instrument failing, not a finding, so it exits 2 like a red baseline —
+        # exit 1 is documented as "hunks survived" and a traceback there reads as findings.
         print(f"cannot run: {exc}", file=sys.stderr)
         sys.exit(2)
