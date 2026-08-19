@@ -122,7 +122,7 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
     Constant and does not. A hunk that also moves code fails the compare and keeps its
     unqualified SURVIVED.
     """
-    if not path.endswith(".py"):
+    if Path(path).suffix not in _PARSEABLE_SUFFIXES:
         return False
 
     def _stripped(source: str) -> str | None:
@@ -141,8 +141,6 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
                 body[0].value.value = ""
         return ast.dump(tree)
 
-    if Path(path).suffix not in _PARSEABLE_SUFFIXES:
-        return False
     try:
         current = _run(["git", "show", f"{head}:{path}"], cwd=repo)
     except RuntimeError:
