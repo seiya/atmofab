@@ -68,6 +68,10 @@
     [
       ".",
       "CLAUDE.md"
+    ],
+    [
+      "leaf_config",
+      "**/*.json"
     ]
   ],
   "skill_backend_shape": "^skills/[^/]+/backends/([^/]+)/([^/]+)\\.md$",

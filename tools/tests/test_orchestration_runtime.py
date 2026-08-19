@@ -32,6 +32,7 @@ from tools import orchestration_runtime as ort
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
+    CLAUDE_HOME_WRITABLE_RELPATHS,
     TERMINAL_STATUSES,
     _allowed_file_tool_paths_for_launch,
     _allowed_output_paths_for_launch,
@@ -20929,7 +20930,8 @@ class RecordTimeoutTests(unittest.TestCase):
 
     def _setup_substep_launch(self, repo_root: Path,
                               response_extra: dict | None = None,
-                              request_extra: dict | None = None) -> str:
+                              request_extra: dict | None = None,
+                              omit_backend: bool = False) -> str:
         """Initialise an orchestration with a substep launched and return the substep agent_run_id.
 
         `response_extra` merges extra keys into the launch response payload, for callers
@@ -21016,13 +21018,41 @@ class RecordTimeoutTests(unittest.TestCase):
             },
             response_payload={
                 "agent_run_id": substep_arid,
-                "backend": "claude",
+                **({} if omit_backend else {"backend": "claude"}),
                 "started_at": "2026-05-09T08:00:00Z",
                 **_spawn_response_payload(substep_arid),
                 **(response_extra or {}),
             },
         )
         return substep_arid
+
+    def test_a_response_without_a_backend_field_still_gets_the_isolation(self) -> None:
+        """The isolation must follow the family the PROFILE resolves.
+
+        `build_*_bwrap_profile` resolves the family with
+        `_resolve_backend_type(backend_type, backend_command)`, which falls back to
+        the COMMAND when the response omits `backend`. Keyed on the raw field, such a
+        launch built a claude-shaped profile — `~/.claude` rw-bound, no
+        `CLAUDE_CONFIG_DIR` — with no private home: a leaf on the operator's home,
+        recorded as having none. Two independent reviewers found this survivor;
+        production always stamps the field, so this pins the guard rather than a
+        reachable bug.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            arid = self._setup_substep_launch(repo_root, omit_backend=True)
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            meta = json.loads(
+                (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            home = meta.get("claude_workflow_home")
+            self.assertTrue(home, "a claude-commanded launch prepared no private home")
+            self.addCleanup(shutil.rmtree, Path(home), True)
+            profile = json.loads(
+                (orch_root / "sandbox_profiles" / f"{arid}.json").read_text(encoding="utf-8"))
+            argv = profile["rendered_command"]
+            setenv = {argv[i + 1]: argv[i + 2]
+                      for i, tok in enumerate(argv) if tok == "--setenv"}
+            self.assertEqual(setenv.get("CLAUDE_CONFIG_DIR"), home)
 
     def test_a_pure_claude_launch_gets_no_private_home(self) -> None:
         """The pure path takes NO settings layer, so it must not acquire one.
@@ -21130,7 +21160,12 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertEqual(setenv.get("CLAUDE_CONFIG_DIR"), home)
 
             rw_binds = {argv[i + 1] for i, tok in enumerate(argv) if tok == "--bind"}
-            self.assertIn(home, rw_binds)
+            ro_binds = {argv[i + 1] for i, tok in enumerate(argv) if tok == "--ro-bind"}
+            self.assertIn(home, ro_binds)
+            self.assertEqual(
+                {b for b in rw_binds if b.startswith(home)},
+                {str(Path(home) / rel) for rel in CLAUDE_HOME_WRITABLE_RELPATHS},
+            )
             operator_home = Path(os.environ.get("HOME") or Path.home())
             self.assertNotIn(str(operator_home / ".claude"), rw_binds)
             self.assertNotIn(str(operator_home / ".claude.json"), rw_binds)
@@ -34497,6 +34532,19 @@ class ClaudeLeafConfigProbeTests(unittest.TestCase):
         """
         from tools.orchestration_runtime import (
             _CLAUDE_HOOK_MATCHER_COVERAGE, _CLAUDE_REQUIRED_HOOK_EVENTS)
+        # THE INDEPENDENT SOURCE. Comparing the table with the committed file alone
+        # is not enough: the file is what the table constrains, so shrinking BOTH
+        # together satisfies both directions — measured, and it leaves a leaf with no
+        # PreToolUse hook for Read/Write/Edit/Grep while preflight reports pass. The
+        # literal below is the RULE (every tool whose payload names a path the read
+        # or write boundary must authorize, plus the session-level events), so
+        # weakening the policy now requires editing this expectation, which is the
+        # visible signal a coordinated shrink otherwise avoids.
+        expected_events = {"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+        expected_pretooluse = {"Bash", "Write", "Edit", "Read", "Grep", "Glob"}
+        self.assertEqual(_CLAUDE_REQUIRED_HOOK_EVENTS, expected_events)
+        self.assertEqual(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"], expected_pretooluse)
+
         payload = self._config()
         file_events = set(payload["hooks"])
         self.assertEqual(_CLAUDE_REQUIRED_HOOK_EVENTS, file_events)
@@ -34554,6 +34602,39 @@ class ClaudeLeafConfigProbeTests(unittest.TestCase):
             probe = self._probe(payload)
             self.assertIs(probe["pass"], False, f"accepted an evasion: {evasion!r}")
 
+    def test_a_matcher_is_credited_only_when_it_matches_the_whole_tool_name(self) -> None:
+        """`fullmatch`, not `search` — and `search` is the fail-OPEN direction.
+
+        MEASURED on CLI 2.1.235: the CLI full-matches a matcher (`.*` and
+        `Bash|Write` fire for `Bash`; `Bas` does not). Under `search`, a matcher of
+        `as` would be scored here as covering `Bash`, so the probe would pass a
+        settings file whose hook the CLI never fires for that tool: preflight green,
+        leaf launched with an unenforced read/write boundary. Nothing observed this
+        (measured: the mutation survived), while its sibling — exact command
+        equality — was witnessed.
+        """
+        from tools.orchestration_runtime import _canonical_claude_hook_command
+        # One SUBSTRING matcher per tool: under `search` all six would be credited
+        # and the probe would PASS; under `fullmatch` none is, and it must refuse.
+        # A single substring matcher would fail under both and discriminate nothing —
+        # measured: the first version of this test did exactly that and the mutation
+        # survived it.
+        substrings = {"Bash": "as", "Write": "rit", "Edit": "di",
+                      "Read": "ea", "Grep": "re", "Glob": "lo"}
+        for tool, fragment in substrings.items():
+            self.assertIn(fragment, tool)              # the probe is what it claims
+            self.assertNotEqual(fragment, tool)
+        payload = self._config()
+        payload["hooks"]["PreToolUse"] = [
+            {"matcher": fragment,
+             "hooks": [{"type": "command",
+                        "command": _canonical_claude_hook_command("PreToolUse")}]}
+            for fragment in substrings.values()
+        ]
+        probe = self._probe(payload)
+        self.assertIs(probe["pass"], False)
+        self.assertIn("PreToolUse", probe["detail"])
+
     def test_the_grant_question_is_left_to_the_canonical_evaluator(self) -> None:
         """A configuration that grants by `bypassPermissions` — no allow list at all —
         must NOT be refused here. Re-deciding the grant in this probe made it stricter
@@ -34598,7 +34679,7 @@ class ClaudeLeafConfigPreflightTests(unittest.TestCase):
                         " - \u2713 Connected\n"))
         raise AssertionError(args)
 
-    def _probe(self, *, break_hooks: bool) -> dict:
+    def _probe(self, *, break_hooks: bool, drop_matcher: str = "Glob") -> dict:
         from tools.orchestration_runtime import probe_execution_platform
         from tools.tests.leaf_config_fixture import seed_claude_leaf_config
         with tempfile.TemporaryDirectory() as td:
@@ -34616,10 +34697,24 @@ class ClaudeLeafConfigPreflightTests(unittest.TestCase):
                 # blind spot hunk-level mutation cannot see.
                 payload = json.loads(leaf.read_text(encoding="utf-8"))
                 payload["hooks"]["PreToolUse"] = [
-                    b for b in payload["hooks"]["PreToolUse"] if b.get("matcher") != "Glob"]
+                    b for b in payload["hooks"]["PreToolUse"]
+                    if b.get("matcher") != drop_matcher]
                 leaf.write_text(json.dumps(payload), encoding="utf-8")
             return probe_execution_platform(
                 backend="claude", runner=self._runner, repo_root=root)
+
+    def test_every_covered_tool_is_gated_end_to_end(self) -> None:
+        """One probe per tool, through the REAL preflight.
+
+        The earlier version hard-coded dropping `Glob`, so exactly one of the six
+        matchers was independently witnessed and a shrink touching the other five
+        passed. Each tool here is a separate launch-refusal.
+        """
+        for tool in ("Bash", "Write", "Edit", "Read", "Grep", "Glob"):
+            result = self._probe(break_hooks=True, drop_matcher=tool)
+            by_name = {c["name"]: c for c in result["checks"]}
+            self.assertIs(by_name["claude_leaf_config_validated"]["pass"], False, tool)
+            self.assertFalse(result["can_launch_step_agents"], tool)
 
     def test_the_check_is_reported_and_gates_the_launch(self) -> None:
         present = self._probe(break_hooks=False)
@@ -34721,6 +34816,42 @@ class ClaudeWorkflowHomeTests(unittest.TestCase):
             self.assertEqual(_claude_trust_key(main), str(main.resolve()))
             # THE point of the test: from inside the worktree the key is still main.
             self.assertEqual(_claude_trust_key(tree), str(main.resolve()))
+
+    def test_the_seed_written_into_the_home_uses_the_main_root_key(self) -> None:
+        """At the HANDLER, not the helper.
+
+        `test_the_trust_seed_is_written_and_stays_writable` builds its repo under a
+        non-git temp dir, where `_claude_trust_key` and `repo_root` coincide — so it
+        could not see the seed reverting to `repo_root`, and that mutation survived.
+        This drives `_prepare_claude_workflow_home` from inside a real worktree, where
+        the two spellings differ, and reads the bytes actually written.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+        with tempfile.TemporaryDirectory() as td:
+            main = Path(td) / "main"
+            main.mkdir()
+            subprocess.run(["git", "init", "-q", str(main)], check=True)
+            for key, value in (("user.email", "t@e.com"), ("user.name", "T")):
+                subprocess.run(["git", "-C", str(main), "config", key, value], check=True)
+            seed_claude_leaf_config(main)
+            subprocess.run(["git", "-C", str(main), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(main), "commit", "-qm", "seed"], check=True)
+            tree = Path(td) / "wt"
+            subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "--detach",
+                            str(tree)], check=True)
+            self.addCleanup(subprocess.run,
+                            ["git", "-C", str(main), "worktree", "remove", "--force",
+                             str(tree)])
+            meta_dir = tree / "workspace" / "orchestrations" / "orch_w"
+            meta_dir.mkdir(parents=True)
+            (meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
+
+            iso = _prepare_claude_workflow_home(tree, "orch_w")
+            self.addCleanup(shutil.rmtree, Path(iso["home"]), True)
+            seed = json.loads(Path(iso["trust"]).read_text(encoding="utf-8"))
+            self.assertEqual(list(seed["projects"]), [str(main.resolve())])
+            self.assertNotIn(str(tree.resolve()), seed["projects"])
 
     def test_a_non_git_checkout_still_gets_a_seed(self) -> None:
         """No git, no worktree case to get wrong — fall back rather than fail."""
@@ -34931,13 +35062,28 @@ class ClaudeIsolationProfileTests(unittest.TestCase):
             self.assertEqual(setenv.get("CLAUDE_CONFIG_DIR"), iso["home"])
 
             rw_binds = {argv[i + 1] for i, token in enumerate(argv) if token == "--bind"}
-            self.assertIn(iso["home"], rw_binds)
             self.assertNotIn(str(operator / ".claude"), rw_binds)
             self.assertNotIn(str(operator / ".claude.json"), rw_binds)
 
+            ro_binds = {argv[i + 1] for i, token in enumerate(argv) if token == "--ro-bind"}
             ro_pairs = {(argv[i + 1], argv[i + 2])
                         for i, token in enumerate(argv) if token == "--ro-bind"}
             self.assertIn((iso["settings"], iso["settings"]), ro_pairs)
+
+            # The home itself is READ-ONLY and only the measured state paths are
+            # writable over it. Asserted as an exact set, not a containment: an
+            # extra writable path is the whole failure mode — `<home>/CLAUDE.md`
+            # and `<home>/agents/` are live instruction surfaces under
+            # `--setting-sources user`, and the home is shared by every leaf.
+            self.assertIn(iso["home"], ro_binds)
+            self.assertEqual(
+                {b for b in rw_binds if b.startswith(iso["home"])},
+                {str(Path(iso["home"]) / rel) for rel in CLAUDE_HOME_WRITABLE_RELPATHS},
+            )
+            # ...and the two injection surfaces are among what stays read-only:
+            # bwrap applies binds in order, so nothing later re-opens them.
+            for planted in ("CLAUDE.md", "agents", "skills"):
+                self.assertNotIn(str(Path(iso["home"]) / planted), rw_binds)
 
             # The operator's real credential file is bound WRITABLE over the empty
             # placeholder: token refresh must keep working, and that one file is the

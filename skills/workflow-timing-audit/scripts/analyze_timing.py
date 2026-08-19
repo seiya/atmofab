@@ -429,6 +429,7 @@ def main():
     orch_id = pick_orch(orch_dir, requested)
     orch_path = os.path.join(orch_dir, orch_id)
 
+    project_dirs = [project_dir] if project_dir else []
     if project_dir is None:
         slug = repo_root.replace("/", "-")
         # Since issue #63 a workflow leaf writes its transcript into the
@@ -446,8 +447,14 @@ def main():
                     private = candidate
         except (OSError, ValueError):
             private = None
-        project_dir = private or os.path.expanduser(
-            os.path.join("~/.claude/projects", slug))
+        # BOTH, private first. An orchestration resumed across the issue-#63
+        # migration has its older leaves under `~/.claude` and its newer ones in the
+        # private home; taking only the private directory whenever it exists made
+        # every older leaf look non-LLM below, silently undercounting the run's time
+        # and tokens. Resolved per run id, not per directory.
+        project_dirs = [d for d in (private, os.path.expanduser(
+            os.path.join("~/.claude/projects", slug))) if d]
+        project_dir = project_dirs[0]
 
     durations = load_leaf_durations(orch_path)
     labels = load_labels(orch_path)
@@ -458,8 +465,12 @@ def main():
     # to the leaf that first produced it, which is the earlier-launched one.
     raws = {}
     for row in durations:
-        tpath = os.path.join(project_dir, row["run_id"] + ".jsonl")
-        raws[row["run_id"]] = read_transcript(tpath) if os.path.exists(tpath) else None
+        raws[row["run_id"]] = None
+        for candidate_dir in project_dirs:
+            tpath = os.path.join(candidate_dir, row["run_id"] + ".jsonl")
+            if os.path.exists(tpath):
+                raws[row["run_id"]] = read_transcript(tpath)
+                break
 
     seen_ids = set()
     summaries = {}

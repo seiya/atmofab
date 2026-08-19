@@ -132,6 +132,11 @@ _SCANNED_GLOBS = (
     (".", "README.md"),
     (".", "AGENTS.md"),
     (".", "CLAUDE.md"),
+    # The committed leaf launch configuration (issue #63). In scope by
+    # `docs/BACKEND_BOUNDARY.md` §Scope, which lists it; every other §Scope bullet
+    # maps 1:1 to a glob here, and a token added under `leaf_config/` was unmeasured
+    # while the document said it was in scope.
+    ("leaf_config", "**/*.json"),
 )
 
 #: Out of scope by the rule. The three backend ROOTS are deliberately absent: a path under a

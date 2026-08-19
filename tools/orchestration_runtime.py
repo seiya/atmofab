@@ -15824,6 +15824,38 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 }
 
 
+# The ONLY paths inside the private home a leaf may write, MEASURED on CLI 2.1.235
+# by running an agentic (tool-using) leaf against a fresh home and diffing the tree:
+# `.claude.json` (rewritten on every start), `projects/` (transcripts, which
+# `--resume` needs), `sessions/`, `session-env/`, `shell-snapshots/` (created by the
+# Bash tool) and `backups/`.
+#
+# Everything ELSE in the home is bound read-only, and that polarity is the point.
+# Under `--setting-sources user` the config directory is a live instruction surface:
+# `<home>/CLAUDE.md` is injected as "the user's private global instructions" and
+# `<home>/agents/*.md` join the subagent roster (both measured). The home is shared
+# by every leaf of an orchestration, so a writable one lets a `generate` leaf plant
+# instructions that the later `validate.judge` leaf receives — a false certification
+# with no artifact trace, since writes outside `repo_root` are invisible to the
+# filesystem diff. An allowlist of writable paths makes an unknown name inert; a
+# denylist of injecting names would make every name the CLI adds next a silent hole.
+#
+# The cost of the polarity, stated: if a future CLI writes somewhere not listed here,
+# the leaf fails visibly rather than escaping quietly, and this list must be
+# re-measured. RESIDUE: `projects/` stays writable, so a leaf can still tamper with
+# another leaf's transcript (reads are blocked by `workflow_private_backend_homes`),
+# and `projects/<slug>/memory/MEMORY.md` remains writable — inert only because
+# `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` is set, which is therefore load-bearing.
+CLAUDE_HOME_WRITABLE_RELPATHS = (
+    ".claude.json",
+    "backups",
+    "projects",
+    "session-env",
+    "sessions",
+    "shell-snapshots",
+)
+
+
 def _claude_leaf_config_path(repo_root: Path) -> Path:
     """The committed settings file a Claude leaf — and ONLY a leaf — loads."""
     return repo_root / _normalize_rel_posix(CLAUDE_LEAF_CONFIG_REL)
@@ -16063,6 +16095,14 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
         # claude credential home is (it reads $HOME the same way the bwrap profile
         # does), so the file bound over the placeholder is the one inside the home
         # this repository already guards and binds — not a second spelling of it.
+        # Pre-created so the profile can bind them writable over the read-only home:
+        # bwrap needs an existing destination, and a path the CLI would create itself
+        # cannot be created once the home is read-only.
+        for rel in CLAUDE_HOME_WRITABLE_RELPATHS:
+            target = home / rel
+            if rel.endswith(".json"):
+                continue  # `.claude.json` is the trust seed, already written above
+            target.mkdir(mode=0o700, exist_ok=True)
         cred_dirs, _cred_files = _backend_credential_home_paths("claude")
         origin = cred_dirs[0] / ".credentials.json"
         # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json: the
@@ -16100,10 +16140,18 @@ def claude_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, A
     diagnostician's read-only profile) read this, so the two cannot drift into
     binding different things. The codex twin below exists for the same reason.
     """
+    home = isolation["home"]
     return {
-        # The home stays writable for session/transcript state (`--resume` depends
-        # on it), but the settings the leaf loads must be immutable to the leaf:
-        # otherwise a leaf could rewrite its own hooks and permission grants.
+        # The home is bound READ-ONLY and only the measured state paths are made
+        # writable over it (bwrap applies binds in order, so the later rw binds win
+        # inside those subtrees). This is what stops a leaf planting `CLAUDE.md` or
+        # `agents/*.md` in the home that every LATER leaf of the orchestration reads
+        # as instructions — see `CLAUDE_HOME_WRITABLE_RELPATHS`.
+        "backend_ro_extra": [home],
+        # Redundant while the home itself is read-only, and kept deliberately: it is
+        # the one pin that states "the settings the leaf loads are immutable to it"
+        # at the place a reader looks for it, and it survives if the home's binding
+        # is ever loosened again.
         "backend_ro_mappings": [(isolation["settings"], isolation["settings"])],
         # Token refresh must keep working, so the operator's real credential file is
         # bound WRITABLE over the placeholder. This is the only writable path outside
@@ -16113,8 +16161,9 @@ def claude_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, A
             if isolation.get("credentials") and isolation.get("credentials_destination")
             else []
         ),
-        "backend_rw_override": [isolation["home"]],
-        "env_overrides": {"CLAUDE_CONFIG_DIR": isolation["home"]},
+        "backend_rw_override": [str(Path(home) / rel)
+                                for rel in CLAUDE_HOME_WRITABLE_RELPATHS],
+        "env_overrides": {"CLAUDE_CONFIG_DIR": home},
     }
 
 

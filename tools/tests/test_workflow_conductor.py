@@ -372,10 +372,30 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                                llm_config=_cfg("claude"), env={})
             with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
                 self.assertTrue(c._claude_session_resumable("sess-private"))
-                # A pre-#63 session still lives in the operator home and must stay
-                # resumable, so both roots are searched.
-                self.assertTrue(c._claude_session_resumable("sess-operator"))
+                # A session in the OPERATOR's home is NOT resumable, even though it
+                # is findable: `--resume` is served from `CLAUDE_CONFIG_DIR`, so a
+                # pre-move transcript would send the launch at a home that never
+                # held it. The earlier version of this test asserted the opposite
+                # and encoded exactly that bug.
+                self.assertFalse(c._claude_session_resumable("sess-operator"))
                 self.assertFalse(c._claude_session_resumable("sess-absent"))
+
+    def test_no_private_home_means_nothing_is_resumable(self) -> None:
+        """Before any claude leaf has launched there is no home to resume into."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+            (repo / "workspace" / "orchestrations" / "o"
+             / "orchestration_meta.json").write_text("{}", encoding="utf-8")
+            operator_home = Path(td) / "operator_home"
+            proj = operator_home / ".claude" / "projects" / "-slug"
+            proj.mkdir(parents=True)
+            (proj / "sess-old.jsonl").write_text("{}\n", encoding="utf-8")
+            c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH",
+                               llm_config=_cfg("claude"), env={})
+            with mock.patch.dict(os.environ, {"HOME": str(operator_home)}, clear=False):
+                self.assertFalse(c._claude_session_resumable("sess-old"))
 
     def test_resolve_reuse_resume_none_for_restart_strategy(self) -> None:
         # restart stays cold (no resume) to avoid anchoring on the defective reasoning — this
@@ -6211,8 +6231,13 @@ class DiagnosticianTest(unittest.TestCase):
         home = meta["claude_workflow_home"]
         self.addCleanup(shutil.rmtree, Path(home), True)
 
+        from tools.orchestration_runtime import CLAUDE_HOME_WRITABLE_RELPATHS
         self.assertEqual((profile.get("env") or {}).get("CLAUDE_CONFIG_DIR"), home)
-        self.assertIn(home, profile.get("runtime_rw_bind_paths") or [])
+        self.assertIn(home, profile.get("runtime_ro_bind_paths") or [])
+        self.assertEqual(
+            {b for b in (profile.get("runtime_rw_bind_paths") or []) if b.startswith(home)},
+            {str(Path(home) / rel) for rel in CLAUDE_HOME_WRITABLE_RELPATHS},
+        )
         operator_home = Path(os.environ.get("HOME") or Path.home())
         self.assertNotIn(str(operator_home / ".claude"),
                          profile.get("runtime_rw_bind_paths") or [])

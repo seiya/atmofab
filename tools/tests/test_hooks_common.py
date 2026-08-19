@@ -3784,6 +3784,55 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                                 "a name-alike sibling is not, and claiming otherwise "
                                 "would overstate what the resolver closes")
 
+    def test_the_harness_own_persisted_tool_result_stays_readable_in_the_private_home(self) -> None:
+        """The exemption has to follow the file, or the guard eats the mechanism.
+
+        The harness saves an oversized tool output and tells the agent "Full output
+        saved to <path>". That path follows `CLAUDE_CONFIG_DIR`, so since issue #63
+        it is inside the private home — which this same branch made a protected read
+        root. Anchored on `~/.claude`, all three exemption sites stopped firing for
+        every leaf, and the read came back as `forbid_backend_credential_direct_read`:
+        a leaf that cannot read its own gate output reports on evidence it never saw.
+
+        The controls are the point: the same home must still refuse the credential
+        file and another leaf's transcript, so this is an exemption for one SHAPE and
+        not a hole in the root.
+        """
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            meta = repo / "workspace" / "orchestrations" / "o"
+            meta.mkdir(parents=True)
+            (meta / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            results = home / "projects" / slug / "sess-1" / "tool-results"
+            results.mkdir(parents=True)
+            (results / "abc.txt").write_text("oversized gate output", encoding="utf-8")
+            (home / ".credentials.json").write_text("SECRET", encoding="utf-8")
+            (home / "projects" / slug / "other-arid.jsonl").write_text("{}", encoding="utf-8")
+
+            def policy(command: str) -> str:
+                env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+                with patch.dict(os.environ, env, clear=False):
+                    decision = evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command))
+                return (decision.audit_detail or {}).get("policy", "")
+
+            # Asserted against THIS policy, not against "no policy at all": these
+            # fixtures live under /tmp, where a different pre-existing rule answers
+            # first, and demanding silence would pin that rule instead of this one.
+            self.assertNotEqual(policy(f"cat {results}/abc.txt"),
+                                "forbid_backend_credential_direct_read")
+            for blocked in (f"cat {home}/.credentials.json",
+                            f"cat {home}/projects/{slug}/other-arid.jsonl",
+                            f"ls {home}"):
+                self.assertEqual(policy(blocked),
+                                 "forbid_backend_credential_direct_read", msg=blocked)
+
     def test_the_guarded_home_is_the_one_the_host_recorded_not_the_one_a_caller_names(self) -> None:
         """The orchestration id is read from the environment, not the hook payload.
 

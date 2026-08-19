@@ -3750,25 +3750,32 @@ class Conductor:
         `--resume` is viable or must fall back to a cold launch (the session may have
         been expired/GC'd by Claude Code).
 
-        The projects roots come from the CANONICAL resolver, not a second spelling of
-        `~/.claude/projects`: issue #63 moved an agentic leaf's transcript into this
-        orchestration's private home, and a probe still pointing at the operator's home
-        would find nothing — silently degrading EVERY reuse repair to a cold launch
-        while the code still read as though warm resume worked."""
+        THE HOME THE LAUNCH WILL USE, and only that one. Issue #63 moved an agentic
+        leaf's transcript into this orchestration's private home, and `--resume` is
+        served from `CLAUDE_CONFIG_DIR`, so a transcript anywhere else is not
+        resumable no matter how findable it is. Searching the operator's
+        `~/.claude/projects` as well — which the shared resolver does, correctly, for
+        AUDIT consumers — answered True for a session recorded before the move and
+        sent `--resume <id>` at a home that has never held it. The same mismatch
+        follows a rotation. Both a reviewer and an independent Codex pass found this;
+        the safe answer is cold, which is what the repair loop already handles.
+
+        No private home recorded means no claude leaf has launched under this
+        orchestration yet, so anything findable is pre-move and equally unreachable:
+        False is right there too."""
         if not isinstance(session_id, str) or not session_id.strip():
             return False
-        from tools.hooks.common import claude_leaf_projects_roots
+        from tools.hooks.common import claude_workflow_home
         try:
-            roots = claude_leaf_projects_roots(self.repo_root, self.orchestration_id)
+            home = claude_workflow_home(self.repo_root, self.orchestration_id)
         except (OSError, ValueError):
             return False
-        for proj in roots:
-            try:
-                if sorted(proj.glob(f"*/{session_id.strip()}.jsonl")):
-                    return True
-            except OSError:
-                continue
-        return False
+        if home is None:
+            return False
+        try:
+            return bool(sorted((home / "projects").glob(f"*/{session_id.strip()}.jsonl")))
+        except OSError:
+            return False
 
     def _pure_session_resumable(self, session_id: str,
                                 entry: ResolvedLeafEntry | None = None,
@@ -7351,12 +7358,13 @@ clean:
             # exists to prevent; it is also a leaf reading `~/.claude`, and a leaf being handed
             # PAST-RUN state, both of which the workflow forbids outright.
             # Set here rather than on the argv because the CLI exposes no flag for it.
-            # KEPT after issue #63's private home, which independently empties the
-            # directory the memory would be read from: two mechanisms closing one hole
-            # is not redundancy to remove, because they close it for different reasons
-            # and a future CLI could relocate the memory file without relocating the
-            # home. Removing it would also be a deletion of a defence justified by
-            # reasoning rather than by a measured attempt.
+            # LOAD-BEARING, not redundant. An earlier version of this comment said
+            # issue #63's private home "independently empties the directory the memory
+            # would be read from"; that is FALSE, and measured so: the home's
+            # `projects/` stays writable (a leaf needs to write its own transcript),
+            # so `<home>/projects/<slug>/memory/MEMORY.md` can exist, and with this
+            # variable unset it IS injected. This variable is the only thing closing
+            # that path.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
             # CLAUDE_CONFIG_DIR is deliberately NOT set here. The private home reaches
             # the leaf through exactly ONE route — the bwrap profile's `--setenv`,

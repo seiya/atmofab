@@ -1126,9 +1126,14 @@ class ClaudeHookCliTests(unittest.TestCase):
             self.assertFalse(log_path.exists())
 
     def test_claude_backend_settings_json_command_works(self) -> None:
+        # The LEAF's settings file is the owner of the hook wiring (issue #63); the
+        # dev layer mirrors it. The sync test asserts leaf hooks are a SUBSET of dev,
+        # so a hook deleted on the leaf side would not show up there — reading the
+        # owner here is what makes that direction observable.
+        from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         repo_root = Path(__file__).resolve().parents[2]
         settings_doc = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            (repo_root / CLAUDE_LEAF_CONFIG_REL).read_text(encoding="utf-8")
         )
         with tempfile.TemporaryDirectory() as tmp:
             command = (
@@ -3178,14 +3183,21 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
 
     @staticmethod
     def _allowlisted_bash_matchers(repo_root: Path) -> list[re.Pattern[str]]:
-        """The Bash commands `.claude/settings.json` permits, read from the file.
+        """The Bash commands the LEAF's settings file permits, read from the file.
+
+        `leaf_config/claude/settings.json`, not `.claude/settings.json`: since issue
+        #63's final form that is the only permission layer a leaf loads, and this
+        pin followed the layer. Left pointing at the dev file, stripping all sixteen
+        `Bash(...)` entries from the leaf file left the entire suite green — the very
+        defect this test was written to prevent, one file over.
 
         A `*` is a wildcard wherever it appears, not only at the end: an earlier
         version stripped a trailing `*` and prefix-matched the rest, which made
         `Bash(jq -er * workspace/tmp/*)` unmatchable.
         """
+        from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         settings = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            (repo_root / CLAUDE_LEAF_CONFIG_REL).read_text(encoding="utf-8")
         )
         matchers = []
         for entry in settings["permissions"]["allow"]:
@@ -3270,8 +3282,8 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
     ) -> None:
         """PIN: every command a leaf is TOLD to run is matched by a committed entry.
 
-        Since PR #72 the committed `.claude/settings.json` is an agentic leaf's whole
-        permission layer, so an entry deleted or misspelled costs every leaf an
+        Since issue #63's final form the committed `leaf_config/claude/settings.json`
+        is an agentic leaf's whole permission layer, so an entry deleted or misspelled costs every leaf an
         interactive approval that cannot be answered — the workflow stalls. Nothing
         read that file after the redirect admission was removed: measured, stripping
         all sixteen `Bash(...)` entries left the entire suite green.
@@ -3858,9 +3870,11 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         ]
 
     def test_settings_json_registers_grep_and_glob_with_bash_first(self) -> None:
+        """Read from the LEAF's settings file, the owner of the hook wiring."""
+        from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
         repo_root = Path(__file__).resolve().parents[2]
         settings_doc = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+            (repo_root / CLAUDE_LEAF_CONFIG_REL).read_text(encoding="utf-8")
         )
         entries = settings_doc["hooks"]["PreToolUse"]
         matchers = [entry["matcher"] for entry in entries]
