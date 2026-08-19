@@ -64,10 +64,12 @@ A substitution script's `assert old in t` failed, the test ran **unmutated**, an
 back. It nearly became "this pin works" in the prose — the pin was in fact false and went green
 against `origin/main`'s wording, which only replacing the whole file revealed.
 
-- Count the occurrences before substituting and **exit non-zero on zero matches**
-  (`scripts/mutation_check.py` does this, and its analogue — a hunk `git apply -R` refuses — is
-  reported as SKIPPED and exits 1; until 2026-08-19 it was counted as neither a survivor nor
-  inconclusive, so a run where every hunk skipped printed "every hunk is pinned" and exited 0)
+- Count the occurrences before substituting and **exit non-zero on zero matches**.
+  `scripts/mutation_check.py` does this for the case that matches it — a hunk `git apply -R`
+  refuses is reported as SKIPPED and exits 1 (until 2026-08-19 it was counted as neither a survivor
+  nor inconclusive, so a run where every hunk skipped printed "every hunk is pinned" and exited 0).
+  It does **not** do it for a range that produced no hunks at all: that prints "nothing to check"
+  and exits 0, which is why the rule above is to read the hunk count rather than the exit code
 - The certain method is **replacing the whole file with `git show origin/main:<path>`** — string
   identification cannot fail
 - Put it in the reviewer launch prompt as well: PR #76's two reviewers built harnesses that abort

@@ -100,8 +100,9 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 run 4-way parallel in separate worktrees by default (`--jobs`); 4 hunks × 805 tests measured
 5m52s → 43s. **Do not put a `TMPDIR=` prefix in `--test-cmd`**: the script gives each job its own
 temp root, a prefix overrides it and puts every job back on one, and that is the shape that
-produces failures belonging to no hunk — recorded as `killed`, i.e. a false pin. It refuses the
-combination rather than mismeasuring. **Run the un-mutated baseline once first**: an already-red suite makes every hunk
+produces failures belonging to no hunk — recorded as `killed`, i.e. a false pin. At more than one
+job it refuses the combination (exit 2) rather than mismeasuring; at `--jobs 1` there is nothing to
+share, so it only says so. **Run the un-mutated baseline once first**: an already-red suite makes every hunk
 look "killed", and a red baseline exits 2 (`--skip-baseline` removes the check — write down why
 if you use it).
 
@@ -130,8 +131,10 @@ came from, and the reasoning you need when a rule does not obviously apply.
   The annotation is decided mechanically by AST comparison (blank the docstring, is it
   isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
   unmarked SURVIVED — the absence of the annotation is not evidence that a hunk is code
-- **Get `--range`'s base wrong and "no hunks in range" looks green.** Check the output states a
-  hunk count — after a merge or rebase `origin/main..HEAD` is empty
+- **Get `--range`'s base wrong and "no hunks in range" looks green** — it exits 0, because a
+  range with nothing to check is not a failure. Check the output states a hunk count: after a merge
+  or rebase `origin/main..HEAD` is empty, and a round whose diff is all tests and comments filters
+  down to the same message
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply.** "Nothing to
   check" with a correct base is **not applicable, not a pass** (PR #58). `--include-tests` does not
   rescue it: reverting a test hunk deletes an assertion, so it always survives and reading it is

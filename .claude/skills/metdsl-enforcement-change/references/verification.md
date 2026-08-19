@@ -31,8 +31,8 @@ TMPDIR=/dev/shm python3 -m pytest tools/tests/ -q -p no:randomly
   **hand over a stale count and reviewers take it for the baseline and miss a real failure**
 - **Skips: measure, do not assume.** On 2026-08-19 the suite reported 4877 passed and **0
   skipped**; every skip in `tools/tests/` is conditional on the host (gfortran, bwrap, `/proc` and
-  eight more conditions, all declared in `tools/tests/test_skip_reasons_are_declared.py`), so what
-  you see depends on the machine. **If a skip appears, find out which condition produced it** —
+  the rest of `_DECLARED_ENVIRONMENT_SKIPS` in
+  `tools/tests/test_skip_reasons_are_declared.py`), so what you see depends on the machine. **If a skip appears, find out which condition produced it** —
   that is the reason to look, and it is the same reason whether the count is 0 or 3. An earlier
   version of this line claimed one permanent calibration skip and sent a reader hunting a test that
   does not exist
@@ -49,11 +49,14 @@ independently. **It shows "nothing is broken" as a diff instead of an argument.*
 #    fix the gate's premises explicitly (node_key, dep_spec_ids, …)
 python3 corpus_scan.py > after.json
 # 2. run the SAME scanner against the baseline in a throwaway worktree. Feed the scanner in
-#    on stdin rather than copying it: a copied file is untracked, and `git worktree remove`
-#    then refuses (exit 128) and leaves both the directory and its registration behind.
-git worktree add -q --detach ~/.cache/corpus-base origin/main
-(cd ~/.cache/corpus-base && python3 - ) < corpus_scan.py > before.json
-git worktree remove ~/.cache/corpus-base
+#    on stdin rather than copying it in: ANY untracked file in the worktree makes
+#    `git worktree remove` refuse (exit 128) and leave both the directory and its
+#    registration behind. `mktemp -d` so a leftover from an earlier run cannot be scanned
+#    by mistake, and a `trap` so a scanner that raises still removes the worktree.
+BASE=$(mktemp -d) && rmdir "$BASE"
+git worktree add -q --detach "$BASE" origin/main || exit 1
+trap 'git worktree remove --force "$BASE" 2>/dev/null' EXIT
+(cd "$BASE" && python3 -) < corpus_scan.py > before.json
 # 3. report which violation in which file moved, not the counts
 ```
 
@@ -62,7 +65,16 @@ requires before you measure anything — `git stash` is a **silent no-op**: it e
 entry, and both scans read the same bytes, so the diff is empty and the check reports that nothing
 changed verdict. A trailing `git stash pop` then pops whatever unrelated entry was already on the
 stack into your checkout. Running the same scanner on both sides is not incidental either: the
-harness has to be identical, or what you measure includes the harness.
+harness has to be identical, or what you measure includes the harness. (`python3 -` gives the same
+`sys.path[0]` — the cwd — as running the file, so repo-relative imports behave identically; what
+differs is `__file__`, which is `<stdin>`. A scanner that reads its own source, or that needs a
+helper module beside it, wants a path outside the worktree instead.)
+
+**A reused worktree path is the same silent no-op in different clothes.** If the directory already
+exists, `git worktree add` fails, an unguarded script walks on, and the scan reads whatever
+revision that leftover tree is at — an empty diff again, from the population most likely to have a
+leftover: whoever ran the earlier version of this recipe. That is what `mktemp` and the `|| exit`
+above are for.
 
 - **Always record the harness.** Changing how dep_spec_ids are derived changes the absolute
   numbers (29→27 / 31→29 / 35→33 on the same tree). **The diff reproduces; the absolute values are
@@ -79,15 +91,19 @@ Compare per file, not by count. **Add a file to the comparison and the baseline 
 added, and was wrong.
 
 ```bash
-for f in <touched files>; do echo -n "$f: "; ruff check "$f" 2>&1 | tail -1; done
-git worktree add -q --detach ~/.cache/ruff-base origin/main
+# ruff answers `E902 No such file` + `Found 1 error.` for a path that does not exist, and
+# `tail -1` prints that count. Unguarded, a file the branch ADDS reads as a lint error the
+# branch fixed, and a file it DELETES (or the old name of a rename) reads as one it introduced.
+# Both sides need the test, not just the baseline side.
+BASE=$(mktemp -d) && rmdir "$BASE"
+git worktree add -q --detach "$BASE" origin/main || exit 1
+trap 'git worktree remove --force "$BASE" 2>/dev/null' EXIT
 for f in <touched files>; do
-  # a file the branch ADDS does not exist on the baseline, and ruff answers `E902 No such file`
-  # + `Found 1 error.` — which reads as "the branch fixed a lint error" if you skip this test
-  [ -f ~/.cache/ruff-base/"$f" ] || { echo "$f: (new on this branch — no baseline)"; continue; }
-  echo -n "$f: "; ruff check ~/.cache/ruff-base/"$f" 2>&1 | tail -1
+  for side in . "$BASE"; do
+    [ -f "$side/$f" ] || { echo "$f ($side): absent this side"; continue; }
+    echo -n "$f ($side): "; ruff check "$side/$f" 2>&1 | tail -1
+  done
 done
-git worktree remove ~/.cache/ruff-base
 ```
 
 `tail -1` is a summary, not a verdict: a file whose findings all carry fixes ends with
@@ -129,7 +145,7 @@ PY
 
 In PR #55, headroom fell to **1 byte** during work that was shortening a SKILL and went unnoticed
 for several rounds (it ended at 37). **As measured on 2026-08-13, 4 of the 9 docs had headroom
-under 50** (`workflow-generate-generate` +6, `workflow-generate-verify` +5, `AGENT_CONTRACT` +47,
+of 50 or less** (`workflow-generate-generate` +6, `workflow-generate-verify` +5, `AGENT_CONTRACT` +47,
 `phase_01_compile` +50). **One added sentence fails those.** Measure before touching them.
 
 ## End to end through a real server process

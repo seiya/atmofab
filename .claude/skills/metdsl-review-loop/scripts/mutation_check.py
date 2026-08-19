@@ -35,7 +35,12 @@ counted as a failure, never folded into "pinned".
 
 Exit code is 1 when an UNANNOTATED hunk survives (a docstring-only survivor is
 expected and does not fail the run), or when any hunk is inconclusive or skipped; 2 when
-the baseline is red or the run cannot be trusted.
+the baseline is red, or when `--test-cmd` sets TMPDIR while several jobs run, which would
+put them on one temp root.
+
+A range with no hunks left to check — a wrong base, or everything filtered out as a test
+file or a comment — prints that and exits 0. It is not a pass: nothing was tested. Read the
+hunk count the run prints, never the exit code alone.
 """
 
 from __future__ import annotations
@@ -147,7 +152,14 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
             cwd=scratch, input=patch, text=True, capture_output=True)
         if reverted.returncode != 0:
             return False  # not provably prose; keep the unqualified SURVIVED
-        after_source = target.read_text(encoding="utf-8")
+        try:
+            after_source = target.read_text(encoding="utf-8")
+        except OSError:
+            # A rename hunk reverts the file to its OLD path, so nothing is at `path` any
+            # more. That is a code move, never a docstring-only change; before this guard
+            # the FileNotFoundError escaped as a traceback and the process exited 1 with no
+            # summary — indistinguishable, to a caller reading the exit code, from survivors.
+            return False
     before, after = _stripped(current), _stripped(after_source)
     return before is not None and before == after
 
@@ -159,8 +171,12 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> str:
     return proc.stdout
 
 
-#: A `VAR=value` prefix a shell applies to the command — only TMPDIR matters here.
-_TMPDIR_ASSIGNMENT_RE = re.compile(r"(?:^|[;&|]\s*|\s)TMPDIR=")
+#: A `VAR=value` assignment a shell applies to the command — only TMPDIR matters here.
+#: Anything that is not a name character before `TMPDIR=` starts an assignment, which covers
+#: the quoted and sub-shell forms (`sh -c "TMPDIR=… …"`, `(TMPDIR=… …)`) that an earlier
+#: version — anchored on whitespace and `;&|` — read straight past. `=`, `/`, `:`, `-` and `.`
+#: before it mean it is part of a path, a flag value or a test id, not an assignment.
+_TMPDIR_ASSIGNMENT_RE = re.compile(r"(?<![\w=/:.\-])TMPDIR=")
 
 
 def _split_hunks(diff_text: str) -> list[tuple[str, str]]:
@@ -270,8 +286,8 @@ def main() -> int:
             return 2
         print("note: --test-cmd sets TMPDIR, overriding the per-job temp root. Harmless at "
               "--jobs 1.")
-    if "pytest" in args.test_cmd and not any(
-            flag in args.test_cmd.split() for flag in ("-x", "--exitfirst")):
+    if "pytest" in args.test_cmd and not re.search(r"(?<![\w-])(-x|--exitfirst)(?![\w-])",
+                                                   args.test_cmd):
         print("hint: only the exit code is read — adding -x to --test-cmd ends each "
               "killed hunk at its first failing test")
 
@@ -309,7 +325,17 @@ def main() -> int:
         with lock:
             wt = free.pop()
         try:
+            # `git checkout -- .` restores tracked files ONLY. A hunk whose revert CREATES a
+            # file — the change deleted or renamed one — leaves that file untracked in this
+            # worktree, and the next hunk scheduled here inherits it: its suite fails for the
+            # leftover and the hunk is scored `killed`. Measured: a two-commit range (one
+            # deletion, one unpinned addition) reported "every hunk is pinned" and exit 0 at
+            # --jobs 1, while --jobs 2 correctly reported the addition as SURVIVED — the
+            # verdict depended on how many jobs the machine chose. `-x` as well as `-fd`,
+            # because a stale ignored artifact (a `__pycache__`, a leftover workspace dir) is
+            # the same class of carry-over.
             _run(["git", "checkout", "--", "."], cwd=wt, check=False)
+            _run(["git", "clean", "-qfdx"], cwd=wt, check=False)
             revert = subprocess.run(
                 ["git", "apply", "-R", "--recount", "-"], cwd=wt,
                 input=patch, text=True, capture_output=True)
