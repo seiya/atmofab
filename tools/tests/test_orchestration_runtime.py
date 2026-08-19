@@ -34390,6 +34390,77 @@ class ClaudeLeafConfigProbeTests(unittest.TestCase):
         self.assertIs(self._probe(payload)["pass"], False)
 
 
+class ClaudeLeafConfigPreflightTests(unittest.TestCase):
+    """The leaf configuration is checked at PREFLIGHT, not only at the first launch.
+
+    `_prepare_claude_workflow_home` fails closed on the same probe, but that happens at
+    the first leaf launch — mid-run, after the operator has been billed for everything
+    up to it. The fault is knowable before init, so it is surfaced there too; the
+    launch-time check stays as the authoritative backstop.
+    """
+
+    @staticmethod
+    def _runner(args, **kwargs):  # type: ignore[no-untyped-def]
+        """The same CLI double the sibling registry tests use, so this test's other
+        preflight checks pass for the reasons they normally do."""
+        if args[0] == "claude" and args[1:] == ["--version"]:
+            return _FakeCompletedProcess(0, stdout="2.1.235 (Claude Code)\n")
+        if args[0] == "claude" and args[1:] == ["features", "list"]:
+            return _FakeCompletedProcess(1, stderr="unknown command\n")
+        if args[0] == "claude" and args[1:] == ["-p"]:
+            return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+        if args[0] == "claude" and args[1:] == ["--help"]:
+            return _FakeCompletedProcess(
+                0, stdout="Usage: claude [options] [command] [prompt]\n")
+        if args[0] == "claude" and args[1:] == ["mcp", "list"]:
+            return _FakeCompletedProcess(
+                0,
+                stdout=("build-runtime: stdio python3 ./mcp_servers/build_runtime_server.py"
+                        " - \u2713 Connected\n"))
+        raise AssertionError(args)
+
+    def _probe(self, *, break_hooks: bool) -> dict:
+        from tools.orchestration_runtime import probe_execution_platform
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"enabledMcpjsonServers": ["build-runtime"]}), encoding="utf-8")
+            leaf = seed_claude_leaf_config(root)
+            if break_hooks:
+                # The GRANT stays intact and only the hook wiring is broken, so the
+                # permission check still passes. Deleting the file instead would fail
+                # that check too, and this test would then be green even with the
+                # gating line removed — measured: that mutation survived the first
+                # version of this test, which is the "passes for a different reason"
+                # blind spot hunk-level mutation cannot see.
+                payload = json.loads(leaf.read_text(encoding="utf-8"))
+                payload["hooks"]["PreToolUse"] = [
+                    b for b in payload["hooks"]["PreToolUse"] if b.get("matcher") != "Glob"]
+                leaf.write_text(json.dumps(payload), encoding="utf-8")
+            return probe_execution_platform(
+                backend="claude", runner=self._runner, repo_root=root)
+
+    def test_the_check_is_reported_and_gates_the_launch(self) -> None:
+        present = self._probe(break_hooks=False)
+        by_name = {c["name"]: c for c in present["checks"]}
+        self.assertIn("claude_leaf_config_validated", by_name)
+        self.assertIs(by_name["claude_leaf_config_validated"]["pass"], True)
+        self.assertEqual(present["status"], "pass")
+        self.assertTrue(present["can_launch_step_agents"])
+
+        broken = self._probe(break_hooks=True)
+        by_name = {c["name"]: c for c in broken["checks"]}
+        self.assertIs(by_name["claude_leaf_config_validated"]["pass"], False)
+        # Every OTHER check still passes here, so the refusal is attributable to this
+        # one: reported AND gating. A check that were merely listed would let the run
+        # start and fail at the first leaf instead.
+        self.assertIs(by_name["claude_mcp_build_runtime_permission_granted"]["pass"], True)
+        self.assertEqual(broken["status"], "fail")
+        self.assertFalse(broken["can_launch_step_agents"])
+
+
 class ClaudeWorkflowHomeTests(unittest.TestCase):
     """`_prepare_claude_workflow_home` — the private CLAUDE_CONFIG_DIR (issue #63)."""
 

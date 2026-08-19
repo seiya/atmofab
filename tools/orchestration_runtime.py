@@ -15803,6 +15803,9 @@ def _secure_backend_home_file(
             os.close(fd)
 
 
+# The repo-relative path of the leaf's own configuration. ONE spelling: the probe, the
+# home preparation, and the preflight permission read all resolve through
+# `_claude_leaf_config_path` below rather than repeating it.
 CLAUDE_LEAF_CONFIG_REL = "leaf_config/claude/settings.json"
 
 # The events + matchers the leaf's PreToolUse/read boundary depends on. Kept as a
@@ -15820,7 +15823,7 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 
 def _claude_leaf_config_path(repo_root: Path) -> Path:
     """The committed settings file a Claude leaf — and ONLY a leaf — loads."""
-    return repo_root / "leaf_config" / "claude" / "settings.json"
+    return repo_root / _normalize_rel_posix(CLAUDE_LEAF_CONFIG_REL)
 
 
 def _canonical_claude_hook_command(event: str) -> str:
