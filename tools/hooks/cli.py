@@ -24,6 +24,7 @@ from tools.hooks.common import (
     _is_self_agent_manifest_read_path,
     _load_read_manifest_allowed_roots,
     _is_persisted_tool_result_shape,
+    _workflow_orchestration_id,
     _read_target_in_allowed_roots,
     _resolve_target_path,
     _strip_quoted_strings,
@@ -752,8 +753,15 @@ def _is_auto_approvable_readonly_bash(
         for word in scanned.split():
             if not word.startswith("/"):
                 continue
+            # The orchestration id is threaded so the shape resolver can see the
+            # PRIVATE home: since issue #63 an agentic leaf's persisted tool output
+            # lives there, not in `~/.claude`. Without it this auto-approve path
+            # searches the operator home only, so the read the harness just told the
+            # agent to make is classified out-of-repo and falls through to the
+            # committed permissions — which grant no `cat /tmp/...`.
             if word in _OUT_OF_REPO_READ_EXEMPT or _is_persisted_tool_result_shape(
-                repo_root, _expanded_target_path(repo_root, word)
+                repo_root, _expanded_target_path(repo_root, word),
+                _workflow_orchestration_id()
             ):
                 continue
             if not _is_path_under_root(_resolve_target_path(repo_root, word), repo_resolved):
@@ -1348,7 +1356,8 @@ def _evaluate_bash_read_manifest_policy(
             out_of_repo.extend(escaped)
             continue
         if target in _OUT_OF_REPO_READ_EXEMPT or _is_persisted_tool_result_shape(
-            repo_root, _expanded_target_path(repo_root, target)
+            repo_root, _expanded_target_path(repo_root, target),
+            _workflow_orchestration_id()
         ):
             # Not a file read at all — and `diff -u /dev/null <in-repo file>` is a
             # real, common shape whose auto-approve is worth keeping.

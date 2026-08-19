@@ -3277,6 +3277,49 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 return False
         return True
 
+    def test_a_private_home_tool_result_is_auto_approved_not_merely_unblocked(self) -> None:
+        """The carve-out has to reach the AUTO-APPROVE path, not only the block path.
+
+        Two layers decide this read. The common policy stopped BLOCKING it once the
+        exemption learned about the private home — but auto-approval is a separate
+        call, and its callers here did not pass the orchestration id, so it kept
+        searching `~/.claude` only. The read then fell through to the committed leaf
+        permissions, which grant no `cat /tmp/...`, and the file the harness had just
+        told the agent to read stayed unavailable through Bash. Fixing the block and
+        declaring victory is exactly what happened; this asserts the end state.
+        """
+        from tools.hooks.cli import _is_auto_approvable_readonly_bash
+        with tempfile.TemporaryDirectory() as repo_td, tempfile.TemporaryDirectory() as homes:
+            repo = Path(repo_td)
+            home = Path(homes) / "metdsl-claude-t"
+            home.mkdir()
+            meta = repo / "workspace" / "orchestrations" / "o"
+            meta.mkdir(parents=True)
+            (meta / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(home)}), encoding="utf-8")
+            slug = str(repo.resolve()).replace("/", "-")
+            results = home / "projects" / slug / "sess-1" / "tool-results"
+            results.mkdir(parents=True)
+            target = results / "abc.txt"
+            target.write_text("oversized gate output", encoding="utf-8")
+
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o"}
+            with patch.dict(os.environ, env, clear=False):
+                self.assertTrue(
+                    _is_auto_approvable_readonly_bash(f"cat {target}", repo))
+                # CONTROL — auto-approval bypasses the harness allowlist, so it must
+                # not have become "any out-of-repo file".
+                other = Path(homes) / "unrelated.txt"
+                other.write_text("x", encoding="utf-8")
+                self.assertFalse(
+                    _is_auto_approvable_readonly_bash(f"cat {other}", repo))
+            # CONTROL — without the host-set orchestration id there is no private
+            # home to recognise, so the pre-issue-#63 answer stands.
+            with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+                os.environ.pop("METDSL_ORCHESTRATION_ID", None)
+                self.assertFalse(
+                    _is_auto_approvable_readonly_bash(f"cat {target}", repo))
+
     def test_committed_allowlist_covers_the_commands_the_repository_instructs(
         self,
     ) -> None:
