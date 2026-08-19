@@ -7974,6 +7974,9 @@ class LeafSpawnTest(unittest.TestCase):
             (prof_dir / "A.json").write_text(json.dumps({
                 "repo_root": str(repo), "tmp_dir": str(ws_tmp),
                 "workspace_tmp_rw_abs": str(ws_tmp),
+                # `render_bwrap_command` fails closed on an env-less profile: under
+                # `--clearenv` the leaf would get NO environment at all.
+                "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
                 "read_roots": [], "write_roots": [],
                 "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             }), encoding="utf-8")
@@ -8116,6 +8119,9 @@ class LeafSpawnTest(unittest.TestCase):
             (prof_dir / "A.json").write_text(json.dumps({
                 "repo_root": str(repo), "tmp_dir": str(ws_tmp),
                 "workspace_tmp_rw_abs": str(ws_tmp),
+                # `render_bwrap_command` fails closed on an env-less profile: under
+                # `--clearenv` the leaf would get NO environment at all.
+                "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
                 "read_roots": [], "write_roots": [],
                 "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             }), encoding="utf-8")
@@ -8147,6 +8153,8 @@ class LeafSpawnTest(unittest.TestCase):
         (prof_dir / "A.json").write_text(json.dumps({
             "repo_root": str(repo), "tmp_dir": str(ws_tmp),
             "workspace_tmp_rw_abs": str(ws_tmp),
+            # see the sibling fixtures: an env-less profile no longer renders.
+            "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
             "read_roots": [], "write_roots": [],
             "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
         }), encoding="utf-8")
@@ -17258,7 +17266,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
-        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
         c.record_launch("arid-2", {}, c.entry_for("validate", "judge"))
@@ -17278,7 +17286,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "  command: /opt/wrap/claude --sandbox\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        command: /opt/other/claude\n"))
-        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         for phase, substep in (("generate", "generate"), ("validate", "judge")):
             entry = c.entry_for(phase, substep)
@@ -17293,7 +17301,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                                 entry: "wc.ResolvedLeafEntry | None") -> dict:
         """Drive the real `record_launch` and return the response payload it sent."""
         recorded: list[dict] = []
-        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         c.record_launch(arid, request, entry)
         return recorded[-1]
@@ -17539,7 +17547,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         calls: list[list[str]] = []
-        c.runtime = lambda argv: (calls.append(list(argv)) or {})   # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (calls.append(list(argv)) or {})   # type: ignore[assignment]
         with self.assertRaises(OSError):
             c.record_launch("arid-1", {"step": "generate", "substep": "generate"},
                             c.entry_for("generate", "generate"))
@@ -17572,7 +17580,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                     b"{}", b"[]", b"123", b'"a string"', b'{"mcpServers": []}',
                     b'{"mcpServers": null}'):
             (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(bad)
-            c.runtime = lambda argv: {}                          # type: ignore[assignment]
+            c.runtime = lambda argv, *, input=None: {}                          # type: ignore[assignment]
             with self.assertRaises(OSError, msg=repr(bad)) as caught:
                 c.record_launch("arid-1", {"step": "generate", "substep": "generate"}, entry)
             self.assertIn(".mcp.json", str(caught.exception))
@@ -17621,7 +17629,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        c.runtime = lambda argv: {}                                 # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: {}                                 # type: ignore[assignment]
         with self.assertRaises(OSError) as caught:
             c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
         # Read the message THIS code composes (`args[0]`), not `str(exception)`: the chained

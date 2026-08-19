@@ -4294,6 +4294,12 @@ class Conductor:
                 agent_run_id=self.orchestration_agent_run_id,
                 backend_command=backend_command,
                 backend_type=entry.backend_token,
+                # The diagnostician is the ONE leaf built in-process, so without this the
+                # builder would fall back to filtering the DRIVER's raw `os.environ`
+                # rather than the conductor's `self.env`. Those differ whenever the two
+                # were seeded differently, and under `--clearenv` the difference is no
+                # longer invisible — it decides what the leaf gets.
+                child_env=self._child_env(self.orchestration_agent_run_id, entry),
                 **profile_kwargs,
             )
         except (ValueError, OSError) as exc:
@@ -5285,10 +5291,21 @@ class Conductor:
             "--child-agent-run-id", child_arid,
             "--request-json-file", request_ref,
             "--response-json", json.dumps(response),
+            # The environment the sandbox profile is BUILT from is the environment the
+            # spawn will pass — `_child_env` is deterministic, so this call and the
+            # `spawn_leaf` that follows compute the identical dict, and the persisted
+            # profile is a record of the leaf's real environment rather than of a second
+            # one derived over there. Over STDIN, not argv: these values would otherwise
+            # be readable in `ps` by every process on the host, and an HTTP entry's
+            # credential can be among them. Not written to the request evidence file
+            # either — the profile is the ONE record, and a second copy would be a
+            # second thing to keep true.
+            "--child-env-from-stdin",
         ]
         if expected_codex_home_generation is not None:
             argv += ["--expected-codex-home-generation", str(expected_codex_home_generation)]
-        return self.runtime(argv)
+        return self.runtime(argv, input=json.dumps(
+            self._child_env(child_arid, entry), ensure_ascii=False))
 
     def _launch_setting_surface(self, child_arid: str, request: dict[str, Any],
                                 entry: ResolvedLeafEntry | None) -> dict[str, Any]:

@@ -18281,6 +18281,9 @@ class BwrapProfileFilePinTests(unittest.TestCase):
                     [str(config), str(config)],
                     [str(auth), str(auth)],
                 ],
+                # An env-less profile no longer renders: with `--clearenv` it would
+                # launch a leaf with no environment at all, so the layer fails closed.
+                "env": {"PATH": "/usr/bin:/bin", "CODEX_HOME": str(codex_home)},
             }
             cmd = render_bwrap_command(profile=profile, command_argv=["codex"])
             home_bind_idx = next(
@@ -20931,7 +20934,8 @@ class RecordTimeoutTests(unittest.TestCase):
     def _setup_substep_launch(self, repo_root: Path,
                               response_extra: dict | None = None,
                               request_extra: dict | None = None,
-                              omit_backend: bool = False) -> str:
+                              omit_backend: bool = False,
+                              child_env: dict | None = None) -> str:
         """Initialise an orchestration with a substep launched and return the substep agent_run_id.
 
         `response_extra` merges extra keys into the launch response payload, for callers
@@ -20972,6 +20976,7 @@ class RecordTimeoutTests(unittest.TestCase):
             orchestration_id="orch_to_001",
             parent_agent_run_id="orch_run_to_001",
             child_agent_run_id=substep_arid,
+            child_env=child_env,
             request_payload={
                 "agent_model": "claude-opus-4-8",
                 "agent_run_id": substep_arid,
@@ -21126,6 +21131,62 @@ class RecordTimeoutTests(unittest.TestCase):
                 _hashlib.sha256(
                     (repo_root / "leaf_config" / "claude" / "settings.json").read_bytes()
                 ).hexdigest())
+
+    def test_the_threaded_child_env_is_what_the_profile_records_and_delivers(self) -> None:
+        """The persisted profile IS the environment record (no second field: see
+        `feedback_no_redundant_persistence`), so it has to be the environment the leaf
+        gets. Driven through the real `record_launch`, asserted on both halves of the
+        artifact — `#env` and the `--setenv` map of `#rendered_command` — because the
+        rendered argv is the only thing that reflects the wiring rather than restating it.
+        """
+        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
+                    "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
+                    "METDSL_ORCHESTRATION_ID": "orch_to_001",
+                    "METDSL_CHILD_AGENT_RUN_ID": "substep_run_to_001",
+                    "METDSL_WORKFLOW_MODE": "1",
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            arid = self._setup_substep_launch(repo_root, child_env=dict(authored))
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            meta = json.loads(
+                (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.addCleanup(shutil.rmtree, Path(meta["claude_workflow_home"]), True)
+            profile = json.loads(
+                (orch_root / "sandbox_profiles" / f"{arid}.json").read_text(encoding="utf-8"))
+            # the record: exactly what was authored, plus only the names the DELIVERER owns
+            self.assertEqual(
+                {k: v for k, v in profile["env"].items()
+                 if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS)},
+                authored)
+            self.assertEqual(profile["env"]["CLAUDE_CONFIG_DIR"],
+                             meta["claude_workflow_home"])
+            # the delivery: the rendered argv carries that same set and nothing else
+            argv = profile["rendered_command"]
+            setenv = {argv[i + 1]: argv[i + 2]
+                      for i, tok in enumerate(argv) if tok == "--setenv"}
+            self.assertEqual(setenv, profile["env"])
+            self.assertEqual(argv.count("--clearenv"), 1)
+            self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
+
+    def test_a_launch_without_a_threaded_env_still_excludes_the_host_poison(self) -> None:
+        """The `child_env=None` path (a conductor-less caller) must not be a way back in:
+        it filters `os.environ` through the same owner constant. Sibling of the assertion
+        above rather than a repeat — this is the fallback, that one is the threading."""
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                                          "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001"}):
+            with tempfile.TemporaryDirectory() as td:
+                repo_root = Path(td)
+                arid = self._setup_substep_launch(repo_root)
+                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                meta = json.loads(
+                    (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+                self.addCleanup(shutil.rmtree, Path(meta["claude_workflow_home"]), True)
+                profile = json.loads((orch_root / "sandbox_profiles" /
+                                      f"{arid}.json").read_text(encoding="utf-8"))
+        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
+        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
+        self.assertNotIn("ANTHROPIC_BASE_URL", "\x00".join(profile["rendered_command"]))
 
     def test_the_launched_profile_actually_carries_the_isolation(self) -> None:
         """Driven through `record_launch`, asserted on the PERSISTED argv.
@@ -35262,3 +35323,269 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
                     got = ort.leaf_env_from(host)
                 self.assertNotEqual(got, full)
                 self.assertNotIn(name, got if name != "PATH" else {})
+
+
+class LeafEnvClosureTests(unittest.TestCase):
+    """The DELIVERY and RECORD half of the leaf's declared environment (issue #63, PR-B).
+
+    The conductor AUTHORS the dict (`_child_env`, pinned in `test_workflow_conductor.py`);
+    this class pins that the sandbox hands the leaf exactly that dict and nothing else, and
+    that the persisted profile is a record of it rather than of a second one.
+    """
+
+    # -- the CLI seam that carries the authored dict ---------------------------
+
+    def test_the_stdin_flag_parses_only_a_non_empty_object_of_strings(self) -> None:
+        """The seam the conductor actually uses. On STDIN rather than argv because these
+        values would otherwise be readable in `ps` by every process on the host, and an
+        HTTP entry's credential can be among them — so the parse is where the shape is
+        checked, and a bad shape must fail closed rather than build an env-less profile.
+        """
+        from tools.orchestration_runtime import main as runtime_main
+
+        def _run(raw: str) -> str:
+            buf, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(sys, "stdin", io.StringIO(raw)):
+                with redirect_stdout(buf), redirect_stderr(err):
+                    rc = runtime_main([
+                        "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                        "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                        "--request-json", "{}", "--response-json", "{}",
+                        "--child-env-from-stdin",
+                    ])
+            self.assertEqual(rc, 1)
+            return err.getvalue().strip()
+
+        for raw in ("", "not json", "[]", "{}", '{"A": 1}', "null"):
+            with self.subTest(raw=raw):
+                # NAMES the flag, so the refusal is this parse and not some later
+                # validation the fixture also fails.
+                self.assertIn("--child-env-from-stdin", _run(raw))
+        # Control: every one of these calls fails (the fixture payloads are empty), so
+        # "rc == 1" alone proves nothing. A WELL-FORMED env gets past this parse and dies
+        # further in, at response-json validation — that is what makes the six above
+        # attributable to the parse.
+        self.assertNotIn("--child-env-from-stdin", _run('{"PATH": "/usr/bin"}'))
+
+    def _profile(self, **over) -> dict:
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        root = Path(d)
+        (root / "repo").mkdir()
+        (root / "ws").mkdir()
+        (root / "tmp").mkdir()
+        base = {
+            "repo_root": str(root / "repo"),
+            "tmp_dir": str(root / "tmp"),
+            "workspace_tmp_rw_abs": str(root / "ws"),
+            "read_roots": [], "write_roots": [],
+            "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
+            "env": {"PATH": "/usr/bin:/bin", "HOME": "/h",
+                    "METDSL_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws")},
+        }
+        base.update(over)
+        if "env" in over and isinstance(over["env"], dict) and over["env"]:
+            base["env"] = {**over["env"]}
+            if "TMPDIR" in base["env"]:
+                base["env"]["TMPDIR"] = str(root / "ws")
+        return base
+
+    @staticmethod
+    def _setenv_map(argv: list) -> dict:
+        return {argv[i + 1]: argv[i + 2] for i, tok in enumerate(argv) if tok == "--setenv"}
+
+    # -- the render layer ------------------------------------------------------
+
+    def test_clearenv_is_rendered_exactly_once_and_before_every_setenv(self) -> None:
+        """Measured on bubblewrap 0.11.0: `--clearenv` wipes what EARLIER `--setenv`s
+        set, so a `--clearenv` that drifted after them would silently deliver a leaf with
+        no environment at all — and every absence assertion in this file would still pass,
+        because absent is exactly what it would produce. Position is the assertion."""
+        argv = ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])
+        self.assertEqual(argv.count("--clearenv"), 1)
+        self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
+
+    def test_the_rendered_setenv_set_is_exactly_the_profile_env(self) -> None:
+        """Set identity, not containment: a `--setenv` the profile does not name is a
+        name the record does not describe, which is the whole failure being closed."""
+        profile = self._profile()
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv), profile["env"])
+
+    def test_the_host_environment_cannot_reach_the_leaf_through_this_layer(self) -> None:
+        """The end-to-end property in one assertion: with a poisoned process environment,
+        nothing of it appears in the rendered argv."""
+        poison = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                  "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+                  "AWS_SECRET_ACCESS_KEY": "s3cret", "LD_PRELOAD": "/evil.so"}
+        with mock.patch.dict(os.environ, poison, clear=False):
+            argv = ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])
+        joined = "\x00".join(argv)
+        for name, value in poison.items():
+            with self.subTest(name=name):
+                self.assertNotIn(name, joined)
+                self.assertNotIn(value, joined)
+
+    def test_a_profile_without_an_env_fails_closed(self) -> None:
+        """Under `--clearenv` an env-less profile is not "the default environment", it is
+        NO environment — no PATH, no config home, no orchestration id. The old code's
+        `if isinstance(profile_env, dict):` would have rendered it silently."""
+        for bad in ({}, None, "PATH=/usr/bin", []):
+            with self.subTest(env=bad):
+                profile = self._profile()
+                if bad is None:
+                    profile.pop("env")
+                else:
+                    profile["env"] = bad
+                with self.assertRaises(ValueError):
+                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_an_undeclared_name_in_the_profile_fails_closed(self) -> None:
+        """A stranger here means something built an environment outside `leaf_env_from`
+        — the one question this layer exists to answer — so it is refused rather than
+        delivered and recorded as though it had been declared."""
+        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "METDSL_HOME", "SHELL"):
+            with self.subTest(name=name):
+                profile = self._profile()
+                profile["env"] = {**profile["env"], name: "x"}
+                with self.assertRaises(ValueError) as ctx:
+                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+                self.assertIn(name, str(ctx.exception))
+
+    def test_the_names_only_the_deliverer_adds_are_accepted(self) -> None:
+        """The two backend-home names and the claude extras never come from the author,
+        so the validation has to allow them — asserted, or a correct profile would be
+        refused and every launch would fail closed."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "CLAUDE_CONFIG_DIR": "/home/x",
+                          "CODEX_HOME": "/home/y",
+                          "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
+                          "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv), profile["env"])
+
+    def test_a_tmpdir_that_disagrees_with_the_bind_fails_closed(self) -> None:
+        """The writable bind is what makes TMPDIR usable, so a TMPDIR naming anywhere
+        else points the leaf at a path bwrap did not make writable."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "TMPDIR": "/somewhere/else"}
+        with self.assertRaises(ValueError):
+            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_tmpdir_is_the_resolved_bind_even_if_the_env_omits_it(self) -> None:
+        profile = self._profile()
+        profile["env"] = {k: v for k, v in profile["env"].items() if k != "TMPDIR"}
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv)["TMPDIR"],
+                         str(Path(profile["workspace_tmp_rw_abs"]).resolve()))
+
+    def test_an_empty_value_is_dropped_rather_than_declared_empty(self) -> None:
+        """`--setenv CLAUDE_CONFIG_DIR ""` points the CLI at the empty path; absent lets
+        its own resolution run. The pre-`--clearenv` code skipped empty backend-home
+        values for exactly this reason and the rule now covers every name."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "CLAUDE_CONFIG_DIR": ""}
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertNotIn("CLAUDE_CONFIG_DIR", self._setenv_map(argv))
+
+    # -- the profile builders --------------------------------------------------
+
+    def test_a_threaded_child_env_is_what_the_profile_carries(self) -> None:
+        """Congruence: what the conductor authored is what the profile records, plus only
+        the names the deliverer owns (TMPDIR here; the backend home arrives via
+        `env_overrides`). Without this the builder would re-derive from `os.environ` and
+        the record could describe an environment no leaf ran under."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        repo = Path(d)
+        authored = {"PATH": "/a/bin", "HOME": "/a/home", "LANG": "C.UTF-8",
+                    "METDSL_ORCHESTRATION_ID": "o", "METDSL_CHILD_AGENT_RUN_ID": "A"}
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="claude", backend_type="claude", child_env=authored)
+        self.assertEqual({k: v for k, v in profile["env"].items() if k != "TMPDIR"},
+                         authored)
+        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
+
+    def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
+        """Threading only helps if the dict belongs to THIS launch. A profile carrying
+        another leaf's `METDSL_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
+        different run, and the record and the reality would be one object describing two."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name, bad in (("METDSL_ORCHESTRATION_ID", "other-orch"),
+                          ("METDSL_CHILD_AGENT_RUN_ID", "other-arid")):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d), orchestration_id="o", agent_run_id="A",
+                        backend_command="claude", backend_type="claude",
+                        child_env={"PATH": "/a", name: bad})
+
+    def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
+        """`child_env=None` — a test fixture, the standalone CLI — must not fall back to
+        inheriting: it filters the host environment through the same owner constant."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        fake_home = Path(d) / "home"
+        fake_home.mkdir()
+        with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "haiku",
+                                          "HOME": str(fake_home)}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=Path(d) / "repo", orchestration_id="o", agent_run_id="A",
+                backend_command="claude", backend_type="claude")
+        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
+        self.assertEqual(profile["env"]["HOME"], str(fake_home))
+
+
+@unittest.skipUnless(shutil.which("bwrap"), "bwrap not installed")
+class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
+    """The one measurement that is not an argv assertion: RUN the rendered command and
+    read the child's actual environment.
+
+    Every other test in `LeafEnvClosureTests` asserts what the argv SAYS. What the argv
+    says and what bwrap does are different claims, and the gap is exactly where a
+    `--clearenv` in the wrong position hides: measured on bubblewrap 0.11.0, `--setenv
+    FOO bar --clearenv` renders both tokens and delivers neither. So this swaps the leaf
+    command for `/usr/bin/env`, runs it under a POISONED parent environment, and compares
+    the child's real environment against `profile["env"]`.
+    """
+
+    def test_the_child_env_is_the_profile_env_and_nothing_of_the_parents(self) -> None:
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        root = Path(d)
+        for sub in ("repo", "ws", "tmp"):
+            (root / sub).mkdir()
+        profile = {
+            "repo_root": str(root / "repo"),
+            "tmp_dir": str(root / "tmp"),
+            "workspace_tmp_rw_abs": str(root / "ws"),
+            "read_roots": [], "write_roots": [],
+            "runtime_ro_bind_paths": ["/usr", "/bin", "/lib", "/lib64"],
+            "runtime_rw_bind_paths": [],
+            "env": {"PATH": "/usr/bin:/bin", "HOME": "/leaf/home", "LANG": "C.UTF-8",
+                    "METDSL_ORCHESTRATION_ID": "o", "METDSL_CHILD_AGENT_RUN_ID": "A",
+                    "TMPDIR": str(root / "ws")},
+        }
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["/usr/bin/env"])
+        poison = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                  "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+                  "AWS_SECRET_ACCESS_KEY": "s3cret",
+                  "HTTPS_PROXY": "http://user:pw@proxy:3128"}
+        proc = subprocess.run(argv, env={**os.environ, **poison}, text=True,
+                              capture_output=True, check=False, timeout=60)
+        if proc.returncode != 0:
+            self.skipTest(f"bwrap could not run here: {proc.stderr.strip()[:200]}")
+        child = {}
+        for line in proc.stdout.splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                child[key] = value
+        # bwrap sets PWD itself from --chdir; it is the ONE name in the child that the
+        # profile does not name, and it is measured rather than assumed.
+        self.assertEqual({k: v for k, v in child.items() if k != "PWD"}, profile["env"])
+        # ...and the poison controls, so "equal" cannot be "the parent env was empty".
+        for name in poison:
+            self.assertNotIn(name, child)
