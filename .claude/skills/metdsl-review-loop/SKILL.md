@@ -62,11 +62,15 @@ it is unpushed you can fix it by squashing — and say in the message that you d
 and split the history into two afterwards. The review target is `origin/main...HEAD` = **the
 whole stack**, so splitting later **misaligns the review unit from the PR unit**.
 
-L174 (2026-08-14) did exactly this: the plan said "PR A = swap the front end (semantics unchanged), PR B =
+L174 (2026-08-14) did exactly this: the plan said "PR A = swap the front end (semantics
+unchanged), PR B =
 visibility (moves verdicts)", and I implemented A and B back to back, split them with `git
 branch` + `git reset --hard`, then ran four rounds against the whole stack. **Most defects the
-review found were in A's code, and every fix commit landed on B**, so PR A's tip was
-"A before review" and **merging it alone would have put the unbroken-nothing state on main**. I
+review found were in A's code** — a recursion crash, a forgeable classification channel, a
+label-induced over-refusal and a silently renamed grammar, none of which a
+"semantics-preserving swap" is supposed to be able to produce — **and every fix commit landed on
+B**, so PR A's tip was
+"A before review" and **merging it alone would have put the unfixed state on main**. I
 closed PR A and folded the stack back into one; the point of staging was gone.
 
 **The judgment**: staging exists so that "a semantics-preserving swap" and "a change that moves
@@ -117,7 +121,8 @@ came from, and the reasoning you need when a rule does not obviously apply.
   `--include-comments`); one half of a code move is expected to survive, so read the pair together
 - **Docstring-only hunks are annotated, not excluded** (`[docstring-only — expected]`): docstrings
   are string literals and real tests pin prompt templates and contract text. **Zero unannotated
-  survivors exits 0.** In PR #67, 2 of 5 survivors were docstrings listed beside 3 real defects.
+  survivors exits 0; one or more exits 1.** In PR #67, 2 of 5 survivors were docstrings listed
+  beside 3 real defects.
   The annotation is decided mechanically by AST comparison (blank the docstring, is it
   isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
   unmarked SURVIVED — the absence of the annotation is not evidence that a hunk is code
@@ -128,8 +133,9 @@ came from, and the reasoning you need when a rule does not obviously apply.
   rescue it: reverting a test hunk deletes an assertion, so it always survives and reading it is
   worthless. Build mutants that kill each decision of the new machinery one at a time
 - **Do not handwrite a mutation harness.** PR #53's produced three real harms, the worst being
-  `str.replace` rewriting all occurrences at once so 2 of 3 reachable fail-opens survived per-site
-  mutation. If you must, **count the occurrences and hit them one at a time**, and **assert the
+  `str.replace` rewriting all occurrences at once so per-site mutation showed 2 of the 3
+  surviving, both of them reachable fail-opens. If you must, **count the occurrences and hit them
+  one at a time**, and **assert the
   patch applied** — a mutation that did not apply is indistinguishable from green (PR #76). The
   script is not universal either: one hunk can bundle a pinned and an unpinned change, so **follow
   up at line granularity when one rule lives in N places**
@@ -267,7 +273,8 @@ correctness+regression+doc-truth).
   in the reviewer instructions through the final round** (not once), (c) if over-refusals persist
   after two rewrites, conclude **the rule is not an invariant** and change its shape, (d) **build
   probes from the project's own "what we do next", not from imagination** — in PR #68, widening the
-  scan to the whole backend directory refused **the very area the migration ledger names as next** (`build_system/make`),
+  scan to the whole backend directory refused **the very area the migration ledger names as
+  next** (`build_system/make`),
   and a reviewer produced it just by reading the ledger. Implementing the next TODO / plan item is
   the cheapest over-refusal probe there is (PR #67 landed on "a census that constrains nobody's
   registration" = moving the target from a rule to **checking the declaration**)
@@ -294,8 +301,7 @@ Run one via `Agent` with `model: "sonnet"`, **in parallel** with the up-model re
 an axis, so add it to the default two rather than replacing them.
 
 **This stays an experiment: add a data point each time you use it, and delete this section if it
-stops paying.** Three of the four data points were confounded, and the conclusion above rests on
-the fourth.
+stops paying.**
 
 **Work you may delegate (verifiable = running it settles the truth)**:
 
@@ -542,15 +548,17 @@ and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
 > unwitnessed ones, construct a violating input yourself and report whether the suite notices.
 
 What comes back turns "the remainder is bounded" from a feeling into a list, and the instrument
-reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Practical notes,
-learned one per loop (the numbers and transitions are in `references/class-descent-log.md`):
+reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Practical
+notes (the numbers and
+transitions are in `references/class-descent-log.md`):
 
 - **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
   "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
   on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
 - **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable —
   `_require_axis` inside `provides`, and `LANGUAGES`'s `implemented_backend_ids`, which the
-  following filter subsumes — and the right response was a comment saying "a marker of intent, not a live guard". The problem
+  following filter subsumes — and the right response was a comment saying "a marker of intent,
+  not a live guard". The problem
   is not the redundant call; it is that it **reads as a live guard**
 - **The census makes you doubt your own instrument too** — the verification test built from PR #67's
   census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
@@ -621,6 +629,9 @@ as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fi
   after that into another PR. Stacking 25 commits on one branch compounds fixes calling for fixes.
   If you continue without splitting, **give the user the options and ask** (L128 redesigned in
   place, but that was a deviation taken after asking)
+- **Five rounds or more without the class descending** → the shape of the rule is wrong. Change
+  the design instead of adding a round (the sign below is the case where you already did that
+  once)
 - **You rebuilt the instrument itself and the second one behaved the same** → **do not build a
   third.** The first rebuild was right (the question could not be answered). If the second keeps
   breaking the same way, the sign is that **the question is at the wrong level**, and lining up

@@ -138,8 +138,8 @@ run it.** Read rule 3 as being about old text and you keep only half of it. In L
   wrote "re-measured")
 - A perf ratio twice (off by 3.5x against the raw baseline, then quoting a single point while
   ignoring directory dependence — **write a range when the number varies**)
-- A lint rule id (the one that enforces `implicit none` is C001; **C003 is the rule the phase
-  doc has the leaf suppress**, so the citation pointed at a check that never fires)
+- A lint rule id (of fortitude's: the one that enforces `implicit none` is C001; **C003 is the
+  rule the phase doc has the leaf suppress**, so the citation pointed at a check that never fires)
 - **Numbers that were right rot when the branch moves.** In PR #53 I got the suite count wrong
   twice; the second time it was **correct when written** and was obsoleted by a later round
   adding tests. **Keep a list of every place you wrote a number and re-measure them together at
