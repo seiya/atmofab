@@ -5,8 +5,9 @@ SKILL.md holds the operating rules. This file holds how to launch it and what ea
 ## Launching
 
 `/codex:review` and `/codex:adversarial-review` are `disable-model-invocation: true` — **I cannot
-launch them**; they are for the user to type. Each command body is one line calling the companion
-script, so call that directly. Both `.md` files were read to confirm this, and the commands below
+launch them**; they are for the user to type. Each command file wraps a one-line `node …codex-companion.mjs`
+invocation in execution rules (`review.md` is 61 lines around one call), so call the script
+directly. Both `.md` files were read to confirm this, and the commands below
 were run to confirm a job starts.
 
 ```bash
