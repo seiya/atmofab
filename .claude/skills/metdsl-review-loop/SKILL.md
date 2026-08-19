@@ -91,14 +91,16 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
 # right after a fix commit (the default)
 python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
   --range HEAD~1..HEAD --paths <sources you touched> \
-  --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x"
-# to look at the whole branch at once
-#   --range origin/main..HEAD
+  --test-cmd "python3 -m pytest tools/tests/<relevant file> -q -p no:randomly -x \
+                --continue-on-collection-errors"
+# to look at the whole branch at once (three-dot, like the review target: it excludes the
+# commits main gained after you branched)
+#   --range origin/main...HEAD
 ```
 
-**Pass `-x`.** Only the exit code is read, so a killed hunk may stop at the first failure. Hunks
-run 4-way parallel in separate worktrees by default (`--jobs`); 4 hunks × 805 tests measured
-5m52s → 43s. **Do not put a `TMPDIR=` prefix in `--test-cmd`**: the script gives each job its own
+**Pass `-x`.** Only the exit code is read, so a killed hunk may stop at the first failure. Hunks run in
+separate worktrees, `min(cores - 2, 4)` at a time by default and never more than the hunk count
+(`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in `--test-cmd`**: the script gives each job its own
 temp root, a prefix overrides it and puts every job back on one, and that is the shape that
 produces failures belonging to no hunk — recorded as `killed`, i.e. a false pin. At more than one
 job it refuses the combination (exit 2) rather than mismeasuring; at `--jobs 1` there is nothing to
@@ -122,23 +124,32 @@ came from, and the reasoning you need when a rule does not obviously apply.
 - **Past 50 lines, a hunk hides the decisions inside it** — re-target each judgment individually
 - **Survivors** mean no pin, or a neighbouring check killing it. Fix them or write down why not.
   Test-file and comment-only hunks are excluded by default (`--include-tests` /
-  `--include-comments`); one half of a code move is expected to survive, so read the pair together
+  `--include-comments`). "Comment-only" means a leading `#` in a file type where `#` starts a
+  comment — not Markdown, where it is a heading this repository pins, and not the c/cpp families,
+  where it is a preprocessor directive. One half of a code move is expected to survive, so read
+  the pair together — though a move between Python modules usually reports INCONCLUSIVE for the
+  halves whose import breaks at collection, so pass `--continue-on-collection-errors` first
 - **Docstring-only hunks are annotated, not excluded** (`[docstring-only — expected]`): docstrings
   are string literals and real tests pin prompt templates and contract text. **An unannotated survivor exits 1, and so
-  does any inconclusive or skipped hunk; only a clean run, or one whose sole survivors are
-  docstring-only, exits 0.** In PR #67, 2 of 5 survivors were docstrings listed
+  does any inconclusive or skipped hunk, or a change with no revertible hunk; only a clean run, or
+  one whose sole survivors are docstring-only, exits 0. Exit 2 means the run itself cannot be
+  trusted** — a red baseline, a range that does not resolve, a `--repo` that is not one, or a
+  `TMPDIR=` in `--test-cmd` with several jobs. In PR #67, 2 of 5 survivors were docstrings listed
   beside 3 real defects.
   The annotation is decided mechanically by AST comparison (blank the docstring, is it
   isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
   unmarked SURVIVED — the absence of the annotation is not evidence that a hunk is code
 - **Get `--range`'s base wrong and "no hunks in range" looks green** — it exits 0, because a
-  range with nothing to check is not a failure. Check the output states a hunk count: after a merge
-  or rebase `origin/main..HEAD` is empty, and a round whose diff is all tests and comments filters
-  down to the same message
+  range that resolves to nothing is not a failure. Check that the output states a hunk count. The
+  causes: a base that resolves but is wrong (after a MERGE `origin/main..HEAD` is empty; after a
+  REBASE it is not — it is your own commits, replayed), a `--paths` that matches nothing, and a
+  round whose diff is all tests and comments. A pure rename, a binary file or a mode change is
+  listed separately and exits 1, because nothing was tested for those either
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply.** "Nothing to
   check" with a correct base is **not applicable, not a pass** (PR #58). `--include-tests` does not
-  rescue it: reverting a test hunk deletes an assertion, so it always survives and reading it is
-  worthless. Build mutants that kill each decision of the new machinery one at a time
+  rescue it: reverting an ADDED test hunk deletes an assertion, so it always survives. (A hunk
+  that CHANGED an assertion is different — reverting it makes the old assertion contradict the
+  fixed code, so it reports `killed` while saying nothing about the code under review.) Build mutants that kill each decision of the new machinery one at a time
 - **Do not handwrite a mutation harness.** PR #53's produced three real harms, the worst being
   `str.replace` rewriting all occurrences at once so per-site mutation showed 2 of the 3
   surviving, both of them reachable fail-opens. If you must, **count the occurrences and hit them
@@ -148,7 +159,8 @@ came from, and the reasoning you need when a rule does not obviously apply.
   up at line granularity when one rule lives in N places**
 - **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too** (done
   twice on the issue #63 PR, once losing an uncommitted P1 fix). Use a separate worktree (the
-  script's default) or a `cp` backup
+  script's default; with `--keep` those worktrees stay REGISTERED in your repository, so
+  `git worktree prune` once you have read them) or a `cp` backup
 - **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk looks
   like a pass (L128: deleting the scope mechanism outright kept everything green and all 5 tests
   meant to pin it were inert). The countermeasures, each with its episode in the reference file:

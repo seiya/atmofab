@@ -29,18 +29,24 @@ A baseline run (nothing reverted) goes first. Without it a suite that is already
 reports every hunk as "killed" — a false green, and the failure mode of this script that
 reads most like success.
 
-The other one is a hunk `git apply -R` refuses (it overlaps a later change, so it cannot
-be reverted alone). Nothing is tested for such a hunk, so it is reported as SKIPPED and
-counted as a failure, never folded into "pinned".
+The other one is a hunk nothing can be tested for: one carrying a rename (reverting it
+reverses the rename, so the suite answers about the file's absence), or one `git apply -R`
+refuses — a symlink whose target changed, or a patch this script mangled. Those are reported
+as SKIPPED and counted as a failure, never folded into "pinned". A change with no revertible
+hunk at all — a pure rename, a binary file, a mode change — is listed the same way.
 
 Exit code is 1 when an UNANNOTATED hunk survives (a docstring-only survivor is
 expected and does not fail the run), or when any hunk is inconclusive or skipped; 2 when
 the baseline is red, or when `--test-cmd` sets TMPDIR while several jobs run, which would
 put them on one temp root.
 
-A range with no hunks left to check — a wrong base, or everything filtered out as a test
-file or a comment — prints that and exits 0. It is not a pass: nothing was tested. Read the
-hunk count the run prints, never the exit code alone.
+A range with no hunks left to check — a wrong base that still resolves, `--paths` that
+matches nothing, or everything filtered out as a test file or a comment — prints that and
+exits 0. It is not a pass: nothing was tested. Read the hunk count the run prints, never the
+exit code alone. A base that does not resolve at all, or a `--repo` that is not one, exits 2.
+
+`--timeout` (default 1800s) applies to each test run; hitting it makes that hunk
+INCONCLUSIVE rather than killing the process.
 """
 
 from __future__ import annotations
@@ -66,14 +72,30 @@ def _is_test_file(path: str) -> bool:
     return "/tests/" in f"/{path}" or name.startswith("test_") or name.endswith("_test.py")
 
 
-def _is_comment_only(patch: str) -> bool:
+#: Suffixes where a leading `#` starts a comment. Everywhere else it means something that
+#: DOES change behaviour, and this repository has both kinds: `#` opens a heading in Markdown
+#: (`test_cli_reference_sync.py` and `test_readme_sync.py` both read `##` sections out of
+#: committed documents), and a preprocessor directive in the c/cpp families this toolchain
+#: builds. Measured before this list existed: a heading-only change and an
+#: `#include`/`#define`-only change were both dropped as "cannot change behaviour", leaving
+#: `no hunks in range — nothing to check` and exit 0 for a round that was in fact pinned.
+_HASH_COMMENT_SUFFIXES = frozenset({
+    ".py", ".pyi", ".sh", ".bash", ".zsh", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".mk",
+})
+
+
+def _is_comment_only(path: str, patch: str) -> bool:
     """True when every line this hunk adds or removes is a `#` comment or blank.
 
     Such a hunk cannot change behaviour, so it is a GUARANTEED survivor — the same argument
     that excludes test files, and worth applying for the same reason: a survivor list whose
-    entries are all expected is one nobody reads. Only `#` comments count; a docstring is a
-    string literal and stays in the check, since a test may assert on one.
+    entries are all expected is one nobody reads. Only `#` comments count, and only in the
+    file types where `#` IS a comment; a docstring is a string literal and stays in the check,
+    since a test may assert on one.
     """
+    name = Path(path).name
+    if Path(path).suffix not in _HASH_COMMENT_SUFFIXES and name not in ("Makefile", "makefile"):
+        return False
     changed = [
         line[1:].strip()
         for line in patch.splitlines()
@@ -165,10 +187,17 @@ def _docstring_only(repo: Path, head: str, path: str, patch: str) -> bool:
 
 
 def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> str:
-    proc = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    """Run git and return its stdout with line endings INTACT.
+
+    Bytes, not `text=True`: text mode translates `\r\n` to `\n`, and `git apply -R` then
+    refuses the patch it is handed. Measured before this: every hunk of a CRLF file came back
+    `SKIP (cannot revert in isolation)` while the same patch written to a file applied fine.
+    """
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True)
     if check and proc.returncode != 0:
-        raise RuntimeError(f"{' '.join(cmd)} failed: {proc.stderr.strip()}")
-    return proc.stdout
+        raise RuntimeError(f"{' '.join(cmd)} failed: "
+                           f"{proc.stderr.decode('utf-8', 'replace').strip()}")
+    return proc.stdout.decode("utf-8", "replace")
 
 
 #: A `VAR=value` assignment a shell applies to the command — only TMPDIR matters here.
@@ -177,6 +206,32 @@ def _run(cmd: list[str], cwd: Path | None = None, check: bool = True) -> str:
 #: version — anchored on whitespace and `;&|` — read straight past. `=`, `/`, `:`, `-` and `.`
 #: before it mean it is part of a path, a flag value or a test id, not an assignment.
 _TMPDIR_ASSIGNMENT_RE = re.compile(r"(?<![\w=/:.\-])TMPDIR=")
+
+#: `git diff` marks a rename with these; a hunk carrying one cannot be reverted alone.
+_RENAME_HEADER_RE = re.compile(r"^rename (from|to) ", re.MULTILINE)
+
+
+def _hunkless_files(diff_text: str) -> list[str]:
+    """Files the diff names but gives no `@@` body for: pure renames, binaries, mode changes.
+
+    They cannot be hunk-reverted, and before they were counted they fell into the same
+    `no hunks in range — nothing to check` line as a wrong base, so a rename-only or
+    binary-only round exited 0 having tested nothing.
+    """
+    named: list[str] = []
+    current = ""
+    saw_hunk = True
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            if current and not saw_hunk:
+                named.append(current)
+            current = line.split(" b/", 1)[-1].strip()
+            saw_hunk = False
+        elif line.startswith(_HUNK_START):
+            saw_hunk = True
+    if current and not saw_hunk:
+        named.append(current)
+    return named
 
 
 def _split_hunks(diff_text: str) -> list[tuple[str, str]]:
@@ -211,16 +266,22 @@ def _split_hunks(diff_text: str) -> list[tuple[str, str]]:
 
 
 def _run_tests(cmd: str, worktree: Path, tmpdir: Path,
-               timeout: int) -> subprocess.CompletedProcess[str]:
+               timeout: int) -> subprocess.CompletedProcess[str] | None:
     """Run the test command in `worktree`; only its exit code decides a verdict.
 
     Each worker gets its own TMPDIR: jobs run concurrently, and tests that write to a
     fixed name under the temp root would otherwise fight over it.
     """
     tmpdir.mkdir(parents=True, exist_ok=True)
-    return subprocess.run(
-        cmd, cwd=worktree, shell=True, text=True, capture_output=True,
-        timeout=timeout, env={**os.environ, "TMPDIR": str(tmpdir)})
+    try:
+        return subprocess.run(
+            cmd, cwd=worktree, shell=True, text=True, capture_output=True,
+            timeout=timeout, env={**os.environ, "TMPDIR": str(tmpdir)})
+    except subprocess.TimeoutExpired:
+        # Nothing observed the hunk, so this is INCONCLUSIVE, not a kill. Letting the
+        # exception escape printed a traceback and exited 1 with no summary, which a caller
+        # reading the exit code cannot tell from "an unannotated hunk survived".
+        return None
 
 
 def main() -> int:
@@ -251,8 +312,13 @@ def main() -> int:
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
-    diff = _run(["git", "diff", args.range, "--", *args.paths], cwd=repo)
+    # `-c diff.noprefix=false` because with the caller's `diff.noprefix=true` the `--- `
+    # header stops matching and EVERY hunk skips; `--no-ext-diff`/`--no-color` for the same
+    # reason — the instrument's parsing must not depend on the operator's git config.
+    diff = _run(["git", "-c", "diff.noprefix=false", "diff", "--no-ext-diff", "--no-color",
+                 args.range, "--", *args.paths], cwd=repo)
     hunks = _split_hunks(diff)
+    hunkless = _hunkless_files(diff)
     if not args.include_tests:
         kept = [(f, p) for f, p in hunks if not _is_test_file(f)]
         if len(kept) != len(hunks):
@@ -260,15 +326,21 @@ def main() -> int:
                   f"(reverting a test only removes assertions); --include-tests to keep")
         hunks = kept
     if not args.include_comments:
-        kept = [(f, p) for f, p in hunks if not _is_comment_only(p)]
+        kept = [(f, p) for f, p in hunks if not _is_comment_only(f, p)]
         if len(kept) != len(hunks):
             print(f"ignoring {len(hunks) - len(kept)} comment-only hunk(s) "
                   f"(they cannot change behaviour, so they always survive); "
                   f"--include-comments to keep")
         hunks = kept
+    if hunkless:
+        print(f"{len(hunkless)} change(s) with no revertible hunk — a pure rename, a binary "
+              f"file or a mode change. NOTHING was tested for these:")
+        for name in hunkless:
+            print(f"  {name}")
     if not hunks:
-        print("no hunks in range — nothing to check")
-        return 0
+        print("no hunks in range — nothing to check"
+              + (" beyond the change(s) above" if hunkless else ""))
+        return 1 if hunkless else 0
 
     jobs = args.jobs if args.jobs > 0 else max(1, min((os.cpu_count() or 3) - 2, 4))
     jobs = min(jobs, len(hunks))
@@ -276,8 +348,9 @@ def main() -> int:
     # TMPDIR set below and every job shares one temp root. That is the configuration met-dsl
     # has already been bitten by: two suite runs on one TMPDIR produce failures that belong to
     # neither, and here such a failure is recorded as `killed` — a hunk reported pinned that
-    # nothing pins. The canonical suite command in the skill carries exactly that prefix, so
-    # this is ordinary usage, not a corner: refuse it rather than silently mismeasure.
+    # nothing pins. It is the spelling this repository's own suite command has always carried
+    # (the skill now tells you to drop it HERE, for this reason), so it is ordinary usage, not
+    # a corner: refuse it rather than silently mismeasure.
     if _TMPDIR_ASSIGNMENT_RE.search(args.test_cmd):
         if jobs > 1:
             print("--test-cmd sets TMPDIR, which overrides the per-job temp root and makes "
@@ -336,20 +409,32 @@ def main() -> int:
             # the same class of carry-over.
             _run(["git", "checkout", "--", "."], cwd=wt, check=False)
             _run(["git", "clean", "-qfdx"], cwd=wt, check=False)
-            revert = subprocess.run(
-                ["git", "apply", "-R", "--recount", "-"], cwd=wt,
-                input=patch, text=True, capture_output=True)
-            if revert.returncode != 0:
-                verdict = "SKIP (cannot revert in isolation)"
+            if _RENAME_HEADER_RE.search(patch):
+                # `git apply -R` reverses the rename along with the hunk, so the suite is
+                # answering about the file's absence at its new path, not about this hunk.
+                # Measured: a docstring-only edit inside a renamed module came back `killed`
+                # when the failing import sat in a test body and INCONCLUSIVE when it sat at
+                # module scope — a verdict decided by where someone wrote an import.
+                verdict = ("SKIP (carries a rename — reverting it reverses the rename, so no "
+                           "verdict here is about the hunk; check the content separately)")
             else:
-                proc = _run_tests(args.test_cmd, wt, tmpdirs[wt], args.timeout)
-                if not proc.returncode:
-                    verdict = "SURVIVED — no test noticed this hunk"
-                elif _suite_did_not_run(proc.stdout + proc.stderr):
-                    verdict = ("INCONCLUSIVE — the suite did not run (collection error / no "
-                               "tests): nonzero exit, but nothing observed this hunk")
+                revert = subprocess.run(
+                    ["git", "apply", "-R", "--recount", "-"], cwd=wt,
+                    input=patch, text=True, capture_output=True)
+                if revert.returncode != 0:
+                    verdict = "SKIP (cannot revert in isolation)"
                 else:
-                    verdict = "killed"
+                    proc = _run_tests(args.test_cmd, wt, tmpdirs[wt], args.timeout)
+                    if proc is None:
+                        verdict = ("INCONCLUSIVE — the test command hit --timeout, so nothing "
+                                   "observed this hunk")
+                    elif not proc.returncode:
+                        verdict = "SURVIVED — no test noticed this hunk"
+                    elif _suite_did_not_run(proc.stdout + proc.stderr):
+                        verdict = ("INCONCLUSIVE — the suite did not run (collection error / no "
+                                   "tests): nonzero exit, but nothing observed this hunk")
+                    else:
+                        verdict = "killed"
         finally:
             with lock:
                 free.append(wt)
@@ -404,9 +489,9 @@ def main() -> int:
         return 2
     print(f"\n{len(hunks)} hunk(s) in {time.monotonic() - started:.0f}s")
     if skipped:
-        print(f"{len(skipped)} SKIPPED hunk(s) — `git apply -R` refused them, so NOTHING was "
-              f"tested for these. Not a pass: revert them by hand, or narrow --range so they "
-              f"apply in isolation:")
+        print(f"{len(skipped)} SKIPPED hunk(s) — NOTHING was tested for these, for the reason "
+              f"each line gives. Not a pass: revert them by hand, or narrow --range so the "
+              f"content can be reverted without its rename:")
         for path, first in skipped:
             print(f"  {path} {first[:70]}")
     if inconclusive:
@@ -447,4 +532,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except RuntimeError as exc:
+        # A git invocation this script depends on failed: a range whose base does not resolve
+        # (a stale `origin/main` is the common one), a `--repo` that is not a repository. That
+        # is the instrument failing, not a finding, so it exits 2 like a red baseline — exit 1
+        # is documented as "hunks survived" and a traceback there reads as findings.
+        print(f"cannot run: {exc}", file=sys.stderr)
+        sys.exit(2)
