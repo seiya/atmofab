@@ -10,6 +10,10 @@ This document defines the reference conventions for the `skills` used in the pro
 - The core workflow phases `Compile` / `Generate` / `Build` / `Validate`
 - The `skills/<skill_name>/SKILL.md` referenced in each phase
 - The SKILL of the optional flows `Tune` / `Promote` is handled separately from the core workflow.
+- OUT OF SCOPE: the skills under `.claude/skills/`. Those are dev-only procedures for an operator's
+  interactive session (how to review a change, how to change enforcement machinery); no phase maps to
+  them, and an agentic leaf was measured not to load them (`CLAUDE.md` carries the measurement
+  and its limits).
 
 ## Requirements
 - The agent identifies the target phase, then reads the corresponding `SKILL.md`.
