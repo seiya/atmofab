@@ -2132,6 +2132,16 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         audit = decision.audit_detail or {}
         self.assertEqual(audit.get("policy"), "forbid_unauthorized_file_write")
         self.assertEqual(audit.get("tool_name"), "Bash")
+        # The reason a blocked leaf reads must state the rule in the form the
+        # measurement supports: a redirect is refused in EVERY position, not only
+        # when it is the whole command. The retired narrower wording read as a
+        # licence for a capture appended to a permitted command
+        # (docs/HOOKS.md §"Layer boundary"). Read the scratch half specifically —
+        # this string states the artifact rule first, and that half names the same
+        # tool, so a whole-string match proves nothing about this one.
+        scratch_half = (decision.reason or "").split("Scratch files", 1)
+        self.assertEqual(len(scratch_half), 2, decision.reason)
+        self.assertIn("in any position", scratch_half[1])
 
     def test_bash_redirect_to_allowed_file_tool_path_is_blocked(self) -> None:
         """Phase-2: a Bash redirect / tee / sed -i is NEVER an authorized
@@ -2226,6 +2236,15 @@ class FixHintInAuditDetailTests(unittest.TestCase):
         self.assertIn("For temp files", WRITE_HINT)
         temp_half = WRITE_HINT.split("For temp files", 1)[1]
         self.assertIn("Write tool", temp_half)
+        # The same half must not scope the refusal to the whole-command case: that
+        # narrower clause reads as a licence for a capture appended to a permitted
+        # command, which is the shape the permission layer was measured to refuse
+        # (docs/HOOKS.md §"Layer boundary"). The retired wording said only "a Bash
+        # redirect that is itself the command matches no committed permissions.allow
+        # rule"; it satisfies the "Write tool" assertion above, which is why this
+        # sentence needs its own.
+        self.assertIn("in any position", temp_half)
+        self.assertIn("refuses a redirect to a file", temp_half)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._write_manifest(

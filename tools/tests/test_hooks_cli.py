@@ -2876,6 +2876,16 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
         ("skills/workflow-audit-claude/SKILL.md", "| output_manifest_write_guard |", "row"),
     )
 
+    # Files scanned for a redirect into the tmp root. The scratch surfaces, plus
+    # docs/CLI_REFERENCE.md — it taught the gate-stderr capture but states no scratch
+    # rule, so it is not a _SCRATCH_SURFACES member and the other check must not read
+    # it. One owner for the shared part: the file list is derived, not respelled.
+    _REDIRECT_SURFACES = tuple(
+        dict.fromkeys(
+            [rel for rel, _anchor, _scope in _SCRATCH_SURFACES] + ["docs/CLI_REFERENCE.md"]
+        )
+    )
+
     # Long enough for every surface's own statement (measured longest: 132 chars from
     # anchor to the start of the tool name; 144 to its end, which is the true lower
     # bound), short enough to exclude the artifact-write sentence that follows it on
@@ -2896,63 +2906,54 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
     # emphasis spellings a normal doc edit produces: **Write** tool, `Write`-tool.
     _NAMES_THE_ROUTE = re.compile(r"[`*]*Write[`*]*[-\s]+tool|AGENT_CONTRACT\.md")
 
-    # A span introduced by an explicit refusal marker is an NG example — the natural
-    # way to strengthen the rule — not an instruction. Deliberately NARROW (the 40
-    # characters immediately before the span): a marker anywhere on the line exempts
-    # every other span on it, and on these surfaces every line carrying the tmp rule
-    # also carries the bootstrap-Bash prohibition.
-    _MARKS_AS_REFUSED = re.compile(
-        r"(?:\bNG\b|\bnot\b|\bnever\b|forbidden|blocked|refused|instead of)[^`]{0,40}$",
-        re.IGNORECASE,
+    # A `Bash(...)` / `Read(...)` span is a permission-RULE spelling, not a command
+    # anyone is being taught to run. Without this, the repository could not quote
+    # the candidate allow entry that issue #77 exists to evaluate.
+    _PERMISSION_ENTRY = re.compile(
+        r"^[\"']?(?:Bash|Read|Write|Edit|WebFetch)\(.*\)[\"']?,?$"
     )
 
-    # In a fenced block the marker is a comment LINE above the command, and this
-    # repository writes those comments at 80-90 characters, so the 40-character
-    # window above cannot see them: measured, the NG example could not be written
-    # in the block where docs/AGENT_CONTRACT.md keeps its other NG examples.
-    _MARKS_AS_REFUSED_ANYWHERE = re.compile(
-        r"\bNG\b|\bnever\b|forbidden|blocked|refused|instead of", re.IGNORECASE
-    )
+    @classmethod
+    def _redirect_offenders(cls, text: str, rel: str = "<fixture>") -> list[str]:
+        """The rule, in one place, called by the surfaces check and by its self-test.
 
-    @staticmethod
-    def _allowlisted_bash_matchers(repo_root: Path) -> list[re.Pattern[str]]:
-        """The Bash commands `.claude/settings.json` permits, read from the file.
-
-        A `*` is a wildcard wherever it appears, not only at the end: an earlier
-        version stripped a trailing `*` and prefix-matched the rest, which made
-        `Bash(jq -er * workspace/tmp/*)` unmatchable and refused a genuinely
-        permitted command.
+        A negative assertion is green when its detector is broken, and the detector
+        is five parts, not one: the span scanner, the two marker vocabularies, the
+        permission-entry exemption, and the redirect pattern. Reimplementing any of
+        them in the self-test would leave the real one unobserved, so both callers
+        run THIS function.
         """
-        settings = json.loads(
-            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
-        )
-        matchers = []
-        for entry in settings["permissions"]["allow"]:
-            if not entry.startswith("Bash(") or not entry.endswith(")"):
+        offenders: list[str] = []
+        for n, span in cls._command_spans(text):
+            if cls._PERMISSION_ENTRY.match(span.strip()):
                 continue
-            pattern = entry[len("Bash(") : -1]
-            body = "".join(
-                ".*" if part == "*" else re.escape(part)
-                for part in re.split(r"(\*)", pattern)
-            )
-            # An entry with no wildcard is an EXACT match, not a prefix: `Bash(python3
-            # tools/new_agent_run_id.py)` does not permit that command with a redirect
-            # appended. Anchoring both ends is what makes the check say what the
-            # permission layer says.
-            matchers.append(re.compile(body if "*" in pattern else body + r"\s*$"))
-        return matchers
+            # The command in front of the redirect is not consulted: no command
+            # makes a redirect to a file a permitted route.
+            if cls._REDIRECT.search(span):
+                offenders.append(f"{rel}:{n}: {span.strip()}")
+        return offenders
 
     @staticmethod
-    def _command_spans(text: str) -> list[tuple[int, str, bool, str]]:
-        """(line number, command text, is_fenced, the prose introducing it).
+    def _command_spans(text: str) -> list[tuple[int, str]]:
+        """(line number, command text) for every backticked or fenced span.
 
-        The introducing prose is what decides whether a command is being TAUGHT or
-        shown as refused, so it is captured per span, not per line: on these surfaces
-        one line carries several spans, and the tmp paragraph always contains the word
-        "blocked" somewhere (the bootstrap-Bash prohibition), which would exempt the
-        whole line — measured, that left both prompt templates unguarded.
+        No introducing prose is captured, because the check no longer exempts a
+        span for being shown as an NG example. That exemption asked whether a
+        span was being TAUGHT or REFUSED — a question about meaning, decided from
+        nearby words — and it was broken three review rounds running, each time in
+        a new form: a fixed window too short for this repository's NG headers, then
+        a wider window that exempted 88 unrelated fenced lines, then a vocabulary
+        that fires on ANY refusal verb regardless of its subject, so a header
+        reading "a direct Read of the gate file is blocked, so capture the stderr:"
+        exempted the very instruction this branch removed. Narrowing the sample a
+        fourth time would have been the fourth version of one mistake.
+
+        The question is weaker now and answerable: does a scanned surface spell a
+        redirect into the tmp root at all? An NG example must therefore name the
+        shape without spelling a target under `workspace/tmp/` — the one live
+        example was reworded that way, and the cost is stated in the check below.
         """
-        spans: list[tuple[int, str, bool, str]] = []
+        spans: list[tuple[int, str]] = []
         lines = text.splitlines()
         fenced = False
         for n, line in enumerate(lines, start=1):
@@ -2960,12 +2961,10 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 fenced = not fenced
                 continue
             if fenced:
-                spans.append((n, line, True, "\n".join(lines[max(0, n - 3) : n - 1])))
+                spans.append((n, line))
                 continue
             for m in re.finditer(r"`([^`]+)`", line):
-                spans.append(
-                    (n, m.group(1), False, line[max(0, m.start() - 120) : m.start()])
-                )
+                spans.append((n, m.group(1)))
         return spans
 
     def test_tmpdir_env_form_is_not_a_write_path(self) -> None:
@@ -2995,113 +2994,600 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
                 self.assertEqual(code, 2, f"{spelling} must not be write-eligible")
                 self.assertEqual(body.get("decision"), "block")
 
-    def test_instruction_surfaces_admit_only_permitted_redirects_into_the_tmp_root(
+    def test_instruction_surfaces_teach_no_redirect_into_the_tmp_root(
         self,
     ) -> None:
         """SAMPLE (not a pin): no instruction surface shows a redirect into the tmp
-        root whose command `.claude/settings.json` does not already permit.
+        root, in any position.
 
-        The rule, not a spelling: a redirect is authorized only when it is appended to
-        a command an allow entry covers, because the redirect rides that entry — so
-        `... 2>workspace/tmp/<arid>/gate.txt` on the allowlisted run-gate command is
-        correct, `cat workspace/tmp/a 2>workspace/tmp/b` is correct (`Bash(cat
-        workspace/tmp/*)` covers it), and `cat > workspace/tmp/x.py`, `printf ... >`,
-        `| tee workspace/tmp/x` are not, because no entry covers those commands. An
-        earlier version of this test hard-coded `cat`/`tee`, which both flagged
-        legitimate captures and missed `echo`/`printf`; reading the allowlist removes
-        the guesswork.
+        The rule, not a spelling: the permission layer refuses a Bash redirect to a
+        file, so there is no position in which one is a route a leaf can take. An
+        earlier version of this check admitted a redirect APPENDED to a command the
+        committed allowlist covers, on the premise that it rides that entry. That
+        premise was measured false on Claude Code 2.1.234 — both taught captures
+        (`... 2>workspace/tmp/<arid>/e.txt` on the allowlisted run-gate command, and a
+        stdout capture on the allowlisted `python3 workspace/tmp/*` route) answer
+        `Output redirection to '<path>' was blocked`, while the same commands without
+        the redirect run. The admission is therefore gone rather than narrowed, and
+        the check is strictly stricter than the version it replaces; `docs/HOOKS.md`
+        §"Layer boundary" carries the measurement.
 
         SCOPE, stated because three versions of this check were each defeated in a
         new form. It answers ONE question: does a documented command carry a redirect
         into the tmp root that the permission layer would refuse? It does NOT answer
         "does this document teach shell-authored scratch files", which is not decidable
-        from text — `python3 gen.py > work.py` and `cat tpl > work.py` are permitted
-        commands that also author a scratch file, and both are admitted here. That
+        from text. `python3 gen.py > docs/out.txt` names a path outside the tmp root
+        and is admitted here for that reason — not because the redirect is permitted,
+        which it is not in any position (docs/HOOKS.md §"Layer boundary"); which
+        layer refuses a write is a different question from which rule this check
+        enforces. That
         second question has no static instrument in this branch; it is what review of
         a documentation change is for.
 
         Further declared limits, each measured: it reads an enumerated file list; it
-        only sees commands inside backticks, a fenced block (``` or ~~~), so a route
-        taught in bare prose or a 4-space-indented block is invisible; a span split
-        across two backtick runs is invisible; and a span introduced by an explicit
-        refusal marker in the 40 characters before it is skipped, so the rule can be
-        shown as an NG example.
+        only sees commands inside backticks or a fenced block (``` or ~~~), so a
+        route taught in bare prose or a 4-space-indented block is invisible; a span
+        split across two backtick runs is invisible; and it sees only targets under
+        `workspace/tmp`, which is the route these documents taught — an in-repo
+        target elsewhere (`> workspace/ir/x/ir_meta.json`) is refused by the same
+        layer and is NOT scanned here, because the write-side hook is what governs
+        that class and the surfaces state it separately.
+
+        There is NO exemption for a span shown as an NG example: writing one means
+        naming the shape without spelling a target under the tmp root ("a `2>`
+        redirect whose target is under `workspace/tmp/<agent_run_id>/`"). That cost
+        is deliberate — the exemption it replaces was broken in three review rounds,
+        finally by a marker whose subject was a different rule entirely.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        matchers = self._allowlisted_bash_matchers(repo_root)
-        redirect = self._REDIRECT
-        for rel, _anchor, _scope in self._SCRATCH_SURFACES:
+        # The scanned set is asserted against a LITERAL list, not against the
+        # expression it is derived from: comparing the derived tuple with its own
+        # derivation holds by construction, so emptying `_SCRATCH_SURFACES` left
+        # both this check and the scratch-route check scanning nothing, green.
+        self.assertEqual(
+            set(self._REDIRECT_SURFACES),
+            {
+                "docs/AGENT_CONTRACT.md",
+                "docs/CLI_REFERENCE.md",
+                "docs/RUNBOOK.md",
+                "docs/WORKSPACE_LAYOUT.md",
+                "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+                "tools/prompt_templates/step_agent.txt",
+                "tools/prompt_templates/substep_agent.txt",
+                "skills/workflow-audit-claude/SKILL.md",
+            },
+        )
+        for rel in self._REDIRECT_SURFACES:
             with self.subTest(surface=rel):
                 path = repo_root / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
-                offenders = []
-                for n, span, is_fenced, intro in self._command_spans(
-                    path.read_text(encoding="utf-8")
-                ):
-                    marked = (
-                        self._MARKS_AS_REFUSED_ANYWHERE.search(intro)
-                        if is_fenced
-                        else self._MARKS_AS_REFUSED.search(intro)
-                    )
-                    if marked:
-                        continue
-                    continued = is_fenced and intro.rstrip().endswith("\\")
-                    for segment in re.split(r"\|\||&&|[;|]", span):
-                        m = redirect.search(segment)
-                        if not m:
-                            continue
-                        command = segment[: m.start()].strip()
-                        if not command and continued:
-                            # The command is on the previous line, joined by a `\`.
-                            continue
-                        if not command and not is_fenced:
-                            # An inline backtick quoting the redirect idiom alone
-                            # ("capture it with `2>workspace/tmp/...`") names no
-                            # command to judge. Residue: so does a bare redirect.
-                            continue
-                        # Judge the WHOLE segment, redirect included: that is the
-                        # string the permission layer matches. A wildcard entry
-                        # absorbs the appended redirect; an exact entry does not.
-                        whole = re.sub(r"^\$\s+", "", segment.strip())
-                        whole = re.sub(r"^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+", "", whole)
-                        if any(m.match(whole) for m in matchers):
-                            continue
-                        offenders.append(f"{rel}:{n}: {segment.strip()}")
+                offenders = self._redirect_offenders(
+                    path.read_text(encoding="utf-8"), rel
+                )
                 self.assertEqual(offenders, [], "\n".join(offenders))
 
-    def test_redirect_detector_flags_a_refused_command_and_admits_a_permitted_one(
+    def test_redirect_detector_sees_every_taught_shape_and_not_the_exempt_ones(
         self,
     ) -> None:
         """SELF-TEST for the check above, which is a negative assertion.
 
-        A negative assertion is green when its detector is broken: replacing the
-        redirect regex with a pattern that never matches leaves the surfaces check
-        passing. Its seven surface witnesses show the detector works on today's tree
-        and say nothing about tomorrow's, so the detector is exercised here directly,
-        on fixtures rather than on the documents.
+        A negative assertion is green when its detector is broken, and this detector
+        has five parts: the span scanner, the two marker vocabularies, the
+        permission-entry exemption, and the redirect pattern. Measured: emptying
+        `_command_spans`, blanking either marker regex, or replacing the offender
+        accumulation with `pass` all left the surfaces check green while it read the
+        real tree. So the fixtures below drive `_redirect_offenders` — the same
+        function the surfaces check calls — instead of reimplementing the loop.
+
+        The two former "admitted" cases are here as DETECTED shapes: after the
+        measurement, an appended capture is refused exactly as a standalone redirect
+        is. `/dev/null` and a path outside the tmp root must NOT be seen — the first
+        discards rather than writes, the second is a different rule's subject.
         """
+        detected = (
+            "cat > workspace/tmp/a/x.py <<'EOF'",
+            "printf 'x' > workspace/tmp/a/x.py",
+            "tee workspace/tmp/a/x.py",
+            "python3 tools/new_agent_run_id.py > workspace/tmp/a/id.txt",
+            "python3 tools/orchestration_runtime.py run-gate --gate g 2>workspace/tmp/a/e.txt",
+            "cat workspace/tmp/a/in.txt 2>workspace/tmp/a/err.txt",
+            "python3 workspace/tmp/a/x.py > workspace/tmp/a/out.txt",
+            "python3 tools/orchestration_runtime.py run-gate --gate g >>workspace/tmp/a/e.txt",
+        )
+        not_detected = (
+            "python3 tools/orchestration_runtime.py run-gate --gate g 2>/dev/null",
+            "python3 workspace/tmp/a/x.py",
+            "python3 gen.py > docs/out.txt",
+        )
+        for command in detected:
+            with self.subTest(command=command, expect="detected"):
+                self.assertIsNotNone(
+                    self._REDIRECT.search(command),
+                    "the detector saw no redirect into the tmp root",
+                )
+        for command in not_detected:
+            with self.subTest(command=command, expect="not detected"):
+                self.assertIsNone(self._REDIRECT.search(command))
+
+    def test_redirect_offender_rule_flags_and_admits_on_fixtures(self) -> None:
+        """SELF-TEST of the whole rule, on fixture documents rather than the tree.
+
+        Each case names the part it observes. Without these, four ways of making the
+        surfaces check vacuous were green: `_command_spans` returning `[]`, either
+        marker regex reduced to `r""`, and the offender append replaced by `pass`.
+
+        The admitted cases are equally load-bearing: they are the over-refusal
+        probes. `refuses` / `blocks` / `rejects` are the verbs these surfaces write,
+        a permission entry is a rule spelling rather than a command, and a fenced NG
+        block carries its marker in a comment header several lines up.
+        """
+        flagged = {
+            "bare prose": "Capture it with `2>workspace/tmp/<agent_run_id>/e.txt` for later.",
+            "appended to a permitted command": (
+                "Run `python3 tools/orchestration_runtime.py run-gate --gate g "
+                "2>workspace/tmp/<agent_run_id>/e.txt` to keep the result."
+            ),
+            "tee": "Keep a copy with `run-gate --gate g | tee workspace/tmp/a/e.txt`.",
+            "fenced": "```bash\nrun-gate --gate g 2>workspace/tmp/a/e.txt\n```",
+            # Every one of these was ADMITTED while the check exempted a span
+            # introduced by a refusal marker. Each is a real sentence from a real
+            # review round, and each was a way to re-teach the route with the suite
+            # green: the verb tense, the distance to the marker, and — the one no
+            # narrowing could reach — a marker whose SUBJECT is something else.
+            "prose marker before the span": "The layer refuses `2>workspace/tmp/a/e.txt`.",
+            "marker about a different subject": (
+                "A direct Read is blocked, so capture stderr with "
+                "`2>workspace/tmp/a/e.txt`."
+            ),
+            "fenced, marker about a different subject": (
+                "```bash\n# a direct Read of the gate file is blocked, so capture the stderr:\n"
+                "run-gate --gate g 2>workspace/tmp/a/e.txt\n```"
+            ),
+            "fenced NG header": (
+                "```bash\n# NG: the permission layer refuses this shape.\n"
+                "run-gate --gate g 2>workspace/tmp/a/e.txt\n```"
+            ),
+        }
+        for label, text in flagged.items():
+            with self.subTest(case=label, expect="flagged"):
+                self.assertEqual(
+                    len(self._redirect_offenders(text)), 1, f"{label}: not flagged"
+                )
+        admitted = {
+            # The two structural exemptions that remain. Neither asks what a
+            # sentence MEANS: a permission entry is a rule spelling rather than a
+            # command, and the other two name no target under the tmp root.
+            "permission entry": "Add `Bash(python3 tools/orchestration_runtime.py * 2>workspace/tmp/*)`.",
+            "permission entry, JSON spelling": (
+                'Add `"Bash(python3 tools/orchestration_runtime.py * 2>workspace/tmp/*)",` '
+                "to the allow list."
+            ),
+            "devnull": "Discard it with `run-gate --gate g 2>/dev/null`.",
+            "outside the tmp root": "Write it with `python3 gen.py > docs/out.txt`.",
+            # How an NG example is written now: name the shape, not a target.
+            "shape named without a target": (
+                "A `2>` redirect whose target is under `workspace/tmp/<agent_run_id>/` "
+                "is refused."
+            ),
+        }
+        for label, text in admitted.items():
+            with self.subTest(case=label, expect="admitted"):
+                self.assertEqual(
+                    self._redirect_offenders(text), [], f"{label}: wrongly flagged"
+                )
+
+    @staticmethod
+    def _allowlisted_bash_matchers(repo_root: Path) -> list[re.Pattern[str]]:
+        """The Bash commands `.claude/settings.json` permits, read from the file.
+
+        A `*` is a wildcard wherever it appears, not only at the end: an earlier
+        version stripped a trailing `*` and prefix-matched the rest, which made
+        `Bash(jq -er * workspace/tmp/*)` unmatchable.
+        """
+        settings = json.loads(
+            (repo_root / ".claude" / "settings.json").read_text(encoding="utf-8")
+        )
+        matchers = []
+        for entry in settings["permissions"]["allow"]:
+            if not entry.startswith("Bash(") or not entry.endswith(")"):
+                continue
+            pattern = entry[len("Bash(") : -1]
+            if pattern.endswith(" *"):
+                # A trailing ` *` also permits the command with NO argument at all:
+                # measured on CLI 2.1.234, `python3 tools/validate_workspace_root.py`
+                # runs under `Bash(python3 tools/validate_workspace_root.py *)`, and
+                # the gate runbook emits exactly that argument-less form. Requiring
+                # the separator refused a command the layer allows.
+                head = "".join(
+                    ".*" if part == "*" else re.escape(part)
+                    for part in re.split(r"(\*)", pattern[: -len(" *")])
+                )
+                matchers.append(re.compile(head + r"(?:\s.*)?$"))
+                continue
+            body = "".join(
+                ".*" if part == "*" else re.escape(part)
+                for part in re.split(r"(\*)", pattern)
+            )
+            # An entry with no wildcard is an EXACT match, not a prefix.
+            matchers.append(re.compile(body if "*" in pattern else body + r"\s*$"))
+        return matchers
+
+    # A redirect to a FILE anywhere in a segment: measured refused by the permission
+    # layer regardless of the entry the rest of the segment matches
+    # (docs/HOOKS.md §"Layer boundary"). `>&` is fd duplication, `/dev/null` a discard.
+    _FILE_REDIRECT = re.compile(r"\d?>>?(?!&)\s*(?!/dev/null\b)[^\s;&|<>]+")
+
+    @classmethod
+    def _command_is_permitted(cls, command: str, matchers: list[re.Pattern[str]]) -> bool:
+        """Model of what the permission layer admits, as far as it has been measured.
+
+        The question is "does a committed ENTRY cover this command", not "would the
+        CLI run it": the CLI additionally admits commands through its own read-only
+        analysis (measured: `echo hi` and `head` run with no entry naming them), and
+        that admission is deliberately not modelled — an instructed command must be
+        covered by an entry, not by a classifier this repository does not control.
+
+        Two properties beyond "some entry matches the string", both MEASURED against
+        CLI 2.1.234 rather than assumed. The layer decomposes a compound and names
+        the offending part (`… run-gate --gate g && curl …` →
+        `The following part requires approval: curl …`), and it refuses a redirect to
+        a file whatever entry the rest of the command matches. Without them this
+        model certified as covered the exact command `docs/HOOKS.md` records the
+        layer refusing.
+
+        Fail-closed beyond the split: a segment carrying command substitution
+        (`$(…)`, backticks) or a background `&` is not permitted, because what runs
+        then is not the segment this model matched.
+
+        Declared residue, none of which any instructed command uses, all measured on
+        2.1.234 except the last: a leading `VAR=value` prefix (refused — model
+        agrees), a `./tools/…` spelling (refused — agrees), a quoted path (refused —
+        agrees), and repeated whitespace (`python3  tools/…` RUNS, while the model
+        calls it not permitted — the one measured disagreement, in the direction
+        that makes a runbook emitting it fail this test rather than pass silently).
+        Splitting is byte-level, so a separator inside quotes splits too.
+        """
+        # `&&` and `>&` first: a bare `&` is a separator, but the `&` of an fd
+        # duplication is not.
+        for segment in re.split(r"\|\||&&|(?<![>&])&(?!&)|[;|]", command):
+            segment = segment.strip()
+            if not segment:
+                continue
+            if "$(" in segment or "`" in segment:
+                return False
+            # `<capability_token>` / `<PATH>` are documentation placeholders, not
+            # shell syntax; their closing `>` read as a redirect operator and
+            # rejected the runbook's own gate command.
+            scanned = re.sub(r"<[^>\s]*>", " ", segment)
+            if cls._FILE_REDIRECT.search(scanned):
+                return False
+            if not any(matcher.match(segment) for matcher in matchers):
+                return False
+        return True
+
+    def test_committed_allowlist_covers_the_commands_the_repository_instructs(
+        self,
+    ) -> None:
+        """PIN: every command a leaf is TOLD to run is matched by a committed entry.
+
+        Since PR #72 the committed `.claude/settings.json` is an agentic leaf's whole
+        permission layer, so an entry deleted or misspelled costs every leaf an
+        interactive approval that cannot be answered — the workflow stalls. Nothing
+        read that file after the redirect admission was removed: measured, stripping
+        all sixteen `Bash(...)` entries left the entire suite green.
+
+        The gate commands are taken from the RENDERED runbook rather than restated
+        here, so a new gate command is covered the day it is emitted. The three
+        contract-named routes no runbook renders are listed below, each with the
+        document that instructs it.
+
+        SCOPE, measured by deleting each entry in turn: of the sixteen committed
+        `Bash(...)` entries this reaches SIX. Three come from the runbook
+        (`python3 tools/orchestration_runtime.py *`, `python3 tools/check_artifact_syntax.py *`,
+        `python3 tools/validate_workspace_root.py *`) — and only from two of the
+        eleven (step, substep) pairs, since the other nine render no runbook at all,
+        so "covered the day it is emitted" holds for those two. Three come from the
+        listed routes (`python3 workspace/tmp/*`, `python3 tools/new_agent_run_id.py`,
+        `cat workspace/orchestrations/*`). The ten it does NOT reach, each verified
+        to survive deletion: `python3 tools/run_workflow.py *` (operator-side),
+        `python3 tools/validate_pipeline_semantics.py *`,
+        `python3 tools/audit_orchestration.py *`, `mkdir -p workspace/tmp/*`,
+        `cat workspace/tmp/*`, both `jq -er *` entries, `date -u *`, and the two
+        `echo` entries. It does not ask whether the entries are minimal, and it
+        cannot see a command a leaf invents.
+        The negative probes are what keep it from being vacuous — a matcher list
+        that matched everything, or one that ignored a refused redirect, would
+        satisfy the positives alone.
+        """
+        import re as _re
+
+        from tools.orchestration_runtime import (
+            ALLOWED_VALIDATE_PIPELINE_STAGES,
+            _build_gate_runbook,
+        )
+
         repo_root = Path(__file__).resolve().parents[2]
         matchers = self._allowlisted_bash_matchers(repo_root)
-        redirect = self._REDIRECT
-        cases = (
-            ("cat > workspace/tmp/a/x.py <<'EOF'", True),
-            ("printf 'x' > workspace/tmp/a/x.py", True),
-            ("tee workspace/tmp/a/x.py", True),
-            ("python3 tools/new_agent_run_id.py > workspace/tmp/a/id.txt", True),
-            ("python3 tools/orchestration_runtime.py run-gate --gate g 2>workspace/tmp/a/e.txt", False),
-            ("cat workspace/tmp/a/in.txt 2>workspace/tmp/a/err.txt", False),
-            ("python3 workspace/tmp/a/x.py > workspace/tmp/a/out.txt", False),
+        self.assertTrue(matchers, ".claude/settings.json names no Bash entry")
+
+        payload = dict(
+            orchestration_id="orch_ALLOW_001",
+            agent_run_id="arid-ALLOW",
+            node_key="component/demo@0.1.0",
+            ir_ref="workspace/ir/component__demo__0.1.0/d_001",
+            pipeline_ref="workspace/pipelines/component__demo__0.1.0/d_001",
+            source_id="src_001",
+            run_id="run_001",
+            parent_agent_run_id="arid-PARENT",
         )
-        for command, expected_offender in cases:
-            with self.subTest(command=command):
-                m = redirect.search(command)
-                self.assertIsNotNone(m, "the detector saw no redirect at all")
-                admitted = any(matcher.match(command) for matcher in matchers)
-                self.assertEqual(
-                    not admitted,
-                    expected_offender,
-                    f"{command!r}: admitted={admitted}",
-                )
+        instructed = set()
+        for step, substep in ALLOWED_VALIDATE_PIPELINE_STAGES:
+            runbook = _build_gate_runbook(dict(payload, step=step, substep=substep))
+            instructed.update(
+                m.group().strip() for m in _re.finditer(r"python3 \S+[^\n]*", runbook)
+            )
+        # Contract-named routes no runbook renders, each with its instruction site.
+        instructed.update({
+            # docs/AGENT_CONTRACT.md "For a temporary file" / the scratch-script route
+            "python3 workspace/tmp/arid-ALLOW/build_patch.py",
+            # docs/AGENT_CONTRACT.md "For UUID generation" and docs/RUNBOOK.md step 1
+            "python3 tools/new_agent_run_id.py",
+            # docs/RUNBOOK.md §substep-timeout-recovery step 6a — a BARE cat, which
+            # that section names by spelling because `$(cat …)` is rejected
+            "cat workspace/orchestrations/orch_ALLOW_001/launches/arid-CHILD.parent_return_token",
+        })
+        self.assertTrue(instructed, "no instructed command was rendered")
+
+        uncovered = [
+            command
+            for command in sorted(instructed)
+            if not self._command_is_permitted(command, matchers)
+        ]
+        self.assertEqual(uncovered, [], "\n".join(uncovered))
+
+        # Negative probes: the model must not be a rubber stamp, and must not
+        # certify what the layer was MEASURED to refuse.
+        refused = (
+            "curl http://example.invalid/x",
+            "rm -rf workspace",
+            # every part of a compound must be permitted; the layer decomposes
+            "python3 tools/orchestration_runtime.py run-gate --gate g && rm -rf workspace",
+            "python3 tools/orchestration_runtime.py run-gate --gate g | tee /etc/passwd",
+            # the redirect this branch measured refused, appended to a permitted
+            # command: modelling it as covered is modelling the opposite of the
+            # measurement docs/HOOKS.md carries
+            "python3 tools/orchestration_runtime.py run-gate --gate g 2>workspace/tmp/a/e.txt",
+            "python3 tools/orchestration_runtime.py run-gate --gate g > workspace/tmp/a/e.txt",
+            # a background `&` is a separator too, and what follows it is not the
+            # segment any entry matched
+            "python3 tools/orchestration_runtime.py run-gate --gate g & rm -rf workspace",
+            # command substitution runs something the match never saw
+            "python3 tools/orchestration_runtime.py run-gate --gate g $(rm -rf x)",
+            "python3 tools/orchestration_runtime.py run-gate --gate g `rm -rf x`",
+        )
+        for command in refused:
+            with self.subTest(refused=command):
+                self.assertFalse(self._command_is_permitted(command, matchers))
+        # …while a discard is not a write and stays permitted.
+        self.assertTrue(
+            self._command_is_permitted(
+                "python3 tools/orchestration_runtime.py run-gate --gate g 2>/dev/null",
+                matchers,
+            )
+        )
+
+    @classmethod
+    def _anchored_statements(cls, text: str, anchor: str, scope: str) -> list[str]:
+        """Every statement of the scratch rule in `text`, read at the anchor.
+
+        Shared by the surfaces check and by its self-test, so the WINDOW and the
+        row-cell rule are observed rather than reimplemented: mutating
+        `_STATEMENT_WINDOW` to 100000 or `_NAMES_THE_ROUTE` to `r""` was measured to
+        leave the surfaces check green, because nothing fed it a document whose
+        route is named only outside the window.
+        """
+        statements: list[str] = []
+        lines = text.splitlines()
+        for n, line in enumerate(lines):
+            if anchor not in line:
+                continue
+            if scope == "row":
+                cells = [c for c in line.split("|") if c.strip()]
+                statements.append(cells[-1])
+                continue
+            # Join the next line first: a reflow that ends the line at the anchor
+            # would otherwise read an empty statement.
+            joined = " ".join([line] + lines[n + 1 : n + 2])
+            i = joined.index(anchor)
+            statements.append(joined[i : i + cls._STATEMENT_WINDOW])
+        return statements
+
+    def test_scratch_route_statement_reader_is_bounded_and_names_the_route(
+        self,
+    ) -> None:
+        """SELF-TEST for the check below, whose two knobs had no witness.
+
+        The window is what makes the check read THIS rule's sentence rather than the
+        artifact-write sentence that follows it on the same line and names the same
+        tool. Without a fixture whose route is named just outside the window, the
+        window could be widened to the whole file and nothing would notice.
+        """
+        anchor = "For a temporary file"
+        near = f"{anchor}, write it with the `Write` tool to that literal path."
+        far = f"{anchor}, put it under allowed_tmp_root." + " padding" * 40 + " Write tool."
+        self.assertTrue(
+            all(
+                self._NAMES_THE_ROUTE.search(s)
+                for s in self._anchored_statements(near, anchor, "sentence")
+            )
+        )
+        self.assertFalse(
+            any(
+                self._NAMES_THE_ROUTE.search(s)
+                for s in self._anchored_statements(far, anchor, "sentence")
+            ),
+            "the statement window is wide enough to read a later sentence's route",
+        )
+        # The row scope reads the remedy cell, not the whole row.
+        row = "| `output_manifest_write_guard` | wrote /tmp | use the `Write` tool |"
+        self.assertEqual(
+            self._anchored_statements(row, "output_manifest_write_guard", "row"),
+            [" use the `Write` tool "],
+        )
+
+    # The five surfaces that state the redirect rule for a leaf. Not derived from
+    # `_SCRATCH_SURFACES`: `skills/workflow-audit-claude/SKILL.md` and
+    # `docs/WORKSPACE_LAYOUT.md` are in that list for the scratch-route statement
+    # and say nothing about redirects.
+    _REDIRECT_RULE_SURFACES = (
+        "docs/AGENT_CONTRACT.md",
+        "docs/RUNBOOK.md",
+        "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+        "tools/prompt_templates/step_agent.txt",
+        "tools/prompt_templates/substep_agent.txt",
+    )
+
+    # The general form of the rule. Pinned as a PHRASE because the property is a
+    # sentence's scope, which no pattern over commands can reach: the retired
+    # wording ("a Bash redirect that is itself the command matches no committed
+    # permissions.allow rule") carries no redirect span at all, so the offender
+    # scan cannot see it, and reverting either prompt template — the text every
+    # leaf receives — was measured to leave the whole suite green.
+    _STATES_THE_GENERAL_RULE = re.compile(r"not a (?:write|scratch-write) route in any position", re.I)
+
+    @classmethod
+    def _narrow_clause_alone(cls, text: str) -> list[str]:
+        """Paragraphs that name the whole-command case without the general rule.
+
+        A file-wide phrase match cannot see this: the general clause in paragraph
+        one satisfies it while paragraph nine reintroduces the narrow premise.
+        Shared with the self-test, because with every real surface satisfying it
+        today the rule has no witness in the tree — disabling it was measured to
+        change nothing.
+        """
+        return [
+            unit[:200]
+            for unit in cls._statement_units(text)
+            if re.search(r"itself the command|the whole command", unit)
+            and not cls._STATES_THE_GENERAL_RULE.search(unit)
+        ]
+
+    @staticmethod
+    def _statement_units(text: str) -> list[str]:
+        """Split into units a reader would take as one statement.
+
+        A blank line is not the boundary on these surfaces: a consecutive bullet
+        list or a table is ONE `\n\n`-paragraph — measured 9637 characters in
+        docs/AGENT_CONTRACT.md, 6952 in docs/RUNBOOK.md, 2335 in
+        docs/workflow/LAUNCH_PROMPT_REFERENCE.md — so splitting on it collapsed the
+        per-statement rule into the file-wide check that the caller's docstring
+        says is insufficient. Demonstrated: the retired premise placed in a
+        DIFFERENT row of the docs/RUNBOOK.md remedy table, with the general clause
+        left in its own row, passed. A list item and a table row each start a
+        statement of their own.
+        """
+        units: list[str] = []
+        current: list[str] = []
+        for line in text.splitlines():
+            starts_item = bool(re.match(r"\s*(?:[-*+]\s|\d+[.)]\s|\||#)", line))
+            if not line.strip() or starts_item:
+                if current:
+                    units.append("\n".join(current))
+                current = []
+            if line.strip():
+                current.append(line)
+        if current:
+            units.append("\n".join(current))
+        return units
+
+    def test_narrow_clause_alone_is_detected_per_paragraph(self) -> None:
+        """SELF-TEST for the paragraph rule, which no real surface exercises."""
+        good = (
+            "A Bash redirect is not a write route in any position, as the whole "
+            "command or appended.\n\nUnrelated paragraph."
+        )
+        bad = (
+            "A Bash redirect is not a write route in any position.\n\n"
+            "A redirect that is itself the command matches no committed rule."
+        )
+        self.assertEqual(self._narrow_clause_alone(good), [])
+        self.assertEqual(len(self._narrow_clause_alone(bad)), 1)
+        # A markdown list or table is ONE blank-line paragraph, so the boundary
+        # that matters is the item, not the blank line: with a `\n\n` split the
+        # premise below hides behind the general clause in the row above it.
+        table = (
+            "| `output_manifest_write_guard` | wrote /tmp | a Bash redirect is not "
+            "a write route in any position |\n"
+            "| `forbid_git_reset_hard` | ran it | a redirect that is itself the "
+            "command matches no committed rule |\n"
+        )
+        self.assertEqual(len(self._narrow_clause_alone(table)), 1)
+        bullets = (
+            "- A Bash redirect is not a write route in any position.\n"
+            "- A redirect that is itself the command matches no committed rule.\n"
+        )
+        self.assertEqual(len(self._narrow_clause_alone(bullets)), 1)
+
+    def test_general_rule_phrase_accepts_the_current_form_and_rejects_the_retired(
+        self,
+    ) -> None:
+        """SELF-TEST for the phrase pin below, which is a positive assertion.
+
+        A positive assertion is green when its pattern matches everything: blanking
+        `_STATES_THE_GENERAL_RULE` was measured to leave the surfaces check passing
+        even with a prompt template reverted to the retired wording. The pattern is
+        therefore fed both forms directly.
+        """
+        current = (
+            "A Bash redirect is not a write route in any position: on the Claude "
+            "Code backend the permission layer refuses it."
+        )
+        retired = (
+            "a Bash redirect that is itself the command (`cat > ...`) matches no "
+            "committed `permissions.allow` rule and costs an attempt"
+        )
+        self.assertRegex(current, self._STATES_THE_GENERAL_RULE)
+        self.assertNotRegex(retired, self._STATES_THE_GENERAL_RULE)
+        # …and the scratch-write spelling the prompt templates use.
+        self.assertRegex(
+            "not a scratch-write route in any position", self._STATES_THE_GENERAL_RULE
+        )
+
+    def test_redirect_rule_surfaces_state_it_in_the_general_form(self) -> None:
+        """PIN: every surface that states the redirect rule states it for ANY position.
+
+        The narrow form scopes the refusal to a redirect that IS the command, which
+        reads as a licence for a capture appended to a permitted command — the shape
+        the permission layer was measured to refuse (docs/HOOKS.md §"Layer
+        boundary"). That premise was written in five places, retired in stages, and
+        found still standing twice; a phrase pin is what observes it.
+
+        Read WHOLE-FILE rather than at an anchor, deliberately: this phrase appears
+        nowhere else in these files, so it cannot be satisfied by a sentence about a
+        different rule — the failure the anchored checks in this class exist to
+        avoid. The cost is that rewording it costs a test update, which is the point.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        # Asserted as a literal, for the reason the sibling check learned the hard
+        # way: a loop over an emptied tuple asserts nothing and stays green.
+        self.assertEqual(
+            set(self._REDIRECT_RULE_SURFACES),
+            {
+                "docs/AGENT_CONTRACT.md",
+                "docs/RUNBOOK.md",
+                "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
+                "tools/prompt_templates/step_agent.txt",
+                "tools/prompt_templates/substep_agent.txt",
+            },
+        )
+        for rel in self._REDIRECT_RULE_SURFACES:
+            with self.subTest(surface=rel):
+                text = (repo_root / rel).read_text(encoding="utf-8")
+                self.assertRegex(text, self._STATES_THE_GENERAL_RULE)
+                # …and the narrow clause never stands alone: where a surface still
+                # names the whole-command case (it is true, just not the whole
+                # rule), the general clause must be in the same paragraph.
+                self.assertEqual(self._narrow_clause_alone(text), [], rel)
 
     def test_instruction_surfaces_state_the_write_tool_scratch_route(self) -> None:
         """SAMPLE (not a pin): each surface's scratch sentence names the file tool.
@@ -3133,20 +3619,9 @@ class WriteToolExtensionPolicyTests(unittest.TestCase):
             with self.subTest(surface=rel):
                 path = repo_root / rel
                 self.assertTrue(path.is_file(), f"{rel} missing; update the surface list")
-                stated = []
-                doc_lines = path.read_text(encoding="utf-8").splitlines()
-                for n, line in enumerate(doc_lines):
-                    if anchor not in line:
-                        continue
-                    if scope == "row":
-                        cells = [c for c in line.split("|") if c.strip()]
-                        stated.append(cells[-1])
-                    else:
-                        # Join the next line first: a reflow that ends the line at the
-                        # anchor would otherwise read an empty statement.
-                        joined = " ".join([line] + doc_lines[n + 1 : n + 2])
-                        i = joined.index(anchor)
-                        stated.append(joined[i : i + self._STATEMENT_WINDOW])
+                stated = self._anchored_statements(
+                    path.read_text(encoding="utf-8"), anchor, scope
+                )
                 self.assertTrue(
                     stated, f"{rel} no longer states the scratch rule ({anchor!r})"
                 )
