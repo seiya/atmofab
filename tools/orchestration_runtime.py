@@ -15842,9 +15842,22 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 #
 # The cost of the polarity, stated: if a future CLI writes somewhere not listed here,
 # the leaf fails visibly rather than escaping quietly, and this list must be
-# re-measured. RESIDUE: `projects/` stays writable, so a leaf can still tamper with
-# another leaf's transcript (reads are blocked by `workflow_private_backend_homes`),
-# and `projects/<slug>/memory/MEMORY.md` remains writable — inert only because
+# re-measured.
+#
+# ONE SUCH COST IS ALREADY MEASURED AND ACCEPTED. The CLI updates `.claude.json`
+# ATOMICALLY — it makes `<home>/.claude.json.lock` and `<home>/.claude.json.tmp.<pid>.<rand>`
+# in the home ROOT and renames — so listing the file itself cannot make that work,
+# and those writes fail (measured: 11 lock retries, then it gives up). Nothing the
+# workflow needs is lost: the trust seed is written once by the host at preparation
+# time, and what the CLI wanted to persist is a feature-flag cache and a machine id.
+# Measured on CLI 2.1.235 against a read-only home: leaf exits 0, the session
+# transcript is written, an MCP tool dispatches `outcome=ok`, and a warm
+# `--resume` finds the session. Making those writes succeed would require the home
+# ROOT to be writable, which is exactly the channel this closes.
+#
+# RESIDUE: `projects/` stays writable, so a leaf can still tamper with another
+# leaf's transcript (reads are blocked by `workflow_private_backend_homes`), and
+# `projects/<slug>/memory/MEMORY.md` remains writable — inert only because
 # `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` is set, which is therefore load-bearing.
 CLAUDE_HOME_WRITABLE_RELPATHS = (
     ".claude.json",
