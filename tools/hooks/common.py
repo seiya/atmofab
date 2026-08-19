@@ -4523,6 +4523,64 @@ def _claude_project_slug(repo_root: Path) -> str:
     return abs_str.replace("/", "-")
 
 
+def claude_workflow_home(repo_root: Path, orchestration_id: str) -> Path | None:
+    """The private ``CLAUDE_CONFIG_DIR`` the HOST prepared for this orchestration.
+
+    Read from host-authored ``orchestration_meta.json``, never from the environment:
+    a leaf can set an environment variable for anything it spawns, so env would be a
+    caller-writable channel deciding where trusted state is looked for. Returns None
+    for an orchestration that has none — a codex-only run, a run recorded before
+    issue #63, or a call made before the first claude launch prepared one.
+    """
+    meta_path = (
+        repo_root / "workspace" / "orchestrations" / orchestration_id
+        / "orchestration_meta.json"
+    )
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("claude_workflow_home")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return Path(raw.strip())
+
+
+def claude_leaf_projects_roots(repo_root: Path,
+                               orchestration_id: str | None = None) -> tuple[Path, ...]:
+    """Every directory a Claude leaf's per-project state may live under.
+
+    CANONICAL for the consumers that must not drift apart, all of which locate a
+    leaf's own session by ``<projects-root>/<slug>/<session-id>.jsonl``:
+      * `workflow_conductor._claude_session_resumable` (is a warm `--resume` viable);
+      * `orchestration_diagnostics._leaf_transcript_path` / `_claude_projects_dir`
+        (post-mortem of a dangling leaf);
+      * the persisted-tool-result shape exemptions in this module.
+
+    Issue #63 moved a leaf's state from the operator's `~/.claude` into a private
+    per-orchestration home, so BOTH are returned, private home first: a resume or an
+    audit may legitimately reach back to a session recorded before that move, and the
+    operator's own dev sessions still live in `~/.claude`. Callers that only need to
+    know whether a session exists search all of them.
+    """
+    roots: list[Path] = []
+    if orchestration_id and str(orchestration_id).strip():
+        home = claude_workflow_home(repo_root, str(orchestration_id).strip())
+        if home is not None:
+            roots.append(home / "projects")
+    roots.append(_home_dir() / ".claude" / "projects")
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            unique.append(root)
+    return tuple(unique)
+
+
 def _auto_reads_seen_path(repo_root: Path, orchestration_id: str, agent_run_id: str) -> Path:
     return (
         repo_root

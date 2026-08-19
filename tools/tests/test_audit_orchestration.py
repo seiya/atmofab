@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -12,7 +13,6 @@ from pathlib import Path
 from unittest import mock
 
 from tools import audit_orchestration as ao
-from tools import orchestration_diagnostics as diag
 from tools.audit_orchestration import (
     audit,
     collect_allow_auto_approve_stats,
@@ -219,7 +219,7 @@ class TokenCostSummaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo, orch_id = self._setup(tmp)
             home = Path(tmp) / "home"
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 # Transcript reconstruction is OPT-IN since issue #47 — the workflow does not
                 # read ~/.claude, so the default audit never touches it. These rows carry no
                 # durable `usage`, which is what a pre-issue-#47 run looks like.
@@ -264,7 +264,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             # No child agent_runs (only the parent): child attribution is
             # unavailable, but the parent total must still be reported.
             runs = [{"agent_run_id": parent_arid, "agent_role": "orchestration", "status": "pass"}]
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 tcs = collect_token_cost_summary(repo, meta, runs, from_transcripts=True)
             self.assertEqual(tcs["children"]["matched_count"], 0)  # no children measured
             self.assertTrue(tcs["available"])  # parent rescues availability
@@ -301,14 +301,14 @@ class TokenCostSummaryTests(unittest.TestCase):
                     },
                 }
             ]
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 tcs = collect_token_cost_summary(repo, {}, runs)
             self.assertEqual(tcs["children_total_tokens"], 1020)
             self.assertEqual(tcs["children"]["per_child"][child]["source"], "agent_runs.jsonl")
             # The {"status":"unavailable"} marker must NOT count as usage.
             runs2 = [{"agent_run_id": child, "agent_role": "substep", "status": "pass",
                       "usage": {"status": "unavailable", "reason": "x"}}]
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 tcs2 = collect_token_cost_summary(repo, {}, runs2)
             self.assertEqual(tcs2["children"]["matched_count"], 0)
 
@@ -547,7 +547,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             slug = str(repo.resolve()).replace("/", "-")
             (home / ".claude" / "projects" / slug).mkdir(parents=True)
             runs = [{"agent_run_id": "bbbb2222-2222-4222-8222-222222222222", "agent_role": "substep", "status": "pass"}]
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 tcs = collect_token_cost_summary(repo, {}, runs)
             self.assertFalse(tcs["available"])
             lines: list[str] = []
@@ -577,7 +577,7 @@ class TokenCostSummaryTests(unittest.TestCase):
             )
             meta: dict = {}  # no parent identity → parent unavailable
             runs = [{"agent_run_id": child, "agent_role": "substep", "status": "pass"}]
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 tcs = collect_token_cost_summary(repo, meta, runs, from_transcripts=True)
             self.assertTrue(tcs["available"])
             self.assertFalse(tcs["parent"].get("found"))

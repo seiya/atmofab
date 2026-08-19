@@ -7890,6 +7890,12 @@ def _safe_host_env_for_child() -> dict[str, str]:
     return body
 
 
+# The environment variables that relocate a backend CLI's configuration home.
+# Read by `render_bwrap_command` (which must re-declare them through the sandbox)
+# and by the conductor's child environment, so the two routes cannot disagree.
+_BACKEND_HOME_ENV_VARS = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
+
+
 def _resolve_backend_type(backend_type: str, backend_command: str) -> str:
     """The backend family (``claude`` / ``codex``), preferring the explicit type and
     falling back to the launch command string. A configured ``command:`` wrapper means
@@ -7940,8 +7946,22 @@ def _backend_runtime_bind_paths(
             ro.add(str(Path(home) / ".local" / "share" / "claude"))
         # The credential-home paths themselves come from the single canonical
         # resolver in tools/hooks/common.py, which the Bash read guard reads from
-        # the same call — what this profile binds writable is exactly what that
+        # the same call — what this function returns writable is exactly what that
         # guard forbids reading, with no second spelling to drift.
+        #
+        # SCOPE OF THAT CLAIM, since issue #63. It is about what THIS FUNCTION
+        # returns. A caller may pass `backend_rw_override`, which REPLACES this rw
+        # list wholesale, and both backends' isolated homes do exactly that: an
+        # agentic claude leaf is bound `{<private home>, ~/.claude/.credentials.json}`
+        # and a codex leaf `{<private home>}`. So the guarded set is a superset of
+        # what such a leaf can actually write — never a subset, which is the direction
+        # that would matter — and the one credential file still bound writable stays
+        # inside the guarded `~/.claude`. The private homes themselves are NOT read-
+        # guarded, for either backend: they hold this repository's own committed
+        # settings, a feature-flag cache, and the leaf's own session transcript, not
+        # operator credentials. Documented as residue in `docs/HOOKS.md` rather than
+        # closed here, so both backends keep one story; issue #64 owns relocating
+        # those homes and revisits it there.
         cred_dirs, cred_files = _backend_credential_home_paths(btype)
         for cred_dir in cred_dirs:  # config dir (creatable if absent)
             rw.add(str(cred_dir))
@@ -8007,6 +8027,7 @@ def build_readonly_bwrap_profile(
     backend_type: str = "",
     backend_ro_extra: Sequence[str] = (),
     backend_ro_mappings: Sequence[tuple[str, str]] = (),
+    backend_rw_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -8055,6 +8076,7 @@ def build_readonly_bwrap_profile(
         "write_roots": [],
         "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
         "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
+        "runtime_rw_bind_mappings": [list(pair) for pair in backend_rw_mappings],
         "runtime_rw_bind_paths": backend_rw,
         "tmp_dir": str(tmp_root),
         "workspace_tmp_rw_abs": str(workspace_tmp_host),
@@ -8076,6 +8098,7 @@ def build_bwrap_profile(
     backend_type: str = "",
     backend_ro_extra: Sequence[str] = (),
     backend_ro_mappings: Sequence[tuple[str, str]] = (),
+    backend_rw_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -8283,6 +8306,7 @@ def build_bwrap_profile(
         "write_roots": write_roots,
         "runtime_ro_bind_paths": _runtime_ro_bind_paths() + backend_ro,
         "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
+        "runtime_rw_bind_mappings": [list(pair) for pair in backend_rw_mappings],
         # Writable binds outside repo_root: the backend's config/credential home
         # (auth refresh + session transcript). Bound writable so the CLI runs and
         # Phase 4 `--session-id`/`--resume` can read/write their session files.
@@ -8370,6 +8394,18 @@ def render_bwrap_command(
         if not (Path(source).is_file() and Path(destination).is_file()):
             raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
         cmd.extend(["--ro-bind", source, destination])
+    # Writable file mappings, emitted after the read-only ones so neither can be
+    # silently downgraded by ordering. The Claude private home uses exactly one:
+    # the operator's real credential file over the home's empty placeholder, so
+    # OAuth token refresh keeps working without binding the whole `~/.claude`.
+    for mapping in profile.get("runtime_rw_bind_mappings", []):
+        if not (isinstance(mapping, list) and len(mapping) == 2
+                and all(isinstance(part, str) and part.strip() for part in mapping)):
+            raise ValueError("runtime_rw_bind_mappings entries must be [source, destination]")
+        source, destination = mapping[0].strip(), mapping[1].strip()
+        if not (Path(source).is_file() and Path(destination).is_file()):
+            raise ValueError("runtime_rw_bind_mapping source and destination must be existing files")
+        cmd.extend(["--bind", source, destination])
     for rel in profile.get("write_roots", []):
         if not isinstance(rel, str) or not rel.strip():
             continue
@@ -8486,9 +8522,16 @@ def render_bwrap_command(
     cmd.extend(["--setenv", "TMPDIR", ws_abs])
     profile_env = profile.get("env")
     if isinstance(profile_env, dict):
-        codex_home = profile_env.get("CODEX_HOME")
-        if isinstance(codex_home, str) and codex_home.strip():
-            cmd.extend(["--setenv", "CODEX_HOME", codex_home.strip()])
+        # The backend-home variables the profile may override. bwrap clears the
+        # environment, so a variable the child needs must be re-declared here; a
+        # backend home that is prepared but not announced would leave the leaf
+        # reading the OPERATOR's home instead, which is the whole point of the
+        # isolation. Both backends are listed in one place so adding a third
+        # cannot be forgotten on this side.
+        for var in _BACKEND_HOME_ENV_VARS:
+            value = profile_env.get(var)
+            if isinstance(value, str) and value.strip():
+                cmd.extend(["--setenv", var, value.strip()])
     cmd.extend(["--bind", tmp_dir, tmp_dir])
     cmd.append("--")
     cmd.extend([str(part) for part in command_argv])
@@ -13991,7 +14034,8 @@ def default_agent_model_for_backend(backend: str) -> str:
 
     It deliberately does NOT read the operator's `~/.claude` (`resolve_claude_model_alias`,
     which serves the orchestration row instead). An agentic claude leaf runs with
-    `--setting-sources project` and cannot see that home, so stamping a value read from
+    `--setting-sources user` against a private home and cannot see the operator's, so
+    stamping a value read from
     it would describe a run that did not happen. A PURE claude leaf is asymmetric: its
     flag set (`pure_leaf_flags`) carries no `--setting-sources`, so operator settings can
     still decide its model. Predicting per-path would make the stamp claim a precision
@@ -15666,22 +15710,45 @@ def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
             "detail": f"validated repository hook source: {path}"}
 
 
-def _require_secure_codex_home(home: Path) -> None:
-    """Fail closed unless ``home`` is a private, non-symlinked directory."""
+def _require_secure_backend_home(home: Path, label: str = "Codex") -> None:
+    """Fail closed unless ``home`` is a private, non-symlinked directory.
+
+    ONE spelling for both backends: the Claude private home (issue #63) has the
+    same threat model as the Codex one — a world-writable or symlinked home lets
+    another process substitute the very configuration that is about to be
+    SHA-pinned, so the pin would certify bytes the leaf never loads. ``label``
+    only names the backend in the message; the checks are identical by design and
+    must not be allowed to drift apart per backend.
+    """
     try:
         info = home.lstat()
     except OSError as exc:
-        raise ValueError(f"isolated Codex home is inaccessible: {home}") from exc
+        raise ValueError(f"isolated {label} home is inaccessible: {home}") from exc
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"isolated Codex home must be a real directory: {home}")
+        raise ValueError(f"isolated {label} home must be a real directory: {home}")
     if info.st_uid != os.getuid():
-        raise ValueError(f"isolated Codex home is not owned by this user: {home}")
+        raise ValueError(f"isolated {label} home is not owned by this user: {home}")
     if stat.S_IMODE(info.st_mode) != 0o700:
-        raise ValueError(f"isolated Codex home must have mode 0700: {home}")
+        raise ValueError(f"isolated {label} home must have mode 0700: {home}")
 
 
-def _secure_codex_home_file(path: Path, data: bytes | None = None) -> None:
-    """Create or validate a private regular file without following symlinks."""
+def _secure_backend_home_file(
+    path: Path,
+    data: bytes | None = None,
+    *,
+    label: str = "Codex",
+    verify_existing: bool = True,
+) -> None:
+    """Create or validate a private regular file without following symlinks.
+
+    ``verify_existing=False`` seeds ``data`` when the file is absent but accepts
+    whatever an already-present file contains. That is required for a file the
+    BACKEND itself rewrites: the Claude private home's ``.claude.json`` gains
+    cached feature flags and a machine id on first launch (measured, CLI 2.1.235),
+    so a warm resume re-preparing the same home would otherwise fail with
+    "differs from its verified source". Files the workflow PINS (``settings.json``,
+    Codex's ``hooks.json`` / ``config.toml``) keep the default and are verified.
+    """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -15690,13 +15757,13 @@ def _secure_codex_home_file(path: Path, data: bytes | None = None) -> None:
         try:
             info = path.lstat()
         except OSError as exc:
-            raise ValueError(f"isolated Codex file is inaccessible: {path}") from exc
+            raise ValueError(f"isolated {label} file is inaccessible: {path}") from exc
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"isolated Codex file must be a regular file: {path}")
+            raise ValueError(f"isolated {label} file must be a regular file: {path}")
         if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
-            raise ValueError(f"isolated Codex file has unsafe ownership or mode: {path}")
-        if data is not None and path.read_bytes() != data:
-            raise ValueError(f"isolated Codex file differs from its verified source: {path}")
+            raise ValueError(f"isolated {label} file has unsafe ownership or mode: {path}")
+        if verify_existing and data is not None and path.read_bytes() != data:
+            raise ValueError(f"isolated {label} file differs from its verified source: {path}")
         return
     try:
         # Write the WHOLE payload (os.write may be short) and remove the file if any
@@ -15734,6 +15801,286 @@ def _secure_codex_home_file(path: Path, data: bytes | None = None) -> None:
     finally:
         if fd >= 0:
             os.close(fd)
+
+
+CLAUDE_LEAF_CONFIG_REL = "leaf_config/claude/settings.json"
+
+# The events + matchers the leaf's PreToolUse/read boundary depends on. Kept as a
+# COVERAGE map (not a count) for the same reason as the codex twin above: a settings
+# file may spell the same coverage with one `*` block or with one block per tool, and
+# what must hold is the set of tools reached, not the shape that reaches them.
+_CLAUDE_REQUIRED_HOOK_EVENTS = {"UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"}
+_CLAUDE_HOOK_MATCHER_COVERAGE = {
+    "UserPromptSubmit": {"anything"},
+    "PreToolUse": {"Bash", "Write", "Edit", "Read", "Grep", "Glob"},
+    "PostToolUse": {"Bash"},
+    "Stop": {"anything"},
+}
+
+
+def _claude_leaf_config_path(repo_root: Path) -> Path:
+    """The committed settings file a Claude leaf — and ONLY a leaf — loads."""
+    return repo_root / "leaf_config" / "claude" / "settings.json"
+
+
+def _canonical_claude_hook_command(event: str) -> str:
+    """The sole repository-approved native Claude hook wrapper for an event.
+
+    THE single spelling, read by the leaf-config probe, by the dev-layer sync test,
+    and by the documentation. Differs from `_canonical_codex_hook_command` only in
+    the `--backend` value; both exist because the two CLIs read different files, not
+    because the policy differs.
+    """
+    return (
+        "sh -lc 'ROOT=$(git rev-parse --show-toplevel) || exit 2; "
+        "PYTHONPATH=\"$ROOT${PYTHONPATH:+:$PYTHONPATH}\" "
+        "METDSL_HOOK_REPO_ROOT=\"$ROOT\" python3 -m tools.hooks.cli "
+        f"--backend claude --event {event} --repo-root \"$ROOT\"'"
+    )
+
+
+def _claude_hook_invokes_event(hook: Any, event: str) -> bool:
+    """True only for one real policy-CLI invocation wired to this event.
+
+    EXACT string equality, never a substring test: a command that merely CONTAINS
+    the wrapper can short-circuit it (`false && <wrapper>`) or redirect its verdict,
+    and the leaf's whole read/write boundary is what the wrapper decides.
+    """
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    command = hook.get("command")
+    return isinstance(command, str) and command == _canonical_claude_hook_command(event)
+
+
+def _probe_claude_leaf_config(repo_root: Path | None) -> dict[str, Any]:
+    """Verify the committed leaf-only Claude configuration before it is copied.
+
+    Structural validation of the file the private home is built from: every required
+    hook event reaches the policy CLI for every tool the read boundary covers, and a
+    `permissions` key, if present, is an object. Nothing validated the hook blocks
+    before issue #63
+    — the project layer was loaded on trust — so this closes that gap at the same time
+    as it relocates the layer.
+
+    WHETHER build-runtime is actually granted is deliberately NOT decided here. That
+    question has several valid spellings (a server-level token, the five individual
+    tool tokens, an enabled alias spelled with an underscore, `defaultMode:
+    bypassPermissions`), all of them already known to the canonical evaluator
+    `_evaluate_build_runtime_tool_permission`, which reads THIS same file and gates
+    preflight on the answer. Re-deciding it here would be a second, stricter spelling
+    of one rule: the first version of this probe demanded the literal server token and
+    so refused four configurations the canonical evaluator accepts, and requiring merely
+    that an `allow` LIST exist still refused a valid `defaultMode: bypassPermissions`
+    configuration that grants without listing anything.
+    """
+    root = (repo_root or Path.cwd()).resolve()
+    path = _claude_leaf_config_path(root)
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError) as exc:
+        return {"name": "claude_leaf_config_validated", "pass": False,
+                "detail": f"cannot parse {path}: {exc}"}
+    if not isinstance(payload, dict):
+        return {"name": "claude_leaf_config_validated", "pass": False,
+                "detail": f"{path} must contain a settings object"}
+    permissions = payload.get("permissions")
+    if permissions is not None and not isinstance(permissions, dict):
+        return {"name": "claude_leaf_config_validated", "pass": False,
+                "detail": f"{path} permissions must be an object"}
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict):
+        return {"name": "claude_leaf_config_validated", "pass": False,
+                "detail": f"{path} must contain a hooks object"}
+    missing: list[str] = []
+    for event in sorted(_CLAUDE_REQUIRED_HOOK_EVENTS):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            missing.append(event)
+            continue
+        covered: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+                continue
+            matcher = entry.get("matcher")
+            if not isinstance(matcher, str):
+                continue
+            if not any(_claude_hook_invokes_event(hook, event) for hook in entry["hooks"]):
+                continue
+            if matcher == "*":
+                covered.update(_CLAUDE_HOOK_MATCHER_COVERAGE[event])
+                continue
+            try:
+                matcher_re = re.compile(matcher)
+            except re.error:
+                continue
+            for tool_name in _CLAUDE_HOOK_MATCHER_COVERAGE[event]:
+                if matcher_re.fullmatch(tool_name):
+                    covered.add(tool_name)
+        if covered != _CLAUDE_HOOK_MATCHER_COVERAGE[event]:
+            missing.append(event)
+    if missing:
+        return {"name": "claude_leaf_config_validated", "pass": False,
+                "detail": "workflow hook command missing for: " + ", ".join(missing)}
+    return {"name": "claude_leaf_config_validated", "pass": True,
+            "detail": f"validated leaf configuration source: {path}"}
+
+
+def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
+    """Create the only configuration-bearing Claude home for one orchestration.
+
+    The mirror of `_prepare_codex_workflow_home`, same order and same lock, for the
+    same reason: the leaf must come up with EXACTLY what this repository declares.
+    Launch pairs it with `CLAUDE_CONFIG_DIR=<home> --setting-sources user`, so the
+    operator's `~/.claude` and this checkout's `.claude/` are both out of the picture.
+
+    MEASURED (CLI 2.1.235, 2026-08-19, unbilled capture harness):
+      * hooks in this home's user-tier settings.json fire (UserPromptSubmit and
+        PreToolUse sentinels both observed);
+      * `--setting-sources user` also stops the repo's CLAUDE.md — and the AGENTS.md
+        it `@`-imports — from being injected into the leaf's first message;
+      * the `permissions.allow` grant is honoured with NO trust seed present
+        (`tool_dispatch_end ... outcome=ok`), while a control command was refused,
+        so the permission layer was demonstrably alive during that measurement;
+      * `--resume` finds this home's sessions, and does NOT find them against a
+        different home.
+    The trust seed is written anyway: it was measured unnecessary AND harmless, and
+    writing it means a future CLI that does gate grants on trust cannot silently drop
+    the build-runtime grant. It is deliberately NOT SHA-pinned or remounted read-only,
+    because the CLI rewrites `.claude.json` itself (cached feature flags, machine id).
+
+    Credentials are never copied. An empty 0600 placeholder is created for the bwrap
+    profile to file-bind the operator's real `~/.claude/.credentials.json` over, so
+    token refresh keeps working while the leaf's writable scope shrinks from the whole
+    `~/.claude` to that one file, and nothing durably secret is written under /tmp.
+    """
+    probe = _probe_claude_leaf_config(repo_root)
+    if probe.get("pass") is not True:
+        raise ValueError(f"cannot prepare isolated Claude configuration: {probe.get('detail')}")
+    source = _claude_leaf_config_path(repo_root)
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
+        meta = _read_json(meta_path)
+        if not isinstance(meta, dict):
+            raise ValueError("orchestration metadata missing while preparing Claude home")
+        raw_home = meta.get("claude_workflow_home")
+        raw_generation = meta.get("claude_workflow_home_generation")
+        prior_generation = raw_generation if isinstance(raw_generation, int) and raw_generation > 0 else 0
+        rotate_missing_home = False
+        if isinstance(raw_home, str) and raw_home.strip():
+            home = Path(raw_home)
+            try:
+                home.lstat()
+            except FileNotFoundError:
+                # /tmp is intentionally non-durable (issue #64 owns relocating it for
+                # BOTH backends). A host restart therefore rotates the home instead of
+                # making --resume permanently unlaunchable; the generation below stops
+                # any thread recorded against the vanished home from warm-resuming.
+                rotate_missing_home = True
+            else:
+                _require_secure_backend_home(home, "Claude")
+        if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
+            # `dir="/tmp"` is hardcoded for the same reason as the codex twin:
+            # `run_workflow.py` points TMPDIR inside the repository for leaf scratch,
+            # and a backend rw bind inside repo_root is rejected outright.
+            home = Path(tempfile.mkdtemp(prefix="metdsl-claude-", dir="/tmp"))
+            os.chmod(home, 0o700)
+            _require_secure_backend_home(home, "Claude")
+            meta["claude_workflow_home"] = str(home)
+            meta["claude_workflow_home_generation"] = prior_generation + 1
+            if rotate_missing_home:
+                meta["claude_workflow_home_rotated_from"] = raw_home.strip()
+                meta["claude_workflow_home_rotated_at"] = _utc_now_iso()
+            _write_json(meta_path, meta)
+        generation = meta.get("claude_workflow_home_generation")
+        if not isinstance(generation, int) or generation <= 0:
+            generation = max(1, prior_generation)
+            meta["claude_workflow_home_generation"] = generation
+            _write_json(meta_path, meta)
+        settings_path = home / "settings.json"
+        _secure_backend_home_file(settings_path, data, label="Claude")
+        if hashlib.sha256(settings_path.read_bytes()).hexdigest() != digest:
+            raise ValueError("isolated Claude settings SHA-256 verification failed")
+        trust = json.dumps(
+            {"projects": {str(repo_root.resolve()): {"hasTrustDialogAccepted": True}}},
+            sort_keys=True,
+        ).encode("utf-8")
+        trust_path = home / ".claude.json"
+        _secure_backend_home_file(trust_path, trust, label="Claude", verify_existing=False)
+        # `_backend_credential_home_paths` is the canonical resolver for WHERE the
+        # claude credential home is (it reads $HOME the same way the bwrap profile
+        # does), so the file bound over the placeholder is the one inside the home
+        # this repository already guards and binds — not a second spelling of it.
+        cred_dirs, _cred_files = _backend_credential_home_paths("claude")
+        origin = cred_dirs[0] / ".credentials.json"
+        # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json: the
+        # claude CLI also authenticates from `ANTHROPIC_API_KEY`, for which no
+        # credential file exists at all, so refusing to launch without one would
+        # fail closed on a configuration that works. `_backend_runtime_bind_paths`
+        # already gates the auth FILE on existence for the same reason ("it cannot
+        # be fabricated"). A subscription host that has genuinely lost the file
+        # still fails, but at authentication where the cause is legible, not here.
+        credentials = ""
+        credentials_destination = ""
+        if origin.is_file():
+            destination = home / ".credentials.json"
+            # bwrap needs an existing destination for a file bind. The placeholder
+            # stays empty on the host: the operator's file is bound over it before
+            # launch, so nothing durably secret is ever written under /tmp.
+            _secure_backend_home_file(destination, label="Claude")
+            credentials = str(origin.resolve())
+            credentials_destination = str(destination.resolve())
+    return {
+        "home": str(home.resolve()),
+        "settings": str(settings_path.resolve()),
+        "settings_sha256": digest,
+        "trust": str(trust_path.resolve()),
+        "credentials": credentials,
+        "credentials_destination": credentials_destination,
+        "generation": str(generation),
+    }
+
+
+def claude_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
+    """The bwrap profile kwargs a prepared Claude home implies — ONE spelling.
+
+    Both callers that build a Claude leaf's sandbox (`record_launch` and the
+    diagnostician's read-only profile) read this, so the two cannot drift into
+    binding different things. The codex twin below exists for the same reason.
+    """
+    return {
+        # The home stays writable for session/transcript state (`--resume` depends
+        # on it), but the settings the leaf loads must be immutable to the leaf:
+        # otherwise a leaf could rewrite its own hooks and permission grants.
+        "backend_ro_mappings": [(isolation["settings"], isolation["settings"])],
+        # Token refresh must keep working, so the operator's real credential file is
+        # bound WRITABLE over the placeholder. This is the only writable path outside
+        # the private home, replacing the whole-`~/.claude` rw bind it supersedes.
+        "backend_rw_mappings": (
+            [(isolation["credentials"], isolation["credentials_destination"])]
+            if isolation.get("credentials") and isolation.get("credentials_destination")
+            else []
+        ),
+        "backend_rw_override": [isolation["home"]],
+        "env_overrides": {"CLAUDE_CONFIG_DIR": isolation["home"]},
+    }
+
+
+def codex_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
+    """The bwrap profile kwargs a prepared Codex home implies — ONE spelling."""
+    return {
+        "backend_ro_mappings": [
+            (isolation["auth"], isolation["auth_destination"]),
+            # The home itself stays writable for Codex session/state persistence,
+            # but the trust-bypassed hook source and project-layer exclusion config
+            # must remain immutable.
+            (isolation["hooks"], isolation["hooks"]),
+            (isolation["config"], isolation["config"]),
+        ],
+        "backend_rw_override": [isolation["home"]],
+        "env_overrides": {"CODEX_HOME": isolation["home"]},
+    }
 
 
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict[str, str]:
@@ -15777,7 +16124,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
                 # thread recorded against the vanished home from warm-resuming.
                 rotate_missing_home = True
             else:
-                _require_secure_codex_home(home)
+                _require_secure_backend_home(home)
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
             # leaf scratch.  This home is a writable backend-state bind and must
@@ -15785,7 +16132,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             # rejected to preserve the write-root boundary.
             home = Path(tempfile.mkdtemp(prefix="metdsl-codex-", dir="/tmp"))
             os.chmod(home, 0o700)
-            _require_secure_codex_home(home)
+            _require_secure_backend_home(home)
             meta["codex_workflow_home"] = str(home)
             meta["codex_workflow_home_generation"] = prior_generation + 1
             if rotate_missing_home:
@@ -15800,17 +16147,17 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             meta["codex_workflow_home_generation"] = generation
             _write_json(meta_path, meta)
         # EVERY file of the home is populated under the same lock as the home itself.
-        # `_secure_codex_home_file` is create-exclusive-then-write, so a concurrent
+        # `_secure_backend_home_file` is create-exclusive-then-write, so a concurrent
         # preparer that observed a created-but-not-yet-written file would take the
         # content-comparison branch and fail with "differs from its verified source".
         hooks_path = home / "hooks.json"
-        _secure_codex_home_file(hooks_path, data)
+        _secure_backend_home_file(hooks_path, data)
         if hashlib.sha256(hooks_path.read_bytes()).hexdigest() != digest:
             raise ValueError("isolated Codex hooks SHA-256 verification failed")
         # TOML basic strings use JSON escaping for these path strings.
         config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
         config_path = home / "config.toml"
-        _secure_codex_home_file(config_path, config.encode("utf-8"))
+        _secure_backend_home_file(config_path, config.encode("utf-8"))
         raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("METDSL_HOME", "").strip()
         origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
         auth = origin / "auth.json"
@@ -15819,7 +16166,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
         auth_destination = home / "auth.json"
         # bwrap needs an existing destination for a file bind. This empty regular
         # file is hidden by the read-only source bind before Codex starts.
-        _secure_codex_home_file(auth_destination)
+        _secure_backend_home_file(auth_destination)
     return {
         "home": str(home.resolve()),
         "auth": str(auth.resolve()),
@@ -16239,16 +16586,19 @@ _CLAUDE_MCP_PERMISSION_REMEDIATION = (
     "build-runtime MCP tools are registered/connected but not permission-granted to the "
     "orchestration's spawned child Agent sessions. Add the server-level grant "
     "`\"mcp__build-runtime\"` to `permissions.allow` in the repo-committed "
-    "`.claude/settings.json` (this grants all build-runtime tools — run_linter, "
+    "`leaf_config/claude/settings.json` — the LEAF configuration, not the repository's "
+    "own `.claude/settings.json`, which is the dev layer and reaches no leaf "
+    "(this grants all build-runtime tools — run_linter, "
     "run_syntax_check, compile_project, run_program, run_quality_checks, "
     "detect_build_system). Claude Code "
     "permission rules do NOT support a tool-name wildcard (`mcp__build-runtime__*`), so use "
     "the server-level token; to grant individually, list "
     "`mcp__build-runtime__run_linter` / `__run_syntax_check` / `__compile_project` / "
     "`__run_program` / `__run_quality_checks`. Ensure no matching `permissions.deny` entry exists in "
-    "`.claude/settings.json`. NOTE: `.claude/settings.local.json` is NOT consulted for this "
-    "check and does not reach a leaf either (a leaf loads `--setting-sources project`), so a "
-    "grant that lives only there must be MOVED into the committed file. "
+    "`leaf_config/claude/settings.json`. NOTE: neither `.claude/settings.json` nor "
+    "`.claude/settings.local.json` is consulted for this check, and neither reaches a leaf "
+    "(a leaf loads `--setting-sources user` against a private home holding only the leaf "
+    "configuration), so a grant that lives in either must be MOVED into the leaf file. "
     "Reference: `mcp_servers/README.md`."
 )
 
@@ -16357,12 +16707,15 @@ def _read_repo_mcp_tool_permissions(
     settings_path: Path | None = None,
     local_settings_path: Path | None = None,
 ) -> tuple[set[str], set[str], str | None, str]:
-    """Read the state of MCP tool permission from the project settings committed to the repo.
+    """Read the state of MCP tool permission from the leaf configuration committed to the repo.
 
-    THE ONLY SOURCE IS `<repo>/.claude/settings.json`, because that is the only permission
-    layer a workflow leaf loads: since issue #63 step 1 it is launched with
-    `--setting-sources project`, which excludes both `user` and `local`. This function answers
-    "will the leaf be allowed to call the tool", so it must read what the leaf reads.
+    THE ONLY SOURCE IS `<repo>/leaf_config/claude/settings.json`, because that is the only
+    permission layer a workflow leaf loads: since issue #63's final form it is launched with
+    `CLAUDE_CONFIG_DIR=<private home> --setting-sources user`, and that home holds a
+    SHA-pinned copy of exactly this file. This function answers "will the leaf be allowed to
+    call the tool", so it must read what the leaf reads. The repository's own
+    `.claude/settings.json` is the DEV layer and no leaf loads it; a sync test keeps the two
+    files' hook commands identical so an operator's session behaves like a leaf.
 
     `.claude/settings.local.json` is deliberately NOT consulted. It used to be, and that was
     right while a leaf loaded the `local` source; afterwards it made the gate wrong in both
@@ -16374,9 +16727,12 @@ def _read_repo_mcp_tool_permissions(
     from what a leaf loads. `~/.claude.json` is not referenced, for the same reason as the
     enablement check (machine-dependent, reproducibility).
 
-    Note this decides only whether the grant is DECLARED. Whether the CLI honours a declared
-    project-layer grant is conditional on workspace trust, which no static read can see
-    (`docs/RUNBOOK.md` §0-2, issue #65).
+    Note this decides only whether the grant is DECLARED. Whether the CLI honours it was
+    MEASURED for this launch shape (CLI 2.1.235, 2026-08-19): a user-tier grant in the
+    private home is honoured with NO trust seed present, while a control command was refused
+    in the same session, so the permission layer was demonstrably alive during the
+    measurement. The trust conditionality `docs/RUNBOOK.md` §0-2 and issue #65 describe
+    applied to the PROJECT layer, which this launch shape no longer uses.
 
     Return value `(allow_set, deny_set, default_mode, detail)`:
       - allow_set: the string set of `permissions.allow`
@@ -16387,7 +16743,7 @@ def _read_repo_mcp_tool_permissions(
     settings = (
         settings_path
         if settings_path is not None
-        else repo_root / _CLAUDE_PROJECT_SETTINGS_RELPATH
+        else _claude_leaf_config_path(repo_root)
     )
     local_settings = (
         local_settings_path
@@ -16523,7 +16879,7 @@ def _probe_claude_mcp_registry(
 ) -> tuple[list[dict[str, Any]], bool]:
     """Determine whether the Claude session exposes the build-runtime MCP tool in the target repo.
 
-    SCOPE, since issue #63 step 1: this certifies the OPERATOR's checkout as a place where the
+    SCOPE, since issue #63: this certifies the OPERATOR's checkout as a place where the
     server is registered and granted. It is no longer the path a workflow LEAF takes — the
     conductor launches one with `--strict-mcp-config --mcp-config .mcp.json`, so a leaf's
     server set is that file read directly and no enablement decision applies to it. The
@@ -16881,6 +17237,16 @@ def probe_execution_platform(
         mcp_checks, mcp_ok = _probe_claude_mcp_registry(command, repo_root, runner)
         checks.extend(mcp_checks)
         can_launch_agents = can_launch_agents and mcp_ok
+        # EARLIEST CERTAIN DETECTION. `_prepare_claude_workflow_home` runs this same
+        # probe and fails closed on it, but that happens at the FIRST LEAF LAUNCH —
+        # mid-run, after the operator has been billed for everything up to it. The
+        # fault is an operator/checkout one (a malformed or missing committed leaf
+        # configuration), and it is fully knowable before init, so it is surfaced
+        # here as well; the launch-time check stays as the authoritative backstop.
+        # Precedent: `run_workflow.py`'s REQUIRED_CLI_TOOLS.
+        leaf_config_check = _probe_claude_leaf_config(repo_root)
+        checks.append(leaf_config_check)
+        can_launch_agents = can_launch_agents and (leaf_config_check.get("pass") is True)
     else:
         # Codex's internal multi_agent feature is diagnostic only: the conductor
         # launches independent CLI processes and does not use Codex subagents. Every
@@ -18053,7 +18419,9 @@ def record_launch(
         else:
             try:
                 _resp_backend = response_payload.get("backend")
-                if isinstance(_resp_backend, str) and _resp_backend.strip().lower() == "codex":
+                _backend_family = (_resp_backend.strip().lower()
+                                   if isinstance(_resp_backend, str) else "")
+                if _backend_family == "codex":
                     # Prepared before any launch-side durable mutations above.  Do not
                     # re-prepare here: doing so would reopen the generation race that
                     # the expected-generation transaction check closes.
@@ -18062,20 +18430,21 @@ def record_launch(
                     response_payload["codex_workflow_home"] = codex_isolation["home"]
                     response_payload["codex_home_generation"] = int(codex_isolation["generation"])
                     response_payload["codex_hooks_sha256"] = codex_isolation["hooks_sha256"]
+                claude_isolation: dict[str, str] | None = None
+                if _backend_family == "claude" and not is_pure:
+                    # Issue #63 final form. Only the AGENTIC leaf gets a private home: a
+                    # pure leaf takes no settings layer at all (`--safe-mode`, no tools,
+                    # no hooks), so preparing one would record a configuration surface it
+                    # never reads.
+                    claude_isolation = _prepare_claude_workflow_home(repo_root, orchestration_id)
+                    response_payload["claude_workflow_home"] = claude_isolation["home"]
+                    response_payload["claude_home_generation"] = int(claude_isolation["generation"])
+                    response_payload["claude_settings_sha256"] = claude_isolation["settings_sha256"]
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
-                    profile_kwargs = {
-                        "backend_ro_mappings": [
-                            (codex_isolation["auth"], codex_isolation["auth_destination"]),
-                            # The home itself stays writable for Codex session/state
-                            # persistence, but the trust-bypassed hook source and
-                            # project-layer exclusion config must remain immutable.
-                            (codex_isolation["hooks"], codex_isolation["hooks"]),
-                            (codex_isolation["config"], codex_isolation["config"]),
-                        ],
-                        "backend_rw_override": [codex_isolation["home"]],
-                        "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
-                    }
+                    profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
+                elif claude_isolation is not None:
+                    profile_kwargs = claude_isolation_profile_kwargs(claude_isolation)
                 if is_pure:
                     # Read-only sandbox: repo bound ro, NO write_roots, no file pins. The pure leaf
                     # has no repository write authority. Claude is tool-free, while Codex's

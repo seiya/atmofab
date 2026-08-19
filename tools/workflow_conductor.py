@@ -1370,8 +1370,9 @@ def build_launch_request(
 #
 # The conductor does NOT pin the leaf model (`leaf_command` passes no `--model` unless the
 # configuration file declared one). What the unpinned case then resolves to depends on the
-# launch: an AGENTIC leaf runs the CLI's own default, because `--setting-sources project`
-# means it never reads the operator's configuration (issue #63 step 1); a PURE leaf carries
+# launch: an AGENTIC leaf runs the CLI's own default, because `--setting-sources user`
+# against a private CLAUDE_CONFIG_DIR means it never reads the operator's configuration
+# (issue #63); a PURE leaf carries
 # no `--setting-sources`, so there the operator's configuration still decides. 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
@@ -1453,9 +1454,9 @@ def _effective_option_value(argv: list[str], flag: str) -> str | None:
     """The value an OVERRIDING (non-accumulating) option actually takes on `argv`: the LAST
     occurrence's, or None if the flag is absent.
 
-    Last, not first — measured on 2.1.234: `--setting-sources project --setting-sources
+    Last, not first — measured on 2.1.234: `--setting-sources user --setting-sources
     nonsense` is rejected for `nonsense` while `--setting-sources nonsense
-    --setting-sources project` runs, so the trailing occurrence is the one in force. The
+    --setting-sources user` runs, so the trailing occurrence is the one in force. The
     conductor appends its own after any the entry's `command:` prefix carries, so reading
     the first would record a value that was never in effect."""
     value: str | None = None
@@ -3745,16 +3746,29 @@ class Conductor:
 
     def _claude_session_resumable(self, session_id: str) -> bool:
         """True if a claude session transcript for `session_id` still exists under
-        ~/.claude/projects/*/<session_id>.jsonl. Used to decide whether a warm
+        `<projects-root>/*/<session_id>.jsonl`. Used to decide whether a warm
         `--resume` is viable or must fall back to a cold launch (the session may have
-        been expired/GC'd by Claude Code)."""
+        been expired/GC'd by Claude Code).
+
+        The projects roots come from the CANONICAL resolver, not a second spelling of
+        `~/.claude/projects`: issue #63 moved an agentic leaf's transcript into this
+        orchestration's private home, and a probe still pointing at the operator's home
+        would find nothing — silently degrading EVERY reuse repair to a cold launch
+        while the code still read as though warm resume worked."""
         if not isinstance(session_id, str) or not session_id.strip():
             return False
+        from tools.hooks.common import claude_leaf_projects_roots
         try:
-            proj = Path.home() / ".claude" / "projects"
-            return bool(sorted(proj.glob(f"*/{session_id.strip()}.jsonl")))
-        except OSError:
+            roots = claude_leaf_projects_roots(self.repo_root, self.orchestration_id)
+        except (OSError, ValueError):
             return False
+        for proj in roots:
+            try:
+                if sorted(proj.glob(f"*/{session_id.strip()}.jsonl")):
+                    return True
+            except OSError:
+                continue
+        return False
 
     def _pure_session_resumable(self, session_id: str,
                                 entry: ResolvedLeafEntry | None = None,
@@ -3894,8 +3908,9 @@ class Conductor:
             # launching the CLI's own default would be provenance that describes a run that did
             # not happen. A model the file did not declare is deliberately NOT pinned — that is
             # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
-            # every pre-issue-#28 launch byte-identical. With `--setting-sources project` the
-            # unpinned case is decided by the CLI itself, not by the operator's `~/.claude`.
+            # every pre-issue-#28 launch byte-identical. With `--setting-sources user` against
+            # a private home, the unpinned case is decided by the CLI itself, not by the
+            # operator's `~/.claude`.
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is
@@ -3922,13 +3937,15 @@ class Conductor:
                 # leaves, which reach it through a different set of flags because they
                 # keep their tools, their skill, and the repo's PreToolUse hook.
                 #
-                # INTERIM (issue #63 step 1): `project` is not the end state. The hooks and
-                # the build-runtime permission grant live only in the repository's project
-                # layer today, so that layer cannot be dropped until they are relocated
-                # into a leaf-only configuration directory copied to a private home
-                # (`--setting-sources user`). Until then `project` also still carries this
-                # checkout's CLAUDE.md/AGENTS.md into the leaf.
-                flags += ["--setting-sources", "project",
+                # `user`, paired with `CLAUDE_CONFIG_DIR=<private home>` (issue #63 final
+                # form): the ONLY settings layer the leaf loads is the SHA-pinned copy of
+                # this repository's `leaf_config/claude/settings.json`, which carries the
+                # hooks and the build-runtime grant. The operator's `~/.claude` and this
+                # checkout's dev-only `.claude/` are both out of reach. MEASURED on CLI
+                # 2.1.235: `user` also stops the repo's CLAUDE.md — and the AGENTS.md it
+                # `@`-imports — from being injected into the leaf's first message, which
+                # `project` did.
+                flags += ["--setting-sources", "user",
                           "--strict-mcp-config",
                           "--mcp-config", CLAUDE_LEAF_MCP_CONFIG,
                           "--disable-slash-commands"]
@@ -4208,8 +4225,11 @@ class Conductor:
         SandboxEnforcementError if the host cannot build the profile (so the caller can
         fail closed instead of crashing or launching unconfined)."""
         from tools.orchestration_runtime import (
+            _prepare_claude_workflow_home,
             _prepare_codex_workflow_home,
             build_readonly_bwrap_profile,
+            claude_isolation_profile_kwargs,
+            codex_isolation_profile_kwargs,
         )
         # The diagnostician carries no phase/substep, so it runs on `defaults` — the same
         # entry `escalate` launches through.
@@ -4224,15 +4244,15 @@ class Conductor:
                 # preserves Codex state without admitting ambient user hooks.
                 codex_isolation = _prepare_codex_workflow_home(
                     self.repo_root, self.orchestration_id)
-                profile_kwargs = {
-                    "backend_ro_mappings": [
-                        (codex_isolation["auth"], codex_isolation["auth_destination"]),
-                        (codex_isolation["hooks"], codex_isolation["hooks"]),
-                        (codex_isolation["config"], codex_isolation["config"]),
-                    ],
-                    "backend_rw_override": [codex_isolation["home"]],
-                    "env_overrides": {"CODEX_HOME": codex_isolation["home"]},
-                }
+                profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
+            elif entry.provider == "claude_cli":
+                # Same reasoning for the Claude leaf's private home (issue #63): this
+                # launch re-derives its own isolation because it never reaches
+                # record_launch, and without it the diagnostician would be the ONE
+                # claude leaf still coming up on the operator's `~/.claude`.
+                claude_isolation = _prepare_claude_workflow_home(
+                    self.repo_root, self.orchestration_id)
+                profile_kwargs = claude_isolation_profile_kwargs(claude_isolation)
             return build_readonly_bwrap_profile(
                 repo_root=self.repo_root,
                 orchestration_id=self.orchestration_id,
@@ -7318,7 +7338,7 @@ clean:
         if entry.provider == "claude_cli":
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
                 entry.max_output_tokens or LEAF_MAX_OUTPUT_TOKENS)
-            # AUTO-MEMORY IS NOT A SETTING, so `--setting-sources project` does not close it:
+            # AUTO-MEMORY IS NOT A SETTING, so no `--setting-sources` value closes it:
             # the CLI injects `~/.claude/projects/<repo-slug>/memory/MEMORY.md` into the leaf's
             # FIRST USER MESSAGE, and its enable predicate keys on safe-mode / `--bare` / this
             # variable, none of which an agentic leaf has (the PURE path is closed by
@@ -7331,7 +7351,19 @@ clean:
             # exists to prevent; it is also a leaf reading `~/.claude`, and a leaf being handed
             # PAST-RUN state, both of which the workflow forbids outright.
             # Set here rather than on the argv because the CLI exposes no flag for it.
+            # KEPT after issue #63's private home, which independently empties the
+            # directory the memory would be read from: two mechanisms closing one hole
+            # is not redundancy to remove, because they close it for different reasons
+            # and a future CLI could relocate the memory file without relocating the
+            # home. Removing it would also be a deletion of a defence justified by
+            # reasoning rather than by a measured attempt.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+            # CLAUDE_CONFIG_DIR is deliberately NOT set here. The private home reaches
+            # the leaf through exactly ONE route — the bwrap profile's `--setenv`,
+            # built from the home that `record_launch` prepared and recorded — which is
+            # the same single-route story codex's CODEX_HOME follows. A second spelling
+            # here could name a different home than the one whose settings were
+            # SHA-pinned and bound, and the record would describe neither.
         elif entry.provider == "codex_cli":
             # METDSL_HOME was the historical private alias.  Pass the canonical
             # variable to the CLI so its state/session directory matches the

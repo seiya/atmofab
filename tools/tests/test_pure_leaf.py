@@ -500,9 +500,9 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         """What still distinguishes a pure launch from an agentic one.
 
         `--strict-mcp-config` and `--disable-slash-commands` USED to be listed here: they
-        were pure-only, so their absence identified an agentic leaf. Issue #63 step 1 gives
-        the agentic branch its own copy of both (plus `--setting-sources` and
-        `--mcp-config`), for its own reason — closing the OPERATOR's configuration out of a
+        were pure-only, so their absence identified an agentic leaf. Issue #63 gives
+        the agentic branch its own copy of both (plus `--setting-sources user` against a
+        private `CLAUDE_CONFIG_DIR`, and `--mcp-config`), for its own reason — closing the OPERATOR's configuration out of a
         leaf that keeps its tools — so they are shared hardening now and no longer
         discriminate. Asserting their absence here would forbid that hardening rather than
         pin the pure/agentic split.

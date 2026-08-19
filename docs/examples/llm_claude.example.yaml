@@ -25,8 +25,9 @@
 #            `claude --model opus`. Delete the `model:` lines and no `--model` is passed,
 #            which hands the choice to whatever that leaf's launch resolves to. For an
 #            AGENTIC leaf that is the CLI's own default and NOT the operator's
-#            `~/.claude/settings.json`, which it no longer reads (`--setting-sources
-#            project`, issue #63 step 1). A PURE launch carries no `--setting-sources`, so
+#            `~/.claude/settings.json`, which it no longer reads (`--setting-sources user`
+#            against a private CLAUDE_CONFIG_DIR carrying only this repository's leaf
+#            configuration, issue #63). A PURE launch carries no `--setting-sources`, so
 #            there the operator's settings can still decide, exactly as before. Which
 #            launches are pure is a property of the NODE, not of this file: the two
 #            `generate` leaves run pure on an M3c physics node and AGENTIC on an

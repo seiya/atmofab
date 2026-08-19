@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -336,7 +337,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             (proj / f"{CHILD_ARID}.jsonl").write_text(
                 "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8"
             )
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 incident = diag.build_launch_incident(repo, ORCH_ID)
             self.assertIsNotNone(incident)
             assert incident is not None
@@ -358,7 +359,7 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             empty_home = Path(tmp) / "home"
             empty_home.mkdir()
             _open_dangling_window(_orch_root(repo))
-            with mock.patch.object(diag.Path, "home", return_value=empty_home):
+            with mock.patch.dict(os.environ, {"HOME": str(empty_home)}, clear=False):
                 incident = diag.build_launch_incident(repo, ORCH_ID)
             self.assertIsNotNone(incident)
             assert incident is not None
@@ -458,7 +459,7 @@ class AggregateChildUsageTests(unittest.TestCase):
             child_b = "bbbb2222-2222-4222-8222-222222222222"
             self._write_child(subagents, "agent-a.jsonl", child_a, parent, [_usage_record(10, 10, 1000, 0)])
             self._write_child(subagents, "agent-b.jsonl", child_b, parent, [_usage_record(5, 5, 500, 0)])
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 # parent arid is in the target set but must NOT capture a child file.
                 agg = diag.aggregate_child_usage(repo, [child_a, child_b, parent])
             self.assertTrue(agg["available"])
@@ -476,7 +477,7 @@ class AggregateChildUsageTests(unittest.TestCase):
             repo.mkdir()
             empty_home = Path(tmp) / "home"
             empty_home.mkdir()
-            with mock.patch.object(diag.Path, "home", return_value=empty_home):
+            with mock.patch.dict(os.environ, {"HOME": str(empty_home)}, clear=False):
                 agg = diag.aggregate_child_usage(repo, ["aaaa1111-1111-4111-8111-111111111111"])
             self.assertFalse(agg["available"])
             self.assertIn("reason", agg)
@@ -499,7 +500,7 @@ class AggregateChildUsageTests(unittest.TestCase):
                 d = base / sess / "subagents"
                 d.mkdir(parents=True, exist_ok=True)
                 self._write_child(d, "agent-x.jsonl", child, parent, [_usage_record(1, 1, 100, 0)])
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 # Every host session's subagents dir is scanned; the child is found
                 # regardless of which session ran it.
                 agg_all = diag.aggregate_child_usage(repo, [child])
@@ -546,7 +547,7 @@ class AggregateParentUsageTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 agg = diag.aggregate_parent_usage(repo, arid)
             self.assertTrue(agg["available"])
             self.assertEqual(agg["session_count"], 2)
@@ -558,7 +559,7 @@ class AggregateParentUsageTests(unittest.TestCase):
             repo.mkdir()
             home = Path(tmp) / "home"
             (home / ".claude" / "projects").mkdir(parents=True)
-            with mock.patch.object(diag.Path, "home", return_value=home):
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
                 agg = diag.aggregate_parent_usage(repo, "nope-arid")
             self.assertFalse(agg["available"])
 

@@ -303,7 +303,7 @@ class ResolvedLeafEntry:
     this sentence deliberately does not restate it. (It has been restated wrongly three
     times here — first asserting the operator's settings decide, then that a leaf never
     reads them, then that on the agentic path the prediction constrains the outcome. The
-    last is false too: `--setting-sources project` closes the settings-file channel, not
+    last is false too: `--setting-sources` closes the settings-file channel, not
     the ENVIRONMENT, and `ANTHROPIC_MODEL` reaches the leaf regardless — measured, issue
     #63. A fourth wording is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
     omission, caught at run START by `validate_runnable` rather than at load, so that a
