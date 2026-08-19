@@ -192,11 +192,13 @@ language permits**:
 This checklist names concrete spellings of one target language, which is knowledge
 `docs/BACKEND_BOUNDARY.md` keeps out of the neutral core. It is here because the gates it warns
 about are in `validate_pipeline_semantics.py`, and it goes when the source-reading area on the
-TODO ledger goes. Two things about that are worth stating rather than implying: nothing measures
-it — `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds this kind
-of growth elsewhere does not read these files at all (measured: 33 occurrences of sampled tokens
-across 5 files in this tree) — and the debt is **new to the repository**, since until this branch
-these files lived in one operator's home directory.
+TODO ledger goes. Two things about that are worth stating rather than implying. Nothing measures
+this file: `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds
+this kind of growth elsewhere does not read it at all. And the debt is **new to the repository**,
+since until this branch these files lived in one operator's home directory. The checklist is not
+where most of it sits, either — of the 33 occurrences of sampled tokens across the 5 files of that
+tree, 4 are in these bullets and the rest are in episodes and identifier names, including 3 in
+`metdsl-review-loop`.
 
 When a rule derives its safety from an enumeration, **write a test that kills each element of
 the enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in
