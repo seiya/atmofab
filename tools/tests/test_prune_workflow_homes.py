@@ -128,12 +128,27 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         small but real. Fail closed by default; let the operator say they know better.
         """
         for label, marker in (("missing", None),
+                              # NOT `/nonexistent`: a marker naming a checkout that does
+                              # not exist reaches `refused:unverifiable_owner` through the
+                              # STATUS lookup returning None, so the id comparison above
+                              # it is never what decided — two paths to one outcome, and
+                              # a reviewer's mutant deleting the comparison survived. The
+                              # repo_root is filled in below with a REAL checkout whose
+                              # metadata is terminal, so only the id mismatch can produce
+                              # the verdict.
                               ("wrong_id", {"schema": 1, "orchestration_id": "someone_else",
-                                            "repo_root": "/nonexistent"}),
-                              ("no_repo", {"schema": 1, "orchestration_id": "orch_x"})):
+                                            "repo_root": "<real>"}),
+                              ("no_repo", {"schema": 1, "orchestration_id": "orch_no_repo"}),
+                              ("blank_repo", {"schema": 1, "orchestration_id": "orch_blank_repo",
+                                              "repo_root": "   "})):
             with self.subTest(marker=label):
                 oid = f"orch_{label}"
-                self._entry(oid, status="pass", marker=marker)
+                self._entry(oid, status="pass", marker=None)
+                if marker is not None:
+                    if marker.get("repo_root") == "<real>":
+                        marker = {**marker, "repo_root": str((self.root / f"repo_{oid}").resolve())}
+                    (self.homes / oid / WORKFLOW_HOME_OWNER_FILENAME).write_text(
+                        json.dumps(marker), encoding="utf-8")
                 reports, code = self._prune(orchestration_ids=[oid], delete=True)
                 self.assertEqual(reports[0]["verdict"], pwh.REFUSED_UNVERIFIABLE_OWNER)
                 self.assertTrue((self.homes / oid).is_dir())
@@ -143,6 +158,44 @@ class PruneWorkflowHomesTests(unittest.TestCase):
                 self.assertTrue(reports[0]["deleted"])
                 self.assertFalse((self.homes / oid).exists())
                 self.assertEqual(code, 0)
+
+    def test_an_entry_owned_by_another_user_is_refused(self) -> None:
+        """The first refusal the module docstring names, and it had no witness at all.
+
+        `os.getuid` is patched rather than a second user created, because a test cannot
+        make one. Asserted together with the size and backend fields staying empty: the
+        uid check returns before the walk, so a directory another user owns is not even
+        enumerated.
+        """
+        self._entry("orch_theirs", status="pass")
+        with mock.patch("os.getuid", return_value=os.getuid() + 1):
+            reports, code = self._prune(orchestration_ids=["orch_theirs"], delete=True,
+                                        allow_unverifiable=True)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_FOREIGN_OWNER_UID)
+        self.assertFalse(reports[0]["deleted"])
+        self.assertEqual(reports[0]["backends"], [])
+        self.assertEqual(code, 2)
+        self.assertTrue((self.homes / "orch_theirs" / "claude").is_dir())
+
+    def test_the_size_walk_does_not_follow_symlinks_out_of_the_entry(self) -> None:
+        """`followlinks=False` is named in the docstring and was unwitnessed.
+
+        A codex leaf's home is bound WRITABLE, so a leaf can put a symlink in it. Two
+        consequences the flag prevents: a link to a large tree makes the report overstate
+        what deleting the home reclaims, and a link that forms a cycle makes `os.walk`
+        recurse until it gives up. Measured as a size comparison, which is the observable
+        one.
+        """
+        self._entry("orch_link", status="pass")
+        big = self.root / "big"
+        big.mkdir()
+        (big / "payload.bin").write_bytes(b"x" * 200_000)
+        os.symlink(big, self.homes / "orch_link" / "claude" / "elsewhere")
+        os.symlink(self.homes / "orch_link", self.homes / "orch_link" / "claude" / "loop")
+        reports, _ = self._prune(orchestration_ids=["orch_link"])
+        self.assertLess(reports[0]["size_bytes"], 10_000,
+                        "the size walk followed a symlink out of the entry")
+        self.assertEqual(reports[0]["verdict"], pwh.VERDICT_DELETABLE)
 
     def test_an_owner_checkout_that_no_longer_exists_is_unverifiable_not_terminal(self) -> None:
         """The marker LOCATED nothing, so "did the run finish" is unanswerable.
@@ -321,6 +374,23 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(payload["entries"][0]["verdict"], pwh.REFUSED_NOT_TERMINAL)
         self.assertTrue((self.homes / "orch_live").is_dir())
 
+    # ONE definition, read by the census and by its control alike. The first version
+    # spelled the patterns twice — once in the census, once copied into the control —
+    # so the control could not see a gap in the census or an edit to it, and its copy
+    # had already silently dropped one of the four. A test placed outside the thing that
+    # defines the set cannot make a claim about the set.
+    CALLER_PATTERNS = (
+        # `^\s*` and not `^`: this repository's norm is importing `tools.*` INSIDE a
+        # function (`workflow_conductor.py` imports both home preparers that way), and
+        # anchoring at column 0 missed every such caller — measured against planted ones.
+        r"^\s*import prune_workflow_homes",
+        r"^\s*from tools\.prune_workflow_homes import",
+        r"^\s*from prune_workflow_homes import",
+        r"prune_workflow_homes\.(main|prune|inspect_entry)\(",
+        # An argv element rather than a sentence: quoted, and inside a list.
+        r"[\"'](python3 )?tools/prune_workflow_homes\.py[\"']",
+    )
+
     def test_nothing_is_wired_to_invoke_this_tool_automatically(self) -> None:
         """Retention is manual BY DESIGN, and the design is only real if nothing calls it.
 
@@ -330,8 +400,8 @@ class PruneWorkflowHomesTests(unittest.TestCase):
 
         What is searched for is a CALLER — an import of the module or an argv naming the
         script — and not a mention. Mentions are the point: the refusal message names the
-        remedy, and four documents explain when to run it. An earlier version of this
-        test allowlisted mention SITES, and every prose edit in the same change failed it,
+        remedy, and several documents explain when to run it. An earlier version
+        allowlisted mention SITES, and every prose edit in the same change failed it,
         which trains the reader to extend the list rather than to read the diff.
 
         SAMPLED, not pinned. A caller that assembles the name at runtime — an importlib
@@ -341,20 +411,8 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         """
         import subprocess
         repo_root = Path(__file__).resolve().parents[2]
-        # PYTHON FILES ONLY, and patterns that are Python CODE. Prose naming the script
-        # is what the documents are supposed to do, and a search that cannot tell prose
-        # from a call reports the documents — which is what the first version of this
-        # test did, failing on every prose edit until its allowlist was extended.
-        patterns = [
-            r"^import prune_workflow_homes",
-            r"^from tools\.prune_workflow_homes import",
-            r"^from prune_workflow_homes import",
-            r"prune_workflow_homes\.(main|prune|inspect_entry)\(",
-            # An argv element rather than a sentence: quoted, and inside a list.
-            r"[\"'](python3 )?tools/prune_workflow_homes\.py[\"']",
-        ]
         offenders: dict[str, list[str]] = {}
-        for pattern in patterns:
+        for pattern in self.CALLER_PATTERNS:
             out = subprocess.run(
                 ["git", "-C", str(repo_root), "grep", "-n", "--untracked", "-E", pattern,
                  "--", "tools/*.py", "tools/**/*.py", "mcp_servers/*.py",
@@ -372,33 +430,35 @@ class PruneWorkflowHomesTests(unittest.TestCase):
     def test_the_search_this_census_uses_can_actually_find_a_caller(self) -> None:
         """The control for the test above: a census that finds nothing proves nothing.
 
-        Written as a positive probe against a real caller rather than as a mutation of
-        the census, because "the grep returned empty" and "there is no caller" are
-        indistinguishable from the passing side.
+        Reads `CALLER_PATTERNS` — it does not copy them — so it also fails if a later
+        edit narrows the census. Both directions are checked, because the census has
+        failed in both: it missed function-local imports (this repository's own style),
+        and an earlier version reported every document that merely names the script.
         """
         import re
-        for spelling in ("import prune_workflow_homes",
-                         "from tools.prune_workflow_homes import prune",
-                         "        rc = prune_workflow_homes.main([])",
-                         "    subprocess.run(['python3', 'tools/prune_workflow_homes.py'])"):
-            with self.subTest(spelling=spelling):
+        must_catch = (
+            "import prune_workflow_homes",
+            "    import prune_workflow_homes",                       # function-local
+            "from tools.prune_workflow_homes import prune",
+            "        from tools.prune_workflow_homes import prune",  # function-local
+            "        rc = prune_workflow_homes.main([])",
+            "    subprocess.run(['python3', 'tools/prune_workflow_homes.py'])",
+        )
+        must_not_catch = (
+            "# remove it with `python3 tools/prune_workflow_homes.py --delete`",
+            "run tools/prune_workflow_homes.py to remove one",
+            '            "recording it. Inspect it, then remove it with `python3 "',
+            "  See tools/prune_workflow_homes.py for the retention policy.",
+        )
+        for spelling in must_catch:
+            with self.subTest(caller=spelling):
                 self.assertTrue(
-                    any(re.search(p, spelling) for p in (
-                        r"^import prune_workflow_homes",
-                        r"^from tools\.prune_workflow_homes import",
-                        r"prune_workflow_homes\.(main|prune|inspect_entry)\(",
-                        r"[\"'](python3 )?tools/prune_workflow_homes\.py[\"']")),
+                    any(re.search(p, spelling) for p in self.CALLER_PATTERNS),
                     f"the census patterns would not catch: {spelling}")
-        # ...and the CONTROL in the other direction: prose must NOT be caught, which is
-        # the failure the first version of this test actually had.
-        for prose in ("# remove it with `python3 tools/prune_workflow_homes.py --delete`",
-                      "run tools/prune_workflow_homes.py to remove one"):
+        for prose in must_not_catch:
             with self.subTest(prose=prose):
                 self.assertFalse(
-                    any(re.search(p, prose) for p in (
-                        r"^import prune_workflow_homes",
-                        r"^from tools\.prune_workflow_homes import",
-                        r"prune_workflow_homes\.(main|prune|inspect_entry)\(")),
+                    any(re.search(p, prose) for p in self.CALLER_PATTERNS),
                     f"prose must not read as a caller: {prose}")
 
 
