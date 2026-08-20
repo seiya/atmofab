@@ -13,8 +13,18 @@ model-directed tools against the filesystem. An HTTP pure leaf runs none: the re
 handed to the same `extract_json_document` / bundle / verdict validators the CLI pure leaf's
 response goes through, and the leaf's write authority is the empty set either way (the host
 still runs the FS-diff over empty write_roots). What IS new is egress: the conductor now
-originates outbound HTTPS to an operator-configured `base_url`. `urllib` honours the standard
-proxy environment variables, so an operator who routes egress through a proxy keeps doing so.
+originates outbound HTTPS to an operator-configured `base_url`. This module still ASKS urllib
+to honour the standard proxy environment variables, and it is handed the leaf's environment to
+read them from — but since the leaf's environment became a declared allowlist (issue #63), the
+proxy families are a NAMED EXCLUSION (`orchestration_runtime.LEAF_ENV_NAMED_EXCLUSIONS`), so
+`_env_proxies` finds nothing and an operator who routes egress through a proxy NO LONGER keeps
+doing so on this path. Measured, not inferred. The mechanism below is kept rather than deleted
+because the exclusion is a decision that can be revisited by adding the names back, and the
+handler is what makes that a one-line change; the exclusion's own comment carries the reasons.
+An asymmetry worth knowing: the HTTP PREFLIGHT (`orchestration_runtime`'s reachability probe)
+calls `urllib.request.urlopen` bare, so it still reads the process-global environment and still
+goes through the operator's proxy. On a proxied host preflight therefore passes while the leaf
+call it is vouching for cannot reach the same endpoint.
 
 **The key is never in the config.** A config names the ENVIRONMENT VARIABLE
 (`api_key_env`); this module reads it at call time and puts it in a header. It is never logged,
@@ -117,9 +127,13 @@ def _env_proxies(env: "Mapping[str, str]") -> "dict[str, str]":
 def _default_opener(env: "Mapping[str, str] | None" = None) -> "Callable[..., Any]":
     """An opener that refuses redirects and honours `env`'s proxy settings.
 
-    `env` is the CONDUCTOR's environment, which is what every other leaf runs under: urllib
-    would otherwise read the process-global `os.environ`, so a run whose proxy (or endpoint
-    routing) was set for the workflow would silently bypass it."""
+    `env` is the LEAF's environment — the dict `workflow_conductor._child_env` reconstructed
+    for this launch, which is what every other leaf of the run gets. (It was the conductor's
+    own environment when this was written, and the two stopped being the same thing when the
+    leaf environment became a declared allowlist.) Reading it rather than the process-global
+    `os.environ` is what keeps this call on the same footing as every other leaf: today that
+    means NO proxy, because the proxy families are a named exclusion — see the module
+    docstring."""
     handlers: list[Any] = [_NoRedirects]
     if env is not None:
         handlers.append(_EnvProxyHandler(_env_proxies(env)))
