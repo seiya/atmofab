@@ -8471,14 +8471,26 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     to filtering the host environment, so those callers stay allowlist-true too.
     """
     if child_env is None:
-        return leaf_env_from(os.environ)
-    if not isinstance(child_env, Mapping):
+        # The fallback still goes through the SAME id check below. It used to return
+        # here, which meant a conductor-less `record-launch` — one run from inside a
+        # leaf, an ordinary spelling that `docs/CLI_REFERENCE.md` documents and
+        # `leaf_config/claude/settings.json` grants — filtered that leaf's own
+        # environment and so carried the PARENT's `METDSL_CHILD_AGENT_RUN_ID` into the
+        # child's profile, where it was both persisted as the record and `--setenv`ed
+        # into the child. Which is precisely what the check exists to prevent: the hook
+        # selects a capability by that name. Not reachable through the conductor (every
+        # `record-launch` it issues passes the flag, pinned) and no worse than the
+        # pre-`--clearenv` inheritance, but there is no reason for the two paths to
+        # answer the question differently.
+        body = leaf_env_from(os.environ)
+    elif not isinstance(child_env, Mapping):
         raise ValueError("child_env must be a mapping of str to str")
-    body: dict[str, str] = {}
-    for key, value in child_env.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise ValueError(f"child_env entries must be str -> str, got {key!r}")
-        body[key] = value
+    else:
+        body = {}
+        for key, value in child_env.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError(f"child_env entries must be str -> str, got {key!r}")
+            body[key] = value
     for name, expected in (("METDSL_ORCHESTRATION_ID", orchestration_id),
                            ("METDSL_CHILD_AGENT_RUN_ID", agent_run_id)):
         got = body.get(name)
@@ -8706,9 +8718,14 @@ def render_bwrap_command(
     # TMPDIR it resolves itself. A stranger here means something built an environment
     # outside `leaf_env_from` — the one question this whole layer exists to answer — so
     # it is refused rather than passed through and recorded as if it were declared.
-    for name, value in sorted(profile_env.items()):
+    # Types BEFORE sorting: `sorted()` on mixed key types raises TypeError, which the
+    # spawn seam does not convert (it catches ValueError), so a mistyped profile would
+    # escape as a raw crash instead of a named fail-closed. Found by the test that was
+    # written for this branch precisely because review noticed the check was undriven.
+    for name, value in profile_env.items():
         if not isinstance(name, str) or not isinstance(value, str):
             raise ValueError(f"profile env entries must be str -> str, got {name!r}")
+    for name, value in sorted(profile_env.items()):
         allowed = (
             name in LEAF_ENV_ALLOWLIST
             or name in _BACKEND_HOME_ENV_VARS

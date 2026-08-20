@@ -35571,6 +35571,17 @@ class LeafEnvClosureTests(unittest.TestCase):
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         self.assertEqual(self._setenv_map(argv), profile["env"])
 
+    def test_a_mistyped_profile_env_entry_fails_closed_at_render(self) -> None:
+        """The renderer's own str->str check, also found undriven. A non-string value
+        here would reach `cmd.extend([...])` and produce a `TypeError` from subprocess
+        rather than a refusal naming the profile."""
+        for bad in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
+            with self.subTest(env=bad):
+                profile = self._profile()
+                profile["env"] = {**profile["env"], **bad}
+                with self.assertRaises(ValueError):
+                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
     def test_a_tmpdir_that_disagrees_with_the_bind_fails_closed(self) -> None:
         """The writable bind is what makes TMPDIR usable, so a TMPDIR naming anywhere
         else points the leaf at a path bwrap did not make writable."""
@@ -35629,6 +35640,50 @@ class LeafEnvClosureTests(unittest.TestCase):
                         repo_root=Path(d), orchestration_id="o", agent_run_id="A",
                         backend_command="claude", backend_type="claude",
                         child_env={"PATH": "/a", name: bad})
+
+    def test_the_fallback_path_is_id_checked_too(self) -> None:
+        """The `child_env is None` path used to return BEFORE the id agreement check.
+
+        A `record-launch` run from inside a leaf — documented in `docs/CLI_REFERENCE.md`
+        and granted by `leaf_config/claude/settings.json` — takes that path, and the
+        leaf's own environment carries the PARENT's `METDSL_CHILD_AGENT_RUN_ID`. That
+        value was then persisted as the child's record and `--setenv`ed into the child,
+        which is exactly what the check exists to prevent: the hook selects a capability
+        by that name."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "o",
+                                          "METDSL_CHILD_AGENT_RUN_ID": "PARENT-ARID",
+                                          "PATH": "/usr/bin"}):
+            with self.assertRaises(ValueError) as ctx:
+                ort.build_readonly_bwrap_profile(
+                    repo_root=Path(d) / "repo", orchestration_id="o",
+                    agent_run_id="CHILD-ARID", backend_command="claude",
+                    backend_type="claude")
+        self.assertIn("PARENT-ARID", str(ctx.exception))
+
+    def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
+        """The type validations, which review found undriven by any test.
+
+        Not decorative: `child_env` arrives from a JSON payload over stdin, and a
+        non-string value that reached `--setenv` would be a `TypeError` deep inside argv
+        construction rather than a named refusal at the boundary."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for bad in ([("PATH", "/b")], "PATH=/b", 42):
+            with self.subTest(child_env=bad):
+                with self.assertRaises(ValueError):
+                    ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d) / "repo", orchestration_id="o",
+                        agent_run_id="A", backend_command="claude",
+                        backend_type="claude", child_env=bad)
+        for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
+            with self.subTest(entry=bad_entry):
+                with self.assertRaises(ValueError):
+                    ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d) / "repo", orchestration_id="o",
+                        agent_run_id="A", backend_command="claude",
+                        backend_type="claude", child_env=bad_entry)
 
     def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
         """`child_env=None` — a test fixture, the standalone CLI — must not fall back to
