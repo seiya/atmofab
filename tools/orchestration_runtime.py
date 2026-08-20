@@ -7961,6 +7961,21 @@ LEAF_ENV_NAMED_EXCLUSIONS = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    # A SECOND named exclusion, for a different reason, and it has a real cost:
+    # these two are how the claude CLI authenticates on a host with no
+    # `~/.claude/.credentials.json`. Excluding them means that configuration
+    # launches and then fails at authentication. It is still the right call,
+    # because the alternative is worse and was measured: everything on this list
+    # is persisted verbatim into `sandbox_profiles/<arid>.json` and into that
+    # file's `rendered_command`, the repository is bound read-only INTO the
+    # sandbox whole, and `leaf_config/claude/settings.json` grants every agentic
+    # leaf `Bash(cat workspace/orchestrations/*)`. So allowlisting a live API key
+    # here writes it where any leaf of the run reads it with one granted command —
+    # the same hole the `api_key_env` rule above closes. The supported route is the
+    # credentials FILE, which is bound into the sandbox and never copied into a
+    # record. `_prepare_claude_workflow_home` records `claude_credentials_bound`
+    # so a host without one is visible in the launch record before the leaf fails.
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
 )
 
 
@@ -16299,13 +16314,21 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
             target.mkdir(mode=0o700, exist_ok=True)
         cred_dirs, _cred_files = _backend_credential_home_paths("claude")
         origin = cred_dirs[0] / ".credentials.json"
-        # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json: the
-        # claude CLI also authenticates from `ANTHROPIC_API_KEY`, for which no
-        # credential file exists at all, so refusing to launch without one would
-        # fail closed on a configuration that works. `_backend_runtime_bind_paths`
-        # already gates the auth FILE on existence for the same reason ("it cannot
-        # be fabricated"). A subscription host that has genuinely lost the file
-        # still fails, but at authentication where the cause is legible, not here.
+        # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json —
+        # but NOT for the reason this comment used to give. It said the CLI "also
+        # authenticates from `ANTHROPIC_API_KEY`, so refusing to launch without a
+        # file would fail closed on a configuration that works". That stopped being
+        # true when the leaf environment became a declared allowlist: the variable
+        # is a named exclusion (`LEAF_ENV_NAMED_EXCLUSIONS`, with the reason), so it
+        # no longer reaches a leaf and that configuration no longer works.
+        # The reason that survives is the one `_backend_runtime_bind_paths` gives
+        # for gating the auth FILE on existence: it cannot be fabricated. Refusing
+        # here would also refuse every launch on a host that authenticates some way
+        # neither this code nor its author has enumerated, which is a claim of
+        # impossibility no one has executed. So the launch proceeds and the absence
+        # is RECORDED instead (`claude_credentials_bound` below): a host with no
+        # credential file still fails at authentication, but the record now names
+        # the reason before the leaf does.
         credentials = ""
         credentials_destination = ""
         if origin.is_file():
@@ -16323,6 +16346,11 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
         "trust": str(trust_path.resolve()),
         "credentials": credentials,
         "credentials_destination": credentials_destination,
+        # Whether a credential file was found and will be bound. False means the
+        # leaf has NO way to authenticate — the environment route is a named
+        # exclusion — so this is the field that makes that legible in the record
+        # rather than only in the CLI's own error.
+        "credentials_bound": "1" if credentials else "",
         "generation": str(generation),
     }
 
@@ -18746,6 +18774,14 @@ def record_launch(
                     response_payload["claude_workflow_home"] = claude_isolation["home"]
                     response_payload["claude_home_generation"] = int(claude_isolation["generation"])
                     response_payload["claude_settings_sha256"] = claude_isolation["settings_sha256"]
+                    # A leaf authenticates from the bound credential FILE alone: the
+                    # environment route is a named exclusion, so `false` here means
+                    # this launch cannot authenticate at all. Recorded rather than
+                    # refused (see `_prepare_claude_workflow_home`), which makes the
+                    # cause readable in the launch record instead of only in whatever
+                    # the CLI prints when it fails.
+                    response_payload["claude_credentials_bound"] = bool(
+                        claude_isolation.get("credentials_bound"))
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)

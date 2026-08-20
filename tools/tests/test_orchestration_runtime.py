@@ -35354,6 +35354,30 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
                     any(name.startswith(p) for p in ort.LEAF_ENV_ALLOWED_PREFIXES),
                     f"{name} would be admitted by a prefix")
 
+    def test_the_claude_credential_variables_are_excluded_by_name(self) -> None:
+        """The costliest exclusion on the list, so it is pinned separately.
+
+        These two are how the claude CLI authenticates on a host with no
+        `~/.claude/.credentials.json`, and excluding them breaks that configuration.
+        The reason it is still right is measured, not asserted: everything on the
+        allowlist is persisted into `sandbox_profiles/<arid>.json` and its
+        `rendered_command`, the repo is ro-bound into the sandbox whole, and
+        `leaf_config/claude/settings.json` grants every agentic leaf
+        `Bash(cat workspace/orchestrations/*)` — so an allowlisted API key is one
+        granted command away from any leaf in the run.
+        """
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                     "CLAUDE_CODE_OAUTH_TOKEN"):
+            with self.subTest(name=name):
+                self.assertIn(name, ort.LEAF_ENV_NAMED_EXCLUSIONS)
+                self.assertNotIn(name, ort.leaf_env_from({name: "sk-live", "PATH": "/b"}))
+        # The grant that makes the profile leaf-readable — if it ever goes away the
+        # exclusion's stated reason goes with it, and this should be re-decided.
+        repo_root = Path(__file__).resolve().parents[2]
+        allow = json.loads((repo_root / "leaf_config" / "claude" / "settings.json")
+                           .read_text(encoding="utf-8"))["permissions"]["allow"]
+        self.assertIn("Bash(cat workspace/orchestrations/*)", allow)
+
     def test_the_named_exclusions_are_a_decision_not_an_oversight(self) -> None:
         """Decision 2 (2026-08-20): the proxy/TLS families are excluded. The tuple is
         what makes that reviewable — if someone adds one to the allowlist, the two
