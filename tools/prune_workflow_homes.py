@@ -225,12 +225,21 @@ def _render_text(reports: list[dict[str, Any]], *, delete: bool, homes_root: Pat
         lines.append("(no isolated backend homes)")
         return "\n".join(lines)
     for report in reports:
-        mb = report["size_bytes"] / (1024 * 1024)
+        # Scaled rather than always-MB: a real home is tens of megabytes, but a run that
+        # died at its first leaf is a few kilobytes, and "0.0 MB" reads as "this entry is
+        # empty, deleting it costs nothing" — the opposite of what the report is for.
+        size = report["size_bytes"]
+        if size >= 1024 * 1024:
+            size_s = f"{size / (1024 * 1024):.1f} MB"
+        elif size >= 1024:
+            size_s = f"{size / 1024:.1f} KB"
+        else:
+            size_s = f"{size} B"
         action = "DELETED" if report.get("deleted") else ("would delete" if
                  report["verdict"] == VERDICT_DELETABLE and not delete else report["verdict"])
         lines.append(
             f"{report['orchestration_id']}  status={report['status'] or '?'}  "
-            f"backends={','.join(report['backends']) or '-'}  {mb:.1f} MB  {action}")
+            f"backends={','.join(report['backends']) or '-'}  {size_s}  {action}")
         if report["owner_repo_root"]:
             lines.append(f"    owner: {report['owner_repo_root']}")
     if not delete:

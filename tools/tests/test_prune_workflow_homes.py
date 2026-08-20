@@ -220,6 +220,10 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertIn("claude,codex", text)
         self.assertIn("would delete", text)
         self.assertIn("--delete", text)
+        # Scaled, not always-MB: this fixture is a few bytes, and "0.0 MB" reads as
+        # "empty, deleting it costs nothing" — the opposite of what the report is for.
+        self.assertNotIn("0.0 MB", text)
+        self.assertRegex(text, r"\d+ B|\d+\.\d KB|\d+\.\d MB")
 
     def test_no_scope_is_a_usage_error_rather_than_a_default(self) -> None:
         """There is no implicit "everything": the destructive default is the one
