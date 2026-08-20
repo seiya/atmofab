@@ -19,11 +19,20 @@ TWO LAYERS, and the second is the one that actually holds:
      than per-session on purpose: the home path is deterministic now, so two tests using
      the same fixed orchestration id would collide on the exclusive `os.mkdir` under a
      shared root.
-  2. ENFORCE. A session-scoped guard wraps both preparers and RAISES if the home that
-     came back is under the operator's REAL secret root. The redirect is a default a test
-     can undo — `patch.dict(os.environ, ..., clear=True)` without re-setting the name is
-     one line away — and this turns "the suite wrote into the operator's tree" from
-     something noticed weeks later into a failure at the call that did it.
+  2. ENFORCE, BEFORE THE FACT. A session-scoped guard wraps `_workflow_homes_root` — the
+     one function that decides WHERE a home goes — and raises if it is about to return
+     the operator's REAL homes root. The redirect is a default a test can undo
+     (`patch.dict(os.environ, ..., clear=True)` without re-setting the name is one line
+     away), and this turns "the suite wrote into the operator's tree" from something
+     noticed weeks later into a failure at the call that did it.
+
+     PREVENT, NOT DETECT, and the distinction was paid for: the first version of this
+     guard wrapped the two PREPARERS and raised on the path they RETURNED, so by the time
+     it fired the directory was already on disk and nothing removed it. A reviewer
+     running one mutant that made `_workflow_homes_root` ignore the redirect left four
+     real directories in the operator's `~/.met-dsl/homes` — permanent, unverifiable
+     residue in the one tree whose retention is manual. Wrapping the resolver means the
+     mutant that reaches past the redirect cannot create anything at all.
 
      "REAL" is load-bearing: the root is resolved ONCE, from the environment as the
      session starts, and NOT re-derived inside the wrapper. Several tests patch `$HOME`
@@ -63,40 +72,32 @@ def _redirect_workflow_homes_root(tmp_path, monkeypatch):
 
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_isolated_homes_in_operator_secret_root():
-    """Fail any test whose prepared home landed in the real `~/.met-dsl`."""
+    """Fail any test about to resolve the isolated-homes root to the real `~/.met-dsl`."""
     import tools.orchestration_runtime as runtime
     from tools.hooks.common import operator_secret_root
 
     # Resolved ONCE, before any test can patch `$HOME` — see the module docstring.
     secret_root = operator_secret_root()
-    originals = {}
-    for name in ("_prepare_claude_workflow_home", "_prepare_codex_workflow_home"):
-        original = getattr(runtime, name)
-        originals[name] = original
+    original = runtime._workflow_homes_root
 
-        def _wrapper(*args, _original=original, _name=name, **kwargs):
-            isolation = _original(*args, **kwargs)
-            home = isolation.get("home") if isinstance(isolation, dict) else None
-            if isinstance(home, str) and home.strip():
-                # Resolved on BOTH sides: `operator_secret_root` resolves, and a home
-                # reached through a symlinked $HOME would otherwise compare unequal.
-                try:
-                    resolved = Path(home).resolve()
-                except (OSError, RuntimeError, ValueError):
-                    resolved = Path(home)
-                if resolved == secret_root or secret_root in resolved.parents:
-                    raise AssertionError(
-                        f"{_name} created a home inside the operator's secret root: "
-                        f"{resolved}. The suite must keep "
-                        f"{runtime.WORKFLOW_HOMES_ROOT_ENV} pointed at a temporary "
-                        "directory (see tools/tests/conftest.py)."
-                    )
-            return isolation
+    def _guarded():
+        root = original()
+        try:
+            resolved = Path(root).resolve()
+        except (OSError, RuntimeError, ValueError):
+            resolved = Path(root)
+        if resolved == secret_root or secret_root in resolved.parents:
+            raise AssertionError(
+                f"a test resolved the isolated-homes root to {resolved}, inside the "
+                "operator's real secret root. Nothing has been created — the guard runs "
+                "before the directory would be. Keep "
+                f"{runtime.WORKFLOW_HOMES_ROOT_ENV} pointed at a temporary directory "
+                "(see tools/tests/conftest.py)."
+            )
+        return root
 
-        setattr(runtime, name, _wrapper)
+    runtime._workflow_homes_root = _guarded
     try:
         yield
     finally:
-        for name, original in originals.items():
-            setattr(runtime, name, original)
-
+        runtime._workflow_homes_root = original
