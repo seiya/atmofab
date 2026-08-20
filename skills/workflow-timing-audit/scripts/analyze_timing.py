@@ -25,7 +25,9 @@ Usage:
                     home (orchestration_meta.json#claude_workflow_home +
                     /projects/<slug>, issue #63) when it exists, else
                     ~/.claude/projects/<slug>, where <slug> is the repo abs-path
-                    with '/' -> '-'.
+                    with '/' -> '-'. Since issue #64 that private home is durable
+                    (~/.met-dsl/homes/<orch_id>/claude), so an older run stays
+                    analysable; before it, a host restart took the transcripts.
 
 MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
   1) One model API response is written to the session transcript as SEVERAL
@@ -435,7 +437,8 @@ def main():
         # Since issue #63 a workflow leaf writes its transcript into the
         # orchestration's PRIVATE home, recorded host-side in orchestration_meta.json.
         # Fall back to the operator's `~/.claude` for a run recorded before that, and
-        # for a home that has been cleaned (it lives under /tmp; issue #64).
+        # for a home that is gone — since issue #64 the home is durable, so that means
+        # an operator ran `tools/prune_workflow_homes.py` rather than a /tmp sweep.
         private = None
         try:
             with open(os.path.join(orch_path, "orchestration_meta.json"),

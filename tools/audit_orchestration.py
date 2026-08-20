@@ -955,7 +955,8 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         else:
             lines.append(
                 f"Child subagent transcript not available: {ct.get('reason', 'unknown')} "
-                "(~/.claude transcripts are machine-local and ephemeral)."
+                "(leaf transcripts are machine-local: the orchestration's private "
+                "home, else ~/.claude)."
             )
     lines.append("")
 
@@ -1025,7 +1026,7 @@ def _render_token_cost(summary: dict[str, Any] | None, lines: list[str]) -> None
             f"Child token attribution unavailable: {reason}. "
             "(Per-leaf usage is written into `agent_runs.jsonl` at finalize time; a run "
             "recorded before that carries none, and `--token-cost-from-transcripts` can "
-            "try the machine-local, ephemeral `~/.claude` transcripts instead.)"
+            "try the machine-local leaf transcripts instead.)"
         )
         lines.append("")
         return
@@ -1384,9 +1385,10 @@ def main() -> None:
     parser.add_argument(
         "--token-cost-from-transcripts",
         action="store_true",
-        help=("Reconstruct per-leaf token usage from the machine-local, ephemeral "
-              "~/.claude transcripts for runs recorded before per-leaf usage became "
-              "durable. Off by default: the workflow does not read ~/.claude."),
+        help=("Reconstruct per-leaf token usage from the machine-local leaf "
+              "transcripts (the orchestration's private home, else ~/.claude) for runs "
+              "recorded before per-leaf usage became durable. Off by default: the "
+              "workflow does not read ~/.claude."),
     )
     args = parser.parse_args()
 

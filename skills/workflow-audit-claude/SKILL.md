@@ -24,13 +24,14 @@ Investigate the logs of a completed or interrupted workflow execution across the
 | sandbox violations | `workspace/orchestrations/<orch_id>/violations/*.json` |
 | access logs | `workspace/orchestrations/<orch_id>/access_logs/<agent_run_id>.jsonl` |
 | failure analysis | `workspace/orchestrations/<orch_id>/failure_analysis.json` |
-| session conversation log | `<projects-root>/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`). Since issue #63 a workflow LEAF writes into the orchestration's private home: `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` when that key is present, else `~/.claude/projects` (the operator's own sessions, and any run recorded before that change). The private home lives under `/tmp` and is not durable — issue #64. |
+| session conversation log | `<projects-root>/<cwd-slug>/<session_id>.jsonl` (`<cwd-slug>` is the repo's absolute path with `/` replaced by `-`). Since issue #63 a workflow LEAF writes into the orchestration's private home: `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` when that key is present, else `~/.claude/projects` (the operator's own sessions, and any run recorded before that change). Since issue #64 that private home is DURABLE (`~/.met-dsl/homes/<orch_id>/claude`), so a leaf's transcript survives a host restart and this audit still finds it; before that it was under `/tmp` and went with the next reboot. It is kept indefinitely and removed only by an operator running `tools/prune_workflow_homes.py` — see `docs/RUNBOOK.md` §"The operator-private root". |
 
-> **Operator context only.** The `~/.claude` read in the row above is of the backend CLI's
-> credential/session home, which the Bash read guard rejects fail-closed whenever
-> `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical:
-> `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
-> workflow run — inside one, every such read blocks, and that block is correct.
+> **Operator context only.** Both roots in the row above are protected read roots for Bash
+> — the backend CLI's credential/session home, and since issue #64 `~/.met-dsl` — so the
+> guard rejects these reads fail-closed whenever `METDSL_WORKFLOW_MODE=1` (policies
+> `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read`;
+> canonical: `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal
+> outside a workflow run — inside one, every such read blocks, and that block is correct.
 
 ## Investigation procedure
 
@@ -65,11 +66,22 @@ for line in hook_log.read_text().splitlines():
         session_ids.add(sid)
 
 cwd_slug = str(pathlib.Path.cwd().resolve()).replace("/", "-")
-projects_dir = pathlib.Path.home() / ".claude/projects" / cwd_slug
+# The isolated home the HOST recorded FIRST — that is where a leaf's transcript is — with
+# the operator's `~/.claude` kept as the fallback for a run recorded before issue #63.
+# This must match the table above; hardcoding `~/.claude/projects` here made the script
+# report NOT FOUND for every leaf of every post-#63 run.
+meta = json.loads(
+    pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
+recorded = (meta.get("claude_workflow_home") or "").strip()
+projects_dirs = [pathlib.Path(recorded) / "projects" / cwd_slug] if recorded else []
+projects_dirs.append(pathlib.Path.home() / ".claude/projects" / cwd_slug)
+print(f"searching: {[str(d) for d in projects_dirs]}")
 for sid in sorted(session_ids):
-    p = projects_dir / f"{sid}.jsonl"
-    exists = "found" if p.exists() else "NOT FOUND"
-    print(f"{sid}: {exists}  ({p})")
+    found = [d / f"{sid}.jsonl" for d in projects_dirs if (d / f"{sid}.jsonl").exists()]
+    if found:
+        print(f"{sid}: found  ({found[0]})")
+    else:
+        print(f"{sid}: NOT FOUND  (looked in {len(projects_dirs)} roots)")
 EOF
 ```
 

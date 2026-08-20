@@ -107,9 +107,11 @@ The bundled script handles all seven structurally; do not hand-sum these:
 | per-leaf token usage | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` (`usage`), mirrored in `agents/<agent_run_id>/dialogs/agent.result.json` |
 | per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (since issue #63 `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` for a workflow leaf, else `~/.claude/projects`; pass it with `--project-dir`) (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
 
-> **Operator context only.** The `~/.claude` read in the row above is of the backend CLI's
-> credential/session home, which the Bash read guard rejects fail-closed whenever
-> `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical:
+> **Operator context only.** Both roots in the row above are protected read roots for Bash
+> — the backend CLI's credential/session home, and since issue #64 `~/.met-dsl`, under
+> which the durable private homes live — so the guard rejects these reads fail-closed
+> whenever `METDSL_WORKFLOW_MODE=1` (policies `forbid_backend_credential_direct_read` /
+> `forbid_operator_secret_direct_read`; canonical:
 > `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
 > workflow run — inside one, every such read blocks, and that block is correct.
 

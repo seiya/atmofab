@@ -35205,8 +35205,11 @@ class ClaudeWorkflowHomeTests(unittest.TestCase):
             self.assertIsNone(self._meta(root).get("claude_workflow_home"))
 
     def test_the_credential_placeholder_is_empty_and_private(self) -> None:
-        """Nothing durably secret is written under /tmp: the placeholder exists only so
-        bwrap has a destination to bind the operator's real file over."""
+        """No secret is ever written into the home: the placeholder exists only so bwrap
+        has a destination to bind the operator's real file over, and the operator's
+        credential therefore exists only inside the leaf's mount namespace. That is what
+        makes the home safe to keep forever now that issue #64 has made it durable — the
+        bytes that persist are configuration and transcripts."""
         from tools.orchestration_runtime import _prepare_claude_workflow_home
         with tempfile.TemporaryDirectory() as td:
             root = self._repo(td)

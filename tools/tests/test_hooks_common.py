@@ -3893,6 +3893,163 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                     "forbid_backend_credential_direct_read")
 
 
+class DurablePrivateHomeReadGuardTests(unittest.TestCase):
+    """The read guard against the DURABLE home layout (`~/.met-dsl/homes/<oid>/<backend>`).
+
+    The twin of `test_the_isolated_private_home_is_guarded_for_both_backends` and its
+    neighbours, which put the homes in an arbitrary temporary directory. Those stay:
+    they are the control for the RESOLVER's boundary — that only the home this
+    orchestration recorded is named — and being outside `$HOME` is what makes that
+    boundary observable at all. This class covers what changes when the homes sit
+    under the operator-secret root instead, which is a different question in three
+    ways: the `~` / `$HOME` / `${HOME}` spellings now exist for these paths, a sibling
+    orchestration's home is now covered by the root above it, and the longest-path-first
+    sort in `protected_host_read_roots` becomes what decides attribution.
+
+    `$HOME` is patched to a temporary directory throughout. Reading the operator's own
+    tree would couple the suite to the machine it runs on — issue #84's shape — and
+    would also make the assertions depend on how deep this checkout happens to be.
+    """
+
+    def _fixture(self, td: str):
+        """A fake `$HOME` with a durable homes tree, plus a repo whose meta names it."""
+        home = Path(td) / "home"
+        (home / ".met-dsl").mkdir(parents=True)
+        (home / ".claude").mkdir()
+        repo = Path(td) / "repo"
+        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+        claude_home = home / ".met-dsl" / "homes" / "o" / "claude"
+        codex_home = home / ".met-dsl" / "homes" / "o" / "codex"
+        claude_home.mkdir(parents=True)
+        codex_home.mkdir(parents=True)
+        sibling = home / ".met-dsl" / "homes" / "other" / "claude"
+        sibling.mkdir(parents=True)
+        (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json").write_text(
+            json.dumps({"claude_workflow_home": str(claude_home),
+                        "codex_workflow_home": str(codex_home)}),
+            encoding="utf-8")
+        return home, repo, claude_home, codex_home, sibling
+
+    def _policy(self, home: Path, repo: Path, command: str, backend: str = "claude") -> str:
+        env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o",
+               "HOME": str(home)}
+        with patch.dict(os.environ, env, clear=False):
+            decision = evaluate_common_policy(HookInput(
+                event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
+                payload={"command": command, "repo_root": str(repo)},
+                command=command))
+        return (decision.audit_detail or {}).get("policy", "")
+
+    def test_the_home_under_the_secret_root_is_still_named_by_its_own_rule(self) -> None:
+        """Attribution, and it is the longest-path-first sort that produces it.
+
+        Both `~/.met-dsl` and `~/.met-dsl/homes/o/claude` are protected roots now, and
+        the second is inside the first. `protected_host_read_roots` sorts longest
+        first, so the leaf's own home names itself; drop that sort and every one of
+        these reads is reported as an operator-secret read instead — still blocked,
+        but the message would send the reader to the dismiss-violation tokens rather
+        than to the home they actually touched.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, claude_home, codex_home, _sibling = self._fixture(td)
+            for command, backend in (
+                (f"cat {claude_home}/.credentials.json", "claude"),
+                (f"cat {claude_home}/projects/-slug/other-arid.jsonl", "claude"),
+                (f"ls {claude_home}", "claude"),
+                (f"cat {codex_home}/auth.json", "codex"),
+            ):
+                self.assertEqual(self._policy(home, repo, command, backend),
+                                 "forbid_backend_credential_direct_read", msg=command)
+
+    def test_the_home_toward_home_spellings_are_blocked_too(self) -> None:
+        """`~` / `$HOME` / `${HOME}` are spellings these paths did not have before.
+
+        While the home was in a temporary directory it had exactly one spelling, so
+        the marker regex's home-relative alternatives never applied to it. Now they
+        do, and the tokenizer is not what catches them — adjacent shell punctuation
+        mangles the token, which is why the raw-command marker scan exists.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _sibling = self._fixture(td)
+            for spelling in ("~", "$HOME", "${HOME}", "${HOME:-/x}"):
+                command = f"cat {spelling}/.met-dsl/homes/o/claude/.credentials.json"
+                self.assertEqual(self._policy(home, repo, command),
+                                 "forbid_backend_credential_direct_read", msg=command)
+
+    def test_a_sibling_orchestrations_home_is_now_blocked_by_the_root_above_it(self) -> None:
+        """A DELIBERATE inversion of what the temporary-directory twin asserts.
+
+        That test pins "only the home this orchestration RECORDED is guarded; a
+        name-alike sibling is not" — accurate for a resolver that reads one
+        orchestration's metadata, and it stays accurate. What changed is that the
+        sibling now lives under `operator_secret_root()`, which is a protected root in
+        its own right and is never dropped, so the read fails closed anyway. The
+        POLICY NAME is how the two rules stay distinguishable: the resolver did not
+        widen, a second rule caught it, and the block message names `~/.met-dsl`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, sibling = self._fixture(td)
+            self.assertEqual(self._policy(home, repo, f"cat {sibling}/projects/x.jsonl"),
+                             "forbid_operator_secret_direct_read")
+            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/homes/other/claude/x"),
+                             "forbid_operator_secret_direct_read")
+            # The dismiss-violation tokens are what that root exists for, unchanged.
+            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/operator_tokens/o.txt"),
+                             "forbid_operator_secret_direct_read")
+
+    def test_the_leaf_own_persisted_tool_result_stays_readable_in_every_spelling(self) -> None:
+        """The exemption follows the file into `$HOME`, or the guard eats the mechanism.
+
+        The harness saves an oversized tool output and tells the agent "Full output
+        saved to <path>"; that path follows `CLAUDE_CONFIG_DIR`, so it is inside the
+        private home. `_blank_persisted_tool_results` has always carried the `~` /
+        `$HOME` / `${HOME}` alternatives, but only for a projects root UNDER the home —
+        a branch that no isolated home could reach while it was in a temporary
+        directory, and that every isolated home reaches now.
+
+        The `${HOME}` case was BROKEN when this layout landed, and not in the branch
+        above: the second `_blank_persisted_tool_results` call — the one guarding the
+        unresolved-expansion fallback — was passing no orchestration id, so it resolved
+        only the operator's `~/.claude/projects` and did not recognize the isolated
+        home's file as a persisted tool result. The leaf was refused the reading of its
+        own gate output. Latent since issue #63 (reachable then only through `$(…)`,
+        because a temporary-directory home has no `${HOME}` spelling to trigger the
+        branch), ordinary since the home moved under `$HOME`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, claude_home, _x, _sibling = self._fixture(td)
+            slug = str(repo.resolve()).replace("/", "-")
+            results = claude_home / "projects" / slug / "sess-1" / "tool-results"
+            results.mkdir(parents=True)
+            (results / "abc.txt").write_text("oversized gate output", encoding="utf-8")
+            rel = f".met-dsl/homes/o/claude/projects/{slug}/sess-1/tool-results/abc.txt"
+            for spelling in (str(claude_home / "projects" / slug / "sess-1" / "tool-results" / "abc.txt"),
+                             f"~/{rel}", f"$HOME/{rel}", "${HOME}/" + rel):
+                self.assertEqual(self._policy(home, repo, f"cat {spelling}"), "",
+                                 msg=f"the leaf must be able to read its own tool result: {spelling}")
+            # CONTROLS in the same home and the same spellings — this is an exemption
+            # for one SHAPE, not a hole in the root.
+            for blocked in ("${HOME}/.met-dsl/homes/o/claude/.credentials.json",
+                            f"${{HOME}}/.met-dsl/homes/o/claude/projects/{slug}/other-arid.jsonl",
+                            "${HOME}/.met-dsl/homes/o/claude/projects/-other-slug/sess/tool-results/a.txt"):
+                self.assertEqual(self._policy(home, repo, f"cat {blocked}"),
+                                 "forbid_backend_credential_direct_read", msg=blocked)
+
+    def test_an_unrelated_read_under_the_fake_home_is_not_blocked(self) -> None:
+        """The guard did not become "block everything under `$HOME`".
+
+        Without this, every assertion above passes for the wrong reason. `~/.bashrc`
+        and a file beside `.met-dsl` are ordinary reads and must stay so.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            (home / ".bashrc").write_text("", encoding="utf-8")
+            (home / "notes.txt").write_text("", encoding="utf-8")
+            for command in ("cat ~/.bashrc", "cat ~/notes.txt", f"cat {home}/notes.txt",
+                            "cat ~/.met-dsl-notes"):
+                self.assertEqual(self._policy(home, repo, command), "", msg=command)
+
+
 class ForbidOperatorSecretReadTests(unittest.TestCase):
     """P1: ~/.met-dsl/ reads are blocked regardless of the read command."""
 

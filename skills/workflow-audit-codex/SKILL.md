@@ -24,13 +24,23 @@ Investigate the logs of a completed or interrupted workflow execution across the
 | sandbox violations | `workspace/orchestrations/<orch_id>/violations/*.json` |
 | access logs | `workspace/orchestrations/<orch_id>/access_logs/<agent_run_id>.jsonl` |
 | failure analysis | `workspace/orchestrations/<orch_id>/failure_analysis.json` |
-| session conversation log | `~/.codex/sessions/YYYY/MM/DD/rollout-*-<session_id>.jsonl` |
+| session conversation log | `<codex-home>/sessions/YYYY/MM/DD/rollout-*-<session_id>.jsonl` |
 
-> **Operator context only.** The `~/.codex` read in the row above is of the backend CLI's
-> credential/session home, which the Bash read guard rejects fail-closed whenever
-> `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical:
-> `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
-> workflow run — inside one, every such read blocks, and that block is correct.
+> **`<codex-home>` is the ISOLATED per-orchestration home, read from
+> `workspace/orchestrations/<orch_id>/orchestration_meta.json#codex_workflow_home`** — not
+> `~/.codex`. A workflow leaf has run against a private home since before issue #63, so
+> `~/.codex/sessions` holds an operator's own codex sessions and none of the run's. Issue
+> #64 made that private home durable at `~/.met-dsl/homes/<orch_id>/codex`, which is why
+> this audit works at all after a host restart; before it, a rollout was gone with the next
+> reboot. `~/.codex/sessions` is worth a look only for a run that predates the isolated
+> home.
+>
+> **Operator context only.** Both of those paths are protected read roots for Bash — the
+> credential/session home and, since issue #64, `~/.met-dsl` — so the guard rejects these
+> reads fail-closed whenever `METDSL_WORKFLOW_MODE=1` (policies
+> `forbid_backend_credential_direct_read` / `forbid_operator_secret_direct_read`;
+> canonical: `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal
+> outside a workflow run — inside one, every such read blocks, and that block is correct.
 
 ## Investigation procedure
 
@@ -45,7 +55,7 @@ To investigate a specific orchestration, use the instructed `orchestration_id`.
 
 ### Step 2 - Auto-detect the session_id
 
-Read the `payload_summary.session_id` recorded in `native_hook_events.jsonl`, and identify the corresponding `rollout-*.jsonl` under `~/.codex/sessions`.
+Read the `payload_summary.session_id` recorded in `native_hook_events.jsonl`, and identify the corresponding `rollout-*.jsonl` under the orchestration's own codex home.
 
 ```bash
 python3 - <<'EOF'
@@ -63,9 +73,16 @@ for line in hook_log.read_text().splitlines():
     if isinstance(sid, str) and sid.strip():
         session_ids.add(sid.strip())
 
-sessions_root = pathlib.Path.home() / ".codex/sessions"
+# The isolated home the HOST recorded, with `~/.codex` kept only as the fallback for a
+# run that predates the isolated home.
+meta = json.loads(
+    pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
+recorded = (meta.get("codex_workflow_home") or "").strip()
+roots = [pathlib.Path(recorded) / "sessions"] if recorded else []
+roots.append(pathlib.Path.home() / ".codex/sessions")
+print(f"searching: {[str(r) for r in roots]}")
 for sid in sorted(session_ids):
-    matches = sorted(sessions_root.glob(f"**/rollout-*-{sid}.jsonl"))
+    matches = sorted(m for root in roots for m in root.glob(f"**/rollout-*-{sid}.jsonl"))
     if matches:
         print(f"{sid}: found")
         for p in matches:
@@ -306,4 +323,4 @@ Enumerate multiple phase-launch attempts, gate-failure loops, sandbox violations
 
 - During workflow execution, the implementation under `tools/` is forbidden to read directly by hook policy. Derive workflow rules by referencing only `docs/` and `spec/`. During repository improvement, maintenance, testing, and refactoring, `tools/*.py` may be inspected directly.
 - The session `jsonl` can be tens of thousands of lines. Do not read all lines from the top; extract only the necessary fields with `python`.
-- When `payload_summary.session_id` is missing, prefer the `agent_session_id` of `agent_runs.jsonl`, and reverse-look it up with `~/.codex/sessions/**/rollout-*-<agent_session_id>.jsonl`.
+- When `payload_summary.session_id` is missing, prefer the `agent_session_id` of `agent_runs.jsonl`, and reverse-look it up with `<codex-home>/sessions/**/rollout-*-<agent_session_id>.jsonl`, resolving `<codex-home>` from `orchestration_meta.json#codex_workflow_home` as in Step 2.

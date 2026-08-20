@@ -1623,7 +1623,20 @@ def workflow_private_backend_homes(repo_root: Path | None,
     """The isolated per-orchestration backend homes, as recorded by the HOST.
 
     Issue #63 (claude) and its codex predecessor move a leaf's backend home out of
-    the operator's `~/.claude` / `~/.codex` into a private directory under /tmp.
+    the operator's `~/.claude` / `~/.codex` into a private per-orchestration
+    directory; issue #64 made that directory durable at
+    `operator_secret_root()/homes/<orchestration_id>/<backend>`.
+
+    That location means this resolver is no longer the ONLY thing standing between a
+    leaf and these homes: `protected_host_read_roots` lists `operator_secret_root()`
+    unconditionally, and the homes are now underneath it, so a read of ANY
+    orchestration's home fails closed even when the id cannot be resolved. What this
+    resolver still decides is ATTRIBUTION — the roots are sorted longest-first, so the
+    leaf's own home names itself in the block message rather than being reported as the
+    operator-secret root. MEASURED, both directions: a read of the current
+    orchestration's home is attributed to that home, and a read of a SIBLING
+    orchestration's home is attributed to `~/.met-dsl`.
+
     Two things a leaf must not read live there, and BOTH arrive by a BIND rather
     than by being copied, so inspecting the directory's contents on the host shows
     neither:
@@ -1645,15 +1658,18 @@ def workflow_private_backend_homes(repo_root: Path | None,
     — naming another orchestration would unguard the leaf's own. A leaf's Bash
     command cannot alter the environment of the hook process the CLI spawns.
 
-    Bounded, and deliberately so: this guards the CURRENT orchestration's homes.
-    RESIDUE, stated accurately rather than as "a leaf cannot learn the name": a leaf
-    need not learn it. `leaf_config/claude/settings.json` grants
-    `Bash(python3 tools/audit_orchestration.py *)`, and that tool resolves ANY
-    orchestration's private home out of `orchestration_meta.json` itself, so no path
-    token ever reaches this guard. What it can surface from another run is bounded by
-    what the auditor prints — a dangling leaf's last tool name, an input preview and
-    an interrupt excerpt, or token counts — not the producing leaf's reasoning, and
-    the same route existed against `~/.claude` before this change.
+    Bounded, and deliberately so: this resolver names the CURRENT orchestration's
+    homes. Since issue #64 that bound is about the MESSAGE, not about whether the read
+    happens — a direct Bash read of a sibling orchestration's home is refused by the
+    operator-secret root above it. What survives is a residue in a different shape, and
+    it is stated accurately rather than as "a leaf cannot learn the name": a leaf need
+    not learn it. `leaf_config/claude/settings.json` grants `Bash(python3
+    tools/audit_orchestration.py *)`, and that tool resolves ANY orchestration's
+    private home out of `orchestration_meta.json` itself, so no path token ever reaches
+    this guard. What it can surface from another run is bounded by what the auditor
+    prints — a dangling leaf's last tool name, an input preview and an interrupt
+    excerpt, or token counts — not the producing leaf's reasoning, and the same route
+    existed against `~/.claude` before this change.
     """
     root = repo_root if repo_root is not None else Path.cwd()
     oid = (orchestration_id or "").strip()
@@ -2513,8 +2529,12 @@ def _blank_persisted_tool_results(command: str, repo_root: Path,
         heads.append(re.escape(prefix))
         if prefix.startswith(home + "/"):
             # The same file is spelled `~/…`, `$HOME/…` and `${HOME}/…` too; blanking
-            # only the absolute form left those reaching the marker scan. Only a root
-            # UNDER the home has such spellings; a private home under /tmp has none.
+            # only the absolute form left those reaching the marker scan. This branch
+            # was reachable only for `~/.claude` while the private home was under
+            # /tmp; since issue #64 the home is under `$HOME` too, so it now carries
+            # the isolated home's spellings as well — MEASURED for all four, against
+            # controls (`.credentials.json`, another leaf's transcript, a sibling
+            # orchestration's home) that must and do stay blocked.
             heads.append(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(prefix[len(home) + 1:]))
     if not any(re.search(head, command) for head in heads):
         return command
@@ -2909,9 +2929,19 @@ def _command_reads_protected_host_path(
     (an in-repo `CODEX_HOME` would fail-close reads of the workspace).
     `_resolve_backend_rw_binds` rejects both directions on the bind side, so
     nothing under such a root is bound writable and there is nothing here to
-    protect. The OPERATOR-SECRET root is never dropped: that justification does
-    not apply to it (it is not an rw bind at all), so a checkout placed inside or
-    around `~/.met-dsl` must keep failing closed rather than lose the guard.
+    protect.
+
+    The OPERATOR-SECRET root is never dropped. The reason USED TO BE "it is not an rw
+    bind at all", and issue #64 made that false: the isolated backend homes are rw
+    binds and they now live under `~/.met-dsl/homes/`. The reason that survives is
+    about what the root holds and where it is. It holds the dismiss-violation tokens,
+    which are not bound anywhere and whose whole purpose is that an agent cannot reach
+    them; and its location is fixed relative to nothing — a checkout placed inside or
+    around it is a configuration nobody has a reason for, so failing closed is the
+    right answer there rather than losing the guard. The homes are a separate entry in
+    the same list (`workflow_private_backend_homes`) and take the containment drop like
+    every other rw bind; dropping one of them costs attribution, not enforcement,
+    because this root still covers it.
     """
     repo_resolved = repo_root.resolve()
     secret_root = operator_secret_root()
@@ -3040,8 +3070,15 @@ def _command_reads_protected_host_path(
         # `${A:0x7}/.claude.json`, and whatever syntax comes next), and the false
         # positives it costs are the ones already accepted: a command that names
         # a protected path.
+        # The orchestration id is passed for the same reason the marker-scan call
+        # above passes it: without it `claude_leaf_projects_roots` returns only the
+        # operator's `~/.claude/projects`, so a persisted tool-result inside the
+        # ISOLATED home is not recognized as one and this branch refuses the read the
+        # harness itself told the agent to make. Latent since issue #63 (reachable
+        # then only through `$(…)`, since a `/tmp` home has no `${HOME}` spelling) and
+        # ordinary since issue #64 put the home under `$HOME`.
         if (unresolvable_command or "${" in t) and _blank_persisted_tool_results(
-            t, repo_root
+            t, repo_root, _workflow_orchestration_id()
         ) == t:
             # `$(…)` and backticks are unresolvable for the same reason a nested
             # `${…}` is, and `cat $HOME/$(echo .claude.json)` puts the component

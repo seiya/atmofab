@@ -295,6 +295,83 @@ python3 tools/run_workflow.py --resume build
 - `copy_based_artifact_reuse` is not detected.
 - `write_scope_violation.json` is not generated.
 
+## The operator-private root (`~/.met-dsl`) {#operator-private-root}
+
+Three things live outside the repository, under the operator's own home, and this is the
+inventory. All three are per-operator and per-host; none of them is ever committed.
+
+| Path | Written by | Read by | Retention |
+|---|---|---|---|
+| `~/.met-dsl/operator_tokens/<orchestration_id>.txt` | `init_orchestration`, once per run | the operator, when dismissing an `unauthorized_write_violation` (§dismiss) | kept; a run's token stays valid across `--resume` |
+| `~/.met-dsl/start_claims/` | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
+| `~/.met-dsl/homes/<orchestration_id>/{claude,codex}/` | the leaf launcher, per orchestration and backend | `--resume` (warm session lookup), `audit_orchestration.py`, the three audit skills | **indefinite. Nothing deletes these automatically. See below.** |
+
+An agent cannot read any of it: `~/.met-dsl` is a protected read root for Bash on both
+backends (`forbid_operator_secret_direct_read`) and is outside every read manifest, so
+the Read tool cannot name it either. **`chmod 700 ~/.met-dsl` is recommended** on a
+shared host. The workflow creates the directory best-effort and does not force its mode,
+because a root that predates this recommendation would otherwise fail every launch;
+everything it creates BELOW that level is 0700 and is re-checked for ownership and
+symlinks on each launch.
+
+`METDSL_WORKFLOW_HOMES_ROOT` relocates the homes tree, and `METDSL_START_CLAIM_ROOT` the
+claims tree. Both exist for tests and for an operator with a specific reason; neither is
+needed for an ordinary run.
+
+### Why the homes are kept, and how to remove one
+
+A backend home holds the leaf's ONLY record of its own turn — the claude transcript, the
+codex rollout. The artifacts under `workspace/orchestrations/<id>/` record what the HOST
+observed; nothing else records what the leaf did. Those homes used to be created under
+`/tmp`, where a host restart took them, and a billed run became unauditable the moment
+the machine rebooted. They are now durable, and the price of that is that they accumulate.
+
+There is deliberately **no automatic retention rule**, for the same reason `TODO.md`
+records for `workspace/`: any such rule has to choose between deleting evidence someone
+may still want and keeping everything, and only the second cannot silently destroy the
+thing the directory exists for.
+
+Removing one is the operator's decision, made with:
+
+```bash
+# Report only — the default. Never deletes.
+python3 tools/prune_workflow_homes.py --all
+
+# Remove the homes of runs that are over.
+python3 tools/prune_workflow_homes.py --all --delete
+python3 tools/prune_workflow_homes.py --orchestration-id <orchestration_id> --delete
+```
+
+**What deleting costs**, so it is a decision rather than a discovery:
+
+- `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a leaf's
+  session inside the home; a re-created one has none;
+- the run stops being auditable. `skills/workflow-audit-claude`, `workflow-audit-codex`
+  and `workflow-timing-audit` all read from the home.
+
+The tool refuses three things, and only one refusal has an override:
+
+- an entry that is not a real directory owned by this user;
+- an entry whose `owner.json` is missing or inconsistent — `refused:unverifiable_owner`.
+  The marker names the checkout that owns the run; without it, the home may equally
+  belong to a LIVE run in a checkout this invocation cannot see. `--allow-unverifiable`
+  releases this one, and only this one. An owner checkout that has been moved or deleted
+  lands here too, since "did that run finish" is then unanswerable;
+- an orchestration whose status is not terminal — `refused:orchestration_not_terminal`,
+  with **no override**: deleting a home under a live leaf takes that leaf's session with
+  it. The status is re-read under the orchestration's own metadata lock, so a concurrent
+  `--resume` cannot be caught mid-transition.
+
+An orchestration named explicitly on the command line and then refused makes the tool
+exit 2; a refusal during `--all` does not, because there the refusals are the report.
+
+**One failure mode worth recognising.** If a launch reports `isolated <backend> home
+already exists but is not recorded in this orchestration's metadata`, a previous run
+created the directory and died before recording it, or its metadata was lost. The home is
+never adopted — that would hand a new orchestration an earlier run's transcripts — so
+inspect it and then remove it with `--orchestration-id <id> --allow-unverifiable
+--delete`.
+
 ## Repair cheat sheet on a hook block {#hook-recovery}
 
 When a hook blocks during workflow execution, identify the cause from `reason` and `audit_detail.policy`, and take the next action according to the table below.
@@ -429,7 +506,7 @@ python3 tools/audit_orchestration.py --orchestration-id <orchestration_id>
 #   last activity, dead-air seconds, the abort marker, and any final API error.
 ```
 
-`audit_orchestration.py` correlates the dangling leaf's OWN transcript on demand: the conductor pins each leaf's Claude session id to its `agent_run_id`, so the transcript is directly addressable as `<projects-root>/<slug>/<arid>.jsonl` (no host session needed). Since issue #63 that root is the orchestration's PRIVATE home — read `orchestration_meta.json#claude_workflow_home`, or let the tooling resolve it through `tools/hooks/common.py::claude_leaf_projects_roots`, which is the canonical resolver every consumer shares. The operator's `~/.claude/projects` is still searched as well, so a run recorded before that move stays auditable. The private home lives under `/tmp` and is not durable (issue #64). This recovers the child's last activity, dead-air interval, and final API error — distinguishing a retryable 529 from other failures — and degrades to the in-repo facts when that home has been cleaned or rotated. Older runs may additionally carry persisted `launch_incident.runtime.*.json` snapshots, which are surfaced too.
+`audit_orchestration.py` correlates the dangling leaf's OWN transcript on demand: the conductor pins each leaf's Claude session id to its `agent_run_id`, so the transcript is directly addressable as `<projects-root>/<slug>/<arid>.jsonl` (no host session needed). Since issue #63 that root is the orchestration's PRIVATE home — read `orchestration_meta.json#claude_workflow_home`, or let the tooling resolve it through `tools/hooks/common.py::claude_leaf_projects_roots`, which is the canonical resolver every consumer shares. The operator's `~/.claude/projects` is still searched as well, so a run recorded before that move stays auditable. Since issue #64 that home is DURABLE — `~/.met-dsl/homes/<orchestration_id>/claude` — so this correlation keeps working after a host restart, which is the reason the move was made; see §"The operator-private root (`~/.met-dsl`)". This recovers the child's last activity, dead-air interval, and final API error — distinguishing a retryable 529 from other failures — and degrades to the in-repo facts when that home has been cleaned or rotated. Older runs may additionally carry persisted `launch_incident.runtime.*.json` snapshots, which are surfaced too.
 
 Recovery is the normal `python3 tools/run_workflow.py --resume --orchestration-id <orchestration_id>` (§3-1): the completed substeps are skipped and the dangling substep is re-launched. The reconciliations below are scoped to the terminal→`running` reset, so the orchestration must be terminal first. That transition is automatic when the resume gate probes the recorded driver as `dead` (§3-1 "Driver liveness on a non-terminal target"): the run is terminalized as `fail` / `driver_crashed` and the reset follows in the same invocation. It stays manual for a `unknown` liveness verdict — a run that predates the `driver` block, one whose meta was written on another host, or a non-Linux host — where the operator terminalizes explicitly before resuming:
 
