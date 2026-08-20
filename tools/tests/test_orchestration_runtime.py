@@ -116,6 +116,7 @@ from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.leaf_config_fixture import (
     seed_claude_leaf_config,
     seed_codex_hooks,
+    isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
 )
@@ -136,6 +137,13 @@ def setUpModule() -> None:
 
 def tearDownModule() -> None:
     restore_isolated_homes_root_for_module(__name__)
+
+
+def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
+    # Per-TEST isolated-homes root outside pytest, matching what conftest does inside it.
+    # Without this the module-scoped root above is shared, and the fixtures here reuse
+    # fixed orchestration ids, so they collide on the exclusive `mkdir`.
+    return isolated_homes_per_test_suite(tests)
 
 
 def _discard_isolated_homes(orchestration_id: str) -> None:
@@ -35929,6 +35937,97 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertFalse((elsewhere.parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
                              "a marker was written into a homes tree that is not the "
                              "one this launch resolves")
+
+    def test_a_rival_checkout_cannot_take_over_by_REUSING_an_existing_home(self) -> None:
+        """The marker check on the REUSE path, which no test observed.
+
+        `_require_owner_marker_agrees` guards two callers and only the creation one was
+        witnessed: deleting the reuse call left the whole suite green while a copied
+        checkout — same orchestration id, same metadata, different directory — was
+        allowed to adopt the home AND had the marker rewritten to name it. That is
+        precisely the precondition of the harm the creation-side check exists for: the
+        prune tool reads the marker to decide whose status to ask about, so it would then
+        ask the wrong checkout and delete a live run's only record.
+
+        A COPIED checkout rather than a moved one, because the moved case is the one the
+        refresh deliberately adopts; what must be refused is a second checkout whose
+        metadata for this orchestration is still there.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOME_OWNER_FILENAME, _prepare_claude_workflow_home)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            original = self._claude_repo(str(root / "original"))
+            (original / "workspace" / "orchestrations" / "orch_d"
+             / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": "orch_d", "status": "running"}),
+                encoding="utf-8")
+            _prepare_claude_workflow_home(original, "orch_d")
+            marker = self._homes_root() / "orch_d" / WORKFLOW_HOME_OWNER_FILENAME
+            before = json.loads(marker.read_text(encoding="utf-8"))
+
+            rival = root / "copied"
+            shutil.copytree(original, rival)
+            with self.assertRaisesRegex(ValueError, "belongs to a different checkout"):
+                _prepare_claude_workflow_home(rival, "orch_d")
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), before,
+                             "a rival checkout rewrote the marker by reusing the home")
+
+    def test_a_module_run_outside_pytest_writes_nothing_into_the_home(self) -> None:
+        """The module redirect, which the suite cannot observe from inside itself.
+
+        `tools/tests/conftest.py` redirects `METDSL_WORKFLOW_HOMES_ROOT` for every test,
+        so under pytest the module-level redirect changes nothing and a mutant deleting
+        it stays green — while the thing it exists to prevent happens only where conftest
+        is NOT loaded. Two reviewers ran `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m
+        unittest …`, the command this branch's own commit messages prescribe, and had to
+        prune entries out of the operator's real `~/.met-dsl/homes` afterwards.
+
+        So this witness leaves the process: it runs a class that relies on the module
+        redirect under plain `unittest`, with the variable cleared and `$HOME` pointed at
+        a temporary directory, and asserts that nothing was created under it. Delete the
+        redirect and `<fake home>/.met-dsl/homes` appears.
+
+        `ClaudeWorkflowHomeTests` is the target on purpose: `DurableWorkflowHomesTests`
+        has its own `setUp` root and would pass either way.
+        """
+        import subprocess
+        repo_root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td) / "home"
+            fake_home.mkdir()
+            env = {k: v for k, v in os.environ.items()
+                   if k != ort.WORKFLOW_HOMES_ROOT_ENV}
+            env["HOME"] = str(fake_home)
+            env["PYTHONPATH"] = str(repo_root)
+            proc = subprocess.run(
+                [sys.executable, "-m", "unittest",
+                 "tools.tests.test_orchestration_runtime.ClaudeWorkflowHomeTests"],
+                cwd=str(repo_root), env=env, capture_output=True, text=True, timeout=300)
+            self.assertEqual(proc.returncode, 0,
+                             f"the class did not pass outside pytest:\n{proc.stderr[-2000:]}")
+            self.assertFalse(
+                (fake_home / ".met-dsl" / "homes").exists(),
+                "a test module wrote isolated homes into $HOME when run outside pytest")
+
+    def test_a_tilde_homes_root_override_is_expanded(self) -> None:
+        """`~` is expanded, and nothing observed that either.
+
+        A quoted `METDSL_WORKFLOW_HOMES_ROOT='~/big/homes'` is a plausible spelling — the
+        RUNBOOK says these accumulate, so pointing them at a bigger disk is the reason the
+        lever exists — and the shell does not expand inside quotes. Without `expanduser`
+        the value would be a literal `~` directory under whoever's working directory, and
+        the writer and the read guard would resolve different trees; it would also slip
+        past the absolute-path refusal, since `~/...` is not absolute until expanded.
+        """
+        from tools.hooks.common import workflow_homes_root
+        with mock.patch.dict(os.environ, {"HOME": "/tmp/fake-home-probe"}, clear=False):
+            with mock.patch.dict(
+                    os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: "~/big/homes"},
+                    clear=False):
+                resolved = workflow_homes_root()
+        self.assertEqual(resolved, Path("/tmp/fake-home-probe/big/homes"))
+        self.assertNotIn("~", str(resolved))
 
     def test_a_marker_naming_another_orchestration_refuses_the_launch(self) -> None:
         """The other half of the marker check, and the cheaper one to get wrong.

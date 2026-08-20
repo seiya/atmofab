@@ -38,6 +38,7 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
 from tools.tests.leaf_config_fixture import (
+    isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
     restore_isolated_homes_root_for_module,
     seed_claude_leaf_config,
@@ -55,6 +56,13 @@ def setUpModule() -> None:
 
 def tearDownModule() -> None:
     restore_isolated_homes_root_for_module(__name__)
+
+
+def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
+    # Per-TEST isolated-homes root outside pytest, matching what conftest does inside it.
+    # Without this the module-scoped root above is shared, and the fixtures here reuse
+    # fixed orchestration ids, so they collide on the exclusive `mkdir`.
+    return isolated_homes_per_test_suite(tests)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Tracked, slim copies of real working launch requests (one per step/substep),
@@ -6623,13 +6631,20 @@ class DiagnosticianTest(unittest.TestCase):
 
         Asserted on the profile the REAL method returns, not on the kwargs helper.
         """
-        repo = self._repo_root()
+        # Its OWN id, like `_conductor()` mints: the isolated home is
+        # `<homes-root>/<oid>/<backend>` and its creation is exclusive, so two tests
+        # sharing the literal `"o"` under one homes root collide. Under pytest each test
+        # gets its own root and the collision is invisible; run as plain `unittest` — the
+        # command this branch's commit messages prescribe — it fails, and it does NOT
+        # fail on `origin/main`.
+        oid = "o_readonly_profile"
+        repo = self._repo_root(oid)
         c = _FakeConductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+            repo_root=repo, orchestration_id=oid, orchestration_agent_run_id="ORCH",
             llm_config=_cfg("claude"), env={})
         profile = c._readonly_sandbox_profile()
         meta = json.loads(
-            (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json")
+            (repo / "workspace" / "orchestrations" / oid / "orchestration_meta.json")
             .read_text(encoding="utf-8"))
         home = meta["claude_workflow_home"]
         self.addCleanup(shutil.rmtree, Path(home), True)
@@ -6656,11 +6671,13 @@ class DiagnosticianTest(unittest.TestCase):
         # committed leaf configuration).
         with tempfile.TemporaryDirectory() as tmp:
             seed_claude_leaf_config(Path(tmp))
-            _meta_dir = Path(tmp) / "workspace" / "orchestrations" / "o"
+            # Its own id, for the reason given at the other direct construction above.
+            _oid = "o_bwrap_argv"
+            _meta_dir = Path(tmp) / "workspace" / "orchestrations" / _oid
             _meta_dir.mkdir(parents=True, exist_ok=True)
             (_meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
             c = _FakeConductor(
-                repo_root=Path(tmp), orchestration_id="o",
+                repo_root=Path(tmp), orchestration_id=_oid,
                 orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
             )
             c.calls = []

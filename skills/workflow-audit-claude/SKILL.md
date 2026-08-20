@@ -80,7 +80,10 @@ except (OSError, ValueError):
     meta = {}
 if not isinstance(meta, dict):
     meta = {}   # a metadata document that is valid JSON but not an object
-recorded = (meta.get("claude_workflow_home") or "").strip()
+_raw = meta.get("claude_workflow_home")
+# The VALUE's type as well as the document's: `(x or "").strip()` raises on a number or a
+# list, and this is the audit you open when the metadata is damaged.
+recorded = _raw.strip() if isinstance(_raw, str) else ""
 projects_dirs = [pathlib.Path(recorded) / "projects" / cwd_slug] if recorded else []
 projects_dirs.append(pathlib.Path.home() / ".claude/projects" / cwd_slug)
 print(f"searching: {[str(d) for d in projects_dirs]}")

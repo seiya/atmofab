@@ -329,14 +329,23 @@ symlinks on each launch.
 
 `METDSL_WORKFLOW_HOMES_ROOT` relocates the homes tree, and `METDSL_START_CLAIM_ROOT` the
 claims tree. Both exist for tests and for an operator with a specific reason; neither is
-needed for an ordinary run. The homes one has **one precondition, and it is not the one
-you would guess**: the directory it names is created if absent but its PARENT must exist,
-so a typo does not silently build a tree somewhere nobody looks — which is also why the
-default `~/.met-dsl/homes` may be created from nothing while an override may not. The
-mode is NOT a precondition: a root you create with a plain `mkdir` is tightened to 0700
-on first use rather than refused, as is a mode that later drifts (a backup restored
-without permissions). What is refused is a symlink, a non-directory, a directory owned by
-another user, and a filesystem on which the tightening does not take.
+needed for an ordinary run. The homes one has **two preconditions, and neither is the
+one you would guess**:
+
+- the value must be an **absolute path**. A relative one does not stay relative — it is
+  resolved against whichever process asks, and the conductor that creates a home and the
+  hook process that forbids reading it need not share a working directory, so the two
+  would guard and create different trees;
+- the directory it names is created if absent, but its **parent must exist**, so a typo
+  does not silently build a tree somewhere nobody looks. (That is also why the default
+  `~/.met-dsl/homes` may be created from nothing while an override may not.)
+
+The MODE is not a precondition: a root you create with a plain `mkdir` is tightened to
+0700 on first use rather than refused, as is a mode that later drifts (a backup restored
+without permissions) — and since the tightening also runs on a warm reuse, a drift is
+corrected by the next launch of the same orchestration rather than only by a new one.
+What is refused is a symlink, a non-directory, a directory owned by another user, and a
+filesystem on which the tightening does not take.
 
 ### Why the homes are kept, and how to remove one
 

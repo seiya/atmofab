@@ -16337,7 +16337,18 @@ def _require_owner_marker_agrees(repo_root: Path, orchestration_id: str,
     try:
         existing = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
-        return  # unreadable: the prune tool's `unverifiable` answer, not a launch refusal
+        # Unreadable: the prune tool's `unverifiable` answer, not a launch refusal.
+        #
+        # RESIDUE, and wider than the shape this sentence used to name. A marker that is
+        # unreadable — and equally one that is valid JSON, a dict, and merely INCOMPLETE
+        # (no `repo_root`) — is neither refused here nor replaced by
+        # `_write_workflow_home_owner`'s stale-owner branch, which requires a `repo_root`
+        # STRING that differs. So such an entry stays `unverifiable` forever and is
+        # deletable with `--allow-unverifiable` while its run is live: the end state the
+        # moved-checkout refresh closed, reached by a different route. No code path
+        # produces either shape — it takes filesystem damage or hand editing — which is
+        # why this is recorded rather than fixed.
+        return
     if not isinstance(existing, dict):
         return
     other_oid = existing.get("orchestration_id")
