@@ -6222,7 +6222,7 @@ class NodeAllocationTest(unittest.TestCase):
 class DiagnosticianTest(unittest.TestCase):
     """M4: LLM diagnostician escalation for unclassifiable failures."""
 
-    def _repo_root(self) -> Path:
+    def _repo_root(self, orchestration_id: str = "o") -> Path:
         """A real, per-test repo root carrying this repository's leaf configuration.
 
         The diagnostician builds a REAL read-only sandbox profile, which since issue
@@ -6237,14 +6237,28 @@ class DiagnosticianTest(unittest.TestCase):
         # The private-home preparation records the home in orchestration metadata
         # under that file's own lock, exactly as the codex twin does, so the
         # orchestration directory has to exist for a diagnostician to launch at all.
-        meta_dir = root / "workspace" / "orchestrations" / "o"
+        meta_dir = root / "workspace" / "orchestrations" / orchestration_id
         meta_dir.mkdir(parents=True, exist_ok=True)
         (meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
         return root
 
     def _conductor(self) -> _FakeConductor:
+        """A conductor with a FRESH repo root AND a fresh orchestration id.
+
+        The id used to be the literal `"o"` for every conductor. Since issue #64 the
+        private home is `<homes-root>/<oid>/<backend>` and its creation is exclusive, so
+        a test that builds two conductors — each with its own temporary repo root, the
+        way this class simulates two independent runs — collided on one home and the
+        second launch failed closed. That refusal is the intended production behaviour
+        (two checkouts naming the same orchestration must not share one home, which
+        would hand each the other's transcripts); what was wrong is a fixture that gives
+        two unrelated runs the same id. Real ids carry a timestamp and 8 random hex
+        characters.
+        """
+        type(self)._conductor_seq = getattr(type(self), "_conductor_seq", 0) + 1
+        oid = f"o{type(self)._conductor_seq}"
         c = _FakeConductor(
-            repo_root=self._repo_root(), orchestration_id="o",
+            repo_root=self._repo_root(oid), orchestration_id=oid,
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
