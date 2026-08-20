@@ -21136,6 +21136,35 @@ class RecordTimeoutTests(unittest.TestCase):
                     (repo_root / "leaf_config" / "claude" / "settings.json").read_bytes()
                 ).hexdigest())
 
+    def test_a_launch_records_whether_a_credential_file_was_bound(self) -> None:
+        """The environment route to authentication is a NAMED EXCLUSION, so the bound
+        credential FILE is the only one left. `claude_credentials_bound: false` therefore
+        means this launch cannot authenticate at all — and the whole reason to record it
+        rather than refuse is that the cause is then legible in the artifact before the
+        CLI fails. A record nothing reads is not legible, so it is pinned here.
+
+        Both polarities, because a field that is always false and a field that is always
+        true are indistinguishable from a correct one with a single fixture."""
+        for present in (True, False):
+            with self.subTest(credentials_present=present):
+                with tempfile.TemporaryDirectory() as td:
+                    repo_root = Path(td)
+                    fake_home = Path(tempfile.mkdtemp())
+                    self.addCleanup(shutil.rmtree, fake_home, True)
+                    if present:
+                        (fake_home / ".credentials.json").write_text("{}", encoding="utf-8")
+                    with mock.patch.object(
+                            ort, "_backend_credential_home_paths",
+                            return_value=([fake_home], [fake_home / ".credentials.json"])):
+                        arid = self._setup_substep_launch(repo_root)
+                    orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                    meta = json.loads((orch_root / "orchestration_meta.json")
+                                      .read_text(encoding="utf-8"))
+                    self.addCleanup(shutil.rmtree, Path(meta["claude_workflow_home"]), True)
+                    recorded = json.loads((orch_root / "launches" / f"{arid}.response.json")
+                                          .read_text(encoding="utf-8"))
+                self.assertEqual(recorded["claude_credentials_bound"], present)
+
     def test_the_threaded_child_env_is_what_the_profile_records_and_delivers(self) -> None:
         """The persisted profile IS the environment record (no second field: see
         `feedback_no_redundant_persistence`), so it has to be the environment the leaf
