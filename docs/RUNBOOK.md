@@ -299,9 +299,12 @@ python3 tools/run_workflow.py --resume build
 
 Three things live outside the repository, under the operator's own home. All three are
 per-operator and per-host; none of them is ever committed. This is the inventory of what
-the CODE writes there — an `ls` on a long-lived host may also show residue from versions
-that no longer exist (`cold_start_locks/` has had no producer since the start-claim
-rewrite), which nothing cleans up and nothing reads.
+the CODE writes there. An `ls` on a long-lived host may show more — this checkout's own
+shows `cold_start_locks/` and `escape.txt` — and neither has a producer anywhere in this
+repository's history (`git log --all -S` finds none), so they are residue from something
+outside it or from a version that predates the history. Nothing writes them, nothing
+reads them, and nothing cleans them up; they are named here only so their presence is not
+read as a fourth thing the workflow maintains.
 
 | Path | Written by | Read by | Retention |
 |---|---|---|---|
@@ -314,9 +317,11 @@ cannot name it either. For Bash on both backends the block comes from one of two
 and which one tells the operator WHICH tree was touched: `homes/` and everything under it
 is a protected root of its own and answers `forbid_backend_credential_direct_read` (with
 the leaf's OWN home naming itself, since the roots sort longest-path-first), while
-`operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`. Both
-are refusals; see `docs/RUNBOOK.md#hook-recovery` for the row that matches the id you
-were given. **`chmod 700 ~/.met-dsl` is recommended** on a
+`operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`. Both are refusals, and neither has a
+remedy other than dropping the read: these paths are outside every manifest and no agent
+task needs them. (The `#hook-recovery` table has a row for each policy id, but its
+description column predates this section and still names only the operator tokens for
+`~/.met-dsl`; this section is canonical for what lives under that root.) **`chmod 700 ~/.met-dsl` is recommended** on a
 shared host. The workflow creates the directory best-effort and does not force its mode,
 because a root that predates this recommendation would otherwise fail every launch;
 everything it creates BELOW that level is 0700 and is re-checked for ownership and
@@ -341,13 +346,18 @@ observed; nothing else records what the leaf did. Those homes used to be created
 `/tmp`, where a host restart took them, and a billed run became unauditable the moment
 the machine rebooted. They are now durable, and the price of that is that they accumulate.
 
-There is deliberately **no automatic retention rule**: any such rule has to choose
+There is deliberately **no automatic deletion**: any automatic rule has to choose
 between deleting evidence someone may still want and keeping everything, and only the
 second cannot silently destroy the thing the directory exists for. What is written down
-instead is this section plus the tool below — which is, note, exactly the remedy
-`TODO.md`'s open `workspace/` entry asks for ("state a retention rule in
-`docs/RUNBOOK.md`"). That entry is a DEFECT record, not a precedent for leaving a tree
-unruled; nothing here argues that `workspace/` may stay as it is.
+instead is the rule in this section — keep indefinitely, delete only by hand — plus the
+tool that carries it out.
+
+This is **not** the same answer `TODO.md` reaches for `workspace/`, and the difference is
+worth one sentence because two earlier drafts of this paragraph claimed it was. There the
+repository declines to legislate at all: `workspace/` is the gate's execution workspace
+and how an operator uses it is their business. Here the directory is created by this
+code, holds the only record of what a leaf did, and is one an operator never opens — so
+it gets a written rule.
 
 Removing one is the operator's decision, made with:
 
@@ -409,9 +419,10 @@ command works depends on which cause it was, and the difference is not cosmetic:
   the orchestration first** — the `set-status` command block under
   §"[Incomplete launch recovery](#launch-incomplete-recovery)", which records the same
   status/reason pair the resume gate's automatic terminalization would — then prune it
-  normally. (§3-1 was cited here first and is the wrong section: it describes the
-  AUTOMATIC terminalization a `--resume` performs and carries no command an operator
-  can run.)
+  normally. (§3-1 was cited here first and is the wrong section. It has operator
+  commands — several `run_workflow.py --resume` invocations — but no TERMINALIZING one:
+  the terminalization it describes is the automatic one a `--resume` performs when the
+  resume gate probes the recorded driver as dead.)
 
 ## Repair cheat sheet on a hook block {#hook-recovery}
 

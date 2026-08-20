@@ -14,14 +14,19 @@ cannot silently destroy the thing the directory exists for. This module is there
 invoked by an operator and by nothing else; no conductor, hook, gate, or preflight
 calls it.
 
-`TODO.md` is cited here for what it ACTUALLY says, which is not what an earlier version
-of this docstring claimed. Its `workspace/` entry is an OPEN high defect — "~14 GB of
-run artifacts carry no retention rule", and the loss of a pinned directory has already
-turned one test into a permanent skip — whose fix direction is "state a retention rule
-in `docs/RUNBOOK.md`". So the parallel is not "that entry decided against automation";
-it is that the remedy that entry ASKS FOR is what this pair does: a rule written down
-where an operator reads it, and a tool that carries it out. Nothing here is evidence
-that leaving `workspace/` unruled is fine.
+THE JUSTIFICATION ABOVE STANDS ON ITSELF, and this paragraph exists to stop the next
+reader propping it up with a precedent. Two earlier versions cited `TODO.md`'s
+`workspace/` retention entry — first as "the same decision", then as "the remedy that
+entry asks for" — and both were wrong, in opposite directions, and each was caught by a
+different reviewer. What that entry actually records is a third thing: DONE, with the
+retention-rule half **rejected by decision**, because `workspace/` is the gate's
+execution workspace and how it is used is the operator's business rather than something
+this repository legislates.
+
+That reasoning does not transfer, which is the whole point: these homes are created BY
+this code, hold the only record of what a leaf did, and sit in a directory an operator
+never opens. So a rule IS written for them, in `docs/RUNBOOK.md`, and it is "keep
+indefinitely, delete only by hand". Do not read either case as precedent for the other.
 
 WHAT DELETION COSTS, so the operator can decide rather than discover:
   * `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a
@@ -31,8 +36,13 @@ WHAT DELETION COSTS, so the operator can decide rather than discover:
     artifacts under `workspace/orchestrations/<id>/` record what the host saw, not the
     leaf's own turn.
 
-FAIL-CLOSED, in three independent places, because the argument is a directory path
-under the operator's own home:
+FAIL-CLOSED, in five independent places, because both the root and the entry are
+caller arguments naming directories under the operator's own home:
+  0. the orchestration id must be a plain `[A-Za-z0-9_-]` token, so it cannot reach
+     inside an entry or outside the root;
+  0-b. the entry must LOOK like a backend home — every subdirectory a declared backend
+     name, and either one of those or an `owner.json` naming this orchestration — so
+     `--homes-root` cannot be pointed at an ordinary directory and emptied;
   1. the entry must be a real, non-symlinked directory owned by this uid;
   2. its `owner.json` must name a checkout, and that checkout's
      `orchestration_meta.json` must name this same orchestration id. A marker that is
@@ -229,10 +239,28 @@ def inspect_entry(entry: Path, orchestration_id: str) -> dict[str, Any]:
     # one. RESIDUE, stated: a half-deleted entry has neither and is refused here, and the
     # operator removes it by hand.
     subdirs = set(report["backends"])
-    if not subdirs or not subdirs.issubset(set(WORKFLOW_BACKEND_HOME_DIRNAMES)):
+    marker = _read_owner_marker(entry)
+    marker_is_ours = (isinstance(marker, dict)
+                      and marker.get("orchestration_id") == orchestration_id)
+    if not subdirs.issubset(set(WORKFLOW_BACKEND_HOME_DIRNAMES)):
+        # A subdirectory this code never makes: not ours, whatever else is here.
         report["verdict"] = REFUSED_NOT_A_BACKEND_HOME
         return report
-    marker = _read_owner_marker(entry)
+    if not subdirs and not marker_is_ours:
+        # NEITHER a backend directory NOR a marker claiming this id — nothing about this
+        # directory says it belongs to the workflow, so it is not the tool's to delete.
+        #
+        # The two conditions are an OR rather than an AND, and the AND was an
+        # over-refusal I shipped: requiring a backend directory made an entry whose
+        # backend dir had already been removed — a partial delete, a crash, an operator
+        # tidying by hand — permanently unremovable by the only tool allowed to remove
+        # it, under a verdict documented as having no override. Reproduced, and reached
+        # for real: a reviewer following a command this branch prescribed left two such
+        # entries in the operator's own tree and had to unlink them by hand. An
+        # `owner.json` naming this orchestration is proof enough of authorship; the owner
+        # and terminal checks below still decide whether it may go.
+        report["verdict"] = REFUSED_NOT_A_BACKEND_HOME
+        return report
     if not marker or marker.get("orchestration_id") != orchestration_id:
         report["verdict"] = REFUSED_UNVERIFIABLE_OWNER
         return report

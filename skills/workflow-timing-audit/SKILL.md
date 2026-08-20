@@ -105,7 +105,7 @@ The bundled script handles all seven structurally; do not hand-sum these:
 | role / substep / status label | `workspace/orchestrations/<orch_id>/session_run_index.json`, `agent_runs.jsonl` |
 | run status / spec | `workspace/orchestrations/<orch_id>/orchestration_meta.json` |
 | per-leaf token usage | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` (`usage`), mirrored in `agents/<agent_run_id>/dialogs/agent.result.json` |
-| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (since issue #63 `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` for a workflow leaf, else `~/.claude/projects`; pass it with `--project-dir`) (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
+| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (since issue #63 `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` for a workflow leaf; the bundled script searches that AND `~/.claude/projects`, private first and resolved per run id rather than either/or, because a run resumed across the migration has leaves in both — pass one explicitly with `--project-dir` to override the pair) (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
 
 > **Operator context only.** Both roots in the row above are protected read roots for Bash
 > — the backend CLI's credential/session home, and since issue #64 `~/.met-dsl`, under

@@ -238,6 +238,53 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertTrue((ordinary / "Pictures").is_dir())
         self.assertEqual(code, 0, "an --all sweep reports its refusals rather than exiting 2")
 
+    def test_an_entry_whose_backend_directory_is_already_gone_can_still_be_removed(self) -> None:
+        """An `owner.json` naming this orchestration is proof enough of authorship.
+
+        Requiring a backend DIRECTORY as well was an over-refusal: an entry whose backend
+        dir had already been removed — a partial delete, a crash, an operator tidying by
+        hand — became permanently unremovable by the only tool allowed to remove it,
+        under a verdict documented as having no override. It was reached for real, by a
+        reviewer following a command this branch prescribed, and the leftovers had to be
+        unlinked by hand in the operator's own tree.
+
+        The CONTROL is what keeps the loosening honest and is asserted in the same test:
+        a directory with neither a backend subdirectory nor a marker claiming this id is
+        still refused, because nothing about it says it belongs to the workflow.
+        """
+        entry = self.homes / "orch_stub"
+        entry.mkdir(mode=0o700)
+        (entry / WORKFLOW_HOME_OWNER_FILENAME).write_text(
+            json.dumps({"schema": 1, "orchestration_id": "orch_stub",
+                        "repo_root": str(self.root / "gone")}), encoding="utf-8")
+        (entry / WORKFLOW_HOME_OWNER_FILENAME).chmod(0o600)
+        bare = self.homes / "orch_bare"
+        bare.mkdir(mode=0o700)
+        (bare / "note.txt").write_text("not ours\n", encoding="utf-8")
+        reports, _ = self._prune(delete=True, allow_unverifiable=True)
+        by_id = {r["orchestration_id"]: r for r in reports}
+        self.assertTrue(by_id["orch_stub"]["deleted"])
+        self.assertFalse(entry.exists())
+        self.assertEqual(by_id["orch_bare"]["verdict"], pwh.REFUSED_NOT_A_BACKEND_HOME)
+        self.assertTrue(bare.is_dir())
+
+    def test_a_marker_naming_a_different_orchestration_does_not_vouch_for_the_entry(self) -> None:
+        """The marker only counts as proof of authorship when it names THIS entry.
+
+        Otherwise `--homes-root <anything> --allow-unverifiable --delete` would be
+        re-opened by any directory that happens to contain a JSON file with an
+        `orchestration_id` key.
+        """
+        entry = self.homes / "orch_mismatch"
+        entry.mkdir(mode=0o700)
+        (entry / WORKFLOW_HOME_OWNER_FILENAME).write_text(
+            json.dumps({"schema": 1, "orchestration_id": "somebody_else",
+                        "repo_root": "/nowhere"}), encoding="utf-8")
+        (entry / WORKFLOW_HOME_OWNER_FILENAME).chmod(0o600)
+        reports, _ = self._prune(delete=True, allow_unverifiable=True)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_NOT_A_BACKEND_HOME)
+        self.assertTrue(entry.is_dir())
+
     def test_an_entry_with_an_unknown_backend_directory_is_refused(self) -> None:
         """The subset check, both halves, against a real homes root.
 
@@ -642,11 +689,11 @@ class PruneWorkflowHomesTests(unittest.TestCase):
 
         An automatic rule has to choose between deleting evidence someone may still
         audit and keeping everything, and only the second cannot silently destroy what
-        the directory exists for. (An earlier version of this docstring cited `TODO.md`
-        as recording "the same decision" for `workspace/`. It records the opposite: an
-        open high defect that ~14 GB of run artifacts have NO retention rule, whose fix
-        direction is to write one into `docs/RUNBOOK.md`. What this pair does is that
-        remedy, not that entry's precedent.)
+        the directory exists for. That reason is the whole justification; two earlier
+        versions of this docstring propped it up with `TODO.md`'s `workspace/` entry, as
+        "the same decision" and then as "the remedy that entry asks for", and both were
+        wrong. See `tools/prune_workflow_homes.py`'s module docstring for what that entry
+        actually records and why it does not transfer.
 
         What is searched for is a CALLER — an import of the module or an argv naming the
         script — and not a mention. Mentions are the point: the refusal message names the

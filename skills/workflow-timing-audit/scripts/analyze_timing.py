@@ -447,7 +447,8 @@ def main():
         try:
             with open(os.path.join(orch_path, "orchestration_meta.json"),
                       encoding="utf-8") as handle:
-                raw = json.load(handle).get("claude_workflow_home")
+                _loaded = json.load(handle)
+            raw = _loaded.get("claude_workflow_home") if isinstance(_loaded, dict) else None
             if isinstance(raw, str) and raw.strip():
                 candidate = os.path.join(raw.strip(), "projects", slug)
                 if os.path.isdir(candidate):
@@ -513,7 +514,19 @@ def main():
         })
 
     meta_path = os.path.join(orch_path, "orchestration_meta.json")
-    meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
+    # Guarded for the same reason as the resolution above, and for a reason the two audit
+    # SKILLs cite this script for: a metadata file that is UNREADABLE (truncated by the
+    # crash being audited) is exactly the condition an audit is opened in, and this one
+    # `os.path.exists` + bare `json.load` turned it into a traceback. Missing was handled;
+    # malformed was not.
+    meta = {}
+    try:
+        with open(meta_path, encoding="utf-8") as _handle:
+            loaded = json.load(_handle)
+        if isinstance(loaded, dict):
+            meta = loaded
+    except (OSError, ValueError):
+        meta = {}
 
     # Run wall clock is NOT the run's cost: it contains any host suspend
     # (MULTIPLE-COUNTING 6). Reported only to be contrasted with the leaf totals.

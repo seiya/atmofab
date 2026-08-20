@@ -16829,6 +16829,8 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
             # or 0o000 (0o700) — a bind destination the CLI cannot write its transcript
             # into, and one nothing on the host can descend to clean up. Missed when the
             # rest of this got its chmod, and found by the test written to WITNESS that
+            # (the constant also carries `.claude.json`, which is a FILE and is skipped
+            # by the branch above, so only the directories reach this chmod)
             # chmod: `test_a_hostile_umask_neither_breaks_the_launch_nor_loosens_the_home`
             # leaked a home between its own iterations.
             os.chmod(target, 0o700)
