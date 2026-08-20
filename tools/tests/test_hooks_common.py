@@ -4025,8 +4025,18 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             rel = f".met-dsl/homes/o/claude/projects/{slug}/sess-1/tool-results/abc.txt"
             for spelling in (str(claude_home / "projects" / slug / "sess-1" / "tool-results" / "abc.txt"),
                              f"~/{rel}", f"$HOME/{rel}", "${HOME}/" + rel):
-                self.assertEqual(self._policy(home, repo, f"cat {spelling}"), "",
-                                 msg=f"the leaf must be able to read its own tool result: {spelling}")
+                # Asserted against THESE TWO policies, not against "no policy at all",
+                # for the reason the temporary-directory twin further down states: a
+                # fixture path is answered by OTHER pre-existing rules, and demanding
+                # silence pins one of those instead of this one. Found by running the
+                # suite under `TMPDIR=/dev/shm`, where `output_manifest_write_guard`
+                # answers first and an `assertEqual(..., "")` failed for a reason that
+                # has nothing to do with the protected-root guard.
+                self.assertNotIn(
+                    self._policy(home, repo, f"cat {spelling}"),
+                    {"forbid_backend_credential_direct_read",
+                     "forbid_operator_secret_direct_read"},
+                    msg=f"the leaf must be able to read its own tool result: {spelling}")
             # CONTROLS in the same home and the same spellings — this is an exemption
             # for one SHAPE, not a hole in the root.
             for blocked in ("${HOME}/.met-dsl/homes/o/claude/.credentials.json",
@@ -4047,7 +4057,14 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
             (home / "notes.txt").write_text("", encoding="utf-8")
             for command in ("cat ~/.bashrc", "cat ~/notes.txt", f"cat {home}/notes.txt",
                             "cat ~/.met-dsl-notes"):
-                self.assertEqual(self._policy(home, repo, command), "", msg=command)
+                # Against the two policies this class is about, not against silence —
+                # the absolute-path case names a fixture directory that other rules
+                # answer for on some hosts (measured under `TMPDIR=/dev/shm`).
+                self.assertNotIn(
+                    self._policy(home, repo, command),
+                    {"forbid_backend_credential_direct_read",
+                     "forbid_operator_secret_direct_read"},
+                    msg=command)
 
 
 class ForbidOperatorSecretReadTests(unittest.TestCase):
