@@ -16107,13 +16107,27 @@ def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
 def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bool) -> None:
     """Fail closed unless an ancestor directory of a backend home is safe to descend.
 
-    Weaker than `_require_secure_backend_home` in exactly one way, and deliberately: the
-    mode check is `require_private`-gated. `~/.met-dsl` ITSELF is not forced to 0700 —
-    `init_orchestration`'s operator-token writer has created it best-effort since long
-    before this change, and re-deriving a hard requirement here would fail every launch on
-    a host whose root predates that chmod. `docs/RUNBOOK.md` recommends `chmod 700`
-    instead. `homes/` and `homes/<oid>/` are created BY this code, so they carry the
-    requirement.
+    Three checks REFUSE, because each is a disagreement this code cannot resolve: a
+    symlink or a non-directory means something other than this tree is deciding where the
+    home lands, and a directory owned by another uid is not ours to touch at all.
+
+    The mode does NOT refuse — it is TIGHTENED. That is the difference between "the
+    caller said something incompatible with me" and "the caller did not say anything",
+    and the mode is the second: a directory at 0755 has not claimed it should stay at
+    0755, and the mode this code wants is one it can simply establish. Refusing instead
+    made an operator following `docs/RUNBOOK.md` — which offers
+    `METDSL_WORKFLOW_HOMES_ROOT` with no stated precondition — fail EVERY launch after a
+    plain `mkdir` created the root 0755 under the default umask; and it made a mode drift
+    on `~/.met-dsl/homes` (a backup restored without permissions) refuse every launch of
+    every orchestration. The chmod is exactly what the create path does one branch away,
+    so tightening here makes the two agree rather than adding an authority.
+
+    The tightening is `require_private`-gated for the same reason the check was:
+    `~/.met-dsl` ITSELF is left alone. `init_orchestration`'s operator-token writer has
+    created it best-effort since long before this change and does not force its mode
+    either, it is shared with `operator_tokens/` and `start_claims/`, and it is the one
+    level here that this code did not necessarily create. `docs/RUNBOOK.md` recommends
+    `chmod 700` for it. `homes/` and `homes/<oid>/` are this code's own.
     """
     try:
         info = path.lstat()
@@ -16124,7 +16138,24 @@ def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bo
     if info.st_uid != os.getuid():
         raise ValueError(f"isolated {label} home ancestor is not owned by this user: {path}")
     if require_private and stat.S_IMODE(info.st_mode) != 0o700:
-        raise ValueError(f"isolated {label} home ancestor must have mode 0700: {path}")
+        try:
+            os.chmod(path, 0o700)
+        except OSError as exc:
+            raise ValueError(
+                f"isolated {label} home ancestor must have mode 0700 and could not be "
+                f"changed to it: {path}: {exc}"
+            ) from exc
+        # Re-read rather than assume: on a filesystem that does not honour the mode
+        # (a FAT/exFAT mount, some network filesystems) the chmod succeeds and changes
+        # nothing, and descending would put the transcripts somewhere world-readable.
+        after = path.lstat()
+        if stat.S_IMODE(after.st_mode) != 0o700:
+            raise ValueError(
+                f"isolated {label} home ancestor is still not mode 0700 after chmod "
+                f"(got {stat.S_IMODE(after.st_mode):#o}); the filesystem holding {path} "
+                "does not support it, so the leaf's transcripts cannot be kept private "
+                "there"
+            )
 
 
 def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,

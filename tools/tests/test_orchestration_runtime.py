@@ -35426,22 +35426,73 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                         # for the orchestration-level subtest.
                         target.unlink()
 
-    def test_a_world_writable_ancestor_is_refused(self) -> None:
-        """0700 is required of every level this code owns, and re-checked on reuse.
+    def test_a_loosely_moded_ancestor_is_TIGHTENED_rather_than_refused(self) -> None:
+        """0700 holds at every level this code owns — by being ESTABLISHED, not demanded.
 
-        A pre-existing homes root left at 0777 by anything else is a directory another
-        local user can add to and rename within, which is the whole reason the mkdtemp
-        randomness could be dropped only once the tree became private.
+        A homes root left at 0755 or 0777 is a directory another local user can read, and
+        at 0777 add to and rename within, which is the whole reason the mkdtemp
+        randomness could be dropped only once the tree became private. But a mode is
+        something this code can simply set, and REFUSING made two pieces of correct
+        operator behaviour fail every launch: `docs/RUNBOOK.md` offers
+        `METDSL_WORKFLOW_HOMES_ROOT` with no stated precondition, so a plain `mkdir`
+        creating it 0755 under the default umask bricked the lever; and a mode drift on
+        `~/.met-dsl/homes` — a backup restored without permissions — bricked every
+        orchestration. Both measured before the change.
+
+        What must still hold afterwards is the property, so that is what is asserted: the
+        launch succeeds AND every level this code owns comes out 0700.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        for mode in (0o755, 0o777, 0o750):
+            with self.subTest(mode=oct(mode)):
+                self.addCleanup(_discard_isolated_homes, "orch_d")
+                _discard_isolated_homes("orch_d")
+                with tempfile.TemporaryDirectory() as td:
+                    root = self._claude_repo(td)
+                    homes_root = self._homes_root()
+                    homes_root.mkdir(parents=True, exist_ok=True)
+                    os.chmod(homes_root, mode)
+                    iso = _prepare_claude_workflow_home(root, "orch_d")
+                    self.assertEqual(homes_root.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual((homes_root / "orch_d").stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
+
+    def test_an_ancestor_owned_by_another_user_is_still_refused(self) -> None:
+        """Tightening the MODE does not mean touching a directory that is not ours.
+
+        The distinction the mode change rests on: a loose mode is something the caller
+        did not say, and this code can establish it; another uid is a DISAGREEMENT it
+        cannot resolve, and chmod would fail there anyway. `os.getuid` is patched rather
+        than a real second user created, because a test cannot make one.
         """
         from tools.orchestration_runtime import _prepare_claude_workflow_home
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
             homes_root = self._homes_root()
             homes_root.mkdir(parents=True, exist_ok=True)
-            os.chmod(homes_root, 0o777)
-            self.addCleanup(os.chmod, homes_root, 0o700)
-            with self.assertRaisesRegex(ValueError, "must have mode 0700"):
-                _prepare_claude_workflow_home(root, "orch_d")
+            with mock.patch("os.getuid", return_value=os.getuid() + 1):
+                with self.assertRaisesRegex(ValueError, "not owned by this user"):
+                    _prepare_claude_workflow_home(root, "orch_d")
+            self.assertFalse((homes_root / "orch_d").exists())
+
+    def test_an_ancestor_whose_mode_cannot_be_set_is_refused(self) -> None:
+        """The tightening is fail-closed when it does not take.
+
+        A filesystem that ignores `chmod` (FAT/exFAT, some network mounts) reports
+        success and changes nothing, and descending anyway would put the leaf's
+        transcripts somewhere other local users can read. The mode is therefore re-read
+        after the chmod rather than assumed.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        with tempfile.TemporaryDirectory() as td:
+            root = self._claude_repo(td)
+            homes_root = self._homes_root()
+            homes_root.mkdir(parents=True, exist_ok=True)
+            os.chmod(homes_root, 0o755)
+            with mock.patch("os.chmod"):  # a chmod that "succeeds" and does nothing
+                with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
+                    _prepare_claude_workflow_home(root, "orch_d")
+            os.chmod(homes_root, 0o700)
 
     def test_the_owner_marker_names_the_checkout_and_tolerates_a_second_backend(self) -> None:
         """`<homes-root>/<oid>/owner.json` — a LOCATOR for the prune tool.

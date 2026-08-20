@@ -316,7 +316,14 @@ symlinks on each launch.
 
 `METDSL_WORKFLOW_HOMES_ROOT` relocates the homes tree, and `METDSL_START_CLAIM_ROOT` the
 claims tree. Both exist for tests and for an operator with a specific reason; neither is
-needed for an ordinary run.
+needed for an ordinary run. The homes one has **one precondition, and it is not the one
+you would guess**: the directory it names is created if absent but its PARENT must exist,
+so a typo does not silently build a tree somewhere nobody looks — which is also why the
+default `~/.met-dsl/homes` may be created from nothing while an override may not. The
+mode is NOT a precondition: a root you create with a plain `mkdir` is tightened to 0700
+on first use rather than refused, as is a mode that later drifts (a backup restored
+without permissions). What is refused is a symlink, a non-directory, a directory owned by
+another user, and a filesystem on which the tightening does not take.
 
 ### Why the homes are kept, and how to remove one
 
