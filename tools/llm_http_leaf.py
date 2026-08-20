@@ -593,8 +593,10 @@ def _api_key(entry: Any,
     # reconstructed for this launch, which is the same environment every spawned leaf of
     # the run receives. (It said "the CONDUCTOR's environment" until review found it: the
     # two stopped being the same thing when the leaf environment became a declared
-    # allowlist, and the identical sentence 460 lines below in this same file was
-    # corrected one commit earlier while this one was walked past.) Reading the
+    # allowlist, and the identical sentence ~460 lines ABOVE in this same file, in
+    # `_default_opener`, was corrected one commit earlier while this one was walked past.
+    # An earlier version of this note said "below", in the one comment whose whole job is
+    # to tell the next sweep where the duplicate lives.) Reading the
     # process-global environment instead would take a credential the run did not choose,
     # or miss one the run did.
     source = env if env is not None else os.environ

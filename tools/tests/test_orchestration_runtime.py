@@ -35779,6 +35779,28 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
         self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
+    def test_every_profile_carries_both_per_launch_ids(self) -> None:
+        """The floor `--clearenv` made necessary, on BOTH paths.
+
+        The threaded check only compares a key that EXISTS, so a `child_env` omitting an
+        id used to produce a profile without it — and since the profile is now the only
+        route into the leaf, a leaf without `METDSL_ORCHESTRATION_ID` makes its
+        build-runtime MCP server read "not under a run" (`_workflow_mode_env_signal()`
+        returns None) and stop requiring a capability token. An ungated server, from an
+        omission rather than an attack.
+
+        Filled rather than refused: the ids are this builder's own arguments, so an
+        absence contradicts nothing. Only a disagreement does, and that still raises."""
+        for child_env in ({"PATH": "/b"},
+                          {"PATH": "/b", "METDSL_ORCHESTRATION_ID": "o"},
+                          {"PATH": "/b", "METDSL_CHILD_AGENT_RUN_ID": "A"},
+                          None):
+            with self.subTest(child_env=child_env):
+                got = ort._profile_child_env(child_env, orchestration_id="o",
+                                             agent_run_id="A")
+                self.assertEqual(got["METDSL_ORCHESTRATION_ID"], "o")
+                self.assertEqual(got["METDSL_CHILD_AGENT_RUN_ID"], "A")
+
     def test_a_stale_ambient_id_does_not_make_a_profile_build_fail(self) -> None:
         """The regression itself, stated as the property rather than as a value.
 

@@ -8486,6 +8486,12 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
 
     ``None`` — a conductor-less caller (a test fixture, the standalone CLI) — falls back
     to filtering the host environment, so those callers stay allowlist-true too.
+
+    Whichever path is taken, the returned dict CARRIES BOTH per-launch ids with this
+    builder's own values: a disagreement raises, an absence is filled, and a stale
+    inherited value is overwritten. Under ``--clearenv`` the profile is the only route
+    into the leaf, so "the ids are present and correct" has to be a property of this
+    function rather than of its callers.
     """
     per_launch = (("METDSL_ORCHESTRATION_ID", orchestration_id),
                   ("METDSL_CHILD_AGENT_RUN_ID", agent_run_id))
@@ -8526,6 +8532,20 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
             if got is not None and got != expected:
                 raise ValueError(
                     f"child_env {name}={got!r} disagrees with the profile's {expected!r}")
+    # BOTH PATHS END WITH BOTH IDS PRESENT. Absence used to be tolerated on the threaded
+    # path (the check above only compares a key that exists), and `--clearenv` is what
+    # made that consequential: the profile is now the ONLY route into the leaf, so a
+    # profile missing `METDSL_ORCHESTRATION_ID` produces a leaf whose build-runtime MCP
+    # server reads `_workflow_mode_env_signal() is None` — "not under a run" — and stops
+    # requiring a capability token. An ungated server, from an omission.
+    #
+    # FILLED, not refused. Refusing would be the fourth over-refusal on this branch and
+    # the second on this very function: a caller that omits an id has told us nothing
+    # that contradicts these values, and the ids are the one thing this builder knows for
+    # certain, since they are its own arguments. Only a DISAGREEMENT is a real conflict,
+    # and that still raises above.
+    for name, expected in per_launch:
+        body.setdefault(name, expected)
     return body
 
 
