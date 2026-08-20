@@ -589,9 +589,14 @@ def _api_key(entry: Any,
     name = (entry.api_key_env or "").strip()
     if not name:
         return "", "missing_api_key_env: the entry declares no api_key_env"
-    # The CONDUCTOR's environment when it supplies one — the same environment every spawned
-    # leaf receives. Reading the process-global one would take a credential the run did not
-    # choose, or miss one the run did.
+    # The LEAF's environment when the caller supplies one — the dict `_child_env`
+    # reconstructed for this launch, which is the same environment every spawned leaf of
+    # the run receives. (It said "the CONDUCTOR's environment" until review found it: the
+    # two stopped being the same thing when the leaf environment became a declared
+    # allowlist, and the identical sentence 460 lines below in this same file was
+    # corrected one commit earlier while this one was walked past.) Reading the
+    # process-global environment instead would take a credential the run did not choose,
+    # or miss one the run did.
     source = env if env is not None else os.environ
     value = (source.get(name) or "").strip()
     if not value:

@@ -35386,7 +35386,7 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
     def test_the_claude_credential_variables_are_excluded_by_name(self) -> None:
         """The costliest exclusion on the list, so it is pinned separately.
 
-        These two are how the claude CLI authenticates on a host with no
+        These three are how the claude CLI authenticates on a host with no
         `~/.claude/.credentials.json`, and excluding them breaks that configuration.
         The reason it is still right is measured, not asserted: everything on the
         allowlist is persisted into `sandbox_profiles/<arid>.json` and its
@@ -35439,6 +35439,60 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
             "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
             "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
         })
+
+    def test_the_prefix_is_ANCHORED_not_a_substring_match(self) -> None:
+        """Anchoring is the whole load-bearing half of the prefix justification.
+
+        The comment's surviving claim is that the names known to redirect a leaf are
+        outside the prefix BY CONSTRUCTION. That is only true while the match is
+        anchored: with a substring match `MY_METDSL_API_KEY` and even
+        `ANTHROPIC_METDSL_X` are admitted, and the construction argument evaporates.
+        Measured as a surviving mutation — replacing `startswith` with `in` in BOTH
+        copies of the rule kept all 4972 tests green — so it is pinned here and in the
+        renderer's sibling below."""
+        got = ort.leaf_env_from({
+            "PATH": "/b",
+            "METDSL_REAL": "kept",
+            "MY_METDSL_API_KEY": "sk-live",
+            "OPERATOR_METDSL_X": "y",
+            "XMETDSL_Z": "z",
+        })
+        self.assertEqual(got, {"PATH": "/b", "METDSL_REAL": "kept"})
+
+    def test_an_unanchored_prefix_name_is_refused_at_render_too(self) -> None:
+        """The renderer spells the same rule a second time, so it needs its own probe:
+        two independent copies with no pin on either is how they desync."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        root = Path(d)
+        for sub in ("repo", "ws", "tmp"):
+            (root / sub).mkdir()
+        profile = {
+            "repo_root": str(root / "repo"), "tmp_dir": str(root / "tmp"),
+            "workspace_tmp_rw_abs": str(root / "ws"),
+            "read_roots": [], "write_roots": [],
+            "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
+            "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
+                    "MY_METDSL_API_KEY": "sk-live"},
+        }
+        with self.assertRaises(ValueError) as ctx:
+            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertIn("MY_METDSL_API_KEY", str(ctx.exception))
+
+    def test_an_empty_value_never_becomes_a_declared_name(self) -> None:
+        """The filter's `or not value` skip, measured as a surviving mutation.
+
+        It is what makes `LEAF_ENV_PATH_DEFAULT` reachable: a host exporting `PATH=`
+        would otherwise carry an empty PATH through the filter, and the renderer's own
+        `if value:` then DROPS it — so under `--clearenv` the leaf launches with no PATH
+        at all, which is exactly what the default exists to prevent. The existing
+        stranger test's `"EMPTY": ""` case does not cover this: `EMPTY` is dropped for
+        being undeclared, not for being empty."""
+        self.assertEqual(ort.leaf_env_from({"PATH": ""})["PATH"],
+                         ort.LEAF_ENV_PATH_DEFAULT)
+        # ...and a declared-but-empty name is absent rather than present-and-empty
+        got = ort.leaf_env_from({"PATH": "/b", "HOME": "", "METDSL_X": ""})
+        self.assertEqual(got, {"PATH": "/b"})
 
     def test_path_falls_back_when_the_host_has_none(self) -> None:
         """Kept verbatim from the absorbed `_safe_host_env_for_child`: a PATH-less host

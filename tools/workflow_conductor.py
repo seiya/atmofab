@@ -7484,11 +7484,18 @@ clean:
         # the first place (they are outside the allowlist and outside the prefix). What
         # actually enforces the invariant is `leaf_env_from` on the way in and
         # `render_bwrap_command`'s name validation on the way out.
-        # The loop is kept, and is not merely decorative: the HTTP branch above re-adds
-        # whatever name the entry's `api_key_env` declares, so an entry declaring one of
-        # THESE names is the one path that puts a backend home back into the dict, and
-        # this is what takes it out again. That path is witnessed by
-        # `test_the_pop_is_what_keeps_a_declared_backend_home_out`.
+        # The loop is kept as DEFENCE IN DEPTH, and the honest statement is that no
+        # production path reaches it. The one path that puts a backend home back into the
+        # dict after the filter is the HTTP branch above re-adding whatever name the
+        # entry's `api_key_env` declares — and an HTTP leaf never gets a bwrap profile at
+        # all (`record_launch` skips profile building for an HTTP provider token), so
+        # nothing is delivered or persisted from that dict either way. A second version
+        # of this comment claimed that path made the loop load-bearing; review showed the
+        # consequence does not reach production, which is the same overclaim as the
+        # "enforced not just documented" it replaced. What the loop is worth is that the
+        # single-route rule stays true at THIS layer no matter what a later per-kind
+        # branch adds, and `test_the_pop_is_what_keeps_a_declared_backend_home_out`
+        # witnesses it at the unit level.
         for var in _BACKEND_HOME_ENV_VARS:
             env.pop(var, None)
         return env

@@ -7929,10 +7929,12 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
 # pre-allowlist `_safe_host_env_for_child` used.
 LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 
-# `METDSL_*` is passed by PREFIX, not by enumeration. The namespace is REPO-OWNED — every
-# name in it is set by this repository's own code, so nothing an operator or another tool
-# put in the environment lands inside it — while an enumeration would be a list that grows
-# by one every time a variable is added and fails closed on the day someone forgets. That
+# `METDSL_*` is passed by PREFIX, not by enumeration. The namespace is repo-owned BY
+# CONVENTION — nothing enforces it, and the honest statement is the weaker one: the
+# names that are known to redirect a leaf (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`,
+# `AWS_*`, `LD_*`) are outside the prefix BY CONSTRUCTION, which is what makes the
+# prefix safe to pass. An enumeration instead would be a list that grows by one every
+# time a variable is added and fails closed on the day someone forgets. That
 # is the same allowlist-polarity argument `mcp_servers/README.md` makes for the MCP gate's
 # caller-supplied `env` (the bullet beginning "The caller-supplied `env` is an allowlist
 # under an orchestration"), reached for the same reason: a denylist over environment names
@@ -7940,11 +7942,24 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # `AWS_*`, `LD_*`) is outside the prefix by construction, so the prefix does not weaken
 # the closure.
 #
-# NOT the justification, though an earlier version of this comment said so: "every member
-# has an in-tree reader". That is false, and measured — `METDSL_MISSING_ORCHESTRATION_ID_
-# POLICY` is seeded into every leaf by `run_workflow.py` and read by nothing in the tree.
-# Forwarding it costs nothing, which is the point: the prefix is justified by who OWNS the
-# namespace, not by an inventory of it that has to stay true.
+# TWO justifications this comment has carried and neither survived review, recorded so a
+# third is not written. (1) "every member has an in-tree reader" — false, measured:
+# `METDSL_MISSING_ORCHESTRATION_ID_POLICY` is seeded into every leaf by `run_workflow.py`
+# and read by nothing in the tree. (2) "the namespace is repo-owned, so nothing an
+# operator put in the environment lands inside it" — also false, and by one command:
+# `leaf_env_from({"METDSL_ANYTHING": "x"})` forwards it. Nothing stops an operator
+# exporting a name under this prefix.
+#
+# ACCEPTED RESIDUE, therefore, stated rather than argued away: a `METDSL_*` value an
+# operator exports IS forwarded to every CLI leaf and IS persisted verbatim into
+# `sandbox_profiles/<arid>.json` and its `rendered_command`, which every agentic leaf can
+# read (`Bash(cat workspace/orchestrations/*)`). If that value is a secret, it is exposed.
+# The one credential-shaped case the repository can recognise — a name the loaded
+# configuration declares as an `api_key_env` — is dropped by `_child_env` before anything
+# else. Beyond that this is an operator putting a secret inside the repository's own
+# namespace, a path only the operator can reach; enumerating instead would trade it for a
+# list that silently drops a variable the day someone adds one and forgets, which is the
+# failure this project has actually had. Revisit if a leaf ever gains a way to set one.
 LEAF_ENV_ALLOWED_PREFIXES = ("METDSL_",)
 
 # Inside the prefix but deliberately dropped. `METDSL_HOME` is the deprecated alias for
@@ -7972,12 +7987,14 @@ LEAF_ENV_NAMED_EXCLUSIONS = (
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
     # A SECOND named exclusion, for a different reason, and it has a real cost:
-    # these two are how the claude CLI authenticates on a host with no
+    # these three are how the claude CLI authenticates on a host with no
     # `~/.claude/.credentials.json`. Excluding them means that configuration
     # launches and then fails at authentication. It is still the right call,
-    # because the alternative is worse and was measured: everything on this list
-    # is persisted verbatim into `sandbox_profiles/<arid>.json` and into that
-    # file's `rendered_command`, the repository is bound read-only INTO the
+    # because the alternative is worse and was measured. Everything on the
+    # ALLOWLIST — which is where these names would have to go to reach a leaf, and
+    # not this exclusion list, whose members are precisely the ones that do NOT
+    # travel — is persisted verbatim into `sandbox_profiles/<arid>.json` and into
+    # that file's `rendered_command`, the repository is bound read-only INTO the
     # sandbox whole, and `leaf_config/claude/settings.json` grants every agentic
     # leaf `Bash(cat workspace/orchestrations/*)`. So allowlisting a live API key
     # here writes it where any leaf of the run reads it with one granted command —
