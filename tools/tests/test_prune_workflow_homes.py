@@ -310,6 +310,55 @@ class PruneWorkflowHomesTests(unittest.TestCase):
             pwh._delete_entry(self.homes, self.homes)
         self.assertTrue(self.homes.is_dir())
 
+    def test_a_resume_between_the_check_and_the_delete_saves_the_live_home(self) -> None:
+        """The terminal check and the `rmtree` have to be ONE lock-held operation.
+
+        `inspect_entry` reads the status under the metadata lock and RELEASES it before
+        returning, so a `--resume` resetting a terminal orchestration back to `running`
+        in that window left the delete going ahead on a verdict that had just stopped
+        being true — destroying the live leaf's only session, past the refusal documented
+        as having no override. Reproduced by resetting the status between the two calls,
+        which is what this test does.
+
+        The delete path re-reads the status inside the same lock
+        `update_orchestration_status` holds while writing one, so the reset cannot land
+        between the re-read and the removal.
+        """
+        entry = self._entry("orch_x", status="pass")
+        meta = (self.root / "repo_orch_x" / "workspace" / "orchestrations" / "orch_x"
+                / "orchestration_meta.json")
+        real_inspect = pwh.inspect_entry
+
+        def _inspect_then_resume(*args, **kwargs):
+            report = real_inspect(*args, **kwargs)
+            meta.write_text(json.dumps({"orchestration_id": "orch_x", "status": "running"}),
+                            encoding="utf-8")
+            return report
+
+        with mock.patch.object(pwh, "inspect_entry", _inspect_then_resume):
+            reports, code = self._prune(orchestration_ids=["orch_x"], delete=True)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_NOT_TERMINAL)
+        self.assertEqual(reports[0]["status"], "running")
+        self.assertFalse(reports[0]["deleted"])
+        self.assertEqual(code, 2)
+        self.assertTrue((entry / "claude" / "transcript.jsonl").is_file(),
+                        "a live leaf's transcript was deleted on a stale verdict")
+
+    def test_an_unverifiable_entry_still_deletes_without_an_owner_to_lock(self) -> None:
+        """The re-read must not become a new refusal for the case it cannot apply to.
+
+        An entry reached through `--allow-unverifiable` has no owner checkout to lock and
+        no status to race — demanding one would have turned the fix for the race above
+        into an over-refusal that made the flag useless, which is the direction this
+        repository's fixes fail in most often.
+        """
+        entry = self._entry("orch_gone", status=None)
+        reports, code = self._prune(orchestration_ids=["orch_gone"], delete=True,
+                                    allow_unverifiable=True)
+        self.assertTrue(reports[0]["deleted"])
+        self.assertEqual(code, 0)
+        self.assertFalse(entry.exists())
+
     def test_the_status_is_read_under_the_orchestration_metadata_lock(self) -> None:
         """A concurrent `--resume` must not be observed mid-transition.
 

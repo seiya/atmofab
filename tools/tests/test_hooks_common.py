@@ -4045,6 +4045,73 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
                 self.assertEqual(self._policy(home, repo, f"cat {blocked}"),
                                  "forbid_backend_credential_direct_read", msg=blocked)
 
+    def test_a_relocated_homes_root_is_protected_as_a_root_in_its_own_right(self) -> None:
+        """The sibling closure must not be conditional on an environment variable.
+
+        `protected_host_read_roots` covered every orchestration's home through ONE entry,
+        `operator_secret_root()`, which the homes sit under by default. Set
+        `METDSL_WORKFLOW_HOMES_ROOT` outside `~/.met-dsl` and that entry stopped covering
+        them, so a leaf's Bash read of a SIBLING run's transcript was ALLOWED — while this
+        module's docstrings and `docs/HOOKS.md` §22 asserted the closure with no mention
+        of the condition. Measured before the fix; found by Codex.
+
+        The root itself is a protected entry now, resolved by the same
+        `workflow_homes_root` the writer uses, so the tree that gets created is by
+        construction the tree that gets guarded.
+
+        Both directions are asserted. Enforcement: the sibling and a home that does not
+        exist yet are blocked. Attribution: the leaf's own home still names ITSELF rather
+        than the root above it, which is what the longest-path-first sort is for. And a
+        control: an unrelated file beside the homes root stays readable, so this is a root
+        and not "block everything near it".
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, claude_home, _codex, _sib = self._fixture(td)
+            relocated = Path(td) / "elsewhere" / "homes"
+            (relocated / "o" / "claude").mkdir(parents=True)
+            (relocated / "other" / "claude").mkdir(parents=True)
+            (relocated / "other" / "claude" / "transcript.jsonl").write_text(
+                "another run\n", encoding="utf-8")
+            (relocated.parent / "notes.txt").write_text("unrelated\n", encoding="utf-8")
+            (repo / "workspace" / "orchestrations" / "o"
+             / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(relocated / "o" / "claude")}),
+                encoding="utf-8")
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o",
+                   "HOME": str(home),
+                   "METDSL_WORKFLOW_HOMES_ROOT": str(relocated)}
+
+            def policy(command: str) -> str:
+                with patch.dict(os.environ, env, clear=False):
+                    decision = evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command))
+                return (decision.audit_detail or {}).get("policy", "")
+
+            # BLOCKED is the property; WHICH policy names it is not, and it differs from
+            # the default layout on purpose. Under `~/.met-dsl/homes` a sibling is caught
+            # by the operator-secret root above it (the neighbouring test pins that);
+            # under an override the homes root is its own entry and is reported as a
+            # backend-home read, which is the more accurate label of the two.
+            blocked = {"forbid_operator_secret_direct_read",
+                       "forbid_backend_credential_direct_read"}
+            self.assertIn(
+                policy(f"cat {relocated}/other/claude/transcript.jsonl"), blocked,
+                "a sibling orchestration's transcript was readable under the override")
+            self.assertIn(
+                policy(f"cat {relocated}/never_created/codex/rollout.jsonl"), blocked,
+                "a home this orchestration cannot name was readable under the override")
+            # Attribution: the leaf's OWN home still names itself.
+            self.assertEqual(
+                policy(f"cat {relocated}/o/claude/.credentials.json"),
+                "forbid_backend_credential_direct_read")
+            # CONTROL: a file beside the root is an ordinary read.
+            self.assertNotIn(
+                policy(f"cat {relocated.parent}/notes.txt"),
+                {"forbid_backend_credential_direct_read",
+                 "forbid_operator_secret_direct_read"})
+
     def test_an_unrelated_read_under_the_fake_home_is_not_blocked(self) -> None:
         """The guard did not become "block everything under `$HOME`".
 

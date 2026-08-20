@@ -71,8 +71,9 @@ try:
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
         backend_credential_home_paths as _backend_credential_home_paths,
-        operator_secret_root as _operator_secret_root,
         validate_pipeline_semantics_stage,
+        workflow_homes_root as _hooks_workflow_homes_root,
+        WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
@@ -102,8 +103,9 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         _ALLOWED_EXTENSIONLESS_BYPRODUCT_NAMES,
         _COMPILER_BYPRODUCT_EXTENSIONS,
         backend_credential_home_paths as _backend_credential_home_paths,
-        operator_secret_root as _operator_secret_root,
         validate_pipeline_semantics_stage,
+        workflow_homes_root as _hooks_workflow_homes_root,
+        WORKFLOW_HOMES_ROOT_ENV,
     )
     from tools.meta_contracts import (
         STAGE_META_FILENAME_BY_STEP,
@@ -16036,13 +16038,20 @@ def _require_secure_backend_home(home: Path, label: str = "Codex") -> None:
         raise ValueError(f"isolated {label} home must have mode 0700: {home}")
 
 
-# The environment name that relocates the whole durable-homes tree. Same shape and
-# same purpose as `METDSL_START_CLAIM_ROOT` in `tools/run_workflow.py`: a test (or an
-# operator with a reason) needs the tree somewhere other than the real `~/.met-dsl`,
-# and every reader must agree on the spelling. `METDSL_HOME` is deliberately NOT
-# reused — it already means "the operator's `~/.codex`" on the codex auth path, and
-# one name with two meanings is how the two resolutions silently drift apart.
-WORKFLOW_HOMES_ROOT_ENV = "METDSL_WORKFLOW_HOMES_ROOT"
+# `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
+# `tools/hooks/common.py`, not defined here. The name relocates the whole durable-homes
+# tree, in the same shape and for the same purpose as `METDSL_START_CLAIM_ROOT` in
+# `tools/run_workflow.py`: a test, or an operator with a reason, needs the tree somewhere
+# other than the real `~/.met-dsl`. (`METDSL_HOME` is deliberately NOT reused — it already
+# means "the operator's `~/.codex`" on the codex auth path, and one name with two meanings
+# is how two resolutions silently drift apart.)
+#
+# It lives in the hooks module because the side that CREATES these homes and the side that
+# FORBIDS a leaf from reading them have to resolve the same location — the arrangement
+# `backend_credential_home_paths` already uses. When this constant lived here, the Bash
+# guard knew only `~/.met-dsl`, so setting the override moved the homes out from under the
+# one protected root that covers every orchestration and a leaf could read a SIBLING run's
+# transcript (measured). Codex found that; the fix is that there is now one resolver.
 
 # The per-backend subdirectory names under `<homes-root>/<orchestration_id>/`. One
 # orchestration may use BOTH backends — `llm.yaml` selects per phase / per substep —
@@ -16058,21 +16067,18 @@ WORKFLOW_HOME_OWNER_FILENAME = "owner.json"
 def _workflow_homes_root() -> Path:
     """`~/.met-dsl/homes` — the durable root of every isolated backend home.
 
-    Under the operator-secret root ON PURPOSE, and that is the whole reason issue #64
-    can move these homes out of `/tmp` without opening a read path: `tools/hooks/common.py
-    ::protected_host_read_roots` already refuses a leaf's Bash read of `operator_secret_root()`
-    unconditionally (it is the one root that survives the containment drop), so every
-    orchestration's home is covered by that root even when the per-orchestration
-    resolution below cannot name it.
+    A thin alias over `tools/hooks/common.py::workflow_homes_root`, kept as a name because
+    this module's tests and `tools/prune_workflow_homes.py` patch it, and because the
+    module-local spelling is what the preparers read. The RESOLUTION is not duplicated:
+    the guard lists whatever this returns as a protected read root, so the tree that gets
+    created is by construction the tree that gets guarded — including when the override
+    moves it, which is precisely the case that was open before.
 
-    `operator_secret_root` is IMPORTED rather than respelled here: the Bash guard and this
-    writer must resolve `$HOME` the same way, or the tree this creates is not the tree that
-    guard protects.
+    Under the operator-secret root by default, which is what lets a single entry in
+    `protected_host_read_roots` cover every orchestration's home rather than only the one
+    the per-orchestration resolver can name from metadata.
     """
-    override = os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip()
-    if override:
-        return Path(override).expanduser()
-    return _operator_secret_root() / "homes"
+    return _hooks_workflow_homes_root()
 
 
 def _workflow_backend_home_path(orchestration_id: str, backend: str) -> Path:
@@ -16219,6 +16225,9 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
         except OSError as exc:
             raise ValueError(f"cannot create isolated {label} home ancestor {path}: {exc}") from exc
         os.chmod(path, 0o700)
+    # BEFORE the exclusive creation: a refusal here must leave nothing behind, and a
+    # directory created and then refused would block the legitimate owner's next launch.
+    _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
     try:
         os.mkdir(home, 0o700)
     except FileExistsError as exc:
@@ -16240,6 +16249,50 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     return home
 
 
+def _require_owner_marker_agrees(repo_root: Path, orchestration_id: str,
+                                 owner_dir: Path, label: str) -> None:
+    """Refuse when an existing owner marker is a DIFFERENT live claim on this directory.
+
+    Called BEFORE the exclusive `mkdir`, and the order is the whole point: validating
+    after it leaves the refused run's own backend directory on disk, which then blocks
+    the legitimate owner's next launch with the unrecorded-home error. Found by the probe
+    written for this very check — its first control ("the same checkout's second backend
+    must still work") failed on the debris the refusal had just created.
+
+    See `_write_workflow_home_owner` for what the marker is and why the checkout-gone
+    case is adopted instead.
+    """
+    marker_path = owner_dir / WORKFLOW_HOME_OWNER_FILENAME
+    if not marker_path.is_file():
+        return
+    try:
+        existing = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return  # unreadable: the prune tool's `unverifiable` answer, not a launch refusal
+    if not isinstance(existing, dict):
+        return
+    other_oid = existing.get("orchestration_id")
+    if isinstance(other_oid, str) and other_oid and other_oid != orchestration_id:
+        raise ValueError(
+            f"isolated {label} home directory {owner_dir} is claimed by orchestration "
+            f"{other_oid!r}, not {orchestration_id!r}. Inspect it with `python3 "
+            f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id}` "
+            "before removing anything."
+        )
+    other_repo = existing.get("repo_root")
+    if (isinstance(other_repo, str) and other_repo
+            and other_repo != str(Path(repo_root).resolve())
+            and _orchestration_meta_path_exists(Path(other_repo), orchestration_id)):
+        raise ValueError(
+            f"isolated {label} home directory {owner_dir} belongs to a different checkout "
+            f"({other_repo}) whose metadata for {orchestration_id!r} is still present, so "
+            "both are live claims on one orchestration id. Use a distinct orchestration "
+            "id for this run; a home shared between two checkouts would hand each the "
+            "other's transcripts, and the prune tool would read the wrong checkout's "
+            "status when deciding to delete."
+        )
+
+
 def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
                                owner_dir: Path, label: str) -> None:
     """Record which checkout owns `<homes-root>/<oid>/`, for the prune tool.
@@ -16254,26 +16307,75 @@ def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
     `orchestration_meta.json` — the file the host writes under a lock. Treating the marker
     as the authority would let anything that could write it decide a deletion.
 
-    `verify_existing=False` because the SECOND backend of the same orchestration reaches
-    here with the marker already present: identical content is the normal case, and a
-    differing one is not a reason to refuse a launch (the prune tool is where a mismatch
-    is acted on).
+    The bytes are NOT verified, because `created_at` is regenerated on every call and the
+    second backend of the same orchestration legitimately arrives with the marker already
+    there. What IS verified is the pair that identifies the run — and this is a refusal
+    rather than a fill, because a marker naming a different orchestration or a different
+    LIVE checkout is a DISAGREEMENT: two runs claiming one directory.
+
+    That mattered, measured. Two checkouts using the same explicit orchestration id with
+    different backends each got their own `<oid>/<backend>` (the exclusive creation is
+    per backend), while the second silently inherited the FIRST's marker. The prune tool
+    then read the first checkout's status — terminal — and deleted the second checkout's
+    LIVE codex home. Reproduced end to end before this check existed.
+
+    A marker whose checkout is GONE is adopted rather than refused, and that is the fill
+    half: the previous owner cannot be asked anything, nothing contradicts this run, and
+    refusing would break the ordinary case of an operator who moved a checkout and
+    resumed. The discriminator is whether the recorded path still holds metadata for
+    this same orchestration — if it does, both are live claims and the launch stops.
     """
+    marker_path = owner_dir / WORKFLOW_HOME_OWNER_FILENAME
+    resolved_repo = str(Path(repo_root).resolve())
     payload = json.dumps(
         {
             "schema": 1,
             "orchestration_id": orchestration_id,
-            "repo_root": str(Path(repo_root).resolve()),
+            "repo_root": resolved_repo,
             "created_at": _utc_now_iso(),
         },
         sort_keys=True,
     ).encode("utf-8")
+    # A marker naming a checkout that is GONE is REPLACED, not kept. `_require_owner_
+    # marker_agrees` has already decided that case is safe to adopt (nothing else claims
+    # the id), and leaving the stale path in place would make the locator locate nothing
+    # forever — the prune tool would answer `unverifiable` for a run whose owner is
+    # perfectly identifiable, which is fail-closed but useless. A marker that AGREES is
+    # left alone rather than rewritten, so `created_at` keeps meaning "when this
+    # orchestration directory was created" instead of "when a backend last launched".
+    if marker_path.is_file():
+        try:
+            current = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            current = None
+        stale_owner = (
+            isinstance(current, dict)
+            and isinstance(current.get("repo_root"), str)
+            and current.get("repo_root") != resolved_repo
+        )
+        if stale_owner:
+            marker_path.unlink()
     _secure_backend_home_file(
-        owner_dir / WORKFLOW_HOME_OWNER_FILENAME,
+        marker_path,
         payload,
         label=label,
         verify_existing=False,
     )
+
+
+def _orchestration_meta_path_exists(repo_root: Path, orchestration_id: str) -> bool:
+    """Whether `repo_root` still records this orchestration — the "is it live" question.
+
+    Deliberately existence-only and deliberately not locked: this decides whether a
+    previous owner is still THERE, not what its status is, and taking a lock on a path
+    a marker named would create files under it (the mistake the prune tool's report-only
+    mode already made once).
+    """
+    try:
+        return (repo_root / "workspace" / "orchestrations" / orchestration_id
+                / "orchestration_meta.json").is_file()
+    except (OSError, ValueError):
+        return False
 
 def _secure_backend_home_file(
     path: Path,

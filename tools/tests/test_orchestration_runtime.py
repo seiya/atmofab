@@ -35605,6 +35605,90 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             # who created the orchestration directory, not who touched it last.
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), first)
 
+    def test_a_rival_live_checkout_cannot_take_over_an_orchestration_directory(self) -> None:
+        """Two checkouts, one explicit orchestration id, and the second inherited the
+        first's `owner.json`.
+
+        The exclusive creation is PER BACKEND, so checkout B asking for `codex` while
+        checkout A already made `claude` sailed past it and then silently accepted A's
+        marker. The prune tool reads the marker to decide which checkout to ask about the
+        status, so it read A's — terminal — and deleted B's LIVE codex home. Reproduced
+        end to end before the check existed.
+
+        Three cases in one test, because the refusal is only correct if the two adjacent
+        legitimate ones still work:
+          * a RIVAL checkout whose metadata for the id is still present -> refused, and
+            NOTHING left behind (the check runs before the exclusive mkdir; validating
+            after it left the refused run's own directory blocking the real owner);
+          * the SAME checkout's second backend -> accepted, marker untouched, so
+            `created_at` keeps meaning when the directory was made;
+          * a MOVED checkout, old path gone -> adopted AND the marker rewritten to the
+            path that exists, because a locator that locates nothing makes the prune tool
+            answer `unverifiable` forever for a run whose owner is identifiable.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOME_OWNER_FILENAME, _create_workflow_backend_home)
+
+        def _checkout(root: Path, name: str, status: str) -> Path:
+            repo = root / name
+            meta_dir = repo / "workspace" / "orchestrations" / "orch_shared"
+            meta_dir.mkdir(parents=True)
+            (meta_dir / "orchestration_meta.json").write_text(
+                json.dumps({"orchestration_id": "orch_shared", "status": status}),
+                encoding="utf-8")
+            return repo
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            homes = self._homes_root()
+            marker = homes / "orch_shared" / WORKFLOW_HOME_OWNER_FILENAME
+            a = _checkout(root, "checkout_a", "pass")
+            _create_workflow_backend_home(a, "orch_shared", "claude", "Claude")
+            first = json.loads(marker.read_text(encoding="utf-8"))
+            self.assertEqual(first["repo_root"], str(a.resolve()))
+
+            b = _checkout(root, "checkout_b", "running")
+            with self.assertRaisesRegex(ValueError, "belongs to a different checkout"):
+                _create_workflow_backend_home(b, "orch_shared", "codex", "Codex")
+            self.assertFalse((homes / "orch_shared" / "codex").exists(),
+                             "a refused launch left its own backend directory behind, "
+                             "which blocks the legitimate owner's next launch")
+
+            second = _create_workflow_backend_home(a, "orch_shared", "codex", "Codex")
+            self.assertEqual(second.name, "codex")
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), first)
+
+            shutil.rmtree(second)
+            moved = root / "checkout_a_moved"
+            shutil.move(str(a), str(moved))
+            _create_workflow_backend_home(moved, "orch_shared", "codex", "Codex")
+            self.assertEqual(
+                json.loads(marker.read_text(encoding="utf-8"))["repo_root"],
+                str(moved.resolve()))
+
+    def test_a_marker_naming_another_orchestration_refuses_the_launch(self) -> None:
+        """The other half of the marker check, and the cheaper one to get wrong.
+
+        A directory whose marker names a DIFFERENT orchestration id is not a stale owner
+        to adopt — it is the wrong directory entirely, and no "is that checkout still
+        there" question makes it right.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOME_OWNER_FILENAME, _create_workflow_backend_home)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            oid_dir = self._homes_root() / "orch_d"
+            oid_dir.mkdir(parents=True)
+            os.chmod(oid_dir, 0o700)
+            (oid_dir / WORKFLOW_HOME_OWNER_FILENAME).write_text(
+                json.dumps({"schema": 1, "orchestration_id": "somebody_else",
+                            "repo_root": str(root)}), encoding="utf-8")
+            os.chmod(oid_dir / WORKFLOW_HOME_OWNER_FILENAME, 0o600)
+            repo = self._claude_repo(td)
+            with self.assertRaisesRegex(ValueError, "claimed by orchestration"):
+                _create_workflow_backend_home(repo, "orch_d", "claude", "Claude")
+            self.assertFalse((oid_dir / "claude").exists())
+
     def test_an_orchestration_id_that_is_not_a_plain_token_is_refused(self) -> None:
         """The id becomes a path segment OUTSIDE the repository.
 

@@ -1588,6 +1588,34 @@ def operator_secret_root() -> Path:
     return (_home_dir() / ".met-dsl").resolve()
 
 
+# The environment name that relocates the durable isolated-homes tree. Defined HERE, in
+# the module that also owns `operator_secret_root` and the protected-read-root list, and
+# imported by `tools/orchestration_runtime.py` — the same arrangement as
+# `backend_credential_home_paths`, and for the same reason: the side that CREATES the
+# homes and the side that FORBIDS reading them must resolve the location identically.
+WORKFLOW_HOMES_ROOT_ENV = "METDSL_WORKFLOW_HOMES_ROOT"
+
+
+def workflow_homes_root() -> Path:
+    """`~/.met-dsl/homes` — the durable root of every isolated backend home.
+
+    Under the operator-secret root by default, which is what lets
+    `protected_host_read_roots` cover EVERY orchestration's home through one entry rather
+    than only the current one it can resolve from metadata.
+
+    `METDSL_WORKFLOW_HOMES_ROOT` relocates it, and that used to silently withdraw the
+    coverage: with the override pointing outside `~/.met-dsl`, a leaf's Bash read of a
+    SIBLING orchestration's transcript was allowed (measured), while
+    `docs/HOOKS.md` and this module's own docstrings asserted that closure without
+    naming the condition. The root is returned here so the guard protects wherever the
+    homes actually are.
+    """
+    override = os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return operator_secret_root() / "homes"
+
+
 BACKEND_CREDENTIAL_BACKEND_TYPES = ("claude", "codex")
 
 
@@ -1695,19 +1723,32 @@ def protected_host_read_roots(repo_root: Path | None = None,
                               orchestration_id: str | None = None) -> tuple[Path, ...]:
     """Out-of-repo host paths a Bash command in workflow mode may never read.
 
-    Three classes, one rule: the operator-secret root (dismiss-violation tokens),
-    every backend credential home the sandbox rw-binds (OAuth credentials +
-    session transcripts), and — when the caller can name the orchestration — the
-    isolated per-orchestration backend homes, which hold the SAME credential by
-    bind plus every earlier leaf's transcript. The Read tool reaches none of them
-    — the read manifest's allowed_read_roots are repo-relative — so this closes
-    the Bash-only route.
+    Four classes, one rule: the operator-secret root (dismiss-violation tokens), the
+    isolated-homes ROOT (every orchestration's homes, wherever
+    `METDSL_WORKFLOW_HOMES_ROOT` puts them), every backend credential home the sandbox
+    rw-binds (OAuth credentials + session transcripts), and — when the caller can name the
+    orchestration — that orchestration's own homes, which hold the SAME credential by bind
+    plus every earlier leaf's transcript. The Read tool reaches none of them — the read
+    manifest's allowed_read_roots are repo-relative — so this closes the Bash-only route.
 
-    The isolated homes are omitted when no orchestration id is supplied. That is
-    the pre-issue-#63 answer and is right for callers outside a run; inside a run
-    the conductor always sets `METDSL_ORCHESTRATION_ID`.
+    The homes ROOT and the per-orchestration homes are both listed on purpose, and they
+    answer different questions. The root is what makes a SIBLING orchestration's
+    transcript unreadable, and it holds whether or not the caller can name an
+    orchestration. Listing only the root would be enough for enforcement; the
+    per-orchestration entries exist for ATTRIBUTION, because the list is sorted
+    longest-path-first and a leaf reading its own home should be told which home rather
+    than being pointed at the operator's secret store.
+
+    Until the root was added, the sibling closure held only while the override was unset:
+    with `METDSL_WORKFLOW_HOMES_ROOT` pointing outside `~/.met-dsl`, another run's
+    transcript was readable (measured), while this docstring and `docs/HOOKS.md` asserted
+    the closure unconditionally.
+
+    The per-orchestration entries are omitted when no orchestration id is supplied. That
+    is the pre-issue-#63 answer and is right for callers outside a run; inside a run the
+    conductor always sets `METDSL_ORCHESTRATION_ID`.
     """
-    roots: list[Path] = [operator_secret_root()]
+    roots: list[Path] = [operator_secret_root(), workflow_homes_root()]
     for btype in BACKEND_CREDENTIAL_BACKEND_TYPES:
         dirs, files = backend_credential_home_paths(btype)
         roots.extend(dirs)

@@ -126,7 +126,20 @@ def _orchestration_status(repo_root: Path, orchestration_id: str) -> str | None:
         return None
     try:
         with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            return _read_status_locked(repo_root, orchestration_id)
+    except (OSError, ValueError):
+        return None
+
+
+def _read_status_locked(repo_root: Path, orchestration_id: str) -> str | None:
+    """The recorded status, read with the caller ALREADY holding the metadata lock.
+
+    Split out so the delete path can re-read it inside one lock held across the check and
+    the `rmtree`, rather than taking the lock twice with a window in between.
+    """
+    meta_path = repo_root / "workspace" / "orchestrations" / orchestration_id / "orchestration_meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, ValueError):
         return None
     if not isinstance(meta, dict):
@@ -185,6 +198,44 @@ def inspect_entry(entry: Path, orchestration_id: str) -> dict[str, Any]:
     report["verdict"] = (
         VERDICT_DELETABLE if status in DELETABLE_STATUSES else REFUSED_NOT_TERMINAL)
     return report
+
+
+class _StatusChangedDuringPrune(Exception):
+    """The owner's status stopped being terminal between the check and the delete."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(f"orchestration status changed to {status!r} before deletion")
+        self.status = status
+
+
+def _delete_under_owner_lock(entry: Path, homes_root: Path,
+                             report: dict[str, Any]) -> None:
+    """Re-verify the status and delete, both inside the owner's metadata lock.
+
+    `inspect_entry` reads the status under that lock and RELEASES it before returning,
+    which left a window: a `--resume` resets a terminal orchestration to `running`, and
+    the delete then went ahead on a verdict that was true a moment ago and destroyed the
+    live leaf's session. Reproduced by resetting the status between the two calls.
+
+    The lock is the right instrument because it is the one `update_orchestration_status`
+    itself holds while writing a status, so a resume cannot slip between this re-read and
+    the `rmtree` the way it could between the two calls.
+
+    An entry with no verifiable owner (the `--allow-unverifiable` route) has no status to
+    race and no lock to take: the re-read is skipped and the delete proceeds, which is
+    the same answer the check gave.
+    """
+    raw_repo = report.get("owner_repo_root") or ""
+    orchestration_id = report.get("orchestration_id") or ""
+    if not raw_repo or not orchestration_id:
+        _delete_entry(entry, homes_root)
+        return
+    repo_root = Path(raw_repo)
+    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
+        status = _read_status_locked(repo_root, orchestration_id)
+        if status is not None and status not in DELETABLE_STATUSES:
+            raise _StatusChangedDuringPrune(status)
+        _delete_entry(entry, homes_root)
 
 
 def _delete_entry(entry: Path, homes_root: Path) -> None:
@@ -247,7 +298,11 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
         report["deleted"] = False
         if deletable and delete:
             try:
-                _delete_entry(homes_root / name, homes_root)
+                _delete_under_owner_lock(homes_root / name, homes_root, report)
+            except _StatusChangedDuringPrune as exc:
+                report["verdict"] = REFUSED_NOT_TERMINAL
+                report["status"] = exc.status
+                deletable = False
             except (OSError, ValueError) as exc:
                 report["verdict"] = f"refused:delete_failed:{exc}"
                 # The exit code is decided from what HAPPENED, not from what was
