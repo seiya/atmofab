@@ -7477,8 +7477,18 @@ clean:
                 key_value = self.env.get(key_name)
                 if isinstance(key_value, str) and key_value:
                     env[key_name] = key_value
-        # Single-route invariant, enforced not just documented: the two backend-home
-        # names reach a leaf through the profile's `--setenv` alone.
+        # Single-route invariant: the two backend-home names reach a leaf through the
+        # profile's `--setenv` alone. An earlier version of this comment claimed the loop
+        # ENFORCES that; review showed it does not, and measured it — deleting the loop
+        # leaves the whole suite green, because `leaf_env_from` never emits these names in
+        # the first place (they are outside the allowlist and outside the prefix). What
+        # actually enforces the invariant is `leaf_env_from` on the way in and
+        # `render_bwrap_command`'s name validation on the way out.
+        # The loop is kept, and is not merely decorative: the HTTP branch above re-adds
+        # whatever name the entry's `api_key_env` declares, so an entry declaring one of
+        # THESE names is the one path that puts a backend home back into the dict, and
+        # this is what takes it out again. That path is witnessed by
+        # `test_the_pop_is_what_keeps_a_declared_backend_home_out`.
         for var in _BACKEND_HOME_ENV_VARS:
             env.pop(var, None)
         return env

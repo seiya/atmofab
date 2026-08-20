@@ -4144,7 +4144,12 @@ class LeafChildEnvTest(unittest.TestCase):
     def test_child_env_never_carries_a_backend_home(self) -> None:
         """Single-route rule: `CLAUDE_CONFIG_DIR` / `CODEX_HOME` reach a leaf through the
         bwrap profile's `--setenv` alone, so that the home the leaf reads is the home
-        whose settings were SHA-pinned. A host copy must not create a second spelling."""
+        whose settings were SHA-pinned. A host copy must not create a second spelling.
+
+        WHAT THIS PINS, precisely: that `leaf_env_from` omits the two names. It does NOT
+        pin the `env.pop` loop in `_child_env` — measured, that loop can be deleted and
+        this test still passes, because the host copy never survives the filter to begin
+        with. The sibling below is the one that pins the pop."""
         ort = wc_runtime
         for backend in ("claude", "codex"):
             with self.subTest(backend=backend):
@@ -4155,6 +4160,32 @@ class LeafChildEnvTest(unittest.TestCase):
                          "CODEX_HOME": "/host/.codex", "PATH": "/host/bin"})
                 env = c._child_env("child-1")
                 self.assertEqual(set(env) & set(ort._BACKEND_HOME_ENV_VARS), set())
+
+    def test_the_pop_is_what_keeps_a_declared_backend_home_out(self) -> None:
+        """The one path that puts a backend home back into the dict after the filter.
+
+        `_child_env`'s HTTP branch re-adds whatever name the entry's `api_key_env`
+        declares. An entry declaring `CODEX_HOME` therefore reintroduces a backend home
+        AFTER `leaf_env_from` removed it, and the `env.pop` loop is the only thing that
+        takes it out again — so this is the fixture under which deleting that loop fails.
+        Written because review measured the loop as unreachable by every existing test
+        and the comment above it claimed it was doing the enforcing."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        path.write_text(
+            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "phases:\n  generate:\n    substeps:\n      generate:\n"
+            "        provider: openai_compatible\n"
+            "        base_url: http://localhost:8000/v1\n"
+            "        api_key_env: CODEX_HOME\n"
+            "        model: local-coder\n", encoding="utf-8")
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                         orchestration_agent_run_id="ORCH",
+                         llm_config=lc.load_llm_config(path),
+                         env={"CODEX_HOME": "/host/.codex", "PATH": "/b"})
+        env = c._child_env("child-1", c.entry_for("generate", "generate"))
+        self.assertNotIn("CODEX_HOME", env)
 
     def test_child_env_drops_metdsl_home_despite_the_prefix(self) -> None:
         """`METDSL_HOME` is inside the allowed prefix and still must not travel: it is
