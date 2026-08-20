@@ -9808,16 +9808,38 @@ clean:
             return None, _meta("backend_unsupported")
         argv = [*_provider_command_base(entry), "--output-format", "json", "-p", "/usage"]
         try:
-            # The probe must query the SAME context the leaf runs under, or its reset instant
-            # is for the wrong quota — and this is the trusted PRIMARY source, so a
-            # confidently-wrong instant here arms a multi-hour wait ahead of the scrape. That
-            # invariant used to be spelled `env=self.env`, which was the leaf's environment
-            # while the leaf inherited. It no longer is: a leaf's environment is now
+            # The probe must query the SAME account/endpoint context the leaf runs under, or
+            # its reset instant is for the wrong quota — and this is the trusted PRIMARY
+            # source, so a confidently-wrong instant here arms a multi-hour wait ahead of the
+            # scrape. That invariant used to be spelled `env=self.env`, which was the leaf's
+            # environment while the leaf inherited. It no longer is: a leaf's environment is
             # RECONSTRUCTED by `_child_env` from the declared allowlist, so `self.env` would
-            # query the operator's endpoint while the leaf runs on the allowlisted one. The
-            # invariant is kept BY CONSTRUCTION — the probe goes through the same author.
-            proc = subprocess.run(argv, cwd=self.repo_root,
-                                  env=self._child_env(self.orchestration_agent_run_id, entry),
+            # query the operator's endpoint while the leaf runs on the allowlisted one. Going
+            # through the same AUTHOR is what keeps the account and endpoint the same.
+            #
+            # Two things that author adds are wrong for a HOST-side probe, and both are
+            # dropped here rather than papered over:
+            #   TMPDIR names `workspace/tmp/<arid>`, a directory only a PROFILE BUILDER
+            #     creates — and the meta arid gets a profile only if `escalate()` ran. So for
+            #     an ordinary run the probe was handed a TMPDIR that does not exist, and the
+            #     CLI is a node program: `mkdtemp` under a missing TMPDIR is ENOENT. Measured.
+            #     This was a live regression introduced when the probe was rerouted; dropping
+            #     the name restores exactly the pre-reroute behaviour (the CLI falls back to
+            #     /tmp) without touching the account/endpoint half.
+            #   the claude output-ceiling / auto-memory pair describes a LEAF's turn. `/usage`
+            #     is a built-in slash command answering at `num_turns == 0`, so they say
+            #     nothing here.
+            # And the invariant is NOT "by construction" end to end, which an earlier version
+            # of this comment claimed: a leaf's real environment is author PLUS deliverer, and
+            # the deliverer adds `CLAUDE_CONFIG_DIR=<private home>`, which this host-side probe
+            # does not get. It reads the operator's `~/.claude`. Same ACCOUNT — the private
+            # home binds the operator's own credentials file — so the quota is right, which is
+            # what the invariant is actually about.
+            from tools.orchestration_runtime import CLAUDE_LEAF_ENV_EXTRAS
+            probe_env = self._child_env(self.orchestration_agent_run_id, entry)
+            for host_side_irrelevant in ("TMPDIR", *CLAUDE_LEAF_ENV_EXTRAS):
+                probe_env.pop(host_side_irrelevant, None)
+            proc = subprocess.run(argv, cwd=self.repo_root, env=probe_env,
                                   text=True,
                                   capture_output=True, check=False,
                                   timeout=USAGE_PROBE_TIMEOUT_SECONDS)

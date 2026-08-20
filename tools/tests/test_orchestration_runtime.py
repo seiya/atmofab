@@ -35418,6 +35418,25 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
                 self.assertFalse(any(name.startswith(p)
                                      for p in ort.LEAF_ENV_ALLOWED_PREFIXES))
 
+    def test_the_two_spellings_of_is_http_cannot_drift(self) -> None:
+        """A credential is gated by ONE question asked in TWO places.
+
+        `_child_env` adds the entry's `api_key_env` value when `entry.is_http`
+        (`llm_config.HTTP_PROVIDERS`); `record_launch` skips building a sandbox profile
+        when `backend_token in _HTTP_PROVIDER_TOKENS`. Today they agree, so the key is
+        never persisted. If a provider were ever added to the FIRST set alone, its API
+        key would be written verbatim into `sandbox_profiles/<arid>.json#env` and its
+        `rendered_command` — which every agentic leaf can read
+        (`Bash(cat workspace/orchestrations/*)`) — which is precisely the hole the
+        credential exclusion and the `api_key_env` drop exist to close. Nothing named
+        both constants before this test."""
+        from tools import llm_config as lc
+        self.assertEqual(set(lc.HTTP_PROVIDERS), set(ort._HTTP_PROVIDER_TOKENS))
+        # ...and the mapping between them is identity, which is what makes comparing the
+        # two sets the same question as comparing the two predicates.
+        for provider in lc.HTTP_PROVIDERS:
+            self.assertEqual(lc.PROVIDER_BACKEND_TOKENS.get(provider, provider), provider)
+
     def test_backend_home_vars_are_not_host_passthrough(self) -> None:
         """Single-route rule: the config home reaches a leaf through the bwrap
         profile's `--setenv` alone, so the filter must never forward a host copy."""
@@ -35502,7 +35521,15 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
 
     def test_each_allowlist_entry_is_load_bearing(self) -> None:
         """Per-element probe: deleting any one entry must change the filter's output.
-        Without this the list could grow dead names that no one notices."""
+
+        WHAT THIS DOES NOT DO, though an earlier docstring said it: catch a DEAD name.
+        The host dict is synthesized FROM the constant, so a name nobody reads still
+        shows up in the output and this stays green — measured by adding
+        `TOTALLY_DEAD_NAME_NOBODY_READS` to the allowlist, which leaves this test passing
+        and fails `test_child_env_is_the_owner_constant_plus_the_per_run_names` instead
+        (its fixture is a literal). What this pins is narrower and still worth having:
+        every entry is actually consulted by the filter, so the constant cannot become
+        decorative."""
         host = {name: f"v-{name}" for name in ort.LEAF_ENV_ALLOWLIST}
         full = ort.leaf_env_from(host)
         for name in list(ort.LEAF_ENV_ALLOWLIST):

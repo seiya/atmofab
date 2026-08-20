@@ -3927,10 +3927,16 @@ class UsageProbeRunnerTests(unittest.TestCase):
         # gone, `HOME` is and survives verbatim.
         self.assertEqual(kw["env"], {"HOME": "/h", "PATH": wc_runtime.LEAF_ENV_PATH_DEFAULT,
                                      "METDSL_ORCHESTRATION_ID": "orch_x",
-                                     "METDSL_CHILD_AGENT_RUN_ID": "ORCH",
-                                     "TMPDIR": "/tmp/repo/workspace/tmp/ORCH",
-                                     "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(wc.LEAF_MAX_OUTPUT_TOKENS),
-                                     "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"})
+                                     "METDSL_CHILD_AGENT_RUN_ID": "ORCH"})
+        # TMPDIR is absent DELIBERATELY, and this is the assertion that says so. `_child_env`
+        # points it at `workspace/tmp/<arid>`, which only a profile builder creates — and the
+        # meta arid gets a profile only if `escalate()` ran. Handing the CLI a TMPDIR that
+        # does not exist breaks it: it is a node program and `mkdtemp` under a missing TMPDIR
+        # is ENOENT, measured. The probe is a HOST-side process and wants the host's default.
+        self.assertNotIn("TMPDIR", kw["env"])
+        # Same for the leaf-turn pair: `/usage` is a built-in answering at num_turns == 0.
+        for name in wc_runtime.CLAUDE_LEAF_ENV_EXTRAS:
+            self.assertNotIn(name, kw["env"])
         self.assertNotIn("outcome", meta)          # success: the caller decides from the rows
         self.assertIn("Current session", meta["excerpt"])
         # and with no wrapper configured it is the bare backend
@@ -4049,6 +4055,13 @@ class LeafChildEnvTest(unittest.TestCase):
         # the pre-existing leaf env is untouched
         self.assertEqual(env["METDSL_ORCHESTRATION_ID"], "orch_x")
         self.assertTrue(env["TMPDIR"].endswith("/workspace/tmp/child-1"))
+        # THE CHILD'S OWN ARID, not the orchestration's. The hook selects a capability by
+        # this value, so labelling a leaf with the parent's id hands it the wrong one.
+        # Measured as a surviving mutation: swapping `child_arid` for
+        # `self.orchestration_agent_run_id` here kept the whole suite green, because the
+        # set-identity test names the KEY and never checked the VALUE.
+        self.assertEqual(env["METDSL_CHILD_AGENT_RUN_ID"], "child-1")
+        self.assertNotEqual(env["METDSL_CHILD_AGENT_RUN_ID"], "ORCH")
 
     def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
         """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
