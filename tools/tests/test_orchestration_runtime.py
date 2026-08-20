@@ -35659,6 +35659,54 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             # who created the orchestration directory, not who touched it last.
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8")), first)
 
+    def test_both_backends_tighten_a_drifted_home_on_reuse(self) -> None:
+        """The CODEX reuse path had no witness, and the two must not drift apart.
+
+        `_require_secure_backend_home` carries one spelling for both backends precisely so
+        the checks cannot diverge per backend — and the `tighten=True` that stops a
+        drifted mode from bricking an orchestration was pinned on the claude side only,
+        so reverting the codex call to a refusal left the suite green. Driven through the
+        real preparer for each backend.
+        """
+        from tools.orchestration_runtime import (
+            _prepare_claude_workflow_home, _prepare_codex_workflow_home)
+        with tempfile.TemporaryDirectory() as td:
+            repo_root, auth_home = self._codex_repo(td)
+            from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+            seed_claude_leaf_config(repo_root)
+            with mock.patch.dict(os.environ, {"CODEX_HOME": str(auth_home)}, clear=False):
+                prepared = {
+                    "claude": Path(_prepare_claude_workflow_home(repo_root, "orch_d")["home"]),
+                    "codex": Path(_prepare_codex_workflow_home(repo_root, "orch_d")["home"]),
+                }
+                for backend, home in prepared.items():
+                    with self.subTest(backend=backend):
+                        os.chmod(home, 0o755)
+                        if backend == "claude":
+                            _prepare_claude_workflow_home(repo_root, "orch_d")
+                        else:
+                            _prepare_codex_workflow_home(repo_root, "orch_d")
+                        self.assertEqual(home.stat().st_mode & 0o777, 0o700)
+
+    def test_a_reuse_tightening_that_does_not_take_is_refused(self) -> None:
+        """The re-read after the home's own tightening, which nothing observed.
+
+        Its twin one level up (the ancestor) is pinned; the home's was not, so skipping
+        the re-read entirely left the suite green — and skipping it means launching into
+        a home the chmod silently failed to make private, on a filesystem that reports
+        success and changes nothing. `os.fchmod` is patched because that is what
+        `_chmod_directory_no_follow` uses.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        with tempfile.TemporaryDirectory() as td:
+            root = self._claude_repo(td)
+            home = Path(_prepare_claude_workflow_home(root, "orch_d")["home"])
+            os.chmod(home, 0o755)
+            with mock.patch("os.fchmod"):  # succeeds, changes nothing
+                with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
+                    _prepare_claude_workflow_home(root, "orch_d")
+            os.chmod(home, 0o700)
+
     def test_a_rival_live_checkout_cannot_take_over_an_orchestration_directory(self) -> None:
         """Two checkouts, one explicit orchestration id, and the second inherited the
         first's `owner.json`.
