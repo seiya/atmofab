@@ -68,8 +68,13 @@ def _workflow_mode_env_signal() -> str | None:
     """The workflow environment variable that puts this server under a run, if any.
 
     `tools/run_workflow.py` sets `METDSL_WORKFLOW_MODE=1` in the node environment and
-    the conductor adds `METDSL_ORCHESTRATION_ID` per child; bwrap passes the environment
-    through, so both reach the leaf's CLI and the MCP server it spawns. Read
+    the conductor adds `METDSL_ORCHESTRATION_ID` per child. Both reach the leaf's CLI —
+    and the MCP server it spawns — because they are on the leaf's DECLARED environment
+    (`METDSL_*` is allowlisted by prefix — the prefix itself lives in
+    `orchestration_runtime.LEAF_ENV_ALLOWED_PREFIXES`, not in the exact-name
+    `LEAF_ENV_ALLOWLIST` beside it, which an earlier version of this sentence cited) and the bwrap profile `--setenv`s each one after `--clearenv`; it is
+    no longer a pass-through. Measured under the stripped environment: the server comes
+    up and answers identically to a full-environment control. Read
     `os.environ` on every call — tests substitute the environment per case, so a cached
     answer would be wrong.
     """

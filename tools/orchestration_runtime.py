@@ -7879,21 +7879,171 @@ def _runtime_ro_bind_paths() -> list[str]:
     return paths
 
 
-def _safe_host_env_for_child() -> dict[str, str]:
-    allowed = ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME")
+# --- the leaf's declared environment (issue #63, the process-environment face) -------
+#
+# A leaf's environment is a DECLARED ALLOWLIST, not an inheritance. The host's process
+# environment decides things the launch record cannot describe: measured on CLI 2.1.235,
+# `ANTHROPIC_BASE_URL` redirects 100% of a leaf's traffic to whatever host it names, and
+# `ANTHROPIC_MODEL` decides the model for every launch that does not pass `--model` —
+# which is the repo's default launch, since `--model` is passed only for a model the
+# configuration FILE declares. Neither appears in any artifact. So the rule is the same
+# one the configuration surface already follows: what the leaf gets is what this file
+# names, and a name absent here is absent from the child.
+#
+# Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
+# a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
+# profile / `render_bwrap_command` layer is the single DELIVERER and the single RECORD
+# (`--clearenv` then one `--setenv` per entry, and `profile["env"]` persisted). The names
+# the deliverer adds on its own are `_BACKEND_HOME_ENV_VARS` — and `TMPDIR`, which the
+# profile builders set and `render_bwrap_command` supplies from the resolved bind when the
+# record omits it. (This named the backend homes alone until a census caught the third.)
+
+# name -> why this name is on the list. The value is the justification, so an entry
+# cannot be added without writing one down (a test pins that every value is non-empty).
+LEAF_ENV_ALLOWLIST: dict[str, str] = {
+    "PATH": (
+        "resolves the backend CLI, the `sh -lc` hook commands' git/python3, and every "
+        "subprocess a leaf runs. Absent from the host env -> the default below."
+    ),
+    "HOME": (
+        "the CLI's own non-config fallbacks, `sh -lc`, and git (the hooks run "
+        "`git rev-parse --show-toplevel`). NOT the config home: that is CLAUDE_CONFIG_DIR."
+    ),
+    "LANG": (
+        "text-I/O encoding for the leaf and its subprocesses. Passed together with "
+        "LC_ALL — forwarding one and dropping the other changes the resolved locale."
+    ),
+    "LC_ALL": "the LANG pair; see LANG.",
+    "TERM": "the CLI's terminal-capability probe; kept from the pre-allowlist set.",
+    "USER": "identity the CLI and git may read; kept from the pre-allowlist set.",
+    "LOGNAME": "the USER pair; kept from the pre-allowlist set.",
+    "PYTHONPATH": (
+        "`run_workflow.py` prepends repo_root so a leaf's `python3 tools/...` and the "
+        "hook modules import THIS checkout rather than an installed copy."
+    ),
+    "PYTHONDONTWRITEBYTECODE": (
+        "a grandchild python writing __pycache__ under tools/ trips the terminal "
+        "unauthorized-write validation (issue #5)."
+    ),
+}
+
+# The default applied when the host environment has no PATH at all. Same value the
+# pre-allowlist `_safe_host_env_for_child` used.
+LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
+
+# `METDSL_*` is passed by PREFIX, not by enumeration. The namespace is repo-owned BY
+# CONVENTION — nothing enforces it, and the honest statement is the weaker one: the
+# names that are known to redirect a leaf (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`,
+# `AWS_*`, `LD_*`) are outside the prefix BY CONSTRUCTION, which is what makes the
+# prefix safe to pass. An enumeration instead would be a list that grows by one every
+# time a variable is added and fails closed on the day someone forgets. That
+# is the same allowlist-polarity argument `mcp_servers/README.md` makes for the MCP gate's
+# caller-supplied `env` (the bullet beginning "The caller-supplied `env` is an allowlist
+# under an orchestration"), reached for the same reason: a denylist over environment names
+# does not terminate. The dangerous direction (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`,
+# `AWS_*`, `LD_*`) is outside the prefix by construction, so the prefix does not weaken
+# the closure.
+#
+# TWO justifications this comment has carried and neither survived review, recorded so a
+# third is not written. (1) "every member has an in-tree reader" — false, measured:
+# `METDSL_MISSING_ORCHESTRATION_ID_POLICY` is seeded into every leaf by `run_workflow.py`
+# and read by nothing in the tree. (2) "the namespace is repo-owned, so nothing an
+# operator put in the environment lands inside it" — also false, and by one command:
+# `leaf_env_from({"METDSL_ANYTHING": "x"})` forwards it. Nothing stops an operator
+# exporting a name under this prefix.
+#
+# ACCEPTED RESIDUE, therefore, stated rather than argued away: a `METDSL_*` value an
+# operator exports IS forwarded to every CLI leaf and IS persisted verbatim into
+# `sandbox_profiles/<arid>.json` and its `rendered_command`, which every agentic leaf can
+# read (`Bash(cat workspace/orchestrations/*)`). If that value is a secret, it is exposed.
+# The one credential-shaped case the repository can recognise — a name the loaded
+# configuration declares as an `api_key_env` — is dropped by `_child_env` before anything
+# else. Beyond that this is an operator putting a secret inside the repository's own
+# namespace, a path only the operator can reach; enumerating instead would trade it for a
+# list that silently drops a variable the day someone adds one and forgets, which is the
+# failure this project has actually had. Revisit if a leaf ever gains a way to set one.
+LEAF_ENV_ALLOWED_PREFIXES = ("METDSL_",)
+
+# Inside the prefix but deliberately dropped. `METDSL_HOME` is the deprecated alias for
+# codex's configuration home; like `CODEX_HOME` it must reach the leaf through the bwrap
+# profile's `--setenv` alone, so that the home the leaf reads is the home whose settings
+# were SHA-pinned. The conductor still READS it (to raise on a conflict with CODEX_HOME)
+# — it just does not forward it.
+LEAF_ENV_PREFIX_EXCEPTIONS = ("METDSL_HOME",)
+
+# Conductor-AUTHORED claude values (not host passthrough): the leaf's output ceiling and
+# the auto-memory closure. Named here so the render-time name validation accepts them.
+CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_AUTO_MEMORY")
+
+# NAMED EXCLUSIONS — decided, not overlooked (2026-08-20). The proxy / TLS families
+# (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` in both cases, `SSL_CERT_FILE`,
+# `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`) are NOT forwarded. Two reasons: a proxy URL
+# routinely carries credentials, and this list's values are persisted verbatim into
+# `sandbox_profiles/<arid>.json` and the rendered argv; and their absence fails LOUDLY at
+# egress (the leaf cannot reach the API at all) rather than silently redirecting, which is
+# the failure mode the whole closure exists to prevent. An operator on a proxied host adds
+# them here with a justification — this comment is the record that the decision was made
+# and what it costs, which is what TODO.md's "proxy variables included" asks for.
+LEAF_ENV_NAMED_EXCLUSIONS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    # A SECOND named exclusion, for a different reason, and it has a real cost:
+    # these three are how the claude CLI authenticates on a host with no
+    # `~/.claude/.credentials.json`. Excluding them means that configuration
+    # launches and then fails at authentication. It is still the right call,
+    # because the alternative is worse and was measured. Everything on the
+    # ALLOWLIST — which is where these names would have to go to reach a leaf, and
+    # not this exclusion list, whose members are precisely the ones that do NOT
+    # travel — is persisted verbatim into `sandbox_profiles/<arid>.json` and into
+    # that file's `rendered_command`, the repository is bound read-only INTO the
+    # sandbox whole, and `leaf_config/claude/settings.json` grants every agentic
+    # leaf `Bash(cat workspace/orchestrations/*)`. So allowlisting a live API key
+    # here writes it where any leaf of the run reads it with one granted command —
+    # the same hole the `api_key_env` rule above closes. The supported route is the
+    # credentials FILE, which is bound into the sandbox and never copied into a
+    # record. `_prepare_claude_workflow_home` records `claude_credentials_bound`
+    # so a host without one is visible in the launch record before the leaf fails.
+    "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+)
+
+
+def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
+    """THE filter: the declared subset of ``host_env`` a leaf may inherit.
+
+    Both layers call this — the conductor's `_child_env` to AUTHOR the child environment,
+    and the bwrap profile builders to stay allowlist-true for conductor-less callers.
+
+    It returns the declared host names AND ONE VALUE OF ITS OWN: `LEAF_ENV_PATH_DEFAULT`
+    when the host has no usable `PATH`, which `test_path_falls_back_when_the_host_has_none`
+    pins. (This said "only host passthrough" until a census caught it.) Everything else
+    per-run — the ids, TMPDIR, the backend home, the claude extras — is added by the
+    caller that owns it.
+    """
     body: dict[str, str] = {}
-    for key in allowed:
-        value = os.environ.get(key)
-        if isinstance(value, str) and value:
+    for key, value in host_env.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not value:
+            continue
+        if key in LEAF_ENV_ALLOWLIST:
             body[key] = value
-    body.setdefault("PATH", "/usr/bin:/bin")
+            continue
+        if key in LEAF_ENV_PREFIX_EXCEPTIONS:
+            continue
+        if any(key.startswith(prefix) for prefix in LEAF_ENV_ALLOWED_PREFIXES):
+            body[key] = value
+    body.setdefault("PATH", LEAF_ENV_PATH_DEFAULT)
     return body
 
 
 # The environment variables that relocate a backend CLI's configuration home.
-# ONE reader: `render_bwrap_command`, which declares them through the sandbox.
-# The conductor's `_child_env` deliberately does not set them — a second spelling
-# could name a different home than the one whose settings were SHA-pinned.
+# TWO roles. (1) `render_bwrap_command` declares them through the sandbox — that
+# `--setenv` is the ONLY route by which a prepared home reaches a leaf. (2) the same
+# tuple names what the conductor's `_child_env` pops, so a second spelling cannot name a
+# different home than the one whose settings were SHA-pinned. What ENFORCES that is
+# `leaf_env_from` (these names are outside the allowlist and outside the prefix) plus
+# this function's own name validation; the pop is defence in depth. An earlier version
+# said the tuple "is the exclusion set `_child_env` enforces", which the conductor-side
+# comment had already retracted — leaving the rule's two homes disagreeing.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 
 
@@ -8032,6 +8182,7 @@ def build_readonly_bwrap_profile(
     backend_rw_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
+    child_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """A bwrap profile for a READ-ONLY leaf that has no capability / write_roots.
 
@@ -8052,7 +8203,8 @@ def build_readonly_bwrap_profile(
     tmp_root.mkdir(parents=True, exist_ok=True)
     workspace_tmp_host = (repo_root / "workspace" / "tmp" / agent_run_id).resolve()
     workspace_tmp_host.mkdir(parents=True, exist_ok=True)
-    child_env = _safe_host_env_for_child()
+    child_env = _profile_child_env(child_env, orchestration_id=orchestration_id,
+                                   agent_run_id=agent_run_id)
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
@@ -8103,6 +8255,7 @@ def build_bwrap_profile(
     backend_rw_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
+    child_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     read_manifest = _load_read_access_manifest(
         repo_root,
@@ -8185,7 +8338,8 @@ def build_bwrap_profile(
     tmp_root.mkdir(parents=True, exist_ok=True)
     workspace_tmp_host = (repo_root / "workspace" / "tmp" / agent_run_id).resolve()
     workspace_tmp_host.mkdir(parents=True, exist_ok=True)
-    child_env = _safe_host_env_for_child()
+    child_env = _profile_child_env(child_env, orchestration_id=orchestration_id,
+                                   agent_run_id=agent_run_id)
     child_env["TMPDIR"] = str(workspace_tmp_host)
     backend_ro, backend_rw_desired = _backend_runtime_bind_paths(backend_type, backend_command)
     backend_ro.extend(str(p) for p in backend_ro_extra)
@@ -8328,6 +8482,82 @@ def build_bwrap_profile(
     }
 
 
+def _profile_child_env(child_env: Mapping[str, str] | None, *,
+                       orchestration_id: str, agent_run_id: str) -> dict[str, str]:
+    """The base environment a bwrap profile carries, before TMPDIR / `env_overrides`.
+
+    ``child_env`` is the dict the conductor's ``_child_env`` AUTHORED for this leaf,
+    threaded in so the profile records and delivers the environment that is actually
+    used rather than a second, independently-derived one. It is validated against the
+    ids this builder was called with: a profile that carried another leaf's ids would
+    hand the leaf a `METDSL_CHILD_AGENT_RUN_ID` naming a different run, and the whole
+    point of threading it is that record and reality are the same object.
+
+    ``None`` — a conductor-less caller (a test fixture, the standalone CLI) — falls back
+    to filtering the host environment, so those callers stay allowlist-true too.
+
+    Whichever path is taken, the returned dict CARRIES BOTH per-launch ids with this
+    builder's own values: a disagreement raises, an absence is filled, and a stale
+    inherited value is overwritten. Under ``--clearenv`` the profile is the only route
+    into the leaf, so "the ids are present and correct" has to be a property of this
+    function rather than of its callers.
+    """
+    per_launch = (("METDSL_ORCHESTRATION_ID", orchestration_id),
+                  ("METDSL_CHILD_AGENT_RUN_ID", agent_run_id))
+    if child_env is None:
+        # THE FALLBACK RECONSTRUCTS; IT DOES NOT VALIDATE. The two paths answer
+        # different questions and must not share an answer. Here the source is the
+        # BUILDING process's own environment, so a per-launch id in it belongs to
+        # whatever launched that process — for a `record-launch` run from inside a leaf
+        # (documented in `docs/CLI_REFERENCE.md`, granted by
+        # `leaf_config/claude/settings.json`) that is the PARENT's id, and under the
+        # workflow `run_workflow.py` puts `METDSL_ORCHESTRATION_ID` in every node's
+        # environment, so it is present essentially always. Those values are STALE, not
+        # a contradiction: overwrite them with the ids this profile is actually for.
+        #
+        # This was briefly a `raise`, and that was a bad fix for a real finding —
+        # measured, exporting one of the two names made 152 tests fail and, in
+        # production, turned an unreachable stale record into
+        # `record-launch sandbox enforcement failed` -> `fail_closed`, i.e. a killed run.
+        # The finding was right; refusing was the wrong remedy for a path whose whole
+        # job is to rebuild an environment from an unrelated one.
+        body = leaf_env_from(os.environ)
+        body.update(per_launch)
+    elif not isinstance(child_env, Mapping):
+        raise ValueError("child_env must be a mapping of str to str")
+    else:
+        body = {}
+        for key, value in child_env.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError(f"child_env entries must be str -> str, got {key!r}")
+            body[key] = value
+        # THE THREADED PATH VALIDATES. Here the dict was AUTHORED for this launch by
+        # `_child_env`, so a disagreeing id is not staleness — it is the caller handing
+        # this builder another leaf's environment, and the profile would then both
+        # record and `--setenv` an id naming a different run. Refuse rather than
+        # silently correct, because there is no way to tell which half is wrong.
+        for name, expected in per_launch:
+            got = body.get(name)
+            if got is not None and got != expected:
+                raise ValueError(
+                    f"child_env {name}={got!r} disagrees with the profile's {expected!r}")
+    # BOTH PATHS END WITH BOTH IDS PRESENT. Absence used to be tolerated on the threaded
+    # path (the check above only compares a key that exists), and `--clearenv` is what
+    # made that consequential: the profile is now the ONLY route into the leaf, so a
+    # profile missing `METDSL_ORCHESTRATION_ID` produces a leaf whose build-runtime MCP
+    # server reads `_workflow_mode_env_signal() is None` — "not under a run" — and stops
+    # requiring a capability token. An ungated server, from an omission.
+    #
+    # FILLED, not refused. Refusing would be the fourth over-refusal on this branch and
+    # the second on this very function: a caller that omits an id has told us nothing
+    # that contradicts these values, and the ids are the one thing this builder knows for
+    # certain, since they are its own arguments. Only a DISAGREEMENT is a real conflict,
+    # and that still raises above.
+    for name, expected in per_launch:
+        body.setdefault(name, expected)
+    return body
+
+
 def render_bwrap_command(
     *,
     profile: dict[str, Any],
@@ -8343,6 +8573,16 @@ def render_bwrap_command(
         "bwrap",
         "--die-with-parent",
         "--new-session",
+        # The leaf's environment is DECLARED, not inherited (issue #63). `--clearenv`
+        # drops the host's environment inside the sandbox and every name the leaf gets
+        # arrives as an explicit `--setenv` below, so `profile["env"]` — which is
+        # persisted to `sandbox_profiles/<arid>.json` — is the environment the leaf
+        # actually ran under rather than a partial record of it. Position is
+        # load-bearing and measured on bubblewrap 0.11.0: `--clearenv` wipes what
+        # EARLIER `--setenv`s set, so it belongs in the fixed head, ahead of all of
+        # them. (bwrap still sets `PWD` itself from `--chdir`; that is the one name in
+        # the child that this dict does not name.)
+        "--clearenv",
         "--proc",
         "/proc",
         "--dev",
@@ -8521,20 +8761,73 @@ def render_bwrap_command(
         raise ValueError(f"workspace_tmp_rw_abs must be existing directory: {ws_rw}")
     ws_abs = str(ws_path.resolve())
     cmd.extend(["--bind", ws_abs, ws_abs])
-    cmd.extend(["--setenv", "TMPDIR", ws_abs])
+    # Every name the leaf gets, one `--setenv` each, after the head's `--clearenv`.
+    # FAIL CLOSED on an absent or empty env: with `--clearenv` in force that would
+    # launch a leaf with no PATH, no config home and no orchestration id — a shape no
+    # profile should ever have, and one that a `if isinstance(...)` guard would have
+    # rendered silently. The spawn seam converts this to SandboxEnforcementError.
     profile_env = profile.get("env")
-    if isinstance(profile_env, dict):
-        # The backend-home variables the profile may override. bwrap does NOT clear
-        # the environment here (no `--clearenv`; `workflow_conductor._child_env`
-        # says the same), so the child would otherwise inherit the OPERATOR's value
-        # — or none. `--setenv` is what makes the prepared home the one the leaf
-        # actually reads, and it is the ONLY route: `_child_env` deliberately does
-        # not set these, so there is no second spelling to disagree with. Both
-        # backends are listed together so adding a third cannot be forgotten here.
-        for var in _BACKEND_HOME_ENV_VARS:
-            value = profile_env.get(var)
-            if isinstance(value, str) and value.strip():
-                cmd.extend(["--setenv", var, value.strip()])
+    if not isinstance(profile_env, dict) or not profile_env:
+        raise ValueError(
+            "profile must include a non-empty env: with --clearenv the leaf gets "
+            "exactly these names and nothing else")
+    # Name validation. The deliverer may carry only what an author is allowed to have
+    # produced, plus the two backend-home names that ONLY the deliverer adds and the
+    # TMPDIR it resolves itself. A stranger here means something built an environment
+    # outside `leaf_env_from` — the one question this whole layer exists to answer — so
+    # it is refused rather than passed through and recorded as if it were declared.
+    # Types BEFORE sorting: `sorted()` on mixed key types raises TypeError, which the
+    # spawn seam does not convert (it catches ValueError), so a mistyped profile would
+    # escape as a raw crash instead of a named fail-closed. Found by the test that was
+    # written for this branch precisely because review noticed the check was undriven.
+    for name, value in profile_env.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise ValueError(f"profile env entries must be str -> str, got {name!r}")
+    for name, value in sorted(profile_env.items()):
+        allowed = (
+            name in LEAF_ENV_ALLOWLIST
+            or name in _BACKEND_HOME_ENV_VARS
+            or name in CLAUDE_LEAF_ENV_EXTRAS
+            or name == "TMPDIR"
+            or (name not in LEAF_ENV_PREFIX_EXCEPTIONS
+                and any(name.startswith(p) for p in LEAF_ENV_ALLOWED_PREFIXES))
+        )
+        if not allowed:
+            raise ValueError(
+                f"profile env carries undeclared name {name!r}; the leaf environment is "
+                f"an allowlist (orchestration_runtime.LEAF_ENV_ALLOWLIST)")
+    # TMPDIR is the sandbox's, not whatever a caller put in the dict: the bind above is
+    # what makes it writable, so a disagreeing value would name an unwritable path.
+    env_tmp = profile_env.get("TMPDIR")
+    if env_tmp is not None and env_tmp != ws_abs:
+        raise ValueError(
+            f"profile env TMPDIR={env_tmp!r} disagrees with workspace_tmp_rw_abs {ws_abs!r}")
+    # The both-ids floor, again, on the DELIVERER. `_profile_child_env` guarantees it for
+    # profiles built in this process, but this function also renders a profile READ OFF
+    # DISK (`spawn_leaf` -> `_sandbox_profile_for`), which that guarantee never touched —
+    # including one persisted before the environment became declared, whose `env` predates
+    # the ids entirely. Under `--clearenv` such a profile delivers a leaf with no
+    # `METDSL_ORCHESTRATION_ID`, and its build-runtime MCP server then reads "not under a
+    # run" and stops requiring a capability token.
+    # FILLED from the profile's OWN recorded ids, not refused: refusing here would reject
+    # exactly those older profiles, i.e. break `--resume` of a run started before this
+    # branch — the fourth over-refusal on a change whose failures have all been in that
+    # direction. The profile already records both ids as top-level fields, so the right
+    # values are in hand and nothing has to be guessed.
+    delivered = {**profile_env, "TMPDIR": ws_abs}
+    for _id_name, _id_field in (("METDSL_ORCHESTRATION_ID", "orchestration_id"),
+                                ("METDSL_CHILD_AGENT_RUN_ID", "agent_run_id")):
+        _recorded = str(profile.get(_id_field) or "").strip()
+        if _recorded and not delivered.get(_id_name):
+            delivered[_id_name] = _recorded
+    for name, value in sorted(delivered.items()):
+        # An empty value is dropped rather than declared. Under `--clearenv` the two are
+        # not the same thing: `--setenv CLAUDE_CONFIG_DIR ""` would point the CLI at the
+        # empty path, where absent lets its own resolution run. The pre-`--clearenv` code
+        # skipped empty backend-home values for the same reason; the rule now covers
+        # every name.
+        if value:
+            cmd.extend(["--setenv", name, value])
     cmd.extend(["--bind", tmp_dir, tmp_dir])
     cmd.append("--")
     cmd.extend([str(part) for part in command_argv])
@@ -14034,6 +14327,12 @@ def default_agent_model_for_backend(backend: str) -> str:
     passes no `--model` for an undeclared model, so what actually ran is decided by the
     CLI. The measured value replaces it after the fact from the leaf's own result
     envelope (`_agent_run_json`), which is the only reading either path can rely on.
+    What the prediction is up against is now NARROWER than it was: `ANTHROPIC_MODEL`
+    used to decide the unpinned model from the operator's environment (measured on CLI
+    2.1.235), and it no longer reaches a leaf at all — the leaf's environment is
+    reconstructed from `LEAF_ENV_ALLOWLIST`, which that name is outside. The label stays
+    a prediction, because the CLI's own default is still the CLI's to choose; the
+    difference is that the choice is now the CLI's alone.
 
     It deliberately does NOT read the operator's `~/.claude` (`resolve_claude_model_alias`,
     which serves the orchestration row instead). An agentic claude leaf runs with
@@ -16118,13 +16417,21 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
             target.mkdir(mode=0o700, exist_ok=True)
         cred_dirs, _cred_files = _backend_credential_home_paths("claude")
         origin = cred_dirs[0] / ".credentials.json"
-        # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json: the
-        # claude CLI also authenticates from `ANTHROPIC_API_KEY`, for which no
-        # credential file exists at all, so refusing to launch without one would
-        # fail closed on a configuration that works. `_backend_runtime_bind_paths`
-        # already gates the auth FILE on existence for the same reason ("it cannot
-        # be fabricated"). A subscription host that has genuinely lost the file
-        # still fails, but at authentication where the cause is legible, not here.
+        # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json —
+        # but NOT for the reason this comment used to give. It said the CLI "also
+        # authenticates from `ANTHROPIC_API_KEY`, so refusing to launch without a
+        # file would fail closed on a configuration that works". That stopped being
+        # true when the leaf environment became a declared allowlist: the variable
+        # is a named exclusion (`LEAF_ENV_NAMED_EXCLUSIONS`, with the reason), so it
+        # no longer reaches a leaf and that configuration no longer works.
+        # The reason that survives is the one `_backend_runtime_bind_paths` gives
+        # for gating the auth FILE on existence: it cannot be fabricated. Refusing
+        # here would also refuse every launch on a host that authenticates some way
+        # neither this code nor its author has enumerated, which is a claim of
+        # impossibility no one has executed. So the launch proceeds and the absence
+        # is RECORDED instead (`claude_credentials_bound` below): a host with no
+        # credential file still fails at authentication, but the record now names
+        # the reason before the leaf does.
         credentials = ""
         credentials_destination = ""
         if origin.is_file():
@@ -16142,6 +16449,11 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
         "trust": str(trust_path.resolve()),
         "credentials": credentials,
         "credentials_destination": credentials_destination,
+        # Whether a credential file was found and will be bound. False means the
+        # leaf has NO way to authenticate — the environment route is a named
+        # exclusion — so this is the field that makes that legible in the record
+        # rather than only in the CLI's own error.
+        "credentials_bound": "1" if credentials else "",
         "generation": str(generation),
     }
 
@@ -17937,6 +18249,7 @@ def record_launch(
     response_payload: dict[str, Any],
     relation_type: str = "launch",
     expected_codex_home_generation: int | None = None,
+    child_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(parent_agent_run_id, str) or not parent_agent_run_id.strip():
         raise ValueError("record-launch requires non-empty parent_agent_run_id")
@@ -18564,6 +18877,14 @@ def record_launch(
                     response_payload["claude_workflow_home"] = claude_isolation["home"]
                     response_payload["claude_home_generation"] = int(claude_isolation["generation"])
                     response_payload["claude_settings_sha256"] = claude_isolation["settings_sha256"]
+                    # A leaf authenticates from the bound credential FILE alone: the
+                    # environment route is a named exclusion, so `false` here means
+                    # this launch cannot authenticate at all. Recorded rather than
+                    # refused (see `_prepare_claude_workflow_home`), which makes the
+                    # cause readable in the launch record instead of only in whatever
+                    # the CLI prints when it fails.
+                    response_payload["claude_credentials_bound"] = bool(
+                        claude_isolation.get("credentials_bound"))
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
@@ -18580,6 +18901,7 @@ def record_launch(
                         agent_run_id=child_agent_run_id,
                         backend_command=backend_command,
                         backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                        child_env=child_env,
                         **profile_kwargs,
                     )
                 else:
@@ -18589,6 +18911,7 @@ def record_launch(
                         agent_run_id=child_agent_run_id,
                         backend_command=backend_command,
                         backend_type=_resp_backend if isinstance(_resp_backend, str) else "",
+                        child_env=child_env,
                         **profile_kwargs,
                     )
                 command_argv = [backend_command]
@@ -21723,6 +22046,14 @@ def main(argv: list[str] | None = None) -> int:
                                help=_RECORD_LAUNCH_RESPONSE_HELP)
     launch_parser.add_argument("--relation-type", default="launch")
     launch_parser.add_argument(
+        "--child-env-from-stdin", action="store_true",
+        help=("Read the child leaf's environment (a JSON object of str->str) from stdin "
+              "and build the sandbox profile from it. This is the environment the "
+              "conductor's `_child_env` AUTHORED for this leaf, so the profile records "
+              "and delivers the same dict the leaf actually runs under. On STDIN, not "
+              "argv: the values would otherwise be readable in `ps` for every process "
+              "on the host."))
+    launch_parser.add_argument(
         "--expected-codex-home-generation", type=int,
         help=("For a Codex warm resume, require this isolated CODEX_HOME generation. "
               "A rotated home returns a cold-fallback sentinel before recording a launch."),
@@ -22316,6 +22647,23 @@ def main(argv: list[str] | None = None) -> int:
             args.request_json if args.request_json is not None else args.request_json_file
         )
         try:
+            child_env_payload: dict[str, str] | None = None
+            if getattr(args, "child_env_from_stdin", False):
+                raw = sys.stdin.read()
+                try:
+                    parsed = json.loads(raw or "")
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"--child-env-from-stdin is not JSON: {exc}") from exc
+                if not isinstance(parsed, dict) or not parsed:
+                    raise ValueError(
+                        "--child-env-from-stdin must be a non-empty JSON object; with "
+                        "--clearenv an empty one launches a leaf with no environment")
+                child_env_payload = {}
+                for key, value in parsed.items():
+                    if not isinstance(key, str) or not isinstance(value, str):
+                        raise ValueError(
+                            f"--child-env-from-stdin entries must be str -> str, got {key!r}")
+                    child_env_payload[key] = value
             _validate_record_launch_response_fields(args.response_json)
             result = record_launch(
                 repo_root=repo_root,
@@ -22326,6 +22674,7 @@ def main(argv: list[str] | None = None) -> int:
                 response_payload=args.response_json,
                 relation_type=args.relation_type,
                 expected_codex_home_generation=args.expected_codex_home_generation,
+                child_env=child_env_payload,
             )
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)

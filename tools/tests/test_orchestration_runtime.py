@@ -117,6 +117,10 @@ from tools.tests.leaf_config_fixture import (
     seed_codex_hooks,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+# ONE answer to "can bwrap actually run here", shared with test_bwrap_simulation.py:
+# `shutil.which` alone says the binary exists, not that unprivileged user namespaces
+# are permitted, and the two would drift into disagreeing about the same host.
+from tools.tests.test_bwrap_simulation import _bwrap_usable
 
 # Every synthetic repo an orchestration is initialised in also gets this
 # repository's committed leaf configuration.
@@ -18281,6 +18285,9 @@ class BwrapProfileFilePinTests(unittest.TestCase):
                     [str(config), str(config)],
                     [str(auth), str(auth)],
                 ],
+                # An env-less profile no longer renders: with `--clearenv` it would
+                # launch a leaf with no environment at all, so the layer fails closed.
+                "env": {"PATH": "/usr/bin:/bin", "CODEX_HOME": str(codex_home)},
             }
             cmd = render_bwrap_command(profile=profile, command_argv=["codex"])
             home_bind_idx = next(
@@ -20931,7 +20938,8 @@ class RecordTimeoutTests(unittest.TestCase):
     def _setup_substep_launch(self, repo_root: Path,
                               response_extra: dict | None = None,
                               request_extra: dict | None = None,
-                              omit_backend: bool = False) -> str:
+                              omit_backend: bool = False,
+                              child_env: dict | None = None) -> str:
         """Initialise an orchestration with a substep launched and return the substep agent_run_id.
 
         `response_extra` merges extra keys into the launch response payload, for callers
@@ -20972,6 +20980,7 @@ class RecordTimeoutTests(unittest.TestCase):
             orchestration_id="orch_to_001",
             parent_agent_run_id="orch_run_to_001",
             child_agent_run_id=substep_arid,
+            child_env=child_env,
             request_payload={
                 "agent_model": "claude-opus-4-8",
                 "agent_run_id": substep_arid,
@@ -21126,6 +21135,170 @@ class RecordTimeoutTests(unittest.TestCase):
                 _hashlib.sha256(
                     (repo_root / "leaf_config" / "claude" / "settings.json").read_bytes()
                 ).hexdigest())
+
+    def test_a_launch_records_whether_a_credential_file_was_bound(self) -> None:
+        """The environment route to authentication is a NAMED EXCLUSION, so the bound
+        credential FILE is the only one left. `claude_credentials_bound: false` therefore
+        means this launch cannot authenticate at all — and the whole reason to record it
+        rather than refuse is that the cause is then legible in the artifact before the
+        CLI fails. A record nothing reads is not legible, so it is pinned here.
+
+        Both polarities, because a field that is always false and a field that is always
+        true are indistinguishable from a correct one with a single fixture."""
+        for present in (True, False):
+            with self.subTest(credentials_present=present):
+                with tempfile.TemporaryDirectory() as td:
+                    repo_root = Path(td)
+                    fake_home = Path(tempfile.mkdtemp())
+                    self.addCleanup(shutil.rmtree, fake_home, True)
+                    if present:
+                        (fake_home / ".credentials.json").write_text("{}", encoding="utf-8")
+                    with mock.patch.object(
+                            ort, "_backend_credential_home_paths",
+                            return_value=([fake_home], [fake_home / ".credentials.json"])):
+                        arid = self._setup_substep_launch(repo_root)
+                    orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                    meta = json.loads((orch_root / "orchestration_meta.json")
+                                      .read_text(encoding="utf-8"))
+                    self.addCleanup(shutil.rmtree, Path(meta["claude_workflow_home"]), True)
+                    recorded = json.loads((orch_root / "launches" / f"{arid}.response.json")
+                                          .read_text(encoding="utf-8"))
+                self.assertEqual(recorded["claude_credentials_bound"], present)
+
+    def test_the_threaded_child_env_is_what_the_profile_records_and_delivers(self) -> None:
+        """The persisted profile IS the environment record (no second field: see
+        `feedback_no_redundant_persistence`), so it has to be the environment the leaf
+        gets. Driven through the real `record_launch`, asserted on both halves of the
+        artifact — `#env` and the `--setenv` map of `#rendered_command` — because the
+        rendered argv is the only thing that reflects the wiring rather than restating it.
+        """
+        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
+                    "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
+                    "METDSL_ORCHESTRATION_ID": "orch_to_001",
+                    "METDSL_CHILD_AGENT_RUN_ID": "substep_run_to_001",
+                    "METDSL_WORKFLOW_MODE": "1",
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        with tempfile.TemporaryDirectory() as td:
+            repo_root = Path(td)
+            arid = self._setup_substep_launch(repo_root, child_env=dict(authored))
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            meta = json.loads(
+                (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+            self.addCleanup(shutil.rmtree, Path(meta["claude_workflow_home"]), True)
+            profile = json.loads(
+                (orch_root / "sandbox_profiles" / f"{arid}.json").read_text(encoding="utf-8"))
+            # the record: exactly what was authored, plus only the names the DELIVERER owns
+            self.assertEqual(
+                {k: v for k, v in profile["env"].items()
+                 if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS)},
+                authored)
+            self.assertEqual(profile["env"]["CLAUDE_CONFIG_DIR"],
+                             meta["claude_workflow_home"])
+            # the delivery: the rendered argv carries that same set and nothing else
+            argv = profile["rendered_command"]
+            setenv = {argv[i + 1]: argv[i + 2]
+                      for i, tok in enumerate(argv) if tok == "--setenv"}
+            self.assertEqual(setenv, profile["env"])
+            self.assertEqual(argv.count("--clearenv"), 1)
+            self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
+
+    def test_a_PURE_launch_threads_the_env_into_its_read_only_profile_too(self) -> None:
+        """The `is_pure` branch builds a DIFFERENT profile function, and it was a
+        surviving mutation: reverting its `child_env=` left the suite green, because the
+        threading test above drives only the agentic branch. A pure leaf is confined more
+        tightly than an agentic one, not less, so it is the wrong one to leave inheriting.
+        """
+        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home", "LANG": "C.UTF-8",
+                    "METDSL_ORCHESTRATION_ID": "orch_to_001",
+                    "METDSL_CHILD_AGENT_RUN_ID": "substep_run_to_001"}
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
+            with tempfile.TemporaryDirectory() as td:
+                repo_root = Path(td)
+                arid = self._setup_substep_launch(
+                    repo_root,
+                    child_env=dict(authored),
+                    request_extra={
+                        "leaf_mode": "pure",
+                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                        "allowed_output_paths": [],
+                        "pure_context": {
+                            "harness_capabilities": "{}",
+                            "target_profile": "{}",
+                            "ir_document": "algorithm:\n  state_variables: [h]\n",
+                            "tests_document": "- test: conserves mass",
+                            "runner_document": "program p\nend program p\n",
+                        },
+                    })
+                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                profile = json.loads((orch_root / "sandbox_profiles" /
+                                      f"{arid}.json").read_text(encoding="utf-8"))
+        self.assertTrue(profile.get("readonly"), "expected the pure read-only profile")
+        self.assertEqual({k: v for k, v in profile["env"].items() if k != "TMPDIR"},
+                         authored)
+        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
+
+    def test_the_cli_hands_the_parsed_stdin_env_to_record_launch(self) -> None:
+        """The dispatch's `child_env=child_env_payload` was a surviving mutation: parsing
+        stdin and then dropping it on the floor kept every other test green, because they
+        call `record_launch` directly. That is the shape this seam fails in — the flag is
+        accepted, the payload is validated, and the profile is built from `os.environ`
+        anyway — so it is pinned on the boundary the CLI actually crosses."""
+        from tools.orchestration_runtime import main as runtime_main
+        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home"}
+        seen: dict = {}
+
+        def fake_record_launch(**kwargs):
+            seen.update(kwargs)
+            return {"ok": True}
+
+        buf = io.StringIO()
+        with mock.patch.object(ort, "record_launch", fake_record_launch):
+            with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(authored))):
+                with redirect_stdout(buf):
+                    rc = runtime_main([
+                        "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                        "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                        "--request-json", "{}",
+                        "--response-json", json.dumps({"agent_run_id": "c", "agent_session_id": "c",
+                                             "started_at": "2026-08-20T00:00:00Z",
+                                             "backend": "claude"}),
+                        "--child-env-from-stdin",
+                    ])
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertEqual(seen.get("child_env"), authored)
+        # Control: without the flag the parameter is None, so the assertion above is
+        # about the flag and not about a default that happens to match.
+        seen.clear()
+        with mock.patch.object(ort, "record_launch", fake_record_launch):
+            with redirect_stdout(io.StringIO()):
+                runtime_main([
+                    "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                    "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                    "--request-json", "{}",
+                    "--response-json", json.dumps({"agent_run_id": "c", "agent_session_id": "c",
+                                             "started_at": "2026-08-20T00:00:00Z",
+                                             "backend": "claude"}),
+                ])
+        self.assertIsNone(seen.get("child_env"))
+
+    def test_a_launch_without_a_threaded_env_still_excludes_the_host_poison(self) -> None:
+        """The `child_env=None` path (a conductor-less caller) must not be a way back in:
+        it filters `os.environ` through the same owner constant. Sibling of the assertion
+        above rather than a repeat — this is the fallback, that one is the threading."""
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                                          "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001"}):
+            with tempfile.TemporaryDirectory() as td:
+                repo_root = Path(td)
+                arid = self._setup_substep_launch(repo_root)
+                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+                meta = json.loads(
+                    (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
+                self.addCleanup(shutil.rmtree, Path(meta["claude_workflow_home"]), True)
+                profile = json.loads((orch_root / "sandbox_profiles" /
+                                      f"{arid}.json").read_text(encoding="utf-8"))
+        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
+        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
+        self.assertNotIn("ANTHROPIC_BASE_URL", "\x00".join(profile["rendered_command"]))
 
     def test_the_launched_profile_actually_carries_the_isolation(self) -> None:
         """Driven through `record_launch`, asserted on the PERSISTED argv.
@@ -35172,3 +35345,665 @@ class ClaudeLeafConfigSyncTests(unittest.TestCase):
         dev_allow = set((dev.get("permissions") or {}).get("allow") or [])
         self.assertIn("mcp__build-runtime", leaf_allow)
         self.assertLessEqual(leaf_allow, dev_allow)
+
+
+class LeafEnvAllowlistHygieneTests(unittest.TestCase):
+    """The owner constants for the leaf's declared environment (issue #63, PR-B).
+
+    These are the *hygiene* pins — that the list is data with a written reason per
+    entry, and that the dangerous names are outside it by construction. The behaviour
+    pins (what `_child_env` produces, what bwrap renders) live with their layers.
+    """
+
+    def test_every_entry_carries_a_non_empty_justification(self) -> None:
+        """The dict's value IS the justification, so an entry cannot be added without
+        writing down why. A one-word value is not a reason; require a sentence."""
+        self.assertTrue(ort.LEAF_ENV_ALLOWLIST)
+        for name, why in ort.LEAF_ENV_ALLOWLIST.items():
+            with self.subTest(name=name):
+                self.assertIsInstance(why, str)
+                self.assertGreaterEqual(
+                    len(why.split()), 5,
+                    f"{name} needs a written justification, not {why!r}")
+
+    def test_the_names_that_redirect_a_leaf_are_outside_the_list(self) -> None:
+        """The measured holes (CLI 2.1.235): `ANTHROPIC_BASE_URL` redirects 100% of a
+        leaf's traffic, `ANTHROPIC_MODEL` decides the model of every launch that passes
+        no `--model`. Neither may become allowlisted by an edit that does not also
+        rewrite this test."""
+        for name in (
+            "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+            "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+            "AWS_PROFILE", "AWS_SECRET_ACCESS_KEY", "LD_PRELOAD", "LD_LIBRARY_PATH",
+            "NODE_OPTIONS", "SHELL", "PYTHONSTARTUP",
+        ):
+            with self.subTest(name=name):
+                self.assertNotIn(name, ort.LEAF_ENV_ALLOWLIST)
+                self.assertFalse(
+                    any(name.startswith(p) for p in ort.LEAF_ENV_ALLOWED_PREFIXES),
+                    f"{name} would be admitted by a prefix")
+
+    def test_the_claude_credential_variables_are_excluded_by_name(self) -> None:
+        """The costliest exclusion on the list, so it is pinned separately.
+
+        These three are how the claude CLI authenticates on a host with no
+        `~/.claude/.credentials.json`, and excluding them breaks that configuration.
+        The reason it is still right is measured, not asserted: everything on the
+        allowlist is persisted into `sandbox_profiles/<arid>.json` and its
+        `rendered_command`, the repo is ro-bound into the sandbox whole, and
+        `leaf_config/claude/settings.json` grants every agentic leaf
+        `Bash(cat workspace/orchestrations/*)` — so an allowlisted API key is one
+        granted command away from any leaf in the run.
+        """
+        for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
+                     "CLAUDE_CODE_OAUTH_TOKEN"):
+            with self.subTest(name=name):
+                self.assertIn(name, ort.LEAF_ENV_NAMED_EXCLUSIONS)
+                self.assertNotIn(name, ort.leaf_env_from({name: "sk-live", "PATH": "/b"}))
+        # The grant that makes the profile leaf-readable — if it ever goes away the
+        # exclusion's stated reason goes with it, and this should be re-decided.
+        repo_root = Path(__file__).resolve().parents[2]
+        allow = json.loads((repo_root / "leaf_config" / "claude" / "settings.json")
+                           .read_text(encoding="utf-8"))["permissions"]["allow"]
+        self.assertIn("Bash(cat workspace/orchestrations/*)", allow)
+
+    def test_the_named_exclusions_are_a_decision_not_an_oversight(self) -> None:
+        """Decision 2 (2026-08-20): the proxy/TLS families are excluded. The tuple is
+        what makes that reviewable — if someone adds one to the allowlist, the two
+        collections disagree and this fails."""
+        # SET IDENTITY, not iteration. The old version looped over the tuple, so removing
+        # an entry just looped less and stayed green — measured: all 11 proxy/TLS drops
+        # survived it. Nothing at runtime reads this constant (it is a recorded decision,
+        # not a filter input), so this test is the only thing that can notice it shrinking.
+        self.assertEqual(set(ort.LEAF_ENV_NAMED_EXCLUSIONS), {
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+            "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+            "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        })
+        for name in ort.LEAF_ENV_NAMED_EXCLUSIONS:
+            with self.subTest(name=name):
+                self.assertNotIn(name, ort.LEAF_ENV_ALLOWLIST)
+                self.assertFalse(any(name.startswith(p)
+                                     for p in ort.LEAF_ENV_ALLOWED_PREFIXES))
+
+    def test_the_two_spellings_of_is_http_cannot_drift(self) -> None:
+        """A credential is gated by ONE question asked in TWO places.
+
+        `_child_env` adds the entry's `api_key_env` value when `entry.is_http`
+        (`llm_config.HTTP_PROVIDERS`); `record_launch` skips building a sandbox profile
+        when `backend_token in _HTTP_PROVIDER_TOKENS`. Today they agree, so the key is
+        never persisted. If a provider were ever added to the FIRST set alone, its API
+        key would be written verbatim into `sandbox_profiles/<arid>.json#env` and its
+        `rendered_command` — which every agentic leaf can read
+        (`Bash(cat workspace/orchestrations/*)`) — which is precisely the hole the
+        credential exclusion and the `api_key_env` drop exist to close. Nothing named
+        both constants before this test."""
+        from tools import llm_config as lc
+        self.assertEqual(set(lc.HTTP_PROVIDERS), set(ort._HTTP_PROVIDER_TOKENS))
+        # ...and the mapping between them is identity, which is what makes comparing the
+        # two sets the same question as comparing the two predicates.
+        for provider in lc.HTTP_PROVIDERS:
+            self.assertEqual(lc.PROVIDER_BACKEND_TOKENS.get(provider, provider), provider)
+
+    def test_backend_home_vars_are_not_host_passthrough(self) -> None:
+        """Single-route rule: the config home reaches a leaf through the bwrap
+        profile's `--setenv` alone, so the filter must never forward a host copy."""
+        poisoned = {var: "/host/leak" for var in ort._BACKEND_HOME_ENV_VARS}
+        poisoned["METDSL_HOME"] = "/host/leak"
+        got = ort.leaf_env_from({**poisoned, "PATH": "/usr/bin"})
+        self.assertEqual(set(got), {"PATH"})
+
+    def test_the_filter_drops_strangers_and_keeps_the_declared_verbatim(self) -> None:
+        host = {
+            "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
+            "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:9", "ANTHROPIC_MODEL": "haiku",
+            "HTTPS_PROXY": "http://user:pw@proxy:3128", "LD_PRELOAD": "/evil.so",
+            "EMPTY": "",
+        }
+        got = ort.leaf_env_from(host)
+        self.assertEqual(got, {
+            "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
+            "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
+        })
+
+    def test_the_allowed_prefix_is_exactly_the_repo_namespace(self) -> None:
+        """The prefix's SPELLING, which anchoring alone does not pin.
+
+        Shortening it to `METDS` still anchors and still passes every other test, while
+        admitting `METDSX_*` — a namespace this repository does not own. The surviving
+        justification for prefix-passing is that it admits only the repo's own namespace,
+        so the exact string is the justification's load-bearing half."""
+        self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("METDSL_",))
+        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "METDSX_FOO": "y"}),
+                         {"PATH": "/b"})
+
+    def test_a_non_string_key_or_value_is_skipped_not_forwarded(self) -> None:
+        """`Conductor.env` is a plain dict, so nothing upstream guarantees str->str.
+
+        The value check is the one that matters: the CLI path would still be refused by
+        the renderer's own type guard, but an HTTP leaf gets `child_env` handed straight
+        to `_run_http_leaf` with no such guard. The key check is a crash-to-skip
+        converter — without it a non-string key raises `AttributeError` from
+        `startswith` rather than being filtered."""
+        got = ort.leaf_env_from({"PATH": "/b", "HOME": object(), 1: "x",
+                                 "METDSL_OK": "yes"})
+        self.assertEqual(got, {"PATH": "/b", "METDSL_OK": "yes"})
+
+    def test_the_prefix_is_ANCHORED_not_a_substring_match(self) -> None:
+        """Anchoring is the whole load-bearing half of the prefix justification.
+
+        The comment's surviving claim is that the names known to redirect a leaf are
+        outside the prefix BY CONSTRUCTION. That is only true while the match is
+        anchored: with a substring match `MY_METDSL_API_KEY` and even
+        `ANTHROPIC_METDSL_X` are admitted, and the construction argument evaporates.
+        Measured as a surviving mutation — replacing `startswith` with `in` in BOTH
+        copies of the rule kept all 4972 tests green — so it is pinned here and in the
+        renderer's sibling below."""
+        got = ort.leaf_env_from({
+            "PATH": "/b",
+            "METDSL_REAL": "kept",
+            "MY_METDSL_API_KEY": "sk-live",
+            "OPERATOR_METDSL_X": "y",
+            "XMETDSL_Z": "z",
+        })
+        self.assertEqual(got, {"PATH": "/b", "METDSL_REAL": "kept"})
+
+    def test_an_unanchored_prefix_name_is_refused_at_render_too(self) -> None:
+        """The renderer spells the same rule a second time, so it needs its own probe:
+        two independent copies with no pin on either is how they desync."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        root = Path(d)
+        for sub in ("repo", "ws", "tmp"):
+            (root / sub).mkdir()
+        profile = {
+            "repo_root": str(root / "repo"), "tmp_dir": str(root / "tmp"),
+            "workspace_tmp_rw_abs": str(root / "ws"),
+            "read_roots": [], "write_roots": [],
+            "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
+            "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
+                    "MY_METDSL_API_KEY": "sk-live"},
+        }
+        with self.assertRaises(ValueError) as ctx:
+            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertIn("MY_METDSL_API_KEY", str(ctx.exception))
+
+    def test_an_empty_value_never_becomes_a_declared_name(self) -> None:
+        """The filter's `or not value` skip, measured as a surviving mutation.
+
+        It is what makes `LEAF_ENV_PATH_DEFAULT` reachable: a host exporting `PATH=`
+        would otherwise carry an empty PATH through the filter, and the renderer's own
+        `if value:` then DROPS it — so under `--clearenv` the leaf launches with no PATH
+        at all, which is exactly what the default exists to prevent. The existing
+        stranger test's `"EMPTY": ""` case does not cover this: `EMPTY` is dropped for
+        being undeclared, not for being empty."""
+        self.assertEqual(ort.leaf_env_from({"PATH": ""})["PATH"],
+                         ort.LEAF_ENV_PATH_DEFAULT)
+        # ...and a declared-but-empty name is absent rather than present-and-empty
+        got = ort.leaf_env_from({"PATH": "/b", "HOME": "", "METDSL_X": ""})
+        self.assertEqual(got, {"PATH": "/b"})
+
+    def test_path_falls_back_when_the_host_has_none(self) -> None:
+        """Kept verbatim from the absorbed `_safe_host_env_for_child`: a PATH-less host
+        env must not produce a leaf that cannot find its own CLI."""
+        self.assertEqual(ort.leaf_env_from({})["PATH"], ort.LEAF_ENV_PATH_DEFAULT)
+        self.assertEqual(ort.LEAF_ENV_PATH_DEFAULT, "/usr/bin:/bin")
+
+    def test_each_allowlist_entry_is_load_bearing(self) -> None:
+        """Per-element probe: deleting any one entry must change the filter's output.
+
+        WHAT THIS DOES NOT DO, though an earlier docstring said it: catch a DEAD name.
+        The host dict is synthesized FROM the constant, so a name nobody reads still
+        shows up in the output and this stays green — measured by adding
+        `TOTALLY_DEAD_NAME_NOBODY_READS` to the allowlist, which leaves this test passing
+        and fails `test_child_env_is_the_owner_constant_plus_the_per_run_names` instead
+        (its fixture is a literal). What this pins is narrower and still worth having:
+        every entry is actually consulted by the filter, so the constant cannot become
+        decorative."""
+        host = {name: f"v-{name}" for name in ort.LEAF_ENV_ALLOWLIST}
+        full = ort.leaf_env_from(host)
+        for name in list(ort.LEAF_ENV_ALLOWLIST):
+            with self.subTest(name=name):
+                trimmed = dict(ort.LEAF_ENV_ALLOWLIST)
+                trimmed.pop(name)
+                with mock.patch.object(ort, "LEAF_ENV_ALLOWLIST", trimmed):
+                    got = ort.leaf_env_from(host)
+                self.assertNotEqual(got, full)
+                self.assertNotIn(name, got if name != "PATH" else {})
+
+
+class LeafEnvClosureTests(unittest.TestCase):
+    """The DELIVERY and RECORD half of the leaf's declared environment (issue #63, PR-B).
+
+    The conductor AUTHORS the dict (`_child_env`, pinned in `test_workflow_conductor.py`);
+    this class pins that the sandbox hands the leaf exactly that dict and nothing else, and
+    that the persisted profile is a record of it rather than of a second one.
+    """
+
+    # -- the CLI seam that carries the authored dict ---------------------------
+
+    def test_the_stdin_flag_parses_only_a_non_empty_object_of_strings(self) -> None:
+        """The seam the conductor actually uses. On STDIN rather than argv because these
+        values would otherwise be readable in `ps` by every process on the host, and an
+        HTTP entry's credential can be among them — so the parse is where the shape is
+        checked, and a bad shape must fail closed rather than build an env-less profile.
+        """
+        from tools.orchestration_runtime import main as runtime_main
+
+        def _run(raw: str) -> str:
+            buf, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(sys, "stdin", io.StringIO(raw)):
+                with redirect_stdout(buf), redirect_stderr(err):
+                    rc = runtime_main([
+                        "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                        "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                        "--request-json", "{}", "--response-json", "{}",
+                        "--child-env-from-stdin",
+                    ])
+            self.assertEqual(rc, 1)
+            return err.getvalue().strip()
+
+        for raw in ("", "not json", "[]", "{}", '{"A": 1}', "null"):
+            with self.subTest(raw=raw):
+                # NAMES the flag, so the refusal is this parse and not some later
+                # validation the fixture also fails.
+                self.assertIn("--child-env-from-stdin", _run(raw))
+        # Control: every one of these calls fails (the fixture payloads are empty), so
+        # "rc == 1" alone proves nothing. A WELL-FORMED env gets past this parse and dies
+        # further in, at response-json validation — that is what makes the six above
+        # attributable to the parse.
+        self.assertNotIn("--child-env-from-stdin", _run('{"PATH": "/usr/bin"}'))
+
+    def _profile(self, **over) -> dict:
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        root = Path(d)
+        (root / "repo").mkdir()
+        (root / "ws").mkdir()
+        (root / "tmp").mkdir()
+        base = {
+            "repo_root": str(root / "repo"),
+            "tmp_dir": str(root / "tmp"),
+            "workspace_tmp_rw_abs": str(root / "ws"),
+            "read_roots": [], "write_roots": [],
+            "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
+            "env": {"PATH": "/usr/bin:/bin", "HOME": "/h",
+                    "METDSL_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws")},
+        }
+        base.update(over)
+        if "env" in over and isinstance(over["env"], dict) and over["env"]:
+            base["env"] = {**over["env"]}
+            if "TMPDIR" in base["env"]:
+                base["env"]["TMPDIR"] = str(root / "ws")
+        return base
+
+    @staticmethod
+    def _setenv_map(argv: list) -> dict:
+        return {argv[i + 1]: argv[i + 2] for i, tok in enumerate(argv) if tok == "--setenv"}
+
+    # -- the render layer ------------------------------------------------------
+
+    def test_clearenv_is_rendered_exactly_once_and_before_every_setenv(self) -> None:
+        """Measured on bubblewrap 0.11.0: `--clearenv` wipes what EARLIER `--setenv`s
+        set, so a `--clearenv` that drifted after them would silently deliver a leaf with
+        no environment at all — and every absence assertion in this file would still pass,
+        because absent is exactly what it would produce. Position is the assertion."""
+        argv = ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])
+        self.assertEqual(argv.count("--clearenv"), 1)
+        self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
+
+    def test_the_rendered_setenv_set_is_exactly_the_profile_env(self) -> None:
+        """Set identity, not containment: a `--setenv` the profile does not name is a
+        name the record does not describe, which is the whole failure being closed."""
+        profile = self._profile()
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv), profile["env"])
+
+    def test_the_host_environment_cannot_reach_the_leaf_through_this_layer(self) -> None:
+        """The end-to-end property in one assertion: with a poisoned process environment,
+        nothing of it appears in the rendered argv."""
+        poison = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                  "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+                  "AWS_SECRET_ACCESS_KEY": "s3cret", "LD_PRELOAD": "/evil.so"}
+        with mock.patch.dict(os.environ, poison, clear=False):
+            argv = ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])
+        joined = "\x00".join(argv)
+        for name, value in poison.items():
+            with self.subTest(name=name):
+                self.assertNotIn(name, joined)
+                self.assertNotIn(value, joined)
+
+    def test_a_profile_without_an_env_fails_closed(self) -> None:
+        """Under `--clearenv` an env-less profile is not "the default environment", it is
+        NO environment — no PATH, no config home, no orchestration id. The old code's
+        `if isinstance(profile_env, dict):` would have rendered it silently."""
+        for bad in ({}, None, "PATH=/usr/bin", []):
+            with self.subTest(env=bad):
+                profile = self._profile()
+                if bad is None:
+                    profile.pop("env")
+                else:
+                    profile["env"] = bad
+                with self.assertRaises(ValueError):
+                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_an_undeclared_name_in_the_profile_fails_closed(self) -> None:
+        """A stranger here means something built an environment outside `leaf_env_from`
+        — the one question this layer exists to answer — so it is refused rather than
+        delivered and recorded as though it had been declared."""
+        for name in ("ANTHROPIC_BASE_URL", "AWS_PROFILE", "METDSL_HOME", "SHELL"):
+            with self.subTest(name=name):
+                profile = self._profile()
+                profile["env"] = {**profile["env"], name: "x"}
+                with self.assertRaises(ValueError) as ctx:
+                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+                self.assertIn(name, str(ctx.exception))
+
+    def test_the_names_only_the_deliverer_adds_are_accepted(self) -> None:
+        """The two backend-home names and the claude extras never come from the author,
+        so the validation has to allow them — asserted, or a correct profile would be
+        refused and every launch would fail closed."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "CLAUDE_CONFIG_DIR": "/home/x",
+                          "CODEX_HOME": "/home/y",
+                          "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
+                          "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv), profile["env"])
+
+    def test_a_mistyped_profile_env_entry_fails_closed_at_render(self) -> None:
+        """The renderer's own str->str check, also found undriven. A non-string value
+        here would reach `cmd.extend([...])` and produce a `TypeError` from subprocess
+        rather than a refusal naming the profile."""
+        for bad in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
+            with self.subTest(env=bad):
+                profile = self._profile()
+                profile["env"] = {**profile["env"], **bad}
+                with self.assertRaises(ValueError):
+                    ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_a_tmpdir_that_disagrees_with_the_bind_fails_closed(self) -> None:
+        """The writable bind is what makes TMPDIR usable, so a TMPDIR naming anywhere
+        else points the leaf at a path bwrap did not make writable."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "TMPDIR": "/somewhere/else"}
+        with self.assertRaises(ValueError):
+            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_tmpdir_is_the_resolved_bind_even_if_the_env_omits_it(self) -> None:
+        profile = self._profile()
+        profile["env"] = {k: v for k, v in profile["env"].items() if k != "TMPDIR"}
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv)["TMPDIR"],
+                         str(Path(profile["workspace_tmp_rw_abs"]).resolve()))
+
+    def test_a_profile_read_off_disk_still_delivers_both_ids(self) -> None:
+        """The deliverer's own floor, for the profiles the author's floor cannot reach.
+
+        `spawn_leaf` renders a profile READ OFF DISK, including one persisted before the
+        environment became declared — whose `env` predates the ids entirely. Under
+        `--clearenv` that leaf gets no `METDSL_ORCHESTRATION_ID`, and its MCP server then
+        reads "not under a run" and stops requiring a capability token.
+
+        Filled from the profile's own recorded ids rather than refused, because refusing
+        would reject those older profiles outright — i.e. break `--resume` of a run
+        started before this branch."""
+        profile = self._profile()
+        # exactly the shape origin/main persisted: the old 7-name host set, no ids
+        profile["env"] = {"PATH": "/usr/bin:/bin", "HOME": "/h", "LANG": "C.UTF-8",
+                          "TMPDIR": profile["env"]["TMPDIR"]}
+        profile["orchestration_id"] = "orch-recorded"
+        profile["agent_run_id"] = "arid-recorded"
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        setenv = self._setenv_map(argv)
+        self.assertEqual(setenv["METDSL_ORCHESTRATION_ID"], "orch-recorded")
+        self.assertEqual(setenv["METDSL_CHILD_AGENT_RUN_ID"], "arid-recorded")
+        # ...and the pre-branch profile is RENDERED, not refused
+        self.assertEqual(setenv["HOME"], "/h")
+
+    def test_the_delivered_ids_never_override_what_the_record_declares(self) -> None:
+        """The fill must not become a silent correction: a profile that DECLARES an id
+        keeps it, so the record and the delivery still cannot disagree."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "METDSL_ORCHESTRATION_ID": "from-env"}
+        profile["orchestration_id"] = "from-field"
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv)["METDSL_ORCHESTRATION_ID"], "from-env")
+
+    def test_an_empty_value_is_dropped_rather_than_declared_empty(self) -> None:
+        """`--setenv CLAUDE_CONFIG_DIR ""` points the CLI at the empty path; absent lets
+        its own resolution run. The pre-`--clearenv` code skipped empty backend-home
+        values for exactly this reason and the rule now covers every name."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "CLAUDE_CONFIG_DIR": ""}
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertNotIn("CLAUDE_CONFIG_DIR", self._setenv_map(argv))
+
+    # -- the profile builders --------------------------------------------------
+
+    def test_a_threaded_child_env_is_what_the_profile_carries(self) -> None:
+        """Congruence: what the conductor authored is what the profile records, plus only
+        the names the deliverer owns (TMPDIR here; the backend home arrives via
+        `env_overrides`). Without this the builder would re-derive from `os.environ` and
+        the record could describe an environment no leaf ran under."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        repo = Path(d)
+        authored = {"PATH": "/a/bin", "HOME": "/a/home", "LANG": "C.UTF-8",
+                    "METDSL_ORCHESTRATION_ID": "o", "METDSL_CHILD_AGENT_RUN_ID": "A"}
+        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=repo, orchestration_id="o", agent_run_id="A",
+                backend_command="claude", backend_type="claude", child_env=authored)
+        self.assertEqual({k: v for k, v in profile["env"].items() if k != "TMPDIR"},
+                         authored)
+        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
+
+    def test_a_child_env_naming_another_leafs_ids_fails_closed(self) -> None:
+        """Threading only helps if the dict belongs to THIS launch. A profile carrying
+        another leaf's `METDSL_CHILD_AGENT_RUN_ID` would hand the leaf an id naming a
+        different run, and the record and the reality would be one object describing two."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name, bad in (("METDSL_ORCHESTRATION_ID", "other-orch"),
+                          ("METDSL_CHILD_AGENT_RUN_ID", "other-arid")):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d), orchestration_id="o", agent_run_id="A",
+                        backend_command="claude", backend_type="claude",
+                        child_env={"PATH": "/a", name: bad})
+
+    def test_the_fallback_replaces_a_stale_per_launch_id_rather_than_refusing(self) -> None:
+        """The two paths answer DIFFERENT questions, and this is the reconstructing one.
+
+        A `record-launch` run from inside a leaf — documented in `docs/CLI_REFERENCE.md`,
+        granted by `leaf_config/claude/settings.json` — builds from that leaf's own
+        environment, which carries the PARENT's `METDSL_CHILD_AGENT_RUN_ID`; and under
+        the workflow `run_workflow.py` puts `METDSL_ORCHESTRATION_ID` into every node's
+        environment, so a stale id is present essentially always. Carrying it into the
+        child's profile is wrong (the hook selects a capability by that name), but so is
+        REFUSING: this path's whole job is to rebuild an environment from an unrelated
+        one. It overwrites.
+
+        This test asserted the refusal for exactly one round. That was measured to make
+        152 tests fail with one variable exported and, in production, to turn an
+        unreachable stale record into `fail_closed`. The sibling below keeps the refusal
+        where it belongs."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "OTHER-ORCH",
+                                          "METDSL_CHILD_AGENT_RUN_ID": "PARENT-ARID",
+                                          "PATH": "/usr/bin"}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=Path(d) / "repo", orchestration_id="o",
+                agent_run_id="CHILD-ARID", backend_command="claude",
+                backend_type="claude")
+        self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
+        self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
+
+    def test_an_EMPTY_per_launch_id_is_refused_not_quietly_filled(self) -> None:
+        """The `is not None` guard, which a census found unpinned.
+
+        An empty string is the one shape that slips between the two mechanisms: the
+        disagreement check would let it past under a truthiness test, and the
+        `setdefault` floor CANNOT repair it because the key exists. The renderer's own
+        `if value:` then drops the name — producing exactly the leaf-with-no-orchestration
+        -id whose MCP server stops requiring a capability token. Refusing at the boundary
+        is right: this arrives over `--child-env-from-stdin`, and an empty id there is a
+        malformed payload, not an omission."""
+        for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    ort._profile_child_env({"PATH": "/b", name: ""},
+                                           orchestration_id="o", agent_run_id="A")
+
+    def test_an_empty_tmpdir_in_the_record_is_refused_at_render(self) -> None:
+        """Same shape one layer down, same guard (`env_tmp is not None`). Under a
+        truthiness test an empty TMPDIR would be silently corrected to the bind rather
+        than refused — the right value, but a record that disagreed with its delivery and
+        said nothing, which is the one thing this layer exists to prevent."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "TMPDIR": ""}
+        with self.assertRaises(ValueError):
+            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+
+    def test_every_profile_carries_both_per_launch_ids(self) -> None:
+        """The floor `--clearenv` made necessary, on BOTH paths.
+
+        The threaded check only compares a key that EXISTS, so a `child_env` omitting an
+        id used to produce a profile without it — and since the profile is now the only
+        route into the leaf, a leaf without `METDSL_ORCHESTRATION_ID` makes its
+        build-runtime MCP server read "not under a run" (`_workflow_mode_env_signal()`
+        returns None) and stop requiring a capability token. An ungated server, from an
+        omission rather than an attack.
+
+        Filled rather than refused: the ids are this builder's own arguments, so an
+        absence contradicts nothing. Only a disagreement does, and that still raises."""
+        for child_env in ({"PATH": "/b"},
+                          {"PATH": "/b", "METDSL_ORCHESTRATION_ID": "o"},
+                          {"PATH": "/b", "METDSL_CHILD_AGENT_RUN_ID": "A"},
+                          None):
+            with self.subTest(child_env=child_env):
+                got = ort._profile_child_env(child_env, orchestration_id="o",
+                                             agent_run_id="A")
+                self.assertEqual(got["METDSL_ORCHESTRATION_ID"], "o")
+                self.assertEqual(got["METDSL_CHILD_AGENT_RUN_ID"], "A")
+
+    def test_a_stale_ambient_id_does_not_make_a_profile_build_fail(self) -> None:
+        """The regression itself, stated as the property rather than as a value.
+
+        `run_workflow.py` exports `METDSL_ORCHESTRATION_ID` into every node, so ANY
+        conductor-less profile build under the workflow sees one. If that can raise, the
+        suite becomes coupled to the operator's shell and a leaf-initiated
+        `record-launch` terminalizes the run through `record_launch`'s `except
+        Exception` -> `sandbox_enforcement_violation` -> `fail_closed`."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for ambient in ({"METDSL_ORCHESTRATION_ID": "OTHER-ORCH"},
+                        {"METDSL_CHILD_AGENT_RUN_ID": "OTHER-ARID"},
+                        {"METDSL_ORCHESTRATION_ID": "OTHER-ORCH",
+                         "METDSL_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
+            with self.subTest(ambient=sorted(ambient)):
+                with mock.patch.dict(os.environ, {**ambient, "PATH": "/usr/bin"}):
+                    profile = ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d) / "repo", orchestration_id="o",
+                        agent_run_id="A", backend_command="claude",
+                        backend_type="claude")
+                self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
+                self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "A")
+
+    def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
+        """The type validations, which review found undriven by any test.
+
+        Not decorative: `child_env` arrives from a JSON payload over stdin, and a
+        non-string value that reached `--setenv` would be a `TypeError` deep inside argv
+        construction rather than a named refusal at the boundary."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for bad in ([("PATH", "/b")], "PATH=/b", 42):
+            with self.subTest(child_env=bad):
+                with self.assertRaises(ValueError):
+                    ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d) / "repo", orchestration_id="o",
+                        agent_run_id="A", backend_command="claude",
+                        backend_type="claude", child_env=bad)
+        for bad_entry in ({"PATH": 1}, {1: "/b"}, {"PATH": None}):
+            with self.subTest(entry=bad_entry):
+                with self.assertRaises(ValueError):
+                    ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d) / "repo", orchestration_id="o",
+                        agent_run_id="A", backend_command="claude",
+                        backend_type="claude", child_env=bad_entry)
+
+    def test_a_conductorless_caller_still_gets_an_allowlisted_env(self) -> None:
+        """`child_env=None` — a test fixture, the standalone CLI — must not fall back to
+        inheriting: it filters the host environment through the same owner constant."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        fake_home = Path(d) / "home"
+        fake_home.mkdir()
+        with mock.patch.dict(os.environ, {"ANTHROPIC_MODEL": "haiku",
+                                          "HOME": str(fake_home)}):
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=Path(d) / "repo", orchestration_id="o", agent_run_id="A",
+                backend_command="claude", backend_type="claude")
+        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
+        self.assertEqual(profile["env"]["HOME"], str(fake_home))
+
+
+@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
+class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
+    """The one measurement that is not an argv assertion: RUN the rendered command and
+    read the child's actual environment.
+
+    Every other test in `LeafEnvClosureTests` asserts what the argv SAYS. What the argv
+    says and what bwrap does are different claims, and the gap is exactly where a
+    `--clearenv` in the wrong position hides: measured on bubblewrap 0.11.0, `--setenv
+    FOO bar --clearenv` renders both tokens and delivers neither. So this swaps the leaf
+    command for `/usr/bin/env`, runs it under a POISONED parent environment, and compares
+    the child's real environment against `profile["env"]`.
+    """
+
+    def test_the_child_env_is_the_profile_env_and_nothing_of_the_parents(self) -> None:
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        root = Path(d)
+        for sub in ("repo", "ws", "tmp"):
+            (root / sub).mkdir()
+        profile = {
+            "repo_root": str(root / "repo"),
+            "tmp_dir": str(root / "tmp"),
+            "workspace_tmp_rw_abs": str(root / "ws"),
+            "read_roots": [], "write_roots": [],
+            "runtime_ro_bind_paths": ["/usr", "/bin", "/lib", "/lib64"],
+            "runtime_rw_bind_paths": [],
+            "env": {"PATH": "/usr/bin:/bin", "HOME": "/leaf/home", "LANG": "C.UTF-8",
+                    "METDSL_ORCHESTRATION_ID": "o", "METDSL_CHILD_AGENT_RUN_ID": "A",
+                    "TMPDIR": str(root / "ws")},
+        }
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["/usr/bin/env"])
+        poison = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+                  "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+                  "AWS_SECRET_ACCESS_KEY": "s3cret",
+                  "HTTPS_PROXY": "http://user:pw@proxy:3128"}
+        proc = subprocess.run(argv, env={**os.environ, **poison}, text=True,
+                              capture_output=True, check=False, timeout=60)
+        # Not skipped on a nonzero exit: the class guard already established that bwrap
+        # runs on this host, so a failure here is this profile's argv being wrong, which
+        # is exactly what the witness exists to catch. Skipping it would turn the one
+        # measurement in the file into the one that never runs.
+        self.assertEqual(proc.returncode, 0, proc.stderr.strip()[:400])
+        child = {}
+        for line in proc.stdout.splitlines():
+            if "=" in line:
+                key, _, value = line.partition("=")
+                child[key] = value
+        # bwrap sets PWD itself from --chdir; it is the ONE name in the child that the
+        # profile does not name, and it is measured rather than assumed.
+        self.assertEqual({k: v for k, v in child.items() if k != "PWD"}, profile["env"])
+        # ...and the poison controls, so "equal" cannot be "the parent env was empty".
+        for name in poison:
+            self.assertNotIn(name, child)

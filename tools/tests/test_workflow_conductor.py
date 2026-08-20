@@ -3888,7 +3888,7 @@ class UsageProbeRunnerTests(unittest.TestCase):
         return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
                             orchestration_agent_run_id="ORCH",
                             llm_config=_cfg(backend, llm_command=llm_command),
-                            env={"MARKER": "leaf-env"})
+                            env={"MARKER": "leaf-env", "HOME": "/h"})
 
     def _envelope(self, result: str, **over) -> str:
         doc = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 0,
@@ -3917,9 +3917,26 @@ class UsageProbeRunnerTests(unittest.TestCase):
         self.assertEqual(kw["cwd"], Path("/tmp/repo"))
         self.assertEqual(kw["timeout"], wc.USAGE_PROBE_TIMEOUT_SECONDS)
         self.assertIs(kw["check"], False)
-        # env is the leaf's, not a bare os.environ: the probe must query the SAME account/endpoint
-        # context the leaf runs under, or its reset instant is for the wrong quota.
-        self.assertEqual(kw["env"], {"MARKER": "leaf-env"})
+        # env is the leaf's, not a bare os.environ: the probe must query the SAME
+        # account/endpoint context the leaf runs under, or its reset instant is for the
+        # wrong quota. That used to mean `self.env`, the driver's own environment. It no
+        # longer does — a leaf's environment is RECONSTRUCTED from the declared allowlist —
+        # so the probe goes through `_child_env`, the same author, and the invariant holds
+        # by construction rather than by two spellings happening to agree. The fixture
+        # proves the filter is really in the path: `MARKER` is not a declared name and is
+        # gone, `HOME` is and survives verbatim.
+        self.assertEqual(kw["env"], {"HOME": "/h", "PATH": wc_runtime.LEAF_ENV_PATH_DEFAULT,
+                                     "METDSL_ORCHESTRATION_ID": "orch_x",
+                                     "METDSL_CHILD_AGENT_RUN_ID": "ORCH"})
+        # TMPDIR is absent DELIBERATELY, and this is the assertion that says so. `_child_env`
+        # points it at `workspace/tmp/<arid>`, which only a profile builder creates — and the
+        # meta arid gets a profile only if `escalate()` ran. Handing the CLI a TMPDIR that
+        # does not exist breaks it: it is a node program and `mkdtemp` under a missing TMPDIR
+        # is ENOENT, measured. The probe is a HOST-side process and wants the host's default.
+        self.assertNotIn("TMPDIR", kw["env"])
+        # Same for the leaf-turn pair: `/usage` is a built-in answering at num_turns == 0.
+        for name in wc_runtime.CLAUDE_LEAF_ENV_EXTRAS:
+            self.assertNotIn(name, kw["env"])
         self.assertNotIn("outcome", meta)          # success: the caller decides from the rows
         self.assertIn("Current session", meta["excerpt"])
         # and with no wrapper configured it is the bare backend
@@ -4038,6 +4055,13 @@ class LeafChildEnvTest(unittest.TestCase):
         # the pre-existing leaf env is untouched
         self.assertEqual(env["METDSL_ORCHESTRATION_ID"], "orch_x")
         self.assertTrue(env["TMPDIR"].endswith("/workspace/tmp/child-1"))
+        # THE CHILD'S OWN ARID, not the orchestration's. The hook selects a capability by
+        # this value, so labelling a leaf with the parent's id hands it the wrong one.
+        # Measured as a surviving mutation: swapping `child_arid` for
+        # `self.orchestration_agent_run_id` here kept the whole suite green, because the
+        # set-identity test names the KEY and never checked the VALUE.
+        self.assertEqual(env["METDSL_CHILD_AGENT_RUN_ID"], "child-1")
+        self.assertNotEqual(env["METDSL_CHILD_AGENT_RUN_ID"], "ORCH")
 
     def test_child_env_closes_the_operators_auto_memory_for_a_claude_leaf(self) -> None:
         """Auto-memory is NOT a settings file, so no `--setting-sources` value reaches it.
@@ -4066,6 +4090,328 @@ class LeafChildEnvTest(unittest.TestCase):
         # Same for the auto-memory switch: codex has its own context surface, and a CLAUDE_*
         # variable there says nothing.
         self.assertNotIn("CLAUDE_CODE_DISABLE_AUTO_MEMORY", env)
+
+    # -- the environment is RECONSTRUCTED, not inherited (issue #63, PR-B) ---------
+
+    #: A host environment carrying every measured hazard next to every declared
+    #: survivor. One fixture for all the reconstruction tests, so a name can never be
+    #: asserted absent in one test while a different test's fixture never contained it.
+    _POISONED_HOST = {
+        # measured hazards (CLI 2.1.235): BASE_URL redirects 100% of a leaf's traffic;
+        # MODEL decides the model of any launch that passes no `--model`.
+        "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+        "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+        "ANTHROPIC_API_KEY": "sk-host-secret",
+        "CLAUDE_CODE_OAUTH_TOKEN": "oauth-host-secret",
+        "LD_PRELOAD": "/tmp/evil.so",
+        "AWS_PROFILE": "prod",
+        "HTTPS_PROXY": "http://user:pw@proxy:3128",
+        "SSL_CERT_FILE": "/tmp/rogue-ca.pem",
+        # declared survivors
+        "PATH": "/host/bin", "HOME": "/host/home", "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8", "TERM": "xterm", "USER": "op", "LOGNAME": "op",
+        "PYTHONPATH": "/repo", "PYTHONDONTWRITEBYTECODE": "1",
+        "METDSL_WORKFLOW_MODE": "1", "METDSL_WORKFLOW_EXEC_MODE": "hybrid",
+    }
+
+    def _poisoned(self, backend: str) -> wc.Conductor:
+        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                            orchestration_agent_run_id="ORCH", llm_config=_cfg(backend),
+                            env=dict(self._POISONED_HOST))
+
+    def test_child_env_drops_every_host_name_the_allowlist_does_not_declare(self) -> None:
+        """The point of the whole change. Before it, `_child_env` did `dict(self.env)` and
+        each of these reached the leaf: the endpoint it talks to, the model it runs, two
+        credentials, a loader injection, and a proxy URL with a password in it. None is
+        recorded by any artifact, and the first two silently change what the run IS."""
+        env = self._poisoned("claude")._child_env("child-1")
+        for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_API_KEY",
+                     "CLAUDE_CODE_OAUTH_TOKEN", "LD_PRELOAD", "AWS_PROFILE",
+                     "HTTPS_PROXY", "SSL_CERT_FILE"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, env)
+
+    def test_child_env_forwards_the_declared_names_verbatim(self) -> None:
+        """Absence assertions alone cannot tell "filtered correctly" from "returned
+        nothing", so the survivors are pinned to their exact host values."""
+        env = self._poisoned("claude")._child_env("child-1")
+        for name in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME",
+                     "PYTHONPATH", "PYTHONDONTWRITEBYTECODE",
+                     "METDSL_WORKFLOW_MODE", "METDSL_WORKFLOW_EXEC_MODE"):
+            with self.subTest(name=name):
+                self.assertEqual(env[name], self._POISONED_HOST[name])
+
+    def test_child_env_is_the_owner_constant_plus_the_per_run_names(self) -> None:
+        """Set identity against the OWNER CONSTANT, never a second literal list: a name
+        added to `LEAF_ENV_ALLOWLIST` without being thought about here would otherwise
+        pass silently."""
+        ort = wc_runtime
+        env = self._poisoned("claude")._child_env("child-1")
+        host_side = set(ort.LEAF_ENV_ALLOWLIST) | {
+            k for k in self._POISONED_HOST
+            if any(k.startswith(p) for p in ort.LEAF_ENV_ALLOWED_PREFIXES)}
+        conductor_side = {"METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID", "TMPDIR",
+                          *ort.CLAUDE_LEAF_ENV_EXTRAS}
+        self.assertEqual(set(env), host_side | conductor_side)
+
+    def test_child_env_never_carries_a_backend_home(self) -> None:
+        """Single-route rule: `CLAUDE_CONFIG_DIR` / `CODEX_HOME` reach a leaf through the
+        bwrap profile's `--setenv` alone, so that the home the leaf reads is the home
+        whose settings were SHA-pinned. A host copy must not create a second spelling.
+
+        WHAT THIS PINS, precisely: that `leaf_env_from` omits the two names. It does NOT
+        pin the `env.pop` loop in `_child_env` — measured, that loop can be deleted and
+        this test still passes, because the host copy never survives the filter to begin
+        with. The sibling below is the one that pins the pop."""
+        ort = wc_runtime
+        for backend in ("claude", "codex"):
+            with self.subTest(backend=backend):
+                c = wc.Conductor(
+                    repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                    orchestration_agent_run_id="ORCH", llm_config=_cfg(backend),
+                    env={**self._POISONED_HOST, "CLAUDE_CONFIG_DIR": "/host/.claude",
+                         "CODEX_HOME": "/host/.codex", "PATH": "/host/bin"})
+                env = c._child_env("child-1")
+                self.assertEqual(set(env) & set(ort._BACKEND_HOME_ENV_VARS), set())
+
+    def test_the_pop_is_what_keeps_a_declared_backend_home_out(self) -> None:
+        """The one path that puts a backend home back into the dict after the filter.
+
+        `_child_env`'s HTTP branch re-adds whatever name the entry's `api_key_env`
+        declares. An entry declaring `CODEX_HOME` therefore reintroduces a backend home
+        AFTER `leaf_env_from` removed it, and the `env.pop` loop is the only thing that
+        takes it out again — so this is the fixture under which deleting that loop fails.
+        Written because review measured the loop as unreachable by every existing test
+        and the comment above it claimed it was doing the enforcing."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        path.write_text(
+            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "phases:\n  generate:\n    substeps:\n      generate:\n"
+            "        provider: openai_compatible\n"
+            "        base_url: http://localhost:8000/v1\n"
+            "        api_key_env: CODEX_HOME\n"
+            "        model: local-coder\n", encoding="utf-8")
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                         orchestration_agent_run_id="ORCH",
+                         llm_config=lc.load_llm_config(path),
+                         env={"CODEX_HOME": "/host/.codex", "PATH": "/b"})
+        env = c._child_env("child-1", c.entry_for("generate", "generate"))
+        self.assertNotIn("CODEX_HOME", env)
+
+    def test_child_env_drops_metdsl_home_despite_the_prefix(self) -> None:
+        """`METDSL_HOME` is inside the allowed prefix and still must not travel: it is
+        the deprecated alias for codex's config home, so it is on the single-route side.
+        The prefix exception is what keeps the general rule general."""
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                         orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
+                         env={"METDSL_HOME": "/host/.codex", "METDSL_KEPT": "yes",
+                              "PATH": "/host/bin"})
+        env = c._child_env("child-1")
+        self.assertNotIn("METDSL_HOME", env)
+        self.assertEqual(env["METDSL_KEPT"], "yes")   # the prefix still works
+
+    def test_codex_home_conflict_still_raises_after_the_filter(self) -> None:
+        """The conflict check reads two names the filter now drops, so it had to move to
+        the HOST environment. If it had been left reading `_child_env`'s own dict it
+        would have gone quietly dead — two incompatible operator settings, no complaint."""
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                         orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
+                         env={"CODEX_HOME": "/a/one", "METDSL_HOME": "/b/two",
+                              "PATH": "/host/bin"})
+        with self.assertRaises(wc.SandboxEnforcementError):
+            c._child_env("child-1")
+
+    def test_codex_home_is_not_promoted_from_the_legacy_alias(self) -> None:
+        """The old code promoted `METDSL_HOME` into `child_env["CODEX_HOME"]`. No
+        host-side reader consumes that, and the home the leaf actually reads is the one
+        `record_launch` prepared and the profile `--setenv`s — so the promotion could
+        only ever name a DIFFERENT home than the one whose settings were pinned."""
+        c = wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                         orchestration_agent_run_id="ORCH", llm_config=_cfg("codex"),
+                         env={"METDSL_HOME": "/b/two", "PATH": "/host/bin"})
+        self.assertNotIn("CODEX_HOME", c._child_env("child-1"))
+
+    def _http_conductor(self, env: dict) -> wc.Conductor:
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = Path(d) / "llm.yaml"
+        path.write_text(
+            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "phases:\n  generate:\n    substeps:\n      generate:\n"
+            "        provider: openai_compatible\n"
+            "        base_url: http://localhost:8000/v1\n"
+            "        api_key_env: METDSL_TEST_HTTP_KEY\n"
+            "        model: local-coder\n", encoding="utf-8")
+        return wc.Conductor(repo_root=Path("/tmp/repo"), orchestration_id="orch_x",
+                            orchestration_agent_run_id="ORCH",
+                            llm_config=lc.load_llm_config(path), env=env)
+
+    def test_an_http_leaf_gets_the_credential_ITS_ENTRY_names(self) -> None:
+        """The one name the allowlist structurally cannot carry: the configuration FILE
+        chooses it, so it is forwarded by entry lookup, not by enumeration. `_api_key`
+        reads `child_env`, so without this every HTTP leaf would fail `missing_api_key`."""
+        c = self._http_conductor({"METDSL_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
+        env = c._child_env("child-1", c.entry_for("generate", "generate"))
+        self.assertEqual(env["METDSL_TEST_HTTP_KEY"], "sk-declared")
+
+    def test_an_http_leaf_gets_only_the_credential_its_entry_names(self) -> None:
+        """Forwarding by ENTRY, not by shape. A `*_API_KEY` the operator happens to have
+        exported is a credential the run did not choose; sending it to a base_url the run
+        DID choose is how a key reaches the wrong endpoint."""
+        c = self._http_conductor({"METDSL_TEST_HTTP_KEY": "sk-declared",
+                                  "OPENAI_API_KEY": "sk-stranger",
+                                  "ANTHROPIC_API_KEY": "sk-stranger-2", "PATH": "/b"})
+        env = c._child_env("child-1", c.entry_for("generate", "generate"))
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_an_absent_http_credential_is_absent_not_empty(self) -> None:
+        """`llm_http_leaf._api_key` already fails closed NAMING the variable
+        (`missing_api_key`), which is a better message than an empty header — so the
+        conductor must not manufacture a `""` that would make the header look present."""
+        c = self._http_conductor({"PATH": "/b"})
+        env = c._child_env("child-1", c.entry_for("generate", "generate"))
+        self.assertNotIn("METDSL_TEST_HTTP_KEY", env)
+
+    def test_a_cli_leaf_does_not_get_the_http_credential(self) -> None:
+        """The delta is per-KIND. `defaults` in the same file is a claude_cli entry, and a
+        CLI leaf's environment is rendered into a persisted bwrap profile — a credential
+        landing there would be written to disk in `sandbox_profiles/<arid>.json`.
+
+        The fixture name is deliberately inside the `METDSL_` prefix, because that is the
+        case that actually bites: the prefix would forward it, and only the "a declared
+        `api_key_env` name is a credential" rule takes it back out. With a name outside
+        the prefix this test would have passed while the hole stayed open — it did, and
+        that is how the hole was found."""
+        c = self._http_conductor({"METDSL_TEST_HTTP_KEY": "sk-declared", "PATH": "/b"})
+        env = c._child_env("child-1", c.entry_for("compile", "generate"))
+        self.assertFalse(c.entry_for("compile", "generate").is_http)
+        self.assertNotIn("METDSL_TEST_HTTP_KEY", env)
+
+
+class LeafEnvThreadingSiteTest(unittest.TestCase):
+    """The two seams where the AUTHORED dict has to reach the DELIVERER.
+
+    Both were surviving mutations: reverting `record_launch`'s stdin threading, and
+    reverting `_readonly_sandbox_profile`'s `child_env=`, each left the whole suite
+    green. Neither is visible in a `_child_env` test (the dict is right, it just does
+    not get there) or in a render test (the profile is right, it was built from the
+    wrong source), which is exactly the shape a per-layer test set misses.
+    """
+
+    _HOST = {"PATH": "/host/bin", "HOME": "/host/home",
+             "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
+             "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001"}
+
+    def _conductor(self, repo: Path) -> wc.Conductor:
+        return wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                            env=dict(self._HOST))
+
+    def test_record_launch_sends_the_authored_env_on_stdin(self) -> None:
+        """Asserted on the runtime call's `input=`, and on the argv NOT carrying the
+        values: stdin is the point, because argv is readable in `ps` by every process on
+        the host and an HTTP entry's credential can be in this dict."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+            c = self._conductor(repo)
+            seen: dict = {}
+
+            def fake_runtime(argv, *, input=None):
+                seen["argv"], seen["input"] = list(argv), input
+                return {}
+
+            c.runtime = fake_runtime            # type: ignore[assignment]
+            c._write_launch_input_evidence = lambda name, payload: "ref"  # type: ignore[assignment]
+            c.record_launch("child-1", {"step": "generate", "substep": "generate"},
+                            c.entry_for("generate", "generate"))
+        self.assertIn("--child-env-from-stdin", seen["argv"])
+        self.assertIsNotNone(seen["input"])
+        sent = json.loads(seen["input"])
+        # identical to what the spawn will pass — the same deterministic author
+        self.assertEqual(sent, c._child_env("child-1", c.entry_for("generate", "generate")))
+        self.assertEqual(sent["HOME"], "/host/home")
+        self.assertNotIn("ANTHROPIC_BASE_URL", sent)
+        # ...and not on the argv, in any element
+        self.assertNotIn("/host/home", "\x00".join(seen["argv"]))
+
+    def test_the_readonly_diagnostician_profile_is_built_from_the_conductors_env(self) -> None:
+        """The diagnostician is the ONE leaf whose profile is built in-process, so it is
+        the one place where the builder's `os.environ` fallback and `self.env` can differ.
+        Poison only the PROCESS environment: `self.env` is clean, so anything of the
+        process environment appearing in the profile came from the fallback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "h").mkdir()
+            # OUTSIDE repo_root: a backend home inside the repo is refused outright.
+            home_parent = Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, home_parent, True)
+            home = home_parent / "private-home"
+            home.mkdir()
+            (home / "settings.json").write_text("{}", encoding="utf-8")
+            c = wc.Conductor(repo_root=repo, orchestration_id="orch_x",
+                             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                             env={"PATH": "/conductor/bin", "HOME": str(repo / "h")})
+            # The home PREPARATION is not what is under test — the `child_env=` wiring is
+            # — and preparing a real one needs a whole initialised orchestration.
+            with mock.patch.object(wc_runtime, "_prepare_claude_workflow_home",
+                                   return_value={"home": str(home),
+                                                 "settings": str(home / "settings.json"),
+                                                 "generation": 1, "settings_sha256": "x"}):
+                with mock.patch.dict(os.environ,
+                                     {"ANTHROPIC_MODEL": "claude-haiku-4-5-20251001",
+                                      "PATH": "/process/bin"}):
+                    profile = c._readonly_sandbox_profile()
+        self.assertEqual(profile["env"]["PATH"], "/conductor/bin")
+        self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
+        self.assertEqual(profile["env"]["CLAUDE_CONFIG_DIR"], str(home))
+
+
+class LeafEnvSpawnSiteGuardTest(unittest.TestCase):
+    """`_child_env` is the single AUTHOR of a leaf's environment. That is only true while
+    every production launch goes through it — a fifth `spawn_leaf(` site that handed
+    `self.env`, or a hand-built dict, would reopen the whole face and no behaviour test
+    would notice, because it would be a code path the suite does not drive.
+
+    Read at the SOURCE (precedent: `test_the_recorded_setting_sources_is_the_argv_token`'s
+    neighbours) rather than by monkeypatching, because the suite defines eight fake
+    `spawn_leaf` doubles and a runtime check would have to be taught about all of them."""
+
+    def _sites(self) -> list:
+        import ast
+        src = (REPO_ROOT / "tools" / "workflow_conductor.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        out = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if (isinstance(fn, ast.Attribute) and fn.attr == "spawn_leaf"
+                    and isinstance(fn.value, ast.Name) and fn.value.id == "self"):
+                out.append(node)
+        return out
+
+    def test_every_production_spawn_authors_its_env_through_child_env(self) -> None:
+        sites = self._sites()
+        # A count assertion so the guard cannot pass by finding nothing: if the call
+        # spelling changes (a helper, a different receiver), this fails and is re-read
+        # rather than going quietly vacuous.
+        self.assertEqual(len(sites), 4, "spawn_leaf call sites changed; re-read the guard")
+        import ast
+        for node in sites:
+            with self.subTest(line=node.lineno):
+                self.assertGreaterEqual(len(node.args), 2,
+                                        "child_env is the second positional argument")
+                arg = node.args[1]
+                self.assertTrue(
+                    isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute)
+                    and arg.func.attr == "_child_env"
+                    and isinstance(arg.func.value, ast.Name) and arg.func.value.id == "self",
+                    f"line {node.lineno} passes {ast.dump(arg)[:80]} rather than "
+                    f"self._child_env(...)")
 
 
 class LeafTransientRetryTest(unittest.TestCase):
@@ -6838,10 +7184,12 @@ class LeafSpawnTest(unittest.TestCase):
         this repository, recorded by the run, or reproducible from its artifacts.
 
         Four flags close it, and each is asserted for what it must be, not merely that it
-        is present: the setting sources are exactly `project` (a list that still named
-        `user` would read the operator's home again), and the MCP configuration is the
-        committed file, paired with `--strict-mcp-config` so it REPLACES the ambient server
-        set instead of adding to it.
+        is present: the setting source is exactly `user` — which under the private
+        `CLAUDE_CONFIG_DIR` the profile sets means the repo's own SHA-pinned
+        `leaf_config/claude/settings.json`, NOT the operator's `~/.claude` — and the MCP
+        configuration is the committed file, paired with `--strict-mcp-config` so it
+        REPLACES the ambient server set instead of adding to it. (This docstring said
+        `project` while the assertion below said `user`; the assertion was right.)
         """
         argv = self._c(backend="claude").leaf_command()
         self.assertEqual(argv[argv.index("--setting-sources") + 1], "user")
@@ -7749,6 +8097,9 @@ class LeafSpawnTest(unittest.TestCase):
             (prof_dir / "A.json").write_text(json.dumps({
                 "repo_root": str(repo), "tmp_dir": str(ws_tmp),
                 "workspace_tmp_rw_abs": str(ws_tmp),
+                # `render_bwrap_command` fails closed on an env-less profile: under
+                # `--clearenv` the leaf would get NO environment at all.
+                "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
                 "read_roots": [], "write_roots": [],
                 "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             }), encoding="utf-8")
@@ -7891,6 +8242,9 @@ class LeafSpawnTest(unittest.TestCase):
             (prof_dir / "A.json").write_text(json.dumps({
                 "repo_root": str(repo), "tmp_dir": str(ws_tmp),
                 "workspace_tmp_rw_abs": str(ws_tmp),
+                # `render_bwrap_command` fails closed on an env-less profile: under
+                # `--clearenv` the leaf would get NO environment at all.
+                "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
                 "read_roots": [], "write_roots": [],
                 "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
             }), encoding="utf-8")
@@ -7922,6 +8276,8 @@ class LeafSpawnTest(unittest.TestCase):
         (prof_dir / "A.json").write_text(json.dumps({
             "repo_root": str(repo), "tmp_dir": str(ws_tmp),
             "workspace_tmp_rw_abs": str(ws_tmp),
+            # see the sibling fixtures: an env-less profile no longer renders.
+            "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(ws_tmp)},
             "read_roots": [], "write_roots": [],
             "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
         }), encoding="utf-8")
@@ -17033,7 +17389,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
-        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
         c.record_launch("arid-2", {}, c.entry_for("validate", "judge"))
@@ -17053,7 +17409,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "  command: /opt/wrap/claude --sandbox\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        command: /opt/other/claude\n"))
-        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         for phase, substep in (("generate", "generate"), ("validate", "judge")):
             entry = c.entry_for(phase, substep)
@@ -17068,7 +17424,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                                 entry: "wc.ResolvedLeafEntry | None") -> dict:
         """Drive the real `record_launch` and return the response payload it sent."""
         recorded: list[dict] = []
-        c.runtime = lambda argv: (                                  # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
             recorded.append(json.loads(argv[argv.index("--response-json") + 1])) or {})
         c.record_launch(arid, request, entry)
         return recorded[-1]
@@ -17314,7 +17670,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         calls: list[list[str]] = []
-        c.runtime = lambda argv: (calls.append(list(argv)) or {})   # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: (calls.append(list(argv)) or {})   # type: ignore[assignment]
         with self.assertRaises(OSError):
             c.record_launch("arid-1", {"step": "generate", "substep": "generate"},
                             c.entry_for("generate", "generate"))
@@ -17347,7 +17703,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                     b"{}", b"[]", b"123", b'"a string"', b'{"mcpServers": []}',
                     b'{"mcpServers": null}'):
             (repo / wc.CLAUDE_LEAF_MCP_CONFIG).write_bytes(bad)
-            c.runtime = lambda argv: {}                          # type: ignore[assignment]
+            c.runtime = lambda argv, *, input=None: {}                          # type: ignore[assignment]
             with self.assertRaises(OSError, msg=repr(bad)) as caught:
                 c.record_launch("arid-1", {"step": "generate", "substep": "generate"}, entry)
             self.assertIn(".mcp.json", str(caught.exception))
@@ -17396,7 +17752,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
-        c.runtime = lambda argv: {}                                 # type: ignore[assignment]
+        c.runtime = lambda argv, *, input=None: {}                                 # type: ignore[assignment]
         with self.assertRaises(OSError) as caught:
             c.record_launch("arid-1", {}, c.entry_for("generate", "generate"))
         # Read the message THIS code composes (`args[0]`), not `str(exception)`: the chained

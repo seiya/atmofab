@@ -303,9 +303,13 @@ class ResolvedLeafEntry:
     this sentence deliberately does not restate it. (It has been restated wrongly three
     times here — first asserting the operator's settings decide, then that a leaf never
     reads them, then that on the agentic path the prediction constrains the outcome. The
-    last is false too: `--setting-sources` closes the settings-file channel, not
-    the ENVIRONMENT, and `ANTHROPIC_MODEL` reaches the leaf regardless — measured, issue
-    #63. A fourth wording is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
+    last was true when it was written: `--setting-sources` closes the settings-file
+    channel, not the ENVIRONMENT, and `ANTHROPIC_MODEL` then decided the unpinned model
+    — measured, issue #63. That environment channel is now closed too: the conductor's
+    `_child_env` reconstructs the leaf environment from
+    `orchestration_runtime.LEAF_ENV_ALLOWLIST`, which `ANTHROPIC_MODEL` is outside, so an
+    unpinned model is decided by the CLI's own default and nothing else. A fifth wording
+    is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
     omission, caught at run START by `validate_runnable` rather than at load, so that a
     configuration whose codex slug has been blanked still LOADS — and can be tested, and can be
     reported on — instead of failing where the rule cannot be named."""
