@@ -406,6 +406,34 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertTrue((entry / "claude" / "transcript.jsonl").is_file(),
                         "a live leaf's transcript was deleted on a stale verdict")
 
+    def test_metadata_that_vanishes_before_the_delete_refuses_rather_than_proceeds(self) -> None:
+        """Verifiable a moment ago and not now is the UNVERIFIABLE answer, not a green light.
+
+        The locked re-read refuses a status that stopped being terminal; the other way it
+        can stop being terminal is by ceasing to exist — the owner checkout removed while
+        the prune runs. Continuing there would delete on the strength of metadata nobody
+        can produce any more, which is exactly what `--allow-unverifiable` is the operator's
+        way of saying on purpose.
+
+        Only the VERIFIED path reaches this: an entry that was unverifiable from the start
+        never takes the lock, which the neighbouring test pins.
+        """
+        entry = self._entry("orch_x", status="pass")
+        meta_dir = self.root / "repo_orch_x" / "workspace" / "orchestrations" / "orch_x"
+        real_inspect = pwh.inspect_entry
+
+        def _inspect_then_remove_checkout(*args, **kwargs):
+            report = real_inspect(*args, **kwargs)
+            (meta_dir / "orchestration_meta.json").unlink()
+            return report
+
+        with mock.patch.object(pwh, "inspect_entry", _inspect_then_remove_checkout):
+            reports, code = self._prune(orchestration_ids=["orch_x"], delete=True)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_NOT_TERMINAL)
+        self.assertFalse(reports[0]["deleted"])
+        self.assertEqual(code, 2)
+        self.assertTrue((entry / "claude" / "transcript.jsonl").is_file())
+
     def test_an_unverifiable_entry_still_deletes_without_an_owner_to_lock(self) -> None:
         """The re-read must not become a new refusal for the case it cannot apply to.
 
