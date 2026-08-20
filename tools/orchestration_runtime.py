@@ -16016,7 +16016,8 @@ def _probe_codex_project_hooks(repo_root: Path | None) -> dict[str, Any]:
             "detail": f"validated repository hook source: {path}"}
 
 
-def _require_secure_backend_home(home: Path, label: str = "Codex") -> None:
+def _require_secure_backend_home(home: Path, label: str = "Codex", *,
+                                 tighten: bool = False) -> None:
     """Fail closed unless ``home`` is a private, non-symlinked directory.
 
     ONE spelling for both backends: the Claude private home (issue #63) has the
@@ -16025,6 +16026,20 @@ def _require_secure_backend_home(home: Path, label: str = "Codex") -> None:
     SHA-pinned, so the pin would certify bytes the leaf never loads. ``label``
     only names the backend in the message; the checks are identical by design and
     must not be allowed to drift apart per backend.
+
+    ``tighten`` decides what a WRONG MODE means, and the two callers want different
+    answers. On REUSE the home already exists and its mode may have drifted — a backup
+    restored without permissions is the ordinary way — so the mode is established, exactly
+    as `_require_secure_home_ancestor` does one level up. Refusing there made a drift on
+    the home itself brick every later launch of that orchestration FOREVER, with no chmod
+    named in the message, while the identical drift on its parent was silently fixed: the
+    justification written for the ancestors applied word for word to the leaf and had not
+    been carried there. Immediately AFTER creation the answer is the opposite and
+    ``tighten`` stays False, because there the check exists to catch a chmod that did not
+    take, and tightening would be the very thing it is watching for.
+
+    Symlink, non-directory and foreign uid refuse in both modes: those are disagreements
+    no chmod resolves.
     """
     try:
         info = home.lstat()
@@ -16035,7 +16050,51 @@ def _require_secure_backend_home(home: Path, label: str = "Codex") -> None:
     if info.st_uid != os.getuid():
         raise ValueError(f"isolated {label} home is not owned by this user: {home}")
     if stat.S_IMODE(info.st_mode) != 0o700:
-        raise ValueError(f"isolated {label} home must have mode 0700: {home}")
+        if not tighten:
+            raise ValueError(f"isolated {label} home must have mode 0700: {home}")
+        _chmod_directory_no_follow(home, 0o700, label)
+        after = home.lstat()
+        if stat.S_IMODE(after.st_mode) != 0o700:
+            raise ValueError(
+                f"isolated {label} home is still not mode 0700 after chmod (got "
+                f"{stat.S_IMODE(after.st_mode):#o}); the filesystem holding {home} does "
+                "not support it, so the leaf's transcripts cannot be kept private there"
+            )
+
+
+def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
+    """`chmod` a DIRECTORY without following a symlink at that path.
+
+    `os.chmod` follows symlinks, so between the `lstat` that approved a path and the
+    `chmod` that tightens it, the directory can be replaced by a link and the mode of an
+    unrelated path is changed instead — with the re-read then failing and blaming the
+    FILESYSTEM, which sends the operator after the wrong thing entirely. MEASURED: a
+    victim directory outside the tree came back 0o700 while the refusal said "does not
+    support it".
+
+    Opening with `O_NOFOLLOW | O_DIRECTORY` and using `fchmod` closes both halves: the
+    open refuses the substituted link, so nothing else is touched and the diagnosis stays
+    about this path. Only another process of the SAME uid can run the race at all — the
+    tree is 0700 and a leaf cannot see it — which is why this is cheap insurance rather
+    than a defence.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(str(path), flags)
+    except OSError as exc:
+        raise ValueError(
+            f"isolated {label} home path could not be opened as a real directory to set "
+            f"its mode: {path}: {exc}"
+        ) from exc
+    try:
+        os.fchmod(fd, mode)
+    except OSError as exc:
+        raise ValueError(
+            f"isolated {label} home path mode could not be changed to {mode:#o}: "
+            f"{path}: {exc}"
+        ) from exc
+    finally:
+        os.close(fd)
 
 
 # `WORKFLOW_HOMES_ROOT_ENV` and the resolver below are IMPORTED from
@@ -16144,13 +16203,7 @@ def _require_secure_home_ancestor(path: Path, label: str, *, require_private: bo
     if info.st_uid != os.getuid():
         raise ValueError(f"isolated {label} home ancestor is not owned by this user: {path}")
     if require_private and stat.S_IMODE(info.st_mode) != 0o700:
-        try:
-            os.chmod(path, 0o700)
-        except OSError as exc:
-            raise ValueError(
-                f"isolated {label} home ancestor must have mode 0700 and could not be "
-                f"changed to it: {path}: {exc}"
-            ) from exc
+        _chmod_directory_no_follow(path, 0o700, label)
         # Re-read rather than assume: on a filesystem that does not honour the mode
         # (a FAT/exFAT mount, some network filesystems) the chmod succeeds and changes
         # nothing, and descending would put the transcripts somewhere world-readable.
@@ -16725,7 +16778,9 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
                 # guard. (An earlier version of this comment said it was.)
                 rotate_missing_home = True
             else:
-                _require_secure_backend_home(home, "Claude")
+                # `tighten=True`: this is the REUSE path, where a drifted mode is a
+                # thing to fix rather than a launch to lose. See the helper's docstring.
+                _require_secure_backend_home(home, "Claude", tighten=True)
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # `<homes-root>/<oid>/claude`, NOT a temporary directory, for the same
             # reason as the codex twin: this home holds the leaf's only conversation
@@ -16915,7 +16970,8 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
                 # which is path-independent and therefore unaffected.
                 rotate_missing_home = True
             else:
-                _require_secure_backend_home(home)
+                # `tighten=True` for the same reason as the Claude twin above.
+                _require_secure_backend_home(home, tighten=True)
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
             # leaf scratch.  This home is a writable backend-state bind and must

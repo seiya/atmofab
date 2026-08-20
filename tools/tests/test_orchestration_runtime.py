@@ -35097,32 +35097,83 @@ class ClaudeWorkflowHomeTests(unittest.TestCase):
             plain.mkdir()
             self.assertEqual(_claude_trust_key(plain), str(plain.resolve()))
 
-    def test_an_insecure_recorded_home_is_refused(self) -> None:
+    def test_an_insecure_recorded_home_is_made_private_or_refused(self) -> None:
         """The SHA pin means nothing if the directory holding it is not private.
 
-        `_require_secure_backend_home` is what makes "the bytes I pinned are the
-        bytes the leaf loads" true; a world-writable or symlinked home lets another
-        process substitute the settings between the pin and the launch. Measured:
-        stubbing the mode check left the suite green, so it had no witness.
+        `_require_secure_backend_home` is what makes "the bytes I pinned are the bytes the
+        leaf loads" true; a world-writable or symlinked home lets another process
+        substitute the settings between the pin and the launch. Measured once: stubbing
+        the mode check left the suite green, so it had no witness.
+
+        The MODE half is now established rather than demanded, and the rename says so. A
+        drifted mode on the home used to refuse every later launch of that orchestration
+        FOREVER, with no chmod named in the message, while the identical drift one level
+        up on its own parent was silently fixed — the justification written for the
+        ancestors ("a backup restored without permissions is the ordinary way") applied
+        word for word to the leaf and had not been carried there. What must hold after the
+        call is the property, so that is what is asserted.
+
+        The other two halves still refuse, and are asserted here beside it so the
+        tightening cannot be read as "the check went away": a symlink and a
+        non-directory are disagreements no chmod resolves.
         """
         from tools.orchestration_runtime import _prepare_claude_workflow_home
         with tempfile.TemporaryDirectory() as td:
             root = self._repo(td)
-            loose = Path(td) / "loose_home"
-            loose.mkdir(mode=0o755)
             meta_path = (root / "workspace" / "orchestrations" / "orch_h"
                          / "orchestration_meta.json")
-            meta_path.write_text(json.dumps({"claude_workflow_home": str(loose)}),
-                                 encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "mode 0700"):
-                _prepare_claude_workflow_home(root, "orch_h")
+            for mode in (0o755, 0o777, 0o750):
+                with self.subTest(mode=oct(mode)):
+                    loose = Path(td) / f"loose_home_{mode:o}"
+                    loose.mkdir(mode=mode)
+                    os.chmod(loose, mode)
+                    meta_path.write_text(json.dumps({"claude_workflow_home": str(loose)}),
+                                         encoding="utf-8")
+                    _prepare_claude_workflow_home(root, "orch_h")
+                    self.assertEqual(loose.stat().st_mode & 0o777, 0o700)
+                    # ...and the SECOND launch, the one that used to be bricked forever.
+                    _prepare_claude_workflow_home(root, "orch_h")
 
+            private = Path(td) / "private_home"
+            private.mkdir(mode=0o700)
             symlinked = Path(td) / "symlinked_home"
-            symlinked.symlink_to(loose)
+            symlinked.symlink_to(private)
             meta_path.write_text(json.dumps({"claude_workflow_home": str(symlinked)}),
                                  encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "real directory"):
                 _prepare_claude_workflow_home(root, "orch_h")
+
+            not_a_dir = Path(td) / "a_file"
+            not_a_dir.write_text("", encoding="utf-8")
+            meta_path.write_text(json.dumps({"claude_workflow_home": str(not_a_dir)}),
+                                 encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "real directory"):
+                _prepare_claude_workflow_home(root, "orch_h")
+
+    def test_the_tightening_chmod_does_not_follow_a_substituted_symlink(self) -> None:
+        """`os.chmod` follows links; the tightening must not.
+
+        Between the `lstat` that approves a path and the `chmod` that tightens it, another
+        process of the same uid can replace the directory with a link — and the mode of an
+        UNRELATED path is changed while the refusal that follows blames the FILESYSTEM,
+        sending the operator after the wrong thing entirely. Measured before the fix: a
+        victim directory outside the tree came back 0o700 under a message saying the
+        filesystem "does not support it".
+
+        Driven by handing the helper a path that IS a symlink, which is the state the race
+        produces; the open refuses it, nothing else is touched, and the diagnosis names
+        this path.
+        """
+        from tools.orchestration_runtime import _chmod_directory_no_follow
+        with tempfile.TemporaryDirectory() as td:
+            victim = Path(td) / "victim"
+            victim.mkdir(mode=0o755)
+            link = Path(td) / "link"
+            link.symlink_to(victim)
+            with self.assertRaisesRegex(ValueError, "could not be opened as a real directory"):
+                _chmod_directory_no_follow(link, 0o700, "Claude")
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o755,
+                             "the chmod followed the link and changed an unrelated path")
 
     def test_a_tampered_settings_copy_fails_closed(self) -> None:
         """The pin is worth nothing if a changed copy is accepted on the next launch."""
@@ -35493,7 +35544,10 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             homes_root = self._homes_root()
             homes_root.mkdir(parents=True, exist_ok=True)
             os.chmod(homes_root, 0o755)
-            with mock.patch("os.chmod"):  # a chmod that "succeeds" and does nothing
+            # `os.fchmod`, not `os.chmod`: the tightening goes through
+            # `_chmod_directory_no_follow`, which opens the directory and uses the
+            # descriptor so a substituted symlink cannot redirect it.
+            with mock.patch("os.fchmod"):  # a chmod that "succeeds" and does nothing
                 with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
                     _prepare_claude_workflow_home(root, "orch_d")
             os.chmod(homes_root, 0o700)
@@ -35565,7 +35619,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             os.chmod(homes_root / "orch_d", 0o700)
             previous = os.umask(0o300)
             try:
-                with mock.patch("os.chmod"):  # succeeds, changes nothing
+                with mock.patch("os.chmod"), mock.patch("os.fchmod"):
                     with self.assertRaisesRegex(ValueError, "must have mode 0700"):
                         _prepare_claude_workflow_home(root, "orch_d")
             finally:
@@ -35688,6 +35742,34 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "claimed by orchestration"):
                 _create_workflow_backend_home(repo, "orch_d", "claude", "Claude")
             self.assertFalse((oid_dir / "claude").exists())
+
+    def test_the_suites_own_homes_guard_raises_before_anything_is_created(self) -> None:
+        """A witness for `tools/tests/conftest.py`'s guard, which had none.
+
+        It was the ONLY survivor of a reviewer's 18-mutant sweep: replacing its condition
+        with `if False:` left all 5022 tests green. A safety net surviving mutation is
+        expected — nothing normally trips it — but this one was introduced at the cost of
+        a reviewer's mutant leaving four real directories in the operator's
+        `~/.met-dsl/homes`, and the conftest docstring calls it "the one that actually
+        holds". A layer described that way and observed by nothing is a claim, not a
+        layer.
+
+        Driven the way the accident happened: the redirect is removed, so the resolver
+        falls back to `operator_secret_root()/homes`. The assertion is on BOTH halves of
+        what "prevent, not detect" means — it raises, and the directory does not exist
+        afterwards.
+        """
+        import tools.orchestration_runtime as runtime
+        from tools.hooks.common import operator_secret_root
+        real_root = operator_secret_root() / "homes"
+        existed_before = real_root.exists()
+        env = {k: v for k, v in os.environ.items()
+               if k != ort.WORKFLOW_HOMES_ROOT_ENV}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(AssertionError, "operator's real secret root"):
+                runtime._workflow_homes_root()
+        self.assertEqual(real_root.exists(), existed_before,
+                         "the guard let something be created in the operator's tree")
 
     def test_an_orchestration_id_that_is_not_a_plain_token_is_refused(self) -> None:
         """The id becomes a path segment OUTSIDE the repository.

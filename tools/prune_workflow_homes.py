@@ -60,23 +60,40 @@ from pathlib import Path
 from typing import Any
 
 try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
+    import orchestration_runtime as _runtime
     from orchestration_runtime import (
         IDEMPOTENT_TERMINAL_STATUSES,
+        WORKFLOW_BACKEND_HOME_DIRNAMES,
         WORKFLOW_HOME_OWNER_FILENAME,
         WORKFLOW_HOMES_ROOT_ENV,
         _is_safe_path_id,
         _orchestration_meta_exclusive_lock,
-        _workflow_homes_root,
     )
 except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package execution
+    from tools import orchestration_runtime as _runtime
     from tools.orchestration_runtime import (
         IDEMPOTENT_TERMINAL_STATUSES,
+        WORKFLOW_BACKEND_HOME_DIRNAMES,
         WORKFLOW_HOME_OWNER_FILENAME,
         WORKFLOW_HOMES_ROOT_ENV,
         _is_safe_path_id,
         _orchestration_meta_exclusive_lock,
-        _workflow_homes_root,
     )
+
+
+def _workflow_homes_root() -> Path:
+    """The homes root, resolved through the MODULE rather than a bound function object.
+
+    `from orchestration_runtime import _workflow_homes_root` binds the function at import
+    time, so anything that later replaces the module attribute — the suite's guard in
+    `tools/tests/conftest.py`, which exists to stop a test writing into the operator's
+    real `~/.met-dsl` — does not reach this module at all. Measured: with the guard
+    installed and the redirect cleared, `prune --all` resolved the operator's real root
+    and the guard never fired. Report-only, so nothing was removed, but the ONE module
+    that deletes was the one outside the guard, and the conftest docstring claimed it
+    wrapped "the ONE function that decides where a home goes".
+    """
+    return _runtime._workflow_homes_root()
 
 # `fail_closed` is terminal for this purpose and is not in `TERMINAL_STATUSES`:
 # `IDEMPOTENT_TERMINAL_STATUSES` is the set that already means "this run is over" to
@@ -85,6 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package e
 DELETABLE_STATUSES = IDEMPOTENT_TERMINAL_STATUSES
 
 VERDICT_DELETABLE = "deletable"
+REFUSED_NOT_A_BACKEND_HOME = "refused:not_a_backend_home"
 REFUSED_INVALID_ORCHESTRATION_ID = "refused:invalid_orchestration_id"
 REFUSED_NOT_A_DIRECTORY = "refused:not_a_directory"
 REFUSED_FOREIGN_OWNER_UID = "refused:foreign_owner_uid"
@@ -185,6 +203,26 @@ def inspect_entry(entry: Path, orchestration_id: str) -> dict[str, Any]:
     except OSError:
         report["backends"] = []
     report["size_bytes"] = _directory_size_bytes(entry)
+    # WHAT THE ENTRY IS, before anything about who owns it. `--homes-root` is a caller
+    # argument like any other and was never validated, so the three refusals this module
+    # documents as "fail-closed in three independent places" could all be aimed somewhere
+    # else with one flag: `--homes-root ~ --all --allow-unverifiable --delete` reported
+    # `Documents … DELETED` and `Pictures … DELETED` and removed them (measured). The same
+    # class and the same argument as the `--orchestration-id` separator hole fixed
+    # earlier on this branch — operator argv, but missing input validation rather than
+    # deliberate circumvention, and the loss is unrecoverable.
+    #
+    # The check is on the SHAPE rather than on the path, because the override exists for
+    # tests and for an operator with a reason, and pinning it to the default root would
+    # take the lever away. A backend home always has at least one subdirectory and every
+    # subdirectory is a declared backend name — `_create_workflow_backend_home` makes the
+    # backend directory before it writes the marker, so there is no valid state without
+    # one. RESIDUE, stated: a half-deleted entry has neither and is refused here, and the
+    # operator removes it by hand.
+    subdirs = set(report["backends"])
+    if not subdirs or not subdirs.issubset(set(WORKFLOW_BACKEND_HOME_DIRNAMES)):
+        report["verdict"] = REFUSED_NOT_A_BACKEND_HOME
+        return report
     marker = _read_owner_marker(entry)
     if not marker or marker.get("orchestration_id") != orchestration_id:
         report["verdict"] = REFUSED_UNVERIFIABLE_OWNER
@@ -230,19 +268,32 @@ def _delete_under_owner_lock(entry: Path, homes_root: Path,
     itself holds while writing a status, so a resume cannot slip between this re-read and
     the `rmtree` the way it could between the two calls.
 
-    An entry with no verifiable owner (the `--allow-unverifiable` route) has no status to
-    race and no lock to take: the re-read is skipped and the delete proceeds, which is
-    the same answer the check gave.
+    An entry going through the `--allow-unverifiable` route is skipped entirely: its
+    verdict was never "the owner says this is terminal", so there is no verdict to
+    re-verify and nothing to race. GATED ON THE VERDICT, not on whether a repo path
+    happens to be recorded — an unverifiable entry usually HAS one (that is how the tool
+    discovered the checkout is gone), and gating on the path alone sent it down the
+    locked branch, where the absent metadata refused it. That turned the fix for the race
+    into an over-refusal that made `--allow-unverifiable` useless, which is the direction
+    fixes on this branch fail in most often; caught by the witness written for that flag.
     """
     raw_repo = report.get("owner_repo_root") or ""
     orchestration_id = report.get("orchestration_id") or ""
-    if not raw_repo or not orchestration_id:
+    if report.get("verdict") != VERDICT_DELETABLE or not raw_repo or not orchestration_id:
         _delete_entry(entry, homes_root)
         return
     repo_root = Path(raw_repo)
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         status = _read_status_locked(repo_root, orchestration_id)
-        if status is not None and status not in DELETABLE_STATUSES:
+        if status is None:
+            # The metadata that authorised this deletion is GONE since `inspect_entry`
+            # read it — the checkout was removed mid-prune. It was verifiable a moment
+            # ago and is not now, so the honest answer is the unverifiable one, and the
+            # operator can say `--allow-unverifiable` if that is what they meant. This
+            # branch is reached only on the VERIFIED path; an entry that was unverifiable
+            # from the start never takes the lock at all.
+            raise _StatusChangedDuringPrune("unknown")
+        if status not in DELETABLE_STATUSES:
             raise _StatusChangedDuringPrune(status)
         _delete_entry(entry, homes_root)
 

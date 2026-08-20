@@ -210,6 +210,68 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(reports[0]["verdict"], pwh.REFUSED_UNVERIFIABLE_OWNER)
         self.assertEqual(reports[0]["status"], "")
 
+    def test_a_homes_root_that_is_not_one_deletes_nothing(self) -> None:
+        """`--homes-root` is a caller argument, and it was never validated.
+
+        The three refusals this module documents as "fail-closed in three independent
+        places" could all be aimed somewhere else with one flag: pointed at a home
+        directory, `--all --allow-unverifiable --delete` reported `Documents … DELETED`
+        and `Pictures … DELETED`, and removed them. Same class and same argument as the
+        `--orchestration-id` separator hole fixed earlier here — operator argv, but
+        missing input validation, and the loss is unrecoverable.
+
+        The check is on the SHAPE of the entry, not on the path, because the override
+        exists for tests and for an operator with a reason. A real backend home has at
+        least one subdirectory and every subdirectory is a declared backend name.
+        """
+        ordinary = self.root / "not_a_homes_root"
+        (ordinary / "Documents" / "thesis").mkdir(parents=True)
+        (ordinary / "Documents" / "thesis" / "chapter1.tex").write_text(
+            "my thesis\n", encoding="utf-8")
+        (ordinary / "Pictures").mkdir()
+        reports, code = pwh.prune(ordinary, orchestration_ids=None, delete=True,
+                                  allow_unverifiable=True)
+        self.assertEqual({r["verdict"] for r in reports},
+                         {pwh.REFUSED_NOT_A_BACKEND_HOME})
+        self.assertFalse(any(r["deleted"] for r in reports))
+        self.assertTrue((ordinary / "Documents" / "thesis" / "chapter1.tex").is_file())
+        self.assertTrue((ordinary / "Pictures").is_dir())
+        self.assertEqual(code, 0, "an --all sweep reports its refusals rather than exiting 2")
+
+    def test_an_entry_with_an_unknown_backend_directory_is_refused(self) -> None:
+        """The subset check, both halves, against a real homes root.
+
+        A directory that is otherwise a perfect entry — correct marker, terminal owner —
+        but carries a subdirectory that is not a declared backend is not this tool's to
+        delete. And the CONTROL matters as much: an entry holding exactly the declared
+        backends must still go, or the check has replaced the tool's purpose.
+        """
+        self._entry("orch_ok", status="pass", backends=("claude", "codex"))
+        self._entry("orch_extra", status="pass", backends=("claude", "notes"))
+        reports, _ = self._prune(delete=True)
+        by_id = {r["orchestration_id"]: r for r in reports}
+        self.assertEqual(by_id["orch_extra"]["verdict"], pwh.REFUSED_NOT_A_BACKEND_HOME)
+        self.assertFalse(by_id["orch_extra"]["deleted"])
+        self.assertTrue(by_id["orch_ok"]["deleted"])
+
+    def test_the_homes_root_is_resolved_through_the_module_the_suite_guards(self) -> None:
+        """`from … import _workflow_homes_root` put this module outside the suite's guard.
+
+        Importing the NAME binds the function object at import time, so
+        `tools/tests/conftest.py` replacing the module attribute — the guard that exists
+        to stop a test writing into the operator's real `~/.met-dsl` — did not reach the
+        one module that DELETES. Measured: with the guard installed and the redirect
+        cleared, `prune --all` resolved the operator's real root and the guard never
+        fired.
+
+        Pinned by patching the module attribute and checking that this module follows,
+        which is exactly what the guard does.
+        """
+        sentinel = self.root / "sentinel_root"
+        with mock.patch.object(pwh._runtime, "_workflow_homes_root",
+                               return_value=sentinel):
+            self.assertEqual(pwh._workflow_homes_root(), sentinel)
+
     def test_a_symlinked_entry_is_refused_and_its_target_survives(self) -> None:
         """`rmtree` through a symlink removes whatever is on the other side."""
         elsewhere = self.root / "precious"
@@ -517,8 +579,15 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         r"^\s*from tools\.prune_workflow_homes import",
         r"^\s*from prune_workflow_homes import",
         r"prune_workflow_homes\.(main|prune|inspect_entry)\(",
-        # An argv element rather than a sentence: quoted, and inside a list.
+        # An argv element rather than a sentence: quoted, and closed right after the path.
         r"[\"'](python3 )?tools/prune_workflow_homes\.py[\"']",
+        # A PERMISSION GRANT, which is its own spelling and matched none of the above —
+        # `Bash(python3 tools/prune_workflow_homes.py *)` opens with `Bash(`, so neither
+        # the quote-anchored form nor the import forms reach it. No such grant exists
+        # today (checked in both settings files), and a grant is precisely how this tool
+        # would become reachable from a LEAF, which is the opposite of retention being
+        # the operator's. Anchored on `Bash(` so it cannot fire on prose.
+        r"Bash\((python3 )?tools/prune_workflow_homes\.py",
     )
 
     def test_nothing_is_wired_to_invoke_this_tool_automatically(self) -> None:
@@ -552,8 +621,13 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         for pattern in self.CALLER_PATTERNS:
             proc = subprocess.run(
                 ["git", "-C", str(repo_root), "grep", "-n", "--untracked", "-E", pattern,
+                 # `.py` for the import and call spellings, and the SETTINGS FILES for
+                 # the permission-grant spelling — which lives in JSON and which a
+                 # `.py`-only search could never have seen. Found by planting a grant and
+                 # watching the census pass.
                  "--", "tools/*.py", "tools/**/*.py", "mcp_servers/*.py",
-                 "skills/**/*.py", "leaf_config/**/*.py"],
+                 "skills/**/*.py", "leaf_config/**/*.py",
+                 "leaf_config/**/*.json", ".claude/*.json", ".mcp.json"],
                 capture_output=True, text=True, check=False)
             # THE RETURN CODE IS THE WHOLE TEST. `git grep` exits 0 with matches, 1 with
             # none, and anything else means the SEARCH failed — 128 outside a git
@@ -597,6 +671,7 @@ class PruneWorkflowHomesTests(unittest.TestCase):
             "        from tools.prune_workflow_homes import prune",  # function-local
             "        rc = prune_workflow_homes.main([])",
             "    subprocess.run(['python3', 'tools/prune_workflow_homes.py'])",
+            '      "Bash(python3 tools/prune_workflow_homes.py *)",',
         )
         must_not_catch = (
             "# remove it with `python3 tools/prune_workflow_homes.py --delete`",
