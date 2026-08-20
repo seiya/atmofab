@@ -169,6 +169,78 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual((elsewhere / "keep.txt").read_text(encoding="utf-8"), "keep me")
 
+    def test_an_orchestration_id_carrying_a_separator_cannot_reach_a_live_home(self) -> None:
+        """The no-override refusal must not be reachable around, only through.
+
+        `--orchestration-id <oid>/<backend>` used to land INSIDE the homes root — so
+        the containment assert in `_delete_entry` passed — while `inspect_entry` looked
+        for `owner.json` one level below where it lives and answered
+        `refused:unverifiable_owner`, which `--allow-unverifiable` releases. The result
+        was that `refused:orchestration_not_terminal`, which this tool's docstring and
+        `docs/RUNBOOK.md` both describe as having NO override, could be walked around
+        with one slash, taking a RUNNING leaf's transcript with it.
+
+        The honest spelling is asserted in the same test as the control: without it,
+        "the separator form is refused" would also pass if the tool refused everything.
+        """
+        self._entry("orch_live", status="running")
+        transcript = self.homes / "orch_live" / "claude" / "transcript.jsonl"
+        self.assertTrue(transcript.is_file())
+        for name in ("orch_live/claude", "orch_live/", "./orch_live", "orch_live/../orch_live"):
+            with self.subTest(orchestration_id=name):
+                reports, code = self._prune(orchestration_ids=[name], delete=True,
+                                            allow_unverifiable=True)
+                self.assertEqual(reports[0]["verdict"], pwh.REFUSED_INVALID_ORCHESTRATION_ID)
+                self.assertFalse(reports[0]["deleted"])
+                self.assertEqual(code, 2)
+                self.assertTrue(transcript.is_file(),
+                                f"a live leaf's transcript was destroyed via {name!r}")
+        # CONTROL — the honest spelling reaches the entry and is refused on its merits.
+        reports, code = self._prune(orchestration_ids=["orch_live"], delete=True,
+                                    allow_unverifiable=True)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_NOT_TERMINAL)
+        self.assertTrue(transcript.is_file())
+
+    def test_a_delete_that_fails_is_not_reported_as_work_done(self) -> None:
+        """`refused:delete_failed:*` on an explicitly named entry must exit 2.
+
+        The exit code was decided from whether the entry was ALLOWED to be deleted, not
+        from whether it WAS, so a delete that raised exited 0 — against the docstring's
+        "0 = the requested work was done". A caller scripting the tool would read that
+        as success.
+        """
+        self._entry("orch_a", status="pass")
+        with mock.patch.object(pwh, "_delete_entry",
+                               side_effect=OSError("Device or resource busy")):
+            reports, code = self._prune(orchestration_ids=["orch_a"], delete=True)
+        self.assertTrue(reports[0]["verdict"].startswith("refused:delete_failed:"))
+        self.assertFalse(reports[0]["deleted"])
+        self.assertEqual(code, 2)
+        self.assertTrue((self.homes / "orch_a").is_dir())
+
+    def test_a_report_only_run_writes_nothing_into_the_owner_checkout(self) -> None:
+        """"Report only" has to mean it, including the lock the status read wanted.
+
+        `_orchestration_meta_exclusive_lock` creates its lock file and `mkdir`s the
+        directory tree to hold it, so taking the lock before knowing the metadata was
+        there made a plain `--all` write
+        `workspace/orchestrations/<oid>/orchestration_meta.json.lock` into whatever path
+        the owner marker named — which, after the checkout was moved or deleted, is an
+        unrelated project. Asserted as a full before/after tree comparison rather than
+        on the lock file's name, so any other write is caught too.
+        """
+        entry = self._entry("orch_gone", status=None)
+        elsewhere = self.root / "repo_orch_gone"
+        elsewhere.mkdir()
+        (elsewhere / "README.md").write_text("someone else's project\n", encoding="utf-8")
+        before = sorted(p.relative_to(elsewhere).as_posix() for p in elsewhere.rglob("*"))
+        reports, _ = self._prune(orchestration_ids=["orch_gone"])
+        after = sorted(p.relative_to(elsewhere).as_posix() for p in elsewhere.rglob("*"))
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_UNVERIFIABLE_OWNER)
+        self.assertEqual(before, after,
+                         "a report-only run created files in the owner checkout")
+        self.assertTrue(entry.is_dir())
+
     def test_a_path_that_escapes_the_homes_root_is_refused_at_the_last_step(self) -> None:
         """The containment assert answers the one question the content checks cannot.
 

@@ -55,6 +55,7 @@ try:  # script run: sys.path[0] is tools/ ; package import: repo root on path
         IDEMPOTENT_TERMINAL_STATUSES,
         WORKFLOW_HOME_OWNER_FILENAME,
         WORKFLOW_HOMES_ROOT_ENV,
+        _is_safe_path_id,
         _orchestration_meta_exclusive_lock,
         _workflow_homes_root,
     )
@@ -63,6 +64,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package e
         IDEMPOTENT_TERMINAL_STATUSES,
         WORKFLOW_HOME_OWNER_FILENAME,
         WORKFLOW_HOMES_ROOT_ENV,
+        _is_safe_path_id,
         _orchestration_meta_exclusive_lock,
         _workflow_homes_root,
     )
@@ -74,6 +76,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for package e
 DELETABLE_STATUSES = IDEMPOTENT_TERMINAL_STATUSES
 
 VERDICT_DELETABLE = "deletable"
+REFUSED_INVALID_ORCHESTRATION_ID = "refused:invalid_orchestration_id"
 REFUSED_NOT_A_DIRECTORY = "refused:not_a_directory"
 REFUSED_FOREIGN_OWNER_UID = "refused:foreign_owner_uid"
 REFUSED_UNVERIFIABLE_OWNER = "refused:unverifiable_owner"
@@ -110,6 +113,17 @@ def _orchestration_status(repo_root: Path, orchestration_id: str) -> str | None:
     than as "not running".
     """
     meta_path = repo_root / "workspace" / "orchestrations" / orchestration_id / "orchestration_meta.json"
+    # EXISTENCE FIRST, LOCK SECOND. `_orchestration_meta_exclusive_lock` creates its
+    # lock file, and `_fcntl_exclusive_lock` `mkdir(parents=True)`s the directory to put
+    # it in — so taking the lock before knowing the metadata is there made a
+    # REPORT-ONLY run write `workspace/orchestrations/<oid>/orchestration_meta.json.lock`
+    # into whatever path the marker named, which after a moved or deleted checkout is an
+    # unrelated project. A missing file has nothing to read under a lock anyway: there is
+    # no state for a concurrent `--resume` to be caught mid-transition in, and the answer
+    # is the same None either way. The TOCTOU that remains — the file appearing between
+    # this check and the lock — falls to the unverifiable side, which is fail-closed.
+    if not meta_path.is_file():
+        return None
     try:
         with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -202,6 +216,31 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
     reports: list[dict[str, Any]] = []
     refused_explicit = False
     for name in names:
+        # THE NAME IS VALIDATED BEFORE IT BECOMES A PATH, for the same reason
+        # `_workflow_backend_home_path` validates it on the writing side, and with the
+        # same predicate so the two cannot drift. Without this, a `--orchestration-id`
+        # carrying a path separator lands INSIDE the homes root — so the containment
+        # assert in `_delete_entry` passes — while `inspect_entry` looks for
+        # `owner.json` one level below where it lives and answers
+        # `refused:unverifiable_owner`, which `--allow-unverifiable` releases.
+        # `--orchestration-id orch-live/claude --allow-unverifiable --delete` therefore
+        # deleted a RUNNING orchestration's home, defeating the one refusal this tool
+        # documents as having no override. The names taken from `iterdir()` are single
+        # components already; the check costs them nothing and covers both sources.
+        if not _is_safe_path_id(name):
+            reports.append({
+                "orchestration_id": name,
+                "path": "",
+                "owner_repo_root": "",
+                "status": "",
+                "backends": [],
+                "size_bytes": 0,
+                "verdict": REFUSED_INVALID_ORCHESTRATION_ID,
+                "deleted": False,
+            })
+            if name in explicit:
+                refused_explicit = True
+            continue
         report = inspect_entry(homes_root / name, name)
         deletable = report["verdict"] == VERDICT_DELETABLE or (
             allow_unverifiable and report["verdict"] == REFUSED_UNVERIFIABLE_OWNER)
@@ -211,6 +250,10 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
                 _delete_entry(homes_root / name, homes_root)
             except (OSError, ValueError) as exc:
                 report["verdict"] = f"refused:delete_failed:{exc}"
+                # The exit code is decided from what HAPPENED, not from what was
+                # allowed: an explicitly named entry whose delete then failed exited 0
+                # while the docstring promises "0 = the requested work was done".
+                deletable = False
             else:
                 report["deleted"] = True
         if not deletable and name in explicit:
