@@ -200,6 +200,16 @@ Test-file hunks are excluded by default (`--include-tests`
     the docstring claims to drive
   - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
     together, a missing element goes unnoticed
+  - **when a comment JUSTIFIES a rule, mutate the property the justification names.** The rule
+    usually has a witness and the property holding it up usually does not. On PR #81 the
+    surviving justification for passing `METDSL_*` by prefix was "the names that redirect a leaf
+    are outside the prefix BY CONSTRUCTION" — true only because the match is anchored, and
+    `startswith` -> `in` kept all 4972 tests green, admitting `MY_METDSL_API_KEY`. The neighbouring
+    spelling too: the prefix STRING was separately unpinned, and shortening `"METDSL_"` to
+    `"METDS"` stayed green while widening the namespace to one the repo does not own. Read your own
+    justification as a list of claims and write one mutant per claim — and note this is the sign's
+    other half: rewriting a justification three times (below) is when its supporting property is
+    newest and least witnessed
   - **one test per occurrence of a rule, not per rule** (PR #53: the same line in three gates, two
     of them surviving as reachable fail-opens)
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
@@ -278,6 +288,21 @@ correctness+regression+doc-truth).
     (a) for work the harness tracks, **do not poll — the completion notification arrives**, (b)
     **wait on the PID** (`while kill -0 <pid> 2>/dev/null; do sleep N; done`), (c) split the
     matching string. **The end-of-round check is `ListAgents` and `ps`, both**
+  - **Evaluate the exit condition ONCE, by hand, before you leave a wait running.** "Can be
+    satisfied" is not a property you can see by reading — twice on PR #81 I wrote a
+    condition that was false for every possible input, the second being
+    `until grep -qE "…" a.txt b.txt | grep -c . | grep -q 2`: `-q` prints nothing, so the count is
+    always `0` and no suite result could ever end it. It also survives the thing it waits for:
+    the other one watched an output file whose producer I had killed, so it polled a
+    permanently empty file. Run the condition once and look at the exit status; if it is already the
+    value that ends the loop, the loop is pointless, and if it cannot reach that value it is an
+    orphan you have not noticed yet
+  - **Two things make the end-of-round `ps` check actually fire.** (i) it is a reconciliation, not
+    a memory: keep the PID of every wait you start and match the list, because "did I leave one
+    running" is exactly the question a tired reviewer answers wrong; (ii) **a backgrounded wait
+    returns immediately** — you get a task id, not a pause — so a turn that launches one and then
+    keeps working has NOT waited, and the loop is still out there. On PR #81 I noticed
+    that mid-session, said so, and still left two behind for the user to find
 - **Include "build your own mutants that delete one mechanism at a time, run them, and report
   survivors".** Do not hand over your mutation list — independence is the point (see L174 above)
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first.** Even
