@@ -433,6 +433,12 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertFalse(reports[0]["deleted"])
         self.assertEqual(code, 2)
         self.assertTrue((entry / "claude" / "transcript.jsonl").is_file())
+        # The REPORTED status is what the explicit branch is actually for, and it is the
+        # only thing that distinguishes it: without it the fall-through still refuses
+        # (`None not in DELETABLE_STATUSES`) but puts a bare `None` in the report and in
+        # `--json`. A mutation sweep showed exactly that — the refusal survived, the
+        # legibility did not — so the assertion is on the string an operator reads.
+        self.assertEqual(reports[0]["status"], "unknown")
 
     def test_an_unverifiable_entry_still_deletes_without_an_owner_to_lock(self) -> None:
         """The re-read must not become a new refusal for the case it cannot apply to.
