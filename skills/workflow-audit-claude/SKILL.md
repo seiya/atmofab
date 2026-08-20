@@ -78,6 +78,8 @@ try:
         pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
 except (OSError, ValueError):
     meta = {}
+if not isinstance(meta, dict):
+    meta = {}   # a metadata document that is valid JSON but not an object
 recorded = (meta.get("claude_workflow_home") or "").strip()
 projects_dirs = [pathlib.Path(recorded) / "projects" / cwd_slug] if recorded else []
 projects_dirs.append(pathlib.Path.home() / ".claude/projects" / cwd_slug)

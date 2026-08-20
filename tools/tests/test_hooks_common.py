@@ -4101,8 +4101,8 @@ class DurablePrivateHomeReadGuardTests(unittest.TestCase):
         `operator_secret_root()`, which the homes sit under by default. Set
         `METDSL_WORKFLOW_HOMES_ROOT` outside `~/.met-dsl` and that entry stopped covering
         them, so a leaf's Bash read of a SIBLING run's transcript was ALLOWED — while this
-        module's docstrings and `docs/HOOKS.md` §22 asserted the closure with no mention
-        of the condition. Measured before the fix; found by Codex.
+        module's docstrings and `docs/HOOKS.md` §"Layer boundary" asserted the closure
+        with no mention of the condition. Measured before the fix; found by Codex.
 
         The root itself is a protected entry now, resolved by the same
         `workflow_homes_root` the writer uses, so the tree that gets created is by

@@ -233,11 +233,12 @@ def inspect_entry(entry: Path, orchestration_id: str) -> dict[str, Any]:
     #
     # The check is on the SHAPE rather than on the path, because the override exists for
     # tests and for an operator with a reason, and pinning it to the default root would
-    # take the lever away. A backend home always has at least one subdirectory and every
-    # subdirectory is a declared backend name — `_create_workflow_backend_home` makes the
-    # backend directory before it writes the marker, so there is no valid state without
-    # one. RESIDUE, stated: a half-deleted entry has neither and is refused here, and the
-    # operator removes it by hand.
+    # take the lever away. What counts as our shape is spelled out just below; the short
+    # version is "a declared backend directory, OR a marker naming this orchestration".
+    # An earlier version of this paragraph said a backend directory was REQUIRED and
+    # called a half-deleted entry accepted residue — that was an over-refusal and is
+    # fixed below, but the paragraph survived one commit longer than the rule it
+    # described.
     subdirs = set(report["backends"])
     marker = _read_owner_marker(entry)
     marker_is_ours = (isinstance(marker, dict)
@@ -422,7 +423,17 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
             except _OwnerVanishedDuringPrune:
                 report["verdict"] = REFUSED_UNVERIFIABLE_OWNER
                 report["status"] = ""
-                deletable = False
+                # Re-decided through the ONE rule rather than forced to False. The entry
+                # has just become unverifiable, and if `--allow-unverifiable` is already
+                # on the command line the operator has said what to do about exactly that
+                # — this comment's own claim that "the flag is the way out" was false
+                # while the handler hard-coded the refusal. `_would_delete` is where that
+                # decision lives; spelling it a second time here is the class this module
+                # already fixed once between `prune()` and the report.
+                deletable = _would_delete(report, allow_unverifiable=allow_unverifiable)
+                if deletable:
+                    _delete_entry(homes_root / name, homes_root)
+                    report["deleted"] = True
             except _StatusChangedDuringPrune as exc:
                 report["verdict"] = REFUSED_NOT_TERMINAL
                 report["status"] = exc.status

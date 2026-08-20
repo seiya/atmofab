@@ -35330,6 +35330,31 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         (auth_home / "auth.json").write_text("{}\n", encoding="utf-8")
         return root / "repo", auth_home
 
+    def setUp(self) -> None:
+        """Own the homes root rather than borrowing the suite's.
+
+        `tools/tests/conftest.py` redirects `METDSL_WORKFLOW_HOMES_ROOT` for every test,
+        and this class read it straight out of the environment — so it worked under
+        pytest and, run any other way, resolved the OPERATOR's real `~/.met-dsl/homes`
+        and created directories in it. That is not hypothetical: a reviewer ran the exact
+        `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest …` command this branch's
+        own commit message prescribes and had to prune three entries out of the operator's
+        tree afterwards. The prevent-not-detect guard lives in conftest, so it is not
+        there either when conftest is not.
+
+        Setting it here makes the class self-contained: it passes under pytest, under
+        plain `unittest`, and with the variable cleared, and it can no longer reach the
+        real tree by any of those routes.
+        """
+        self._homes_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._homes_tmp.cleanup)
+        root = Path(self._homes_tmp.name) / "metdsl-homes"
+        root.mkdir(mode=0o700)
+        patcher = mock.patch.dict(
+            os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(root)}, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _homes_root(self) -> Path:
         return Path(os.environ[ort.WORKFLOW_HOMES_ROOT_ENV])
 
@@ -35798,6 +35823,74 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 json.loads(marker.read_text(encoding="utf-8"))["repo_root"],
                 str(moved.resolve()))
 
+    def test_a_resume_from_a_moved_checkout_refreshes_the_owner_marker(self) -> None:
+        """The refresh existed only on the CREATION path, and the case it was for is resume.
+
+        `_write_workflow_home_owner`'s docstring names the moved-checkout operator as the
+        reason a stale marker is replaced — and nothing on the reuse path ever ran it, so
+        a moved checkout's run stayed `refused:unverifiable_owner` forever. That is the
+        verdict `--allow-unverifiable` releases, and THAT route skips the locked status
+        re-read entirely, so `refused:orchestration_not_terminal` — documented as having
+        no override — became unreachable for such a run.
+
+        Reproduced end to end before the fix: `prune --all --allow-unverifiable --delete`
+        removed the home of an orchestration whose recorded status was `running`. The
+        assertion here is the whole chain, not just the marker: after the resume the
+        marker names the new path, and the live run is refused on its status.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOME_OWNER_FILENAME, _prepare_claude_workflow_home)
+        import tools.prune_workflow_homes as pwh
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = self._claude_repo(str(root / "checkout"))
+            meta = (repo / "workspace" / "orchestrations" / "orch_d"
+                    / "orchestration_meta.json")
+            meta.write_text(json.dumps({"orchestration_id": "orch_d",
+                                        "status": "running"}), encoding="utf-8")
+            _prepare_claude_workflow_home(repo, "orch_d")
+            marker = self._homes_root() / "orch_d" / WORKFLOW_HOME_OWNER_FILENAME
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["repo_root"],
+                             str(repo.resolve()))
+
+            moved = root / "checkout_moved"
+            shutil.move(str(repo), str(moved))
+            _prepare_claude_workflow_home(moved, "orch_d")
+            self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["repo_root"],
+                             str(moved.resolve()),
+                             "a resume from the moved checkout left the marker stale")
+
+            reports, code = pwh.prune(self._homes_root(), orchestration_ids=["orch_d"],
+                                      delete=True, allow_unverifiable=True)
+            self.assertEqual(reports[0]["verdict"], pwh.REFUSED_NOT_TERMINAL)
+            self.assertFalse(reports[0]["deleted"])
+            self.assertEqual(code, 2)
+
+    def test_a_reused_home_at_a_pre_branch_location_gets_no_marker_written(self) -> None:
+        """The refresh is scoped to our own layout, and that scoping is the point.
+
+        A home recorded before issue #64 lives at `/tmp/metdsl-claude-XXXX`, whose parent
+        is `/tmp` — nobody's orchestration directory. Writing a marker there would drop a
+        file claiming an orchestration id into a shared tmpfs, so the refresh runs only
+        when the home sits exactly where this code puts one.
+        """
+        from tools.orchestration_runtime import (
+            WORKFLOW_HOME_OWNER_FILENAME, _prepare_claude_workflow_home)
+        with tempfile.TemporaryDirectory() as td:
+            root = self._claude_repo(td)
+            legacy_parent = Path(tempfile.mkdtemp())
+            self.addCleanup(shutil.rmtree, legacy_parent, True)
+            legacy = legacy_parent / "metdsl-claude-old"
+            legacy.mkdir(mode=0o700)
+            os.chmod(legacy, 0o700)
+            (root / "workspace" / "orchestrations" / "orch_d"
+             / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(legacy)}), encoding="utf-8")
+            iso = _prepare_claude_workflow_home(root, "orch_d")
+            self.assertEqual(Path(iso["home"]), legacy)
+            self.assertFalse((legacy_parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
+                             "a marker was written beside a pre-branch home")
+
     def test_a_marker_naming_another_orchestration_refuses_the_launch(self) -> None:
         """The other half of the marker check, and the cheaper one to get wrong.
 
@@ -35839,6 +35932,12 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         import tools.orchestration_runtime as runtime
         from tools.hooks.common import operator_secret_root
+        if not getattr(runtime._workflow_homes_root,
+                       "_metdsl_homes_guard_installed", False):
+            # The subject of this test is a pytest fixture. Run under plain `unittest`
+            # there is no guard to observe, and asserting anyway would fail for the
+            # absence of the harness rather than for a defect.
+            self.skipTest("the suite's homes guard is not installed")
         real_root = operator_secret_root() / "homes"
         existed_before = real_root.exists()
         env = {k: v for k, v in os.environ.items()

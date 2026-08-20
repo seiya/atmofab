@@ -16347,6 +16347,41 @@ def _require_owner_marker_agrees(repo_root: Path, orchestration_id: str,
         )
 
 
+def _refresh_workflow_home_owner_on_reuse(repo_root: Path, orchestration_id: str,
+                                          home: Path, label: str) -> None:
+    """Re-assert the owner marker for a home that ALREADY exists.
+
+    The marker's whole reason for being refreshed — a checkout that moved, so the recorded
+    path locates nothing — is a RESUME scenario, and the refresh lived only on the
+    creation path. `_write_workflow_home_owner`'s own docstring named the moved-checkout
+    operator as the case it handles, while nothing on the reuse path ever ran it.
+
+    The consequence was not cosmetic. A moved checkout's run stayed `unverifiable`
+    forever, and that verdict is the one `--allow-unverifiable` releases — and that route
+    skips the locked status re-read entirely, so `refused:orchestration_not_terminal`,
+    documented as having no override, became unreachable for it. Reproduced end to end:
+    `prune --all --allow-unverifiable --delete` removed the home of an orchestration whose
+    recorded status was `running`.
+
+    SCOPED TO OUR OWN LAYOUT. A home recorded before issue #64 lives wherever it lived —
+    `/tmp/metdsl-claude-XXXX` — and its parent is `/tmp`, which is nobody's orchestration
+    directory. Writing a marker there would litter a shared tmpfs with a file claiming an
+    orchestration id. So the refresh runs only when the home sits exactly where this code
+    puts one.
+    """
+    try:
+        expected = _workflow_backend_home_path(orchestration_id, home.name)
+    except ValueError:
+        return
+    try:
+        if home.resolve() != expected.resolve():
+            return
+    except (OSError, RuntimeError, ValueError):
+        return
+    _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
+    _write_workflow_home_owner(repo_root, orchestration_id, home.parent, label)
+
+
 def _write_workflow_home_owner(repo_root: Path, orchestration_id: str,
                                owner_dir: Path, label: str) -> None:
     """Record which checkout owns `<homes-root>/<oid>/`, for the prune tool.
@@ -16782,6 +16817,8 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
                 # `tighten=True`: this is the REUSE path, where a drifted mode is a
                 # thing to fix rather than a launch to lose. See the helper's docstring.
                 _require_secure_backend_home(home, "Claude", tighten=True)
+                _refresh_workflow_home_owner_on_reuse(
+                    repo_root, orchestration_id, home, "Claude")
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # `<homes-root>/<oid>/claude`, NOT a temporary directory, for the same
             # reason as the codex twin: this home holds the leaf's only conversation
@@ -16975,6 +17012,8 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             else:
                 # `tighten=True` for the same reason as the Claude twin above.
                 _require_secure_backend_home(home, tighten=True)
+                _refresh_workflow_home_owner_on_reuse(
+                    repo_root, orchestration_id, home, "Codex")
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for
             # leaf scratch.  This home is a writable backend-state bind and must

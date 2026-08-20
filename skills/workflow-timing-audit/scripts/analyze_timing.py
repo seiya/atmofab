@@ -538,7 +538,13 @@ def main():
         "orchestration_id": orch_id,
         "spec_ref": meta.get("spec_ref"),
         "status": meta.get("status"),
+        # ALL the roots searched, not the first of them. The report line built from this
+        # named one directory while the resolution deliberately reads two (private home
+        # and the operator's `~/.claude`, per run id), so a run whose leaves came from
+        # both was reported as if they came from one — and the reader had no way to see
+        # which transcripts the numbers below were built from.
         "project_dir": project_dir,
+        "project_dirs": list(project_dirs),
         "run_wall_s": run_wall_s,
         "leaves": leaves,
     }
@@ -561,7 +567,8 @@ def render(r):
 
     print(f"orchestration: {r['orchestration_id']}  ({r.get('status')})")
     print(f"spec: {r.get('spec_ref')}")
-    print(f"transcripts: {r['project_dir']}")
+    _roots = r.get("project_dirs") or [r["project_dir"]]
+    print(f"transcripts: {', '.join(str(d) for d in _roots)}")
     print()
     wall = r.get("run_wall_s")
     if wall:

@@ -96,6 +96,10 @@ def _forbid_isolated_homes_in_operator_secret_root():
             )
         return root
 
+    # Marked so a test can ask whether the guard is installed rather than inferring it
+    # from a function name. The witness for this guard must SKIP when run outside pytest,
+    # where conftest is not loaded and the thing it tests does not exist.
+    _guarded._metdsl_homes_guard_installed = True
     runtime._workflow_homes_root = _guarded
     try:
         yield

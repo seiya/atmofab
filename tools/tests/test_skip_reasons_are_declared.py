@@ -112,6 +112,9 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "the platform has no SIGTERM",
     "not a git checkout":
         "the tree is a `git archive` snapshot, so a repository-wide census has no subject",
+    "the suite's homes guard is not installed":
+        "running outside pytest, where conftest is not loaded and the guard under test "
+        "does not exist",
 }
 
 # Canonical name -> index of the reason among the positional arguments. `skipUnless`/`skipIf`

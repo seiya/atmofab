@@ -379,10 +379,13 @@ python3 tools/prune_workflow_homes.py --orchestration-id <orchestration_id> --de
 
 The tool refuses FIVE things, and only one of them has an override:
 
-- an entry that is not shaped like a backend home at all — no subdirectory, or one whose
-  name is not a declared backend — `refused:not_a_backend_home`. This is what stops
-  `--homes-root` being pointed at an ordinary directory and emptying it, and it has no
-  override on purpose; a half-deleted entry lands here too and is removed by hand;
+- an entry that is not shaped like a backend home — one carrying a subdirectory whose
+  name is not a declared backend, or one with neither a backend subdirectory nor an
+  `owner.json` naming that orchestration — `refused:not_a_backend_home`. This is what
+  stops `--homes-root` being pointed at an ordinary directory and emptying it, and it has
+  no override on purpose. An entry whose backend directory is already gone but whose
+  marker remains is NOT refused: the marker is proof enough that the workflow made it, so
+  a partial delete can still be cleaned up by the only tool allowed to clean it;
 - an orchestration id that is not a plain `[A-Za-z0-9_-]` token —
   `refused:invalid_orchestration_id`. A separator would otherwise reach INSIDE an entry,
   past the containment assert and past the owner check;
@@ -398,8 +401,13 @@ The tool refuses FIVE things, and only one of them has an override:
   it. The status is re-read under the orchestration's own metadata lock, so a concurrent
   `--resume` cannot be caught mid-transition.
 
-An orchestration named explicitly on the command line and then refused makes the tool
-exit 2; a refusal during `--all` does not, because there the refusals are the report.
+One more verdict exists that is not a refusal to try: `refused:delete_failed:<error>`,
+reported when the removal itself failed (a busy mount, a permission change under the
+tool). It counts as "not done" for the exit code.
+
+An orchestration named explicitly on the command line and then refused — or attempted and
+failed — makes the tool exit 2; a refusal during `--all` does not, because there the
+refusals are the report.
 
 **One failure mode worth recognising, and the two causes need different commands.** If a
 launch reports `isolated <backend> home already exists but is not recorded in this
