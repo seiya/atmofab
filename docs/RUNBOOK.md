@@ -309,9 +309,14 @@ rewrite), which nothing cleans up and nothing reads.
 | `~/.met-dsl/start_claims/` | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
 | `~/.met-dsl/homes/<orchestration_id>/{claude,codex}/` | the leaf launcher, per orchestration and backend | `--resume` (warm session lookup), `audit_orchestration.py`, the three audit skills | **indefinite. Nothing deletes these automatically. See below.** |
 
-An agent cannot read any of it: `~/.met-dsl` is a protected read root for Bash on both
-backends (`forbid_operator_secret_direct_read`) and is outside every read manifest, so
-the Read tool cannot name it either. **`chmod 700 ~/.met-dsl` is recommended** on a
+An agent cannot read any of it, and it is outside every read manifest so the Read tool
+cannot name it either. For Bash on both backends the block comes from one of two policies,
+and which one tells the operator WHICH tree was touched: `homes/` and everything under it
+is a protected root of its own and answers `forbid_backend_credential_direct_read` (with
+the leaf's OWN home naming itself, since the roots sort longest-path-first), while
+`operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`. Both
+are refusals; see `docs/RUNBOOK.md#hook-recovery` for the row that matches the id you
+were given. **`chmod 700 ~/.met-dsl` is recommended** on a
 shared host. The workflow creates the directory best-effort and does not force its mode,
 because a root that predates this recommendation would otherwise fail every launch;
 everything it creates BELOW that level is 0700 and is re-checked for ownership and
@@ -336,10 +341,13 @@ observed; nothing else records what the leaf did. Those homes used to be created
 `/tmp`, where a host restart took them, and a billed run became unauditable the moment
 the machine rebooted. They are now durable, and the price of that is that they accumulate.
 
-There is deliberately **no automatic retention rule**, for the same reason `TODO.md`
-records for `workspace/`: any such rule has to choose between deleting evidence someone
-may still want and keeping everything, and only the second cannot silently destroy the
-thing the directory exists for.
+There is deliberately **no automatic retention rule**: any such rule has to choose
+between deleting evidence someone may still want and keeping everything, and only the
+second cannot silently destroy the thing the directory exists for. What is written down
+instead is this section plus the tool below — which is, note, exactly the remedy
+`TODO.md`'s open `workspace/` entry asks for ("state a retention rule in
+`docs/RUNBOOK.md`"). That entry is a DEFECT record, not a precedent for leaving a tree
+unruled; nothing here argues that `workspace/` may stay as it is.
 
 Removing one is the operator's decision, made with:
 
@@ -359,7 +367,15 @@ python3 tools/prune_workflow_homes.py --orchestration-id <orchestration_id> --de
 - the run stops being auditable. `skills/workflow-audit-claude`, `workflow-audit-codex`
   and `workflow-timing-audit` all read from the home.
 
-The tool refuses three things, and only one refusal has an override:
+The tool refuses FIVE things, and only one of them has an override:
+
+- an entry that is not shaped like a backend home at all — no subdirectory, or one whose
+  name is not a declared backend — `refused:not_a_backend_home`. This is what stops
+  `--homes-root` being pointed at an ordinary directory and emptying it, and it has no
+  override on purpose; a half-deleted entry lands here too and is removed by hand;
+- an orchestration id that is not a plain `[A-Za-z0-9_-]` token —
+  `refused:invalid_orchestration_id`. A separator would otherwise reach INSIDE an entry,
+  past the containment assert and past the owner check;
 
 - an entry that is not a real directory owned by this user;
 - an entry whose `owner.json` is missing or inconsistent — `refused:unverifiable_owner`.
@@ -390,8 +406,12 @@ command works depends on which cause it was, and the difference is not cosmetic:
   entry is NOT unverifiable — `--allow-unverifiable` does nothing for it. The recorded
   status is whatever the dead run left, which for a crash is `running`, so the entry is
   `refused:orchestration_not_terminal` and that refusal has no override. **Terminalize
-  the orchestration first** (§3-1 "Resuming a failed workflow" — the same
-  `set-status` the resume gate would use), then prune it normally.
+  the orchestration first** — the `set-status` command block under
+  §"[Incomplete launch recovery](#launch-incomplete-recovery)", which records the same
+  status/reason pair the resume gate's automatic terminalization would — then prune it
+  normally. (§3-1 was cited here first and is the wrong section: it describes the
+  AUTOMATIC terminalization a `--resume` performs and carries no command an operator
+  can run.)
 
 ## Repair cheat sheet on a hook block {#hook-recovery}
 

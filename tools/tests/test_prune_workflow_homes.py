@@ -406,14 +406,23 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertTrue((entry / "claude" / "transcript.jsonl").is_file(),
                         "a live leaf's transcript was deleted on a stale verdict")
 
-    def test_metadata_that_vanishes_before_the_delete_refuses_rather_than_proceeds(self) -> None:
-        """Verifiable a moment ago and not now is the UNVERIFIABLE answer, not a green light.
+    def test_metadata_that_vanishes_before_the_delete_is_reported_as_unverifiable(self) -> None:
+        """Verifiable a moment ago and not now is the UNVERIFIABLE answer, not a green light
+        and not the NON-TERMINAL one either.
 
         The locked re-read refuses a status that stopped being terminal; the other way it
         can stop being terminal is by ceasing to exist — the owner checkout removed while
         the prune runs. Continuing there would delete on the strength of metadata nobody
-        can produce any more, which is exactly what `--allow-unverifiable` is the operator's
-        way of saying on purpose.
+        can produce any more, which is exactly what `--allow-unverifiable` is the
+        operator's way of saying on purpose.
+
+        WHICH refusal is the point, and it was wrong: this reported
+        `refused:orchestration_not_terminal`, a verdict documented as having no override
+        and as being cleared by terminalizing the run — and terminalizing needs the very
+        metadata that just vanished, so the instruction could not be followed. The
+        implementation's own comment already argued for `unverifiable` while the code did
+        the other thing, and this docstring's first line said so too; a blank-slate
+        reviewer read all three and found them disagreeing.
 
         Only the VERIFIED path reaches this: an entry that was unverifiable from the start
         never takes the lock, which the neighbouring test pins.
@@ -429,16 +438,20 @@ class PruneWorkflowHomesTests(unittest.TestCase):
 
         with mock.patch.object(pwh, "inspect_entry", _inspect_then_remove_checkout):
             reports, code = self._prune(orchestration_ids=["orch_x"], delete=True)
-        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_NOT_TERMINAL)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_UNVERIFIABLE_OWNER)
         self.assertFalse(reports[0]["deleted"])
         self.assertEqual(code, 2)
         self.assertTrue((entry / "claude" / "transcript.jsonl").is_file())
-        # The REPORTED status is what the explicit branch is actually for, and it is the
-        # only thing that distinguishes it: without it the fall-through still refuses
-        # (`None not in DELETABLE_STATUSES`) but puts a bare `None` in the report and in
-        # `--json`. A mutation sweep showed exactly that — the refusal survived, the
-        # legibility did not — so the assertion is on the string an operator reads.
-        self.assertEqual(reports[0]["status"], "unknown")
+        # No status is reported, because there is none to report — the alternative was a
+        # bare `None` reaching the text report and `--json`.
+        self.assertEqual(reports[0]["status"], "")
+        # And the documented way out actually works from here: the operator re-runs with
+        # the flag the verdict names. This is the half that was unreachable while this
+        # reported the non-terminal refusal, whose remedy needs the vanished metadata.
+        reports, code = self._prune(orchestration_ids=["orch_x"], delete=True,
+                                    allow_unverifiable=True)
+        self.assertTrue(reports[0]["deleted"])
+        self.assertEqual(code, 0)
 
     def test_an_unverifiable_entry_still_deletes_without_an_owner_to_lock(self) -> None:
         """The re-read must not become a new refusal for the case it cannot apply to.
@@ -627,9 +640,13 @@ class PruneWorkflowHomesTests(unittest.TestCase):
     def test_nothing_is_wired_to_invoke_this_tool_automatically(self) -> None:
         """Retention is manual BY DESIGN, and the design is only real if nothing calls it.
 
-        `TODO.md` records the same decision for `workspace/`: an automatic rule has to
-        choose between deleting evidence someone may still audit and keeping everything,
-        and only the second cannot silently destroy what the directory exists for.
+        An automatic rule has to choose between deleting evidence someone may still
+        audit and keeping everything, and only the second cannot silently destroy what
+        the directory exists for. (An earlier version of this docstring cited `TODO.md`
+        as recording "the same decision" for `workspace/`. It records the opposite: an
+        open high defect that ~14 GB of run artifacts have NO retention rule, whose fix
+        direction is to write one into `docs/RUNBOOK.md`. What this pair does is that
+        remedy, not that entry's precedent.)
 
         What is searched for is a CALLER — an import of the module or an argv naming the
         script — and not a mention. Mentions are the point: the refusal message names the

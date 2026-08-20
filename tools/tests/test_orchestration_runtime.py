@@ -35512,6 +35512,36 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     self.assertEqual((homes_root / "orch_d").stat().st_mode & 0o777, 0o700)
                     self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
 
+    def test_the_operator_secret_root_itself_is_never_re_moded(self) -> None:
+        """`~/.met-dsl` is left exactly as the operator has it. Nothing observed that.
+
+        `_require_secure_home_ancestor`'s docstring and `docs/RUNBOOK.md` both state it —
+        the root is shared with `operator_tokens/` and `start_claims/`, the operator-token
+        writer has created it best-effort since long before this branch, and RUNBOOK
+        RECOMMENDS `chmod 700` rather than doing it. Dropping the `require_private` gate
+        so every ancestor gets tightened left the whole suite green, which means the one
+        sentence a reader relies on had no witness at all.
+
+        Asserted as the pair: the level this code owns comes out 0700, the level above it
+        is untouched at whatever it was.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td) / "home"
+            secret_root = fake_home / ".met-dsl"
+            secret_root.mkdir(parents=True)
+            os.chmod(secret_root, 0o755)
+            root = self._claude_repo(str(Path(td) / "repo_parent"))
+            env = {k: v for k, v in os.environ.items()
+                   if k != ort.WORKFLOW_HOMES_ROOT_ENV}
+            env["HOME"] = str(fake_home)
+            with mock.patch.dict(os.environ, env, clear=True):
+                iso = _prepare_claude_workflow_home(root, "orch_d")
+            self.assertEqual(secret_root.stat().st_mode & 0o777, 0o755,
+                             "the operator's own `~/.met-dsl` was re-moded")
+            self.assertEqual((secret_root / "homes").stat().st_mode & 0o777, 0o700)
+            self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
+
     def test_an_ancestor_owned_by_another_user_is_still_refused(self) -> None:
         """Tightening the MODE does not mean touching a directory that is not ours.
 
@@ -35838,6 +35868,29 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         self.assertEqual(
             _workflow_backend_home_path("orch_d", "codex"),
             self._homes_root() / "orch_d" / "codex")
+
+    def test_a_relative_override_is_resolved_to_an_absolute_path(self) -> None:
+        """"The tree that gets created is the tree that gets guarded" needs one more thing.
+
+        The guard runs inside a HOOK process and the writer inside the conductor, and the
+        two need not share a working directory — so a relative
+        `METDSL_WORKFLOW_HOMES_ROOT` would have made the two resolve different trees, which
+        is the same failure the override closure was supposed to end. Measured before the
+        fix: `../outside_homes` came back relative from the resolver both sides share.
+        """
+        from tools.hooks.common import workflow_homes_root
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(
+                    os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: "../outside_homes"},
+                    clear=False):
+                resolved = workflow_homes_root()
+            self.assertTrue(resolved.is_absolute(), f"still relative: {resolved}")
+            self.assertEqual(resolved.name, "outside_homes")
+            # A `~` override still expands, and an absolute one is unchanged.
+            with mock.patch.dict(
+                    os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(Path(td) / "abs")},
+                    clear=False):
+                self.assertEqual(workflow_homes_root(), Path(td) / "abs")
 
     def test_an_override_whose_parent_is_absent_is_refused(self) -> None:
         """A typo'd `METDSL_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.

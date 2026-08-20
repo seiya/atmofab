@@ -21,13 +21,17 @@ Usage:
   orchestration_id  Target under workspace/orchestrations/. Omit to auto-pick
                     the most recent orch_* directory.
   --json            Emit machine-readable JSON instead of the text report.
-  --project-dir     Claude transcript dir. Default: the orchestration's private
+  --project-dir     Claude transcript dir. Default: BOTH the orchestration's private
                     home (orchestration_meta.json#claude_workflow_home +
-                    /projects/<slug>, issue #63) when it exists, else
-                    ~/.claude/projects/<slug>, where <slug> is the repo abs-path
-                    with '/' -> '-'. Since issue #64 that private home is durable
-                    (~/.met-dsl/homes/<orch_id>/claude), so an older run stays
-                    analysable; before it, a host restart took the transcripts.
+                    /projects/<slug>, issue #63) and ~/.claude/projects/<slug>,
+                    private first, resolved PER RUN ID rather than picking one —
+                    see the comment at the resolution site, which records that
+                    taking the private dir "when it exists, else ~/.claude" made
+                    every pre-migration leaf of a resumed run look non-LLM. <slug>
+                    is the repo abs-path with '/' -> '-'. Since issue #64 that
+                    private home is durable (~/.met-dsl/homes/<orch_id>/claude), so
+                    an older run stays analysable; before it, a host restart took
+                    the transcripts.
 
 MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
   1) One model API response is written to the session transcript as SEVERAL

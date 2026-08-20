@@ -1612,7 +1612,12 @@ def workflow_homes_root() -> Path:
     """
     override = os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip()
     if override:
-        return Path(override).expanduser()
+        # RESOLVED to an absolute path against this process's cwd. The guard runs in a
+        # hook process and the writer in the conductor, and the two need not share a cwd,
+        # so a RELATIVE override would have made "the tree that gets created is the tree
+        # that gets guarded" false again along a second axis — measured as
+        # `../outside_homes` staying relative here.
+        return Path(override).expanduser().absolute()
     return operator_secret_root() / "homes"
 
 
@@ -1660,10 +1665,15 @@ def workflow_private_backend_homes(repo_root: Path | None,
     unconditionally, and the homes are now underneath it, so a read of ANY
     orchestration's home fails closed even when the id cannot be resolved. What this
     resolver still decides is ATTRIBUTION — the roots are sorted longest-first, so the
-    leaf's own home names itself in the block message rather than being reported as the
-    operator-secret root. MEASURED, both directions: a read of the current
-    orchestration's home is attributed to that home, and a read of a SIBLING
-    orchestration's home is attributed to `~/.met-dsl`.
+    leaf's own home names ITSELF in the block message rather than the root above it.
+    MEASURED, and the second half was wrong the first time it was written here: a read of
+    the current orchestration's home is attributed to that home, and a read of a SIBLING
+    orchestration's home is attributed to the HOMES ROOT (`~/.met-dsl/homes`), not to
+    `~/.met-dsl`. The homes root became a protected entry in its own right when the
+    override was closed, and it is a longer path than the operator-secret root, so it
+    wins the sort for everything under it. That is the more accurate label of the two — a
+    sibling home is a backend home, not the dismiss-violation store — and `~/.met-dsl`
+    still names what is directly under it (`operator_tokens/`, `start_claims/`).
 
     Two things a leaf must not read live there, and BOTH arrive by a BIND rather
     than by being copied, so inspecting the directory's contents on the host shows
@@ -2576,7 +2586,14 @@ def _blank_persisted_tool_results(command: str, repo_root: Path,
             # the isolated home's spellings as well — MEASURED for all four, against
             # controls (`.credentials.json`, another leaf's transcript, a sibling
             # orchestration's home) that must and do stay blocked.
-            heads.append(r"(?:~|\$HOME|\$\{HOME\})/" + re.escape(prefix[len(home) + 1:]))
+            # `\$\{HOME[^}]*\}` — the SAME class the marker regex accepts, not the three
+            # literal spellings this used to list. The two sides had to agree or the seam
+            # between them is an over-refusal: the block side has always caught every
+            # `${HOME…}` parameter expansion, so `${HOME:-/x}/…/tool-results/abc.txt` was
+            # refused although it names the leaf's own gate output. Measured for
+            # `${HOME:-/x}`, `${HOME:+$HOME}` and `${HOME%/}`. Pre-existing as a class,
+            # and ordinary only since the leaf's projects root moved under `$HOME`.
+            heads.append(r"(?:~|\$HOME|\$\{HOME[^}]*\})/" + re.escape(prefix[len(home) + 1:]))
     if not any(re.search(head, command) for head in heads):
         return command
     # Components, not "anything": `[^\s'\"]+` can swallow slashes, and the

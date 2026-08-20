@@ -8,11 +8,20 @@ ONLY record of what a leaf actually did — the claude transcript, the codex rol
 so **nothing deletes them automatically and nothing ever will**. Retention is
 indefinite, and this tool is the one way a home is removed.
 
-That is a deliberate repeat of the decision `TODO.md` records for `workspace/`
-retention: an automatic rule has to choose between deleting evidence of a run someone
-may still audit and keeping everything, and the second is the only one that cannot
-silently destroy the thing the directory exists for. This module is therefore invoked
-by an operator and by nothing else; no conductor, hook, gate, or preflight calls it.
+The reason is that an automatic rule has to choose between deleting evidence of a run
+someone may still audit and keeping everything, and the second is the only one that
+cannot silently destroy the thing the directory exists for. This module is therefore
+invoked by an operator and by nothing else; no conductor, hook, gate, or preflight
+calls it.
+
+`TODO.md` is cited here for what it ACTUALLY says, which is not what an earlier version
+of this docstring claimed. Its `workspace/` entry is an OPEN high defect — "~14 GB of
+run artifacts carry no retention rule", and the loss of a pinned directory has already
+turned one test into a permanent skip — whose fix direction is "state a retention rule
+in `docs/RUNBOOK.md`". So the parallel is not "that entry decided against automation";
+it is that the remedy that entry ASKS FOR is what this pair does: a rule written down
+where an operator reads it, and a tool that carries it out. Nothing here is evidence
+that leaving `workspace/` unruled is fine.
 
 WHAT DELETION COSTS, so the operator can decide rather than discover:
   * `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a
@@ -255,6 +264,16 @@ class _StatusChangedDuringPrune(Exception):
         self.status = status
 
 
+class _OwnerVanishedDuringPrune(Exception):
+    """The owner's metadata disappeared between the check and the delete.
+
+    A separate type from `_StatusChangedDuringPrune` because it routes to a DIFFERENT
+    verdict, and the difference is what the operator is told to do: a status that turned
+    non-terminal is cleared by terminalizing the run, while a checkout that is gone cannot
+    be terminalized at all and wants `--allow-unverifiable` instead.
+    """
+
+
 def _delete_under_owner_lock(entry: Path, homes_root: Path,
                              report: dict[str, Any]) -> None:
     """Re-verify the status and delete, both inside the owner's metadata lock.
@@ -287,12 +306,20 @@ def _delete_under_owner_lock(entry: Path, homes_root: Path,
         status = _read_status_locked(repo_root, orchestration_id)
         if status is None:
             # The metadata that authorised this deletion is GONE since `inspect_entry`
-            # read it — the checkout was removed mid-prune. It was verifiable a moment
-            # ago and is not now, so the honest answer is the unverifiable one, and the
-            # operator can say `--allow-unverifiable` if that is what they meant. This
-            # branch is reached only on the VERIFIED path; an entry that was unverifiable
-            # from the start never takes the lock at all.
-            raise _StatusChangedDuringPrune("unknown")
+            # read it — the checkout was removed mid-prune. It was verifiable a moment ago
+            # and is not now, so the answer is the UNVERIFIABLE one, and `--allow-
+            # unverifiable` is the operator's way of saying that is what they meant.
+            #
+            # It used to raise the NOT-TERMINAL refusal here, which was wrong in the way
+            # that costs an operator time rather than data: that verdict is documented as
+            # having no override and as being cleared by terminalizing the run — and
+            # terminalizing needs the very metadata that just vanished, so the instruction
+            # could not be followed. The comment above already argued for `unverifiable`
+            # while the code did the other thing; a blank-slate reviewer read both.
+            #
+            # Reached only on the VERIFIED path: an entry unverifiable from the start
+            # never takes the lock at all.
+            raise _OwnerVanishedDuringPrune()
         if status not in DELETABLE_STATUSES:
             raise _StatusChangedDuringPrune(status)
         _delete_entry(entry, homes_root)
@@ -364,6 +391,10 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
         if deletable and delete:
             try:
                 _delete_under_owner_lock(homes_root / name, homes_root, report)
+            except _OwnerVanishedDuringPrune:
+                report["verdict"] = REFUSED_UNVERIFIABLE_OWNER
+                report["status"] = ""
+                deletable = False
             except _StatusChangedDuringPrune as exc:
                 report["verdict"] = REFUSED_NOT_TERMINAL
                 report["status"] = exc.status

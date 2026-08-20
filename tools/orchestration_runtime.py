@@ -16291,8 +16291,9 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
             "recording it. Inspect it, then remove it with `python3 "
             f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id} "
             "--delete` — adding --allow-unverifiable if that run's metadata is gone, "
-            "and terminalizing it first (docs/RUNBOOK.md §3-1) if its recorded status "
-            "is still non-terminal, which the crash case leaves it."
+            "and terminalizing it first (the set-status block under docs/RUNBOOK.md "
+            "#launch-incomplete-recovery) if its recorded status is still non-terminal, "
+            "which the crash case leaves it."
         ) from exc
     except OSError as exc:
         raise ValueError(f"cannot create isolated {label} home {home}: {exc}") from exc
