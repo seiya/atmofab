@@ -16195,9 +16195,11 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
             f"isolated {label} home already exists but is not recorded in this "
             f"orchestration's metadata: {home}. It belongs to an earlier run whose "
             "metadata was lost, or to a run that crashed between creating the home and "
-            "recording it. Inspect it, then remove it with "
-            "`python3 tools/prune_workflow_homes.py --orchestration-id "
-            f"{orchestration_id} --allow-unverifiable --delete`."
+            "recording it. Inspect it, then remove it with `python3 "
+            f"tools/prune_workflow_homes.py --orchestration-id {orchestration_id} "
+            "--delete` — adding --allow-unverifiable if that run's metadata is gone, "
+            "and terminalizing it first (docs/RUNBOOK.md §3-1) if its recorded status "
+            "is still non-terminal, which the crash case leaves it."
         ) from exc
     except OSError as exc:
         raise ValueError(f"cannot create isolated {label} home {home}: {exc}") from exc

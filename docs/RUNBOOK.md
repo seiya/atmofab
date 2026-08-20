@@ -365,12 +365,23 @@ The tool refuses three things, and only one refusal has an override:
 An orchestration named explicitly on the command line and then refused makes the tool
 exit 2; a refusal during `--all` does not, because there the refusals are the report.
 
-**One failure mode worth recognising.** If a launch reports `isolated <backend> home
-already exists but is not recorded in this orchestration's metadata`, a previous run
-created the directory and died before recording it, or its metadata was lost. The home is
-never adopted — that would hand a new orchestration an earlier run's transcripts — so
-inspect it and then remove it with `--orchestration-id <id> --allow-unverifiable
---delete`.
+**One failure mode worth recognising, and the two causes need different commands.** If a
+launch reports `isolated <backend> home already exists but is not recorded in this
+orchestration's metadata`, a previous run created the directory and died before recording
+it, or its metadata was lost. The home is never adopted — that would hand a new
+orchestration an earlier run's transcripts — so inspect it and then remove it. Which
+command works depends on which cause it was, and the difference is not cosmetic:
+
+- **the metadata is gone** (the checkout was removed, or the orchestration directory
+  was): the entry is `refused:unverifiable_owner`, and `--allow-unverifiable --delete`
+  is the command;
+- **the run crashed between the `mkdir` and the metadata write**: `owner.json` is
+  written immediately after the `mkdir`, so the marker is present and valid and the
+  entry is NOT unverifiable — `--allow-unverifiable` does nothing for it. The recorded
+  status is whatever the dead run left, which for a crash is `running`, so the entry is
+  `refused:orchestration_not_terminal` and that refusal has no override. **Terminalize
+  the orchestration first** (§3-1 "Resuming a failed workflow" — the same
+  `set-status` the resume gate would use), then prune it normally.
 
 ## Repair cheat sheet on a hook block {#hook-recovery}
 
