@@ -330,7 +330,8 @@ correctness+regression+doc-truth).
   one implemented member" **refused the docs' three-step "Adding an axis" outright** (a new axis
   has neither an implementation nor a declarable capability) → ③ extending the duplicate-definition
   guard to dict values flagged a legitimate mapping. **Miss-direction bugs come one per round;
-  over-refusal comes in a new shape with every rewrite.** Four countermeasures: (a) for each check
+  over-refusal comes in a new shape with every rewrite.** Four countermeasures that DETECT it —
+  a fifth that prevents it is the next bullet: (a) for each check
   you write, construct one piece of correct work that violates it, (b) **keep the over-refusal probe
   in the reviewer instructions through the final round** (not once), (c) if over-refusals persist
   after two rewrites, conclude **the rule is not an invariant** and change its shape, (d) **build
@@ -340,6 +341,21 @@ correctness+regression+doc-truth).
   and a reviewer produced it just by reading the ledger. Implementing the next TODO / plan item is
   the cheapest over-refusal probe there is (PR #67 landed on "a census that constrains nobody's
   registration" = moving the target from a rule to **checking the declaration**)
+- **A fifth countermeasure, and the one that actually worked: when you add a FLOOR, default to
+  FILL rather than REFUSE.** The others detect over-refusal after you write it; this one stops you
+  writing it. Ask what the missing thing IS. An input that omits a value has said nothing that
+  contradicts you — and if the value is something the layer already knows (its own arguments, a
+  field the record carries), supply it. Refuse only a DISAGREEMENT, where two sources make
+  incompatible claims and you cannot tell which is wrong. PR #81 got this backwards first: told
+  that a fallback path skipped an id check, I made it refuse, and one exported variable took the
+  suite from 4971 passed to 152 failed while production turned the same `ValueError` into
+  `fail_closed` — an unreachable stale record traded for a reachable killed run. Rewritten as
+  "overwrite the stale value, refuse only a disagreement" it fixed the finding and broke nothing.
+  The two later floors on that PR were written FILL-first for this reason, and the second is the
+  clearest case: refusing a profile that lacked the ids would have rejected every profile
+  persisted before the branch, i.e. broken `--resume` of an older run, while filling them from the
+  record's own fields cost one line. **Before writing a refusal into a floor, name the legitimate
+  input it rejects.** If you cannot, you have not looked; if you can, that input is the test.
 
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
