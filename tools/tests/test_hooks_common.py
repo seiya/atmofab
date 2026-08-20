@@ -3724,7 +3724,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """The secret moved; the guard has to move with it.
 
         Issue #63 binds the operator's REAL `~/.claude/.credentials.json` over a
-        placeholder inside a private `/tmp` home, and the codex twin binds
+        placeholder inside a private per-orchestration home, and the codex twin binds
         `auth.json` the same way. Inside the sandbox those paths ARE the operator's
         credentials, so a guard that only knows `~/.claude` / `~/.codex` leaves the
         same secret readable — and writable — under a different name. Measured

@@ -3719,8 +3719,12 @@ class Conductor:
                 _read_session_run_index_consistent,
             )
             # Ensure the isolated home exists before accepting a recorded Codex
-            # thread. If /tmp state vanished, this rotates its generation; every
-            # prior thread is then deliberately cold-fallback only.
+            # thread. If the home vanished, this rotates its generation; every
+            # prior thread is then deliberately cold-fallback only. Since issue #64
+            # the home is durable (`~/.met-dsl/homes/<oid>/codex`), so "vanished"
+            # means an operator pruned it or lost the filesystem, not a /tmp sweep —
+            # and the rotated home lands at the SAME path, which is exactly why the
+            # generation is an integer and not a location.
             try:
                 isolation = _prepare_codex_workflow_home(self.repo_root, self.orchestration_id)
             except (OSError, ValueError):
@@ -3849,8 +3853,9 @@ class Conductor:
 
         A thread is resumable only inside the CODEX_HOME generation in which it
         was created.  This value is carried to record-launch as a transaction
-        precondition; a /tmp rotation there turns the pending launch cold before
-        any child bookkeeping is created.
+        precondition; a rotation there turns the pending launch cold before any
+        child bookkeeping is created.  The generation is compared, never the path:
+        since issue #64 a rotated home is re-created at the same location.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         if (entry.provider != "codex_cli" or not isinstance(session_id, str)
@@ -9472,7 +9477,8 @@ clean:
                    if expected_codex_home_generation is not None
                    else self.record_launch(child_arid, request, entry))
             if rec.get("codex_home_generation_mismatch"):
-                # The isolated /tmp HOME vanished after resume selection.  The
+                # The isolated HOME vanished after resume selection (pruned, or
+                # lost with its filesystem — it is durable since issue #64).  The
                 # runtime deliberately returned before creating launch state, so
                 # retry this same substep as a full cold launch against the new
                 # home rather than issuing `codex exec resume` to an empty one.

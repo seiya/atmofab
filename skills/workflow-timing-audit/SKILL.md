@@ -118,7 +118,9 @@ The bundled script handles all seven structurally; do not hand-sum these:
 Note: since issue #47 the conductor records each leaf's usage in-repo, from the leaf's own
 output — a normalized dict (`total_tokens`, `usage_source`, and where the provider reports
 them `reasoning_tokens` / `cached_tokens`) or an explicit `not_measured` / `unavailable`
-marker. Prefer that row: it is durable, where the transcript is machine-local and ephemeral.
+marker. Prefer that row: it is in-repo, so it travels with the artifacts, where the transcript is
+machine-local — and, since issue #64, durable but removable by an operator running
+`tools/prune_workflow_homes.py`.
 The transcript is still the only source for per-TURN detail, and the only source at all for a
 run recorded before issue #47 (those rows read `usage: unavailable`, "no locatable child
 transcript").

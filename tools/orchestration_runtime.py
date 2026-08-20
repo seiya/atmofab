@@ -16665,6 +16665,15 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
             if rel.endswith(".json"):
                 continue  # `.claude.json` is the trust seed, already written above
             target.mkdir(mode=0o700, exist_ok=True)
+            # The chmod is the same one `_create_workflow_backend_home` does after every
+            # mkdir, and for the same measured reason: `mkdir`'s mode is masked by the
+            # umask, so under one carrying owner bits these came out 0o200 (umask 0o500)
+            # or 0o000 (0o700) — a bind destination the CLI cannot write its transcript
+            # into, and one nothing on the host can descend to clean up. Missed when the
+            # rest of this got its chmod, and found by the test written to WITNESS that
+            # chmod: `test_a_hostile_umask_neither_breaks_the_launch_nor_loosens_the_home`
+            # leaked a home between its own iterations.
+            os.chmod(target, 0o700)
         cred_dirs, _cred_files = _backend_credential_home_paths("claude")
         origin = cred_dirs[0] / ".credentials.json"
         # PRESENT-ONLY, unlike the codex twin's hard requirement on auth.json —

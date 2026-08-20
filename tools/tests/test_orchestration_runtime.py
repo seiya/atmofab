@@ -428,8 +428,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         under `operator_secret_root()`, whose every level this code creates 0700 and
         re-checks for ownership and symlinks, so no other user can place anything on
         the path at all. What replaces the randomness is the EXCLUSIVE `os.mkdir` —
-        pinned by `test_prepare_codex_home_refuses_an_unrecorded_existing_home`, which
-        is the witness that would fail if the creation were made adoptive.
+        pinned by `DurableWorkflowHomesTests.
+        test_an_unrecorded_existing_home_is_refused_rather_than_adopted`. That witness
+        drives the CLAUDE preparer; both preparers reach the same
+        `_create_workflow_backend_home`, so what it pins is the shared creation, not a
+        per-backend behaviour. (An earlier version of this sentence named a codex-specific
+        test that does not exist.)
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOMES_ROOT_ENV,
@@ -35493,6 +35497,79 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "still not mode 0700 after chmod"):
                     _prepare_claude_workflow_home(root, "orch_d")
             os.chmod(homes_root, 0o700)
+
+    def test_a_hostile_umask_neither_breaks_the_launch_nor_loosens_the_home(self) -> None:
+        """The chmod after each `mkdir`, and the re-check after it, in one witness.
+
+        Both survived every mutation sweep on this branch, and a reviewer wrote them off
+        as redundant on the grounds that removal "fails closed at
+        `_require_secure_backend_home`". Failing closed is not the same as costing
+        nothing: MEASURED here, `os.mkdir(path, 0o700)` under a umask that contains owner
+        bits yields 0o400 (umask 0o300), 0o200 (0o500) or 0o000 (0o700), so without the
+        chmod the launch does not merely lose a defense — it DIES, on every launch, on a
+        host whose umask is unusual but legal. The chmod is what makes it work; the
+        re-check is what stops it from proceeding when the chmod does not take (a
+        filesystem that ignores it — FAT/exFAT, some network mounts — reports success and
+        changes nothing).
+
+        Asserted as both halves of the same property: the launch succeeds AND the home
+        is 0700. Delete the chmod and the first fails; make the chmod a no-op and the
+        second is caught rather than shipped.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        for umask_value in (0o300, 0o500, 0o700):
+            with self.subTest(umask=oct(umask_value)):
+                self.addCleanup(_discard_isolated_homes, "orch_d")
+                _discard_isolated_homes("orch_d")
+                with tempfile.TemporaryDirectory() as td:
+                    root = self._claude_repo(td)
+                    # The homes root is made BEFORE the umask changes: this test is about
+                    # the mode of what the launch creates, not about pytest's tmp tree.
+                    self._homes_root().mkdir(parents=True, exist_ok=True)
+                    previous = os.umask(umask_value)
+                    try:
+                        iso = _prepare_claude_workflow_home(root, "orch_d")
+                    finally:
+                        os.umask(previous)
+                    self.assertEqual(Path(iso["home"]).stat().st_mode & 0o777, 0o700)
+                    self.assertEqual(
+                        (self._homes_root() / "orch_d").stat().st_mode & 0o777, 0o700)
+                    # EVERY directory the launch creates, not only the home. The
+                    # `CLAUDE_HOME_WRITABLE_RELPATHS` bind destinations were the one
+                    # `mkdir` on this path with no chmod after it, so under umask 0o500
+                    # they came out 0o200 — a directory the CLI cannot write its
+                    # transcript into and nothing on the host can descend to clean up.
+                    # This assertion is how that was found: the loop leaked a home
+                    # between its own iterations because `rmtree` could not enter one.
+                    for rel in ort.CLAUDE_HOME_WRITABLE_RELPATHS:
+                        if rel.endswith(".json"):
+                            continue
+                        self.assertEqual(
+                            (Path(iso["home"]) / rel).stat().st_mode & 0o777, 0o700,
+                            msg=f"{rel} under umask {umask_value:#o}")
+
+    def test_a_home_whose_mode_did_not_take_is_refused_rather_than_used(self) -> None:
+        """`_require_secure_backend_home` after the creation is the last word.
+
+        Everything it checks is established two lines above it, which is why it survives
+        mutation — until the chmod silently does not take, which is exactly when a
+        re-check is the only thing left. Driven by patching `os.chmod` to a no-op under a
+        umask that makes the raw `mkdir` mode wrong.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        with tempfile.TemporaryDirectory() as td:
+            root = self._claude_repo(td)
+            homes_root = self._homes_root()
+            (homes_root / "orch_d").mkdir(parents=True, exist_ok=True)
+            os.chmod(homes_root, 0o700)
+            os.chmod(homes_root / "orch_d", 0o700)
+            previous = os.umask(0o300)
+            try:
+                with mock.patch("os.chmod"):  # succeeds, changes nothing
+                    with self.assertRaisesRegex(ValueError, "must have mode 0700"):
+                        _prepare_claude_workflow_home(root, "orch_d")
+            finally:
+                os.umask(previous)
 
     def test_the_owner_marker_names_the_checkout_and_tolerates_a_second_backend(self) -> None:
         """`<homes-root>/<oid>/owner.json` — a LOCATOR for the prune tool.
