@@ -7929,12 +7929,22 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
 # pre-allowlist `_safe_host_env_for_child` used.
 LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 
-# `METDSL_*` is passed by PREFIX, not by enumeration. The namespace is repo-owned and
-# every member has an in-tree reader, so an enumeration would be a list that grows by one
-# every time a variable is added and fails closed on the day someone forgets — the same
-# allowlist-polarity argument `mcp_servers/README.md` §24 makes for the gate's inputs.
-# The dangerous direction (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`, `AWS_*`, `LD_*`) is
-# outside the prefix by construction, so the prefix does not weaken the closure.
+# `METDSL_*` is passed by PREFIX, not by enumeration. The namespace is REPO-OWNED — every
+# name in it is set by this repository's own code, so nothing an operator or another tool
+# put in the environment lands inside it — while an enumeration would be a list that grows
+# by one every time a variable is added and fails closed on the day someone forgets. That
+# is the same allowlist-polarity argument `mcp_servers/README.md` makes for the MCP gate's
+# caller-supplied `env` (the bullet beginning "The caller-supplied `env` is an allowlist
+# under an orchestration"), reached for the same reason: a denylist over environment names
+# does not terminate. The dangerous direction (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`,
+# `AWS_*`, `LD_*`) is outside the prefix by construction, so the prefix does not weaken
+# the closure.
+#
+# NOT the justification, though an earlier version of this comment said so: "every member
+# has an in-tree reader". That is false, and measured — `METDSL_MISSING_ORCHESTRATION_ID_
+# POLICY` is seeded into every leaf by `run_workflow.py` and read by nothing in the tree.
+# Forwarding it costs nothing, which is the point: the prefix is justified by who OWNS the
+# namespace, not by an inventory of it that has to stay true.
 LEAF_ENV_ALLOWED_PREFIXES = ("METDSL_",)
 
 # Inside the prefix but deliberately dropped. `METDSL_HOME` is the deprecated alias for
