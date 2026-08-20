@@ -169,7 +169,11 @@ Test-file hunks are excluded by default (`--include-tests`
   `str.replace` rewriting all occurrences at once so per-site mutation showed 2 of the 3
   surviving, both of them reachable fail-opens. If you must, **count the occurrences and hit them
   one at a time**, and **assert the
-  patch applied** — a mutation that did not apply is indistinguishable from green (PR #76). The
+  patch applied** — a mutation that did not apply is indistinguishable from green (PR #76).
+  **A mutant list REUSED across rounds goes stale as the source moves**, and then reports as a
+  survivor: on PR #86 three "survivors" in one sweep were stale target strings, visible only
+  because the harness printed `PATCH DID NOT APPLY` instead of counting them green. Re-point them
+  before reading the result, and treat a not-applied patch as a failed run rather than a finding. The
   script is not universal either: one hunk can bundle a pinned and an unpinned change, so **follow
   up at line granularity when one rule lives in N places**
 - **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too** (done
@@ -200,6 +204,25 @@ Test-file hunks are excluded by default (`--include-tests`
     the docstring claims to drive
   - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
     together, a missing element goes unnoticed
+  - **a test can pass because of the SUITE'S OWN ENVIRONMENT.** Distinct from "two paths to the
+    outcome": here the fixture is fine and `conftest.py` is what decides the verdict. On PR #86 a
+    session fixture redirected `METDSL_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
+    which protected root a path falls under was reasoning about a nesting that did not exist while
+    it ran — green under pytest, **failing under `env -u <VAR> python3 -m unittest <dotted.path>`**,
+    which is the production resolution. Two tests on that branch had it.
+    - **The tell**: the test reasons about a RELATIONSHIP (this path is under that root, this id
+      matches that record) whose two halves are not both built by the fixture
+    - **The check is one command.** Run the branch's new test classes both ways and diff the
+      verdicts. Cheap enough to be routine when conftest touches the environment at all
+    - **The fix is not to unset the variable — it is to build the relationship in the fixture**, so
+      the test asserts the workflow's answer instead of the harness's
+  - **a mechanism that guards the HARNESS cannot be witnessed from inside the suite.** If the same
+    protection also comes from `conftest.py`, every mutant of it is green there, and the thing it
+    prevents happens only where conftest is not loaded. PR #86's module-level redirect — added
+    after two reviewers wrote real directories into the operator's home — survived every mutation
+    until the witness left the process: **a subprocess running a dependent class under plain
+    `unittest` with a fake `$HOME`, asserting the directory never appears.** Reach for this
+    whenever the mechanism's whole purpose is what happens outside the runner you are testing under
   - **when a comment JUSTIFIES a rule, mutate the property the justification names.** The rule
     usually has a witness and the property holding it up usually does not. On PR #81 the
     surviving justification for passing `METDSL_*` by prefix was "the names that redirect a leaf

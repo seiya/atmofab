@@ -339,6 +339,36 @@ close a path opened a new one**.
   sharing, write into the design the sentence that **a write to the shared object is an input to
   the other leaves**
 
+**Surface 9: "it moved under something the other side already covers" is a claim about a
+CONFIGURATION, and it holds only for the configurations you enumerated.** Surfaces 7 and 8 are
+about what a flag leaves open and what an isolation dir lets in. This one is the reassuring
+version of the same mistake: you move a protected thing so that an EXISTING rule covers it, and
+write that the closure came for free.
+
+Hit on PR #86. The isolated backend homes moved under `operator_secret_root()`, which the Bash
+read guard refuses unconditionally, so enforcement did appear to come for free and only the
+attribution looked resolver-dependent. But the location is relocatable by an environment
+variable, and with it pointed outside that root a leaf could read a SIBLING orchestration's
+transcript — measured — while three documents asserted the closure with no mention of the
+condition. Worse, one of those documents was a docstring I had written "MEASURED, both
+directions" next to, having measured only the default. Codex found it; four subagent rounds had
+not.
+
+- **Enumerate what can MOVE the thing before writing that it is covered**: an environment
+  override, a config key, a CLI flag, a symlink, a different `$HOME`. Each is a configuration in
+  which the claim must be re-checked, and the check is one execution each
+- **The fix that survives is one resolver, not one sentence.** Documenting the condition leaves
+  the reader to remember it. Moving the resolution into the module that owns the protected-root
+  list, and having the writer import it, makes the tree that gets created the tree that gets
+  guarded by construction. That is the same arrangement the repo already uses for
+  `backend_credential_home_paths` — when a rule keeps needing a caveat, look for a
+  neighbouring pair that already solved it
+- **Attribution is not enforcement, and adding a longer protected root changes it silently.**
+  Roots are sorted longest-path-first, so a new entry beneath an existing one takes over the
+  block message for everything under it. The read stays refused; the id in the message changes,
+  and any test or document that named the old id becomes false. Check both, and keep a control
+  read that must still be attributed to the root above
+
 ### 2. Confirm the path production actually takes
 
 **Production does not necessarily pass the argument you wrote the rule on.** In PR #51 the rule
