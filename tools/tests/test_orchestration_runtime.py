@@ -116,12 +116,26 @@ from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.leaf_config_fixture import (
     seed_claude_leaf_config,
     seed_codex_hooks,
+    redirect_isolated_homes_root_for_module,
+    restore_isolated_homes_root_for_module,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
 # ONE answer to "can bwrap actually run here", shared with test_bwrap_simulation.py:
 # `shutil.which` alone says the binary exists, not that unprivileged user namespaces
 # are permitted, and the two would drift into disagreeing about the same host.
 from tools.tests.test_bwrap_simulation import _bwrap_usable
+
+
+
+def setUpModule() -> None:
+    # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
+    # backend homes, and without this it writes them into the operator's real
+    # `~/.met-dsl/homes` whenever it is run outside pytest.
+    redirect_isolated_homes_root_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_isolated_homes_root_for_module(__name__)
 
 
 def _discard_isolated_homes(orchestration_id: str) -> None:
@@ -35866,13 +35880,21 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertFalse(reports[0]["deleted"])
             self.assertEqual(code, 2)
 
-    def test_a_reused_home_at_a_pre_branch_location_gets_no_marker_written(self) -> None:
-        """The refresh is scoped to our own layout, and that scoping is the point.
+    def test_a_reused_home_outside_the_current_layout_gets_no_marker_written(self) -> None:
+        """The refresh is scoped to our own layout, and BOTH of its guards are observed.
 
         A home recorded before issue #64 lives at `/tmp/metdsl-claude-XXXX`, whose parent
         is `/tmp` — nobody's orchestration directory. Writing a marker there would drop a
         file claiming an orchestration id into a shared tmpfs, so the refresh runs only
         when the home sits exactly where this code puts one.
+
+        TWO cases, because the first version of this test only reached the first guard.
+        `metdsl-claude-old` is not a declared backend name, so
+        `_workflow_backend_home_path` raised and returned before the path comparison ever
+        ran — a mutant replacing that comparison with `if False:` left the whole suite
+        green. The second case is a home whose directory IS named `claude` but sits under
+        a DIFFERENT homes root than the one in force now, which is what a relocated
+        override or a moved tree produces, and only the comparison catches it.
         """
         from tools.orchestration_runtime import (
             WORKFLOW_HOME_OWNER_FILENAME, _prepare_claude_workflow_home)
@@ -35890,6 +35912,23 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             self.assertEqual(Path(iso["home"]), legacy)
             self.assertFalse((legacy_parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
                              "a marker was written beside a pre-branch home")
+
+            # CASE 2 — the backend name matches, the ROOT does not. Only the path
+            # comparison stands between this and a marker written into a homes tree that
+            # is no longer the one in force.
+            other_root = Path(td) / "other_homes"
+            elsewhere = other_root / "orch_d" / "claude"
+            elsewhere.mkdir(parents=True)
+            for level in (other_root, elsewhere.parent, elsewhere):
+                os.chmod(level, 0o700)
+            (root / "workspace" / "orchestrations" / "orch_d"
+             / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(elsewhere)}), encoding="utf-8")
+            iso = _prepare_claude_workflow_home(root, "orch_d")
+            self.assertEqual(Path(iso["home"]), elsewhere)
+            self.assertFalse((elsewhere.parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
+                             "a marker was written into a homes tree that is not the "
+                             "one this launch resolves")
 
     def test_a_marker_naming_another_orchestration_refuses_the_launch(self) -> None:
         """The other half of the marker check, and the cheaper one to get wrong.
@@ -35990,6 +36029,71 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: str(Path(td) / "abs")},
                     clear=False):
                 self.assertEqual(workflow_homes_root(), Path(td) / "abs")
+
+    def test_a_reuse_re_secures_the_ancestors_not_only_the_home(self) -> None:
+        """`docs/RUNBOOK.md` promises a LATER drift is tightened; only creation did that.
+
+        The ancestor check ran inside `_create_workflow_backend_home`, so a warm reuse
+        looked at the home and never above it. Measured before the fix: with
+        `<homes-root>` or `<homes-root>/<oid>` dropped to 0755, relaunching left them
+        there indefinitely — the transcripts stayed 0700, so what leaked was which
+        orchestrations exist and which backends ran, but the document's sentence was
+        false and the drift persisted until an unrelated new orchestration rebuilt the
+        path.
+
+        All three levels are asserted, because the home's own tightening already had a
+        witness and would have carried a two-level assertion on its own.
+        """
+        from tools.orchestration_runtime import _prepare_claude_workflow_home
+        with tempfile.TemporaryDirectory() as td:
+            repo = self._claude_repo(td)
+            homes = self._homes_root()
+            home = Path(_prepare_claude_workflow_home(repo, "orch_d")["home"])
+            for target, label in ((homes, "homes root"),
+                                  (home.parent, "orchestration dir"),
+                                  (home, "the home")):
+                with self.subTest(level=label):
+                    os.chmod(target, 0o755)
+                    _prepare_claude_workflow_home(repo, "orch_d")
+                    self.assertEqual(target.stat().st_mode & 0o777, 0o700,
+                                     f"{label} stayed loose across a warm reuse")
+
+    def test_a_relative_homes_root_override_is_refused_at_creation(self) -> None:
+        """Absolute or nothing, and `.absolute()` is NOT what makes it so.
+
+        `workflow_homes_root()` makes the value absolute so the read guard has something
+        to protect, and that resolves against whoever asks: the writer is the conductor,
+        the guard is a hook process the CLI spawns, and they need not share a working
+        directory. A relative override therefore does not stay relative — it silently
+        becomes a DIFFERENT absolute path per caller, which is the same failure the
+        override closure existed to end. Measured: `relhomes` resolved under `/tmp`, under
+        the repo root and under `$HOME` depending on the caller's cwd.
+
+        The refusal lives on the creation side because that is where failing closed is
+        available; the resolver has to stay total for the guard.
+        """
+        from tools.orchestration_runtime import _create_workflow_backend_home
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = root / "co"
+            (repo / "workspace" / "orchestrations" / "orch_d").mkdir(parents=True)
+            for relative in ("relhomes", "./relhomes", "../elsewhere/homes"):
+                with self.subTest(override=relative):
+                    with mock.patch.dict(
+                            os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: relative},
+                            clear=False):
+                        with self.assertRaisesRegex(ValueError, "must be an absolute path"):
+                            _create_workflow_backend_home(repo, "orch_d", "claude", "Claude")
+            # CONTROL: an absolute override, and a `~` one, still work — the refusal is
+            # about the SHAPE of the value, not about using the lever at all.
+            for usable in (str(root / "abs_homes"), str(root / "tilde_homes")):
+                with self.subTest(override=usable):
+                    with mock.patch.dict(
+                            os.environ, {ort.WORKFLOW_HOMES_ROOT_ENV: usable},
+                            clear=False):
+                        made = _create_workflow_backend_home(
+                            repo, "orch_d", "claude", "Claude")
+                    self.assertTrue(made.is_dir())
 
     def test_an_override_whose_parent_is_absent_is_refused(self) -> None:
         """A typo'd `METDSL_WORKFLOW_HOMES_ROOT` must not silently build a deep tree.

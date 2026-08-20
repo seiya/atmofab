@@ -37,9 +37,24 @@ import pytest
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
-from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+from tools.tests.leaf_config_fixture import (
+    redirect_isolated_homes_root_for_module,
+    restore_isolated_homes_root_for_module,
+    seed_claude_leaf_config,
+)
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
+
+
+def setUpModule() -> None:
+    # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
+    # backend homes through `record_launch`, and without this it writes them into
+    # the operator's real `~/.met-dsl/homes` whenever it is run outside pytest.
+    redirect_isolated_homes_root_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_isolated_homes_root_for_module(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Tracked, slim copies of real working launch requests (one per step/substep),

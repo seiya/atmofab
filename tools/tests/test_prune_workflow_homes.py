@@ -492,13 +492,31 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         # No status is reported, because there is none to report — the alternative was a
         # bare `None` reaching the text report and `--json`.
         self.assertEqual(reports[0]["status"], "")
-        # And the documented way out actually works from here: the operator re-runs with
-        # the flag the verdict names. This is the half that was unreachable while this
-        # reported the non-terminal refusal, whose remedy needs the vanished metadata.
-        reports, code = self._prune(orchestration_ids=["orch_x"], delete=True,
-                                    allow_unverifiable=True)
-        self.assertTrue(reports[0]["deleted"])
+        # And the documented way out works from here — in ONE invocation, not two. The
+        # handler re-decides through `_would_delete` rather than hard-coding a refusal,
+        # so a `--allow-unverifiable` already on the command line covers the entry that
+        # has just become unverifiable. Spelling that decision a second time inside the
+        # `except` was the shape this module had already fixed once between `prune()` and
+        # the report; a mutant restoring `deletable = False` here left the suite green.
+        entry2 = self._entry("orch_y", status="pass")
+        meta2 = (self.root / "repo_orch_y" / "workspace" / "orchestrations" / "orch_y"
+                 / "orchestration_meta.json")
+
+        def _inspect_then_remove_y(*args, **kwargs):
+            report = real_inspect(*args, **kwargs)
+            if report["orchestration_id"] == "orch_y":
+                meta2.unlink()
+            return report
+
+        with mock.patch.object(pwh, "inspect_entry", _inspect_then_remove_y):
+            reports, code = self._prune(orchestration_ids=["orch_y"], delete=True,
+                                        allow_unverifiable=True)
+        self.assertEqual(reports[0]["verdict"], pwh.REFUSED_UNVERIFIABLE_OWNER)
+        self.assertTrue(reports[0]["deleted"],
+                        "--allow-unverifiable did not cover an entry that became "
+                        "unverifiable during the delete")
         self.assertEqual(code, 0)
+        self.assertFalse(entry2.exists())
 
     def test_an_unverifiable_entry_still_deletes_without_an_owner_to_lock(self) -> None:
         """The re-read must not become a new refusal for the case it cannot apply to.
@@ -552,8 +570,18 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertIn("--delete", text)
         # Scaled, not always-MB: this fixture is a few bytes, and "0.0 MB" reads as
         # "empty, deleting it costs nothing" — the opposite of what the report is for.
+        # ALL THREE BRANCHES are exercised below, because asserting only on a few-byte
+        # fixture is satisfied with the MB branch deleted — measured, a mutant replacing
+        # its condition with `if False:` left the suite green.
         self.assertNotIn("0.0 MB", text)
-        self.assertRegex(text, r"\d+ B|\d+\.\d KB|\d+\.\d MB")
+        self.assertRegex(text, r"\d+ B")
+        for size, expected in ((0, "0 B"), (512, "512 B"), (2048, "2.0 KB"),
+                               (3 * 1024 * 1024, "3.0 MB")):
+            with self.subTest(size_bytes=size):
+                probe = dict(reports[0], size_bytes=size)
+                rendered = pwh._render_text([probe], delete=False,
+                                            homes_root=self.homes)
+                self.assertIn(expected, rendered)
 
     def test_the_preview_names_exactly_what_the_same_flags_would_delete(self) -> None:
         """The report and the delete must read one rule, not two spellings of it.

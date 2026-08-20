@@ -319,9 +319,9 @@ is a protected root of its own and answers `forbid_backend_credential_direct_rea
 the leaf's OWN home naming itself, since the roots sort longest-path-first), while
 `operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`. Both are refusals, and neither has a
 remedy other than dropping the read: these paths are outside every manifest and no agent
-task needs them. (The `#hook-recovery` table has a row for each policy id, but its
-description column predates this section and still names only the operator tokens for
-`~/.met-dsl`; this section is canonical for what lives under that root.) **`chmod 700 ~/.met-dsl` is recommended** on a
+task needs them. (The `#hook-recovery` table covers both policy ids in ONE row, whose
+description predates this section and names only the operator tokens for `~/.met-dsl`;
+this section is canonical for what lives under that root.) **`chmod 700 ~/.met-dsl` is recommended** on a
 shared host. The workflow creates the directory best-effort and does not force its mode,
 because a root that predates this recommendation would otherwise fail every launch;
 everything it creates BELOW that level is 0700 and is re-checked for ownership and

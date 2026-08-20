@@ -16253,6 +16253,21 @@ def _create_workflow_backend_home(repo_root: Path, orchestration_id: str,
     # exist yet (a host that has never run `init_orchestration`).
     ancestors: list[tuple[Path, bool]] = []
     if override_used:
+        # ABSOLUTE OR NOTHING. A relative override resolves against whoever asks, and the
+        # two sides that must agree about this tree do not share a working directory: the
+        # writer is the conductor, the Bash read guard is a hook process the CLI spawns.
+        # `workflow_homes_root()` makes the value absolute so the guard has something to
+        # protect, which is NOT the same as making it the same tree — it silently becomes
+        # a different absolute path per caller. Refusing here is where failing closed is
+        # available; the resolver has to stay total.
+        raw_override = os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip()
+        if not Path(raw_override).expanduser().is_absolute():
+            raise ValueError(
+                f"{WORKFLOW_HOMES_ROOT_ENV} must be an absolute path (got "
+                f"{raw_override!r}): a relative one resolves against each process's "
+                "working directory, so the conductor that creates a home and the hook "
+                "that forbids reading it would resolve different trees"
+            )
         parent = root.parent
         if not parent.exists():
             raise ValueError(
@@ -16347,9 +16362,23 @@ def _require_owner_marker_agrees(repo_root: Path, orchestration_id: str,
         )
 
 
-def _refresh_workflow_home_owner_on_reuse(repo_root: Path, orchestration_id: str,
-                                          home: Path, label: str) -> None:
-    """Re-assert the owner marker for a home that ALREADY exists.
+def _resecure_workflow_home_on_reuse(repo_root: Path, orchestration_id: str,
+                                     home: Path, label: str) -> None:
+    """Re-assert the ancestors AND the owner marker for a home that ALREADY exists.
+
+    Two things ran only on the creation path, and both are about the state a home is
+    FOUND in rather than the state it is made in — which is the reuse path's whole
+    subject.
+
+    THE ANCESTORS. `docs/RUNBOOK.md` says a mode that "later drifts (a backup restored
+    without permissions)" is tightened, and that held only for a launch that CREATED a
+    home: a warm reuse checked the home itself and never looked above it. Measured before
+    this — with `<homes-root>` or `<homes-root>/<oid>` dropped to 0755, relaunching left
+    them there indefinitely. The transcripts stayed 0700, so what leaked was the metadata
+    (which orchestrations exist, which backends ran), but the document's claim was false
+    and the drift persisted until some unrelated new orchestration rebuilt the path.
+
+    THE MARKER.
 
     The marker's whole reason for being refreshed — a checkout that moved, so the recorded
     path locates nothing — is a RESUME scenario, and the refresh lived only on the
@@ -16378,6 +16407,8 @@ def _refresh_workflow_home_owner_on_reuse(repo_root: Path, orchestration_id: str
             return
     except (OSError, RuntimeError, ValueError):
         return
+    _require_secure_home_ancestor(_workflow_homes_root(), label, require_private=True)
+    _require_secure_home_ancestor(home.parent, label, require_private=True)
     _require_owner_marker_agrees(repo_root, orchestration_id, home.parent, label)
     _write_workflow_home_owner(repo_root, orchestration_id, home.parent, label)
 
@@ -16817,7 +16848,7 @@ def _prepare_claude_workflow_home(repo_root: Path, orchestration_id: str) -> dic
                 # `tighten=True`: this is the REUSE path, where a drifted mode is a
                 # thing to fix rather than a launch to lose. See the helper's docstring.
                 _require_secure_backend_home(home, "Claude", tighten=True)
-                _refresh_workflow_home_owner_on_reuse(
+                _resecure_workflow_home_on_reuse(
                     repo_root, orchestration_id, home, "Claude")
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # `<homes-root>/<oid>/claude`, NOT a temporary directory, for the same
@@ -16983,10 +17014,13 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
-    # A single random, 0700 home belongs to an orchestration.  Persist its path
-    # in host-authored metadata so warm resume reuses Codex's state without using
-    # predictable temporary names.  The metadata lock also serializes concurrent
-    # child launches that otherwise could create competing homes.
+    # A single 0700 home belongs to an orchestration.  Its path is persisted in
+    # host-authored metadata so warm resume reuses Codex's state.  The name is
+    # DETERMINISTIC since issue #64 (`<homes-root>/<oid>/codex`), not the random
+    # temporary one this comment used to describe: the randomness was a defense for
+    # `/tmp`, which is world-writable, and under a 0700 root owned by this uid the
+    # exclusive `os.mkdir` replaces it.  The metadata lock still serializes concurrent
+    # child launches that would otherwise both reach that creation.
     with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
         meta = _read_json(meta_path)
         if not isinstance(meta, dict):
@@ -17012,7 +17046,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str) -> dict
             else:
                 # `tighten=True` for the same reason as the Claude twin above.
                 _require_secure_backend_home(home, tighten=True)
-                _refresh_workflow_home_owner_on_reuse(
+                _resecure_workflow_home_on_reuse(
                     repo_root, orchestration_id, home, "Codex")
         if not isinstance(raw_home, str) or not raw_home.strip() or rotate_missing_home:
             # ``run_workflow.py`` deliberately sets TMPDIR beneath repo_root for

@@ -1612,11 +1612,19 @@ def workflow_homes_root() -> Path:
     """
     override = os.environ.get(WORKFLOW_HOMES_ROOT_ENV, "").strip()
     if override:
-        # RESOLVED to an absolute path against this process's cwd. The guard runs in a
-        # hook process and the writer in the conductor, and the two need not share a cwd,
-        # so a RELATIVE override would have made "the tree that gets created is the tree
-        # that gets guarded" false again along a second axis — measured as
-        # `../outside_homes` staying relative here.
+        # Made absolute so callers get a usable path, and that is ALL this does — it does
+        # NOT make a relative override safe. `.absolute()` resolves against THIS process's
+        # cwd, and the guard runs in a hook process while the writer runs in the
+        # conductor: a relative override simply becomes two different absolute paths
+        # instead of staying relative (measured: `relhomes` resolves under `/tmp`, under
+        # the repo root, and under `$HOME` depending on who asks). An earlier version of
+        # this comment claimed the call closed that axis; it does not.
+        #
+        # What closes it is a REFUSAL on the creation side
+        # (`_create_workflow_backend_home`), which is where failing closed is available.
+        # This resolver must stay total: it feeds `protected_host_read_roots`, and a hook
+        # that raises while deciding a read is worse than one that guards a path nobody
+        # writes to.
         return Path(override).expanduser().absolute()
     return operator_secret_root() / "homes"
 

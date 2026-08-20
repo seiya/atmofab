@@ -39,3 +39,51 @@ def seed_codex_hooks(repo_root: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes((REPO_ROOT / CODEX_HOOKS_REL).read_bytes())
     return destination
+
+
+# --------------------------------------------------------------------------------------
+# Isolated-homes redirect for test MODULES, not only for pytest.
+#
+# `tools/tests/conftest.py` points `METDSL_WORKFLOW_HOMES_ROOT` at each test's `tmp_path`
+# and raises if a prepared home lands in the operator's real `~/.met-dsl`. Neither half
+# is loaded by plain `unittest`, so any module that prepares a backend home writes into
+# the operator's durable tree when run that way — and this branch's own commit messages
+# prescribe `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest …` as the way to check
+# the production resolution. Two reviewers had to prune entries out of the real tree
+# afterwards.
+#
+# A per-CLASS `setUp` was the first fix and covered one class of the several that prepare
+# homes. This is per MODULE, so a class added later is covered without anyone remembering
+# to. It defers to a value already in the environment — under pytest the conftest fixture
+# sets its own per-test root afterwards, which is finer-grained and wins.
+_MODULE_HOMES_REDIRECTS: dict[str, tuple] = {}
+
+
+def redirect_isolated_homes_root_for_module(module_name: str) -> None:
+    """Call from a module's `setUpModule`; pair with the restore below."""
+    import os
+    import tempfile
+    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
+
+    tmp = tempfile.TemporaryDirectory(prefix="metdsl-test-homes-")
+    root = Path(tmp.name) / "homes"
+    root.mkdir(mode=0o700)
+    _MODULE_HOMES_REDIRECTS[module_name] = (
+        tmp, os.environ.get(WORKFLOW_HOMES_ROOT_ENV))
+    os.environ[WORKFLOW_HOMES_ROOT_ENV] = str(root)
+
+
+def restore_isolated_homes_root_for_module(module_name: str) -> None:
+    """Call from a module's `tearDownModule`."""
+    import os
+    from tools.orchestration_runtime import WORKFLOW_HOMES_ROOT_ENV
+
+    entry = _MODULE_HOMES_REDIRECTS.pop(module_name, None)
+    if entry is None:
+        return
+    tmp, previous = entry
+    if previous is None:
+        os.environ.pop(WORKFLOW_HOMES_ROOT_ENV, None)
+    else:
+        os.environ[WORKFLOW_HOMES_ROOT_ENV] = previous
+    tmp.cleanup()
