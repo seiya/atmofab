@@ -7478,24 +7478,17 @@ clean:
                 if isinstance(key_value, str) and key_value:
                     env[key_name] = key_value
         # Single-route invariant: the two backend-home names reach a leaf through the
-        # profile's `--setenv` alone. An earlier version of this comment claimed the loop
-        # ENFORCES that; review showed it does not, and measured it — deleting the loop
-        # leaves the whole suite green, because `leaf_env_from` never emits these names in
-        # the first place (they are outside the allowlist and outside the prefix). What
-        # actually enforces the invariant is `leaf_env_from` on the way in and
-        # `render_bwrap_command`'s name validation on the way out.
-        # The loop is kept as DEFENCE IN DEPTH, and the honest statement is that no
-        # production path reaches it. The one path that puts a backend home back into the
-        # dict after the filter is the HTTP branch above re-adding whatever name the
-        # entry's `api_key_env` declares — and an HTTP leaf never gets a bwrap profile at
-        # all (`record_launch` skips profile building for an HTTP provider token), so
-        # nothing is delivered or persisted from that dict either way. A second version
-        # of this comment claimed that path made the loop load-bearing; review showed the
-        # consequence does not reach production, which is the same overclaim as the
-        # "enforced not just documented" it replaced. What the loop is worth is that the
-        # single-route rule stays true at THIS layer no matter what a later per-kind
-        # branch adds, and `test_the_pop_is_what_keeps_a_declared_backend_home_out`
-        # witnesses it at the unit level.
+        # profile's `--setenv` alone. DEFENCE IN DEPTH — what enforces the invariant is
+        # `leaf_env_from` on the way in (both names are outside the allowlist and outside
+        # the prefix) and `render_bwrap_command`'s name validation on the way out. This
+        # loop matters when a per-kind branch above puts one back: the HTTP branch re-adds
+        # whatever name the entry's `api_key_env` declares, and
+        # `test_the_pop_is_what_keeps_a_declared_backend_home_out` fails without the loop.
+        # (Three earlier versions of this comment each asserted something review then
+        # falsified — that the loop enforces the rule, that the HTTP path makes it
+        # reachable in production, and that deleting it leaves the suite green, the last
+        # of which contradicted the test added in its own commit. Kept short deliberately:
+        # the archaeology is what the stale clause kept hiding in.)
         for var in _BACKEND_HOME_ENV_VARS:
             env.pop(var, None)
         return env

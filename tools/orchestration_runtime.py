@@ -7893,8 +7893,10 @@ def _runtime_ro_bind_paths() -> list[str]:
 # Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
 # a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
 # profile / `render_bwrap_command` layer is the single DELIVERER and the single RECORD
-# (`--clearenv` then one `--setenv` per entry, and `profile["env"]` persisted). The two
-# names only the deliverer adds are `_BACKEND_HOME_ENV_VARS`.
+# (`--clearenv` then one `--setenv` per entry, and `profile["env"]` persisted). The names
+# the deliverer adds on its own are `_BACKEND_HOME_ENV_VARS` — and `TMPDIR`, which the
+# profile builders set and `render_bwrap_command` supplies from the resolved bind when the
+# record omits it. (This named the backend homes alone until a census caught the third.)
 
 # name -> why this name is on the list. The value is the justification, so an entry
 # cannot be added without writing one down (a test pins that every value is non-empty).
@@ -8010,9 +8012,13 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
     """THE filter: the declared subset of ``host_env`` a leaf may inherit.
 
     Both layers call this — the conductor's `_child_env` to AUTHOR the child environment,
-    and the bwrap profile builders to stay allowlist-true for conductor-less callers. It
-    returns only host passthrough; the per-run values (ids, TMPDIR, the backend home, the
-    claude extras) are added by the caller that owns them.
+    and the bwrap profile builders to stay allowlist-true for conductor-less callers.
+
+    It returns the declared host names AND ONE VALUE OF ITS OWN: `LEAF_ENV_PATH_DEFAULT`
+    when the host has no usable `PATH`, which `test_path_falls_back_when_the_host_has_none`
+    pins. (This said "only host passthrough" until a census caught it.) Everything else
+    per-run — the ids, TMPDIR, the backend home, the claude extras — is added by the
+    caller that owns it.
     """
     body: dict[str, str] = {}
     for key, value in host_env.items():
@@ -8032,9 +8038,12 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
 # The environment variables that relocate a backend CLI's configuration home.
 # TWO roles. (1) `render_bwrap_command` declares them through the sandbox — that
 # `--setenv` is the ONLY route by which a prepared home reaches a leaf. (2) the same
-# tuple is the exclusion set the conductor's `_child_env` enforces: it deliberately does
-# not set them, because a second spelling could name a different home than the one whose
-# settings were SHA-pinned, and the record would then describe neither.
+# tuple names what the conductor's `_child_env` pops, so a second spelling cannot name a
+# different home than the one whose settings were SHA-pinned. What ENFORCES that is
+# `leaf_env_from` (these names are outside the allowlist and outside the prefix) plus
+# this function's own name validation; the pop is defence in depth. An earlier version
+# said the tuple "is the exclusion set `_child_env` enforces", which the conductor-side
+# comment had already retracted — leaving the rule's two homes disagreeing.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME", "CLAUDE_CONFIG_DIR")
 
 
@@ -8793,7 +8802,25 @@ def render_bwrap_command(
     if env_tmp is not None and env_tmp != ws_abs:
         raise ValueError(
             f"profile env TMPDIR={env_tmp!r} disagrees with workspace_tmp_rw_abs {ws_abs!r}")
-    for name, value in sorted({**profile_env, "TMPDIR": ws_abs}.items()):
+    # The both-ids floor, again, on the DELIVERER. `_profile_child_env` guarantees it for
+    # profiles built in this process, but this function also renders a profile READ OFF
+    # DISK (`spawn_leaf` -> `_sandbox_profile_for`), which that guarantee never touched —
+    # including one persisted before the environment became declared, whose `env` predates
+    # the ids entirely. Under `--clearenv` such a profile delivers a leaf with no
+    # `METDSL_ORCHESTRATION_ID`, and its build-runtime MCP server then reads "not under a
+    # run" and stops requiring a capability token.
+    # FILLED from the profile's OWN recorded ids, not refused: refusing here would reject
+    # exactly those older profiles, i.e. break `--resume` of a run started before this
+    # branch — the fourth over-refusal on a change whose failures have all been in that
+    # direction. The profile already records both ids as top-level fields, so the right
+    # values are in hand and nothing has to be guessed.
+    delivered = {**profile_env, "TMPDIR": ws_abs}
+    for _id_name, _id_field in (("METDSL_ORCHESTRATION_ID", "orchestration_id"),
+                                ("METDSL_CHILD_AGENT_RUN_ID", "agent_run_id")):
+        _recorded = str(profile.get(_id_field) or "").strip()
+        if _recorded and not delivered.get(_id_name):
+            delivered[_id_name] = _recorded
+    for name, value in sorted(delivered.items()):
         # An empty value is dropped rather than declared. Under `--clearenv` the two are
         # not the same thing: `--setenv CLAUDE_CONFIG_DIR ""` would point the CLI at the
         # empty path, where absent lets its own resolution run. The pre-`--clearenv` code

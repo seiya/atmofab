@@ -35411,7 +35411,16 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         """Decision 2 (2026-08-20): the proxy/TLS families are excluded. The tuple is
         what makes that reviewable — if someone adds one to the allowlist, the two
         collections disagree and this fails."""
-        self.assertTrue(ort.LEAF_ENV_NAMED_EXCLUSIONS)
+        # SET IDENTITY, not iteration. The old version looped over the tuple, so removing
+        # an entry just looped less and stayed green — measured: all 11 proxy/TLS drops
+        # survived it. Nothing at runtime reads this constant (it is a recorded decision,
+        # not a filter input), so this test is the only thing that can notice it shrinking.
+        self.assertEqual(set(ort.LEAF_ENV_NAMED_EXCLUSIONS), {
+            "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+            "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+            "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        })
         for name in ort.LEAF_ENV_NAMED_EXCLUSIONS:
             with self.subTest(name=name):
                 self.assertNotIn(name, ort.LEAF_ENV_ALLOWLIST)
@@ -35458,6 +35467,29 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
             "PATH": "/p", "HOME": "/h", "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
             "METDSL_WORKFLOW_MODE": "1", "METDSL_ANYTHING_NEW": "x",
         })
+
+    def test_the_allowed_prefix_is_exactly_the_repo_namespace(self) -> None:
+        """The prefix's SPELLING, which anchoring alone does not pin.
+
+        Shortening it to `METDS` still anchors and still passes every other test, while
+        admitting `METDSX_*` — a namespace this repository does not own. The surviving
+        justification for prefix-passing is that it admits only the repo's own namespace,
+        so the exact string is the justification's load-bearing half."""
+        self.assertEqual(ort.LEAF_ENV_ALLOWED_PREFIXES, ("METDSL_",))
+        self.assertEqual(ort.leaf_env_from({"PATH": "/b", "METDSX_FOO": "y"}),
+                         {"PATH": "/b"})
+
+    def test_a_non_string_key_or_value_is_skipped_not_forwarded(self) -> None:
+        """`Conductor.env` is a plain dict, so nothing upstream guarantees str->str.
+
+        The value check is the one that matters: the CLI path would still be refused by
+        the renderer's own type guard, but an HTTP leaf gets `child_env` handed straight
+        to `_run_http_leaf` with no such guard. The key check is a crash-to-skip
+        converter — without it a non-string key raises `AttributeError` from
+        `startswith` rather than being filtered."""
+        got = ort.leaf_env_from({"PATH": "/b", "HOME": object(), 1: "x",
+                                 "METDSL_OK": "yes"})
+        self.assertEqual(got, {"PATH": "/b", "METDSL_OK": "yes"})
 
     def test_the_prefix_is_ANCHORED_not_a_substring_match(self) -> None:
         """Anchoring is the whole load-bearing half of the prefix justification.
@@ -35707,6 +35739,39 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.assertEqual(self._setenv_map(argv)["TMPDIR"],
                          str(Path(profile["workspace_tmp_rw_abs"]).resolve()))
 
+    def test_a_profile_read_off_disk_still_delivers_both_ids(self) -> None:
+        """The deliverer's own floor, for the profiles the author's floor cannot reach.
+
+        `spawn_leaf` renders a profile READ OFF DISK, including one persisted before the
+        environment became declared — whose `env` predates the ids entirely. Under
+        `--clearenv` that leaf gets no `METDSL_ORCHESTRATION_ID`, and its MCP server then
+        reads "not under a run" and stops requiring a capability token.
+
+        Filled from the profile's own recorded ids rather than refused, because refusing
+        would reject those older profiles outright — i.e. break `--resume` of a run
+        started before this branch."""
+        profile = self._profile()
+        # exactly the shape origin/main persisted: the old 7-name host set, no ids
+        profile["env"] = {"PATH": "/usr/bin:/bin", "HOME": "/h", "LANG": "C.UTF-8",
+                          "TMPDIR": profile["env"]["TMPDIR"]}
+        profile["orchestration_id"] = "orch-recorded"
+        profile["agent_run_id"] = "arid-recorded"
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        setenv = self._setenv_map(argv)
+        self.assertEqual(setenv["METDSL_ORCHESTRATION_ID"], "orch-recorded")
+        self.assertEqual(setenv["METDSL_CHILD_AGENT_RUN_ID"], "arid-recorded")
+        # ...and the pre-branch profile is RENDERED, not refused
+        self.assertEqual(setenv["HOME"], "/h")
+
+    def test_the_delivered_ids_never_override_what_the_record_declares(self) -> None:
+        """The fill must not become a silent correction: a profile that DECLARES an id
+        keeps it, so the record and the delivery still cannot disagree."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "METDSL_ORCHESTRATION_ID": "from-env"}
+        profile["orchestration_id"] = "from-field"
+        argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
+        self.assertEqual(self._setenv_map(argv)["METDSL_ORCHESTRATION_ID"], "from-env")
+
     def test_an_empty_value_is_dropped_rather_than_declared_empty(self) -> None:
         """`--setenv CLAUDE_CONFIG_DIR ""` points the CLI at the empty path; absent lets
         its own resolution run. The pre-`--clearenv` code skipped empty backend-home
@@ -35778,6 +35843,32 @@ class LeafEnvClosureTests(unittest.TestCase):
                 backend_type="claude")
         self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
         self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
+
+    def test_an_EMPTY_per_launch_id_is_refused_not_quietly_filled(self) -> None:
+        """The `is not None` guard, which a census found unpinned.
+
+        An empty string is the one shape that slips between the two mechanisms: the
+        disagreement check would let it past under a truthiness test, and the
+        `setdefault` floor CANNOT repair it because the key exists. The renderer's own
+        `if value:` then drops the name — producing exactly the leaf-with-no-orchestration
+        -id whose MCP server stops requiring a capability token. Refusing at the boundary
+        is right: this arrives over `--child-env-from-stdin`, and an empty id there is a
+        malformed payload, not an omission."""
+        for name in ("METDSL_ORCHESTRATION_ID", "METDSL_CHILD_AGENT_RUN_ID"):
+            with self.subTest(name=name):
+                with self.assertRaises(ValueError):
+                    ort._profile_child_env({"PATH": "/b", name: ""},
+                                           orchestration_id="o", agent_run_id="A")
+
+    def test_an_empty_tmpdir_in_the_record_is_refused_at_render(self) -> None:
+        """Same shape one layer down, same guard (`env_tmp is not None`). Under a
+        truthiness test an empty TMPDIR would be silently corrected to the bind rather
+        than refused — the right value, but a record that disagreed with its delivery and
+        said nothing, which is the one thing this layer exists to prevent."""
+        profile = self._profile()
+        profile["env"] = {**profile["env"], "TMPDIR": ""}
+        with self.assertRaises(ValueError):
+            ort.render_bwrap_command(profile=profile, command_argv=["claude"])
 
     def test_every_profile_carries_both_per_launch_ids(self) -> None:
         """The floor `--clearenv` made necessary, on BOTH paths.
