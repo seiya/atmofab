@@ -8470,19 +8470,27 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     ``None`` — a conductor-less caller (a test fixture, the standalone CLI) — falls back
     to filtering the host environment, so those callers stay allowlist-true too.
     """
+    per_launch = (("METDSL_ORCHESTRATION_ID", orchestration_id),
+                  ("METDSL_CHILD_AGENT_RUN_ID", agent_run_id))
     if child_env is None:
-        # The fallback still goes through the SAME id check below. It used to return
-        # here, which meant a conductor-less `record-launch` — one run from inside a
-        # leaf, an ordinary spelling that `docs/CLI_REFERENCE.md` documents and
-        # `leaf_config/claude/settings.json` grants — filtered that leaf's own
-        # environment and so carried the PARENT's `METDSL_CHILD_AGENT_RUN_ID` into the
-        # child's profile, where it was both persisted as the record and `--setenv`ed
-        # into the child. Which is precisely what the check exists to prevent: the hook
-        # selects a capability by that name. Not reachable through the conductor (every
-        # `record-launch` it issues passes the flag, pinned) and no worse than the
-        # pre-`--clearenv` inheritance, but there is no reason for the two paths to
-        # answer the question differently.
+        # THE FALLBACK RECONSTRUCTS; IT DOES NOT VALIDATE. The two paths answer
+        # different questions and must not share an answer. Here the source is the
+        # BUILDING process's own environment, so a per-launch id in it belongs to
+        # whatever launched that process — for a `record-launch` run from inside a leaf
+        # (documented in `docs/CLI_REFERENCE.md`, granted by
+        # `leaf_config/claude/settings.json`) that is the PARENT's id, and under the
+        # workflow `run_workflow.py` puts `METDSL_ORCHESTRATION_ID` in every node's
+        # environment, so it is present essentially always. Those values are STALE, not
+        # a contradiction: overwrite them with the ids this profile is actually for.
+        #
+        # This was briefly a `raise`, and that was a bad fix for a real finding —
+        # measured, exporting one of the two names made 152 tests fail and, in
+        # production, turned an unreachable stale record into
+        # `record-launch sandbox enforcement failed` -> `fail_closed`, i.e. a killed run.
+        # The finding was right; refusing was the wrong remedy for a path whose whole
+        # job is to rebuild an environment from an unrelated one.
         body = leaf_env_from(os.environ)
+        body.update(per_launch)
     elif not isinstance(child_env, Mapping):
         raise ValueError("child_env must be a mapping of str to str")
     else:
@@ -8491,12 +8499,16 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
             if not isinstance(key, str) or not isinstance(value, str):
                 raise ValueError(f"child_env entries must be str -> str, got {key!r}")
             body[key] = value
-    for name, expected in (("METDSL_ORCHESTRATION_ID", orchestration_id),
-                           ("METDSL_CHILD_AGENT_RUN_ID", agent_run_id)):
-        got = body.get(name)
-        if got is not None and got != expected:
-            raise ValueError(
-                f"child_env {name}={got!r} disagrees with the profile's {expected!r}")
+        # THE THREADED PATH VALIDATES. Here the dict was AUTHORED for this launch by
+        # `_child_env`, so a disagreeing id is not staleness — it is the caller handing
+        # this builder another leaf's environment, and the profile would then both
+        # record and `--setenv` an id naming a different run. Refuse rather than
+        # silently correct, because there is no way to tell which half is wrong.
+        for name, expected in per_launch:
+            got = body.get(name)
+            if got is not None and got != expected:
+                raise ValueError(
+                    f"child_env {name}={got!r} disagrees with the profile's {expected!r}")
     return body
 
 

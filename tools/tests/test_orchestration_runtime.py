@@ -35670,26 +35670,56 @@ class LeafEnvClosureTests(unittest.TestCase):
                         backend_command="claude", backend_type="claude",
                         child_env={"PATH": "/a", name: bad})
 
-    def test_the_fallback_path_is_id_checked_too(self) -> None:
-        """The `child_env is None` path used to return BEFORE the id agreement check.
+    def test_the_fallback_replaces_a_stale_per_launch_id_rather_than_refusing(self) -> None:
+        """The two paths answer DIFFERENT questions, and this is the reconstructing one.
 
-        A `record-launch` run from inside a leaf — documented in `docs/CLI_REFERENCE.md`
-        and granted by `leaf_config/claude/settings.json` — takes that path, and the
-        leaf's own environment carries the PARENT's `METDSL_CHILD_AGENT_RUN_ID`. That
-        value was then persisted as the child's record and `--setenv`ed into the child,
-        which is exactly what the check exists to prevent: the hook selects a capability
-        by that name."""
+        A `record-launch` run from inside a leaf — documented in `docs/CLI_REFERENCE.md`,
+        granted by `leaf_config/claude/settings.json` — builds from that leaf's own
+        environment, which carries the PARENT's `METDSL_CHILD_AGENT_RUN_ID`; and under
+        the workflow `run_workflow.py` puts `METDSL_ORCHESTRATION_ID` into every node's
+        environment, so a stale id is present essentially always. Carrying it into the
+        child's profile is wrong (the hook selects a capability by that name), but so is
+        REFUSING: this path's whole job is to rebuild an environment from an unrelated
+        one. It overwrites.
+
+        This test asserted the refusal for exactly one round. That was measured to make
+        152 tests fail with one variable exported and, in production, to turn an
+        unreachable stale record into `fail_closed`. The sibling below keeps the refusal
+        where it belongs."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        with mock.patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "o",
+        with mock.patch.dict(os.environ, {"METDSL_ORCHESTRATION_ID": "OTHER-ORCH",
                                           "METDSL_CHILD_AGENT_RUN_ID": "PARENT-ARID",
                                           "PATH": "/usr/bin"}):
-            with self.assertRaises(ValueError) as ctx:
-                ort.build_readonly_bwrap_profile(
-                    repo_root=Path(d) / "repo", orchestration_id="o",
-                    agent_run_id="CHILD-ARID", backend_command="claude",
-                    backend_type="claude")
-        self.assertIn("PARENT-ARID", str(ctx.exception))
+            profile = ort.build_readonly_bwrap_profile(
+                repo_root=Path(d) / "repo", orchestration_id="o",
+                agent_run_id="CHILD-ARID", backend_command="claude",
+                backend_type="claude")
+        self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
+        self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
+
+    def test_a_stale_ambient_id_does_not_make_a_profile_build_fail(self) -> None:
+        """The regression itself, stated as the property rather than as a value.
+
+        `run_workflow.py` exports `METDSL_ORCHESTRATION_ID` into every node, so ANY
+        conductor-less profile build under the workflow sees one. If that can raise, the
+        suite becomes coupled to the operator's shell and a leaf-initiated
+        `record-launch` terminalizes the run through `record_launch`'s `except
+        Exception` -> `sandbox_enforcement_violation` -> `fail_closed`."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for ambient in ({"METDSL_ORCHESTRATION_ID": "OTHER-ORCH"},
+                        {"METDSL_CHILD_AGENT_RUN_ID": "OTHER-ARID"},
+                        {"METDSL_ORCHESTRATION_ID": "OTHER-ORCH",
+                         "METDSL_CHILD_AGENT_RUN_ID": "OTHER-ARID"}):
+            with self.subTest(ambient=sorted(ambient)):
+                with mock.patch.dict(os.environ, {**ambient, "PATH": "/usr/bin"}):
+                    profile = ort.build_readonly_bwrap_profile(
+                        repo_root=Path(d) / "repo", orchestration_id="o",
+                        agent_run_id="A", backend_command="claude",
+                        backend_type="claude")
+                self.assertEqual(profile["env"]["METDSL_ORCHESTRATION_ID"], "o")
+                self.assertEqual(profile["env"]["METDSL_CHILD_AGENT_RUN_ID"], "A")
 
     def test_a_non_mapping_or_mistyped_child_env_fails_closed(self) -> None:
         """The type validations, which review found undriven by any test.
