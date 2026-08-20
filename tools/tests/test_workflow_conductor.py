@@ -37,9 +37,32 @@ import pytest
 import tools.llm_config as lc
 import tools.orchestration_runtime as wc_runtime
 import tools.workflow_conductor as wc
-from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+from tools.tests.leaf_config_fixture import (
+    isolated_homes_per_test_suite,
+    redirect_isolated_homes_root_for_module,
+    restore_isolated_homes_root_for_module,
+    seed_claude_leaf_config,
+)
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
+
+
+def setUpModule() -> None:
+    # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
+    # backend homes through `record_launch`, and without this it writes them into
+    # the operator's real `~/.met-dsl/homes` whenever it is run outside pytest.
+    redirect_isolated_homes_root_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_isolated_homes_root_for_module(__name__)
+
+
+def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
+    # Per-TEST isolated-homes root outside pytest, matching what conftest does inside it.
+    # Without this the module-scoped root above is shared, and the fixtures here reuse
+    # fixed orchestration ids, so they collide on the exclusive `mkdir`.
+    return isolated_homes_per_test_suite(tests)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Tracked, slim copies of real working launch requests (one per step/substep),
@@ -6222,7 +6245,7 @@ class NodeAllocationTest(unittest.TestCase):
 class DiagnosticianTest(unittest.TestCase):
     """M4: LLM diagnostician escalation for unclassifiable failures."""
 
-    def _repo_root(self) -> Path:
+    def _repo_root(self, orchestration_id: str = "o") -> Path:
         """A real, per-test repo root carrying this repository's leaf configuration.
 
         The diagnostician builds a REAL read-only sandbox profile, which since issue
@@ -6237,14 +6260,28 @@ class DiagnosticianTest(unittest.TestCase):
         # The private-home preparation records the home in orchestration metadata
         # under that file's own lock, exactly as the codex twin does, so the
         # orchestration directory has to exist for a diagnostician to launch at all.
-        meta_dir = root / "workspace" / "orchestrations" / "o"
+        meta_dir = root / "workspace" / "orchestrations" / orchestration_id
         meta_dir.mkdir(parents=True, exist_ok=True)
         (meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
         return root
 
     def _conductor(self) -> _FakeConductor:
+        """A conductor with a FRESH repo root AND a fresh orchestration id.
+
+        The id used to be the literal `"o"` for every conductor. Since issue #64 the
+        private home is `<homes-root>/<oid>/<backend>` and its creation is exclusive, so
+        a test that builds two conductors — each with its own temporary repo root, the
+        way this class simulates two independent runs — collided on one home and the
+        second launch failed closed. That refusal is the intended production behaviour
+        (two checkouts naming the same orchestration must not share one home, which
+        would hand each the other's transcripts); what was wrong is a fixture that gives
+        two unrelated runs the same id. Real ids carry a timestamp and 8 random hex
+        characters.
+        """
+        type(self)._conductor_seq = getattr(type(self), "_conductor_seq", 0) + 1
+        oid = f"o{type(self)._conductor_seq}"
         c = _FakeConductor(
-            repo_root=self._repo_root(), orchestration_id="o",
+            repo_root=self._repo_root(oid), orchestration_id=oid,
             orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
         )
         c.calls = []
@@ -6594,13 +6631,20 @@ class DiagnosticianTest(unittest.TestCase):
 
         Asserted on the profile the REAL method returns, not on the kwargs helper.
         """
-        repo = self._repo_root()
+        # Its OWN id, like `_conductor()` mints: the isolated home is
+        # `<homes-root>/<oid>/<backend>` and its creation is exclusive, so two tests
+        # sharing the literal `"o"` under one homes root collide. Under pytest each test
+        # gets its own root and the collision is invisible; run as plain `unittest` — the
+        # command this branch's commit messages prescribe — it fails, and it does NOT
+        # fail on `origin/main`.
+        oid = "o_readonly_profile"
+        repo = self._repo_root(oid)
         c = _FakeConductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
+            repo_root=repo, orchestration_id=oid, orchestration_agent_run_id="ORCH",
             llm_config=_cfg("claude"), env={})
         profile = c._readonly_sandbox_profile()
         meta = json.loads(
-            (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json")
+            (repo / "workspace" / "orchestrations" / oid / "orchestration_meta.json")
             .read_text(encoding="utf-8"))
         home = meta["claude_workflow_home"]
         self.addCleanup(shutil.rmtree, Path(home), True)
@@ -6627,11 +6671,13 @@ class DiagnosticianTest(unittest.TestCase):
         # committed leaf configuration).
         with tempfile.TemporaryDirectory() as tmp:
             seed_claude_leaf_config(Path(tmp))
-            _meta_dir = Path(tmp) / "workspace" / "orchestrations" / "o"
+            # Its own id, for the reason given at the other direct construction above.
+            _oid = "o_bwrap_argv"
+            _meta_dir = Path(tmp) / "workspace" / "orchestrations" / _oid
             _meta_dir.mkdir(parents=True, exist_ok=True)
             (_meta_dir / "orchestration_meta.json").write_text("{}", encoding="utf-8")
             c = _FakeConductor(
-                repo_root=Path(tmp), orchestration_id="o",
+                repo_root=Path(tmp), orchestration_id=_oid,
                 orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
             )
             c.calls = []

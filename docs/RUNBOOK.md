@@ -295,6 +295,152 @@ python3 tools/run_workflow.py --resume build
 - `copy_based_artifact_reuse` is not detected.
 - `write_scope_violation.json` is not generated.
 
+## The operator-private root (`~/.met-dsl`) {#operator-private-root}
+
+Three things live outside the repository, under the operator's own home. All three are
+per-operator and per-host; none of them is ever committed. This is the inventory of what
+the CODE writes there. An `ls` on a long-lived host may show more — this checkout's own
+shows `cold_start_locks/` and `escape.txt` — and neither has a producer anywhere in this
+repository's history (`git log --all -S` finds none), so they are residue from something
+outside it or from a version that predates the history. Nothing writes them, nothing
+reads them, and nothing cleans them up; they are named here only so their presence is not
+read as a fourth thing the workflow maintains.
+
+| Path | Written by | Read by | Retention |
+|---|---|---|---|
+| `~/.met-dsl/operator_tokens/<orchestration_id>.txt` | `init_orchestration`, once per run | the operator, when dismissing an `unauthorized_write_violation` (§dismiss) | kept; a run's token stays valid across `--resume` |
+| `~/.met-dsl/start_claims/` | `run_workflow.py`'s cold-start guard | itself | advisory `flock` files; the OS releases the lock when the driver dies |
+| `~/.met-dsl/homes/<orchestration_id>/{claude,codex}/` | the leaf launcher, per orchestration and backend | `--resume` (warm session lookup), `audit_orchestration.py`, the three audit skills | **indefinite. Nothing deletes these automatically. See below.** |
+
+An agent cannot read any of it, and it is outside every read manifest so the Read tool
+cannot name it either. For Bash on both backends the block comes from one of two policies,
+and which one tells the operator WHICH tree was touched: `homes/` and everything under it
+is a protected root of its own and answers `forbid_backend_credential_direct_read` (with
+the leaf's OWN home naming itself, since the roots sort longest-path-first), while
+`operator_tokens/` and `start_claims/` answer `forbid_operator_secret_direct_read`. Both are refusals, and neither has a
+remedy other than dropping the read: these paths are outside every manifest and no agent
+task needs them. (The `#hook-recovery` table covers both policy ids in ONE row, whose
+description predates this section and names only the operator tokens for `~/.met-dsl`;
+this section is canonical for what lives under that root.) **`chmod 700 ~/.met-dsl` is recommended** on a
+shared host. The workflow creates the directory best-effort and does not force its mode,
+because a root that predates this recommendation would otherwise fail every launch;
+everything it creates BELOW that level is 0700 and is re-checked for ownership and
+symlinks on each launch.
+
+`METDSL_WORKFLOW_HOMES_ROOT` relocates the homes tree, and `METDSL_START_CLAIM_ROOT` the
+claims tree. Both exist for tests and for an operator with a specific reason; neither is
+needed for an ordinary run. The homes one has **two preconditions, and neither is the
+one you would guess**:
+
+- the value must be an **absolute path**. A relative one does not stay relative — it is
+  resolved against whichever process asks, and the conductor that creates a home and the
+  hook process that forbids reading it need not share a working directory, so the two
+  would guard and create different trees;
+- the directory it names is created if absent, but its **parent must exist**, so a typo
+  does not silently build a tree somewhere nobody looks. (That is also why the default
+  `~/.met-dsl/homes` may be created from nothing while an override may not.)
+
+The MODE is not a precondition: a root you create with a plain `mkdir` is tightened to
+0700 on first use rather than refused, as is a mode that later drifts (a backup restored
+without permissions) — and since the tightening also runs on a warm reuse, a drift is
+corrected by the next launch of the same orchestration rather than only by a new one.
+What is refused is a symlink, a non-directory, a directory owned by another user, and a
+filesystem on which the tightening does not take.
+
+### Why the homes are kept, and how to remove one
+
+A backend home holds the leaf's ONLY record of its own turn — the claude transcript, the
+codex rollout. The artifacts under `workspace/orchestrations/<id>/` record what the HOST
+observed; nothing else records what the leaf did. Those homes used to be created under
+`/tmp`, where a host restart took them, and a billed run became unauditable the moment
+the machine rebooted. They are now durable, and the price of that is that they accumulate.
+
+There is deliberately **no automatic deletion**: any automatic rule has to choose
+between deleting evidence someone may still want and keeping everything, and only the
+second cannot silently destroy the thing the directory exists for. What is written down
+instead is the rule in this section — keep indefinitely, delete only by hand — plus the
+tool that carries it out.
+
+This is **not** the same answer `TODO.md` reaches for `workspace/`, and the difference is
+worth one sentence because two earlier drafts of this paragraph claimed it was. There the
+repository declines to legislate at all: `workspace/` is the gate's execution workspace
+and how an operator uses it is their business. Here the directory is created by this
+code, holds the only record of what a leaf did, and is one an operator never opens — so
+it gets a written rule.
+
+Removing one is the operator's decision, made with:
+
+```bash
+# Report only — the default. Never deletes.
+python3 tools/prune_workflow_homes.py --all
+
+# Remove the homes of runs that are over.
+python3 tools/prune_workflow_homes.py --all --delete
+python3 tools/prune_workflow_homes.py --orchestration-id <orchestration_id> --delete
+```
+
+**What deleting costs**, so it is a decision rather than a discovery:
+
+- `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a leaf's
+  session inside the home; a re-created one has none;
+- the run stops being auditable. `skills/workflow-audit-claude`, `workflow-audit-codex`
+  and `workflow-timing-audit` all read from the home.
+
+The tool refuses FIVE things, and only one of them has an override:
+
+- an entry that is not shaped like a backend home — one carrying a subdirectory whose
+  name is not a declared backend, or one with neither a backend subdirectory nor an
+  `owner.json` naming that orchestration — `refused:not_a_backend_home`. This is what
+  stops `--homes-root` being pointed at an ordinary directory and emptying it, and it has
+  no override on purpose. An entry whose backend directory is already gone but whose
+  marker remains is NOT refused: the marker is proof enough that the workflow made it, so
+  a partial delete can still be cleaned up by the only tool allowed to clean it;
+- an orchestration id that is not a plain `[A-Za-z0-9_-]` token —
+  `refused:invalid_orchestration_id`. A separator would otherwise reach INSIDE an entry,
+  past the containment assert and past the owner check;
+
+- an entry that is not a real directory owned by this user;
+- an entry whose `owner.json` is missing or inconsistent — `refused:unverifiable_owner`.
+  The marker names the checkout that owns the run; without it, the home may equally
+  belong to a LIVE run in a checkout this invocation cannot see. `--allow-unverifiable`
+  releases this one, and only this one. An owner checkout that has been moved or deleted
+  lands here too, since "did that run finish" is then unanswerable;
+- an orchestration whose status is not terminal — `refused:orchestration_not_terminal`,
+  with **no override**: deleting a home under a live leaf takes that leaf's session with
+  it. The status is re-read under the orchestration's own metadata lock, so a concurrent
+  `--resume` cannot be caught mid-transition.
+
+One more verdict exists that is not a refusal to try: `refused:delete_failed:<error>`,
+reported when the removal itself failed (a busy mount, a permission change under the
+tool). It counts as "not done" for the exit code.
+
+An orchestration named explicitly on the command line and then refused — or attempted and
+failed — makes the tool exit 2; a refusal during `--all` does not, because there the
+refusals are the report.
+
+**One failure mode worth recognising, and the two causes need different commands.** If a
+launch reports `isolated <backend> home already exists but is not recorded in this
+orchestration's metadata`, a previous run created the directory and died before recording
+it, or its metadata was lost. The home is never adopted — that would hand a new
+orchestration an earlier run's transcripts — so inspect it and then remove it. Which
+command works depends on which cause it was, and the difference is not cosmetic:
+
+- **the metadata is gone** (the checkout was removed, or the orchestration directory
+  was): the entry is `refused:unverifiable_owner`, and `--allow-unverifiable --delete`
+  is the command;
+- **the run crashed between the `mkdir` and the metadata write**: `owner.json` is
+  written immediately after the `mkdir`, so the marker is present and valid and the
+  entry is NOT unverifiable — `--allow-unverifiable` does nothing for it. The recorded
+  status is whatever the dead run left, which for a crash is `running`, so the entry is
+  `refused:orchestration_not_terminal` and that refusal has no override. **Terminalize
+  the orchestration first** — the `set-status` command block under
+  §"[Incomplete launch recovery](#launch-incomplete-recovery)", which records the same
+  status/reason pair the resume gate's automatic terminalization would — then prune it
+  normally. (§3-1 was cited here first and is the wrong section. It has operator
+  commands — several `run_workflow.py --resume` invocations — but no TERMINALIZING one:
+  the terminalization it describes is the automatic one a `--resume` performs when the
+  resume gate probes the recorded driver as dead.)
+
 ## Repair cheat sheet on a hook block {#hook-recovery}
 
 When a hook blocks during workflow execution, identify the cause from `reason` and `audit_detail.policy`, and take the next action according to the table below.
@@ -429,7 +575,7 @@ python3 tools/audit_orchestration.py --orchestration-id <orchestration_id>
 #   last activity, dead-air seconds, the abort marker, and any final API error.
 ```
 
-`audit_orchestration.py` correlates the dangling leaf's OWN transcript on demand: the conductor pins each leaf's Claude session id to its `agent_run_id`, so the transcript is directly addressable as `<projects-root>/<slug>/<arid>.jsonl` (no host session needed). Since issue #63 that root is the orchestration's PRIVATE home — read `orchestration_meta.json#claude_workflow_home`, or let the tooling resolve it through `tools/hooks/common.py::claude_leaf_projects_roots`, which is the canonical resolver every consumer shares. The operator's `~/.claude/projects` is still searched as well, so a run recorded before that move stays auditable. The private home lives under `/tmp` and is not durable (issue #64). This recovers the child's last activity, dead-air interval, and final API error — distinguishing a retryable 529 from other failures — and degrades to the in-repo facts when that home has been cleaned or rotated. Older runs may additionally carry persisted `launch_incident.runtime.*.json` snapshots, which are surfaced too.
+`audit_orchestration.py` correlates the dangling leaf's OWN transcript on demand: the conductor pins each leaf's Claude session id to its `agent_run_id`, so the transcript is directly addressable as `<projects-root>/<slug>/<arid>.jsonl` (no host session needed). Since issue #63 that root is the orchestration's PRIVATE home — read `orchestration_meta.json#claude_workflow_home`, or let the tooling resolve it through `tools/hooks/common.py::claude_leaf_projects_roots`, which is the canonical resolver every consumer shares. The operator's `~/.claude/projects` is still searched as well, so a run recorded before that move stays auditable. Since issue #64 that home is DURABLE — `~/.met-dsl/homes/<orchestration_id>/claude` — so this correlation keeps working after a host restart, which is the reason the move was made; see §"The operator-private root (`~/.met-dsl`)". This recovers the child's last activity, dead-air interval, and final API error — distinguishing a retryable 529 from other failures — and degrades to the in-repo facts when that home has been cleaned or rotated. Older runs may additionally carry persisted `launch_incident.runtime.*.json` snapshots, which are surfaced too.
 
 Recovery is the normal `python3 tools/run_workflow.py --resume --orchestration-id <orchestration_id>` (§3-1): the completed substeps are skipped and the dangling substep is re-launched. The reconciliations below are scoped to the terminal→`running` reset, so the orchestration must be terminal first. That transition is automatic when the resume gate probes the recorded driver as `dead` (§3-1 "Driver liveness on a non-terminal target"): the run is terminalized as `fail` / `driver_crashed` and the reset follows in the same invocation. It stays manual for a `unknown` liveness verdict — a run that predates the `driver` block, one whose meta was written on another host, or a non-Linux host — where the operator terminalizes explicitly before resuming:
 

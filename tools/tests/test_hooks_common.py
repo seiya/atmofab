@@ -3724,7 +3724,7 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
         """The secret moved; the guard has to move with it.
 
         Issue #63 binds the operator's REAL `~/.claude/.credentials.json` over a
-        placeholder inside a private `/tmp` home, and the codex twin binds
+        placeholder inside a private per-orchestration home, and the codex twin binds
         `auth.json` the same way. Inside the sandbox those paths ARE the operator's
         credentials, so a guard that only knows `~/.claude` / `~/.codex` leaves the
         same secret readable — and writable — under a different name. Measured
@@ -3891,6 +3891,296 @@ class ForbidBackendCredentialReadTests(unittest.TestCase):
                 self.assertEqual(
                     self._policy(f"cat {legacy}/auth.json"),
                     "forbid_backend_credential_direct_read")
+
+
+class DurablePrivateHomeReadGuardTests(unittest.TestCase):
+    """The read guard against the DURABLE home layout (`~/.met-dsl/homes/<oid>/<backend>`).
+
+    The twin of `test_the_isolated_private_home_is_guarded_for_both_backends` and its
+    neighbours, which put the homes in an arbitrary temporary directory. Those stay:
+    they are the control for the RESOLVER's boundary — that only the home this
+    orchestration recorded is named — and being outside `$HOME` is what makes that
+    boundary observable at all. This class covers what changes when the homes sit
+    under the operator-secret root instead, which is a different question in three
+    ways: the `~` / `$HOME` / `${HOME}` spellings now exist for these paths, a sibling
+    orchestration's home is now covered by the root above it, and the longest-path-first
+    sort in `protected_host_read_roots` becomes what decides attribution.
+
+    `$HOME` is patched to a temporary directory throughout. Reading the operator's own
+    tree would couple the suite to the machine it runs on — issue #84's shape — and
+    would also make the assertions depend on how deep this checkout happens to be.
+
+    `METDSL_WORKFLOW_HOMES_ROOT` is set EXPLICITLY to the fake home's `.met-dsl/homes`,
+    and that is load-bearing rather than tidy. `tools/tests/conftest.py` redirects that
+    variable for every test in the suite, so without this the homes root resolved
+    somewhere OUTSIDE the fake `~/.met-dsl` — a relationship production never has — and
+    the verdicts these tests assert were the harness's, not the workflow's. Measured: one
+    assertion here passed under pytest and FAILED under
+    `env -u METDSL_WORKFLOW_HOMES_ROOT python3 -m unittest`, which is the production
+    resolution. Anything that reasons about which root a path falls under has to build the
+    nesting it is reasoning about.
+    """
+
+    def _fixture(self, td: str):
+        """A fake `$HOME` with a durable homes tree, plus a repo whose meta names it."""
+        home = Path(td) / "home"
+        (home / ".met-dsl").mkdir(parents=True)
+        (home / ".claude").mkdir()
+        repo = Path(td) / "repo"
+        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+        claude_home = home / ".met-dsl" / "homes" / "o" / "claude"
+        codex_home = home / ".met-dsl" / "homes" / "o" / "codex"
+        claude_home.mkdir(parents=True)
+        codex_home.mkdir(parents=True)
+        sibling = home / ".met-dsl" / "homes" / "other" / "claude"
+        sibling.mkdir(parents=True)
+        (repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json").write_text(
+            json.dumps({"claude_workflow_home": str(claude_home),
+                        "codex_workflow_home": str(codex_home)}),
+            encoding="utf-8")
+        return home, repo, claude_home, codex_home, sibling
+
+    def _policy(self, home: Path, repo: Path, command: str, backend: str = "claude") -> str:
+        env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o",
+               "HOME": str(home),
+               # The production RELATIONSHIP, not merely a temporary directory: the homes
+               # root must sit under this fixture's `~/.met-dsl`, or every verdict below
+               # is about a layout the workflow never produces. See the class docstring.
+               "METDSL_WORKFLOW_HOMES_ROOT": str(home / ".met-dsl" / "homes")}
+        with patch.dict(os.environ, env, clear=False):
+            decision = evaluate_common_policy(HookInput(
+                event_name=HookEventName.PRE_COMMAND_EXECUTE, backend=backend,
+                payload={"command": command, "repo_root": str(repo)},
+                command=command))
+        return (decision.audit_detail or {}).get("policy", "")
+
+    def test_the_home_under_the_secret_root_is_still_named_by_its_own_rule(self) -> None:
+        """Attribution, and it is the longest-path-first sort that produces it.
+
+        Both `~/.met-dsl` and `~/.met-dsl/homes/o/claude` are protected roots now, and
+        the second is inside the first. `protected_host_read_roots` sorts longest
+        first, so the leaf's own home names itself; drop that sort and every one of
+        these reads is reported as an operator-secret read instead — still blocked,
+        but the message would send the reader to the dismiss-violation tokens rather
+        than to the home they actually touched.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, claude_home, codex_home, _sibling = self._fixture(td)
+            for command, backend in (
+                (f"cat {claude_home}/.credentials.json", "claude"),
+                (f"cat {claude_home}/projects/-slug/other-arid.jsonl", "claude"),
+                (f"ls {claude_home}", "claude"),
+                (f"cat {codex_home}/auth.json", "codex"),
+            ):
+                self.assertEqual(self._policy(home, repo, command, backend),
+                                 "forbid_backend_credential_direct_read", msg=command)
+
+    def test_the_home_toward_home_spellings_are_blocked_too(self) -> None:
+        """`~` / `$HOME` / `${HOME}` are spellings these paths did not have before.
+
+        While the home was in a temporary directory it had exactly one spelling, so
+        the marker regex's home-relative alternatives never applied to it. Now they
+        do, and the tokenizer is not what catches them — adjacent shell punctuation
+        mangles the token, which is why the raw-command marker scan exists.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _sibling = self._fixture(td)
+            for spelling in ("~", "$HOME", "${HOME}", "${HOME:-/x}"):
+                command = f"cat {spelling}/.met-dsl/homes/o/claude/.credentials.json"
+                self.assertEqual(self._policy(home, repo, command),
+                                 "forbid_backend_credential_direct_read", msg=command)
+
+    def test_a_sibling_orchestrations_home_is_blocked_and_named_as_a_backend_home(self) -> None:
+        """A DELIBERATE inversion of what the temporary-directory twin asserts.
+
+        That test pins "only the home this orchestration RECORDED is guarded; a
+        name-alike sibling is not" — accurate for a resolver that reads one
+        orchestration's metadata, and it stays accurate. What changed is that a sibling
+        now falls under two protected roots it did not before, so the read fails closed
+        whatever the resolver knows.
+
+        WHICH root names it is the part I got wrong and a blank-slate reviewer caught.
+        The first version of this test asserted `forbid_operator_secret_direct_read` and
+        two documents said the message names `~/.met-dsl`. That was true only until the
+        homes ROOT became a protected entry of its own: it is a longer path than
+        `~/.met-dsl`, so longest-path-first now attributes anything under `homes/` to it,
+        and a sibling is reported as a backend-home read. That is the MORE accurate of
+        the two labels — a sibling home is a backend home, not the dismiss-violation
+        store — so the behaviour stands and the claim moved to match it.
+
+        The reason the wrong assertion passed is worth as much as the assertion: the
+        suite's conftest redirects `METDSL_WORKFLOW_HOMES_ROOT` away from `~/.met-dsl`,
+        so the nesting this test reasons about did not exist while it ran. The fixture
+        now builds it (see the class docstring), and the operator-token control below is
+        what keeps the two rules distinguishable.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, sibling = self._fixture(td)
+            self.assertEqual(self._policy(home, repo, f"cat {sibling}/projects/x.jsonl"),
+                             "forbid_backend_credential_direct_read")
+            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/homes/other/claude/x"),
+                             "forbid_backend_credential_direct_read")
+            # The dismiss-violation tokens are what the operator-secret root exists for,
+            # and they are still attributed to it — so the homes root did not swallow the
+            # rule above it, which is the failure mode of adding a longer entry.
+            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/operator_tokens/o.txt"),
+                             "forbid_operator_secret_direct_read")
+            self.assertEqual(self._policy(home, repo, "cat ~/.met-dsl/start_claims/x.lock"),
+                             "forbid_operator_secret_direct_read")
+
+    def test_the_leaf_own_persisted_tool_result_stays_readable_in_every_spelling(self) -> None:
+        """The exemption follows the file into `$HOME`, or the guard eats the mechanism.
+
+        The harness saves an oversized tool output and tells the agent "Full output
+        saved to <path>"; that path follows `CLAUDE_CONFIG_DIR`, so it is inside the
+        private home. `_blank_persisted_tool_results` has always carried the `~` /
+        `$HOME` / `${HOME}` alternatives, but only for a projects root UNDER the home —
+        a branch that no isolated home could reach while it was in a temporary
+        directory, and that every isolated home reaches now.
+
+        The `${HOME}` case was BROKEN when this layout landed, and not in the branch
+        above: the second `_blank_persisted_tool_results` call — the one guarding the
+        unresolved-expansion fallback — was passing no orchestration id, so it resolved
+        only the operator's `~/.claude/projects` and did not recognize the isolated
+        home's file as a persisted tool result. The leaf was refused the reading of its
+        own gate output. Latent since issue #63 (reachable then only through `$(…)`,
+        because a temporary-directory home has no `${HOME}` spelling to trigger the
+        branch), ordinary since the home moved under `$HOME`.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, claude_home, _x, _sibling = self._fixture(td)
+            slug = str(repo.resolve()).replace("/", "-")
+            results = claude_home / "projects" / slug / "sess-1" / "tool-results"
+            results.mkdir(parents=True)
+            (results / "abc.txt").write_text("oversized gate output", encoding="utf-8")
+            rel = f".met-dsl/homes/o/claude/projects/{slug}/sess-1/tool-results/abc.txt"
+            # EVERY `${HOME…}` parameter expansion, not the three literal spellings. The
+            # block side has always accepted the whole class, so listing only `~`,
+            # `$HOME` and `${HOME}` on the exemption side left a seam: `${HOME:-/x}`,
+            # `${HOME:+$HOME}` and `${HOME%/}` naming the leaf's OWN gate output came back
+            # refused. And the first version of these tests pinned `${HOME:-/x}` on the
+            # BLOCK side only, which is exactly how a seam survives a test suite.
+            for spelling in (str(claude_home / "projects" / slug / "sess-1" / "tool-results" / "abc.txt"),
+                             f"~/{rel}", f"$HOME/{rel}", "${HOME}/" + rel,
+                             "${HOME:-/x}/" + rel, "${HOME:+$HOME}/" + rel,
+                             "${HOME%/}/" + rel):
+                # Asserted against THESE TWO policies, not against "no policy at all",
+                # for the reason the temporary-directory twin further down states: a
+                # fixture path is answered by OTHER pre-existing rules, and demanding
+                # silence pins one of those instead of this one. Found by running the
+                # suite under `TMPDIR=/dev/shm`, where `output_manifest_write_guard`
+                # answers first and an `assertEqual(..., "")` failed for a reason that
+                # has nothing to do with the protected-root guard.
+                self.assertNotIn(
+                    self._policy(home, repo, f"cat {spelling}"),
+                    {"forbid_backend_credential_direct_read",
+                     "forbid_operator_secret_direct_read"},
+                    msg=f"the leaf must be able to read its own tool result: {spelling}")
+            # CONTROLS in the same home and the same spellings — this is an exemption
+            # for one SHAPE, not a hole in the root.
+            for blocked in ("${HOME}/.met-dsl/homes/o/claude/.credentials.json",
+                            f"${{HOME}}/.met-dsl/homes/o/claude/projects/{slug}/other-arid.jsonl",
+                            "${HOME}/.met-dsl/homes/o/claude/projects/-other-slug/sess/tool-results/a.txt",
+                            # The SAME widened spellings on the control side: widening the
+                            # exemption must not have widened what it exempts.
+                            "${HOME:-/x}/.met-dsl/homes/o/claude/.credentials.json",
+                            "${HOME%/}/.met-dsl/homes/other/claude/transcript.jsonl"):
+                self.assertEqual(self._policy(home, repo, f"cat {blocked}"),
+                                 "forbid_backend_credential_direct_read", msg=blocked)
+            # The operator-secret store is blocked too, in the widened spellings, and
+            # under its OWN policy — the two rules stay distinguishable.
+            for token_read in ("${HOME:+$HOME}/.met-dsl/operator_tokens/o.txt",
+                               "${HOME:-/x}/.met-dsl/start_claims/x.lock"):
+                self.assertEqual(self._policy(home, repo, f"cat {token_read}"),
+                                 "forbid_operator_secret_direct_read", msg=token_read)
+
+    def test_a_relocated_homes_root_is_protected_as_a_root_in_its_own_right(self) -> None:
+        """The sibling closure must not be conditional on an environment variable.
+
+        `protected_host_read_roots` covered every orchestration's home through ONE entry,
+        `operator_secret_root()`, which the homes sit under by default. Set
+        `METDSL_WORKFLOW_HOMES_ROOT` outside `~/.met-dsl` and that entry stopped covering
+        them, so a leaf's Bash read of a SIBLING run's transcript was ALLOWED — while this
+        module's docstrings and `docs/HOOKS.md` §"Layer boundary" asserted the closure
+        with no mention of the condition. Measured before the fix; found by Codex.
+
+        The root itself is a protected entry now, resolved by the same
+        `workflow_homes_root` the writer uses, so the tree that gets created is by
+        construction the tree that gets guarded.
+
+        Both directions are asserted. Enforcement: the sibling and a home that does not
+        exist yet are blocked. Attribution: the leaf's own home still names ITSELF rather
+        than the root above it, which is what the longest-path-first sort is for. And a
+        control: an unrelated file beside the homes root stays readable, so this is a root
+        and not "block everything near it".
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, claude_home, _codex, _sib = self._fixture(td)
+            relocated = Path(td) / "elsewhere" / "homes"
+            (relocated / "o" / "claude").mkdir(parents=True)
+            (relocated / "other" / "claude").mkdir(parents=True)
+            (relocated / "other" / "claude" / "transcript.jsonl").write_text(
+                "another run\n", encoding="utf-8")
+            (relocated.parent / "notes.txt").write_text("unrelated\n", encoding="utf-8")
+            (repo / "workspace" / "orchestrations" / "o"
+             / "orchestration_meta.json").write_text(
+                json.dumps({"claude_workflow_home": str(relocated / "o" / "claude")}),
+                encoding="utf-8")
+            env = {"METDSL_WORKFLOW_MODE": "1", "METDSL_ORCHESTRATION_ID": "o",
+                   "HOME": str(home),
+                   "METDSL_WORKFLOW_HOMES_ROOT": str(relocated)}
+
+            def policy(command: str) -> str:
+                with patch.dict(os.environ, env, clear=False):
+                    decision = evaluate_common_policy(HookInput(
+                        event_name=HookEventName.PRE_COMMAND_EXECUTE, backend="claude",
+                        payload={"command": command, "repo_root": str(repo)},
+                        command=command))
+                return (decision.audit_detail or {}).get("policy", "")
+
+            # BLOCKED is the property; WHICH policy names it is not, and it differs from
+            # the default layout on purpose. Under `~/.met-dsl/homes` a sibling is caught
+            # by the operator-secret root above it (the neighbouring test pins that);
+            # under an override the homes root is its own entry and is reported as a
+            # backend-home read, which is the more accurate label of the two.
+            blocked = {"forbid_operator_secret_direct_read",
+                       "forbid_backend_credential_direct_read"}
+            self.assertIn(
+                policy(f"cat {relocated}/other/claude/transcript.jsonl"), blocked,
+                "a sibling orchestration's transcript was readable under the override")
+            self.assertIn(
+                policy(f"cat {relocated}/never_created/codex/rollout.jsonl"), blocked,
+                "a home this orchestration cannot name was readable under the override")
+            # Attribution: the leaf's OWN home still names itself.
+            self.assertEqual(
+                policy(f"cat {relocated}/o/claude/.credentials.json"),
+                "forbid_backend_credential_direct_read")
+            # CONTROL: a file beside the root is an ordinary read.
+            self.assertNotIn(
+                policy(f"cat {relocated.parent}/notes.txt"),
+                {"forbid_backend_credential_direct_read",
+                 "forbid_operator_secret_direct_read"})
+
+    def test_an_unrelated_read_under_the_fake_home_is_not_blocked(self) -> None:
+        """The guard did not become "block everything under `$HOME`".
+
+        Without this, every assertion above passes for the wrong reason. `~/.bashrc`
+        and a file beside `.met-dsl` are ordinary reads and must stay so.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home, repo, _c, _x, _s = self._fixture(td)
+            (home / ".bashrc").write_text("", encoding="utf-8")
+            (home / "notes.txt").write_text("", encoding="utf-8")
+            for command in ("cat ~/.bashrc", "cat ~/notes.txt", f"cat {home}/notes.txt",
+                            "cat ~/.met-dsl-notes"):
+                # Against the two policies this class is about, not against silence —
+                # the absolute-path case names a fixture directory that other rules
+                # answer for on some hosts (measured under `TMPDIR=/dev/shm`).
+                self.assertNotIn(
+                    self._policy(home, repo, command),
+                    {"forbid_backend_credential_direct_read",
+                     "forbid_operator_secret_direct_read"},
+                    msg=command)
 
 
 class ForbidOperatorSecretReadTests(unittest.TestCase):

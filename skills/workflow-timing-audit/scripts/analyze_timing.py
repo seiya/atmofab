@@ -21,11 +21,17 @@ Usage:
   orchestration_id  Target under workspace/orchestrations/. Omit to auto-pick
                     the most recent orch_* directory.
   --json            Emit machine-readable JSON instead of the text report.
-  --project-dir     Claude transcript dir. Default: the orchestration's private
+  --project-dir     Claude transcript dir. Default: BOTH the orchestration's private
                     home (orchestration_meta.json#claude_workflow_home +
-                    /projects/<slug>, issue #63) when it exists, else
-                    ~/.claude/projects/<slug>, where <slug> is the repo abs-path
-                    with '/' -> '-'.
+                    /projects/<slug>, issue #63) and ~/.claude/projects/<slug>,
+                    private first, resolved PER RUN ID rather than picking one —
+                    see the comment at the resolution site, which records that
+                    taking the private dir "when it exists, else ~/.claude" made
+                    every pre-migration leaf of a resumed run look non-LLM. <slug>
+                    is the repo abs-path with '/' -> '-'. Since issue #64 that
+                    private home is durable (~/.met-dsl/homes/<orch_id>/claude), so
+                    an older run stays analysable; before it, a host restart took
+                    the transcripts.
 
 MULTIPLE-COUNTING (why naive sums are wrong, and how this script avoids it):
   1) One model API response is written to the session transcript as SEVERAL
@@ -435,12 +441,14 @@ def main():
         # Since issue #63 a workflow leaf writes its transcript into the
         # orchestration's PRIVATE home, recorded host-side in orchestration_meta.json.
         # Fall back to the operator's `~/.claude` for a run recorded before that, and
-        # for a home that has been cleaned (it lives under /tmp; issue #64).
+        # for a home that is gone — since issue #64 the home is durable, so that means
+        # an operator ran `tools/prune_workflow_homes.py` rather than a /tmp sweep.
         private = None
         try:
             with open(os.path.join(orch_path, "orchestration_meta.json"),
                       encoding="utf-8") as handle:
-                raw = json.load(handle).get("claude_workflow_home")
+                _loaded = json.load(handle)
+            raw = _loaded.get("claude_workflow_home") if isinstance(_loaded, dict) else None
             if isinstance(raw, str) and raw.strip():
                 candidate = os.path.join(raw.strip(), "projects", slug)
                 if os.path.isdir(candidate):
@@ -506,7 +514,19 @@ def main():
         })
 
     meta_path = os.path.join(orch_path, "orchestration_meta.json")
-    meta = json.load(open(meta_path)) if os.path.exists(meta_path) else {}
+    # Guarded for the same reason as the resolution above, and for a reason the two audit
+    # SKILLs cite this script for: a metadata file that is UNREADABLE (truncated by the
+    # crash being audited) is exactly the condition an audit is opened in, and this one
+    # `os.path.exists` + bare `json.load` turned it into a traceback. Missing was handled;
+    # malformed was not.
+    meta = {}
+    try:
+        with open(meta_path, encoding="utf-8") as _handle:
+            loaded = json.load(_handle)
+        if isinstance(loaded, dict):
+            meta = loaded
+    except (OSError, ValueError):
+        meta = {}
 
     # Run wall clock is NOT the run's cost: it contains any host suspend
     # (MULTIPLE-COUNTING 6). Reported only to be contrasted with the leaf totals.
@@ -518,7 +538,13 @@ def main():
         "orchestration_id": orch_id,
         "spec_ref": meta.get("spec_ref"),
         "status": meta.get("status"),
+        # ALL the roots searched, not the first of them. The report line built from this
+        # named one directory while the resolution deliberately reads two (private home
+        # and the operator's `~/.claude`, per run id), so a run whose leaves came from
+        # both was reported as if they came from one — and the reader had no way to see
+        # which transcripts the numbers below were built from.
         "project_dir": project_dir,
+        "project_dirs": list(project_dirs),
         "run_wall_s": run_wall_s,
         "leaves": leaves,
     }
@@ -541,7 +567,8 @@ def render(r):
 
     print(f"orchestration: {r['orchestration_id']}  ({r.get('status')})")
     print(f"spec: {r.get('spec_ref')}")
-    print(f"transcripts: {r['project_dir']}")
+    _roots = r.get("project_dirs") or [r["project_dir"]]
+    print(f"transcripts: {', '.join(str(d) for d in _roots)}")
     print()
     wall = r.get("run_wall_s")
     if wall:

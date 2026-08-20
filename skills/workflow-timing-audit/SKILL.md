@@ -105,18 +105,22 @@ The bundled script handles all seven structurally; do not hand-sum these:
 | role / substep / status label | `workspace/orchestrations/<orch_id>/session_run_index.json`, `agent_runs.jsonl` |
 | run status / spec | `workspace/orchestrations/<orch_id>/orchestration_meta.json` |
 | per-leaf token usage | `workspace/orchestrations/<orch_id>/agent_runs.jsonl` (`usage`), mirrored in `agents/<agent_run_id>/dialogs/agent.result.json` |
-| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (since issue #63 `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` for a workflow leaf, else `~/.claude/projects`; pass it with `--project-dir`) (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
+| per-leaf full transcript (per-TURN detail: thinking split, tool time) | `<projects-root>/<cwd-slug>/<agent_run_id>.jsonl` (since issue #63 `<projects-root>` is `orchestration_meta.json#claude_workflow_home` + `/projects` for a workflow leaf; the bundled script searches that AND `~/.claude/projects`, private first and resolved per run id rather than either/or, because a run resumed across the migration has leaves in both — pass one explicitly with `--project-dir` to override the pair) (`<cwd-slug>` = repo abs-path with `/`→`-`; the leaf `agent_session_id` == `agent_run_id` == filename) |
 
-> **Operator context only.** The `~/.claude` read in the row above is of the backend CLI's
-> credential/session home, which the Bash read guard rejects fail-closed whenever
-> `METDSL_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical:
+> **Operator context only.** Both roots in the row above are protected read roots for Bash
+> — the backend CLI's credential/session home, and since issue #64 `~/.met-dsl`, under
+> which the durable private homes live — so the guard rejects these reads fail-closed
+> whenever `METDSL_WORKFLOW_MODE=1` (policies `forbid_backend_credential_direct_read` /
+> `forbid_operator_secret_direct_read`; canonical:
 > `docs/HOOKS.md` §"Layer boundary"). Run this audit from an operator terminal outside a
 > workflow run — inside one, every such read blocks, and that block is correct.
 
 Note: since issue #47 the conductor records each leaf's usage in-repo, from the leaf's own
 output — a normalized dict (`total_tokens`, `usage_source`, and where the provider reports
 them `reasoning_tokens` / `cached_tokens`) or an explicit `not_measured` / `unavailable`
-marker. Prefer that row: it is durable, where the transcript is machine-local and ephemeral.
+marker. Prefer that row: it is in-repo, so it travels with the artifacts, where the transcript is
+machine-local — and, since issue #64, durable but removable by an operator running
+`tools/prune_workflow_homes.py`.
 The transcript is still the only source for per-TURN detail, and the only source at all for a
 run recorded before issue #47 (those rows read `usage: unavailable`, "no locatable child
 transcript").

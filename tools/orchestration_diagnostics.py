@@ -14,9 +14,13 @@ is left mid-launch:
 The conductor is a plain Python process with no host/parent session, but each
 leaf is launched with its ``agent_run_id`` pinned as the Claude session id
 (``claude --session-id <arid>``), so the dangling child's OWN transcript is
-directly addressable as the **ephemeral** ``<projects-root>/<slug>/<arid>.jsonl`` — since
-issue #63 the orchestration's private home first, then the operator's ``~/.claude``
-(which ``~/.claude`` cleanup can delete). Its last activity, the dead-air before
+directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — since issue #63 the
+orchestration's private home first, then the operator's ``~/.claude``. That private home
+is DURABLE since issue #64 (``~/.met-dsl/homes/<orchestration_id>/claude``); it is still
+machine-local, and it is still removable, but by an operator running
+``tools/prune_workflow_homes.py`` rather than by a ``/tmp`` sweep or a ``~/.claude``
+cleanup. Every "when it is still there" below reads against that, not against a directory
+that disappears on its own. Its last activity, the dead-air before
 the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. It can also aggregate leaf token usage
@@ -888,7 +892,8 @@ def build_launch_incident(
         child = summarize_transcript_tail(transcript_path)
     else:
         child = {"found": False,
-                 "reason": "no leaf transcript located (private home / ~/.claude ephemeral/cleaned)"}
+                 "reason": "no leaf transcript located (private home pruned, or "
+                           "~/.claude cleaned)"}
 
     abort_marker = None
     if child.get("found"):
