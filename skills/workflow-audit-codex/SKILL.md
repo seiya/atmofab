@@ -75,8 +75,14 @@ for line in hook_log.read_text().splitlines():
 
 # The isolated home the HOST recorded, with `~/.codex` kept only as the fallback for a
 # run that predates the isolated home.
-meta = json.loads(
-    pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
+# Degrades to the operator's home rather than raising, the way
+# `skills/workflow-timing-audit/scripts/analyze_timing.py` does: a run whose metadata is
+# missing or unreadable is exactly the kind this audit is opened for.
+try:
+    meta = json.loads(
+        pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
+except (OSError, ValueError):
+    meta = {}
 recorded = (meta.get("codex_workflow_home") or "").strip()
 roots = [pathlib.Path(recorded) / "sessions"] if recorded else []
 roots.append(pathlib.Path.home() / ".codex/sessions")

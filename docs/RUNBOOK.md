@@ -297,8 +297,11 @@ python3 tools/run_workflow.py --resume build
 
 ## The operator-private root (`~/.met-dsl`) {#operator-private-root}
 
-Three things live outside the repository, under the operator's own home, and this is the
-inventory. All three are per-operator and per-host; none of them is ever committed.
+Three things live outside the repository, under the operator's own home. All three are
+per-operator and per-host; none of them is ever committed. This is the inventory of what
+the CODE writes there — an `ls` on a long-lived host may also show residue from versions
+that no longer exist (`cold_start_locks/` has had no producer since the start-claim
+rewrite), which nothing cleans up and nothing reads.
 
 | Path | Written by | Read by | Retention |
 |---|---|---|---|

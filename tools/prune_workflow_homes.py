@@ -36,8 +36,17 @@ under the operator's own home:
      `refused:orchestration_not_terminal` has NO override: a home deleted under a
      running leaf takes that leaf's live session with it.
 
-Exit codes: 0 = the requested work was done; 2 = an orchestration named explicitly on
-the command line was refused; 1 = usage or environment error.
+Exit codes: **0 = the requested work was done, 2 = it was not** — either an orchestration
+named explicitly on the command line was refused, or argparse rejected the invocation.
+There is deliberately no third code: the two are distinguished by the output, and a
+caller that must branch should use `--json`, whose `entries[].verdict` says which refusal
+it was. An earlier version of this docstring promised `1 = usage or environment error`
+and the module never returned 1, so a script following it would have treated a live-home
+refusal as a bug in its own flags.
+
+A homes root that cannot be listed at all is a third thing and is reported as such rather
+than as an empty root, because "(no isolated backend homes)" and "I could not look" are
+the same sentence otherwise.
 """
 from __future__ import annotations
 
@@ -262,8 +271,14 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
     else:
         try:
             names = sorted(child.name for child in homes_root.iterdir())
-        except OSError:
+        except FileNotFoundError:
+            # No root yet is an honest empty answer: no run has ever prepared a home.
             return [], 0
+        except OSError as exc:
+            # Present but unlistable (permissions, a broken mount) is NOT an empty root,
+            # and reporting it as one told the operator "nothing to prune" about a tree
+            # the tool could not see into.
+            raise ValueError(f"cannot list the isolated homes root {homes_root}: {exc}") from exc
     reports: list[dict[str, Any]] = []
     refused_explicit = False
     for name in names:
@@ -293,8 +308,7 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
                 refused_explicit = True
             continue
         report = inspect_entry(homes_root / name, name)
-        deletable = report["verdict"] == VERDICT_DELETABLE or (
-            allow_unverifiable and report["verdict"] == REFUSED_UNVERIFIABLE_OWNER)
+        deletable = _would_delete(report, allow_unverifiable=allow_unverifiable)
         report["deleted"] = False
         if deletable and delete:
             try:
@@ -317,7 +331,21 @@ def prune(homes_root: Path, *, orchestration_ids: list[str] | None, delete: bool
     return reports, (2 if refused_explicit else 0)
 
 
-def _render_text(reports: list[dict[str, Any]], *, delete: bool, homes_root: Path) -> str:
+def _would_delete(report: dict[str, Any], *, allow_unverifiable: bool) -> bool:
+    """The ONE deletability rule, read by `prune` and by the report alike.
+
+    It was spelled twice, and the two disagreed on exactly the case the flag exists for:
+    the preview called an entry `refused:unverifiable_owner` while the same command plus
+    `--delete` removed it. For a tool whose whole purpose is "decide before the
+    irreversible thing", a preview that understates what will go is the one defect it
+    must not have.
+    """
+    return report["verdict"] == VERDICT_DELETABLE or (
+        allow_unverifiable and report["verdict"] == REFUSED_UNVERIFIABLE_OWNER)
+
+
+def _render_text(reports: list[dict[str, Any]], *, delete: bool, homes_root: Path,
+                 allow_unverifiable: bool = False) -> str:
     lines = [f"homes root: {homes_root}"]
     if not reports:
         lines.append("(no isolated backend homes)")
@@ -333,8 +361,15 @@ def _render_text(reports: list[dict[str, Any]], *, delete: bool, homes_root: Pat
             size_s = f"{size / 1024:.1f} KB"
         else:
             size_s = f"{size} B"
-        action = "DELETED" if report.get("deleted") else ("would delete" if
-                 report["verdict"] == VERDICT_DELETABLE and not delete else report["verdict"])
+        if report.get("deleted"):
+            action = "DELETED"
+        elif not delete and _would_delete(report, allow_unverifiable=allow_unverifiable):
+            # The verdict is still printed beside it: an entry that will go only because
+            # `--allow-unverifiable` was passed should say so, not merely say "would
+            # delete" as though its owner had been checked.
+            action = f"would delete ({report['verdict']})"
+        else:
+            action = report["verdict"]
         lines.append(
             f"{report['orchestration_id']}  status={report['status'] or '?'}  "
             f"backends={','.join(report['backends']) or '-'}  {size_s}  {action}")
@@ -342,8 +377,11 @@ def _render_text(reports: list[dict[str, Any]], *, delete: bool, homes_root: Pat
             lines.append(f"    owner: {report['owner_repo_root']}")
     if not delete:
         lines.append("")
-        lines.append("Report only. Re-run with --delete to remove the entries marked "
-                     "'would delete'.")
+        if any(_would_delete(r, allow_unverifiable=allow_unverifiable) for r in reports):
+            lines.append("Report only. Re-run with --delete to remove the entries marked "
+                         "'would delete'.")
+        else:
+            lines.append("Report only, and nothing here is deletable as invoked.")
     return "\n".join(lines)
 
 
@@ -372,16 +410,21 @@ def main(argv: list[str] | None = None) -> int:
                      "default scope, because deleting a home destroys the only record "
                      "of what its leaves did")
     homes_root = Path(args.homes_root).expanduser() if args.homes_root else _workflow_homes_root()
-    reports, code = prune(
+    try:
+        reports, code = prune(
         homes_root,
-        orchestration_ids=list(args.orchestration_id) or None,
-        delete=bool(args.delete),
-        allow_unverifiable=bool(args.allow_unverifiable),
-    )
+            orchestration_ids=list(args.orchestration_id) or None,
+            delete=bool(args.delete),
+            allow_unverifiable=bool(args.allow_unverifiable),
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps({"homes_root": str(homes_root), "entries": reports}, indent=2))
     else:
-        print(_render_text(reports, delete=bool(args.delete), homes_root=homes_root))
+        print(_render_text(reports, delete=bool(args.delete), homes_root=homes_root,
+                           allow_unverifiable=bool(args.allow_unverifiable)))
     return code
 
 

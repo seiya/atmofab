@@ -70,8 +70,14 @@ cwd_slug = str(pathlib.Path.cwd().resolve()).replace("/", "-")
 # the operator's `~/.claude` kept as the fallback for a run recorded before issue #63.
 # This must match the table above; hardcoding `~/.claude/projects` here made the script
 # report NOT FOUND for every leaf of every post-#63 run.
-meta = json.loads(
-    pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
+# Degrades to the operator's home rather than raising, the way
+# `skills/workflow-timing-audit/scripts/analyze_timing.py` does: a run whose metadata is
+# missing or unreadable is exactly the kind this audit is opened for.
+try:
+    meta = json.loads(
+        pathlib.Path(f"workspace/orchestrations/{orch_id}/orchestration_meta.json").read_text())
+except (OSError, ValueError):
+    meta = {}
 recorded = (meta.get("claude_workflow_home") or "").strip()
 projects_dirs = [pathlib.Path(recorded) / "projects" / cwd_slug] if recorded else []
 projects_dirs.append(pathlib.Path.home() / ".claude/projects" / cwd_slug)

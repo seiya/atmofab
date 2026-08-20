@@ -110,6 +110,8 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "procfs is present but boot_id is not readable",
     "requires POSIX signals":
         "the platform has no SIGTERM",
+    "not a git checkout":
+        "the tree is a `git archive` snapshot, so a repository-wide census has no subject",
 }
 
 # Canonical name -> index of the reason among the positional arguments. `skipUnless`/`skipIf`

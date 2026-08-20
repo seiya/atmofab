@@ -399,6 +399,87 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertNotIn("0.0 MB", text)
         self.assertRegex(text, r"\d+ B|\d+\.\d KB|\d+\.\d MB")
 
+    def test_the_preview_names_exactly_what_the_same_flags_would_delete(self) -> None:
+        """The report and the delete must read one rule, not two spellings of it.
+
+        They disagreed on exactly the case `--allow-unverifiable` exists for: the preview
+        printed `refused:unverifiable_owner` and the footer said nothing was marked, while
+        the same command plus `--delete` removed the entry. For a tool whose purpose is
+        "decide before the irreversible thing", a preview that UNDERSTATES what will go is
+        the one defect it must not have.
+
+        Both polarities, because a preview that always says "would delete" is as wrong as
+        one that never does — and the verdict stays printed beside it, so an entry going
+        only because the flag was passed says so rather than reading as owner-verified.
+        """
+        self._entry("orch_unverifiable", status="pass", marker=None)
+        self._entry("orch_live", status="running")
+        without = pwh._render_text(self._prune()[0], delete=False,
+                                   homes_root=self.homes, allow_unverifiable=False)
+        self.assertNotIn("would delete", without)
+        self.assertIn("nothing here is deletable as invoked", without)
+
+        reports, _ = self._prune(allow_unverifiable=True)
+        with_flag = pwh._render_text(reports, delete=False, homes_root=self.homes,
+                                     allow_unverifiable=True)
+        self.assertIn(f"would delete ({pwh.REFUSED_UNVERIFIABLE_OWNER})", with_flag)
+        # ...and the live one is still not promised away by the flag.
+        live = [line for line in with_flag.splitlines() if "orch_live" in line][0]
+        self.assertIn(pwh.REFUSED_NOT_TERMINAL, live)
+        self.assertNotIn("would delete", live)
+
+        # The promise is kept: what the preview marked is what --delete removes.
+        deleted, _ = self._prune(delete=True, allow_unverifiable=True)
+        by_id = {r["orchestration_id"]: r for r in deleted}
+        self.assertTrue(by_id["orch_unverifiable"]["deleted"])
+        self.assertFalse(by_id["orch_live"]["deleted"])
+
+    def test_a_homes_root_that_cannot_be_listed_is_not_reported_as_empty(self) -> None:
+        """"Nothing to prune" and "I could not look" must not be the same sentence.
+
+        An unlistable root — permissions, a broken mount — was swallowed and printed as
+        `(no isolated backend homes)` with exit 0, which tells an operator their tree is
+        clean when the tool never saw into it. An ABSENT root is different and still
+        answers empty: no run has prepared a home there yet.
+        """
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+
+        blocked = self.root / "blocked"
+        blocked.mkdir(mode=0o000)
+        self.addCleanup(blocked.chmod, 0o700)
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            code = pwh.main(["--homes-root", str(blocked), "--all"])
+        self.assertEqual(code, 2)
+        self.assertIn("cannot list the isolated homes root", err.getvalue())
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = pwh.main(["--homes-root", str(self.root / "never_made"), "--all"])
+        self.assertEqual(code, 0)
+        self.assertIn("no isolated backend homes", out.getvalue())
+
+    def test_the_exit_code_contract_is_the_one_the_docstring_states(self) -> None:
+        """0 and 2, and nothing returns 1.
+
+        The docstring promised `1 = usage or environment error` while argparse exits 2 for
+        those and the module has no `return 1` at all — so a script following it would
+        read a live-home refusal as a bug in its own flags. Pinned as the absence of a
+        third code rather than as prose, because prose is what was wrong.
+        """
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        source = Path(pwh.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("return 1", source)
+        self.assertNotIn("sys.exit(1)", source)
+        for argv in (["--delete"], ["--all", "--orchestration-id", "x"]):
+            with self.subTest(argv=argv):
+                with self.assertRaises(SystemExit) as ctx:
+                    with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+                        pwh.main(["--homes-root", str(self.homes), *argv])
+                self.assertEqual(ctx.exception.code, 2)
+
     def test_no_scope_is_a_usage_error_rather_than_a_default(self) -> None:
         """There is no implicit "everything": the destructive default is the one
         mistake this tool must not make available."""
@@ -460,21 +541,45 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         """
         import subprocess
         repo_root = Path(__file__).resolve().parents[2]
+        if not (repo_root / ".git").exists():
+            # NOT a vacuous pass — a declared skip. The census's subject is this
+            # repository, and a tree extracted from `git archive` (how a mutation
+            # baseline is taken here) is not one. Failing there would redden every
+            # snapshot baseline, which is a different way to make the census useless.
+            # `git` failing INSIDE a repository is a different thing and fails below.
+            self.skipTest("not a git checkout")
         offenders: dict[str, list[str]] = {}
         for pattern in self.CALLER_PATTERNS:
-            out = subprocess.run(
+            proc = subprocess.run(
                 ["git", "-C", str(repo_root), "grep", "-n", "--untracked", "-E", pattern,
                  "--", "tools/*.py", "tools/**/*.py", "mcp_servers/*.py",
                  "skills/**/*.py", "leaf_config/**/*.py"],
-                capture_output=True, text=True, check=False).stdout
-            for line in out.splitlines():
+                capture_output=True, text=True, check=False)
+            # THE RETURN CODE IS THE WHOLE TEST. `git grep` exits 0 with matches, 1 with
+            # none, and anything else means the SEARCH failed — 128 outside a git
+            # repository, which is exactly what a `git archive` snapshot is. Ignoring it
+            # made this census PASS with a planted caller sitting in the tree: the shape
+            # its own docstring calls "false green". A vacuous pass in a census is worse
+            # than no census, because it reads as evidence.
+            if proc.returncode not in (0, 1):
+                self.fail(
+                    "the retention census could not run its search "
+                    f"(git grep exited {proc.returncode}: {proc.stderr.strip()[:200]}). "
+                    "It proves nothing in this state, so it fails rather than passing.")
+            for line in proc.stdout.splitlines():
                 path = line.split(":", 1)[0]
-                if path == "tools/tests/test_prune_workflow_homes.py":
-                    continue  # this file, and the import at its top
+                # EVERY test module is exempt, not one filename. A test that imports the
+                # tool is not wiring — it is how the tool gets tested — and exempting a
+                # single path refused a legitimate second test module (a reviewer planted
+                # `test_runbook_prune_contract.py`, the doc-truth test the RUNBOOK's
+                # commands deserve, and this census rejected it). What must stay in view
+                # is a caller in PRODUCTION code.
+                if path.startswith("tools/tests/"):
+                    continue
                 offenders.setdefault(path, []).append(line.split(":", 2)[-1].strip())
         self.assertEqual(offenders, {},
-                         "something now invokes the prune tool; retention has stopped "
-                         "being manual")
+                         "something in production code now invokes the prune tool; "
+                         "retention has stopped being manual")
 
     def test_the_search_this_census_uses_can_actually_find_a_caller(self) -> None:
         """The control for the test above: a census that finds nothing proves nothing.
@@ -509,6 +614,35 @@ class PruneWorkflowHomesTests(unittest.TestCase):
                 self.assertFalse(
                     any(re.search(p, prose) for p in self.CALLER_PATTERNS),
                     f"prose must not read as a caller: {prose}")
+
+    def test_the_census_fails_rather_than_passing_when_its_search_cannot_run(self) -> None:
+        """A census that could not look must not report "nothing found".
+
+        Matching the patterns proves the patterns; it never proves the SEARCH ran. Outside
+        a git repository — a `git archive` snapshot, which is how reviewers on this branch
+        take a mutation baseline — `git grep` exits 128 and prints nothing, and the census
+        passed with a planted caller present until the return code was read.
+
+        Driven by making the search fail rather than by asserting on the code path, so it
+        also covers a `git` that is missing or refuses for some other reason.
+
+        The OTHER shape — a tree that is not a checkout at all, which is what a `git
+        archive` snapshot is — takes a declared skip instead, because the census's subject
+        is this repository and failing there would redden every snapshot baseline. That
+        distinction is what `.git` existing decides.
+        """
+        import subprocess
+        real_run = subprocess.run
+
+        def _failing_run(argv, *args, **kwargs):
+            if isinstance(argv, list) and argv[:1] == ["git"]:
+                return subprocess.CompletedProcess(
+                    argv, 128, stdout="", stderr="fatal: not a git repository")
+            return real_run(argv, *args, **kwargs)
+
+        with mock.patch("subprocess.run", _failing_run):
+            with self.assertRaisesRegex(AssertionError, "could not run its search"):
+                self.test_nothing_is_wired_to_invoke_this_tool_automatically()
 
 
 if __name__ == "__main__":  # pragma: no cover

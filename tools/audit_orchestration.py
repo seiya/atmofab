@@ -11,9 +11,11 @@ Collects and aggregates:
 - phase_state_log fail/fail_closed entries
 - agent_runs.jsonl completion status
 - Dangling launch (open active_child window with no child return / terminal run),
-  correlated with the ephemeral leaf transcript tail (since issue #63 the
-  orchestration's private home first, then the operator's ~/.claude; see
-  orchestration_diagnostics.build_launch_incident), AND any persisted
+  correlated with the leaf transcript tail (since issue #63 the orchestration's
+  private home first, then the operator's ~/.claude; see
+  orchestration_diagnostics.build_launch_incident). That home is machine-local but
+  DURABLE since issue #64, and is removed only by an operator running
+  tools/prune_workflow_homes.py. Also surfaced: any persisted
   launch_incident.runtime.*.json snapshots (which survive after --resume clears the
   window or the transcript's home is cleaned)
 """
