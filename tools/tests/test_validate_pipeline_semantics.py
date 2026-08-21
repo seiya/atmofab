@@ -22133,6 +22133,40 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
                         f"fixture must still fail on ordinary violations: {proc.stdout}")
         self.assertEqual(proc.returncode, 1, proc.stdout)
 
+    def test_every_exit_code_constant_is_documented_in_help(self) -> None:
+        """`docs/CLI_REFERENCE.md` makes `--help` canonical for this CLI, and a workflow leaf
+        cannot read this module at all — so `--help` is the only channel either reader has for
+        the exit codes a caller classifies on.
+
+        This pins the RULE, not the values: it enumerates the module's own `*_EXIT_CODE`
+        constants and requires a line for each. Asserting a constant's value against the epilog
+        would be vacuous, since the epilog interpolates the same constants — what actually goes
+        wrong is a FIFTH code being added with no line, and that is what fails here.
+        """
+        codes = {name: getattr(vps, name) for name in dir(vps) if name.endswith("_EXIT_CODE")}
+        self.assertTrue(codes, "no exit-code constants found; the enumeration went stale")
+        epilog = self._help()
+        self.assertIn("exit codes:", epilog)
+        documented = {
+            line.split()[0] for line in epilog.splitlines()
+            if line.startswith("  ") and line.strip()[:1].isdigit()
+        }
+        for name, value in sorted(codes.items()):
+            self.assertIn(str(value), documented, f"{name} = {value} has no --help line")
+        # The three codes that are not module constants (0 PASS, 1 violations, 2 argparse) are
+        # part of the same contract and are listed too.
+        for literal in ("0", "1", "2"):
+            self.assertIn(literal, documented, literal)
+
+    def _help(self) -> str:
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            vps.main(["--help"])
+        return buf.getvalue()
+
     def test_validator_exit_codes_are_pairwise_distinct(self) -> None:
         """Every code a caller classifies on has to name exactly one condition. 0 = PASS,
         1 = violations found, 2 = argparse's usage error, 3 = front end unavailable,

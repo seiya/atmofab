@@ -14114,7 +14114,28 @@ def _validate_impl(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    # The EXIT CODES are part of this CLI's contract — the conductor classifies a gate failure
+    # on them and on nothing in the output — so they belong in the channel
+    # `docs/CLI_REFERENCE.md` declares canonical for this tool, which is `--help`. A workflow
+    # leaf cannot read this file (`forbid_tools_direct_read`) but can run `--help`, so this is
+    # the only place either reader can learn them. Keep in step with the constants above.
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "exit codes:\n"
+            "  0  PASS\n"
+            "  1  violations found (or a load/usage failure reported as a violation)\n"
+            "  2  argparse usage error\n"
+            f"  {FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE}  the source-structure front end is not "
+            "available on this machine — an OPERATOR problem\n"
+            f"  {STALE_DEPENDENCY_IR_EXIT_CODE}  a violation reports a stale/corrupt certified "
+            "IR — re-certify, do not re-author\n"
+            "\n"
+            "Codes 3 and 4 name conditions no re-authored source can clear, so a caller routes\n"
+            "them TERMINAL. They are answered by the branch that knows; nothing in the output\n"
+            "text carries the decision.\n"
+        ),
+    )
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--workspace-root", default="workspace")
     parser.add_argument(
