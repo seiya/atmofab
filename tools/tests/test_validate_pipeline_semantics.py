@@ -7,6 +7,8 @@ import copy
 import json
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17042,8 +17044,9 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             ir["public_api"] = {"signatures": []}  # pre-contract shape: no module_parameters key
             ir_path.write_text(json.dumps(ir), encoding="utf-8")
             violations = self._run(ex, tmp)
-            # Carries the sentinel the conductor keys on to route this TERMINAL (fail_closed), not a
-            # futile warm Generate retry (a leaf cannot mutate the certified IR).
+            # Carries the sentinel for a human reader. What routes this TERMINAL (fail_closed)
+            # rather than as a futile warm Generate retry is the violation's TYPE, mapped by
+            # `main` to a dedicated exit code; the conductor keys on nothing in this text.
             self.assertTrue(any(vps.STALE_DEPENDENCY_IR_MARKER in v
                                 and "does not carry the controlled_spec §5.1 module parameters" in v
                                 and "re-certify" in v for v in violations), violations)
@@ -17051,7 +17054,9 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     def test_stale_ir_empty_or_drifted_module_parameters_fails_closed(self) -> None:
         # The guard must fire not only on an ABSENT key but on any §5.1 mismatch a pre-contract /
         # corrupt IR can carry through a Compile-skipping resume: an empty list, or drifted values.
-        # Each is unrepairable by re-running Generate, so each must carry the terminal marker.
+        # Each is unrepairable by re-running Generate, so each must be emitted as the terminal
+        # violation TYPE — checked here through the marker its message carries, since this
+        # helper-level row observes the message rather than the process exit code.
         for stale_pub in (
             {"module_parameters": []},                                              # empty list
             {"module_parameters": [{"name": "dp", "base": "integer",
@@ -22033,6 +22038,186 @@ class DirectExecutionBootstrapTests(unittest.TestCase):
             "the ModuleNotFoundError fallback does not re-import everything the module-level "
             "block does; a name in only the primary block is a NameError when this module is "
             "run as a script from outside the repository, which no test can reach")
+
+
+class StaleDependencyIRExitCodeTests(unittest.TestCase):
+    """The terminal classification channel for a stale certified IR.
+
+    The conductor used to decide this by scanning the validator's stdout for
+    ``STALE_DEPENDENCY_IR_MARKER``. Violations embed a LEAF-CHOSEN path, so a model file named
+    after the marker forged the terminal verdict and burned a billed run. The channel is now the
+    process exit code, written by the branch that knows and unwritable by any leaf.
+
+    The three rows that exercise the CHANNEL drive the REAL CLI in a REAL subprocess, because it
+    is carried by the violation's Python TYPE: a helper-level assertion would stay green while an
+    unwrapped ``violations.append`` or a list rebuild silently degraded production to exit code 1.
+    The two rows about the exit-code CONSTANTS do not — they read module attributes, and
+    ``_help`` calls ``main(["--help"])`` in-process. Stated because this class's first docstring
+    said "these drive the real CLI" of all of them, which is the same false claim a sibling test
+    in ``test_fortran_structure.py`` had to be renamed for.
+    """
+
+    def _seed(self, tmp: Path, *, module_parameters: object | None) -> Path:
+        """A minimal post_generate tree whose model source is faithful to §5.1.
+
+        The only thing under the test's control is ``public_api.module_parameters``: pass None for
+        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. The IR carries no
+        ``io_contract`` / ``raw_requirements``, so ORDINARY violations always co-occur — which is
+        the point for the exit-code precedence.
+        """
+        ir_ref = "workspace/ir/x"
+        ir_dir = tmp / ir_ref
+        ir_dir.mkdir(parents=True)
+        (tmp / "cs.md").write_text(
+            "## 5. Public API\nprose.\n"
+            + InfrastructureGeneratedSignatureGateTests._FENCE
+            + "## 6. x\n",
+            encoding="utf-8")
+        public_api: dict[str, object] = {"signatures": []}
+        if module_parameters is not None:
+            public_api = {"module_parameters": module_parameters}
+        _write_json(ir_dir / "spec.ir.yaml", {
+            "meta": {"spec_kind": "infrastructure", "spec_id": "hx",
+                     "source_refs": {"controlled_spec": "cs.md"}},
+            "public_api": public_api})
+        pipeline_dir = (
+            tmp / "workspace" / "pipelines" / "infrastructure__hx__0.2.0" / "hx_20260415_001")
+        src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
+        src_dir.mkdir(parents=True)
+        (src_dir / "hx_model.f90").write_text(
+            InfrastructureGeneratedSignatureGateTests._GOOD_SOURCE, encoding="utf-8")
+        (pipeline_dir / "lineage.json").write_text(
+            json.dumps({"ir_ref": ir_ref, "node_key": "infrastructure/hx@0.2.0",
+                        "pipeline_id": "hx_20260415_001"}), encoding="utf-8")
+        return pipeline_dir
+
+    def _run_cli(self, tmp: Path, pipeline_dir: Path) -> subprocess.CompletedProcess[str]:
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        return subprocess.run(
+            [sys.executable, str(Path(vps.__file__).resolve()),
+             "--repo-root", str(tmp), "--workspace-root", "workspace",
+             "--stage", "post_generate", "--pipeline-root", str(pipeline_dir),
+             "--source-id", "src_20260415_001"],
+            cwd=str(repo_root), capture_output=True, text=True, check=False)
+
+    def test_stale_ir_answers_the_dedicated_exit_code_in_a_real_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, module_parameters=None))
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         (proc.stdout, proc.stderr))
+        # The marker stays in the message for a human reader; it carries no decision.
+        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+
+    def test_cooccurring_stale_and_ordinary_violations_answer_the_stale_ir_exit_code(self) -> None:
+        """Hoisting `return 1` above the isinstance check would degrade this to 1.
+
+        Ordinary violations always accompany the stale IR here (the fixture IR carries no
+        io_contract), and they are not repairable while the IR is stale either — so the terminal
+        code must win.
+        """
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, module_parameters=None))
+        self.assertTrue(
+            [line for line in proc.stdout.splitlines()
+             if line.startswith("- ") and vps.STALE_DEPENDENCY_IR_MARKER not in line],
+            f"fixture no longer produces an ordinary violation to co-occur: {proc.stdout}")
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
+
+    def test_ordinary_violations_keep_the_generic_failure_exit_code(self) -> None:
+        """Wrapping more than the stale-IR violation would route ordinary content failures —
+        which a warm Generate retry CAN repair — to a terminal fail_closed."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            pipeline_dir = self._seed(
+                tmp,
+                module_parameters=copy.deepcopy(
+                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS))
+            proc = self._run_cli(tmp, pipeline_dir)
+        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+        self.assertTrue([line for line in proc.stdout.splitlines() if line.startswith("- ")],
+                        f"fixture must still fail on ordinary violations: {proc.stdout}")
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_every_exit_code_constant_is_documented_in_help(self) -> None:
+        """`docs/CLI_REFERENCE.md` makes `--help` canonical for this CLI, and a workflow leaf
+        cannot read this module at all — so `--help` is the only channel either reader has for
+        the exit codes a caller classifies on.
+
+        This pins the RULE, not the values: it enumerates the module's own `*_EXIT_CODE`
+        constants and requires a line for each. Asserting a constant's value against the epilog
+        would be vacuous, since the epilog interpolates the same constants — what fails here is
+        a new CONSTANT added with no line.
+
+        A new code added as a bare LITERAL is invisible to this row (1 and 2 already reach the
+        caller that way, and are asserted separately below). In the other direction, `dir` sees
+        IMPORTED names too, so a future `from ... import SOMETHING_EXIT_CODE` into this module
+        would be demanded a `--help` line it does not owe. No such import exists today, and
+        filtering for it would be machinery for an absent caller — recorded rather than built. An AST walk of `main` /
+        `_main_dispatch` shows every `Return` is 0, 1, or one of the two constants today;
+        nothing keeps it that way, so this is a bound on the row rather than on the code.
+        """
+        codes = {name: getattr(vps, name) for name in dir(vps) if name.endswith("_EXIT_CODE")}
+        self.assertTrue(codes, "no exit-code constants found; the enumeration went stale")
+        epilog = self._help()
+        self.assertIn("exit codes:", epilog)
+        documented = {
+            line.split()[0] for line in epilog.splitlines()
+            if line.startswith("  ") and line.strip()[:1].isdigit()
+        }
+        for name, value in sorted(codes.items()):
+            self.assertIn(str(value), documented, f"{name} = {value} has no --help line")
+        # The three codes that are not module constants (0 PASS, 1 violations, 2 argparse) are
+        # part of the same contract and are listed too.
+        for literal in ("0", "1", "2"):
+            self.assertIn(literal, documented, literal)
+
+    def _help(self) -> str:
+        import contextlib
+        import io
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), self.assertRaises(SystemExit):
+            vps.main(["--help"])
+        return buf.getvalue()
+
+    def test_validator_exit_codes_are_pairwise_distinct(self) -> None:
+        """Every code a caller classifies on has to name exactly one condition. 0 = PASS,
+        1 = violations found, 2 = argparse's usage error, 3 = front end unavailable,
+        4 = stale certified IR.
+
+        The constants are ENUMERATED from the module, not listed here, so this pins the rule the
+        docstring states rather than today's instances of it. Listing them by hand made a fifth
+        constant COLLIDING with an existing one invisible — the sibling help test caught a fifth
+        constant that was merely undocumented, so the two rows disagreed about what they covered.
+
+        PINNED: the module's `*_EXIT_CODE` constants are pairwise distinct, so two conditions
+        cannot end up sharing a code.
+
+        NOT PINNED, deliberately: a constant whose value is 0, 1 or 2. A first version of this
+        row rejected those, and that refused legitimate work — naming an existing code (say
+        `VIOLATIONS_FOUND_EXIT_CODE = 1`, which the epilog comment's "keep in step with the
+        constants above" invites) is an ALIAS, not a second condition, and nothing here can tell
+        an alias from a collision by reading a name. Refusing on a value alone is refusing
+        something that contradicts nothing.
+
+        THE COST OF THAT, stated because the alias argument does not cover it: a genuinely NEW
+        condition given the value 1 or 2 is invisible to both rows — distinctness compares the
+        constants only to each other, and the help row is satisfied because 1 and 2 already have
+        epilog lines. A new TERMINAL condition silently valued 1 would be routed warm, which is
+        the defect class this whole change exists to close. Nothing here catches it; a reviewer
+        constructing the case is what would.
+
+        Also not pinned: a code returned as a bare literal rather than through a constant, which
+        is how 1 and 2 already reach the caller. An AST walk of `main` / `_main_dispatch` shows
+        every `Return` is 0, 1, or one of the two constants today; nothing keeps it that way.
+        """
+        named = {name: getattr(vps, name) for name in dir(vps) if name.endswith("_EXIT_CODE")}
+        self.assertTrue(named, "no exit-code constants found; the enumeration went stale")
+        values = list(named.values())
+        self.assertEqual(len(values), len(set(values)),
+                         f"two exit-code constants share a value: {sorted(named.items())}")
 
 
 if __name__ == "__main__":

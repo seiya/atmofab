@@ -14286,6 +14286,84 @@ class DeterministicBuildTest(unittest.TestCase):
                     ("retry", "generate", "reuse"), category)
                 self.assertEqual(d.reason, f"validate_execute_{category}")
 
+    def test_terminal_execute_categories_fail_closed_without_counting_toward_c2(self) -> None:
+        # PLACEMENT, not merely the branch. The terminal check sits ABOVE the C2 counter, so a
+        # repeated machine failure never reaches the threshold that reopens Compile: rebuilding
+        # the IR and everything downstream cannot install a front end or re-certify anything.
+        # Calling twice is the discriminator — move the branch below the counter and the second
+        # call reopens Compile.
+        import tempfile
+        ex_fail = [wc.SubstepOutcome("pj", "pass", [], 0),
+                   wc.SubstepOutcome("ex", "fail", [], 0)]
+        for category in sorted(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL):
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                                 orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
+                refs = self._refs()
+                self._seed_trial_meta(repo, refs, status="fail", failure_category=category,
+                                      failure_excerpt="[execute fail]\nboom")
+                for call in (1, 2):
+                    d = c.classify_failure(refs, "validate", ex_fail)
+                    self.assertEqual(d.action, "fail_closed", (category, call))
+                    self.assertIsNone(d.target_phase, (category, call))
+                    self.assertEqual(d.reason, f"validate_execute_{category}", (category, call))
+                # The counter is untouched, so a LATER ordinary failure still gets its own
+                # Generate-retry-first cycle rather than inheriting a count from the machine
+                # problem.
+                self.assertEqual(
+                    getattr(c, "_validate_execute_fail_count", {}).get(refs.node_key, 0), 0,
+                    category)
+
+    def test_terminal_execute_set_matches_the_gate_set_and_is_disjoint_from_the_warm_tables(
+            self) -> None:
+        # The two terminal sets are separate constants on purpose (different subsystems), so
+        # nothing keeps them equal except this row: a category added to one is now a decision
+        # about the other. The disjointness is the load-bearing half — a terminal category that
+        # also appeared in a warm table would be routed by whichever branch ran first.
+        #
+        # BOTH dev sets are pinned, and the second is the one that matters. The terminal route
+        # returns `fail_closed`, which `conduct` maps to reason_code `conductor_phase_fail_closed`
+        # — and `_derive_dev_validate_execute_resume_directive` answers THAT code from
+        # `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES`. `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES`
+        # answers `dev_phase_rollback`, a code this route never produces, so pinning it alone
+        # (as the first version of this row did) left the consulted set unwitnessed: admitting
+        # both terminal categories into the VERDICT set kept all 1910 rows of this file plus
+        # test_orchestration_runtime.py green.
+        self.assertEqual(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL, wc.GATE_FAILURE_TERMINAL)
+        self.assertEqual(
+            frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
+            & frozenset(wc.VALIDATE_EXECUTE_FAILURE_ROUTING))
+        for dev_set_name in ("_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES",
+                             "_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES"):
+            self.assertEqual(
+                frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
+                & getattr(wc_runtime, dev_set_name), dev_set_name)
+
+    def test_read_repair_findings_returns_none_for_a_terminal_execute_reason(self) -> None:
+        # A terminal reason shares the `validate_execute_` prefix with the warm categories, so a
+        # findings lookup matching on the prefix would thread the gate's excerpt into a repair
+        # leaf that provably cannot converge on it. The match is on the CATEGORY suffix being a
+        # key of the warm table, which the terminal categories are not.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="O", llm_config=_cfg("claude"), env={})
+            refs = self._refs()
+            self._seed_trial_meta(repo, refs, status="fail",
+                                  failure_category="stale_dependency_ir",
+                                  failure_excerpt="[execute fail]\nboom")
+            for category in sorted(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL):
+                self.assertIsNone(
+                    c._read_repair_findings(refs, f"validate_execute_{category}", "validate"),
+                    category)
+            # Control: the same lookup DOES return the excerpt for a warm category, so the row
+            # above is not green merely because the helper returns None for everything.
+            self.assertIsNotNone(
+                c._read_repair_findings(refs, "validate_execute_post_execute_violation",
+                                        "validate"))
+
     def _m3c_conductor(self, repo: Path) -> "wc.Conductor":
         """A conductor whose node host-renders its runner (M3c), without seeding a full IR."""
         class _M3c(wc.Conductor):
@@ -14487,10 +14565,16 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def _b1_execute(self, repo: Path, ir_yaml: str, *, gate_result: tuple[int, str],
                     matching_diagnostics: bool,
-                    diagnostics: dict | None = None) -> tuple[dict, dict]:
+                    diagnostics: dict | None = None,
+                    syn_result: tuple[int, str] | None = None) -> tuple[dict, dict]:
         """Drive _execute_inproc with the two gate subprocesses stubbed to `gate_result`
         (returncode, stdout) and the runner/make-test diagnostics seeded so the quality_check
-        passes (matching_diagnostics) or fails. Returns (result, trial_meta-or-{})."""
+        passes (matching_diagnostics) or fails. Returns (result, trial_meta-or-{}).
+
+        `syn_result` gives `check_artifact_syntax.py` its own (returncode, stdout) when a test
+        needs the two gates to disagree — the post_execute validator's exit code is the one that
+        classifies, and only a differing pair shows that. It defaults to `gate_result`, which is
+        what every caller predating the exit-code channel passes."""
         import sys
         import subprocess as _sp
         from unittest import mock
@@ -14518,8 +14602,13 @@ class DeterministicBuildTest(unittest.TestCase):
 
         rc, out = gate_result
 
+        syn_rc, syn_out = syn_result if syn_result is not None else gate_result
+
         def fake_subprocess_run(argv, **kwargs):
             # Only the two gates (check_artifact_syntax / validate_pipeline_semantics) run here.
+            script = next((x for x in argv if isinstance(x, str) and x.endswith(".py")), "")
+            if script.endswith("check_artifact_syntax.py"):
+                return _sp.CompletedProcess(argv, syn_rc, stdout=syn_out, stderr="")
             return _sp.CompletedProcess(argv, rc, stdout=out, stderr="")
 
         with mock.patch.object(build_runtime_server, "tool_run_program",
@@ -14552,6 +14641,66 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertIn("[execute fail]", meta["failure_excerpt"])
             self.assertIn("unrecognized wrapper key 'values'", meta["failure_excerpt"])
             self.assertLessEqual(len(meta["failure_excerpt"].splitlines()), 50)
+
+    def test_execute_inproc_maps_the_terminal_exit_codes_to_terminal_categories(self) -> None:
+        # The post_execute validator answers dedicated exit codes for the two conditions no leaf
+        # can repair by re-authoring source. `_execute_inproc` classifies on those codes, so the
+        # gate's TEXT never decides. rc 3 is reachable here (the `problem` model gates raise the
+        # front-end error); rc 4 is not reachable from post_execute today — it is wired so the day
+        # a post_execute gate reports a stale IR it fails closed rather than arriving warm.
+        import tempfile
+        from tools.validate_pipeline_semantics import (
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+        )
+        for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                              "static_frontend_unavailable"),
+                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir")):
+            with tempfile.TemporaryDirectory() as td:
+                out, meta = self._b1_execute(
+                    Path(td), self._B1_IR_MINIMAL,
+                    gate_result=(rc, "pipeline semantic validation: FAIL\n- boom"),
+                    syn_result=(0, ""), matching_diagnostics=True)
+            self.assertEqual(out["returncode"], 0, rc)
+            self.assertEqual(meta["failure_category"], expected, rc)
+            self.assertIn(expected, wc.VALIDATE_EXECUTE_FAILURE_TERMINAL)
+            self.assertNotIn(expected, wc.VALIDATE_EXECUTE_FAILURE_ROUTING)
+
+    def test_execute_inproc_terminal_exit_code_dominates_a_cooccurring_symptom(self) -> None:
+        # Order, not merely membership. An uninstalled front end also makes the artifact-syntax
+        # gate and the quality_check fail; if the terminal branches sat BELOW `syn.returncode !=
+        # 0`, the same run would be classified `post_execute_violation` and routed warm — the
+        # leaf re-authoring source over a machine problem. Both co-occurring symptoms are seeded
+        # at once here (syn non-zero AND a failing quality_check).
+        import tempfile
+        from tools.validate_pipeline_semantics import FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE
+        with tempfile.TemporaryDirectory() as td:
+            out, meta = self._b1_execute(
+                Path(td), self._B1_IR_MINIMAL,
+                gate_result=(FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                             "pipeline semantic validation: FAIL\n- boom"),
+                syn_result=(1, "artifact syntax: FAIL"), matching_diagnostics=False)
+        self.assertEqual(meta["failure_category"], "static_frontend_unavailable", meta)
+
+    def test_execute_inproc_forged_marker_at_rc_1_stays_a_warm_violation(self) -> None:
+        # post_execute never had a text scan, and this pins that it did not grow one alongside
+        # the exit-code branches. Both markers are replayed inside an ordinary rc-1 gate report,
+        # in the interpolated-path shape a leaf controls.
+        import tempfile
+        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
+        payloads = (
+            f"pipeline semantic validation: FAIL\n- src/{STALE_DEPENDENCY_IR_MARKER}_model.f90: "
+            "declared state_variables missing in snapshot files",
+            "pipeline semantic validation: FAIL\n- src/[fortran-structure-unavailable]_model.f90:"
+            " declared state_variables missing in snapshot files",
+        )
+        for payload in payloads:
+            with tempfile.TemporaryDirectory() as td:
+                _out, meta = self._b1_execute(
+                    Path(td), self._B1_IR_MINIMAL, gate_result=(1, payload),
+                    syn_result=(0, ""), matching_diagnostics=True)
+            self.assertEqual(meta["failure_category"], "post_execute_violation", payload)
+            self.assertIn(meta["failure_category"], wc.VALIDATE_EXECUTE_FAILURE_ROUTING, payload)
 
     def test_execute_inproc_excerpt_is_bounded_by_characters_not_only_lines(self) -> None:
         # The excerpt is rendered verbatim into the slim repair prompt. A post_execute violation is
@@ -15440,6 +15589,80 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
                              payload)
 
+    def test_gate_static_check_maps_the_stale_ir_exit_code_to_a_terminal_category(self) -> None:
+        # The twin of the front-end mapping above, and for the same reason: the classification
+        # channel is the validator's EXIT CODE, imported from the module that sets it. The output
+        # text here still carries the human-facing marker, so a mapping that quietly went back to
+        # scanning it would pass this row — which is why the forgery row below exists too.
+        import tempfile
+        from tools.validate_pipeline_semantics import (
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+            STALE_DEPENDENCY_IR_MARKER,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    return wc.subprocess.CompletedProcess(
+                        cmd, STALE_DEPENDENCY_IR_EXIT_CODE,
+                        "pipeline semantic validation: FAIL\n"
+                        f"- x_model.f90: {STALE_DEPENDENCY_IR_MARKER} the certified IR does not "
+                        "carry the controlled_spec §5.1 module parameters", "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "stale_dependency_ir")
+        self.assertEqual("fail_closed",
+                         wc.classify_gate_failure([out["failure_category"]]).action)
+
+    def test_no_gate_output_text_can_forge_the_stale_ir_classification(self) -> None:
+        # THE DEFECT THIS BRANCH REPAIRS. The gate used to classify on `[stale-dependency-ir]`
+        # appearing anywhere in the validator's stdout, and a violation interpolates a path the
+        # LEAF chose — so naming a model source after the marker turned an ordinary, warm-
+        # retryable naming slip into a terminal verdict that killed a billed run. The four
+        # payloads are the front-end marker's full defeat history replayed against this marker
+        # (bare, after a newline, after a newline + `- `, and quoted at the start of a line), all
+        # at rc 1. With the classification keyed on the code the TEXT cannot matter, so this is an
+        # assertion about the channel and not another sample of the prose.
+        import tempfile
+        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER as marker
+        payloads = (
+            f"- src: model source {marker}_model.f90 present but must be named spec_x_model.f90",
+            f"- src: model source x\n{marker}_model.f90 present but must be named spec_x",
+            f"- src: model source x\n- {marker}_model.f90 present but must be named spec_x",
+            f"- {marker} a violation that merely quotes the marker at the start of a line",
+        )
+        for payload in payloads:
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                refs = self._refs()
+                self._seed(repo, refs)
+                c = self._conductor(repo)
+
+                def run(cmd, _payload=payload, **kwargs):
+                    script = next((x for x in cmd if x.endswith(".py")), "")
+                    if script.endswith("validate_workspace_root.py"):
+                        return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                    if script.endswith("validate_pipeline_semantics.py"):
+                        return wc.subprocess.CompletedProcess(
+                            cmd, 1, f"pipeline semantic validation: FAIL\n{_payload}", "")
+                    raise AssertionError(f"unexpected subprocess: {cmd}")
+
+                with self._patch_run(run):
+                    out = c._gate_static_check(refs, "child-1", "captok")
+            self.assertEqual("post_generate_violation", out["failure_category"], payload)
+            self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
+                             payload)
+
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:
@@ -16268,6 +16491,65 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "post_judge_gate_error")
             self.assertEqual(meta["disposition"], "fail_closed")
+
+    def test_post_judge_terminal_exit_codes_fail_closed_before_bullet_classification(self) -> None:
+        # The severity rules classify a violation by its artifact PATH, and here every bullet
+        # names `semantic_review.json` — the recoverable shape that warm-resumes the judge. Left
+        # to the bullet path, an uninstalled front end or a stale certified IR would spend the
+        # judge's warm-resume budget re-authoring a review that cannot fix either. The exit code
+        # is read first, so the recoverable-looking bullet cannot reach the classifier.
+        import tempfile
+        from tools.validate_pipeline_semantics import (
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+        )
+        recoverable_bullet = ("pipeline semantic validation: FAIL\n"
+                              "- workspace/runs/n/semantic_review.json: review_method must be "
+                              "llm_semantic_review\n")
+        for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                              "static_frontend_unavailable"),
+                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir")):
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
+                c = self._conductor(repo)
+                with self._patch_run(lambda cmd, _rc=rc, **k: wc.subprocess.CompletedProcess(
+                        cmd, _rc, recoverable_bullet, "")):
+                    res = c._post_judge_inproc(refs, "child-post", "captok")
+                meta = json.loads(
+                    (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+            self.assertEqual(res["returncode"], 0, rc)  # content failure, not transport
+            self.assertEqual(meta["status"], "fail", rc)
+            self.assertEqual(meta["failure_category"], expected, rc)
+            self.assertEqual(meta["disposition"], "fail_closed", rc)
+            # The violations are still recorded, for observation only.
+            self.assertTrue(any("review_method" in v for v in meta["violations"]), rc)
+
+    def test_post_judge_forged_marker_bullet_at_rc_1_keeps_bullet_classification(self) -> None:
+        # pre_judge never had a text scan, and this pins that it did not grow one alongside the
+        # exit-code branches. Both markers are replayed inside an ordinary rc-1 bullet, which a
+        # scan-anywhere would turn into fail_closed — stranding a violation the judge can
+        # actually repair. The marker rides in the MESSAGE rather than in the path, because the
+        # severity rules key on the artifact path prefix: a forged FILENAME lands the bullet in
+        # `unknown` (disposition `escalate`) for that reason alone, which would make this row
+        # green without saying anything about a text scan.
+        import tempfile
+        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
+        for marker in (STALE_DEPENDENCY_IR_MARKER, "[fortran-structure-unavailable]"):
+            out = ("pipeline semantic validation: FAIL\n"
+                   "- workspace/runs/n/semantic_review.json: review_method must be "
+                   f"llm_semantic_review (found {marker}_review)\n")
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
+                c = self._conductor(repo)
+                with self._patch_run(lambda cmd, _o=out, **k: wc.subprocess.CompletedProcess(
+                        cmd, 1, _o, "")):
+                    c._post_judge_inproc(refs, "child-post", "captok")
+                meta = json.loads(
+                    (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+            self.assertEqual(meta["failure_category"], "pre_judge_violation", marker)
+            self.assertEqual(meta["disposition"], "warm_resume", marker)
 
     def test_post_judge_emits_scoped_args_with_both_in_flight(self) -> None:
         # post_judge runs --stage pre_judge scoped to its own run, declaring BOTH the judge and

@@ -20,6 +20,7 @@ which is the intended contract.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -285,10 +286,65 @@ class FrontEndUnavailableTests(unittest.TestCase):
         self.assertIn("RAISED True", result.stdout)
         self.assertIn("SILENT False", result.stdout)
 
-    def test_the_cli_answers_with_a_dedicated_exit_code(self) -> None:
-        # The classification channel itself. A leaf can write any text it likes into a filename,
-        # and did defeat three successive text-based scans; it cannot write into an exit code.
-        # This runs `main` in a real interpreter with the import really broken.
+    def test_the_cli_process_exits_with_the_dedicated_code(self) -> None:
+        """THE CHANNEL, observed as a PROCESS EXIT CODE. A leaf can write any text it likes into
+        a filename, and did defeat three successive text-based scans; it cannot write into an
+        exit code — but that only holds if `main` actually maps the error to the code.
+
+        This drives the real CLI as a subprocess with the import really broken, and asserts
+        `returncode`. The row below it does not: it observes the exception at the gate and then
+        prints the module CONSTANT, so it says nothing about `main`. With no row here, mutating
+        `_main_dispatch`'s `return FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE` to `return 1` left
+        1555 rows green — every conductor reader keyed on rc 3, the `--help` line and the RUNBOOK
+        entry all rested on a mapping nothing observed. The twin (rc 4) had this witness from the
+        start; this is the missing occurrence of the same rule.
+
+        The fixture is a `problem` node, because the front end is reached through the three
+        `problem` model gates.
+
+        It also witnesses the ORDER of `_main_dispatch`'s two exception clauses, which the
+        comment there calls load-bearing (`FortranStructureUnavailableError` IS a `RuntimeError`,
+        so putting the `RuntimeError` clause first reports `schema_load_failed` at rc 1 — a
+        leaf-repairable content failure for a machine problem). Measured: swapping them fails
+        this row. A structural pin over the source was written first, on the premise that the
+        order could not be observed without editing the module, and removed once that premise
+        was measured false.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            stub_dir = root / "stub"
+            stub_dir.mkdir()
+            (stub_dir / "tree_sitter.py").write_text(self.STUB)
+            (stub_dir / "tree_sitter_fortran.py").write_text(self.STUB)
+            repo = root / "repo"
+            pipeline_dir = (repo / "workspace" / "pipelines" / "problem__probe2d__0.1.0"
+                            / "probe2d_20260415_001")
+            src = pipeline_dir / "source" / "src_20260415_001" / "src"
+            src.mkdir(parents=True)
+            (src / "probe2d_model.f90").write_text(
+                "module probe2d_model\nend module probe2d_model\n", encoding="utf-8")
+            (pipeline_dir / "lineage.json").write_text(json.dumps(
+                {"node_key": "problem/probe2d@0.1.0",
+                 "pipeline_id": "probe2d_20260415_001"}), encoding="utf-8")
+            env = dict(os.environ)
+            env["PYTHONPATH"] = os.pathsep.join([str(stub_dir), str(REPO_ROOT)])
+            result = subprocess.run(
+                [sys.executable, "tools/validate_pipeline_semantics.py",
+                 "--repo-root", str(repo), "--workspace-root", "workspace",
+                 "--stage", "post_generate", "--pipeline-root", str(pipeline_dir),
+                 "--source-id", "src_20260415_001"],
+                cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, check=False)
+        import tools.validate_pipeline_semantics as vps
+        self.assertEqual(vps.FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE, result.returncode,
+                         (result.stdout, result.stderr))
+        # The marker stays in the message for a human reader and carries no decision.
+        self.assertIn("[fortran-structure-unavailable]", result.stdout)
+
+    def test_the_gate_raises_and_the_module_constant_names_the_code(self) -> None:
+        # NOT a witness of the CLI: this observes the exception at the gate and prints the module
+        # constant. The row above is the one that observes `main`. Kept because it pins the
+        # OTHER half — that the gate raises rather than passing quietly — with the import really
+        # broken rather than mocked.
         result = self._run(textwrap.dedent("""
             import tempfile
             from pathlib import Path
@@ -309,7 +365,12 @@ class FrontEndUnavailableTests(unittest.TestCase):
         self.assertIn("EXIT 3 FortranStructureUnavailableError", result.stdout)
 
     def test_with_the_packages_present_the_same_source_is_gated_normally(self) -> None:
-        # The control for the row above: the stub is what makes it fail, not the fixture.
+        # The control for `test_the_generate_gate_raises_instead_of_going_quiet`: with the
+        # packages present the same literal-only source earns its ordinary violation, so the stub
+        # is what makes that row fail rather than the fixture. Named explicitly because "the row
+        # above" stopped being that one when rows were added and renamed between them — and the
+        # CLI row has its own control, measured when it was written: without the stub the same
+        # fixture exits 0/PASS.
         import tools.validate_pipeline_semantics as vps
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

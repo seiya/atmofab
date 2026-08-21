@@ -230,6 +230,8 @@ Each fix narrowed the scan, and **each was broken by one byte**:
 | 3 | `- ` + marker at start of line | `x\n- [marker]_model.f90` |
 | 4 | **exit code** | unbreakable (the leaf cannot write it) |
 
+(v5 closed the twin marker `[stale-dependency-ir]` the same way — see below.)
+
 **Rule**: if a classification comes from scanning text, check whether caller-derived data
 enters that text. If it does, **change the channel rather than narrowing the sample** — exit
 code, exception type, a dedicated field, a sidecar. Each of these is written by the side that
@@ -237,10 +239,27 @@ knows and cannot be written by the caller. This is the classification-channel ve
 `metdsl-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
 one place".
 
-The same shape usually exists several times in the same repository (in L174 the twin survived
+The same shape usually exists several times in the same repository. In L174 the twin survived
 on `[stale-dependency-ir]`, and two further sites — post_execute and pre_judge — **scanned
-neither marker**). Once you find one, **count every site that makes the same decision**. At
-three or more, change the channel design instead of fixing them individually.
+neither marker**, so a machine failure arrived there as a warm retry no leaf could converge on.
+Once you find one, **count every site that makes the same decision**. At three or more, change
+the channel design instead of fixing them individually.
+
+**The twin was closed the same way (TODO:269, 2026-08-21) — as v5 of the table above, and the
+follow-through is the part worth copying.** The channel is the violation's TYPE
+(`StaleDependencyIRViolation(str)`, wrapped at the single emit site) mapped by `main()` to a
+dedicated exit code: a `str` subclass keeps the message byte-identical, so no existing message
+pin moved. Two things that cost time:
+
+- **A type channel dies silently on a list rebuild.** `[str(v) for v in violations]`, a JSON
+  round-trip, or a `sorted(...)` that constructs new strings drops it back to the generic code.
+  Trace the container from the emit site to the decision, and put the witness in a test that
+  drives the **real CLI in a real subprocess** — a helper-level assertion stays green while
+  production degrades.
+- **Counting the sites is not the same as answering them.** Six conductor readers made this
+  decision; four were changed and two were unreachable by construction. The unreachable pair
+  still got a comment, because the next reader cannot tell "deliberately not classified" from
+  "missed" — and prove unreachability with a call-graph closure, not by reading the file.
 
 **Surface 6: if the check tells the reader "do this to fix it", what else does that remedy
 rewrite?** If surface 5 is the read-side question, this is its write-side twin. Wherever a

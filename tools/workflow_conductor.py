@@ -372,6 +372,35 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     "quality_check_mismatch": ("generate", "reuse"),
 }
 
+# Validate.execute STRUCTURAL failure categories that are TERMINAL (fail_closed), NOT any warm
+# route out of the table above. Both name a condition NO leaf can repair by re-authoring source:
+# `static_frontend_unavailable` is an uninstalled structure front end on the machine running
+# the gate (see `GATE_FAILURE_TERMINAL` above), `stale_dependency_ir` a certified IR the leaf
+# does not own. `_execute_inproc` records
+# them from the post_execute validator's dedicated exit codes (3 / 4), which no leaf can write.
+#
+# DELIBERATELY A SEPARATE SET FROM `GATE_FAILURE_TERMINAL`, not an alias of it: that one is the
+# Generate.gate subsystem's contract and this one is Validate.execute's, and the two are free to
+# diverge as either grows a category the other has no counterpart for. That they are equal TODAY
+# is pinned by a test, so a change to one is a decision about the other rather than a silent
+# drift.
+#
+# Members are deliberately absent from `VALIDATE_EXECUTE_FAILURE_ROUTING`, so
+# `_read_repair_findings` cannot thread findings into a repair that provably cannot converge.
+#
+# They must also stay out of BOTH of `orchestration_runtime`'s dev category sets, or a `--resume`
+# in dev would issue a Generate resume directive for a condition no regeneration touches. NAME
+# THE RIGHT ONE: `conduct` maps this `fail_closed` to reason_code `conductor_phase_fail_closed`,
+# and `_derive_dev_validate_execute_resume_directive` consults
+# `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES` for that code —
+# `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES` belongs to `dev_phase_rollback`, which this route
+# never produces. An earlier version of this comment cited only the latter, and the test written
+# beside it pinned only the latter too, so the set the route actually consults had no witness.
+# Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
+VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
+    {"stale_dependency_ir", "static_frontend_unavailable"}
+)
+
 # Route-reason prefix for the table above: `<prefix><failure_category>`. Also the prefix of the
 # no-category `validate_execute_fail` restart reason and of the per-test predicate reasons
 # (`validate_execute_physics_fail` / `validate_execute_structural_violation`), so consumers must
@@ -8207,6 +8236,13 @@ clean:
                 ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_build",
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
+            # NO terminal-exit-code branch here, unlike the post_generate / post_execute /
+            # pre_judge gates. The post_build stage runs only the three build-control-file rules
+            # over `src/`, which read source through the regex/logical-line helpers and never
+            # through the structure front end, and it does not reach the stale-IR emit site at
+            # all — so neither rc 3 nor rc 4 can arrive. Every non-zero code here is a
+            # control-file violation the leaf repairs by re-authoring, which is what the warm
+            # route below assumes.
             if gate.returncode != 0:
                 binary_meta.update({
                     "verification_status": "fail", "status": "fail",
@@ -8803,7 +8839,7 @@ clean:
             if pg.returncode != 0:
                 from tools.validate_pipeline_semantics import (
                     FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
-                    STALE_DEPENDENCY_IR_MARKER,
+                    STALE_DEPENDENCY_IR_EXIT_CODE,
                 )
                 status = "fail"
                 # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
@@ -8813,23 +8849,23 @@ clean:
                 # classify_gate_failure fail_closes any union verdict carrying either
                 # (GATE_FAILURE_TERMINAL).
                 #
-                # THE FIRST IS CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
-                # third answer to one finding. Most violations interpolate a path the LEAF chose,
-                # so scanning the text let a model source named for the marker turn its own
-                # mis-naming into "this machine has no parser" — terminalizing the run instead of
-                # warm-retrying the rename. Anchoring the scan to a line start was defeated by a
-                # filename containing a newline; requiring `- ` in front was defeated by a
-                # filename containing a newline followed by `- `. Each was a tighter sample of the
-                # same prose. An exit code is set by the branch that knows and no leaf can write
-                # into it, so the class is closed rather than sampled again.
+                # BOTH ARE CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
+                # answer this finding took five versions to reach. Most violations interpolate a
+                # path the LEAF chose, so scanning the text let a model source named for a marker
+                # turn its own mis-naming into a terminal verdict — killing the run instead of
+                # warm-retrying the rename. For the front-end marker: anchoring the scan to a line
+                # start was defeated by a filename containing a newline; requiring `- ` in front
+                # was defeated by a filename containing a newline followed by `- `; the exit code
+                # (v4) closed it. `[stale-dependency-ir]` survived as the twin of the same defect
+                # until it too moved to an exit code (v5). Each text version was a tighter sample
+                # of the same prose; an exit code is set by the branch that knows and no leaf can
+                # write into it, so the class is closed rather than sampled again.
                 #
-                # `STALE_DEPENDENCY_IR_MARKER` is still a text scan and still carries that
-                # weakness; it predates this branch and is recorded in TODO.md, where the fix is
-                # now one already-built channel away.
-                gate_output = pg.stdout + pg.stderr
+                # Neither marker string is imported here any more: nothing in this function reads
+                # the gate's output to decide anything.
                 if pg.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
                     failure_category = "static_frontend_unavailable"
-                elif STALE_DEPENDENCY_IR_MARKER in gate_output:
+                elif pg.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
                     failure_category = "stale_dependency_ir"
                 else:
                     failure_category = "post_generate_violation"
@@ -8881,6 +8917,12 @@ clean:
             proc = subprocess.run(
                 cmd, cwd=self.repo_root, env=self.env, text=True,
                 capture_output=True, check=False)
+            # NO terminal-exit-code branch here either, for a second reason on top of the
+            # post_build one. `--stage compile` reads §5.1 and the IR through the regex-only
+            # signature helpers, never the structure front end, and the stale-IR emit site is
+            # not on its call graph — so neither rc 3 nor rc 4 arrives. And the routing would be
+            # wrong even if one did: at Compile the IR IS the artifact under repair, so a stale
+            # or drifted IR is exactly what a warm Compile retry is for, not a terminal verdict.
             if proc.returncode != 0:
                 status = "fail"
                 failure_category = "compile_static_violation"
@@ -9278,14 +9320,38 @@ clean:
                     "docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
             stderr += block
             # Classify the structural failure for classify_failure's execute branch (B1): the
-            # category selects the warm `("generate","reuse")` route out of
-            # VALIDATE_EXECUTE_FAILURE_ROUTING and the (bounded) excerpt becomes the repair leaf's
-            # findings, so the violation text that failed the run is what the leaf gets to fix.
-            # Precedence is report-quality only (all three route identically): a gate/syntax
-            # report is the most specific, a snapshot gap next, quality_check last. The runner
-            # runtime-error branch above returns BEFORE any trial_meta is written — a MISSING
-            # trial_meta is therefore the on-disk discriminator for that (cold-restart) kind.
-            if syn.returncode != 0 or gate.returncode != 0:
+            # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the two
+            # terminal categories, a fail_closed) and the (bounded) excerpt becomes the repair
+            # leaf's findings, so the violation text that failed the run is what the leaf gets to
+            # fix. The runner runtime-error branch above returns BEFORE any trial_meta is written
+            # — a MISSING trial_meta is therefore the on-disk discriminator for that
+            # (cold-restart) kind.
+            #
+            # PRECEDENCE IS ROUTING-LOAD-BEARING at the top and report-quality only below it. The
+            # two leading branches read the post_execute validator's DEDICATED EXIT CODES, which
+            # say the failure is not the leaf's: rc 3 is an uninstalled structure front end (a
+            # machine problem — the gates that need it read nothing), rc 4 a stale certified IR. Both
+            # must dominate a co-occurring `syn`/`quality_check`/snapshot symptom, because those
+            # symptoms are downstream of the same unrepairable condition and routing them warm
+            # spends the leaf's budget re-authoring source that was never the cause. Below them
+            # the three warm categories route identically: a gate/syntax report is the most
+            # specific, a snapshot gap next, quality_check last.
+            #
+            # rc 4 is UNREACHABLE from this stage today: the stale-IR violation has one emit site
+            # (`_validate_infrastructure_generated_signatures`) and one caller
+            # (`_validate_generate_outputs_for_generation`, post_generate only). It is wired here
+            # anyway so that the day a post_execute gate reports it, it fails closed rather than
+            # arriving as a warm retry the leaf cannot converge on. rc 3 IS reachable: the
+            # front-end error is raised from the `problem` model gates that post_execute runs.
+            from tools.validate_pipeline_semantics import (
+                FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                STALE_DEPENDENCY_IR_EXIT_CODE,
+            )
+            if gate.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
+                failure_category = "static_frontend_unavailable"
+            elif gate.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
+                failure_category = "stale_dependency_ir"
+            elif syn.returncode != 0 or gate.returncode != 0:
                 failure_category = "post_execute_violation"
             elif snapshot_gap:
                 failure_category = "snapshot_deliverable_gap"
@@ -10510,7 +10576,15 @@ clean:
         disposition: recoverable (leaf/judge-authored conformance violation) -> warm_resume
         (run_phase warm-resumes the judge in place); unrecoverable (orchestration-record /
         cross-pipeline DAG integrity) -> fail_closed; unknown -> fail_closed (conservative;
-        an escalate-LLM adjudicator is a deferred follow-up)."""
+        an escalate-LLM adjudicator is a deferred follow-up).
+
+        Two exit codes are answered BEFORE the bullets are read at all, because they say the
+        gate never reached a verdict about this run's conformance: rc 3 (the structure front end
+        is not installed) and rc 4 (a stale certified IR). Their bullets describe a
+        machine or IR condition, and the severity rules classify by artifact PATH — so left to
+        the bullet path they would be classified as if they were conformance findings and could
+        warm-resume a judge that cannot converge. Both write `disposition: "fail_closed"` with
+        their own `failure_category`, the same shape as the OSError launch-failure branch."""
         # G6: the conductor authors the deterministically-derivable artifacts (aggregate_verdict
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
@@ -10548,6 +10622,35 @@ clean:
         combined = gate.stdout + gate.stderr
         # The validator prints each violation as a `- {line}` bullet after a FAIL header.
         violations = [ln[2:] for ln in combined.splitlines() if ln.startswith("- ")]
+        # TERMINAL EXIT CODES FIRST, and on the CODE rather than on any bullet: the bullets carry
+        # leaf-chosen paths, and the severity rules below classify by path prefix, so a bullet
+        # naming a repairable-looking artifact would warm-resume the judge over a machine problem
+        # or a stale certified IR — neither of which any re-authored semantic_review.json
+        # touches. The violations are still recorded, for observation only.
+        #
+        # rc 4 is UNREACHABLE from this stage today (the stale-IR violation has one emit site,
+        # reached only from post_generate); it is wired so that the day a pre_judge gate reports
+        # it, it fails closed rather than warm-resuming. rc 3 IS reachable: `--stage pre_judge`
+        # runs gates that read source through the front end.
+        from tools.validate_pipeline_semantics import (
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+        )
+        terminal_category = {
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
+            STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
+        }.get(gate.returncode)
+        if terminal_category:
+            self._write_run_node_meta(refs, "post_judge_meta.json", {
+                "run_id": refs.run_id, "node_key": refs.node_key,
+                "pipeline_id": refs.pipeline_id, "status": "fail",
+                "validation_stage": "pre_judge",
+                "failure_category": terminal_category,
+                "failure_excerpt": "\n".join(combined.splitlines()[-50:]),
+                "violations": violations, "disposition": "fail_closed",
+            })
+            return {"returncode": 0, "stdout": "",
+                    "stderr": "[post_judge gate fail]\n" + combined}
         severity = classify_post_judge_violations(violations)
         # G5: an `unknown` violation (unclassifiable by the deterministic path-prefix rules) is
         # no longer a blind fail_closed — it routes to the unified escalate LLM. `recoverable`
@@ -11300,6 +11403,21 @@ clean:
                 # execute failure is against FRESH artifacts and must get its own
                 # Generate-retry-first cycle rather than immediately re-escalating because
                 # a stale count is still >= 2.
+                #
+                # The trial_meta read is hoisted ABOVE the counter because the two TERMINAL
+                # categories have to be answered before anything counts or escalates. A machine
+                # problem (no front end) or a stale certified IR is not evidence that the IR is
+                # the wrong side of an IR-rooted mismatch, so counting it toward C2 would let two
+                # of them reopen Compile — rebuilding the IR and everything downstream over a
+                # condition no regeneration touches. It is not repairable by any leaf either, so
+                # neither the warm table below nor a cold restart applies: fail closed and let
+                # the operator fix the machine (or re-certify) and `--resume`.
+                trial = _read_json(self.repo_root / refs.run_node_dir() / "trial_meta.json") or {}
+                category = trial.get("failure_category") if trial.get("status") == "fail" else None
+                if str(category or "") in VALIDATE_EXECUTE_FAILURE_TERMINAL:
+                    return RouteDecision(
+                        "fail_closed",
+                        reason=f"{VALIDATE_EXECUTE_REASON_PREFIX}{category}")
                 if not hasattr(self, "_validate_execute_fail_count"):
                     self._validate_execute_fail_count: dict[str, int] = {}
                 count = self._validate_execute_fail_count.get(refs.node_key, 0) + 1
@@ -11315,8 +11433,8 @@ clean:
                 # same treatment the judge's ("structural_violation","code") already gets. A
                 # runner runtime error writes no trial_meta, and an unknown category is not
                 # understood well enough to guide a repair — both keep the cold restart.
-                trial = _read_json(self.repo_root / refs.run_node_dir() / "trial_meta.json") or {}
-                category = trial.get("failure_category") if trial.get("status") == "fail" else None
+                # (`trial` / `category` were read above the C2 counter, which the terminal
+                # categories have to precede.)
                 route = VALIDATE_EXECUTE_FAILURE_ROUTING.get(str(category or ""))
                 if route:
                     # On an M3c node the runner is host-rendered, so a category the table sends to
