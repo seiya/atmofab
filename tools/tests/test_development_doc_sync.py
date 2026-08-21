@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""`docs/DEVELOPMENT.md` is built out of citations, so its citations are what can rot.
+"""The two documents that are MAPS: every place they name has to be real.
+
+`docs/DEVELOPMENT.md` is built out of citations, and `docs/README.md` is an index. Neither
+carries content of its own, so what can rot in them is where they point.
 
 The document deliberately restates nothing: its setup table and its scope section point at the
 section that owns each procedure. That design moves the failure mode. A restatement goes stale
@@ -8,15 +11,16 @@ renumbered or renamed goes stale SILENTLY, and reads as authoritative the whole 
 
 Scope, stated because a wider version of each check was measured and rejected:
 
-- Only `docs/DEVELOPMENT.md` is scanned for citations. The same sweep over every document in the
-  repository is a different change with a different cost; this file pins the document whose
-  citations are its entire content.
+- Only these two documents are scanned. The same sweep over every document in the repository is
+  a different change with a different cost; this file pins the two whose entire content is
+  pointers.
 - Completeness is NOT asserted anywhere here. Requiring `docs/README.md` to index every
   `docs/*.md` would fail on 9 documents that predate this file (measured 2026-08-21), and
   requiring `README.md`'s layout block to list every top-level entry would refuse an ordinary new
   directory until someone documented it. Both are pins on a RESULT rather than on a rule, which
   is the shape this repository has been bitten by. What is asserted is that every path and
-  section the document NAMES resolves.
+  section the document NAMES resolves — the direction that has no legitimate counter-example,
+  since nothing is gained by indexing a document that is not there.
 """
 
 from __future__ import annotations
@@ -200,6 +204,51 @@ class ConfigurationLayerTableTests(unittest.TestCase):
                     f"the table says {path} is untracked, but the COMMITTED ignore rules do not "
                     "cover it — a fresh clone would offer it for commit")
         self.assertGreater(checked, 0, "no row's tracked column was checked")
+
+
+class DocsIndexTests(unittest.TestCase):
+    """Every document `docs/README.md` indexes exists.
+
+    One direction only. The reverse — every `docs/*.md` appears in the index — was measured and
+    is false for 9 documents that predate this check, and closing that is a decision about where
+    each of them belongs rather than a test.
+    """
+
+    INDEX = REPO_ROOT / "docs" / "README.md"
+
+    #: The two sections that ARE the index. Scoped by section rather than by file, because the
+    #: rest of the document is prose that legitimately names artifacts which are not repository
+    #: files: `## Operations Rules` says "the target `spec`'s `tests.md`", and a whole-file sweep
+    #: refused it. That was an over-refusal of correct prose, caught by running this check before
+    #: committing it.
+    INDEX_SECTIONS = ("Shortest reading order", "Role-based Structure")
+
+    def _indexed_names(self) -> list[str]:
+        current: str | None = None
+        names: set[str] = set()
+        for line in self.INDEX.read_text(encoding="utf-8").splitlines():
+            heading = _HEADING_RE.match(line)
+            if heading:
+                text = heading.group("text").strip()
+                current = text if any(text.startswith(s) for s in self.INDEX_SECTIONS) else None
+                continue
+            if current is None:
+                continue
+            names.update(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", line))
+        return sorted(names)
+
+    def test_every_indexed_document_resolves(self) -> None:
+        names = self._indexed_names()
+        self.assertGreaterEqual(
+            len(names), 10,
+            "the index sections were not read; a heading was renamed or the entry spelling moved")
+        for name in names:
+            with self.subTest(document=name):
+                # Entries are docs-relative (`SPEC.md`, `workflow/WORKFLOW_CORE.md`); a few name
+                # a repository-relative path instead, so both roots are tried.
+                self.assertTrue(
+                    (self.INDEX.parent / name).is_file() or (REPO_ROOT / name).is_file(),
+                    f"docs/README.md indexes {name}, which is not in the tree")
 
 
 class DevelopmentDocReachabilityTests(unittest.TestCase):
