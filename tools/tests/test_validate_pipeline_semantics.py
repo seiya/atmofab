@@ -22170,11 +22170,18 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     def test_validator_exit_codes_are_pairwise_distinct(self) -> None:
         """Every code a caller classifies on has to name exactly one condition. 0 = PASS,
         1 = violations found, 2 = argparse's usage error, 3 = front end unavailable,
-        4 = stale certified IR."""
-        codes = [0, 1, 2,
-                 vps.FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
-                 vps.STALE_DEPENDENCY_IR_EXIT_CODE]
-        self.assertEqual(len(codes), len(set(codes)), codes)
+        4 = stale certified IR.
+
+        The constants are ENUMERATED from the module, not listed here, so this pins the rule the
+        docstring states rather than today's instances of it. Listing them by hand made a fifth
+        constant COLLIDING with an existing code invisible — the sibling help test caught a fifth
+        constant that was merely undocumented, so the two rows disagreed about what they covered.
+        """
+        named = {name: getattr(vps, name) for name in dir(vps) if name.endswith("_EXIT_CODE")}
+        self.assertTrue(named, "no exit-code constants found; the enumeration went stale")
+        codes = [0, 1, 2, *named.values()]
+        self.assertEqual(len(codes), len(set(codes)),
+                         f"exit codes collide: {sorted(named.items())} against 0/1/2")
 
 
 if __name__ == "__main__":
