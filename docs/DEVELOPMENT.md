@@ -17,17 +17,17 @@ Out of scope, each with its owner named rather than restated here:
 - Running a trial, and recovering from a failure — `docs/RUNBOOK.md`.
 
 ## Fresh-machine setup
-A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. Two members of it decide behaviour rather than merely holding credentials: the Codex CLI's `hooks` feature flag, without which a leaf would run with no policy layer at all (§0-3 gates on it), and the leaf-`LLM` configuration, which is untracked by design and is the only thing that says which model runs which leaf.
+A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. Two members of it decide behaviour rather than merely holding credentials: the Codex CLI's `hooks` feature flag, without which a leaf would run with no policy layer at all (`docs/RUNBOOK.md` §"0-3" gates on it), and the leaf-`LLM` configuration, which is untracked by design and is the only thing that says which model runs which leaf.
 
 | step | requirement | canonical source |
 |---|---|---|
-| 1 | Host CLI tools and Python packages | `docs/RUNBOOK.md` §0-1 |
-| 2 | Claude backend: server registration and the leaf's tool grant | `docs/RUNBOOK.md` §0-2 |
-| 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
-| 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §Running a workflow |
+| 1 | Host CLI tools and Python packages | `docs/RUNBOOK.md` §"0-1" |
+| 2 | Claude backend: server registration and the leaf's tool grant | `docs/RUNBOOK.md` §"0-2" |
+| 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §"0-3" |
+| 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §"1-3", `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
 
-Steps 1, 2, 3 and 5 all read machine-local state, and preflight gates them so that a machine that cannot run the workflow is refused before the first billed leaf rather than part-way through. One requirement is outside that guarantee and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at the gate (`docs/RUNBOOK.md` §0-3).
+Steps 1, 2, 3 and 5 all read machine-local state, and preflight gates them so that a machine that cannot run the workflow is refused before the first billed leaf rather than part-way through. One requirement is outside that guarantee and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at the gate (`docs/RUNBOOK.md` §"0-3").
 
 ## Configuration layers
 Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. `docs/HOOKS.md` is canonical for the split and for what keeps the two in step.
