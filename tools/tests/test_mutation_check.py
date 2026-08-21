@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 import sys
 import unittest
 from pathlib import Path
@@ -637,6 +638,68 @@ class MutationCheckScenarioTests(unittest.TestCase):
         run = self.run_check(test_cmd=f"{sys.executable} -c \"raise SystemExit(1)\"")
         self.assertIn("BASELINE RED", run.out, msg=str(run))
         self.assertEqual(2, run.code, msg=str(run))
+
+    def test_a_red_baseline_names_the_two_paths_this_harness_chose(self) -> None:
+        """The message must accuse the HARNESS before the suite.
+
+        Both of these defaults were once inputs to met-dsl's own suite — a `/dev/shm` scratch
+        root reddened the two tests that reason about `/dev/shm`, and the default worktree
+        location reddens the hook tests that resolve `..` against the checkout's depth. The
+        message said "Fix the suite", which is the one thing that was not wrong, so a full-suite
+        `--test-cmd` looked impossible to run. What is pinned is that both levers are NAMED with
+        their live values, not the wording around them.
+        """
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        run = self.run_check(test_cmd=f"{sys.executable} -c \"raise SystemExit(1)\"")
+        self.assertIn("BASELINE RED", run.out, msg=str(run))
+        self.assertIn("TMPDIR", run.out, msg=str(run))
+        # Each lever asserted as ONE span joining its wording to its live value. Asserting the
+        # two separately passed for the wrong reason: the run's first line already prints the
+        # worktree root, so deleting the lever sentence left the assertion satisfied.
+        self.assertIn(f"scratch root is {self.tmp}", run.out,
+                      msg="the scratch root in force is not named by the message")
+        self.assertIn(f"worktrees are under {self.workdir}", run.out,
+                      msg="the worktree root in force is not named by the message")
+        self.assertIn("DEPTH differs", run.out, msg=str(run))
+
+    def test_the_scratch_root_falls_back_to_the_platform_not_to_dev_shm(self) -> None:
+        """With TMPDIR unset, the root is `tempfile.gettempdir()`.
+
+        Read out of the red-baseline message, which is the only place the script publishes it.
+        The default used to be `/dev/shm` unconditionally, and a scratch root must not be a path
+        the suite under test makes assertions about — which the script cannot know, so it takes
+        the platform's answer rather than choosing one for speed it did not deliver.
+        """
+        self.repo.write("k.py", "x = 1\n")
+        self.repo.commit("base")
+        self.repo.write("k.py", "x = 2\n")
+        self.repo.commit("change")
+        env = {k: v for k, v in os.environ.items() if k != "TMPDIR"}
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--range", "HEAD~1..HEAD",
+             "--test-cmd", f"{sys.executable} -c \"raise SystemExit(1)\"",
+             "--jobs", "1", "--workdir", str(self.workdir)],
+            cwd=self.repo.root, text=True, capture_output=True,
+            env={**env, **_NO_GIT_CONFIG})
+        out = proc.stdout + proc.stderr
+        self.assertIn("BASELINE RED", out, msg=out[-2000:])
+        self.assertIn(f"scratch root is {tempfile.gettempdir()}", out, msg=out[-2000:])
+        self.assertNotIn("/dev/shm", out, msg=out[-2000:])
+
+    def test_the_workdir_help_says_its_depth_is_load_bearing(self) -> None:
+        """A reader who hits the depth failure looks at `--help` before the source."""
+        proc = subprocess.run([sys.executable, str(SCRIPT), "--help"],
+                              text=True, capture_output=True)
+        # The REMEDY, not the word `DEPTH`: the help says "does NOT match your checkout's
+        # DEPTH" a sentence earlier, so asserting the word alone was satisfied by the
+        # diagnosis while the instruction that fixes it could be deleted unnoticed.
+        # Whitespace collapsed: argparse re-wraps help text, so the phrase is split across
+        # lines at a width nobody controls.
+        flattened = " ".join(proc.stdout.split())
+        self.assertIn("same depth as your checkout", flattened, msg=proc.stdout)
 
     def test_a_baseline_that_times_out_exits_two_without_a_traceback(self) -> None:
         self.repo.write("k.py", "x = 1\n")
