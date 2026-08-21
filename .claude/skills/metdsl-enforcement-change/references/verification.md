@@ -16,6 +16,15 @@ TMPDIR=/dev/shm python3 -m pytest tools/tests/ -q -p no:randomly
 
 - **Never run two of these in parallel.** They share `TMPDIR`, which produces false failures
   (hit for real once)
+- **`TMPDIR=/dev/shm` itself costs two false failures**, measured 2026-08-21 on `main` and on a
+  branch alike: `test_hooks_common.py::DevShmWriteBlockTests::test_blocks_dev_shm_via_find_traversal`
+  and `::test_blocks_dev_shm_via_tar_chdir`. Those two reason about a write guard over `/dev/shm`,
+  and pointing `TMPDIR` there puts the fixture's own scratch directory inside the path the guard
+  is being asked about, so the verdict comes back as a different policy id. Both pass with
+  `TMPDIR` unset. Same class as the `ForbidBackendCredentialReadTests` note below — an
+  environment-dependent pre-existing failure, not a finding — but this one is caused by the
+  command this section recommends, so a run that reports "2 failed" has said nothing until it
+  names WHICH two
 - The baseline is the measured value on `origin/main`. If you compare via `git worktree` /
   `git archive`, placing the checkout outside `$HOME` makes
   `test_hooks_common.py::ForbidBackendCredentialReadTests` fail (it assumes `../..` / `~`
