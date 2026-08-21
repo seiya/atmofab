@@ -129,7 +129,14 @@ def _load_parser():
     """Import the two packages and build a parser, mapping every import failure to one error.
 
     Lazy on purpose: `validate_pipeline_semantics` runs stages that never reach a Fortran gate
-    (`compile`, `pre_judge`), and an absent package must not fail those.
+    (`compile`, `post_build`), and an absent package must not fail those.
+
+    That parenthesis used to name `pre_judge` instead of `post_build`, and it was wrong: an AST
+    call closure over the validator puts `--stage pre_judge` and `--stage post_execute` on
+    `_validate_impl` -> `_validate_generate_outputs` -> `parse_view`, so both DO reach this
+    import and can raise. The two stages that reach neither this module nor the stale-IR gate are
+    `compile` and `post_build` (measured the same way, and the conductor's two non-classifying
+    gate readers rest on the same fact).
     """
     try:
         import tree_sitter_fortran
