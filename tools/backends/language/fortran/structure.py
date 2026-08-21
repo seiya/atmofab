@@ -18,10 +18,13 @@ properties of that view are load-bearing here:
 
 FAIL-CLOSED, IN TWO DIRECTIONS:
 
-* **the packages are absent** → `FortranStructureUnavailableError`, which the caller reports with
-  `FORTRAN_STRUCTURE_UNAVAILABLE_MARKER` so the conductor terminalizes the run
-  (`static_frontend_unavailable`) instead of spending a leaf's retry budget on a machine problem
-  the leaf cannot fix;
+* **the packages are absent** → `FortranStructureUnavailableError`, which propagates to the
+  validator's `main`, where it becomes a DEDICATED EXIT CODE; the conductor terminalizes the run
+  on that code (`static_frontend_unavailable`) instead of spending a leaf's retry budget on a
+  machine problem the leaf cannot fix. The caller also puts `FORTRAN_STRUCTURE_UNAVAILABLE_MARKER`
+  in the message, but that is for a human reader and carries no decision — an earlier version of
+  this line said the marker is what makes the conductor terminalize, which was the text-scan
+  design the exit code replaced;
 * **the parse carries an ERROR or MISSING node** → `StructureTree.errors` is non-empty and the
   caller raises a CONTENT violation. It does not fall back to a looser reading: a structure the
   parser could not resolve is exactly the input a silent gate is made of. Measured over the
