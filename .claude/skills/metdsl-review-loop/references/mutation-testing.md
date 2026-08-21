@@ -11,6 +11,51 @@ scorer that reads only `FAILED` lines saw no failures and recorded them as kille
 `--continue-on-collection-errors` produced 41-47 real failures per mutant. Put the flag in your own
 scorer and in the reviewer's instructions.
 
+## The harness's own scratch paths reddened the baseline (TODO:414, 2026-08-21)
+
+Two of the script's defaults were themselves inputs to the suite under test, and together they
+made a full-suite `--test-cmd` impossible to run in met-dsl at all.
+
+- The per-job temp root defaulted to `/dev/shm`. Two rows of `DevShmWriteBlockTests` ask what the
+  write guard says about `/dev/shm`, so putting the job's scratch directory inside that path
+  returned a different policy id and the baseline came back red. Confirmed in both directions: any
+  `TMPDIR` under `/dev/shm` reddens exactly those two, a `TMPDIR` under `/tmp` does not.
+- With that fixed, the default `--workdir` (`~/.cache/mutation-check`) reddened
+  `ForbidBackendCredentialReadTests::test_blocks_bash_only_tilde_prefixes` instead: the worktree
+  sits at a different filesystem DEPTH from the checkout, and that row resolves `~+/../..` against
+  it. `--workdir` at the checkout's own depth clears it.
+
+What made the episode cost an hour rather than a minute is that the message said "Fix the suite
+(or narrow --test-cmd)" — pointing at the one thing that was not wrong. The suite was green in the
+checkout the whole time. **The script now names both levers in the BASELINE RED message**, and the
+temp root defaults to the platform's rather than to a path chosen for speed it did not deliver
+(`/tmp` was tmpfs on that host too; four alternating full-suite runs measured 96.7 / 103.0 s
+against 102.3 / 93.8 s — no separation).
+
+The transferable rule is not about those two paths. It is that **a harness which supplies paths to
+the code it measures has to assume some of them are under test**, and it cannot find out which
+from the inside. When a baseline is red, ask what the harness changed before asking what you did.
+
+## A documentation-only diff surviving in full is a measurement (TODO:414, 2026-08-21)
+
+A branch whose diff is prose reports every hunk SURVIVED. Read literally that is true and useful:
+no test observes any claim the branch makes. It is not a reason to skip round 0, and not a reason
+to pin everything either.
+
+What worked: split the hunks by whether the claim is **mechanically checkable**. A path that must
+exist, a table column that must agree with `git ls-files` / `git check-ignore`, a pointer that
+must be reachable from a document an agent always reads — those get a check. Everything else is
+declared prose in the commit message, with a count, so the survivor list is a classification
+rather than a debt. On that branch it moved 13 of 13 surviving to 5 killed plus 8 declared, and
+writing the checks surfaced an over-refusal before a reviewer saw the branch.
+
+The counter-lesson from the same branch matters as much: the FIRST attempt at those checks parsed
+markdown prose to decide what a citation was, and two successive versions were broken by reviewers
+in the same way — thirteen refusals of correct writing between them. Checks over a documentation
+diff should key on STRUCTURE the format guarantees (a table with a separator row, a header cell, a
+list entry) and never on prose. When the second version breaks the way the first did, that is the
+signal to declare the scope and stop, not to write a third.
+
 ## A stale worktree makes every mutant look killed (PR #67)
 
 The script runs a baseline unless you pass `--skip-baseline`; handwriting has no baseline at all.

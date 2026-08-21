@@ -11,20 +11,20 @@ while developing this repository.
 ## The suite
 
 ```bash
-TMPDIR=/dev/shm python3 -m pytest tools/tests/ -q -p no:randomly
+python3 -m pytest tools/tests/ -q -p no:randomly
 ```
 
+- **Do NOT point `TMPDIR` at `/dev/shm`.** This section used to recommend it, and the
+  recommendation cost two false failures on `main` and on a branch alike (measured 2026-08-21):
+  `test_hooks_common.py::DevShmWriteBlockTests::test_blocks_dev_shm_via_find_traversal` and
+  `::test_blocks_dev_shm_via_tar_chdir`. Those two reason about a write guard over `/dev/shm`, so
+  putting the fixture's own scratch directory inside the path under test returns a different
+  policy id. It bought nothing either: `/tmp` is tmpfs here too, and four alternating full-suite
+  runs did not separate them (96.7 / 103.0 s against 102.3 / 93.8 s). **The rule, not the
+  spelling**: a scratch root must not be a path the suite makes assertions about. On a host whose
+  `/tmp` is disk-backed, point `TMPDIR` at some OTHER tmpfs
 - **Never run two of these in parallel.** They share `TMPDIR`, which produces false failures
   (hit for real once)
-- **`TMPDIR=/dev/shm` itself costs two false failures**, measured 2026-08-21 on `main` and on a
-  branch alike: `test_hooks_common.py::DevShmWriteBlockTests::test_blocks_dev_shm_via_find_traversal`
-  and `::test_blocks_dev_shm_via_tar_chdir`. Those two reason about a write guard over `/dev/shm`,
-  and pointing `TMPDIR` there puts the fixture's own scratch directory inside the path the guard
-  is being asked about, so the verdict comes back as a different policy id. Both pass with
-  `TMPDIR` unset. Same class as the `ForbidBackendCredentialReadTests` note below — an
-  environment-dependent pre-existing failure, not a finding — but this one is caused by the
-  command this section recommends, so a run that reports "2 failed" has said nothing until it
-  names WHICH two
 - The baseline is the measured value on `origin/main`. If you compare via `git worktree` /
   `git archive`, placing the checkout outside `$HOME` makes
   `test_hooks_common.py::ForbidBackendCredentialReadTests` fail (it assumes `../..` / `~`
@@ -142,7 +142,7 @@ below, which includes `phase_01_compile.md` and none of the other phase docs. **
 first**: editing a doc that is not in the table and running the command measures nothing.
 
 ```bash
-TMPDIR=/dev/shm python3 -m pytest tools/tests/test_orchestration_runtime.py -q -p no:randomly -k child_context_docs
+python3 -m pytest tools/tests/test_orchestration_runtime.py -q -p no:randomly -k child_context_docs
 ```
 
 If you exceed one, **cut redundancy rather than raising the ceiling**.
