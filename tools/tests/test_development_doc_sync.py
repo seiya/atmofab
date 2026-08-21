@@ -31,7 +31,8 @@ What is left needs no prose parsing:
 - **The development document is reachable** from the documents an agent always reads.
 
 Completeness is NOT asserted anywhere. Requiring `docs/README.md` to index every `docs/*.md`
-would fail on 9 documents that predate this file (measured 2026-08-21), and requiring
+would fail on 8 documents that predate this file (measured 2026-08-21, counting
+`docs/*.md` other than the index itself), and requiring
 `README.md`'s layout block to list every top-level entry would refuse an ordinary new directory
 until someone documented it. Both pin a RESULT rather than a rule.
 
@@ -386,20 +387,29 @@ class GitGuardTests(unittest.TestCase):
     global excludes file — with nothing anywhere asserting that the git half ever ran.
     """
 
-    def test_the_guard_does_not_skip_in_this_checkout(self) -> None:
+    def test_the_guard_does_not_skip_where_a_repository_is_present(self) -> None:
+        """Whether the repository is present is decided WITHOUT the guard being tested.
+
+        Asking the guard would make this circular — a guard that always skips would make its own
+        witness skip too. `.git` is the independent question: present as a directory in a normal
+        checkout and as a file in a `git worktree`, absent in a `git archive` snapshot, which is
+        the extraction this repository's own skills prescribe for mutation runs.
+        """
+        if not (REPO_ROOT / ".git").exists():
+            self.skipTest("no git work tree to ask about tracking")
         try:
             _require_git_repository(self)
         except unittest.SkipTest as exc:  # pragma: no cover - the failure path is the point
-            self.fail(f"the git guard skipped in this checkout: {exc}. Every assertion in "
-                      "ConfigurationLayerTableTests.test_the_tracked_column_agrees_with_git is "
-                      "then unreachable.")
+            self.fail(f"the git guard skipped in a checkout that has a .git: {exc}. Every "
+                      "assertion in ConfigurationLayerTableTests."
+                      "test_the_tracked_column_agrees_with_git is then unreachable.")
 
 
 class DocsIndexTests(unittest.TestCase):
     """Every document `docs/README.md` indexes exists.
 
     One direction only. The reverse — every `docs/*.md` appears in the index — was measured and
-    is false for 9 documents that predate this check, and closing that is a decision about where
+    is false for 8 documents that predate this check, and closing that is a decision about where
     each of them belongs rather than a test.
     """
 

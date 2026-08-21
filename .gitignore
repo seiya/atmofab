@@ -10,11 +10,22 @@ plans/
 # checkout that tracked it would make one machine's ad-hoc grants everyone's.
 .claude/settings.local.json
 
-# Scratch checkouts the interactive CLI creates for isolated work. Machine-local by
-# construction. Listed here rather than in `.git/info/exclude`, which is where this
-# repository was carrying it: that file is per-clone, so every fresh clone saw the
-# directory as untracked.
+# Runtime state the interactive CLI writes beside its settings: scratch checkouts, the
+# scheduler's state, per-session bookkeeping. Machine-local by construction, and none of it
+# is a decision this repository makes. Listed here rather than in `.git/info/exclude`, which
+# is where this checkout was carrying the whole set: that file is per-clone, so every fresh
+# clone offers them for commit. The set is the CLI's, so it grows — an entry appearing here
+# means one more thing the CLI writes, not one more decision.
 .claude/worktrees/
+.claude/checkpoints/
+.claude/mailbox/
+.claude/routines/.state/
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+.claude/agent-registry.json
+.claude/agent-memory-local
+.claude/assistant-daemon-state.json
+.claude/first-run
 
 # The operator's own leaf-LLM configuration: the file run_workflow.py loads when nobody
 # passes --llm-config. Which model runs which leaf is a local decision, so tracking it would
