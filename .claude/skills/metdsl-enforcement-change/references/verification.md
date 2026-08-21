@@ -114,6 +114,14 @@ done
 available (1 hidden fix can be enabled with the --unsafe-fixes option).` — in both cases the count
 is on the line above. Read the full output whenever the last lines differ.
 
+**If you want a NUMBER, ask ruff for it: `ruff check --statistics <f>`.** Do not write a counter
+for the occasion. On TODO:269 the count went into the ledger from `ruff check <f> | grep -c
+"^[A-Z][0-9]*"`, where `[0-9]*` matches zero digits, so `No fixes available` and its neighbours
+were counted as findings — four numbers wrong in one sentence, all four reproduced by a reviewer
+in minutes. The comparison itself survived (the same wrong counter ran on both sides), which is
+the shape that makes this kind of bug last: **the claim that matters can be true while every
+number in it is false.**
+
 Same reason as above, and one of this loop's own rules besides: the earlier form used `git stash`
 plus `git checkout -- .`, and `metdsl-review-loop` forbids `git checkout -- <path>` by name for
 discarding uncommitted work along with whatever it was meant to revert.
@@ -218,6 +226,71 @@ rg -n "violations.append|raise (ValueError|RuntimeError)" <touched file>
 
 **If you wrote a measured value as grounds, re-measure it after the change.** In PR #51 the same
 string was rewritten four times.
+
+**One match expression is not a census, and calling it one is a false claim about coverage.** On
+TODO:269 the post_judge disposition rule was stated in six documents. Reading and grepping found
+2; enumerating every `.md` with `os.walk` and matching lines carrying both `disposition` and
+`recoverable` found 5, and that was written up as "the record of how many sites there are"; a
+reviewer matching `post_judge` + `fail_closed` found the 6th, which states the same rule using the
+word **severity**. The remedy is cheap — **run two or three expressions built from DIFFERENT words
+in the rule, and stop only when they agree**:
+
+```bash
+# enumerate files yourself: `grep` is shadowed in an agent session and respects .gitignore
+python3 - <<'PY'
+import os, re
+PATS = [("disposition", "recoverable"), ("post_judge", "fail_closed"), ("warm-resum", "judge")]
+for root, _, files in os.walk("."):
+    if "/.git" in root: continue
+    for f in files:
+        if not f.endswith((".md", ".py")): continue
+        p = os.path.join(root, f)
+        for i, line in enumerate(open(p, errors="ignore"), 1):
+            for a, b in PATS:
+                if a in line and b in line: print(f"{p}:{i}  [{a}+{b}]")
+PY
+```
+
+If the expressions disagree, the rule is stated in more than one vocabulary and the widest answer
+is the census. **Say which expressions you ran** — "I enumerated every `.md`" describes the file
+walk, not the matching, and the matching is where the miss was.
+
+## The backend-boundary token ratchet (run it on every commit that touches a scanned file)
+
+`tools/tests/test_backend_boundary.py::TokenRatchetTests` counts technology tokens per file and
+fails on growth. **It reads WHOLE FILES, so an ordinary comment trips it** — and a commit whose
+verification runs only the test file for the module it changed will not see that. On TODO:269 it
+tripped three times, all from prose, and one was caught two commits late for exactly that reason,
+after a commit message had already asserted "ratchet still green" without running it.
+
+```bash
+python3 -m pytest tools/tests/test_backend_boundary.py -q          # every commit touching tools/ or docs/
+python3 -m tools.tests.test_backend_boundary --write-baseline      # ONLY after the judgement below
+```
+
+**Three trips, three different right answers — the judgement is the whole content of this
+section:**
+
+- **A neutral-role citation → regenerate, and say so in the commit message.** Naming an existing
+  symbol the neutral core already exports (`FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE` at a new read
+  site) is not new technology knowledge. `AGENTS.md` permits naming an `axis` value as an opaque
+  token; the prohibition is on a file extension, keyword, grammar, compiler argument, lint rule
+  id, directive spelling, control-file syntax, naming convention or diagnostic format.
+- **A genuine addition → withdraw it, do not regenerate.** A RUNBOOK recovery entry spelled two
+  parser distribution names that `run_workflow.py`'s `REQUIRED_PYTHON_MODULES` already owns and
+  prints. Pointing at the refusal was both the neutral spelling and the better instruction — one
+  owner, no copy to go stale.
+- **Do NOT rename an identifier to get under the counter.** A reviewer will observe that some of
+  the growth was "avoidable by spelling" (a local alias bound once instead of a long name imported
+  twice). Reject that: it satisfies the instrument and not the rule, and it is the same habit
+  `docs/BACKEND_BOUNDARY.md` §Enforcement warns the ratchet itself can teach — regenerating
+  without reading the rule. Record the debt and the reasoning instead, so the operator can
+  overturn it.
+
+**A ratchet failure is also a false KILL in a mutation sweep.** Deleting an identifier to test
+something else moves the count, so the ratchet fails and the mutant reads as killed for a reason
+that has nothing to do with behaviour. On TODO:269 that hid an exit-code mapping with no
+behavioural witness at all. When a mutant dies, read WHICH row died.
 
 ## Mutation check
 

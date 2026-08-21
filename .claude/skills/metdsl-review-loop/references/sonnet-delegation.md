@@ -1,6 +1,32 @@
 # Delegating verifiable review work to sonnet: the experiment log
 
-Four data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+Five data points. SKILL.md carries the operational conclusion; this is the evidence, newest first.
+
+## Data point 5 (PR #88 / TODO:269, round 1) — the axis paid, and it pushed back on a false premise
+
+**Run as the delegated mechanical-recomputation axis** (the conclusion from data point 4), in
+parallel with two opus reviewers on other axes. 133k tok / 11 min, 50 tool uses.
+
+| | sonnet (mechanical) | opus (correctness+doc-truth) |
+|---|---|---|
+| real findings | 1 | 4 |
+| of which unique | 0 | 3 |
+| reported FALSE | 0 | 0 |
+
+**The one finding was the ruff count** (ledger said 3/1/7/2, actual 1/0/6/1), found independently
+by the opus reviewer as well — so on this branch the axis was **replaceable, not additive**. It
+also independently reproduced the mutation-check ledger and the two `git worktree` location
+artifacts, which is the cheap half of "verify the author's numbers" and freed the opus slots.
+
+**The result worth keeping is a different one: it refused a false premise I had put in its
+prompt.** I told it "the diff claims there are exactly 8 such readers"; that number came from my
+planning document, not the diff, which says 6. Rather than confabulating an 8-reader census it
+ran its own, reported 6, and wrote that it **could not find the claim I attributed to the diff**.
+That is the behaviour a mechanical axis needs most, and it is worth prompting for explicitly:
+**tell it to report claims it cannot locate rather than accounting for them.**
+
+Operationally: unchanged. Keep it as the mechanical axis, expect overlap rather than novelty, and
+do not read overlap as "no point" — the point is the freed up-model slot.
 
 ## Data point 4 (PR #72) — the confound resolved
 

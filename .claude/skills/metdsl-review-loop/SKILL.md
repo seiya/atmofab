@@ -201,7 +201,16 @@ Test-file hunks are excluded by default (`--include-tests`
   - **a test that reproduces the wiring does not observe the wiring**: if it does not call the
     production entry point, it pins "the argument is forwarded", not "that value is chosen" (issue
     #63). **And that shape lies in its docstring easily** — grep the body for the function names
-    the docstring claims to drive
+    the docstring claims to drive. On TODO:269 a row named
+    `test_the_cli_answers_with_a_dedicated_exit_code`, whose comment said "this runs `main` in a
+    real interpreter", drove a gate helper and printed a module CONSTANT; `main` was never
+    entered, and the exit code it was named for had no witness at all
+  - **A CLASS docstring goes stale as rows are appended to the class, and nobody re-reads it.**
+    Distinct from the row above: the prose was TRUE when written and became false by addition. On
+    TODO:269 a class docstring said "these drive the REAL CLI in a REAL subprocess" when all its
+    rows did; two rows added later read module attributes, one of them calling `main` in-process
+    — **in a class I had created one round after renaming a sibling for exactly this**. When you
+    append a row to an existing class, re-read the class docstring as part of the append
   - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
     together, a missing element goes unnoticed
   - **a test can pass because of the SUITE'S OWN ENVIRONMENT.** Distinct from "two paths to the
@@ -235,6 +244,14 @@ Test-file hunks are excluded by default (`--include-tests`
     newest and least witnessed
   - **one test per occurrence of a rule, not per rule** (PR #53: the same line in three gates, two
     of them surviving as reachable fail-opens)
+  - **The sharpest trigger for that is a TWIN.** When a change touches one of a matched pair —
+    two exit codes, two markers, two gates, the two halves of a symmetry — **the witness you build
+    for one is the specification for the other, and building only one is the likeliest miss you
+    will make.** On TODO:269 I built a real-subprocess witness for exit code 4 and none for its
+    twin exit code 3, in the same commits, while adding three readers keyed on rc 3 plus a
+    `--help` line and a RUNBOOK entry: mutating rc 3's mapping to `return 1` left **1555 rows
+    green**, and three review rounds walked past it. The check is mechanical — **list the pair,
+    then list your witnesses, and compare the two lists** before handing over
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
     version with one level of syntactic nesting (PR #53: the round after the flat version was
     fixed, the nested version ate the fix)
@@ -245,6 +262,26 @@ Test-file hunks are excluded by default (`--include-tests`
    errors appeared on that one branch, the last of them in the PR body's disclosure section. What
    worked was **a script that substitutes the numbers in TODO / docs from the measurement
    artifacts**, run and diffed. Leave no path where a human transcribes.
+
+   **"Re-measure at the end" fails outright once a review loop starts, because the end keeps
+   moving.** On TODO:269 one paragraph rotted **three times, twice inside a commit whose stated
+   purpose was to restate it** — each restatement was correct when written and was falsified by
+   the next round's own fix commits, and reviewers reported the same two numbers in three
+   consecutive rounds. Note the shape: a fix commit adds a test or a hunk, so the very act of
+   answering a review finding invalidates the ledger that describes the branch.
+
+   - **The form is the bug, not the numbers. Write every measurement as a HISTORICAL RECORD that
+     names the commit it was taken at** ("at `7c6d187`: 17 hunks, 10 killed …"). A record cannot
+     go stale; a claim about the present can, and will, once per round. A reader who needs today's
+     figure runs the command.
+   - **State the PROPERTY the count stands for, next to the count** ("every behavioural hunk is
+     pinned"). That is the part the reader needs and the part that does not move — and it is what
+     survives when the number is obsolete anyway.
+   - **A count with no unit is not reproducible.** "14 hunks" was reported as 19 and as 16 by two
+     reviewers before anyone noticed the figure depends on the diff CONTEXT WIDTH (`-U0` / `-U3` /
+     `-U5` gave 21 / 17 / 15 on one range). Name the width, the command, and the exclusions.
+   - **Recording that a number "was right when written" does not stop the next rot** — that
+     sentence itself was written twice and rotted twice. Only changing the form stopped it.
 
 3. **Run the verification set** and record the measurements. The commands are in
    `.claude/skills/metdsl-enforcement-change/references/verification.md` (suite baseline, ruff
@@ -613,7 +650,8 @@ it** — do not add rounds waiting for it.
 relaunch a Codex you have no budget for**. Use Codex as one independent pass and finish once you
 have classified the result. Clean did come back once (PR #67), and **the same
 round's two subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror — so
-clean was not evidence of convergence**. Issue #63 is the opposite data point: both completed runs
+clean was not evidence of convergence**. TODO:269 is the second such data point: Codex returned
+clean in round 2, and **round 3 found a mechanism with no behavioural witness at all**. Issue #63 is the opposite data point: both completed runs
 returned real defects, both in subagent blind spots.
 
 **Practical proxies for "the remainder is bounded"** (so you can say it on the spot, not in
