@@ -1,5 +1,20 @@
-# Local planning notes (not tracked)
+# The operator's own planning notes. UNANCHORED deliberately, and it has two effects
+# rather than one: it hides a top-level `plans/`, and it is also what keeps the
+# interactive CLI's own `.claude/plans/` out of the tree. Anchoring this pattern would
+# silently start tracking the second.
 plans/
+
+# The operator's personal permission and hook overrides for their own interactive session.
+# `.claude/settings.json` beside it IS committed: a permission or hook the workflow depends
+# on belongs in a file every checkout carries. This one is per-operator scratch, and a
+# checkout that tracked it would make one machine's ad-hoc grants everyone's.
+.claude/settings.local.json
+
+# Scratch checkouts the interactive CLI creates for isolated work. Machine-local by
+# construction. Listed here rather than in `.git/info/exclude`, which is where this
+# repository was carrying it: that file is per-clone, so every fresh clone saw the
+# directory as untracked.
+.claude/worktrees/
 
 # The operator's own leaf-LLM configuration: the file run_workflow.py loads when nobody
 # passes --llm-config. Which model runs which leaf is a local decision, so tracking it would
