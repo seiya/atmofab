@@ -8228,6 +8228,13 @@ clean:
                 ["python3", "tools/validate_pipeline_semantics.py", "--stage", "post_build",
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
+            # NO terminal-exit-code branch here, unlike the post_generate / post_execute /
+            # pre_judge gates. The post_build stage runs only the Makefile trio
+            # (`_validate_fortran_makefile_src_dir` + the two `test`-target rules), which reads
+            # source through the regex/logical-line helpers and never through the tree-sitter
+            # front end, and it does not reach the stale-IR emit site at all — so neither rc 3
+            # nor rc 4 can arrive. Every non-zero code here is a Makefile violation the leaf
+            # repairs by re-authoring, which is what the warm route below assumes.
             if gate.returncode != 0:
                 binary_meta.update({
                     "verification_status": "fail", "status": "fail",
@@ -8902,6 +8909,12 @@ clean:
             proc = subprocess.run(
                 cmd, cwd=self.repo_root, env=self.env, text=True,
                 capture_output=True, check=False)
+            # NO terminal-exit-code branch here either, for a second reason on top of the
+            # post_build one. `--stage compile` reads §5.1 and the IR through the regex-only
+            # signature helpers, never the tree-sitter front end, and the stale-IR emit site is
+            # not on its call graph — so neither rc 3 nor rc 4 arrives. And the routing would be
+            # wrong even if one did: at Compile the IR IS the artifact under repair, so a stale
+            # or drifted IR is exactly what a warm Compile retry is for, not a terminal verdict.
             if proc.returncode != 0:
                 status = "fail"
                 failure_category = "compile_static_violation"
