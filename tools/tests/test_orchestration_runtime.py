@@ -34735,6 +34735,53 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ClaudeLeafToolAllowlistTests(unittest.TestCase):
+    """The tool allowlist an agentic claude leaf is launched with (issue #71).
+
+    What is pinned here is the DERIVATION, not the membership: `CLAUDE_LEAF_TOOLS` must be
+    exactly the `PreToolUse` matcher coverage. Decoupling the two — writing the six names
+    out as their own literal — is the mutation this class exists to kill, because it is the
+    edit that lets a tool be added to a leaf without a hook that can judge it, which is the
+    entire hole issue #71 closes. The coverage table's own membership is pinned against the
+    committed leaf configuration by `ClaudeLeafConfigProbeTests`.
+    """
+
+    def test_the_allowlist_is_the_hook_matcher_coverage(self) -> None:
+        from tools.orchestration_runtime import (
+            CLAUDE_LEAF_TOOLS, _CLAUDE_HOOK_MATCHER_COVERAGE)
+        self.assertEqual(set(CLAUDE_LEAF_TOOLS),
+                         _CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])
+        # SORTED and deduplicated: the value is comma-joined onto the argv and the roster
+        # probe reproduces that argv, so an unstable order would make the two disagree for
+        # no reason a reader could see.
+        self.assertEqual(list(CLAUDE_LEAF_TOOLS), sorted(set(CLAUDE_LEAF_TOOLS)))
+        # No member may be empty or carry the separator, or the joined value would name a
+        # tool nobody declared (and an empty member spells "no tools" to the CLI).
+        for name in CLAUDE_LEAF_TOOLS:
+            self.assertTrue(name.strip(), repr(name))
+            self.assertNotIn(",", name)
+
+    def test_the_absent_seam_is_a_subset_and_required_is_the_remainder(self) -> None:
+        """`CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` is an escape hatch for a CLI that stops
+        offering a tool this repository still hooks. It may only ever SUBTRACT from the
+        declared set — a name that is not in `CLAUDE_LEAF_TOOLS` would silently excuse the
+        roster check from a tool nobody asked for.
+
+        MEASURED EMPTY on CLI 2.1.238: all six load when `--tools` names them. The
+        emptiness is asserted so that adding a name is a deliberate, visible edit rather
+        than a quiet loosening of the roster comparison.
+        """
+        from tools.orchestration_runtime import (
+            CLAUDE_LEAF_REQUIRED_TOOLS, CLAUDE_LEAF_TOOLS, CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI)
+        self.assertLessEqual(set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI), set(CLAUDE_LEAF_TOOLS))
+        self.assertEqual(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI, ())
+        self.assertEqual(set(CLAUDE_LEAF_REQUIRED_TOOLS),
+                         set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
+        # Non-empty, or the roster check would require nothing at all and a leaf launched
+        # with no working tools would pass preflight.
+        self.assertTrue(CLAUDE_LEAF_REQUIRED_TOOLS)
+
+
 class ClaudeLeafConfigProbeTests(unittest.TestCase):
     """The structural gate on the committed leaf configuration (issue #63).
 

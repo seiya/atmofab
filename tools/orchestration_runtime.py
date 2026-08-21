@@ -16596,6 +16596,58 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
     "Stop": {"anything"},
 }
 
+# The COMPLETE set of built-in tools an agentic claude leaf is launched with, passed as
+# `--tools` (issue #71). DERIVED from the `PreToolUse` coverage above rather than listed:
+# a tool the read-boundary hook cannot judge is a hole in that boundary, so the only way to
+# put a new built-in in a leaf's hands is to add a matcher for it first — and the matcher
+# side is already gated by `_probe_claude_leaf_config`.
+#
+# An ALLOWLIST, replacing the `Task,WebFetch,WebSearch,NotebookEdit` denylist that stood
+# here until issue #71. The denylist enumerated names over a roster the VENDOR grows: at the
+# time it was written it named every built-in the hook could not judge, and by CLI 2.1.238 it
+# named four of nineteen. MEASURED on 2.1.238 with an unbilled request capture, the denylist
+# argv put these fifteen unjudged built-ins in a leaf's hands — `CronCreate`, `CronDelete`,
+# `CronList`, `DesignSync`, `EnterWorktree`, `ExitWorktree`, `ListAgents`, `Monitor`,
+# `PushNotification`, `ReportFindings`, `ScheduleWakeup`, `SendMessage`, `TaskOutput`,
+# `TaskStop`, `Workflow` — several of which defeat the denylist's own stated reasons
+# (`Workflow` orchestrates subagents, which is why `Task` was denied; `Monitor` runs a
+# long-lived script no matcher sees; `EnterWorktree` moves the working directory the whole
+# read boundary is spelled against). Every CLI release could add another, silently. Under an
+# allowlist a new built-in arrives OUTSIDE the leaf, and `_probe_claude_leaf_tool_roster`
+# fails preflight until it is deliberately classified.
+#
+# MEASURED on CLI 2.1.238 (unbilled capture, issue #71 step 0), because three parts of this
+# are not inferable from `--help`:
+#   * `--tools` IS honoured in headless `-p`: the roster collapses to exactly the named set.
+#   * MCP tools SURVIVE it — `mcp__build-runtime__*` stays in the roster with no `mcp__` entry
+#     in the value, so the value carries built-ins only.
+#   * An unknown name is SILENTLY IGNORED, not an error. The allowlist can therefore shrink
+#     without a word if a future CLI renames a tool, which is the second half of what
+#     `_probe_claude_leaf_tool_roster` checks (a MISSING member fails exactly as an extra one
+#     does).
+# `--tools` and `--disallowedTools` compose as an intersection (also measured), so the
+# denylist is redundant under this value rather than merely superseded.
+#
+# A pure leaf passes `--tools ""` (`pure_leaf.py`) and is unaffected by any of this.
+CLAUDE_LEAF_TOOLS = tuple(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))
+
+# Members of `CLAUDE_LEAF_TOOLS` the installed CLI does not actually put in the roster when
+# asked for them. MEASURED EMPTY on CLI 2.1.238: all six load when named — `Grep` and `Glob`
+# are absent from the CLI's DEFAULT roster but present as soon as `--tools` names them.
+#
+# The seam exists because the roster check compares in BOTH directions, and a CLI that drops
+# a tool this repository still hooks would otherwise leave preflight failing with no honest
+# way to say so: shrinking `CLAUDE_LEAF_TOOLS` is the wrong repair (the hook still covers the
+# tool, and the coverage set is what the leaf's tool set is derived from). Adding a name here
+# is a DELIBERATE classification — record the CLI version that dropped it.
+CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI: tuple[str, ...] = ()
+
+# What the roster must actually contain. Computed, never transcribed: `_classify_claude_leaf_roster`
+# requires exactly this set and nothing else among the non-MCP names.
+CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
+    sorted(set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
+)
+
 
 # The ONLY paths inside the private home a leaf may write, MEASURED on CLI 2.1.235
 # by running an agentic (tool-using) leaf against a fresh home and diffing the tree:

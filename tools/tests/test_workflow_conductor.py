@@ -7191,37 +7191,69 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(), ["mywrap", "--model", "Z", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
         self.assertEqual(c2.leaf_command(), ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(self._c(backend="claude").leaf_command(), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
         self.assertEqual(
             self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(),
             ["codex", "exec", "--model", "gpt-5.6-sol", "--dangerously-bypass-hook-trust", "--json", "-"],
         )
 
-    def test_claude_agentic_leaf_disallows_unvalidated_tools(self) -> None:
+    def test_claude_agentic_leaf_is_launched_with_only_hook_validated_tools(self) -> None:
         """The read boundary is hook-enforced, and the hook can only validate a tool
-        whose payload names what it touches. Tools outside that vocabulary must be
-        absent at launch rather than merely discouraged in the prompt."""
-        argv = self._c(backend="claude").leaf_command()
-        self.assertIn("--disallowedTools", argv)
-        value = argv[argv.index("--disallowedTools") + 1]
-        self.assertEqual(set(value.split(",")), {"Task", "WebFetch", "WebSearch", "NotebookEdit"})
-        self.assertEqual(value, wc.CLAUDE_LEAF_DISALLOWED_TOOLS)
-        # The flag is a leaf-launch property, not a codex one.
-        codex_argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command()
-        self.assertNotIn("--disallowedTools", codex_argv)
+        whose payload names what it touches. Since issue #71 the leaf therefore gets an
+        ALLOWLIST: the tools the `PreToolUse` matchers cover, and nothing else.
 
-    def test_pure_claude_leaf_has_no_disallowed_tools_flag(self) -> None:
-        """A pure leaf already passes `--tools ""` — every tool is gone, so an
-        exclusion list would be redundant argv on the one launch path whose argv
-        is pinned byte-for-byte."""
-        argv = self._c(backend="claude").leaf_command(pure=True)
-        self.assertNotIn("--disallowedTools", argv)
+        The expected set is COMPUTED from the matcher coverage rather than written out
+        a second time. A literal here would go stale in the safe-looking direction —
+        it would keep passing while a matcher was deleted from the coverage table (the
+        table itself is pinned to the committed leaf configuration by
+        `ClaudeLeafConfigProbeTests`, which is the independent source). What is pinned
+        here is the DERIVATION: the argv value is exactly the hook-covered set.
+
+        The full-argv goldens above carry the literal `Bash,Edit,Glob,Grep,Read,Write`,
+        so the two together are a cross-check: a change to the coverage table that is
+        not intended to change what a leaf can do fails there.
+        """
+        from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
+        argv = self._c(backend="claude").leaf_command()
         self.assertIn("--tools", argv)
+        value = argv[argv.index("--tools") + 1]
+        self.assertEqual(set(value.split(",")), _CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])
+        # ORDER and SPELLING, so the value the roster probe reproduces is one string:
+        # comma-joined with no spaces, sorted, no empty member.
+        self.assertEqual(value, ",".join(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])))
+        # The denylist it replaced must be gone from EVERY argv, not merely unused: a
+        # `--disallowedTools` left behind would subtract from the allowlist (the two
+        # compose as an intersection, measured on CLI 2.1.238) and silently disarm a
+        # tool the read boundary assumes the leaf has.
+        c = self._c(backend="claude")
+        for other in (c.leaf_command(),
+                      c.leaf_command(pure=True),
+                      self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command()):
+            self.assertNotIn("--disallowedTools", other)
+        self.assertFalse(hasattr(wc, "CLAUDE_LEAF_DISALLOWED_TOOLS"))
+        # The flag is a claude leaf-launch property, not a codex one.
+        codex_argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command()
+        self.assertNotIn("--tools", codex_argv)
+
+    def test_pure_and_agentic_claude_leaves_carry_different_tools_values(self) -> None:
+        """Both branches now pass `--tools`, and the VALUES are what separate them.
+
+        A pure leaf passes the empty string — the CLI's spelling for "no tools at all" —
+        and an agentic one a non-empty list. Asserting only that the flag is present
+        would be satisfied by either branch emitting the other's value, which is a
+        one-token edit that either strips an agentic leaf of the tools its skill needs
+        or hands a pure leaf the full hook-covered set.
+        """
+        c = self._c(backend="claude")
+        pure = c.leaf_command(pure=True)
+        agentic = c.leaf_command()
+        self.assertEqual(pure[pure.index("--tools") + 1], "")
+        self.assertNotEqual(agentic[agentic.index("--tools") + 1], "")
 
     def test_claude_agentic_leaf_argv_closes_user_setting_sources(self) -> None:
         """Issue #63 step 1. An agentic claude leaf used to inherit the OPERATOR's
@@ -7270,7 +7302,7 @@ class LeafSpawnTest(unittest.TestCase):
         # option token", which is a property of the argv, not of the flag's arity. Leaving it
         # out left a hole — a bare word inserted after `project` was caught only by the argv
         # equality goldens, never by the guard written for exactly that hazard.
-        variadic = ("--setting-sources", "--mcp-config", "--disallowedTools", "--tools")
+        variadic = ("--setting-sources", "--mcp-config", "--tools")
         c = self._c(backend="claude")
         argvs = [c.leaf_command(),
                  c.leaf_command(session_id="a"),
@@ -7341,7 +7373,7 @@ class LeafSpawnTest(unittest.TestCase):
         c = self._c(backend="claude")
         self.assertEqual(
             c.leaf_command(session_id="arid-1"),
-            ["claude", "--session-id", "arid-1", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
+            ["claude", "--session-id", "arid-1", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"],
         )
         # codex has no per-session flag; session_id is ignored.
         self.assertEqual(
@@ -7354,7 +7386,7 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(
             c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
             ["claude", "--resume", "producer-arid", "--fork-session",
-             "--session-id", "new-arid", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"],
+             "--session-id", "new-arid", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"],
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
@@ -17533,7 +17565,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         DECLARE a model and an effort, so both reach the CLI."""
         c = self._configured("claude")
         self.assertEqual(c.leaf_command(c.entry_for("validate", "judge")),
-                         ["claude", "--model", "opus", "--effort", "medium", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--model", "opus", "--effort", "medium", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
         k = self._configured("codex")
         judge = k.leaf_command(k.entry_for("validate", "judge"))
         self.assertEqual(judge[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
@@ -17550,10 +17582,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
-        self.assertEqual(judge, ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(judge, ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
         # ...and only that leaf.
         self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")),
-                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
 
     def test_a_model_declared_at_defaults_reaches_every_leaf(self) -> None:
         c = wc.Conductor(
@@ -17562,7 +17594,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "defaults:\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
-                             ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
+                             ["claude", "--model", "haiku", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"], msg=f"{phase}.{substep}")
 
     def test_a_configured_effort_reaches_each_providers_own_surface(self) -> None:
         """The three surfaces are genuinely different — a claude flag, a codex config
@@ -17575,7 +17607,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--effort", "xhigh", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--effort", "xhigh", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
         judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertIn('model_reasoning_effort="ultra"', judge)
         # `--config`, the spelling `CODEX_EXEC_RESUME_REQUIRED_FLAGS` certifies by name.
@@ -17602,7 +17634,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=Path("/tmp/repo"), orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
-                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+                         ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
 
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
@@ -17617,7 +17649,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
-        self.assertEqual(c.leaf_command(entry), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--disallowedTools", "Task,WebFetch,WebSearch,NotebookEdit", "--output-format", "json", "-p"])
+        self.assertEqual(c.leaf_command(entry), ["claude", "--setting-sources", "user", "--strict-mcp-config", "--mcp-config", ".mcp.json", "--disable-slash-commands", "--tools", "Bash,Edit,Glob,Grep,Read,Write", "--output-format", "json", "-p"])
 
     # --- capability predicates replace the backend tests --------------------------------
 
@@ -17781,6 +17813,11 @@ class LeafEntryThreadingTests(unittest.TestCase):
         agentic = self._record_launch_response(
             c, "arid-1", {}, c.entry_for("generate", "generate"))
         self.assertEqual(agentic["claude_setting_sources"], "user")
+        # WHICH tools the leaf came up with (issue #71). Computed from the coverage table,
+        # not transcribed, for the same reason the digest below is computed.
+        from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
+        self.assertEqual(agentic["claude_tools"],
+                         [",".join(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))])
         self.assertEqual(agentic["mcp_config"],
                          [{"ref": ".mcp.json",
                            "sha256": hashlib.sha256(data).hexdigest()}])
@@ -17789,6 +17826,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         codex = self._record_launch_response(
             c, "arid-2", {}, c.entry_for("validate", "judge"))
         self.assertNotIn("claude_setting_sources", codex)
+        self.assertNotIn("claude_tools", codex)
         self.assertNotIn("mcp_config", codex)
 
         # A PURE claude leaf likewise: `pure_leaf_flags` carries no `--setting-sources` and
@@ -17800,6 +17838,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
             c.entry_for("generate", "generate"))
         self.assertNotIn("claude_setting_sources", pure)
         self.assertNotIn("mcp_config", pure)
+        # `--tools` IS on the pure argv, with the empty value, and the record says so: the
+        # field distinguishes "launched with no tools" from "not a claude CLI leaf at all",
+        # which the codex assertion above is the other half of.
+        self.assertEqual(pure["claude_tools"], [""])
 
         # An HTTP leaf launches NO CLI and has no argv at all — `leaf_command` refuses a
         # non-spawnable provider outright, which `spawn_leaf` avoids by returning on the same
@@ -18453,7 +18495,8 @@ class AgenticEnvelopeUnwrapTests(unittest.TestCase):
     channel and several consumers only work on the model's plain text.
 
     The envelope bytes below are a REAL capture (`claude -p --disallowedTools … --output-format
-    json`, 2026-08-07), not a hand-built shape: key order, the `[1m]`-suffixed `modelUsage` key,
+    json`, 2026-08-07 — that argv's tool flag has since become `--tools`, issue #71, which does
+    not bear on the envelope's shape), not a hand-built shape: key order, the `[1m]`-suffixed `modelUsage` key,
     the absent top-level `model`, and the two-model accounting are all as the CLI writes them.
     """
 
