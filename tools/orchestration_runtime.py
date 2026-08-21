@@ -16605,9 +16605,10 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 #
 # An ALLOWLIST, replacing the `Task,WebFetch,WebSearch,NotebookEdit` denylist that stood
 # here until issue #71. The denylist enumerated names over a roster the VENDOR grows: at the
-# time it was written it named every built-in the hook could not judge, and by CLI 2.1.238 it
-# named four of nineteen. MEASURED on 2.1.238 with an unbilled request capture, the denylist
-# argv put these fifteen unjudged built-ins in a leaf's hands — `CronCreate`, `CronDelete`,
+# time it was written it named every built-in the hook could not judge, and by CLI 2.1.238
+# it removed four names from a roster of twenty-three, leaving nineteen of which the
+# `PreToolUse` matchers judge four. MEASURED on 2.1.238 with an unbilled request capture,
+# the denylist argv put these fifteen unjudged built-ins in a leaf's hands — `CronCreate`, `CronDelete`,
 # `CronList`, `DesignSync`, `EnterWorktree`, `ExitWorktree`, `ListAgents`, `Monitor`,
 # `PushNotification`, `ReportFindings`, `ScheduleWakeup`, `SendMessage`, `TaskOutput`,
 # `TaskStop`, `Workflow` — several of which defeat the denylist's own stated reasons
@@ -16622,12 +16623,27 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 #   * `--tools` IS honoured in headless `-p`: the roster collapses to exactly the named set.
 #   * MCP tools SURVIVE it — `mcp__build-runtime__*` stays in the roster with no `mcp__` entry
 #     in the value, so the value carries built-ins only.
+#   * The vendor RENAMES built-ins: what the denylist called `Task` the 2.1.238 roster calls
+#     `Agent` (both spellings still remove it, measured). A denylist that named the tool by
+#     its old name after a rename would have removed nothing at all, silently.
 #   * An unknown name is SILENTLY IGNORED, not an error. The allowlist can therefore shrink
 #     without a word if a future CLI renames a tool, which is the second half of what
 #     `_probe_claude_leaf_tool_roster` checks (a MISSING member fails exactly as an extra one
 #     does).
 # `--tools` and `--disallowedTools` compose as an intersection (also measured), so the
 # denylist is redundant under this value rather than merely superseded.
+#
+# WHAT A LEAF GAINS, not only what it loses — the framing "fifteen removed" is half of it.
+# MEASURED on 2.1.238: `Grep` and `Glob` are absent from the CLI's DEFAULT roster, so the
+# denylist argv did not give a leaf either one, and this allowlist does. The `PreToolUse`
+# matchers for both long predate that (issue #42), so the CLI, not this repository, is what
+# had made them dormant — but the consequence is live either way. `Grep`/`Glob` `path` is
+# validated fail-closed (an absent one is validated as the repository root and therefore
+# blocks), while their `pattern` is NOT: `tools/hooks/cli.py` records that an absolute or
+# `../` pattern reaches outside the validated root, as issue #42's documented residue. That
+# residue applies whenever a leaf holds these tools, which since this change it does.
+# TODO.md carries the follow-up; it is not closed here, because narrowing a second
+# enforcement layer is a different change from choosing which tools a leaf gets.
 #
 # A pure leaf passes `--tools ""` (`pure_leaf.py`) and is unaffected by any of this.
 CLAUDE_LEAF_TOOLS = tuple(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))
@@ -16753,9 +16769,14 @@ def claude_leaf_roster_probe_argv(command_argv: Sequence[str]) -> list[str]:
     actually launches.
 
     Per-launch flags a leaf may additionally carry — `--model`, `--effort`, `--session-id`,
-    `--resume`/`--fork-session` — are absent by construction: `leaf_command()`'s default
-    entry declares no model, and none of them names a tool. That is a claim about the
-    argv, so the equality test is what holds it, not this sentence.
+    `--resume`/`--fork-session` — are absent HERE by construction: `leaf_command()`'s
+    default entry declares no model. The sync test drives each of those variants and
+    requires it to differ from this argv by EXACTLY its own flags, so a flag that started
+    moving the tool set shows up as a token the comparison does not account for. (This
+    sentence credited the test with that before the test exercised any of them — it called
+    `leaf_command()` with no arguments, twice.) That none of them MOVES the roster is a
+    separate, measured fact: `--model haiku` and `--effort xhigh` leave it unchanged on
+    2.1.238, and a session resumed with `--resume … --fork-session` still honours `--tools`.
     """
     argv = list(command_argv)
     if not argv:
@@ -16906,9 +16927,12 @@ def _classify_claude_leaf_roster(
     undeclared_mcp: list[str] = []
     declared = set(declared_servers)
     for name in mcp_names:
-        remainder = name[len("mcp__"):]
-        server = remainder.split("__", 1)[0]
-        if server not in declared:
+        # Matched against the DECLARED names by prefix, rather than by splitting the tool
+        # name on its first `__`. The CLI's spelling is `mcp__<server>__<tool>` and a
+        # server name may itself contain `__`, which the split reads as a shorter server
+        # nobody declared — a refusal aimed at the wrong thing. Asking "does any declared
+        # server's prefix start this name" cannot misread it.
+        if not any(name.startswith(f"mcp__{server}__") for server in declared):
             undeclared_mcp.append(name)
     return {
         "builtins": sorted(builtins),
@@ -17011,7 +17035,13 @@ def _probe_claude_leaf_tool_roster(
                 return {"name": name, "pass": False,
                         "detail": (f"the roster probe could not run {argv[0]!r} "
                                    f"({type(exc).__name__}: {exc}){version_note}")}
-            snapshot = [list(roster) for roster in captured]
+    # AFTER the context manager, deliberately. Reading `captured` inside it took the list
+    # while the server was still accepting, without the handler's lock: a request in
+    # flight would be raced or dropped, and a DROPPED capture is a tool nobody classified
+    # — the fail-OPEN direction this check refuses everywhere else. `shutdown()` has
+    # returned by here and its thread is joined, so no handler can still be appending and
+    # the read needs no lock.
+    snapshot = [list(roster) for roster in captured]
 
     if not snapshot:
         # The CLI ran and sent no request carrying tools. That is not "no tools" — it is

@@ -34801,12 +34801,16 @@ if __name__ == "__main__":
 class ClaudeLeafToolAllowlistTests(unittest.TestCase):
     """The tool allowlist an agentic claude leaf is launched with (issue #71).
 
-    What is pinned here is the DERIVATION, not the membership: `CLAUDE_LEAF_TOOLS` must be
-    exactly the `PreToolUse` matcher coverage. Decoupling the two — writing the six names
-    out as their own literal — is the mutation this class exists to kill, because it is the
-    edit that lets a tool be added to a leaf without a hook that can judge it, which is the
-    entire hole issue #71 closes. The coverage table's own membership is pinned against the
-    committed leaf configuration by `ClaudeLeafConfigProbeTests`.
+    What is pinned here is that the two sets AGREE, in both directions, at every moment the
+    suite runs. That is what stops a tool being added to a leaf without a hook that can
+    judge it, which is the hole issue #71 closes. The coverage table's own membership is
+    pinned against the committed leaf configuration by `ClaudeLeafConfigProbeTests`.
+
+    What it does NOT catch, stated because the first version of this docstring claimed it
+    did: replacing the derivation with a LITERAL of today's six names survives (measured),
+    since an equality of sets is satisfied by any spelling with the same members. The value
+    is in the next divergence, not in the spelling — a literal that stayed behind while the
+    coverage table moved fails here on the following edit, in whichever direction it went.
     """
 
     def test_the_allowlist_is_the_hook_matcher_coverage(self) -> None:
@@ -34900,13 +34904,61 @@ class ClaudeRosterCaptureServerTests(unittest.TestCase):
             self._post(base_url, {"tools": []})
             self.assertEqual(captured, [])
 
-    def test_the_listening_socket_is_released_on_exit(self) -> None:
-        """Preflight runs in one process and may probe more than once; a leaked socket is
-        a port the next probe cannot bind."""
-        import socket
+    def test_the_response_declares_its_length(self) -> None:
+        """`Content-Length` is load-bearing, and its absence has an operator-visible cost.
+
+        The connection is HTTP/1.1 keep-alive, so without an exact length the client waits
+        for a close the threading server does not make. MEASURED against the real CLI:
+        with that one `send_header` deleted, the probe ran to its TIMEOUT and returned
+        `pass=False` "unmeasured" — i.e. EVERY run refused, on a machine where nothing is
+        wrong. Nothing pinned it (measured: the deletion left the whole file green), which
+        is why this asserts the header rather than only the parsed body.
+        """
+        import urllib.error
+        import urllib.request
         from tools.orchestration_runtime import _claude_roster_capture_server
         with _claude_roster_capture_server() as (base_url, _captured):
-            port = int(base_url.rsplit(":", 1)[1])
+            for document in ({"tools": [{"name": "Bash"}]}, {"messages": []}):
+                request = urllib.request.Request(
+                    f"{base_url}/v1/messages", data=json.dumps(document).encode("utf-8"),
+                    headers={"Content-Type": "application/json"})
+                try:
+                    response = urllib.request.urlopen(request, timeout=10)
+                    headers, body = response.headers, response.read()
+                except urllib.error.HTTPError as exc:
+                    headers, body = exc.headers, exc.read()
+                self.assertEqual(headers.get("Content-Length"), str(len(body)), document)
+
+    def test_the_listening_socket_is_released_on_exit(self) -> None:
+        """Preflight runs in one process and may probe more than once; a leaked socket is
+        a port the next probe cannot bind.
+
+        The obvious version of this test — exit the `with`, then rebind the port — passes
+        WITHOUT `server_close()` (measured: deleting that line left the whole file green).
+        Exiting the generator drops the last reference to the server, so CPython's socket
+        finaliser closes the fd whatever the context manager did, and the rebind succeeds
+        for a reason the test does not name.
+
+        Two things make the assertion about the MECHANISM instead. The spy WITNESSES the
+        call, so a deleted `server_close()` fails outright; and it keeps a strong
+        reference to the server, so the finaliser cannot be what frees the port when the
+        rebind below is attempted.
+        """
+        import http.server
+        import socket
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        closed: list[Any] = []
+        real_close = http.server.ThreadingHTTPServer.server_close
+
+        def spy(server):  # type: ignore[no-untyped-def]
+            closed.append(server)
+            real_close(server)
+
+        with mock.patch.object(http.server.ThreadingHTTPServer, "server_close", spy):
+            with _claude_roster_capture_server() as (base_url, _captured):
+                port = int(base_url.rsplit(":", 1)[1])
+        self.assertEqual(len(closed), 1, "server_close() was not called on exit")
         with socket.socket() as probe:
             probe.settimeout(5)
             probe.bind(("127.0.0.1", port))
@@ -34951,6 +35003,20 @@ class ClaudeLeafRosterClassificationTests(unittest.TestCase):
         self.assertNotIn("mcp__build-runtime__run_program", report["undeclared_mcp"])
         self.assertEqual(report["unclassified"], [])
 
+    def test_a_server_name_containing_the_separator_is_matched_whole(self) -> None:
+        """`mcp__<server>__<tool>` is matched against the DECLARED names by prefix.
+
+        Splitting the tool name on its first `__` reads `build__runtime` as the server
+        `build`, which nothing declared, and refuses a legitimate tool while naming the
+        wrong cause. Absent from this repository's corpus — the committed `.mcp.json`
+        declares `build-runtime` — but it is an over-refusal of correct work, which is the
+        error direction this repository keeps making.
+        """
+        report = self._classify(self._allowed() + ["mcp__build__runtime__run_linter"],
+                                servers=("build__runtime",))
+        self.assertEqual(report["undeclared_mcp"], [])
+        self.assertEqual(report["unclassified"], [])
+
     def test_a_tool_recorded_as_absent_on_the_cli_is_unclassified_when_present(self) -> None:
         """`CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` says "this CLI does not offer it". If the CLI
         then DOES offer it, the classification is stale and must fail rather than quietly
@@ -34964,11 +35030,25 @@ class ClaudeLeafRosterClassificationTests(unittest.TestCase):
         self.assertEqual(report["unclassified"], ["Grep"])
 
     def test_the_union_over_captures_is_what_is_classified(self) -> None:
-        """A name in ANY request is a name the leaf could have called, so a second capture
-        cannot launder the first."""
-        report = self._classify(self._allowed(), self._allowed() + ["Monitor"])
-        self.assertEqual(report["unclassified"], ["Monitor"])
-        self.assertEqual(report["captures"], 2)
+        """A name in ANY request is a name the leaf could have called, so a LATER capture
+        cannot launder an earlier one.
+
+        BOTH ORDERS, because one order does not pin the union. With the extra tool in the
+        LAST capture, `names = {...}` (last capture wins) keeps it and the assertion still
+        holds — measured: that mutant left the whole file green. The FIRST-capture case is
+        the one that fails under it, and it is also the realistic shape, since the CLI
+        sends its roster before anything the leaf does could change it.
+        """
+        for label, captures in (
+            ("extra in the first capture",
+             [self._allowed() + ["Monitor"], self._allowed()]),
+            ("extra in the last capture",
+             [self._allowed(), self._allowed() + ["Monitor"]]),
+        ):
+            with self.subTest(label):
+                report = self._classify(*captures)
+                self.assertEqual(report["unclassified"], ["Monitor"])
+                self.assertEqual(report["captures"], 2)
 
 
 class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
@@ -35094,6 +35174,30 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         check = _probe_claude_leaf_tool_roster("claude", None, runner)
         self.assertIsNone(check["pass"])
         self.assertIn("skipped", check["detail"])
+
+    def test_an_empty_command_fails_closed_rather_than_launching_nothing(self) -> None:
+        """Both spellings of "there is no CLI to probe" refuse.
+
+        Unreachable from production today — `probe_execution_platform` strips an empty
+        `agent_command` to the backend default before this is called — but the two guards
+        are written fail-closed, and neither had a witness. That matters more than the
+        reachability, because the wiring gates on `pass is not False`: a guard that
+        drifted to `pass=None` here would report a skip and LAUNCH.
+        """
+        from tools.orchestration_runtime import (
+            _probe_claude_leaf_tool_roster, claude_leaf_roster_probe_argv)
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched with an empty command")
+
+        with tempfile.TemporaryDirectory() as td:
+            check = _probe_claude_leaf_tool_roster("   ", self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("empty", check["detail"])
+        # The pure argv builder refuses outright rather than returning a flags-only argv
+        # that would run whatever `--setting-sources` resolves to as argv[0].
+        with self.assertRaises(ValueError):
+            claude_leaf_roster_probe_argv([])
 
     def test_the_launch_environment_cannot_reach_the_real_endpoint(self) -> None:
         """Asserted on the ENV the probe actually built, because every safety property of

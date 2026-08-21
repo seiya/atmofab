@@ -7280,6 +7280,30 @@ class LeafSpawnTest(unittest.TestCase):
         # for: everything after the prefix must still match.
         wrapped = self._c(backend="claude", llm_command="mywrap --model Z").leaf_command()
         self.assertEqual(claude_leaf_roster_probe_argv(["mywrap", "--model", "Z"]), wrapped)
+        # PER-LAUNCH FLAGS, which the docstring above says are "absent by construction".
+        # That sentence was credited to this test while the test called `leaf_command()`
+        # with no arguments twice, so nothing here observed them at all. Each variant must
+        # differ from the probe argv by EXACTLY its own flags — a leaf-launch flag that
+        # started moving the tool set would then show up as a token this comparison does
+        # not account for, rather than as a probe that certifies a different argv.
+        probe = claude_leaf_roster_probe_argv(["claude"])
+        base = self._c(backend="claude")
+        declared = wc.Conductor(
+            repo_root=Path("/tmp/repo"), orchestration_id="o",
+            orchestration_agent_run_id="O", env={},
+            llm_config=_config_from_text(
+                "defaults:\n  provider: claude_cli\n  model: haiku\n  effort: xhigh\n"))
+        for extra, argv in (
+            (["--session-id", "a"], base.leaf_command(session_id="a")),
+            (["--resume", "b", "--fork-session", "--session-id", "a"],
+             base.leaf_command(session_id="a", resume_session_id="b")),
+            (["--model", "haiku", "--effort", "xhigh"],
+             declared.leaf_command(declared.entry_for(None, None))),
+        ):
+            remainder = list(argv)
+            for token in extra:
+                remainder.remove(token)
+            self.assertEqual(remainder, probe, msg=argv)
 
     def test_claude_agentic_leaf_argv_closes_user_setting_sources(self) -> None:
         """Issue #63 step 1. An agentic claude leaf used to inherit the OPERATOR's
@@ -17847,6 +17871,23 @@ class LeafEntryThreadingTests(unittest.TestCase):
         self.assertEqual(agentic["mcp_config"],
                          [{"ref": ".mcp.json",
                            "sha256": hashlib.sha256(data).hexdigest()}])
+
+        # EVERY OCCURRENCE of the flag, not the first. A configured `command:` prefix may
+        # carry its own `--tools` — the case `_variadic_values`' docstring cites for
+        # `--mcp-config` — and the CLI UNIONS the two (measured on 2.1.238: a prefix naming
+        # `Monitor` puts `Monitor` in the roster; the conductor's flag does NOT win).
+        # Reading only the first occurrence would record the prefix's value as what the
+        # leaf came up with, a false record of the very fact this field carries. Measured:
+        # `argv[argv.index("--tools") + 1]` left the whole file green before this.
+        prefixed = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={}, llm_config=self._config_text(
+                "defaults:\n  provider: claude_cli\n"
+                "  command: claude --tools Monitor\n"))
+        prefixed_surface = self._record_launch_response(
+            prefixed, "arid-5", {}, prefixed.entry_for("generate", "generate"))
+        self.assertEqual(prefixed_surface["claude_tools"],
+                         ["Monitor", ",".join(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))])
 
         # A codex leaf launches through a different argv, which names neither flag.
         codex = self._record_launch_response(
