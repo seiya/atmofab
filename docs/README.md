@@ -15,6 +15,7 @@ This document set is organized so that "the reading order = the way to proceed".
 10. `BACKEND_BOUNDARY.md` (where knowledge of a concrete target-stack technology may live; canonical for the `axis` list)
 11. `PERFORMANCE_DIAGNOSTICS.md` (`perf.json` specification)
 12. `TUNING_WORKFLOW.md` (optional flow: operational guidance for performance exploration)
+13. `DEVELOPMENT.md` (developing this repository: fresh-machine setup, the configuration layers, where a development record belongs)
 
 ## Role-based Structure
 ### Core (direction / contracts)
@@ -36,6 +37,10 @@ This document set is organized so that "the reading order = the way to proceed".
 
 ### Optional flows (optional flows, outside the core workflow)
 - `TUNING_WORKFLOW.md` (Tune: implementation-discretion variant exploration / Promote: promotion to the official version)
+
+### Developing this repository (not part of the workflow)
+- `DEVELOPMENT.md`
+- `design/` (decisions about one named technology; a note states its `Status`)
 
 ## Operations Rules
 - When in doubt, return to the "invariant principles" in `SPEC.md`.

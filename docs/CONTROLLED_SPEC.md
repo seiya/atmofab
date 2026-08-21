@@ -4,6 +4,7 @@
 The `Controlled Spec` is the project's **sole physics-specification canonical source**, and must simultaneously satisfy the following.
 - It can be read and understood by a domain researcher.
 - It can be **deterministically** converted into the subroutine groups (`model`) that implement the computation task defined by each `spec`, and the `runner` responsible for input/output, execution, and judgment coordination.
+- It is **language-neutral throughout**. This is a requirement on the whole document, not on its published-surface block alone: every contract a `Controlled Spec` states — the published `operation_id` naming, the published signatures, the checks-module surface, the runner's emission format — is written in the neutral vocabulary this document defines, and the target language's spelling of it is produced downstream by the language backend. A `Controlled Spec` that names one implementation language's spellings is locked to that language and must be re-authored and re-certified to target another; `docs/BACKEND_BOUNDARY.md` cites this requirement as the one that governs `spec/`, and names the in-tree shortfall it does not yet fully meet.
 
 ## Role separation (most important)
 This project divides the specification into the following 2 layers.
