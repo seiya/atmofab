@@ -17,7 +17,7 @@ Out of scope, each with its owner named rather than restated here:
 - Running a trial, and recovering from a failure — `docs/RUNBOOK.md`.
 
 ## Fresh-machine setup
-A fresh clone needs the host tools and the operator's own CLI state. It needs nothing else from any `~/` directory: every file that decides what a workflow leaf loads is committed.
+A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. Two members of it decide behaviour rather than merely holding credentials: the Codex CLI's `hooks` feature flag, without which a leaf would run with no policy layer at all (§0-3 gates on it), and the leaf-`LLM` configuration, which is untracked by design and is the only thing that says which model runs which leaf.
 
 | step | requirement | canonical source |
 |---|---|---|
@@ -27,7 +27,7 @@ A fresh clone needs the host tools and the operator's own CLI state. It needs no
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §Running a workflow |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
 
-Steps 2 and 3 are the only ones that read machine-local state, and both are gated at preflight rather than discovered part-way into a billed run.
+Steps 1, 2, 3 and 5 all read machine-local state, and preflight gates them so that a machine that cannot run the workflow is refused before the first billed leaf rather than part-way through. One requirement is outside that guarantee and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at the gate (`docs/RUNBOOK.md` §0-3).
 
 ## Configuration layers
 Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. `docs/HOOKS.md` is canonical for the split and for what keeps the two in step.
@@ -47,7 +47,7 @@ Two sessions run against this checkout, and they load disjoint configuration. An
 Three consequences worth stating explicitly:
 
 - **A permission or hook the workflow depends on goes in a committed file.** The untracked local files exist for one operator's scratch; a grant that lives only there works on one machine and nowhere else. When both a tracked and an untracked file could hold a setting, the tracked one is the answer.
-- **The leaf layer is the owner when a setting appears in both.** Edit the leaf file first; a synchronization test keeps the dev layer's hook wiring identical so that an operator's session enforces the same policy a leaf does.
+- **The leaf layer is the owner when a setting appears in both.** Edit the leaf file first; a synchronization test requires the dev layer to be a SUPERSET — every leaf hook and every leaf grant mirrored into it, so an operator's session enforces at least the policy a leaf does, while the dev layer may carry hooks of its own. Equality was tried and refused: it forbade adding any operator-convenience hook to the file whose purpose is the operator's session.
 - **A workflow leaf reads none of the repository's top-level instruction documents.** `CLAUDE.md`, `AGENTS.md`, and the dev skills are the DEV layer. A leaf's contract arrives through its launch prompt: `docs/AGENT_CONTRACT.md` plus the phase `SKILL` under `skills/`. A rule a leaf must follow therefore has to land in one of those, never here.
 
 ## Repository environment
@@ -78,7 +78,7 @@ One fact has one canonical home. A restatement elsewhere is a twin document, and
 ## The `.claude/` boundary decision
 `.claude/` is **out of scope** for `docs/BACKEND_BOUNDARY.md`, and this is the decision that put it there.
 
-The boundary rule bounds knowledge of a concrete target-stack technology in the NEUTRAL CORE — the code, templates, skills, and documents through which a run produces a target-stack system. `.claude/` is none of that. It is the operator's own development session: measured, a workflow leaf loads zero of its skills, and nothing under it reaches a run. The technology spellings it does carry are ABOUT the instrument — a checklist for reviewing this repository's own gates — which is the same reason `tools/tests/` and `docs/design/` are out of scope.
+The boundary rule bounds knowledge of a concrete target-stack technology in the NEUTRAL CORE — the code, templates, skills, and documents through which a run produces a target-stack system. `.claude/` is none of that. It is the operator's own development session: measured on CLI 2.1.235, a workflow leaf loads zero of its skills and its request carries neither skill's name. `CLAUDE.md` holds that measurement and the three limits it was taken under — a hand-assembled launch, a scratch checkout, and the agentic leaf shape only. The technology spellings it does carry are ABOUT the instrument — a checklist for reviewing this repository's own gates — which is the same reason `tools/tests/` and `docs/design/` are out of scope.
 
 The cost of that decision, stated rather than left to be discovered: those spellings are unmeasured. The ratchet does not read `.claude/`, the migration ledger does not count what is there, and a change of target-stack technology has to sweep that tree by hand. The material is also not where a reader would guess — the explicit spelling checklist in one skill is a small minority of it, and the rest is episodes and identifier names spread across BOTH skills, including the one with no checklist at all.
 
