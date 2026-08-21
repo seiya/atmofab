@@ -17,7 +17,7 @@ Out of scope, each with its owner named rather than restated here:
 - Running a trial, and recovering from a failure — `docs/RUNBOOK.md`.
 
 ## Fresh-machine setup
-A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. Two members of it decide behaviour rather than merely holding credentials: the Codex CLI's `hooks` feature flag, without which a leaf would run with no policy layer at all (`docs/RUNBOOK.md` §0-3 gates on it), and the leaf-`LLM` configuration, which is untracked by design and is the only thing that says which model runs which leaf.
+A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. Two members of it reach past holding credentials. The Codex CLI's `hooks` feature flag is what `docs/RUNBOOK.md` §0-3 gates on, so a machine without it cannot start a run. The leaf-`LLM` configuration is untracked by design, and it is authoritative for a leaf's model **when it declares one**; when it does not, the CLI's own default decides — and for a `pure` claude leaf, which is launched with no private configuration directory, that default can come from the operator's own settings.
 
 | step | requirement | canonical source |
 |---|---|---|
@@ -27,7 +27,7 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
 
-Steps 1, 2, 3 and 5 all read machine-local state, and preflight gates them so that a machine that cannot run the workflow is refused before the first billed leaf rather than part-way through. One requirement is outside that guarantee and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at the gate (`docs/RUNBOOK.md` §0-3).
+Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists; steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
 ## Configuration layers
 Two sessions run against this checkout, and they load disjoint configuration. An operator's own interactive session loads the DEV layer; a workflow leaf loads the LEAF layer and nothing else. `docs/HOOKS.md` is canonical for the split and for what keeps the two in step.
