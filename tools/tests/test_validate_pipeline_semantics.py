@@ -7,6 +7,8 @@ import copy
 import json
 import re
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -22033,6 +22035,112 @@ class DirectExecutionBootstrapTests(unittest.TestCase):
             "the ModuleNotFoundError fallback does not re-import everything the module-level "
             "block does; a name in only the primary block is a NameError when this module is "
             "run as a script from outside the repository, which no test can reach")
+
+
+class StaleDependencyIRExitCodeTests(unittest.TestCase):
+    """The terminal classification channel for a stale certified IR.
+
+    The conductor used to decide this by scanning the validator's stdout for
+    ``STALE_DEPENDENCY_IR_MARKER``. Violations embed a LEAF-CHOSEN path, so a model file named
+    after the marker forged the terminal verdict and burned a billed run. The channel is now the
+    process exit code, written by the branch that knows and unwritable by any leaf.
+
+    These drive the REAL CLI in a REAL subprocess, because the channel is carried by the
+    violation's Python TYPE: a helper-level assertion would stay green while an unwrapped
+    ``violations.append`` or a list rebuild silently degraded production to exit code 1.
+    """
+
+    def _seed(self, tmp: Path, *, module_parameters: object | None) -> Path:
+        """A minimal post_generate tree whose model source is faithful to §5.1.
+
+        The only thing under the test's control is ``public_api.module_parameters``: pass None for
+        the pre-contract (stale) shape, or the §5.1 values for a healthy IR. The IR carries no
+        ``io_contract`` / ``raw_requirements``, so ORDINARY violations always co-occur — which is
+        the point for the exit-code precedence.
+        """
+        ir_ref = "workspace/ir/x"
+        ir_dir = tmp / ir_ref
+        ir_dir.mkdir(parents=True)
+        (tmp / "cs.md").write_text(
+            "## 5. Public API\nprose.\n"
+            + InfrastructureGeneratedSignatureGateTests._FENCE
+            + "## 6. x\n",
+            encoding="utf-8")
+        public_api: dict[str, object] = {"signatures": []}
+        if module_parameters is not None:
+            public_api = {"module_parameters": module_parameters}
+        _write_json(ir_dir / "spec.ir.yaml", {
+            "meta": {"spec_kind": "infrastructure", "spec_id": "hx",
+                     "source_refs": {"controlled_spec": "cs.md"}},
+            "public_api": public_api})
+        pipeline_dir = (
+            tmp / "workspace" / "pipelines" / "infrastructure__hx__0.2.0" / "hx_20260415_001")
+        src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
+        src_dir.mkdir(parents=True)
+        (src_dir / "hx_model.f90").write_text(
+            InfrastructureGeneratedSignatureGateTests._GOOD_SOURCE, encoding="utf-8")
+        (pipeline_dir / "lineage.json").write_text(
+            json.dumps({"ir_ref": ir_ref, "node_key": "infrastructure/hx@0.2.0",
+                        "pipeline_id": "hx_20260415_001"}), encoding="utf-8")
+        return pipeline_dir
+
+    def _run_cli(self, tmp: Path, pipeline_dir: Path) -> subprocess.CompletedProcess[str]:
+        repo_root = Path(vps.__file__).resolve().parent.parent
+        return subprocess.run(
+            [sys.executable, str(Path(vps.__file__).resolve()),
+             "--repo-root", str(tmp), "--workspace-root", "workspace",
+             "--stage", "post_generate", "--pipeline-root", str(pipeline_dir),
+             "--source-id", "src_20260415_001"],
+            cwd=str(repo_root), capture_output=True, text=True, check=False)
+
+    def test_stale_ir_answers_the_dedicated_exit_code_in_a_real_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, module_parameters=None))
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE,
+                         (proc.stdout, proc.stderr))
+        # The marker stays in the message for a human reader; it carries no decision.
+        self.assertIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+
+    def test_cooccurring_stale_and_ordinary_violations_answer_the_stale_ir_exit_code(self) -> None:
+        """Hoisting `return 1` above the isinstance check would degrade this to 1.
+
+        Ordinary violations always accompany the stale IR here (the fixture IR carries no
+        io_contract), and they are not repairable while the IR is stale either — so the terminal
+        code must win.
+        """
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            proc = self._run_cli(tmp, self._seed(tmp, module_parameters=None))
+        self.assertTrue(
+            [line for line in proc.stdout.splitlines()
+             if line.startswith("- ") and vps.STALE_DEPENDENCY_IR_MARKER not in line],
+            f"fixture no longer produces an ordinary violation to co-occur: {proc.stdout}")
+        self.assertEqual(proc.returncode, vps.STALE_DEPENDENCY_IR_EXIT_CODE, proc.stdout)
+
+    def test_ordinary_violations_keep_the_generic_failure_exit_code(self) -> None:
+        """Wrapping more than the stale-IR violation would route ordinary content failures —
+        which a warm Generate retry CAN repair — to a terminal fail_closed."""
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            pipeline_dir = self._seed(
+                tmp,
+                module_parameters=copy.deepcopy(
+                    InfrastructurePublicApiGateTests._MODULE_PARAMETERS))
+            proc = self._run_cli(tmp, pipeline_dir)
+        self.assertNotIn(vps.STALE_DEPENDENCY_IR_MARKER, proc.stdout, proc.stdout)
+        self.assertTrue([line for line in proc.stdout.splitlines() if line.startswith("- ")],
+                        f"fixture must still fail on ordinary violations: {proc.stdout}")
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+
+    def test_validator_exit_codes_are_pairwise_distinct(self) -> None:
+        """Every code a caller classifies on has to name exactly one condition. 0 = PASS,
+        1 = violations found, 2 = argparse's usage error, 3 = front end unavailable,
+        4 = stale certified IR."""
+        codes = [0, 1, 2,
+                 vps.FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                 vps.STALE_DEPENDENCY_IR_EXIT_CODE]
+        self.assertEqual(len(codes), len(set(codes)), codes)
 
 
 if __name__ == "__main__":

@@ -12933,16 +12933,40 @@ def _validate_ir_module_parameters_against_section51(
                 f"'{spec_params[name]}'")
 
 
-# Sentinel embedded in the Generate.static stale-IR violation so the conductor can route it as a
-# TERMINAL failure (fail_closed) rather than a warm Generate.generate retry: the leaf cannot mutate
-# the certified IR, so retrying Generate is futile — the fix is a re-certification, not a re-author.
-# workflow_conductor.Conductor._gate_static_check keys on this exact string.
+# Sentinel embedded in the Generate.static stale-IR violation so a HUMAN reader sees, in the
+# message itself, why retrying Generate is futile: the leaf cannot mutate the certified IR, so the
+# fix is a re-certification, not a re-author. It carries NO decision — the conductor routes this
+# failure as TERMINAL (fail_closed) on `STALE_DEPENDENCY_IR_EXIT_CODE` and on nothing in the text.
 STALE_DEPENDENCY_IR_MARKER = "[stale-dependency-ir]"
 
 #: `main`'s exit code when the Fortran structure front end is unavailable — an OPERATOR problem
 #: (an uninstalled package), never a content one. Distinct from 1 (violations found) and from
 #: argparse's 2, so a caller tells the three apart without reading a line of the output.
 FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE = 3
+
+#: `main`'s exit code when a violation reports a stale/corrupt certified IR — the fix is a
+#: re-certification (an OPERATOR action), never a re-authored model, so the conductor routes it
+#: TERMINAL. Distinct from 0/1/2/3, so a caller tells all five apart without reading the output.
+STALE_DEPENDENCY_IR_EXIT_CODE = 4
+
+
+class StaleDependencyIRViolation(str):
+    """A violation string whose TYPE is the terminal-classification channel.
+
+    Violations embed a leaf-chosen path (``f"{loc}: ..."``), so any classification that scans the
+    validator's output text is forgeable by naming a model file after the marker. The failure's
+    type is not: a leaf writes bytes into the message, never a Python class. ``main`` maps the
+    presence of an instance in ``violations`` to :data:`STALE_DEPENDENCY_IR_EXIT_CODE`, and that
+    exit code is the only thing the conductor reads.
+
+    Subclassing ``str`` keeps the message byte-identical and equal to the plain string it wraps,
+    so every existing message pin and every consumer that formats violations is unaffected.
+
+    LIMIT: the channel lives in the object, so REBUILDING the ``violations`` list (``[str(v) for v
+    in violations]``, a JSON round-trip, ``sorted`` into new strings) silently drops it back to
+    exit code 1. ``test_stale_ir_answers_the_dedicated_exit_code_in_a_real_subprocess`` drives the
+    real CLI end to end, so such a rebuild fails loudly rather than degrading in production.
+    """
 
 
 def _validate_infrastructure_generated_signatures(
@@ -13049,14 +13073,14 @@ def _validate_infrastructure_generated_signatures(
         ir_path, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations)
     if stale_ir_violations:
         loc = model_files[0] if model_files else ir_path
-        violations.append(
+        violations.append(StaleDependencyIRViolation(
             f"{loc}: {STALE_DEPENDENCY_IR_MARKER} the certified IR at {ir_path} does not carry the "
             "controlled_spec §5.1 module parameters the current contract pins (absent, empty, null, "
             "or drifted public_api.module_parameters — a pre-contract or corrupt IR that "
             "Compile.static, skipped on this resume, would have rejected) — re-certify the harness "
             "(run_workflow.py --with-deps, which the harness version bump makes freshness re-run) so "
             "Compile transcribes the module-parameter values into the IR; a certified IR cannot be "
-            "repaired by re-running Generate")
+            "repaired by re-running Generate"))
         return
 
     target = model_files[0] if model_files else (repo_root / "<model>")
@@ -14339,6 +14363,11 @@ def _main_dispatch(args: argparse.Namespace, repo_root: Path) -> int:
         print("pipeline semantic validation: FAIL")
         for line in violations:
             print(f"- {line}")
+        # The TYPE decides, not the text (see `StaleDependencyIRViolation`). This precedes the
+        # `return 1` so that a stale IR co-occurring with ordinary content violations still routes
+        # TERMINAL: the ordinary ones cannot be repaired either while the IR is stale.
+        if any(isinstance(v, StaleDependencyIRViolation) for v in violations):
+            return STALE_DEPENDENCY_IR_EXIT_CODE
         return 1
 
     print("pipeline semantic validation: PASS")
