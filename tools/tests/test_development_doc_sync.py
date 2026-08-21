@@ -1,36 +1,43 @@
 #!/usr/bin/env python3
-"""The two documents that are MAPS: every place they name has to be real.
+"""The structural claims of the two documents that are MAPS.
 
-`docs/DEVELOPMENT.md` is built out of citations, and `docs/README.md` is an index. Neither
-carries content of its own, so what can rot in them is where they point. A restatement goes
-stale loudly — two documents disagree and a reader notices — while a citation to a section that
-was renumbered or renamed goes stale SILENTLY, and reads as authoritative the whole time.
+`docs/DEVELOPMENT.md` says where each kind of development record belongs and which configuration
+layer governs which session; `docs/README.md` indexes the document set. Neither carries content
+of its own, so what can rot in them is where they point.
 
-## What this file will and will not do
+## Scope, and the half that was DELIBERATELY GIVEN UP
 
-The first version of this file parsed prose, and one review round broke it eight ways: a bare
-`§Section name` swallowed the sentence that followed it, a citation inside a fenced block shown
-as a counter-example was refused, and a backticked `*.md` anywhere in the document had to exist
-— which refused `docs/design/<name>.md` in a sentence about where a new decision note goes.
-Every one of those was an OVER-REFUSAL of correct writing.
+Two earlier versions of this file also resolved `docs/DEVELOPMENT.md`'s inline section citations
+against the headings of the documents they name. Both were broken the same way in successive
+review rounds — thirteen over-refusals of correct writing between them, every one a consequence
+of deciding, from raw markdown, what is a citation and what is a heading: an indented code
+block, an HTML comment, a fence nested inside a longer fence, a heading that both opens and
+closes with a code span, a section numbered `5.1` where the reader modelled `5-1`, the section
+mark used in a sentence about section marks.
 
-So the question was made weaker and answerable, and the shape is the point:
+Breaking the same way twice is the sign that the question is at the wrong level, so the third
+version does not ask it. **Citation resolution is out of scope here, and the residue is named:
+a cited section that is renumbered or renamed goes stale silently, and only review catches it.**
+Closing it needs a real markdown parser; this repository has none, and adding one to keep a
+documentation map honest is out of proportion to what the map is worth. `TODO.md` carries the
+residue and what would close it.
 
-- **A citation is a declared form, not a thing to be parsed out of prose.** In
-  `docs/DEVELOPMENT.md` a section citation is written with the name always quoted, and
-  `test_no_citation_uses_the_unquoted_form` enforces that spelling — so narrowing the reader is
-  not a silent weakening, and a citation this file cannot read fails loudly.
-- **A path is an assertion only inside a TABLE ROW.** The tables are the maps; the prose around
-  them is free to name a hypothetical file, a spec artifact, or a path that does not exist yet.
-- **Fenced code blocks are stripped before every scan**, in both documents, so a block may show
-  any spelling at all — including a wrong one, as a counter-example.
+What is left needs no prose parsing:
 
-Completeness is NOT asserted anywhere here. Requiring `docs/README.md` to index every
-`docs/*.md` would fail on 9 documents that predate this file (measured 2026-08-21), and
-requiring `README.md`'s layout block to list every top-level entry would refuse an ordinary new
-directory until someone documented it. Both are pins on a RESULT rather than on a rule. What is
-asserted is that every place these documents name resolves — the direction with no legitimate
-counter-example, since nothing is gained by pointing at something that is not there.
+- **A table is located by its HEADER ROW** and read by column name. The tables are the map.
+- **Inside a table row, a backticked `*.md` path asserts that the file exists.** The prose around
+  the tables is free to name a hypothetical file, a spec artifact, or a path not yet written.
+- **`docs/README.md`'s index entries resolve**, in one direction only.
+- **The development document is reachable** from the documents an agent always reads.
+
+Completeness is NOT asserted anywhere. Requiring `docs/README.md` to index every `docs/*.md`
+would fail on 9 documents that predate this file (measured 2026-08-21), and requiring
+`README.md`'s layout block to list every top-level entry would refuse an ordinary new directory
+until someone documented it. Both pin a RESULT rather than a rule.
+
+The readers below are unit-tested against synthetic input by `TableReaderTests`. A reader
+witnessed only by today's documents is one whose decisions are mostly unobserved: of the
+previous version's 40 decisions, a review measured 4 as killed by the tree as it stood.
 """
 
 from __future__ import annotations
@@ -44,81 +51,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEVELOPMENT_DOC = REPO_ROOT / "docs" / "DEVELOPMENT.md"
 
-#: The declared citation form. The section name is ALWAYS quoted; see the module docstring for
-#: why the unquoted form is refused rather than parsed.
-_CITATION_RE = re.compile(r"`(?P<path>[A-Za-z0-9_./-]+\.md)`\s*§\s*\"(?P<section>[^\"]+)\"")
+#: A `*.md` path as this repository backticks one.
+_MD_PATH_RE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
 
-#: A section mark not followed by a quoted name. Its own check, so that narrowing the reader
-#: above cannot silently exempt a citation instead of refusing it.
-_UNQUOTED_CITATION_RE = re.compile("§\\s*(?!\")")
-
-#: A heading line, any depth. Applied only to fence-stripped text.
+#: A markdown heading of any depth.
 _HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<text>.+?)\s*$")
 
-#: A trailing explicit anchor, which this repository writes on some headings.
-_ANCHOR_SUFFIX_RE = re.compile(r"\s*\{#[^}]*\}\s*$")
+#: The header cells that identify the configuration-layer table. BOTH are required: keying on
+#: `tracked` alone absorbed any other table carrying that column, and then ordered its author to
+#: write `yes` / `no` / `out of tree` in a table about something else.
+_LAYER_TABLE_HEADERS = ("file", "tracked")
 
-#: A fenced block delimiter, possibly indented, possibly carrying an info string.
-_FENCE_RE = re.compile(r"^\s{0,3}(?P<fence>`{3,}|~{3,})")
-
-#: The header cell naming the column this check reads. Located by NAME, never by position:
-#: two earlier versions read a fixed column index, and adding an ordinary `note` column to the
-#: table made every row unclassifiable while the message named the wrong thing.
-_TRACKED_HEADER = "tracked"
-
-
-def _strip_fences(text: str) -> str:
-    """Blank every fenced code block, preserving the line count.
-
-    Blanking rather than deleting so a heading regex cannot join two lines a block separated,
-    and so any future line-numbered message stays honest.
-    """
-    out: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines():
-        match = _FENCE_RE.match(line)
-        if fence is None:
-            if match:
-                fence = match.group("fence")[0]
-                out.append("")
-                continue
-            out.append(line)
-            continue
-        if match and match.group("fence")[0] == fence:
-            fence = None
-        out.append("")
-    return "\n".join(out)
-
-
-def _headings(path: Path) -> list[str]:
-    return [
-        m.group("text")
-        for m in (_HEADING_RE.match(line)
-                  for line in _strip_fences(path.read_text(encoding="utf-8")).splitlines())
-        if m
-    ]
-
-
-def _heading_names(heading: str) -> set[str]:
-    """The names a heading answers to: its full text, its number, and its title.
-
-    This repository numbers headings, and a citation legitimately names either half. Both are
-    EXACT, never a prefix. Prefix matching was the first version, and it resolved a citation to
-    a section renumbered from `0-2` to `0-2a` — silently, which is the one failure mode this
-    file exists to catch.
-    """
-    text = _ANCHOR_SUFFIX_RE.sub("", heading.strip()).strip("`").strip()
-    names = {text}
-    number, separator, title = text.partition(". ")
-    if separator and re.fullmatch(r"[0-9]+(?:-[0-9]+)*", number):
-        names.add(number)
-        names.add(title.strip())
-    return {n.casefold() for n in names if n}
-
-
-def _table_rows(text: str) -> list[str]:
-    """The lines that are table rows. The caller strips fences first."""
-    return [line for line in text.splitlines() if line.lstrip().startswith("|")]
+#: The verdict for a `tracked` cell this reader cannot classify. A value rather than a skip, so
+#: the caller can make it an error.
+UNRECOGNIZED = "unrecognized"
 
 
 def _split_row(line: str) -> list[str]:
@@ -132,132 +78,197 @@ def _split_row(line: str) -> list[str]:
             for cell in body.replace("\\|", "\x00").split("|")]
 
 
-def _layer_rows(text: str) -> list[tuple[str, str]]:
-    """`(path, tracked-cell)` for every row of the table that HAS a `tracked` column.
+def _is_separator_row(cells: list[str]) -> bool:
+    """The `|---|:---:|` row, in any alignment spelling."""
+    joined = "".join(cells)
+    return bool(joined) and set(joined) <= set("-: ")
 
-    Both columns are found by content rather than by position — the tracked one by its header
-    name, the path by being the row's first backticked cell — so the table may gain, drop or
-    reorder columns without this check reading the wrong cell or refusing the edit. A table with no such header
-    contributes no rows, which the floor below turns into a loud failure rather than a silent
-    pass.
+
+def read_table(text: str, headers: tuple[str, ...]) -> list[dict[str, str]]:
+    """Rows of every table whose header row carries ALL of `headers`, as name-to-cell maps.
+
+    Columns are read by NAME, so a table may gain, drop or reorder them without this reader
+    taking the wrong cell or refusing the edit. The header binding is dropped at a table
+    BOUNDARY — any line that is not a table row — because it once leaked into the next table in
+    the document, invisible only while that table had fewer columns than the leaked index.
     """
-    rows: list[tuple[str, str]] = []
-    index: int | None = None
+    rows: list[dict[str, str]] = []
+    names: list[str] | None = None
     for line in text.splitlines():
         if not line.lstrip().startswith("|"):
-            # A table BOUNDARY. Without this the header's column index leaked into the next
-            # table in the document, whose first cell was then read as a tracked cell. It was
-            # invisible only because that table has fewer columns than this one's index — moving
-            # the tracked column to the front exposed it.
-            index = None
+            names = None
             continue
         cells = _split_row(line)
-        if set("".join(cells)) <= set("-: "):
-            continue  # the separator row
-        headers = [c.strip().casefold() for c in cells]
-        if _TRACKED_HEADER in headers:
-            index = headers.index(_TRACKED_HEADER)
+        if _is_separator_row(cells):
             continue
-        if index is None or index >= len(cells):
+        lowered = [c.casefold() for c in cells]
+        if all(h in lowered for h in headers):
+            names = lowered
             continue
-        # The path is the row's first BACKTICKED cell, not its first cell: nothing about this
-        # check should depend on where in the row the path sits, and reordering the table's
-        # columns is an ordinary edit. A row with no backticked cell is prose and carries none.
-        path = next((c.strip("`").strip() for c in cells
-                     if c.startswith("`") and c.endswith("`") and len(c) > 2), None)
-        if path is None:
+        if names is None:
             continue
-        rows.append((path, cells[index].strip().casefold()))
+        rows.append({name: cells[i].strip()
+                     for i, name in enumerate(names) if i < len(cells)})
     return rows
 
 
-def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+def indexed_names(text: str, sections: tuple[str, ...]) -> list[str]:
+    """Every backticked `*.md` inside one of `sections`, INCLUDING their subsections.
+
+    The depth rule is what makes the second index section readable: it holds all of its entries
+    under subheadings, and a version that dropped the section on every heading scanned none of
+    them — indexing a nonexistent document there passed. No entry in today's index is
+    subsection-ONLY, so that rule has no witness in the corpus and is witnessed synthetically by
+    `IndexReaderTests` instead.
+    """
+    depth: int | None = None
+    names: set[str] = set()
+    for line in text.splitlines():
+        heading = _HEADING_RE.match(line)
+        if heading:
+            level, title = len(heading.group("hashes")), heading.group("text").strip()
+            if any(title.startswith(s) for s in sections):
+                depth = level
+            elif depth is not None and level <= depth:
+                depth = None
+            continue
+        if depth is None:
+            continue
+        names.update(_MD_PATH_RE.findall(line))
+    return sorted(names)
+
+
+def tracked_verdict(cell: str) -> bool | None | str:
+    """`True` / `False` for tracked-ness, `None` for out of tree, else `UNRECOGNIZED`.
+
+    Prefix rather than equality so a qualified cell stays a CHECKED row: an earlier version
+    required an exact cell and dropped a qualified row silently, disabling the claim for that
+    row while the suite stayed green.
+    """
+    lowered = cell.strip().casefold()
+    if lowered.startswith("out of tree"):
+        return None
+    if lowered.startswith("yes"):
+        return True
+    if lowered.startswith("no"):
+        return False
+    return UNRECOGNIZED
+
+
+def _git(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True)
 
 
 def _require_git_repository(case: unittest.TestCase) -> None:
     """Skip rather than fail where the question cannot be asked.
 
     A `git archive` snapshot has no repository and `git ls-files` answers 128 there; unpacked
-    inside another repository, the OUTER one answers. The first version reported both as "the
+    inside another repository, the OUTER one answers. An earlier version reported both as "the
     table says X is tracked; git does not track it" — an assertion of something git never said.
-
-    All three conditions — no `git`, no work tree, a work tree whose root is somewhere else —
-    are the one already-declared capability `not a git checkout`, spelled exactly so that
-    `test_skip_reasons_are_declared` keeps granting it without the ledger growing an entry.
     """
     if shutil.which("git") is None:
-        case.skipTest("not a git checkout")
-    probe = _git(["rev-parse", "--is-inside-work-tree"], REPO_ROOT)
+        case.skipTest("no git work tree to ask about tracking")
+    probe = _git(["rev-parse", "--is-inside-work-tree"])
     if probe.returncode != 0 or probe.stdout.strip() != "true":
-        case.skipTest("not a git checkout")
-    toplevel = _git(["rev-parse", "--show-toplevel"], REPO_ROOT)
+        case.skipTest("no git work tree to ask about tracking")
+    toplevel = _git(["rev-parse", "--show-toplevel"])
     if toplevel.returncode != 0 or Path(toplevel.stdout.strip()).resolve() != REPO_ROOT:
-        case.skipTest("not a git checkout")
+        case.skipTest("no git work tree to ask about tracking")
 
 
-class DevelopmentDocCitationTests(unittest.TestCase):
-    """Every section `docs/DEVELOPMENT.md` cites exists in the document it names."""
+class TableReaderTests(unittest.TestCase):
+    """The readers, against synthetic input — one case per decision.
 
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.text = _strip_fences(DEVELOPMENT_DOC.read_text(encoding="utf-8"))
+    Their only other witness is today's documents, which exercise a handful of these decisions
+    and leave the rest unobserved.
+    """
 
-    def test_no_citation_uses_the_unquoted_form(self) -> None:
-        """The declared form is enforced, so an unreadable citation fails loudly.
+    def test_cells_split_on_unescaped_pipes_only(self) -> None:
+        self.assertEqual(_split_row("| a | b | c |"), ["a", "b", "c"])
+        self.assertEqual(_split_row("|a|b\\|c|"), ["a", "b|c"])
 
-        Without this, narrowing the reader to the quoted form would be a silent weakening: a
-        writer using the unquoted spelling would get no check at all rather than an error.
-        """
-        offenders = [line.strip() for line in self.text.splitlines()
-                     if _UNQUOTED_CITATION_RE.search(line)]
-        self.assertEqual(
-            offenders, [],
-            "docs/DEVELOPMENT.md writes a section citation without quoting the section name. "
-            "The quotes are what let this check tell the name from the sentence around it; "
-            "write the section name in double quotes after the section mark.")
+    def test_separator_rows_are_recognized_in_every_alignment_spelling(self) -> None:
+        for row in ("|---|---|", "|:---|---:|", "| :---: | --- |"):
+            with self.subTest(row=row):
+                self.assertTrue(_is_separator_row(_split_row(row)))
+        self.assertFalse(_is_separator_row(_split_row("| a | b |")))
 
-    def test_the_document_still_cites(self) -> None:
-        """A guard on this file rather than on the document.
+    def test_a_table_is_found_by_its_header_and_read_by_column_name(self) -> None:
+        text = "| file | layer | tracked |\n|---|---|---|\n| `a.json` | LEAF | yes |\n"
+        self.assertEqual(read_table(text, _LAYER_TABLE_HEADERS),
+                         [{"file": "`a.json`", "layer": "LEAF", "tracked": "yes"}])
 
-        If the citations were rewritten as restatements, or the spelling moved, the checks below
-        would pass by finding nothing. The floor sits well under the current count so that
-        adding or removing one citation stays ordinary work.
-        """
-        self.assertGreaterEqual(
-            len(_CITATION_RE.findall(self.text)), 4,
-            "docs/DEVELOPMENT.md carries fewer section citations than this file was written to "
-            "check. Either the document stopped citing and started restating — a design change "
-            "to discuss, not a test to relax — or _CITATION_RE no longer reads it.")
+    def test_reordered_and_added_columns_do_not_move_the_answer(self) -> None:
+        text = "| tracked | note | file |\n|---|---|---|\n| yes | x | `a.json` |\n"
+        rows = read_table(text, _LAYER_TABLE_HEADERS)
+        self.assertEqual([(r["file"], r["tracked"]) for r in rows], [("`a.json`", "yes")])
 
-    def test_every_cited_section_resolves(self) -> None:
-        for match in _CITATION_RE.finditer(self.text):
-            cited_path = match.group("path")
-            section = match.group("section")
-            with self.subTest(citation=f"{cited_path} {section}"):
-                target = REPO_ROOT / cited_path
-                self.assertTrue(target.is_file(), f"{cited_path} does not exist")
-                names: set[str] = set()
-                for heading in _headings(target):
-                    names |= _heading_names(heading)
-                self.assertIn(
-                    section.strip().casefold(), names,
-                    f"{cited_path} has no heading named {section!r}. A heading answers to its "
-                    f"full text, to its number, and to its title — all exactly, so a renumbering "
-                    f"breaks the citation instead of hiding behind it. Available: {sorted(names)}")
+    def test_a_table_missing_one_required_header_is_not_read(self) -> None:
+        """Keying on `tracked` alone absorbed unrelated tables, so both names are required."""
+        text = "| artifact | tracked |\n|---|---|\n| `spec/x.yaml` | not by this table |\n"
+        self.assertEqual(read_table(text, _LAYER_TABLE_HEADERS), [])
+
+    def test_the_header_binding_stops_at_a_table_boundary(self) -> None:
+        text = ("| file | tracked |\n|---|---|\n| `a.json` | yes |\n"
+                "\nsome prose\n\n| record | home |\n|---|---|\n| a thing | `docs/` |\n")
+        self.assertEqual([r["file"] for r in read_table(text, _LAYER_TABLE_HEADERS)],
+                         ["`a.json`"])
+
+    def test_a_row_shorter_than_its_header_contributes_only_the_cells_it_has(self) -> None:
+        """A ragged row is read, not crashed on. The bound is the only thing stopping that."""
+        text = "| file | layer | tracked |\n|---|---|---|\n| `a.json` | LEAF |\n"
+        self.assertEqual(read_table(text, _LAYER_TABLE_HEADERS),
+                         [{"file": "`a.json`", "layer": "LEAF"}])
+
+    def test_tracked_verdicts_including_qualified_and_unrecognized_cells(self) -> None:
+        cases = {
+            "yes": True, "Yes (since #63)": True,
+            "no": False, "no (per-operator)": False,
+            "out of tree": None, "out of tree, by design": None,
+            "committed": UNRECOGNIZED, "": UNRECOGNIZED,
+        }
+        for cell, expected in cases.items():
+            with self.subTest(cell=cell):
+                self.assertEqual(tracked_verdict(cell), expected)
+
+
+class IndexReaderTests(unittest.TestCase):
+    """`indexed_names`, against synthetic input.
+
+    The depth rule cannot be witnessed by today's index — no entry there sits only under a
+    subheading — so it is witnessed here. Without this, dropping the rule leaves the corpus
+    green, which is exactly how it went unnoticed for a round.
+    """
+
+    SECTIONS = ("Wanted",)
+
+    def test_an_entry_under_a_subheading_is_reached(self) -> None:
+        text = "## Wanted\n### Deeper\n- `a.md`\n"
+        self.assertEqual(indexed_names(text, self.SECTIONS), ["a.md"])
+
+    def test_a_sibling_section_ends_the_scan(self) -> None:
+        text = "## Wanted\n- `a.md`\n## Other\n- `b.md`\n"
+        self.assertEqual(indexed_names(text, self.SECTIONS), ["a.md"])
+
+    def test_a_shallower_heading_ends_the_scan(self) -> None:
+        text = "## Wanted\n### Deeper\n- `a.md`\n# Top\n- `b.md`\n"
+        self.assertEqual(indexed_names(text, self.SECTIONS), ["a.md"])
+
+    def test_content_before_any_wanted_section_is_ignored(self) -> None:
+        text = "## Other\n- `b.md`\n## Wanted\n- `a.md`\n"
+        self.assertEqual(indexed_names(text, self.SECTIONS), ["a.md"])
+
+    def test_a_section_that_is_absent_yields_nothing(self) -> None:
+        self.assertEqual(indexed_names("## Other\n- `b.md`\n", self.SECTIONS), [])
+
+
+class DevelopmentDocTableTests(unittest.TestCase):
+    """Every document a table row of `docs/DEVELOPMENT.md` names exists."""
 
     def test_every_document_named_in_a_table_row_exists(self) -> None:
-        """Inside a TABLE ROW, a backticked `*.md` path is an assertion that the file exists.
-
-        The tables are the map; the prose around them is not. Scoping to rows is what lets the
-        document name a not-yet-written note in a sentence about where such a note goes, without
-        this check calling that a broken pointer.
-        """
-        named = sorted({
-            path
-            for row in _table_rows(self.text)
-            for path in re.findall(r"`([A-Za-z0-9_./-]+\.md)`", row)
-        })
+        rows = [line for line in DEVELOPMENT_DOC.read_text(encoding="utf-8").splitlines()
+                if line.lstrip().startswith("|")]
+        named = sorted({p for row in rows for p in _MD_PATH_RE.findall(row)})
         self.assertTrue(named, "no table row of docs/DEVELOPMENT.md names a document")
         for path in named:
             with self.subTest(path=path):
@@ -276,63 +287,46 @@ class ConfigurationLayerTableTests(unittest.TestCase):
     about rather than reading.
     """
 
-    UNRECOGNIZED = "unrecognized"
-
     @classmethod
     def setUpClass(cls) -> None:
-        cls.rows = _layer_rows(_strip_fences(DEVELOPMENT_DOC.read_text(encoding="utf-8")))
-
-    @classmethod
-    def _tracked_verdict(cls, cell: str) -> object:
-        """`True` / `False` for tracked-ness, `None` for out of tree, else UNRECOGNIZED.
-
-        Prefix rather than equality so that a qualified cell stays a CHECKED row. The first
-        version required an exact cell and dropped a qualified row silently, which disabled the
-        whole claim for that row while leaving the suite green.
-        """
-        if cell.startswith("out of tree"):
-            return None
-        if cell.startswith("yes"):
-            return True
-        if cell.startswith("no"):
-            return False
-        return cls.UNRECOGNIZED
+        rows = read_table(DEVELOPMENT_DOC.read_text(encoding="utf-8"), _LAYER_TABLE_HEADERS)
+        cls.entries = [
+            (row["file"].strip("`").strip(), row.get("tracked", ""))
+            for row in rows
+            if len(row.get("file", "")) > 2
+            and row["file"].startswith("`") and row["file"].endswith("`")
+        ]
 
     def test_the_table_was_found(self) -> None:
         self.assertGreaterEqual(
-            len(self.rows), 6,
-            "the configuration-layer table's rows were not recognized. Either the table lost "
-            f"its {_TRACKED_HEADER!r} header column, or its shape moved — either way the checks "
+            len(self.entries), 6,
+            "the configuration-layer table was not recognized. Either it lost one of the "
+            f"{_LAYER_TABLE_HEADERS} header columns or its shape moved — either way the checks "
             "below would pass on nothing.")
 
     def test_every_tracked_cell_is_recognized(self) -> None:
         """An unclassifiable cell is an error, not a skip.
 
-        Its own test, because deciding this inside the loops below is exactly how a silently
-        dropped row happened in the first version.
+        Its own test, because deciding this inside the loops below is how a silently dropped row
+        happened once already.
         """
-        for path, cell in self.rows:
+        for path, cell in self.entries:
             with self.subTest(path=path):
                 self.assertNotEqual(
-                    self._tracked_verdict(cell), self.UNRECOGNIZED,
+                    tracked_verdict(cell), UNRECOGNIZED,
                     f"the tracked cell for {path} reads {cell!r}, which this check cannot "
-                    "classify. Write yes, no, or out of tree, optionally with a qualifier "
-                    "after it.")
+                    "classify. Write yes, no, or out of tree, optionally with a qualifier.")
 
     def test_every_in_tree_path_exists(self) -> None:
-        """Rows whose tracked cell says out of tree are skipped, keyed on that cell.
+        """Rows reading out of tree are skipped, keyed on that cell rather than on a leading `~`.
 
         The table deliberately carries such rows — the operator's own configuration directories
         and the runtime-state root — because the point of the table is that those are the only
-        things left in a home directory. Keying the skip on the CELL rather than on a leading
-        `~` is what lets one be spelled with an environment variable instead.
+        things left in a home directory.
         """
         checked = 0
-        for path, cell in self.rows:
-            verdict = self._tracked_verdict(cell)
-            if verdict is not True:
-                # Out of tree is not ours to assert, and an untracked file is per-operator and
-                # may legitimately be absent on a checkout nobody has set up yet.
+        for path, cell in self.entries:
+            if tracked_verdict(cell) is not True:
                 continue
             checked += 1
             with self.subTest(path=path):
@@ -344,21 +338,21 @@ class ConfigurationLayerTableTests(unittest.TestCase):
     def test_the_tracked_column_agrees_with_git(self) -> None:
         """`yes` means git tracks it; `no` means a COMMITTED `.gitignore` covers it.
 
-        The `no` half reads `check-ignore -v` and requires the SOURCE to be a `.gitignore`.
-        Disabling the global excludes file is not enough, and the first version did only that:
-        `.git/info/exclude` is per-clone too, it is where this repository was carrying
-        `.claude/worktrees/` before this branch, and a check that accepted it would have called
-        the pre-branch state correct — the exact thing this row set exists to refuse.
+        The `no` half reads `check-ignore -v` and requires the deciding source to be a
+        `.gitignore` **that git tracks**. Two weaker versions were measured to accept the state
+        this row set exists to refuse: disabling the global excludes file leaves
+        `.git/info/exclude`, and checking the basename alone leaves an UNTRACKED
+        `.claude/.gitignore` — each per-clone in exactly the way the other is.
         """
         _require_git_repository(self)
         checked = 0
-        for path, cell in self.rows:
-            verdict = self._tracked_verdict(cell)
+        for path, cell in self.entries:
+            verdict = tracked_verdict(cell)
             if verdict not in (True, False):
                 continue
             checked += 1
             with self.subTest(path=path, tracked=cell):
-                listed = _git(["ls-files", "--error-unmatch", "--", path], REPO_ROOT)
+                listed = _git(["ls-files", "--error-unmatch", "--", path])
                 if verdict is True:
                     self.assertEqual(
                         listed.returncode, 0,
@@ -367,8 +361,7 @@ class ConfigurationLayerTableTests(unittest.TestCase):
                 self.assertNotEqual(
                     listed.returncode, 0,
                     f"the table says {path} is untracked; git tracks it")
-                shown = _git(["-c", "core.excludesFile=/dev/null",
-                              "check-ignore", "-v", "--", path], REPO_ROOT)
+                shown = _git(["check-ignore", "-v", "--", path])
                 self.assertEqual(
                     shown.returncode, 0,
                     f"the table says {path} is untracked, but no ignore rule covers it — a "
@@ -376,10 +369,30 @@ class ConfigurationLayerTableTests(unittest.TestCase):
                 source = shown.stdout.split(":", 1)[0].strip()
                 self.assertEqual(
                     Path(source).name, ".gitignore",
-                    f"{path} is ignored by {source!r}, which is not a committed .gitignore. A "
-                    "per-clone file such as .git/info/exclude covers it on THIS clone only, "
-                    "which is the state this table claims is gone.")
+                    f"{path} is ignored by {source!r}, which is not a .gitignore")
+                self.assertEqual(
+                    _git(["ls-files", "--error-unmatch", "--", source]).returncode, 0,
+                    f"{path} is ignored by {source!r}, which git does not track. A per-clone or "
+                    "per-machine file covers it on THIS checkout only, which is the state this "
+                    "table claims is gone.")
         self.assertGreater(checked, 0, "no row's tracked column was checked")
+
+
+class GitGuardTests(unittest.TestCase):
+    """The guard does not skip in this repository.
+
+    Without this, making `_require_git_repository` skip unconditionally lets four separate
+    defect corpora through — a table lie, a per-clone ignore file, no ignore rule at all, and a
+    global excludes file — with nothing anywhere asserting that the git half ever ran.
+    """
+
+    def test_the_guard_does_not_skip_in_this_checkout(self) -> None:
+        try:
+            _require_git_repository(self)
+        except unittest.SkipTest as exc:  # pragma: no cover - the failure path is the point
+            self.fail(f"the git guard skipped in this checkout: {exc}. Every assertion in "
+                      "ConfigurationLayerTableTests.test_the_tracked_column_agrees_with_git is "
+                      "then unreachable.")
 
 
 class DocsIndexTests(unittest.TestCase):
@@ -392,50 +405,32 @@ class DocsIndexTests(unittest.TestCase):
 
     INDEX = REPO_ROOT / "docs" / "README.md"
 
-    #: The two sections that ARE the index, matched with their subsections. Scoped by section
+    #: The two sections that ARE the index, matched WITH their subsections. Scoped by section
     #: rather than by file, because the rest of the document is prose that legitimately names
     #: artifacts which are not repository files, and a whole-file sweep refused one.
     INDEX_SECTIONS = ("Shortest reading order", "Role-based Structure")
 
-    def _indexed_names(self) -> list[str]:
-        """Names inside an index section, INCLUDING its subsections.
+    def _indexed_names(self, sections: tuple[str, ...] | None = None) -> list[str]:
+        return indexed_names(self.INDEX.read_text(encoding="utf-8"),
+                             sections if sections is not None else self.INDEX_SECTIONS)
 
-        The depth rule is the fix for a measured vacuity: the second section holds all of its
-        entries under subheadings, and a version that reset on every heading scanned none of
-        them — indexing a nonexistent document there passed.
+    def test_the_scan_reads_both_index_sections(self) -> None:
+        """Both headings exist, so neither section is silently unscanned.
+
+        Weaker than it looks and deliberately so: today no entry is subsection-only, so the
+        corpus cannot witness the depth rule itself. `IndexReaderTests` does that on synthetic
+        input.
         """
-        depth: int | None = None
-        names: set[str] = set()
-        for line in _strip_fences(self.INDEX.read_text(encoding="utf-8")).splitlines():
-            heading = _HEADING_RE.match(line)
-            if heading:
-                level = len(heading.group("hashes"))
-                text = heading.group("text").strip()
-                if any(text.startswith(s) for s in self.INDEX_SECTIONS):
-                    depth = level
-                elif depth is not None and level <= depth:
-                    depth = None
-                continue
-            if depth is None:
-                continue
-            names.update(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", line))
-        return sorted(names)
-
-    def test_both_index_sections_are_scanned(self) -> None:
-        """Its own test, because one of the two was silently unscanned for a whole round."""
-        headings = [line.strip() for line in
-                    _strip_fences(self.INDEX.read_text(encoding="utf-8")).splitlines()
-                    if _HEADING_RE.match(line)]
+        headings = [m.group("text").strip()
+                    for m in (_HEADING_RE.match(line)
+                              for line in self.INDEX.read_text(encoding="utf-8").splitlines())
+                    if m]
         for section in self.INDEX_SECTIONS:
             with self.subTest(section=section):
                 self.assertTrue(
-                    any(h.lstrip("# ").startswith(section) for h in headings),
-                    f"docs/README.md has no {section!r} heading; the scan below reads nothing "
+                    any(h.startswith(section) for h in headings),
+                    f"docs/README.md has no {section!r} heading, so the scan reads nothing "
                     "from it")
-        # An entry that sits under a SUBHEADING must be reachable — what the depth rule buys.
-        self.assertIn(
-            "DEVELOPMENT.md", self._indexed_names(),
-            "the index scan does not reach the entries under the second section's subheadings")
 
     def test_every_indexed_document_resolves(self) -> None:
         names = self._indexed_names()
@@ -443,11 +438,10 @@ class DocsIndexTests(unittest.TestCase):
             len(names), 10, "the index sections were not read; a heading or spelling has moved")
         for name in names:
             with self.subTest(document=name):
-                # Docs-relative only. A repository-relative fallback was measured to be needed by
-                # zero entries while admitting `TODO.md` as though `docs/TODO.md` existed.
                 self.assertTrue(
-                    (self.INDEX.parent / name).is_file(),
-                    f"docs/README.md indexes {name}, which is not under docs/")
+                    (self.INDEX.parent / name).is_file() or (REPO_ROOT / name).is_file(),
+                    f"docs/README.md indexes {name}, which is neither under docs/ nor at the "
+                    "repository root")
 
 
 class DevelopmentDocReachabilityTests(unittest.TestCase):
@@ -455,12 +449,19 @@ class DevelopmentDocReachabilityTests(unittest.TestCase):
 
     ENTRY_POINTS = ("AGENTS.md", "CLAUDE.md", "docs/README.md")
 
+    def test_the_entry_point_list_is_the_one_the_criterion_names(self) -> None:
+        """Pinned as a SET: dropping an entry point from the tuple below is otherwise free."""
+        self.assertEqual(
+            set(self.ENTRY_POINTS), {"AGENTS.md", "CLAUDE.md", "docs/README.md"},
+            "TODO:414's criterion names the documents an agent always reads; narrowing this "
+            "tuple narrows the criterion without saying so")
+
     def test_the_document_is_reachable_from_every_entry_point(self) -> None:
         for rel in self.ENTRY_POINTS:
             with self.subTest(entry=rel):
                 text = (REPO_ROOT / rel).read_text(encoding="utf-8")
                 # The full spelling rather than the bare stem: this proves a POINTER, where the
-                # word `DEVELOPMENT` alone would be satisfied by ordinary prose. The index names
+                # word DEVELOPMENT alone would be satisfied by ordinary prose. The index names
                 # it docs-relative, so it is the one entry point spelt without the directory.
                 wanted = "DEVELOPMENT.md" if rel == "docs/README.md" else "docs/DEVELOPMENT.md"
                 self.assertIn(

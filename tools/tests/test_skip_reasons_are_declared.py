@@ -112,6 +112,9 @@ _DECLARED_ENVIRONMENT_SKIPS = {
         "the platform has no SIGTERM",
     "not a git checkout":
         "the tree is a `git archive` snapshot, so a repository-wide census has no subject",
+    "no git work tree to ask about tracking":
+        "the tree is a `git archive` snapshot, or is unpacked inside another repository, so "
+        "`git ls-files` answers for something other than this checkout",
     "the suite's homes guard is not installed":
         "running outside pytest, where conftest is not loaded and the guard under test "
         "does not exist",
