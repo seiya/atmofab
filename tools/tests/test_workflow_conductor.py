@@ -15440,6 +15440,80 @@ class DeterministicStaticTest(unittest.TestCase):
             self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
                              payload)
 
+    def test_gate_static_check_maps_the_stale_ir_exit_code_to_a_terminal_category(self) -> None:
+        # The twin of the front-end mapping above, and for the same reason: the classification
+        # channel is the validator's EXIT CODE, imported from the module that sets it. The output
+        # text here still carries the human-facing marker, so a mapping that quietly went back to
+        # scanning it would pass this row — which is why the forgery row below exists too.
+        import tempfile
+        from tools.validate_pipeline_semantics import (
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+            STALE_DEPENDENCY_IR_MARKER,
+        )
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def run(cmd, **kwargs):
+                script = next((x for x in cmd if x.endswith(".py")), "")
+                if script.endswith("validate_workspace_root.py"):
+                    return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                if script.endswith("validate_pipeline_semantics.py"):
+                    return wc.subprocess.CompletedProcess(
+                        cmd, STALE_DEPENDENCY_IR_EXIT_CODE,
+                        "pipeline semantic validation: FAIL\n"
+                        f"- x_model.f90: {STALE_DEPENDENCY_IR_MARKER} the certified IR does not "
+                        "carry the controlled_spec §5.1 module parameters", "")
+                raise AssertionError(f"unexpected subprocess: {cmd}")
+
+            with self._patch_run(run):
+                out = c._gate_static_check(refs, "child-1", "captok")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["failure_category"], "stale_dependency_ir")
+        self.assertEqual("fail_closed",
+                         wc.classify_gate_failure([out["failure_category"]]).action)
+
+    def test_no_gate_output_text_can_forge_the_stale_ir_classification(self) -> None:
+        # THE DEFECT THIS BRANCH REPAIRS. The gate used to classify on `[stale-dependency-ir]`
+        # appearing anywhere in the validator's stdout, and a violation interpolates a path the
+        # LEAF chose — so naming a model source after the marker turned an ordinary, warm-
+        # retryable naming slip into a terminal verdict that killed a billed run. The four
+        # payloads are the front-end marker's full defeat history replayed against this marker
+        # (bare, after a newline, after a newline + `- `, and quoted at the start of a line), all
+        # at rc 1. With the classification keyed on the code the TEXT cannot matter, so this is an
+        # assertion about the channel and not another sample of the prose.
+        import tempfile
+        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER as marker
+        payloads = (
+            f"- src: model source {marker}_model.f90 present but must be named spec_x_model.f90",
+            f"- src: model source x\n{marker}_model.f90 present but must be named spec_x",
+            f"- src: model source x\n- {marker}_model.f90 present but must be named spec_x",
+            f"- {marker} a violation that merely quotes the marker at the start of a line",
+        )
+        for payload in payloads:
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                refs = self._refs()
+                self._seed(repo, refs)
+                c = self._conductor(repo)
+
+                def run(cmd, _payload=payload, **kwargs):
+                    script = next((x for x in cmd if x.endswith(".py")), "")
+                    if script.endswith("validate_workspace_root.py"):
+                        return wc.subprocess.CompletedProcess(cmd, 0, "ws-out", "ws-err")
+                    if script.endswith("validate_pipeline_semantics.py"):
+                        return wc.subprocess.CompletedProcess(
+                            cmd, 1, f"pipeline semantic validation: FAIL\n{_payload}", "")
+                    raise AssertionError(f"unexpected subprocess: {cmd}")
+
+                with self._patch_run(run):
+                    out = c._gate_static_check(refs, "child-1", "captok")
+            self.assertEqual("post_generate_violation", out["failure_category"], payload)
+            self.assertEqual("retry", wc.classify_gate_failure([out["failure_category"]]).action,
+                             payload)
+
     def test_gate_static_check_workspace_root_violation_short_circuits(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:

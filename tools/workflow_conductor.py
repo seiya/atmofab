@@ -8803,7 +8803,7 @@ clean:
             if pg.returncode != 0:
                 from tools.validate_pipeline_semantics import (
                     FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
-                    STALE_DEPENDENCY_IR_MARKER,
+                    STALE_DEPENDENCY_IR_EXIT_CODE,
                 )
                 status = "fail"
                 # Two TERMINAL conditions, for the same reason: the leaf cannot repair either by
@@ -8813,23 +8813,23 @@ clean:
                 # classify_gate_failure fail_closes any union verdict carrying either
                 # (GATE_FAILURE_TERMINAL).
                 #
-                # THE FIRST IS CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
-                # third answer to one finding. Most violations interpolate a path the LEAF chose,
-                # so scanning the text let a model source named for the marker turn its own
-                # mis-naming into "this machine has no parser" — terminalizing the run instead of
-                # warm-retrying the rename. Anchoring the scan to a line start was defeated by a
-                # filename containing a newline; requiring `- ` in front was defeated by a
-                # filename containing a newline followed by `- `. Each was a tighter sample of the
-                # same prose. An exit code is set by the branch that knows and no leaf can write
-                # into it, so the class is closed rather than sampled again.
+                # BOTH ARE CLASSIFIED ON AN EXIT CODE, NOT ON THE OUTPUT TEXT, and that is the
+                # answer this finding took five versions to reach. Most violations interpolate a
+                # path the LEAF chose, so scanning the text let a model source named for a marker
+                # turn its own mis-naming into a terminal verdict — killing the run instead of
+                # warm-retrying the rename. For the front-end marker: anchoring the scan to a line
+                # start was defeated by a filename containing a newline; requiring `- ` in front
+                # was defeated by a filename containing a newline followed by `- `; the exit code
+                # (v4) closed it. `[stale-dependency-ir]` survived as the twin of the same defect
+                # until it too moved to an exit code (v5). Each text version was a tighter sample
+                # of the same prose; an exit code is set by the branch that knows and no leaf can
+                # write into it, so the class is closed rather than sampled again.
                 #
-                # `STALE_DEPENDENCY_IR_MARKER` is still a text scan and still carries that
-                # weakness; it predates this branch and is recorded in TODO.md, where the fix is
-                # now one already-built channel away.
-                gate_output = pg.stdout + pg.stderr
+                # Neither marker string is imported here any more: nothing in this function reads
+                # the gate's output to decide anything.
                 if pg.returncode == FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE:
                     failure_category = "static_frontend_unavailable"
-                elif STALE_DEPENDENCY_IR_MARKER in gate_output:
+                elif pg.returncode == STALE_DEPENDENCY_IR_EXIT_CODE:
                     failure_category = "stale_dependency_ir"
                 else:
                     failure_category = "post_generate_violation"
