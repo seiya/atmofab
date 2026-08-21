@@ -50,6 +50,16 @@ Three consequences worth stating explicitly:
 - **The leaf layer is the owner when a setting appears in both.** Edit the leaf file first; a synchronization test keeps the dev layer's hook wiring identical so that an operator's session enforces the same policy a leaf does.
 - **A workflow leaf reads none of the repository's top-level instruction documents.** `CLAUDE.md`, `AGENTS.md`, and the dev skills are the DEV layer. A leaf's contract arrives through its launch prompt: `docs/AGENT_CONTRACT.md` plus the phase `SKILL` under `skills/`. A rule a leaf must follow therefore has to land in one of those, never here.
 
+## Repository environment
+Facts about this repository that decide how an operator's own session should be configured. They are stated here because a session-level safety configuration is per-user and per-machine, so this repository cannot hold the configuration itself — only the material an operator builds one from.
+
+- **The repository is public.** Anything pushed to `origin` is published. Only this repository's own work belongs there; credentials and personal data are never made safe by the visibility setting.
+- **`main` is the default branch and carries no protection rule.** Nothing on the hosting side refuses a direct push to it. A change lands through a branch and a pull request by convention, and the convention is the only thing enforcing it.
+- **There is no CI.** Every check named in `docs/DEVELOPMENT.md` and in the two development skills runs on the operator's own machine, and a green tree is a claim about the machine it was measured on. This is why a measured figure is recorded with the commit it was taken at.
+- **There are no deployment targets, cloud accounts, package registries, or internal services.** A workflow run reaches the LLM providers its configuration names, and nothing else.
+- **Dotenv files are ignored**, so a secret placed in one is not offered for commit. Nothing scans for a secret placed anywhere else.
+- **The routine commands are repo-local**: the test suite, the linter, the workflow driver, and the tools under `tools/`.
+
 ## Record placement
 One fact has one canonical home. A restatement elsewhere is a twin document, and a twin is a future disagreement rather than a convenience — cite the owner instead.
 
