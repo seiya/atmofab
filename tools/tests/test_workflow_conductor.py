@@ -14321,13 +14321,24 @@ class DeterministicBuildTest(unittest.TestCase):
         # nothing keeps them equal except this row: a category added to one is now a decision
         # about the other. The disjointness is the load-bearing half — a terminal category that
         # also appeared in a warm table would be routed by whichever branch ran first.
+        #
+        # BOTH dev sets are pinned, and the second is the one that matters. The terminal route
+        # returns `fail_closed`, which `conduct` maps to reason_code `conductor_phase_fail_closed`
+        # — and `_derive_dev_validate_execute_resume_directive` answers THAT code from
+        # `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES`. `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES`
+        # answers `dev_phase_rollback`, a code this route never produces, so pinning it alone
+        # (as the first version of this row did) left the consulted set unwitnessed: admitting
+        # both terminal categories into the VERDICT set kept all 1910 rows of this file plus
+        # test_orchestration_runtime.py green.
         self.assertEqual(wc.VALIDATE_EXECUTE_FAILURE_TERMINAL, wc.GATE_FAILURE_TERMINAL)
         self.assertEqual(
             frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
             & frozenset(wc.VALIDATE_EXECUTE_FAILURE_ROUTING))
-        self.assertEqual(
-            frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
-            & wc_runtime._DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES)
+        for dev_set_name in ("_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES",
+                             "_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES"):
+            self.assertEqual(
+                frozenset(), wc.VALIDATE_EXECUTE_FAILURE_TERMINAL
+                & getattr(wc_runtime, dev_set_name), dev_set_name)
 
     def test_read_repair_findings_returns_none_for_a_terminal_execute_reason(self) -> None:
         # A terminal reason shares the `validate_execute_` prefix with the warm categories, so a

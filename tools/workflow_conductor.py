@@ -385,11 +385,18 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # is pinned by a test, so a change to one is a decision about the other rather than a silent
 # drift.
 #
-# Members are deliberately absent from `VALIDATE_EXECUTE_FAILURE_ROUTING` and from
-# `orchestration_runtime._DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES`: a terminal category must not
-# produce a Generate resume directive, and `_read_repair_findings` must not thread findings into
-# a repair that provably cannot converge. Recovery is the operator's (install the front end /
-# re-certify) followed by `--resume`.
+# Members are deliberately absent from `VALIDATE_EXECUTE_FAILURE_ROUTING`, so
+# `_read_repair_findings` cannot thread findings into a repair that provably cannot converge.
+#
+# They must also stay out of BOTH of `orchestration_runtime`'s dev category sets, or a `--resume`
+# in dev would issue a Generate resume directive for a condition no regeneration touches. NAME
+# THE RIGHT ONE: `conduct` maps this `fail_closed` to reason_code `conductor_phase_fail_closed`,
+# and `_derive_dev_validate_execute_resume_directive` consults
+# `_DEV_VALIDATE_EXECUTE_VERDICT_CATEGORIES` for that code —
+# `_DEV_VALIDATE_EXECUTE_REUSE_CATEGORIES` belongs to `dev_phase_rollback`, which this route
+# never produces. An earlier version of this comment cited only the latter, and the test written
+# beside it pinned only the latter too, so the set the route actually consults had no witness.
+# Recovery is the operator's (install the front end / re-certify) followed by `--resume`.
 VALIDATE_EXECUTE_FAILURE_TERMINAL: frozenset[str] = frozenset(
     {"stale_dependency_ir", "static_frontend_unavailable"}
 )
