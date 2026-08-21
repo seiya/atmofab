@@ -85,6 +85,33 @@ def _is_separator_row(cells: list[str]) -> bool:
     return bool(joined) and set(joined) <= set("-: ")
 
 
+def table_body_rows(text: str) -> list[str]:
+    """Lines that are BODY rows of a real markdown table — one that had a separator row.
+
+    The separator is what distinguishes a table from any other line that happens to start with
+    a pipe. Treating every such line as a row refused a table shown inside a fenced block as an
+    example, which is the markdown-parsing over-refusal this file gave up citation resolution to
+    avoid; one instance of it had survived in the crudest reader.
+
+    RESIDUE, stated rather than parsed away: a fenced block containing a COMPLETE table — header
+    and separator — is still read as one. Telling those apart needs the fence tracking this file
+    deliberately does not do.
+    """
+    rows: list[str] = []
+    in_table = False
+    for line in text.splitlines():
+        if not line.lstrip().startswith("|"):
+            in_table = False
+            continue
+        cells = _split_row(line)
+        if _is_separator_row(cells):
+            in_table = True
+            continue
+        if in_table:
+            rows.append(line)
+    return rows
+
+
 def read_table(text: str, headers: tuple[str, ...]) -> list[dict[str, str]]:
     """Rows of every table whose header row carries ALL of `headers`, as name-to-cell maps.
 
@@ -194,6 +221,18 @@ class TableReaderTests(unittest.TestCase):
                 self.assertTrue(_is_separator_row(_split_row(row)))
         self.assertFalse(_is_separator_row(_split_row("| a | b |")))
 
+    def test_body_rows_need_a_separator_above_them(self) -> None:
+        """A pipe-leading line is a row only inside a table that declared itself with one."""
+        real = "| a | b |\n|---|---|\n| `x.md` | y |\n"
+        self.assertEqual(table_body_rows(real), ["| `x.md` | y |"])
+        self.assertEqual(table_body_rows("| `x.md` | a row with no separator above it |\n"), [])
+
+    def test_body_rows_stop_at_a_table_boundary(self) -> None:
+        """Without the reset, a later pipe-leading line inherits the first table's separator."""
+        text = ("| a | b |\n|---|---|\n| `x.md` | y |\n"
+                "\nprose\n\n| `z.md` | a line that is not in any table |\n")
+        self.assertEqual(table_body_rows(text), ["| `x.md` | y |"])
+
     def test_a_table_is_found_by_its_header_and_read_by_column_name(self) -> None:
         text = "| file | layer | tracked |\n|---|---|---|\n| `a.json` | LEAF | yes |\n"
         self.assertEqual(read_table(text, _LAYER_TABLE_HEADERS),
@@ -267,9 +306,8 @@ class DevelopmentDocTableTests(unittest.TestCase):
     """Every document a table row of `docs/DEVELOPMENT.md` names exists."""
 
     def test_every_document_named_in_a_table_row_exists(self) -> None:
-        rows = [line for line in DEVELOPMENT_DOC.read_text(encoding="utf-8").splitlines()
-                if line.lstrip().startswith("|")]
-        named = sorted({p for row in rows for p in _MD_PATH_RE.findall(row)})
+        named = sorted({p for row in table_body_rows(DEVELOPMENT_DOC.read_text(encoding="utf-8"))
+                        for p in _MD_PATH_RE.findall(row)})
         self.assertTrue(named, "no table row of docs/DEVELOPMENT.md names a document")
         for path in named:
             with self.subTest(path=path):
