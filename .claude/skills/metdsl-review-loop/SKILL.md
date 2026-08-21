@@ -126,6 +126,16 @@ came from, and the reasoning you need when a rule does not obviously apply.
   The rule generalises past those two: **the harness's scratch paths must not be paths the suite
   makes assertions about**, and nothing can know which those are for you. The BASELINE RED message
   now names both levers; when it fires, try them before touching a test
+- **A documentation-only diff reports every hunk as SURVIVED, and that is a MEASUREMENT, not a
+  failure.** It says no test observes any claim the branch makes, which for prose is usually
+  correct and occasionally not. Do not respond by pinning everything, and do not respond by
+  skipping round 0. Split the hunks: a claim that is **mechanically checkable** — a path that must
+  exist, a table column that must agree with `git`, a pointer that must be reachable — gets a
+  check; everything else is declared prose in the commit message, with the count. On the TODO:414
+  branch this turned 13 of 13 surviving into 5 killed plus 8 named as prose, and writing the
+  checks found an over-refusal before any reviewer saw the branch. **Beware the trap on the other
+  side**: a check that parses prose to decide what a claim IS will refuse correct writing, which
+  is the failure that took two rebuilds and a scope declaration to stop on that same branch
 - **Pass `--continue-on-collection-errors` when a hunk comes back INCONCLUSIVE, and drop `-x`
   when you do.** A mutation can kill pytest during collection, and a scorer reading only `FAILED`
   lines records that as green (PR #68: 3 mutants hid 41-47 real failures). The two flags cancel:
