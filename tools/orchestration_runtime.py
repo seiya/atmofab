@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import types
 import uuid
@@ -16648,6 +16649,14 @@ CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
     sorted(set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
 )
 
+# How long one roster capture may take. MEASURED at ~2 s wall on CLI 2.1.238 (the launch
+# ends at the stand-in's 400, before any model turn), so this is two orders of magnitude of
+# headroom for a loaded machine and a slow start — and still a bound, because the probe runs
+# inside preflight and a hang there is a run that never begins with nothing said about why.
+# A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
+# is the state this check exists to refuse.
+CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS = 120
+
 
 # The ONLY paths inside the private home a leaf may write, MEASURED on CLI 2.1.235
 # by running an agentic (tool-using) leaf against a fresh home and diffing the tree:
@@ -16726,6 +16735,320 @@ def _claude_hook_invokes_event(hook: Any, event: str) -> bool:
         return False
     command = hook.get("command")
     return isinstance(command, str) and command == _canonical_claude_hook_command(event)
+
+
+def claude_leaf_roster_probe_argv(command_argv: Sequence[str]) -> list[str]:
+    """The argv whose tool roster the preflight check measures.
+
+    THE SAME ARGV A LEAF IS LAUNCHED WITH, minus nothing that decides the tool set. A
+    roster captured from a different launch shape answers a different question — that is
+    the whole failure mode this function exists to prevent — so
+    `test_the_roster_probe_argv_is_the_agentic_leaf_argv` pins it against
+    `Conductor.leaf_command()`'s default agentic argv by FULL EQUALITY, from the test
+    module that can import both. `references/dual-read-pairs.md` records the pair.
+
+    The one element deliberately outside the equality is the executable: this takes the
+    argv prefix the caller resolved (`shlex.split` of a configured wrapper command, or the
+    bare backend name), because the probe certifies the CLI the operator's configuration
+    actually launches.
+
+    Per-launch flags a leaf may additionally carry — `--model`, `--effort`, `--session-id`,
+    `--resume`/`--fork-session` — are absent by construction: `leaf_command()`'s default
+    entry declares no model, and none of them names a tool. That is a claim about the
+    argv, so the equality test is what holds it, not this sentence.
+    """
+    argv = list(command_argv)
+    if not argv:
+        raise ValueError("claude command must be non-empty")
+    # NOT imported from `workflow_conductor`: the import runs one way (conductor →
+    # runtime), and the preflight must not pull the conductor in. This is therefore a
+    # SECOND SPELLING of `workflow_conductor.CLAUDE_LEAF_MCP_CONFIG`, and the sync test
+    # above is what keeps the two from drifting.
+    argv += ["--setting-sources", "user",
+             "--strict-mcp-config",
+             "--mcp-config", ".mcp.json",
+             "--disable-slash-commands",
+             "--tools", ",".join(CLAUDE_LEAF_TOOLS),
+             "--output-format", "json", "-p"]
+    return argv
+
+
+@contextlib.contextmanager
+def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
+    """A loopback stand-in for the Messages endpoint that RECORDS the tool roster.
+
+    Yields `(base_url, captured)`, where `captured` grows one entry per request that
+    carried a `tools` array — the CLI's own declaration of what it would let the model
+    call. UNBILLED and modelless: a request carrying tools is answered `400`, which the
+    CLI reports as an API error and exits on, so no model turn happens and no token is
+    spent. This is the same harness shape issue #63 used to measure what a leaf's launch
+    injects, made a production component.
+
+    MEASURED on CLI 2.1.238: one launch produces TWO requests, both to
+    `/v1/messages?beta=true` and both carrying the full roster, and the CLI does not retry
+    the 400 into a loop. Nothing here depends on which request is the interesting one —
+    every captured array is classified — so a future CLI that sends one, or five, needs no
+    change.
+
+    A request WITHOUT tools is answered with a minimal `end_turn` message instead of a
+    400: a toolless side request is not the thing being measured, and refusing it could
+    make the CLI abort before it ever composes the roster request. It is recorded as no
+    capture at all rather than as an empty roster, which would otherwise read as "a leaf
+    with no tools" — the exact false PASS the check must not produce.
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    captured: list[list[str]] = []
+    lock = threading.Lock()
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args: Any) -> None:  # noqa: A003 - silence the stderr log
+            """The default handler writes every request to stderr, which under preflight
+            is the operator's terminal and, worse, the captured stderr of the process."""
+
+        def _reply(self, status: int, payload: dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            # HTTP/1.1 keep-alive: without an exact length the client waits for a close
+            # that a threading server does not make, and the probe hangs to its timeout.
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            raw = self.rfile.read(length) if length > 0 else b""
+            try:
+                document = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                document = {}
+            tools = document.get("tools") if isinstance(document, dict) else None
+            if isinstance(tools, list) and tools:
+                names = [str(item.get("name")) for item in tools
+                         if isinstance(item, dict) and item.get("name")]
+                with lock:
+                    captured.append(names)
+                self._reply(400, {"type": "error", "error": {
+                    "type": "invalid_request_error",
+                    "message": "met-dsl preflight roster capture: no model turn is made"}})
+                return
+            self._reply(200, {
+                "id": "msg_metdsl_roster_probe", "type": "message", "role": "assistant",
+                "model": str(document.get("model") or "unknown") if isinstance(document, dict)
+                else "unknown",
+                "content": [{"type": "text", "text": "."}],
+                "stop_reason": "end_turn", "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            """Anything else the CLI reaches for at startup is not this probe's business."""
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address[0], server.server_address[1]
+        yield f"http://{host}:{port}", captured
+    finally:
+        # Both, in this order: `shutdown` stops the accept loop (and blocks until it has),
+        # `server_close` releases the listening socket. Preflight runs several probes in
+        # one process, so a leaked socket is a port the next run cannot have.
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _classify_claude_leaf_roster(
+    captured: Sequence[Sequence[str]],
+    declared_servers: Sequence[str],
+) -> dict[str, Any]:
+    """Sort a captured roster into classified / unclassified, in BOTH directions.
+
+    The union over every capture, because a name that appeared in any request is a name
+    the leaf could have called.
+
+    A built-in must be exactly `CLAUDE_LEAF_REQUIRED_TOOLS`:
+
+      * an EXTRA name is a tool no `PreToolUse` matcher validates — the fail-open issue #71
+        closes, arriving here as the CLI grew its roster or stopped honouring `--tools`;
+      * a MISSING name is the other half, and it is not hypothetical: an unknown tool name
+        is SILENTLY IGNORED by the CLI (measured), so a rename upstream would quietly strip
+        a leaf of a tool its skill depends on and the run would fail later, mid-billing,
+        looking like a model failure.
+
+    Equality, deliberately, rather than "⊆ the allowed set". A subset test tolerates a
+    dormant matcher, and it would also pass a leaf launched with nothing at all. The
+    operational cost is real and accepted: a CLI release that moves the roster stops
+    preflight until someone classifies the change on purpose. That is the issue's
+    acceptance condition working, not a malfunction.
+
+    An `mcp__<server>__<tool>` name is classified by its SERVER against the committed
+    `.mcp.json` — which under `--strict-mcp-config` is the leaf's entire server set — and
+    not by tool name. Whether a particular MCP tool EXISTS is a different question, owned
+    by `_probe_claude_mcp_registry`; what this rejects is a tool from a server this
+    repository never declared, which would mean the strict-config closure had failed.
+    """
+    names: set[str] = set()
+    for roster in captured:
+        names |= {str(name) for name in roster}
+    builtins = {name for name in names if not name.startswith("mcp__")}
+    mcp_names = sorted(names - builtins)
+    required = set(CLAUDE_LEAF_REQUIRED_TOOLS)
+    undeclared_mcp: list[str] = []
+    declared = set(declared_servers)
+    for name in mcp_names:
+        remainder = name[len("mcp__"):]
+        server = remainder.split("__", 1)[0]
+        if server not in declared:
+            undeclared_mcp.append(name)
+    return {
+        "builtins": sorted(builtins),
+        "mcp": mcp_names,
+        "unclassified": sorted(builtins - required),
+        "missing": sorted(required - builtins),
+        "undeclared_mcp": undeclared_mcp,
+        "captures": len(captured),
+    }
+
+
+def _probe_claude_leaf_tool_roster(
+    command: str | Sequence[str],
+    repo_root: Path | None,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    cli_version: str | None = None,
+) -> dict[str, Any]:
+    """Check `claude_leaf_tool_roster_classified`: the tools the INSTALLED CLI would
+    actually hand a leaf are all deliberately classified (issue #71).
+
+    `CLAUDE_LEAF_TOOLS` is a declaration; this is the measurement. The two can part
+    company without a word from either side — the CLI ignores an unknown `--tools` name
+    silently (measured on 2.1.238), and a future release may stop honouring the flag,
+    reinstate a built-in, or rename one. A declaration nobody measures is what the
+    denylist was.
+
+    HOW: launch the leaf argv (`claude_leaf_roster_probe_argv`) against a loopback
+    stand-in for the Messages endpoint and read the `tools` array the CLI itself sends.
+    UNBILLED — the stand-in answers 400 before any model turn — and it costs ~2 s and one
+    CLI start per capture (measured), which preflight pays twice per full run plus once
+    per TTL window.
+
+    Environment: the DECLARED ALLOWLIST (`leaf_env_from`), plus the API base pointed at
+    the stand-in and a dummy key. An allowlist rather than `os.environ` minus the names
+    that look dangerous, for the reason `LEAF_ENV_ALLOWLIST` already gives: a denylist over
+    environment names does not terminate. `ANTHROPIC_AUTH_TOKEN` is the obvious one to
+    strip, but `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` and the proxy family
+    redirect a launch just as effectively, and the next such name ships with a CLI nobody
+    here has read about. Under the allowlist every one of them is absent by construction,
+    so the probe cannot reach a real endpoint and cannot be billed. It is also the more
+    FAITHFUL measurement: it is the environment shape a leaf itself is launched in.
+
+    Deliberately not `_child_env` even so: that function's job is to build a LEAF's
+    environment, and it strips `ANTHROPIC_BASE_URL` — the one variable this probe exists to
+    set. `CLAUDE_CONFIG_DIR` is a fresh empty scratch directory (measured: an empty home
+    reaches the request, so no trust seed is needed), which also keeps the operator's own
+    home out of the roster the check reads.
+
+    FAIL CLOSED on everything: a spawn error, a timeout, no capture at all, an
+    unparseable `.mcp.json`, an unclassified name, or a missing required one. An
+    unmeasured roster is exactly the state the check refuses; reporting `pass` on it would
+    reproduce the denylist's failure in a new place.
+
+    `repo_root is None` is an advisory SKIP (`pass=None`), on the precedent of
+    `_probe_claude_mcp_registry`: production reaches this through `cmd_preflight`, which
+    always passes one, and without a repo root there is no `.mcp.json` to classify the
+    MCP half against.
+    """
+    name = "claude_leaf_tool_roster_classified"
+    version_note = f"; cli={cli_version}" if cli_version else ""
+    if repo_root is None:
+        return {"name": name, "pass": None,
+                "detail": ("skipped; probe_execution_platform was called without repo_root "
+                           "(advisory only — production calls via cmd_preflight always pass "
+                           "repo_root)")}
+    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
+    if not command_argv:
+        return {"name": name, "pass": False, "detail": "claude command is empty"}
+    mcp_path = repo_root / ".mcp.json"
+    try:
+        mcp_document = json.loads(mcp_path.read_text(encoding="utf-8"))
+        declared_servers = sorted(mcp_document["mcpServers"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # FAIL CLOSED rather than classify the MCP half against an empty set: an
+        # unreadable file would turn every MCP tool in the roster into an "undeclared"
+        # finding and point the operator at the wrong repair.
+        return {"name": name, "pass": False,
+                "detail": (f"cannot read the leaf's MCP configuration {mcp_path} "
+                           f"({type(exc).__name__}: {exc}); the roster's MCP tools cannot be "
+                           f"classified against it{version_note}")}
+
+    argv = claude_leaf_roster_probe_argv(command_argv)
+    with _claude_roster_capture_server() as (base_url, captured):
+        env = leaf_env_from(os.environ)
+        env["ANTHROPIC_BASE_URL"] = base_url
+        env["ANTHROPIC_API_KEY"] = "metdsl-preflight-roster-probe"
+        with tempfile.TemporaryDirectory(prefix="metdsl-roster-home-") as scratch_home:
+            env["CLAUDE_CONFIG_DIR"] = scratch_home
+            try:
+                proc = runner(argv, text=True, capture_output=True, check=False,
+                              input=".", env=env, cwd=str(repo_root),
+                              timeout=CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                return {"name": name, "pass": False,
+                        "detail": (f"the roster probe did not finish within "
+                                   f"{CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS}s; the tools a leaf "
+                                   f"would be launched with are unmeasured{version_note}")}
+            except (OSError, ValueError) as exc:
+                return {"name": name, "pass": False,
+                        "detail": (f"the roster probe could not run {argv[0]!r} "
+                                   f"({type(exc).__name__}: {exc}){version_note}")}
+            snapshot = [list(roster) for roster in captured]
+
+    if not snapshot:
+        # The CLI ran and sent no request carrying tools. That is not "no tools" — it is
+        # no measurement, and the difference matters: a leaf launched from this CLI might
+        # have any roster at all.
+        stderr = (proc.stderr or "").strip()[:400]
+        return {"name": name, "pass": False,
+                "detail": (f"the CLI made no request carrying a tool roster (rc="
+                           f"{proc.returncode}), so what a leaf would be launched with is "
+                           f"unmeasured{version_note}"
+                           + (f"; stderr: {stderr}" if stderr else ""))}
+
+    report = _classify_claude_leaf_roster(snapshot, declared_servers)
+    problems: list[str] = []
+    if report["unclassified"]:
+        # NAMED, not counted. The remedy is a judgement about each specific tool — is it
+        # something a leaf may have, and if so which `PreToolUse` matcher will validate it
+        # — and an operator cannot begin that with a number.
+        problems.append("built-ins no PreToolUse matcher validates: "
+                        + ", ".join(report["unclassified"]))
+    if report["missing"]:
+        problems.append("declared built-ins the CLI did not provide: "
+                        + ", ".join(report["missing"]))
+    if report["undeclared_mcp"]:
+        problems.append("MCP tools from servers .mcp.json does not declare: "
+                        + ", ".join(report["undeclared_mcp"]))
+    measured = (f"measured {report['captures']} capture(s); built-ins="
+                f"{','.join(report['builtins']) or '(none)'}; mcp="
+                f"{','.join(report['mcp']) or '(none)'}{version_note}")
+    if problems:
+        return {"name": name, "pass": False,
+                "detail": ("; ".join(problems) + ". " + measured
+                           + ". Classify the change deliberately: add a PreToolUse matcher "
+                             "for a tool a leaf may keep (docs/HOOKS.md), or record it in "
+                             "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI if the CLI stopped offering "
+                             "one. See docs/RUNBOOK.md §0-2.")}
+    return {"name": name, "pass": True, "detail": measured}
 
 
 def _probe_claude_leaf_config(repo_root: Path | None) -> dict[str, Any]:
@@ -18233,6 +18556,26 @@ def probe_execution_platform(
         leaf_config_check = _probe_claude_leaf_config(repo_root)
         checks.append(leaf_config_check)
         can_launch_agents = can_launch_agents and (leaf_config_check.get("pass") is True)
+        # EARLIEST CERTAIN DETECTION, same shape and same reason (issue #71). What a leaf
+        # can DO is decided by the installed CLI's roster, and nothing else measures it:
+        # `CLAUDE_LEAF_TOOLS` is a declaration the CLI may silently disagree with — it
+        # ignores an unknown `--tools` name without a word, and a release can reinstate a
+        # built-in or stop honouring the flag. Detected at the first leaf launch that
+        # would mean a leaf reaching for a tool no `PreToolUse` matcher validates, mid-run
+        # and mid-billing, with nothing in the artifacts saying so. It is fully knowable
+        # before init — one unbilled CLI start — so it is surfaced here.
+        #
+        # Unlike the leaf configuration above there is NO launch-time backstop for this
+        # one: the conductor cannot see the roster, only the endpoint can, so this check
+        # is the whole enforcement. Hence it gates rather than reports.
+        roster_check = _probe_claude_leaf_tool_roster(
+            command, repo_root, runner, cli_version=agent_version)
+        checks.append(roster_check)
+        # `is True`, so an advisory skip (`pass=None`, no repo_root) neither gates nor
+        # silently greens: `_all_strict_boolean_probe_checks_pass` is not used here
+        # because the claude branch ANDs each check at its probe, which is the existing
+        # arrangement this follows rather than changes.
+        can_launch_agents = can_launch_agents and (roster_check.get("pass") is not False)
     else:
         # Codex's internal multi_agent feature is diagnostic only: the conductor
         # launches independent CLI processes and does not use Codex subagents. Every

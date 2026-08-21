@@ -7255,6 +7255,32 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(pure[pure.index("--tools") + 1], "")
         self.assertNotEqual(agentic[agentic.index("--tools") + 1], "")
 
+    def test_the_roster_probe_argv_is_the_agentic_leaf_argv(self) -> None:
+        """DUAL READ (issue #71). `orchestration_runtime.claude_leaf_roster_probe_argv`
+        spells the agentic launch a second time, because the preflight roster check must
+        measure the tools the LEAF gets and the import runs one way (conductor → runtime),
+        so it cannot call `leaf_command`.
+
+        FULL EQUALITY, not "contains `--tools`". Every element of this argv can move the
+        roster the CLI composes — `--setting-sources` decides which settings layer's
+        permissions and hooks load, `--strict-mcp-config`/`--mcp-config` decide the MCP
+        half of the roster outright, `--disable-slash-commands` drops a tool — so a probe
+        that drifted in any of them would certify a tool set no leaf is launched with, and
+        report `pass` while doing it. This test module is the one place that can import
+        both sides; `references/dual-read-pairs.md` records the pair.
+
+        The executable is the one element deliberately outside the comparison: the probe
+        takes the resolved command prefix from its caller, which is what makes it certify
+        a configured wrapper rather than the bare binary.
+        """
+        from tools.orchestration_runtime import claude_leaf_roster_probe_argv
+        argv = self._c(backend="claude").leaf_command()
+        self.assertEqual(claude_leaf_roster_probe_argv([argv[0]]), argv)
+        # And with a wrapper command, which is the case the executable carve-out exists
+        # for: everything after the prefix must still match.
+        wrapped = self._c(backend="claude", llm_command="mywrap --model Z").leaf_command()
+        self.assertEqual(claude_leaf_roster_probe_argv(["mywrap", "--model", "Z"]), wrapped)
+
     def test_claude_agentic_leaf_argv_closes_user_setting_sources(self) -> None:
         """Issue #63 step 1. An agentic claude leaf used to inherit the OPERATOR's
         `~/.claude` whole — model, effort, permission grants, skills, plugins, plugin
