@@ -115,6 +115,17 @@ if you use it).
 The rules below are compact; `references/mutation-testing.md` carries the episodes each one
 came from, and the reasoning you need when a rule does not obviously apply.
 
+- **A red baseline is the HARNESS's fault before it is the suite's.** The script's own scratch
+  paths are inputs to the suite it runs: the per-job temp root (`$TMPDIR`) and the worktree
+  location (`--workdir`, whose filesystem DEPTH differs from your checkout's). A suite green in
+  your checkout and red under the harness is almost always one of those, and it is not a finding
+  about your change. Measured in met-dsl: the old `/dev/shm` temp-root default reddened the two
+  `DevShmWriteBlockTests` rows that reason about `/dev/shm`, and the default `--workdir` under
+  `~/.cache` reddens the hook rows that resolve `..` and `~` against the checkout — together they
+  made a full-suite `--test-cmd` impossible to run at all, while the message said "fix the suite".
+  The rule generalises past those two: **the harness's scratch paths must not be paths the suite
+  makes assertions about**, and nothing can know which those are for you. The BASELINE RED message
+  now names both levers; when it fires, try them before touching a test
 - **Pass `--continue-on-collection-errors` when a hunk comes back INCONCLUSIVE, and drop `-x`
   when you do.** A mutation can kill pytest during collection, and a scorer reading only `FAILED`
   lines records that as green (PR #68: 3 mutants hid 41-47 real failures). The two flags cancel:

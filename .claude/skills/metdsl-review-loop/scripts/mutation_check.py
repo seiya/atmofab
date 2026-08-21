@@ -12,8 +12,17 @@ this with a mechanism-level deletion and with checking that each fixture has onl
 to the outcome it asserts. See the skill's "Before you hand it over (round 0)".
 
 The checkout is never touched: every mutation happens in a `git worktree` under
-`--workdir` (default `~/.cache/mutation-check`). Keeping it under $HOME matters for
-met-dsl, where a few hook tests are sensitive to the checkout's filesystem depth.
+`--workdir` (default `~/.cache/mutation-check`), with one scratch root per job under
+`$TMPDIR` (default: the platform's).
+
+**Both of those are paths the harness chooses, and a suite can be red because of them
+rather than because of your change.** In met-dsl the default worktree location has a
+different filesystem DEPTH from the checkout, which reddens the hook tests that resolve
+`..` and `~`; and a scratch root under `/dev/shm` reddens the two tests that reason about
+a write guard over `/dev/shm`. The BASELINE RED message names both levers. The rule behind
+them: the harness's scratch paths must not be paths the suite makes assertions about, and
+this script cannot know which those are — so when the baseline is red, suspect the harness
+before the suite.
 
     python3 mutation_check.py --range HEAD~1..HEAD --paths mcp_servers tools \\
         --test-cmd "python3 -m pytest tools/tests/test_build_runtime_server.py -q -x"
@@ -343,7 +352,12 @@ def main() -> int:
                          "output is read only to tell a real failure from a suite that never "
                          "ran, so pass -x (pytest) to stop at the first failure")
     ap.add_argument("--repo", default=".", help="repository (default: cwd)")
-    ap.add_argument("--workdir", default=str(Path.home() / ".cache" / "mutation-check"))
+    ap.add_argument("--workdir", default=str(Path.home() / ".cache" / "mutation-check"),
+                    help="where the throwaway worktrees go. The default keeps them under "
+                         "$HOME, which matters where hook tests resolve `~`; it does NOT "
+                         "match your checkout's DEPTH, and a test that resolves `..` "
+                         "against it can turn the baseline red. Point this at a directory "
+                         "at the same depth as your checkout when that happens")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--jobs", type=int, default=0,
                     help="hunks to test at once, each in its own worktree "
@@ -423,7 +437,20 @@ def main() -> int:
     # One TMPDIR per job, since concurrent jobs would otherwise share the temp root.
     # Named as short as `mkdtemp` allows: a met-dsl test asserts a budget on a message
     # that carries a temp path, and a long temp root alone can fail it.
-    tmp_base = os.environ.get("TMPDIR", "/dev/shm")
+    #
+    # `gettempdir()`, which honours TMPDIR and falls back to the platform default. It used
+    # to default to `/dev/shm`, and that default made this script UNUSABLE with a full-suite
+    # `--test-cmd` in met-dsl: two `DevShmWriteBlockTests` rows reason about a write guard
+    # over `/dev/shm`, so putting the job's scratch root inside the path under test made the
+    # BASELINE red on every run — and the message then told the operator to fix a suite that
+    # is green in their own checkout. The general rule the episode teaches: **the harness's
+    # own scratch root must not be a path the suite makes assertions about**, and there is no
+    # way to know which path that is from here, so the default is the one the platform already
+    # chose. `/dev/shm` bought nothing anyway where it was measured — `/tmp` was tmpfs there
+    # too, and four alternating full-suite runs did not separate them (96.7 / 103.0 s against
+    # 102.3 / 93.8 s). On a host where `/tmp` is disk-backed, point TMPDIR at a tmpfs of your
+    # choosing rather than assuming this one.
+    tmp_base = os.environ.get("TMPDIR") or tempfile.gettempdir()
     tmpdirs = {wt: Path(tempfile.mkdtemp(prefix="m", dir=tmp_base)) for wt in worktrees}
     free: list[Path] = list(worktrees)
     lock = threading.Lock()
@@ -503,9 +530,18 @@ def main() -> int:
             elif base.returncode:
                 print("BASELINE RED — the suite fails with nothing reverted, so every "
                       "hunk would report 'killed' for a reason that is not the hunk.\n"
-                      "Fix the suite (or narrow --test-cmd) and rerun. A suite that is "
-                      "green in the checkout but red here is usually reading its own "
-                      "path: the worktree and TMPDIR differ. Last lines:\n")
+                      "BEFORE fixing the suite, check whether THIS HARNESS caused it: a "
+                      "suite green in your checkout and red here is reading a path this "
+                      "run chose, not one your change made. Two levers, both this "
+                      "script's:\n"
+                      f"  * the per-job scratch root is {tmp_base} — if any test reasons "
+                      "about that path, set TMPDIR to somewhere else and rerun;\n"
+                      f"  * the worktrees are under {args.workdir}, so their filesystem "
+                      "DEPTH differs from your checkout's — a test that resolves `..` or "
+                      "`~` relative to the checkout answers differently. Pass --workdir "
+                      "with a directory at your checkout's own depth.\n"
+                      "If neither is it, fix the suite (or narrow --test-cmd) and rerun. "
+                      "Last lines:\n")
                 print("\n".join((base.stdout + base.stderr).splitlines()[-25:]))
                 baseline_failed = True
             else:
