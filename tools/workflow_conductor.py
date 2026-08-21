@@ -374,8 +374,9 @@ VALIDATE_EXECUTE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 
 # Validate.execute STRUCTURAL failure categories that are TERMINAL (fail_closed), NOT any warm
 # route out of the table above. Both name a condition NO leaf can repair by re-authoring source:
-# `static_frontend_unavailable` is an uninstalled Fortran front end on the machine running the
-# gate, `stale_dependency_ir` a certified IR the leaf does not own. `_execute_inproc` records
+# `static_frontend_unavailable` is an uninstalled structure front end on the machine running
+# the gate (see `GATE_FAILURE_TERMINAL` above), `stale_dependency_ir` a certified IR the leaf
+# does not own. `_execute_inproc` records
 # them from the post_execute validator's dedicated exit codes (3 / 4), which no leaf can write.
 #
 # DELIBERATELY A SEPARATE SET FROM `GATE_FAILURE_TERMINAL`, not an alias of it: that one is the
@@ -8229,12 +8230,12 @@ clean:
                  "--pipeline-root", refs.pipeline_ref, "--source-id", refs.source_id or ""],
                 cwd=self.repo_root, env=self.env, text=True, capture_output=True, check=False)
             # NO terminal-exit-code branch here, unlike the post_generate / post_execute /
-            # pre_judge gates. The post_build stage runs only the Makefile trio
-            # (`_validate_fortran_makefile_src_dir` + the two `test`-target rules), which reads
-            # source through the regex/logical-line helpers and never through the tree-sitter
-            # front end, and it does not reach the stale-IR emit site at all — so neither rc 3
-            # nor rc 4 can arrive. Every non-zero code here is a Makefile violation the leaf
-            # repairs by re-authoring, which is what the warm route below assumes.
+            # pre_judge gates. The post_build stage runs only the three build-control-file rules
+            # over `src/`, which read source through the regex/logical-line helpers and never
+            # through the structure front end, and it does not reach the stale-IR emit site at
+            # all — so neither rc 3 nor rc 4 can arrive. Every non-zero code here is a
+            # control-file violation the leaf repairs by re-authoring, which is what the warm
+            # route below assumes.
             if gate.returncode != 0:
                 binary_meta.update({
                     "verification_status": "fail", "status": "fail",
@@ -8911,7 +8912,7 @@ clean:
                 capture_output=True, check=False)
             # NO terminal-exit-code branch here either, for a second reason on top of the
             # post_build one. `--stage compile` reads §5.1 and the IR through the regex-only
-            # signature helpers, never the tree-sitter front end, and the stale-IR emit site is
+            # signature helpers, never the structure front end, and the stale-IR emit site is
             # not on its call graph — so neither rc 3 nor rc 4 arrives. And the routing would be
             # wrong even if one did: at Compile the IR IS the artifact under repair, so a stale
             # or drifted IR is exactly what a warm Compile retry is for, not a terminal verdict.
@@ -9321,8 +9322,8 @@ clean:
             #
             # PRECEDENCE IS ROUTING-LOAD-BEARING at the top and report-quality only below it. The
             # two leading branches read the post_execute validator's DEDICATED EXIT CODES, which
-            # say the failure is not the leaf's: rc 3 is an uninstalled Fortran front end (a
-            # machine problem — every Fortran gate read nothing), rc 4 a stale certified IR. Both
+            # say the failure is not the leaf's: rc 3 is an uninstalled structure front end (a
+            # machine problem — the gates that need it read nothing), rc 4 a stale certified IR. Both
             # must dominate a co-occurring `syn`/`quality_check`/snapshot symptom, because those
             # symptoms are downstream of the same unrepairable condition and routing them warm
             # spends the leaf's budget re-authoring source that was never the cause. Below them
@@ -10571,8 +10572,8 @@ clean:
         an escalate-LLM adjudicator is a deferred follow-up).
 
         Two exit codes are answered BEFORE the bullets are read at all, because they say the
-        gate never reached a verdict about this run's conformance: rc 3 (the Fortran structure
-        front end is not installed) and rc 4 (a stale certified IR). Their bullets describe a
+        gate never reached a verdict about this run's conformance: rc 3 (the structure front end
+        is not installed) and rc 4 (a stale certified IR). Their bullets describe a
         machine or IR condition, and the severity rules classify by artifact PATH — so left to
         the bullet path they would be classified as if they were conformance findings and could
         warm-resume a judge that cannot converge. Both write `disposition: "fail_closed"` with
@@ -10623,7 +10624,7 @@ clean:
         # rc 4 is UNREACHABLE from this stage today (the stale-IR violation has one emit site,
         # reached only from post_generate); it is wired so that the day a pre_judge gate reports
         # it, it fails closed rather than warm-resuming. rc 3 IS reachable: `--stage pre_judge`
-        # runs gates that read Fortran through the front end.
+        # runs gates that read source through the front end.
         from tools.validate_pipeline_semantics import (
             FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
             STALE_DEPENDENCY_IR_EXIT_CODE,
