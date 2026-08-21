@@ -17044,8 +17044,9 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             ir["public_api"] = {"signatures": []}  # pre-contract shape: no module_parameters key
             ir_path.write_text(json.dumps(ir), encoding="utf-8")
             violations = self._run(ex, tmp)
-            # Carries the sentinel the conductor keys on to route this TERMINAL (fail_closed), not a
-            # futile warm Generate retry (a leaf cannot mutate the certified IR).
+            # Carries the sentinel for a human reader. What routes this TERMINAL (fail_closed)
+            # rather than as a futile warm Generate retry is the violation's TYPE, mapped by
+            # `main` to a dedicated exit code; the conductor keys on nothing in this text.
             self.assertTrue(any(vps.STALE_DEPENDENCY_IR_MARKER in v
                                 and "does not carry the controlled_spec §5.1 module parameters" in v
                                 and "re-certify" in v for v in violations), violations)
@@ -17053,7 +17054,9 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
     def test_stale_ir_empty_or_drifted_module_parameters_fails_closed(self) -> None:
         # The guard must fire not only on an ABSENT key but on any §5.1 mismatch a pre-contract /
         # corrupt IR can carry through a Compile-skipping resume: an empty list, or drifted values.
-        # Each is unrepairable by re-running Generate, so each must carry the terminal marker.
+        # Each is unrepairable by re-running Generate, so each must be emitted as the terminal
+        # violation TYPE — checked here through the marker its message carries, since this
+        # helper-level row observes the message rather than the process exit code.
         for stale_pub in (
             {"module_parameters": []},                                              # empty list
             {"module_parameters": [{"name": "dp", "base": "integer",
@@ -22045,9 +22048,13 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
     after the marker forged the terminal verdict and burned a billed run. The channel is now the
     process exit code, written by the branch that knows and unwritable by any leaf.
 
-    These drive the REAL CLI in a REAL subprocess, because the channel is carried by the
-    violation's Python TYPE: a helper-level assertion would stay green while an unwrapped
-    ``violations.append`` or a list rebuild silently degraded production to exit code 1.
+    The three rows that exercise the CHANNEL drive the REAL CLI in a REAL subprocess, because it
+    is carried by the violation's Python TYPE: a helper-level assertion would stay green while an
+    unwrapped ``violations.append`` or a list rebuild silently degraded production to exit code 1.
+    The two rows about the exit-code CONSTANTS do not — they read module attributes, and
+    ``_help`` calls ``main(["--help"])`` in-process. Stated because this class's first docstring
+    said "these drive the real CLI" of all of them, which is the same false claim a sibling test
+    in ``test_fortran_structure.py`` had to be renamed for.
     """
 
     def _seed(self, tmp: Path, *, module_parameters: object | None) -> Path:
@@ -22144,7 +22151,10 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         a new CONSTANT added with no line.
 
         A new code added as a bare LITERAL is invisible to this row (1 and 2 already reach the
-        caller that way, and are asserted separately below). An AST walk of `main` /
+        caller that way, and are asserted separately below). In the other direction, `dir` sees
+        IMPORTED names too, so a future `from ... import SOMETHING_EXIT_CODE` into this module
+        would be demanded a `--help` line it does not owe. No such import exists today, and
+        filtering for it would be machinery for an absent caller — recorded rather than built. An AST walk of `main` /
         `_main_dispatch` shows every `Return` is 0, 1, or one of the two constants today;
         nothing keeps it that way, so this is a bound on the row rather than on the code.
         """
@@ -22191,6 +22201,13 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
         constants above" invites) is an ALIAS, not a second condition, and nothing here can tell
         an alias from a collision by reading a name. Refusing on a value alone is refusing
         something that contradicts nothing.
+
+        THE COST OF THAT, stated because the alias argument does not cover it: a genuinely NEW
+        condition given the value 1 or 2 is invisible to both rows — distinctness compares the
+        constants only to each other, and the help row is satisfied because 1 and 2 already have
+        epilog lines. A new TERMINAL condition silently valued 1 would be routed warm, which is
+        the defect class this whole change exists to close. Nothing here catches it; a reviewer
+        constructing the case is what would.
 
         Also not pinned: a code returned as a bare literal rather than through a constant, which
         is how 1 and 2 already reach the caller. An AST walk of `main` / `_main_dispatch` shows

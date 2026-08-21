@@ -365,7 +365,12 @@ class FrontEndUnavailableTests(unittest.TestCase):
         self.assertIn("EXIT 3 FortranStructureUnavailableError", result.stdout)
 
     def test_with_the_packages_present_the_same_source_is_gated_normally(self) -> None:
-        # The control for the row above: the stub is what makes it fail, not the fixture.
+        # The control for `test_the_generate_gate_raises_instead_of_going_quiet`: with the
+        # packages present the same literal-only source earns its ordinary violation, so the stub
+        # is what makes that row fail rather than the fixture. Named explicitly because "the row
+        # above" stopped being that one when rows were added and renamed between them — and the
+        # CLI row has its own control, measured when it was written: without the stub the same
+        # fixture exits 0/PASS.
         import tools.validate_pipeline_semantics as vps
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

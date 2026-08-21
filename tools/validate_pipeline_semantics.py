@@ -13066,7 +13066,10 @@ def _validate_infrastructure_generated_signatures(
     # none/wrong and this gate would fail below with a confusing source drift that re-running Generate
     # can never repair. Run the SAME comparison Compile.static uses (IR module_parameters == §5.1 by
     # normalized name+value): ANY mismatch means the certified IR is stale/corrupt, so fail closed
-    # with the actionable re-certify signal + the terminal marker, rather than a warm-retry drift.
+    # with the actionable re-certify signal, rather than a warm-retry drift. What makes it TERMINAL is
+    # the violation's TYPE (`StaleDependencyIRViolation`, which `main` maps to a dedicated exit
+    # code) — the marker in the message is for a human reader. This line said "+ the terminal
+    # marker" while the marker still carried the decision.
     pub = ir.get("public_api")
     stale_ir_violations: list[str] = []
     _validate_ir_module_parameters_against_section51(
