@@ -10555,7 +10555,15 @@ clean:
         disposition: recoverable (leaf/judge-authored conformance violation) -> warm_resume
         (run_phase warm-resumes the judge in place); unrecoverable (orchestration-record /
         cross-pipeline DAG integrity) -> fail_closed; unknown -> fail_closed (conservative;
-        an escalate-LLM adjudicator is a deferred follow-up)."""
+        an escalate-LLM adjudicator is a deferred follow-up).
+
+        Two exit codes are answered BEFORE the bullets are read at all, because they say the
+        gate never reached a verdict about this run's conformance: rc 3 (the Fortran structure
+        front end is not installed) and rc 4 (a stale certified IR). Their bullets describe a
+        machine or IR condition, and the severity rules classify by artifact PATH — so left to
+        the bullet path they would be classified as if they were conformance findings and could
+        warm-resume a judge that cannot converge. Both write `disposition: "fail_closed"` with
+        their own `failure_category`, the same shape as the OSError launch-failure branch."""
         # G6: the conductor authors the deterministically-derivable artifacts (aggregate_verdict
         # / summary / validate_meta) from the judge's verdict.json + the dependency set BEFORE
         # the gate, so `--stage pre_judge` re-validates the conductor's own summary.counts.
@@ -10593,6 +10601,35 @@ clean:
         combined = gate.stdout + gate.stderr
         # The validator prints each violation as a `- {line}` bullet after a FAIL header.
         violations = [ln[2:] for ln in combined.splitlines() if ln.startswith("- ")]
+        # TERMINAL EXIT CODES FIRST, and on the CODE rather than on any bullet: the bullets carry
+        # leaf-chosen paths, and the severity rules below classify by path prefix, so a bullet
+        # naming a repairable-looking artifact would warm-resume the judge over a machine problem
+        # or a stale certified IR — neither of which any re-authored semantic_review.json
+        # touches. The violations are still recorded, for observation only.
+        #
+        # rc 4 is UNREACHABLE from this stage today (the stale-IR violation has one emit site,
+        # reached only from post_generate); it is wired so that the day a pre_judge gate reports
+        # it, it fails closed rather than warm-resuming. rc 3 IS reachable: `--stage pre_judge`
+        # runs gates that read Fortran through the front end.
+        from tools.validate_pipeline_semantics import (
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+        )
+        terminal_category = {
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE: "static_frontend_unavailable",
+            STALE_DEPENDENCY_IR_EXIT_CODE: "stale_dependency_ir",
+        }.get(gate.returncode)
+        if terminal_category:
+            self._write_run_node_meta(refs, "post_judge_meta.json", {
+                "run_id": refs.run_id, "node_key": refs.node_key,
+                "pipeline_id": refs.pipeline_id, "status": "fail",
+                "validation_stage": "pre_judge",
+                "failure_category": terminal_category,
+                "failure_excerpt": "\n".join(combined.splitlines()[-50:]),
+                "violations": violations, "disposition": "fail_closed",
+            })
+            return {"returncode": 0, "stdout": "",
+                    "stderr": "[post_judge gate fail]\n" + combined}
         severity = classify_post_judge_violations(violations)
         # G5: an `unknown` violation (unclassifiable by the deterministic path-prefix rules) is
         # no longer a blind fail_closed — it routes to the unified escalate LLM. `recoverable`

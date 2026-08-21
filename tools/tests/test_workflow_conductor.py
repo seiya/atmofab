@@ -16481,6 +16481,65 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "post_judge_gate_error")
             self.assertEqual(meta["disposition"], "fail_closed")
 
+    def test_post_judge_terminal_exit_codes_fail_closed_before_bullet_classification(self) -> None:
+        # The severity rules classify a violation by its artifact PATH, and here every bullet
+        # names `semantic_review.json` — the recoverable shape that warm-resumes the judge. Left
+        # to the bullet path, an uninstalled front end or a stale certified IR would spend the
+        # judge's warm-resume budget re-authoring a review that cannot fix either. The exit code
+        # is read first, so the recoverable-looking bullet cannot reach the classifier.
+        import tempfile
+        from tools.validate_pipeline_semantics import (
+            FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+            STALE_DEPENDENCY_IR_EXIT_CODE,
+        )
+        recoverable_bullet = ("pipeline semantic validation: FAIL\n"
+                              "- workspace/runs/n/semantic_review.json: review_method must be "
+                              "llm_semantic_review\n")
+        for rc, expected in ((FORTRAN_STRUCTURE_UNAVAILABLE_EXIT_CODE,
+                              "static_frontend_unavailable"),
+                             (STALE_DEPENDENCY_IR_EXIT_CODE, "stale_dependency_ir")):
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
+                c = self._conductor(repo)
+                with self._patch_run(lambda cmd, _rc=rc, **k: wc.subprocess.CompletedProcess(
+                        cmd, _rc, recoverable_bullet, "")):
+                    res = c._post_judge_inproc(refs, "child-post", "captok")
+                meta = json.loads(
+                    (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+            self.assertEqual(res["returncode"], 0, rc)  # content failure, not transport
+            self.assertEqual(meta["status"], "fail", rc)
+            self.assertEqual(meta["failure_category"], expected, rc)
+            self.assertEqual(meta["disposition"], "fail_closed", rc)
+            # The violations are still recorded, for observation only.
+            self.assertTrue(any("review_method" in v for v in meta["violations"]), rc)
+
+    def test_post_judge_forged_marker_bullet_at_rc_1_keeps_bullet_classification(self) -> None:
+        # pre_judge never had a text scan, and this pins that it did not grow one alongside the
+        # exit-code branches. Both markers are replayed inside an ordinary rc-1 bullet, which a
+        # scan-anywhere would turn into fail_closed — stranding a violation the judge can
+        # actually repair. The marker rides in the MESSAGE rather than in the path, because the
+        # severity rules key on the artifact path prefix: a forged FILENAME lands the bullet in
+        # `unknown` (disposition `escalate`) for that reason alone, which would make this row
+        # green without saying anything about a text scan.
+        import tempfile
+        from tools.validate_pipeline_semantics import STALE_DEPENDENCY_IR_MARKER
+        for marker in (STALE_DEPENDENCY_IR_MARKER, "[fortran-structure-unavailable]"):
+            out = ("pipeline semantic validation: FAIL\n"
+                   "- workspace/runs/n/semantic_review.json: review_method must be "
+                   f"llm_semantic_review (found {marker}_review)\n")
+            with tempfile.TemporaryDirectory() as td:
+                repo, refs = Path(td), self._refs()
+                (repo / refs.run_node_dir()).mkdir(parents=True, exist_ok=True)
+                c = self._conductor(repo)
+                with self._patch_run(lambda cmd, _o=out, **k: wc.subprocess.CompletedProcess(
+                        cmd, 1, _o, "")):
+                    c._post_judge_inproc(refs, "child-post", "captok")
+                meta = json.loads(
+                    (repo / refs.run_node_dir() / "post_judge_meta.json").read_text())
+            self.assertEqual(meta["failure_category"], "pre_judge_violation", marker)
+            self.assertEqual(meta["disposition"], "warm_resume", marker)
+
     def test_post_judge_emits_scoped_args_with_both_in_flight(self) -> None:
         # post_judge runs --stage pre_judge scoped to its own run, declaring BOTH the judge and
         # the post_judge (self) arids in-flight (post_judge's own graph edge is dangling).
