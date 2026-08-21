@@ -22140,8 +22140,13 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
 
         This pins the RULE, not the values: it enumerates the module's own `*_EXIT_CODE`
         constants and requires a line for each. Asserting a constant's value against the epilog
-        would be vacuous, since the epilog interpolates the same constants — what actually goes
-        wrong is a FIFTH code being added with no line, and that is what fails here.
+        would be vacuous, since the epilog interpolates the same constants — what fails here is
+        a new CONSTANT added with no line.
+
+        A new code added as a bare LITERAL is invisible to this row (1 and 2 already reach the
+        caller that way, and are asserted separately below). An AST walk of `main` /
+        `_main_dispatch` shows every `Return` is 0, 1, or one of the two constants today;
+        nothing keeps it that way, so this is a bound on the row rather than on the code.
         """
         codes = {name: getattr(vps, name) for name in dir(vps) if name.endswith("_EXIT_CODE")}
         self.assertTrue(codes, "no exit-code constants found; the enumeration went stale")
@@ -22174,14 +22179,28 @@ class StaleDependencyIRExitCodeTests(unittest.TestCase):
 
         The constants are ENUMERATED from the module, not listed here, so this pins the rule the
         docstring states rather than today's instances of it. Listing them by hand made a fifth
-        constant COLLIDING with an existing code invisible — the sibling help test caught a fifth
+        constant COLLIDING with an existing one invisible — the sibling help test caught a fifth
         constant that was merely undocumented, so the two rows disagreed about what they covered.
+
+        PINNED: the module's `*_EXIT_CODE` constants are pairwise distinct, so two conditions
+        cannot end up sharing a code.
+
+        NOT PINNED, deliberately: a constant whose value is 0, 1 or 2. A first version of this
+        row rejected those, and that refused legitimate work — naming an existing code (say
+        `VIOLATIONS_FOUND_EXIT_CODE = 1`, which the epilog comment's "keep in step with the
+        constants above" invites) is an ALIAS, not a second condition, and nothing here can tell
+        an alias from a collision by reading a name. Refusing on a value alone is refusing
+        something that contradicts nothing.
+
+        Also not pinned: a code returned as a bare literal rather than through a constant, which
+        is how 1 and 2 already reach the caller. An AST walk of `main` / `_main_dispatch` shows
+        every `Return` is 0, 1, or one of the two constants today; nothing keeps it that way.
         """
         named = {name: getattr(vps, name) for name in dir(vps) if name.endswith("_EXIT_CODE")}
         self.assertTrue(named, "no exit-code constants found; the enumeration went stale")
-        codes = [0, 1, 2, *named.values()]
-        self.assertEqual(len(codes), len(set(codes)),
-                         f"exit codes collide: {sorted(named.items())} against 0/1/2")
+        values = list(named.values())
+        self.assertEqual(len(values), len(set(values)),
+                         f"two exit-code constants share a value: {sorted(named.items())}")
 
 
 if __name__ == "__main__":
