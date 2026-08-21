@@ -26,6 +26,13 @@ Out of scope, each for a stated reason:
   block. Closing that is a `docs/CONTROLLED_SPEC.md` matter, so `spec/` stays out of this rule's
   scope rather than being measured twice.
 - `docs/design/`, which records decisions about a specific technology and is expected to name it.
+- `.claude/`, the operator's own interactive development session — its settings and the skills that
+  govern reviewing a change to this repository. A workflow leaf loads none of it (measured: zero
+  project skills), so nothing there reaches a run; what technology it names, it names ABOUT this
+  repository's own instruments rather than inside a generated system, which is the `tools/tests/`
+  reason one bullet down. `docs/DEVELOPMENT.md` §"The `.claude/` boundary decision" is canonical
+  for the decision and states its cost: that tree is unmeasured, and a technology change must
+  sweep it by hand.
 - `tools/tests/`, whose fixtures supply backend-shaped input in order to exercise a backend.
 
 ## Definitions

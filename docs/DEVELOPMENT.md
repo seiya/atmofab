@@ -57,7 +57,7 @@ One fact has one canonical home. A restatement elsewhere is a twin document, and
 |---|---|
 | a finished specification, contract, or procedure | `docs/` |
 | open work, with the evidence that it is open | `TODO.md` |
-| a decision about one named technology | `docs/design/`, carrying a `Status` line |
+| a decision about one named technology | `docs/design/`; the note states its `Status` |
 | what a review loop taught about reviewing | the relevant skill's `references/` under `.claude/skills/` |
 | a measurement episode, and a design that was rejected | a comment on the GitHub issue it belongs to |
 | a plan the operator approved | a comment on the GitHub issue it belongs to |

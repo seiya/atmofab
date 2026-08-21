@@ -7,6 +7,12 @@ Conventions every agent (Codex / Claude Code) working in this repository must fo
 - **CLI argument information-acquisition policy** (which subcommand uses a doc vs `--help`): the "Information-acquisition policy" section of `docs/CLI_REFERENCE.md`.
 - **Hook implementation structure** (where hook validation / invocations are defined): `docs/HOOKS.md`.
 - **Backend boundary** (where knowledge of a concrete target-stack technology may live, and the `axis` list): `docs/BACKEND_BOUNDARY.md`.
+- **Developing this repository** (fresh-machine setup, the configuration layers, the canonical placement map for a development record, and the development rules with no other owner): `docs/DEVELOPMENT.md`.
+
+## Canonical record placement
+- The canonical copy of a development record lives in this repository or on GitHub (an issue or a pull request). An operator's `~/` holds machine-local runtime state and personal credentials, and nothing a second person would need.
+- **A record that resides in `~/` — an agent's automatic memory, a scratch plan file, a session transcript — is a personal working aid, not a canonical record.** A fact that is permanently needed is not recorded until it has landed in this repository or on GitHub; land it before closing the work.
+- `docs/DEVELOPMENT.md` §Record placement is canonical for which destination each kind of record takes. Do not restate the map here.
 
 ## Backend boundary rules
 - A concrete technology is chosen per **`axis`**, and the knowledge each choice implies lives in exactly one **`backend`** package, `tools/backends/<axis>/<backend_id>/`, registered in `tools/backends/registry.py`. `docs/BACKEND_BOUNDARY.md` is canonical for the rule, the placement table (code / documents / prompt templates / `SKILL`), and the procedure for adding a `backend` or an `axis`.

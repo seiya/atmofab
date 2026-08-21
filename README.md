@@ -110,6 +110,8 @@ spec/         source specs (problem / component / profile / infrastructure) and 
 skills/       per-phase execution procedures (SKILL.md) for the agentic leaves
 tools/        workflow driver, conductor, orchestration runtime, gates, validators, tests
 mcp_servers/  MCP build/runtime server and client configuration examples
+leaf_config/  the committed configuration a workflow leaf is launched with
+.claude/      the operator's own interactive session: settings, and the development skills
 releases/     the component registry, and the promoted official artifacts of the Promote flow (none yet)
 workspace/    trial artifacts
 ```
