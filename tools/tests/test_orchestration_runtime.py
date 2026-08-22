@@ -29689,7 +29689,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # only in gate code, so a verify leaf authoring a structured incident dict was writing
         # an unrepairable artifact it had never been told was invalid. E2E #4
         # (orch_20260712T014005Z_e02a2d4d, validate.execute post_execute_violation).
-        "docs/AGENT_CONTRACT.md": 18800,
+        # Bumped 18800->18950: `Glob`'s `pattern` is now validated like its `path`
+        # (issue #71 put `Glob` in a leaf's hands), and a leaf that does not know the rule
+        # meets a refusal it cannot diagnose — the one class of text this file exists to
+        # carry. 190 bytes, stated in the shortest form that names every blocked shape.
+        "docs/AGENT_CONTRACT.md": 18950,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -35340,10 +35344,14 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         problems = check["detail"].split("measured ")[0]
         self.assertIn("Bash", problems)
         self.assertIn("left out of at least one request", problems)
-        # The evidence is rendered PER REQUEST, like the verdict. Rendering the union here
-        # produced a detail that contradicted itself — naming as absent the very tools the
-        # next clause listed as measured — and pointed at the wrong remedy.
+        # The evidence is rendered PER REQUEST, like the verdict, and asserted by its
+        # CONTENT: `assertIn("per request:", …)` alone passed with the union rendered
+        # behind that label (measured), which is the shape this repository's own comment
+        # two tests up warns about — the label is not the rule.
         self.assertIn("per request:", problems)
+        rendered = problems.split("per request:")[1]
+        self.assertIn("Edit,Glob,Grep,Read,Write", rendered)
+        self.assertNotIn("Bash", rendered)
 
     def test_a_tool_from_an_undeclared_mcp_server_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -35415,6 +35423,27 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIs(check["pass"], False)
         self.assertIn("Address already in use", check["detail"])
         self.assertIn("unmeasured", check["detail"])
+
+    def test_a_teardown_failure_is_not_reported_as_a_setup_failure(self) -> None:
+        """The stage discriminator, which had no witness.
+
+        A probe that already ran can fail on the scratch home's REMOVAL, and telling the
+        operator it "could not set up" points them at the wrong thing — the very
+        misattribution this branch added the discriminator to fix.
+        """
+        real_exit = tempfile.TemporaryDirectory.__exit__
+
+        def exploding_exit(self_, *exc):  # type: ignore[no-untyped-def]
+            real_exit(self_, *exc)
+            raise OSError(28, "No space left on device")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            with mock.patch.object(tempfile.TemporaryDirectory, "__exit__", exploding_exit):
+                check = self._probe(root, self._runner())
+        self.assertIs(check["pass"], False)
+        self.assertIn("tear down", check["detail"])
+        self.assertNotIn("could not set up", check["detail"])
 
     def test_a_timeout_fails_closed(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
@@ -35530,7 +35559,10 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
                     os.environ, {"ANTHROPIC_AUTH_TOKEN": "operator-oauth-token",
                                  "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
                                  "CLAUDE_CODE_USE_BEDROCK": "1",
-                                 "HTTPS_PROXY": "http://operator-proxy:8080"}):
+                                 "HTTPS_PROXY": "http://operator-proxy:8080",
+                                 "METDSL_WORKFLOW_MODE": "1",
+                                 "METDSL_ORCHESTRATION_ID": "orch_live",
+                                 "METDSL_CHILD_AGENT_RUN_ID": "arid_live"}):
                 check = self._probe(root, runner)
         self.assertIs(check["pass"], True)
         env = seen["kwargs"]["env"]
@@ -35544,13 +35576,24 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         # has read about. A denylist would have caught only the first.
         for redirector in ("ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "HTTPS_PROXY"):
             self.assertNotIn(redirector, env)
+        # AND THE WORKFLOW IDENTITY, which `leaf_env_from` forwards by prefix. The scratch
+        # home is seeded with the leaf configuration, so its hooks RUN; with these set the
+        # mid-run TTL re-probe appended a `user_prompt_submit` row — a session belonging to
+        # no leaf — to the LIVE orchestration's `hooks/native_hook_events.jsonl`, which the
+        # audit reads as the record of what the leaves did. Measured twice, independently.
+        for name in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                     "METDSL_CHILD_AGENT_RUN_ID"):
+            self.assertNotIn(name, env)
         # The set itself is `leaf_env_from`'s — the same declaration a LEAF is launched
         # under — plus exactly the three names this probe owns. Pinned as an equality, so
         # a quiet return to `dict(os.environ)` fails here rather than only for the names
         # listed above.
-        self.assertEqual(set(env),
-                         set(ort.leaf_env_from(os.environ))
-                         | {"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"})
+        self.assertEqual(
+            set(env),
+            (set(ort.leaf_env_from(os.environ))
+             - {"METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                "METDSL_CHILD_AGENT_RUN_ID"})
+            | {"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"})
         # A scratch home, so the roster measured is not one the operator's own
         # configuration shaped — and it is gone by the time the probe returns.
         self.assertNotEqual(env["CLAUDE_CONFIG_DIR"], os.environ.get("CLAUDE_CONFIG_DIR"))

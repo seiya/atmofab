@@ -16679,7 +16679,9 @@ CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
 # near 2 s and the same code under review load sits near 5 s (measured both ways against
 # the same commit, which is why a single figure kept being wrong). The launch ends at the
 # stand-in's 400, before any model turn. So this is more than an order of magnitude of
-# headroom for a loaded machine and a slow start — and still a bound, because the probe runs
+# headroom idle. Under heavy load it is less: six probes taken while ~20 pytest processes
+# ran measured 15.6-22.4 s (seeded and unseeded alike, so not the seeding), which is 5.4x
+# rather than an order of magnitude. Still a bound, and still far from firing — and still a bound, because the probe runs
 # inside preflight and a hang there is a run that never begins with nothing said about why.
 # A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
 # is the state this check exists to refuse.
@@ -17150,6 +17152,18 @@ def _probe_claude_leaf_tool_roster(
             scratch_home = stack.enter_context(
                 tempfile.TemporaryDirectory(prefix="metdsl-roster-home-"))
             env = leaf_env_from(os.environ)
+            # THE PROBE IS NOT A LEAF OF THIS ORCHESTRATION, and since the scratch home is
+            # seeded with the leaf configuration its hooks RUN. `leaf_env_from` forwards
+            # the whole `METDSL_` prefix, so during the mid-run TTL re-probe the hook
+            # resolved the LIVE orchestration id and appended a `user_prompt_submit` row —
+            # carrying a session id belonging to no leaf — to that run's
+            # `hooks/native_hook_events.jsonl`, which `tools/audit_orchestration.py` reads
+            # as the record of what the leaves did. Measured, twice and independently.
+            # Removing the two names the hooks key on leaves the probe unattributed, which
+            # is what it is; nothing about the roster depends on them.
+            for workflow_identity in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                                      "METDSL_CHILD_AGENT_RUN_ID"):
+                env.pop(workflow_identity, None)
             env["ANTHROPIC_BASE_URL"] = base_url
             env["ANTHROPIC_API_KEY"] = "metdsl-preflight-roster-probe"
             env["CLAUDE_CONFIG_DIR"] = scratch_home
@@ -17182,7 +17196,11 @@ def _probe_claude_leaf_tool_roster(
                 proc = runner(argv, text=True, capture_output=True, check=False,
                               input=".", env=env, cwd=str(repo_root),
                               timeout=CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS)
-                captured_snapshot = [list(roster) for roster in captured]
+                # Only whether ANYTHING was captured, and only to tell a teardown failure
+                # from a setup one below. The roster itself is read after the manager
+                # exits, where the handlers have been joined — reading it here is the
+                # mistake this file documents two paragraphs down.
+                captured_snapshot = list(captured)
             except subprocess.TimeoutExpired:
                 return {"name": name, "pass": False,
                         "detail": (f"the roster probe did not finish within "
@@ -17219,12 +17237,25 @@ def _probe_claude_leaf_tool_roster(
         # The CLI ran and sent no request carrying tools. That is not "no tools" — it is
         # no measurement, and the difference matters: a leaf launched from this CLI might
         # have any roster at all.
-        stderr = (proc.stderr or "").strip()[:400]
+        # BOTH STREAMS, and a pointer at the other thing this launch runs. Since the
+        # scratch home is seeded with the leaf configuration, the probe executes the
+        # leaf's whole hook chain, and a hook that exits non-zero blocks the prompt before
+        # any request — so the CLI reports rc=0 with an empty stderr and the roster is
+        # "unmeasured" for a reason that has nothing to do with tools. Reproduced by
+        # pointing `repo_root` at a directory that is not a git working tree, which the
+        # `UserPromptSubmit` command's `git rev-parse` needs. Holding stdout and printing
+        # only stderr left an operator with a roster remedy for a hook failure.
+        streams = " ".join(
+            f"{label}: {text.strip()[:400]}"
+            for label, text in (("stdout", proc.stdout or ""), ("stderr", proc.stderr or ""))
+            if text.strip())
         return {"name": name, "pass": False,
                 "detail": (f"the CLI made no request carrying a tool roster (rc="
                            f"{proc.returncode}), so what a leaf would be launched with is "
-                           f"unmeasured{version_note}"
-                           + (f"; stderr: {stderr}" if stderr else ""))}
+                           f"unmeasured. The probe runs the leaf's own hook chain (the "
+                           f"scratch home is seeded with {CLAUDE_LEAF_CONFIG_REL}), so a "
+                           f"hook that refuses the prompt lands here too{version_note}"
+                           + (f"; {streams}" if streams else ""))}
 
     report = _classify_claude_leaf_roster(snapshot, declared_servers)
     problems: list[str] = []

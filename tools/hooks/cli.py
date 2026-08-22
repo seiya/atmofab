@@ -1140,13 +1140,34 @@ def _evaluate_grep_glob_read_policy(
     # outside the validated root while `path` looks innocent. (That example named a
     # source-file extension until the token ratchet caught it: this module is `neutral
     # core` and must not carry a token a target stack implies — docs/BACKEND_BOUNDARY.md.)
+    pattern_blocked = False
     if (decision.action != HookDecisionAction.BLOCK
             and tool_name in _PATTERN_IS_A_PATH_TOOLS):
         raw_pattern = _tool_input(decoded.payload).get("pattern")
         pattern = raw_pattern.strip() if isinstance(raw_pattern, str) else ""
         if pattern:
             joined = pattern if pattern.startswith(("/", "~")) else f"{search_path}/{pattern}"
-            _literal, prefix, _resolved = _glob_literal_prefix(repo_root, joined)
+            literal, prefix, resolved = _glob_literal_prefix(repo_root, joined)
+            # "EVERY MATCH LIES UNDER THE LITERAL PREFIX" IS FALSE ONCE A `..` FOLLOWS A
+            # WILDCARD, and the first version of this check rested on it — in its comment,
+            # in `docs/HOOKS.md`, and in the refusal message shown to the leaf: with `path=docs`
+            # and `pattern=*/../../spec/*` the prefix is `docs` — equal to `path`, so the
+            # comparison below skipped validation entirely — while `glob.glob` really does
+            # return `docs/<sub>/../../spec/<file>` (measured, with a real glob engine, and
+            # the Bash route BLOCKS the identical read). This repository already spelled
+            # the rule at `_bounded_glob_read_targets`; what the first version reused was
+            # only the prefix helper, not the rule. Validating at the repository root is
+            # what that code does in the same situation, and it is the only prefix that
+            # still contains such a match.
+            if ".." in joined.split("/")[len(literal):]:
+                prefix = "."
+            # And the EXPANDED prefix when the pattern leaves the repository by `~` or a
+            # variable: `_glob_literal_prefix` computes that third value for exactly this
+            # case, and the first version discarded it, validating `~/.ssh/*` as the
+            # in-repo literal `<repo>/~/.ssh`. That blocked only because no manifest grants
+            # the root — it would have ALLOWED the read the moment one did.
+            elif not _is_path_under_root(resolved, repo_root.resolve()):
+                prefix = str(resolved)
             if prefix != search_path:
                 pattern_decision = validate_read_access(
                     repo_root,
@@ -1157,17 +1178,26 @@ def _evaluate_grep_glob_read_policy(
                     session_id=decoded.session_id,
                 )
                 if pattern_decision.action == HookDecisionAction.BLOCK:
+                    # The PATTERN is the cause now, so the pathless remedy below must not
+                    # also fire: "its 'path' does grant it" followed by "you passed no
+                    # path" are two contradictory sentences, and only the first names
+                    # something the leaf can act on.
+                    pattern_blocked = True
                     decision = dataclasses.replace(
                         pattern_decision,
                         reason=(
                             f"{pattern_decision.reason or ''} "
                             f"{tool_name}'s pattern {pattern!r} searches {prefix!r}, which "
-                            f"the read_manifest does not grant, even though its 'path' does. "
-                            f"Every match of a glob lies under its literal prefix, so the "
-                            f"pattern decides where the search reads."
+                            f"the read_manifest does not grant"
+                            + (", even though the repository root it defaulted to does. "
+                               if path_missing else
+                               ", even though its 'path' does. ") +
+                            "The pattern decides where a search reads, so it is authorized "
+                            "like a path: a `..` after a wildcard, an absolute pattern and "
+                            "a `~` pattern are all judged where they land."
                         ).strip(),
                     )
-    if decision.action == HookDecisionAction.BLOCK and path_missing:
+    if decision.action == HookDecisionAction.BLOCK and path_missing and not pattern_blocked:
         decision = dataclasses.replace(
             decision,
             reason=(

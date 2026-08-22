@@ -4002,7 +4002,19 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         entirely in the pattern.
         """
         manifest = {"allowed_read_roots": ["docs"]}
-        for pattern in ("../*.py", "../../etc/*", "/etc/*", "~/.ssh/*"):
+        for pattern in (
+            "../*.py", "../../etc/*", "/etc/*", "~/.ssh/*",
+            # A `..` AFTER A WILDCARD, which the literal prefix cannot see: the prefix of
+            # `docs/*/../../spec/*` is `docs` itself, so the first version of this check
+            # compared it with `path`, found them equal, and validated NOTHING — while
+            # `glob.glob` really does return `docs/<sub>/../../spec/<file>`. Two reviewers
+            # reproduced the read independently, and the identical read spelled for `Bash`
+            # was blocked, so the same repository answered one request two ways. Every
+            # metacharacter class the prefix helper stops at gets its own row, because a
+            # fix that handled only `*` would leave the others.
+            "*/../../etc/*", "**/../../etc/*", "?/../../etc/*", "[a-z]*/../../etc/*",
+            "*/../secret.txt",
+        ):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
@@ -4010,16 +4022,67 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
                 self.assertIn("pattern", body)
 
+    def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
+        """Two remedies for one refusal are worse than one.
+
+        A pathless `Glob` is validated at the repository root, so with the root granted the
+        `path` half passes and the PATTERN is what refuses. The pathless remedy ("pass
+        path=…") then fired beside it, producing "its 'path' does grant it" next to "you
+        passed no path" — contradictory, and only one of them names something the leaf can
+        act on.
+        """
+        manifest = {"allowed_read_roots": ["."]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            code, body = self._run(repo_root, "Glob", {"pattern": "../../etc/*"})
+        self.assertEqual(code, 2, body)
+        self.assertIn("pattern", body)
+        self.assertNotIn("was called without a 'path'", body)
+
+    def test_a_pattern_is_read_with_surrounding_whitespace_stripped(self) -> None:
+        """`\t/etc/*` is an ABSOLUTE pattern, and only the strip makes it look like one.
+
+        Without it the leading tab makes `pattern.startswith("/")` false, the pattern is
+        joined under `path`, and the escape is judged as the in-repo spelling
+        `docs/\t/etc/*`. Measured: dropping the `.strip()` left the whole file green.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in ("\t/etc/*", " /etc/*", "/etc/*  "):
+            with self.subTest(repr(pattern)), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern!r} was not blocked: {body}")
+
+    def test_a_pattern_that_leaves_the_repository_by_expansion_is_blocked(self) -> None:
+        """`~` and `$VAR` leave the repository, and must be judged on the EXPANSION.
+
+        `_glob_literal_prefix` computes the expanded path for exactly this reason, and the
+        first version of this check discarded it — validating `~/.ssh/*` as the literal
+        in-repo path `<repo>/~/.ssh`, which blocked only because no manifest granted the
+        root. This grants the root, so a check that reasons about the literal spelling
+        ALLOWS the read and this test fails.
+        """
+        manifest = {"allowed_read_roots": ["."]}
+        for pattern in ("~/.ssh/*", "~/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": ".", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
+
     def test_an_ordinary_glob_pattern_under_a_granted_path_is_allowed(self) -> None:
         """The other half, and the one that decides whether this is an over-refusal.
 
-        Every match of a glob lies under its literal prefix, and for an ordinary pattern
-        that prefix is `path` itself or a subdirectory of it — already authorized by the
-        entry that authorized `path`. If any of these blocked, the check would be
-        refusing correct work.
+        For a pattern with no `..` after a wildcard — which is every ordinary one — the
+        matches do lie under the literal prefix, and that prefix is `path` itself or a
+        subdirectory of it, already authorized by the entry that authorized `path`. (The
+        unqualified form of that sentence is false, which is the hole the sibling test
+        above covers.) If any of these blocked, the check would be refusing correct work.
         """
         manifest = {"allowed_read_roots": ["docs"]}
-        for pattern in ("*.md", "**/*.md", "sub/*.md", "**/sub/*.md", "[a-z]*.md"):
+        for pattern in ("*.md", "**/*.md", "sub/*.md", "**/sub/*.md", "[a-z]*.md",
+                        "./sub/*.md", "sub/../*.md", "*", "?.md", "{a,b}/*.md"):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
