@@ -3993,6 +3993,51 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             if line.strip()
         ]
 
+    def test_a_glob_pattern_that_escapes_the_granted_path_is_blocked(self) -> None:
+        """`Glob`'s `pattern` names PATHS, so it decides where the search reads.
+
+        Until issue #71 no leaf had `Glob` on a CLI whose default roster omits it, so
+        this was an unreachable residue of issue #42; the tool allowlist made it
+        reachable. `path` alone looks innocent in every case below — the escape is
+        entirely in the pattern.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in ("../*.py", "../../etc/*", "/etc/*", "~/.ssh/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
+                self.assertIn("pattern", body)
+
+    def test_an_ordinary_glob_pattern_under_a_granted_path_is_allowed(self) -> None:
+        """The other half, and the one that decides whether this is an over-refusal.
+
+        Every match of a glob lies under its literal prefix, and for an ordinary pattern
+        that prefix is `path` itself or a subdirectory of it — already authorized by the
+        entry that authorized `path`. If any of these blocked, the check would be
+        refusing correct work.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in ("*.md", "**/*.md", "sub/*.md", "**/sub/*.md", "[a-z]*.md"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
+    def test_a_grep_pattern_is_a_content_regex_and_is_not_path_validated(self) -> None:
+        """`Grep`'s pattern is content, not a path. Validating it as one would refuse a
+        legitimate search for text that happens to look like a path escape — the
+        over-refusal direction, and the one this repository keeps making."""
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in (r"\.\./config", "^/usr/local", "~/.ssh"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Grep", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
     def test_settings_json_registers_grep_and_glob_with_bash_first(self) -> None:
         """Read from the LEAF's settings file, the owner of the hook wiring."""
         from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL

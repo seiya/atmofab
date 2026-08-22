@@ -1072,10 +1072,17 @@ def _log_read_decision(
 
 
 # Search tools whose read boundary is enforced by validating their `path` root.
-# Their `pattern` is NOT validated: a Glob pattern can still reach outside the
-# validated root via an absolute or `../` pattern (documented residue, issue #42).
-# `**` only recurses within `path`, so it is not part of that residue.
+#
+# `Glob`'s `pattern` NAMES PATHS and is validated too, since issue #71 put `Glob` in a
+# leaf's hands for the first time on a CLI whose default roster omits it. Until then this
+# was a documented residue of issue #42 that no leaf could reach; the allowlist made it
+# reachable, so it is closed here rather than inherited. `Grep`'s `pattern` is a CONTENT
+# regex and names no path, so it is deliberately NOT validated — treating `\.\./config`
+# as a path escape would refuse a legitimate search.
 _PATH_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+
+# The tools among them whose `pattern` is a PATH pattern rather than a content regex.
+_PATTERN_IS_A_PATH_TOOLS = frozenset({"Glob"})
 
 # Shell glob metacharacters. A token carrying one is expanded by the shell, so
 # it must be resolved against the filesystem rather than tested for existence.
@@ -1124,6 +1131,42 @@ def _evaluate_grep_glob_read_policy(
         agent_role=agent_role,
         session_id=decoded.session_id,
     )
+    # THE PATTERN, for the tools whose pattern names paths. Every match of a glob lies
+    # under its literal prefix, so that prefix is what decides where the search reads —
+    # the same definition `_glob_literal_prefix` already gives the Bash extractor, reused
+    # rather than restated. An ordinary pattern (`**/*`, `src/*`) resolves under `path`
+    # and is authorized by the same manifest entry that authorized `path`, so this refuses
+    # nothing that was working; what it stops is `../../etc/**` and `/etc/**`, which reach
+    # outside the validated root while `path` looks innocent. (That example named a
+    # source-file extension until the token ratchet caught it: this module is `neutral
+    # core` and must not carry a token a target stack implies — docs/BACKEND_BOUNDARY.md.)
+    if (decision.action != HookDecisionAction.BLOCK
+            and tool_name in _PATTERN_IS_A_PATH_TOOLS):
+        raw_pattern = _tool_input(decoded.payload).get("pattern")
+        pattern = raw_pattern.strip() if isinstance(raw_pattern, str) else ""
+        if pattern:
+            joined = pattern if pattern.startswith(("/", "~")) else f"{search_path}/{pattern}"
+            _literal, prefix, _resolved = _glob_literal_prefix(repo_root, joined)
+            if prefix != search_path:
+                pattern_decision = validate_read_access(
+                    repo_root,
+                    orchestration_id,
+                    resolved_run_id,
+                    prefix,
+                    agent_role=agent_role,
+                    session_id=decoded.session_id,
+                )
+                if pattern_decision.action == HookDecisionAction.BLOCK:
+                    decision = dataclasses.replace(
+                        pattern_decision,
+                        reason=(
+                            f"{pattern_decision.reason or ''} "
+                            f"{tool_name}'s pattern {pattern!r} searches {prefix!r}, which "
+                            f"the read_manifest does not grant, even though its 'path' does. "
+                            f"Every match of a glob lies under its literal prefix, so the "
+                            f"pattern decides where the search reads."
+                        ).strip(),
+                    )
     if decision.action == HookDecisionAction.BLOCK and path_missing:
         decision = dataclasses.replace(
             decision,

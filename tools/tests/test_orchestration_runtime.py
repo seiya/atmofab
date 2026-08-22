@@ -34844,6 +34844,26 @@ class ClaudeLeafToolAllowlistTests(unittest.TestCase):
         self.assertEqual(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI, ())
         self.assertEqual(set(CLAUDE_LEAF_REQUIRED_TOOLS),
                          set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
+        # THE SUBTRACTION ITSELF, which the equality above cannot witness while the seam
+        # is empty — deleting it left the suite green (measured). Recomputed here from the
+        # module's own source expression against a non-empty seam, so the day someone
+        # records a name the derivation is known to honour it rather than merely to have
+        # been written.
+        import ast
+        import inspect
+        source = inspect.getsource(ort)
+        expression = next(
+            node.value for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "CLAUDE_LEAF_REQUIRED_TOOLS" for t in node.targets)
+        )
+        for seam in ((), ("Glob",), ("Glob", "Grep")):
+            recomputed = eval(  # noqa: S307 - the module's own expression, not input
+                compile(ast.Expression(expression), "<derivation>", "eval"),
+                {"tuple": tuple, "sorted": sorted, "set": set,
+                 "CLAUDE_LEAF_TOOLS": CLAUDE_LEAF_TOOLS,
+                 "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI": seam})
+            self.assertEqual(set(recomputed), set(CLAUDE_LEAF_TOOLS) - set(seam), seam)
         # Non-empty, or the roster check would require nothing at all and a leaf launched
         # with no working tools would pass preflight.
         self.assertTrue(CLAUDE_LEAF_REQUIRED_TOOLS)
@@ -35001,6 +35021,90 @@ class ClaudeRosterCaptureServerTests(unittest.TestCase):
         # `server_close()` has joined the handler, so the trickled request is recorded.
         self.assertEqual(captured, [["Monitor"]])
 
+
+    def test_a_client_that_hangs_up_writes_nothing_to_stderr(self) -> None:
+        """A traceback from an abandoned connection would land in the operator's terminal.
+
+        Reachable on the probe TIMEOUT path, where the CLI is killed mid-request — that
+        is, exactly when that stderr is being read to find out what went wrong.
+
+        DETERMINISTIC through repetition, which one connection is not: a single RST may or
+        may not arrive before the server's write. Thirty of them separate the two states
+        cleanly — a review measured 10 runs each way with the override present (zero bytes
+        of stderr, every time) and renamed away (58-63 KB, every time). An earlier round
+        declared this "not pinnable" after one-connection attempts; that was a statement
+        about the attempts.
+        """
+        import socket
+        import struct
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        body = json.dumps({"tools": [{"name": "Bash"}]}).encode("utf-8")
+        stderr = io.StringIO()
+        linger = struct.pack("ii", 1, 0)
+        with redirect_stderr(stderr):
+            with _claude_roster_capture_server() as (base_url, captured):
+                host, port = base_url.rsplit("//", 1)[1].split(":")
+                for _ in range(30):
+                    client = socket.create_connection((host, int(port)), timeout=10)
+                    client.sendall(
+                        b"POST /v1/messages HTTP/1.1\r\n"
+                        + f"Host: {host}:{port}\r\n".encode()
+                        + b"Content-Type: application/json\r\n"
+                        + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+                    # RST rather than FIN, and without reading the reply: the server's
+                    # write then fails, which is what the default handler reports.
+                    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+                    client.close()
+        # MOST of them, not all: an RST can arrive before the server has finished reading
+        # that connection's body, in which case there is no capture and no write to fail
+        # on either. The count is here to show the traffic really happened; the assertion
+        # that carries the mechanism is the empty stderr.
+        self.assertGreater(len(captured), 20)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_defect_in_the_handler_is_not_silenced(self) -> None:
+        """The other half, and the reason the override is narrow.
+
+        The first version swallowed EVERY exception, so a `TypeError` in `do_POST` gave
+        zero captures, zero stderr, and a refusal with nothing to act on. Only the
+        connection family is silenced; our own defects keep their traceback.
+        """
+        import urllib.error
+        import urllib.request
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with _claude_roster_capture_server() as (base_url, _captured):
+                with mock.patch.object(json, "dumps",
+                                       side_effect=TypeError("a defect of ours")):
+                    request = urllib.request.Request(
+                        f"{base_url}/v1/messages", data=b'{"tools": [{"name": "Bash"}]}',
+                        headers={"Content-Type": "application/json"})
+                    with self.assertRaises(Exception):
+                        urllib.request.urlopen(request, timeout=10).read()
+        self.assertIn("TypeError", stderr.getvalue())
+
+    def test_a_tools_array_that_names_nothing_is_not_a_capture(self) -> None:
+        """A non-empty `tools` array whose entries carry no `name` is not a roster.
+
+        Recorded as an EMPTY capture it becomes, under the per-request rule, a turn the
+        leaf ran with no tools at all — and the run is refused although every real request
+        carried the full set. That is the same false PASS/FAIL confusion the toolless
+        branch exists to prevent, in the other direction, and it is reachable the moment
+        the API grows a tool shape whose entry is keyed differently.
+        """
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        with _claude_roster_capture_server() as (base_url, captured):
+            status, _body = self._post(base_url, {"tools": [{"name": "Bash"}]})
+            self.assertEqual(status, 400)
+            status, body = self._post(
+                base_url, {"tools": [{"type": "web_search_20250305"}]})
+            # Answered as the roster request it looks like, and recorded as nothing.
+            self.assertEqual(status, 400)
+            self.assertEqual(body["type"], "error")
+        self.assertEqual(captured, [["Bash"]])
 
     def test_the_listening_socket_is_released_on_exit(self) -> None:
         """Preflight runs in one process and may probe more than once; a leaked socket is
@@ -35172,10 +35276,16 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
     """
 
     def _repo(self, td: str, servers=("build-runtime",)) -> Path:
+        """A repository the probe can measure from: the MCP configuration it classifies
+        against, and the leaf configuration it seeds the scratch home with (the layer a
+        leaf's roster is actually decided under). Seeded from the REAL committed file, so
+        the fixture cannot drift into describing a leaf configuration nothing ships."""
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
         root = Path(td)
         (root / ".mcp.json").write_text(
             json.dumps({"mcpServers": {name: {"command": "python3"} for name in servers}}),
             encoding="utf-8")
+        seed_claude_leaf_config(root)
         return root
 
     def _probe(self, root: Path, runner):
@@ -35229,7 +35339,11 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIs(check["pass"], False)
         problems = check["detail"].split("measured ")[0]
         self.assertIn("Bash", problems)
-        self.assertIn("did not provide", problems)
+        self.assertIn("left out of at least one request", problems)
+        # The evidence is rendered PER REQUEST, like the verdict. Rendering the union here
+        # produced a detail that contradicted itself — naming as absent the very tools the
+        # next clause listed as measured — and pointed at the wrong remedy.
+        self.assertIn("per request:", problems)
 
     def test_a_tool_from_an_undeclared_mcp_server_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -35326,6 +35440,45 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
             check = self._probe(root, self._runner())
         self.assertIs(check["pass"], False)
         self.assertIn(".mcp.json", check["detail"])
+
+    def test_the_scratch_home_carries_the_layer_a_leaf_loads(self) -> None:
+        """The probe must measure under the leaf's own `user` layer, not an empty home.
+
+        That layer DECIDES the roster: a `permissions.deny` in the committed file removes
+        the named tools from what the CLI sends. Measured end to end against the real CLI
+        in a worktree — unmodified passes, and the same file with `deny: ["Grep","Glob"]`
+        fails naming both — which is the fail-open an empty home left open. Here the unit
+        witness is that the bytes reach the home the launch is pointed at.
+        """
+        from tools.tests.leaf_config_fixture import LEAF_CONFIG_REL
+        seen: dict = {}
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            home = Path(kwargs["env"]["CLAUDE_CONFIG_DIR"])
+            seen["settings"] = (home / "settings.json").read_bytes()
+            return _answer_claude_roster_probe(args, kwargs)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            check = self._probe(root, runner)
+            expected = (root / LEAF_CONFIG_REL).read_bytes()
+        self.assertIs(check["pass"], True)
+        self.assertEqual(seen["settings"], expected)
+
+    def test_an_unreadable_leaf_configuration_fails_closed(self) -> None:
+        """Without it the probe would measure an empty home again — silently, and in the
+        direction that reports pass."""
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched without the leaf configuration")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"build-runtime": {"command": "python3"}}}),
+                encoding="utf-8")
+            check = self._probe(root, runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("leaf configuration", check["detail"])
 
     def test_no_repo_root_is_an_advisory_skip(self) -> None:
         """`pass is None`, on the precedent of `_probe_claude_mcp_registry`: production
@@ -35451,7 +35604,11 @@ class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
                          "        command: claude --tools Monitor\n").encode("utf-8"))
             seen = self._seen_repo_roots(
                 lambda: ort.probe_all_providers(config=config, repo_root=root))
-        self.assertTrue(seen)
+        # EVERY surface, not just the first. `assertTrue(seen)` left a regression that
+        # probed only the first `describe_providers` row green — and that row is the
+        # `defaults` entry, so the per-substep `command:` prefix this class's docstring
+        # calls the surface that matters would have gone unprobed.
+        self.assertEqual(len(seen), 2)
         for value in seen:
             self.assertEqual(value, root)
 
