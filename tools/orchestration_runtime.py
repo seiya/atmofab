@@ -16633,15 +16633,24 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # `--tools` and `--disallowedTools` compose as an intersection (also measured), so the
 # denylist is redundant under this value rather than merely superseded.
 #
+# EVERY MEASUREMENT ABOVE WAS RE-TAKEN ON 2.1.239 (a release landed mid-review) and each
+# came back the same: 23 built-ins unfiltered, 19 under the denylist, 6 under this value,
+# `Task` still removing the tool the roster now calls `Agent`, an unknown name still
+# ignored in silence. The version numbers are kept as the record of WHEN each was taken;
+# they are not a claim about the CLI you have, which is what the preflight check measures.
+#
 # WHAT A LEAF GAINS, not only what it loses — the framing "fifteen removed" is half of it.
 # MEASURED on 2.1.238: `Grep` and `Glob` are absent from the CLI's DEFAULT roster, so the
 # denylist argv did not give a leaf either one, and this allowlist does. The `PreToolUse`
 # matchers for both long predate that (issue #42), so the CLI, not this repository, is what
-# had made them dormant — but the consequence is live either way. `Grep`/`Glob` `path` is
+# had made them dormant — but the consequence is live either way. The `path` of both is
 # validated fail-closed (an absent one is validated as the repository root and therefore
-# blocks), while their `pattern` is NOT: `tools/hooks/cli.py` records that an absolute or
-# `../` pattern reaches outside the validated root, as issue #42's documented residue. That
-# residue applies whenever a leaf holds these tools, which since this change it does.
+# blocks). What is NOT validated is `Glob`'s `pattern`, which names paths: `tools/hooks/cli.py`
+# records that an absolute or `../` pattern reaches outside the validated root, as issue #42's
+# documented residue. `Grep`'s `pattern` is a CONTENT regex and names no path
+# (`docs/HOOKS.md` is canonical), so it is not part of that residue and must not be
+# validated as one — treating `grep '\.\./config'` as a path escape is the over-refusal
+# direction. The residue applies whenever a leaf holds `Glob`, which since this change it does.
 # TODO.md carries the follow-up; it is not closed here, because narrowing a second
 # enforcement layer is a different change from choosing which tools a leaf gets.
 #
@@ -16665,9 +16674,9 @@ CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
     sorted(set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
 )
 
-# How long one roster capture may take. MEASURED at ~2 s wall on CLI 2.1.238 (the launch
-# ends at the stand-in's 400, before any model turn), so this is two orders of magnitude of
-# headroom for a loaded machine and a slow start — and still a bound, because the probe runs
+# How long one roster probe may take. MEASURED at 2.2-5.2 s wall across runs on one machine
+# (CLI 2.1.238 and 2.1.239; the launch ends at the stand-in's 400, before any model turn),
+# so this is more than an order of magnitude of headroom for a loaded machine and a slow start — and still a bound, because the probe runs
 # inside preflight and a hang there is a run that never begins with nothing said about why.
 # A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
 # is the state this check exists to refuse.
@@ -16824,6 +16833,12 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
 
     class _Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
+        # A KEEP-ALIVE connection holds its handler thread until the client closes it, and
+        # `server_close()` below waits for every handler. Without a bound, a CLI killed at
+        # the probe timeout — the one path where a connection is certainly abandoned —
+        # would leave the wait with nothing to end it. `StreamRequestHandler.setup` turns
+        # this into a socket timeout, so a stalled read raises instead of blocking.
+        timeout = 10
 
         def log_message(self, *args: Any) -> None:  # noqa: A003 - silence the stderr log
             """The default handler writes every request to stderr, which under preflight
@@ -16833,9 +16848,17 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
-            # HTTP/1.1 keep-alive: without an exact length the client waits for a close
-            # that a threading server does not make, and the probe hangs to its timeout.
+            # Both headers, for two different failures. WITHOUT the length, an HTTP/1.1
+            # client waits for a close that a threading server does not make and the probe
+            # hangs to its timeout. WITHOUT the close, the handler thread lives until the
+            # CLIENT hangs up — and since `server_close()` now joins handlers, that turned
+            # a 2.3 s probe into a 10 s one (measured: the join waited out the handler's
+            # own socket timeout on an idle keep-alive connection). Closing per response
+            # keeps every handler short-lived, so the join is instant and no capture can
+            # sit in flight for long.
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.close_connection = True
             self.end_headers()
             self.wfile.write(body)
 
@@ -16871,18 +16894,53 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
             """Anything else the CLI reaches for at startup is not this probe's business."""
             self.send_response(404)
             self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.close_connection = True
             self.end_headers()
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    class _CaptureServer(ThreadingHTTPServer):
+        # THE HANDLER THREADS MUST BE JOINABLE. `ThreadingHTTPServer` sets
+        # `daemon_threads = True`, and `socketserver._Threads.append` DISCARDS a daemon
+        # thread instead of tracking it (`if thread.daemon: return`, read from the
+        # installed interpreter), so `block_on_close` joins nothing and `server_close()`
+        # returns while a handler is still running. MEASURED, not reasoned: with the
+        # default, a request whose body arrived 2 s late was DROPPED and the check
+        # reported `pass` on a roster missing a tool — the fail-open direction. (At 0.5 s
+        # it happened to land, because the exit takes about that long anyway, which is why
+        # the witness for this uses the measured 2 s.)
+        daemon_threads = False
+
+        def handle_error(self, request, client_address):
+            """An abandoned request is expected here; its traceback is not.
+
+            `handle_error` is the SERVER's method, not the handler's — an override on the
+            handler class is never called, which is how the first version of this
+            suppressed nothing while looking like it did. The default writes the whole
+            `BrokenPipeError` traceback to stderr, which under preflight is the operator's
+            terminal AND the captured stderr of the process, on the timeout path where the
+            CLI is killed mid-request — exactly when that stderr is being read to find out
+            what went wrong. Same reason as `log_message` above.
+
+            NOT PINNED BY A TEST, deliberately and said out loud. The traceback appears
+            only when the client hangs up while the server is mid-write, which is a race:
+            a review reproduced it in 4 runs out of 5, and every deterministic shape I
+            built either lost the race (the write had already completed, so no override
+            was needed and the mutant survived) or produced a traceback from a different
+            place and made the test flaky. Kept because "no test observes it" and "it is
+            unnecessary" are different claims.
+            """
+
+    server = _CaptureServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         host, port = server.server_address[0], server.server_address[1]
         yield f"http://{host}:{port}", captured
     finally:
-        # Both, in this order: `shutdown` stops the accept loop (and blocks until it has),
-        # `server_close` releases the listening socket. Preflight runs several probes in
-        # one process, so a leaked socket is a port the next run cannot have.
+        # In this order: `shutdown` stops the accept loop (and blocks until it has),
+        # `server_close` releases the listening socket AND — because of the line above —
+        # joins every handler still running. Preflight runs several probes in one process,
+        # so a leaked socket is a port the next run cannot have.
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -16919,8 +16977,11 @@ def _classify_claude_leaf_roster(
     repository never declared, which would mean the strict-config closure had failed.
     """
     names: set[str] = set()
+    per_capture_builtins: list[set[str]] = []
     for roster in captured:
-        names |= {str(name) for name in roster}
+        roster_names = {str(name) for name in roster}
+        names |= roster_names
+        per_capture_builtins.append({n for n in roster_names if not n.startswith("mcp__")})
     builtins = {name for name in names if not name.startswith("mcp__")}
     mcp_names = sorted(names - builtins)
     required = set(CLAUDE_LEAF_REQUIRED_TOOLS)
@@ -16930,15 +16991,34 @@ def _classify_claude_leaf_roster(
         # Matched against the DECLARED names by prefix, rather than by splitting the tool
         # name on its first `__`. The CLI's spelling is `mcp__<server>__<tool>` and a
         # server name may itself contain `__`, which the split reads as a shorter server
-        # nobody declared — a refusal aimed at the wrong thing. Asking "does any declared
-        # server's prefix start this name" cannot misread it.
+        # nobody declared — a refusal aimed at the wrong thing.
+        #
+        # THE FLATTENED NAME IS AMBIGUOUS AND NEITHER SPELLING RESOLVES IT: with `build`
+        # declared, `mcp__build__runtime__run_linter` is equally "server `build`, tool
+        # `runtime__run_linter`" and "server `build__runtime`, tool `run_linter`", and the
+        # prefix match ACCEPTS it — an under-refusal where the split was an over-refusal.
+        # The trade is deliberate: over-refusing a declared server's tool stops legitimate
+        # work on a plausible name, while the accepted case needs `--strict-mcp-config` to
+        # have already failed AND the leaked server to be named as an extension of a
+        # declared one. Zero occurrences in this repository's `.mcp.json`, which declares
+        # `build-runtime` alone. Recorded rather than closed, because closing it means
+        # guessing at the vendor's naming (requiring the tail to carry no `__`), which is
+        # a new refusal resting on an unmeasured premise.
         if not any(name.startswith(f"mcp__{server}__") for server in declared):
             undeclared_mcp.append(name)
     return {
         "builtins": sorted(builtins),
         "mcp": mcp_names,
         "unclassified": sorted(builtins - required),
-        "missing": sorted(required - builtins),
+        # THE UNION FOR EXTRAS, EACH CAPTURE FOR OMISSIONS. The two questions are not
+        # symmetric and one set cannot answer both: a name in ANY request is a tool the
+        # leaf could have called, so extras take the union — but a request that OMITS a
+        # required tool is a turn the leaf ran without it, and the union hides exactly
+        # that (rosters `[required]` and `[required minus Bash]` union to the full set and
+        # would pass). Measured today: one launch sends two requests carrying identical
+        # rosters. This is what keeps that a measurement rather than an assumption.
+        "missing": sorted(set().union(*(required - c for c in per_capture_builtins))
+                          if per_capture_builtins else required),
         "undeclared_mcp": undeclared_mcp,
         "captures": len(captured),
     }
@@ -16962,9 +17042,10 @@ def _probe_claude_leaf_tool_roster(
 
     HOW: launch the leaf argv (`claude_leaf_roster_probe_argv`) against a loopback
     stand-in for the Messages endpoint and read the `tools` array the CLI itself sends.
-    UNBILLED — the stand-in answers 400 before any model turn — and it costs ~2 s and one
-    CLI start per capture (measured), which preflight pays twice per full run plus once
-    per TTL window.
+    UNBILLED — the stand-in answers 400 before any model turn — and it costs ONE CLI START
+    PER PROBE, 2.3-5.2 s wall measured across runs on one machine. That start produces two
+    captures, not one each. A preflight pays it once per provider surface it probes plus
+    once per TTL window, so a long orchestration can hit it mid-run.
 
     Environment: the DECLARED ALLOWLIST (`leaf_env_from`), plus the API base pointed at
     the stand-in and a dummy key. An allowlist rather than `os.environ` minus the names
@@ -16973,14 +17054,30 @@ def _probe_claude_leaf_tool_roster(
     strip, but `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` and the proxy family
     redirect a launch just as effectively, and the next such name ships with a CLI nobody
     here has read about. Under the allowlist every one of them is absent by construction,
-    so the probe cannot reach a real endpoint and cannot be billed. It is also the more
-    FAITHFUL measurement: it is the environment shape a leaf itself is launched in.
+    so the probe cannot reach a real endpoint and cannot be billed. It is also the closer measurement: a leaf's
+    environment is built from the same `leaf_env_from` allowlist. NOT identical, and the
+    difference is not measured to matter — `_child_env` also drops the declared
+    `api_key_env` names and adds `METDSL_ORCHESTRATION_ID`,
+    `METDSL_CHILD_AGENT_RUN_ID`, `TMPDIR`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and
+    `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, and a leaf runs under bwrap. None of those is known
+    to move the roster; none has been measured to leave it alone either.
 
     Deliberately not `_child_env` even so: that function's job is to build a LEAF's
     environment, and it strips `ANTHROPIC_BASE_URL` — the one variable this probe exists to
     set. `CLAUDE_CONFIG_DIR` is a fresh empty scratch directory (measured: an empty home
     reaches the request, so no trust seed is needed), which also keeps the operator's own
     home out of the roster the check reads.
+
+    THE BLIND SPOT that follows from it, stated rather than implied. A leaf loads the
+    SHA-pinned copy of `leaf_config/claude/settings.json` as its `user` layer, and this
+    probe loads nothing. The real layer CANNOT be measured this way — its
+    `UserPromptSubmit` hook blocks the probe prompt before any request is sent (measured
+    twice, independently: rc=0 and zero captures) — so a `permissions.deny` added to that
+    committed file would strip tools from every leaf while this check reported pass (also
+    measured: `deny: ["Grep","Glob"]` removes both from the roster the CLI sends). The two
+    agree today, measured against the real file with its hooks removed. The MCP half is
+    unaffected: `--strict-mcp-config` makes `.mcp.json` the whole server set whatever the
+    settings layer says.
 
     FAIL CLOSED on everything: a spawn error, a timeout, no capture at all, an
     unparseable `.mcp.json`, an unclassified name, or a missing required one. An
@@ -17016,11 +17113,21 @@ def _probe_claude_leaf_tool_roster(
                            f"classified against it{version_note}")}
 
     argv = claude_leaf_roster_probe_argv(command_argv)
-    with _claude_roster_capture_server() as (base_url, captured):
-        env = leaf_env_from(os.environ)
-        env["ANTHROPIC_BASE_URL"] = base_url
-        env["ANTHROPIC_API_KEY"] = "metdsl-preflight-roster-probe"
-        with tempfile.TemporaryDirectory(prefix="metdsl-roster-home-") as scratch_home:
+    try:
+        # THE LISTENER AND THE SCRATCH HOME ARE FAILURE PATHS TOO. Both were outside every
+        # `try` while the docstring said "fail closed on everything", so a taken port or a
+        # full temp filesystem escaped as a traceback: the run still stopped (the preflight
+        # subprocess exits non-zero), but with no `preflight.json`, no named check and no
+        # remedy — the opposite of the attributable refusal every other failure here gets,
+        # and precisely the case RUNBOOK tells the operator this check reports on.
+        stack = contextlib.ExitStack()
+        with stack:
+            base_url, captured = stack.enter_context(_claude_roster_capture_server())
+            scratch_home = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="metdsl-roster-home-"))
+            env = leaf_env_from(os.environ)
+            env["ANTHROPIC_BASE_URL"] = base_url
+            env["ANTHROPIC_API_KEY"] = "metdsl-preflight-roster-probe"
             env["CLAUDE_CONFIG_DIR"] = scratch_home
             try:
                 proc = runner(argv, text=True, capture_output=True, check=False,
@@ -17035,12 +17142,22 @@ def _probe_claude_leaf_tool_roster(
                 return {"name": name, "pass": False,
                         "detail": (f"the roster probe could not run {argv[0]!r} "
                                    f"({type(exc).__name__}: {exc}){version_note}")}
-    # AFTER the context manager, deliberately. Reading `captured` inside it took the list
-    # while the server was still accepting, without the handler's lock: a request in
-    # flight would be raced or dropped, and a DROPPED capture is a tool nobody classified
-    # — the fail-OPEN direction this check refuses everywhere else. `shutdown()` has
-    # returned by here and its thread is joined, so no handler can still be appending and
-    # the read needs no lock.
+    except OSError as exc:
+        return {"name": name, "pass": False,
+                "detail": (f"the roster probe could not set up its capture server or its "
+                           f"scratch home ({type(exc).__name__}: {exc}); the tools a leaf "
+                           f"would be launched with are unmeasured{version_note}")}
+
+    # AFTER the context manager, deliberately, and only because that manager was ALSO
+    # changed to make the handlers joinable. Reading `captured` inside it took the list
+    # while the server was still accepting: a request whose handler had not finished was
+    # DROPPED, and a dropped capture is a tool nobody classified — the fail-OPEN direction
+    # this check refuses everywhere else. That was reproduced, and moving the read out
+    # ALONE did not fix it, because `ThreadingHTTPServer`'s daemon handler threads are not
+    # tracked and so `server_close()` joined nothing. With `daemon_threads = False` set
+    # there, `server_close()` has joined every handler by the time this line runs, so the
+    # list is complete and needs no lock. The comment that stood here asserted this
+    # conclusion from the code's shape without the line that makes it true.
     snapshot = [list(roster) for roster in captured]
 
     if not snapshot:
@@ -18601,10 +18718,15 @@ def probe_execution_platform(
         roster_check = _probe_claude_leaf_tool_roster(
             command, repo_root, runner, cli_version=agent_version)
         checks.append(roster_check)
-        # `is True`, so an advisory skip (`pass=None`, no repo_root) neither gates nor
-        # silently greens: `_all_strict_boolean_probe_checks_pass` is not used here
-        # because the claude branch ANDs each check at its probe, which is the existing
-        # arrangement this follows rather than changes.
+        # `is not False`, NOT `is True` — the sibling line above uses `is True` and this
+        # one deliberately does not. The difference is the advisory skip: a probe called
+        # without `repo_root` records `pass=None` here (as `_probe_claude_mcp_registry`
+        # does), and `is True` would turn that skip into a refusal of every launch from
+        # such a caller. `is not False` gates every real verdict and lets the documented
+        # skip through. (This comment claimed the opposite predicate, and claimed the skip
+        # "neither gates nor silently greens", which no predicate can mean.)
+        # `_all_strict_boolean_probe_checks_pass` is not used because the claude branch
+        # ANDs each check at its probe, the existing arrangement this follows.
         can_launch_agents = can_launch_agents and (roster_check.get("pass") is not False)
     else:
         # Codex's internal multi_agent feature is diagnostic only: the conductor

@@ -34849,6 +34849,13 @@ class ClaudeLeafToolAllowlistTests(unittest.TestCase):
         self.assertTrue(CLAUDE_LEAF_REQUIRED_TOOLS)
 
 
+#: How long the in-flight witness below holds a request body back. MEASURED, not chosen:
+#: without `daemon_threads = False` the context manager's own exit takes ~0.5 s, so a
+#: shorter trickle lands inside that window and the capture arrives whether the fix is
+#: present or not. At this value the unfixed server returns no capture at all.
+_IN_FLIGHT_TRICKLE_SECONDS = 2.0
+
+
 class ClaudeRosterCaptureServerTests(unittest.TestCase):
     """`_claude_roster_capture_server` — the stand-in the roster probe measures through.
 
@@ -34928,6 +34935,72 @@ class ClaudeRosterCaptureServerTests(unittest.TestCase):
                 except urllib.error.HTTPError as exc:
                     headers, body = exc.headers, exc.read()
                 self.assertEqual(headers.get("Content-Length"), str(len(body)), document)
+                # `Connection: close` is the other half, and it is a CORRECTNESS property
+                # of the join rather than a nicety: `server_close()` waits for handlers, so
+                # a handler kept alive by an idle connection makes it wait out the
+                # handler's own socket timeout — measured, a 2.3 s probe became 10 s.
+                # Asserted as a header rather than as a duration, which would be flaky.
+                self.assertEqual(headers.get("Connection"), "close", document)
+            # The GET branch too. Same mechanism, same outage: the CLI makes non-Messages
+            # requests at startup, and one answered on a keep-alive connection with no
+            # declared length hangs the client to the probe timeout. Measured: deleting
+            # the header from `do_GET` alone left the whole file green.
+            get = urllib.request.Request(f"{base_url}/whatever")
+            try:
+                response = urllib.request.urlopen(get, timeout=10)
+                headers, body = response.headers, response.read()
+            except urllib.error.HTTPError as exc:
+                headers, body = exc.headers, exc.read()
+            self.assertEqual(headers.get("Content-Length"), str(len(body)))
+            self.assertEqual(headers.get("Connection"), "close")
+
+    def test_a_request_still_in_flight_is_not_dropped(self) -> None:
+        """The capture list must be COMPLETE when the caller reads it.
+
+        `ThreadingHTTPServer` sets `daemon_threads = True`, and `socketserver._Threads`
+        DISCARDS a daemon thread instead of tracking it, so `block_on_close` joins nothing
+        and `server_close()` returns while a handler is still running. Reproduced before
+        the fix: a roster carrying `Monitor` was dropped and the check reported PASS on the
+        remaining six — the fail-open direction. Moving the read out of the `with` did NOT
+        fix it on its own; `daemon_threads = False` is the line that does, and this is its
+        witness.
+
+        The body is TRICKLED, and the delay is chosen from a MEASUREMENT rather than
+        guessed. Without the fix the exit takes ~0.5 s of its own, so a 0.5 s trickle lands
+        inside that window and the capture arrives anyway — a witness that passes either
+        way. At 2 s the unfixed version returns `captured=[]` and the fixed one returns the
+        roster, which is the difference this test exists to see. Sending the body all at
+        once measures nothing at all.
+        """
+        import socket
+        import threading
+        import time
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        body = json.dumps({"tools": [{"name": "Monitor"}]}).encode("utf-8")
+        head, tail = body[:10], body[10:]
+
+        with _claude_roster_capture_server() as (base_url, captured):
+            host, port = base_url.rsplit("//", 1)[1].split(":")
+            client = socket.create_connection((host, int(port)), timeout=10)
+            self.addCleanup(client.close)
+            client.sendall(
+                b"POST /v1/messages HTTP/1.1\r\n"
+                + f"Host: {host}:{port}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                + head)
+            # The handler is now blocked reading the rest. Hand the remainder over from a
+            # thread that fires AFTER this one has entered the context manager's exit.
+            finisher = threading.Thread(
+                target=lambda: (time.sleep(_IN_FLIGHT_TRICKLE_SECONDS),
+                                client.sendall(tail)))
+            finisher.start()
+            self.addCleanup(finisher.join)
+            time.sleep(0.2)
+        # `server_close()` has joined the handler, so the trickled request is recorded.
+        self.assertEqual(captured, [["Monitor"]])
+
 
     def test_the_listening_socket_is_released_on_exit(self) -> None:
         """Preflight runs in one process and may probe more than once; a leaked socket is
@@ -34963,6 +35036,24 @@ class ClaudeRosterCaptureServerTests(unittest.TestCase):
             probe.settimeout(5)
             probe.bind(("127.0.0.1", port))
 
+    def test_the_accept_loop_is_stopped_before_the_socket_is_closed(self) -> None:
+        """`shutdown()` is the other half and had no witness.
+
+        Without it `serve_forever` keeps selecting on a socket `server_close()` has closed
+        — measured: not a failure but a busy spin, a 58 s suite run still going at 135% CPU
+        after 25 minutes, which no assertion notices. Witnessed by the thread actually
+        ending: `serve_forever` returns only when `shutdown()` asks it to.
+        """
+        import threading
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        before = set(threading.enumerate())
+        with _claude_roster_capture_server() as (_base_url, _captured):
+            live = [t for t in threading.enumerate() if t not in before]
+            self.assertTrue(live)
+        for thread in live:
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive(), thread)
+
 
 class ClaudeLeafRosterClassificationTests(unittest.TestCase):
     """`_classify_claude_leaf_roster` — the comparison, with no process in the way."""
@@ -34993,6 +35084,26 @@ class ClaudeLeafRosterClassificationTests(unittest.TestCase):
         report = self._classify([name for name in self._allowed() if name != "Bash"])
         self.assertEqual(report["missing"], ["Bash"])
         self.assertEqual(report["unclassified"], [])
+
+    def test_a_tool_missing_from_ONE_capture_is_reported(self) -> None:
+        """Omissions are judged PER CAPTURE; only extras take the union.
+
+        The union hides the case it must not: rosters `[required]` and
+        `[required minus Bash]` union to the full set and would pass, while the second is a
+        turn the leaf genuinely ran without `Bash`. Both orders, because a per-capture rule
+        written as "the last one" would pass one of them.
+        """
+        for label, captures in (
+            ("short capture first",
+             [[n for n in self._allowed() if n != "Bash"], self._allowed()]),
+            ("short capture last",
+             [self._allowed(), [n for n in self._allowed() if n != "Bash"]]),
+        ):
+            with self.subTest(label):
+                report = self._classify(*captures)
+                self.assertEqual(report["missing"], ["Bash"])
+                # And it is not reported as an extra: the union still has every name.
+                self.assertEqual(report["unclassified"], [])
 
     def test_an_mcp_tool_is_classified_by_its_server(self) -> None:
         report = self._classify(self._allowed() + ["mcp__evil__exfiltrate",
@@ -35139,6 +35250,58 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIn("unmeasured", check["detail"])
         self.assertIn("command not found", check["detail"])
 
+    def test_the_prompt_is_delivered_on_stdin(self) -> None:
+        """`input="."` is load-bearing and its loss is an operator-visible outage.
+
+        `claude -p` refuses an empty prompt — it is the same refusal
+        `_probe_claude_backend` reads to certify stdin support — so dropping it makes the
+        CLI exit before composing any roster request and every launch is refused with
+        "unmeasured" (measured against the real CLI: rc=1, `Error: Input must be provided
+        either through stdin or as a prompt argument`). With a tty on stdin instead of
+        `/dev/null` it would hang to the probe timeout. Same class as `Content-Length`,
+        and it had no witness.
+        """
+        seen: dict = {}
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            seen.update(kwargs)
+            return _answer_claude_roster_probe(args, kwargs)
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], True)
+        self.assertEqual(seen.get("input"), ".")
+
+    def test_a_capture_server_that_cannot_start_fails_closed(self) -> None:
+        """The listener and the scratch home are failure paths like any other.
+
+        Both used to sit outside every `try` while the docstring said "fail closed on
+        everything", so a taken port escaped as a traceback: the run stopped, but with no
+        `preflight.json`, no named check and no remedy — the opposite of the attributable
+        refusal every other failure here produces, and the case RUNBOOK tells the operator
+        this check reports on.
+        """
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched without a capture server")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            # The failure is injected at the context manager, not at the server class:
+            # the production code SUBCLASSES `ThreadingHTTPServer`, so replacing that name
+            # with a mock breaks the subclass statement instead of the bind, and would
+            # test a TypeError this code does not claim to handle. What is under test is
+            # the placement of the `try`, which this reaches the same way a taken port does.
+            @contextmanager
+            def refuses_to_bind():
+                raise OSError(98, "Address already in use")
+                yield  # pragma: no cover - unreachable, keeps this a generator
+
+            with mock.patch.object(ort, "_claude_roster_capture_server", refuses_to_bind):
+                check = self._probe(root, runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("Address already in use", check["detail"])
+        self.assertIn("unmeasured", check["detail"])
+
     def test_a_timeout_fails_closed(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs["timeout"])
@@ -35249,6 +35412,62 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
 def _leaf_tools() -> list[str]:
     from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
     return list(CLAUDE_LEAF_TOOLS)
+
+
+class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
+    """`repo_root` must reach EVERY claude probe, not only the top-level one.
+
+    Without it `_probe_claude_leaf_tool_roster` records the advisory skip (`pass=None`),
+    which the wiring deliberately does not gate — so a dropped `repo_root` silently turns
+    the roster check off rather than failing. That matters most exactly where it was
+    unpinned: `probe_all_providers` is the ONLY thing that measures a per-substep
+    `command:` prefix, and a prefix may carry its own `--tools`, which the CLI UNIONS with
+    the conductor's (measured on 2.1.238/2.1.239). `_reprobe_recorded_providers` is the
+    same hole for the mid-run TTL re-probe RUNBOOK advertises. Both survived mutation
+    before this class existed; the third call site (`_run_live_probe_and_update`) was
+    already pinned, so the coverage was inconsistent rather than absent.
+    """
+
+    def _seen_repo_roots(self, call: Callable[[], Any]) -> list[Any]:
+        seen: list[Any] = []
+
+        def spy(**kwargs):  # type: ignore[no-untyped-def]
+            seen.append(kwargs.get("repo_root"))
+            return {"backend": kwargs.get("backend"), "checks": [], "probe_command": "",
+                    "status": "fail"}
+
+        with mock.patch.object(ort, "probe_execution_platform", spy):
+            call()
+        return seen
+
+    def test_probe_all_providers_passes_the_repo_root(self) -> None:
+        from tools.llm_config import load_llm_config
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = load_llm_config(
+                root / "llm.yaml",
+                content=("defaults:\n  provider: claude_cli\n  model: opus\n"
+                         "phases:\n  generate:\n    substeps:\n      generate:\n"
+                         "        command: claude --tools Monitor\n").encode("utf-8"))
+            seen = self._seen_repo_roots(
+                lambda: ort.probe_all_providers(config=config, repo_root=root))
+        self.assertTrue(seen)
+        for value in seen:
+            self.assertEqual(value, root)
+
+    def test_the_ttl_reprobe_passes_the_repo_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cached = {"claude": {"provider_type": "claude_cli", "probe_command": "claude",
+                                 "surfaces": [{"provider_type": "claude_cli",
+                                               "probe_command": "claude"},
+                                              {"provider_type": "claude_cli",
+                                               "probe_command": "claude --tools Monitor"}]}}
+            seen = self._seen_repo_roots(
+                lambda: ort._reprobe_recorded_providers(cached, root))
+        self.assertEqual(len(seen), 2)
+        for value in seen:
+            self.assertEqual(value, root)
 
 
 class ClaudeLeafConfigProbeTests(unittest.TestCase):
