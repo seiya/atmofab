@@ -29689,13 +29689,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # only in gate code, so a verify leaf authoring a structured incident dict was writing
         # an unrepairable artifact it had never been told was invalid. E2E #4
         # (orch_20260712T014005Z_e02a2d4d, validate.execute post_execute_violation).
-        # Bumped 18800->19000: `Glob`'s `pattern` is now validated like its `path`
-        # (issue #71 put `Glob` in a leaf's hands), and a leaf that does not know the rule
-        # meets a refusal it cannot diagnose — the one class of text this file exists to
-        # carry. 150 bytes of ceiling for a 187-byte sentence, stated in the shortest form
-        # that names what is judged and where. (The first bump left ONE byte of headroom
-        # and its comment said 190 where the bump was 150; a ceiling with no room is a
-        # tripwire, which this class's own docstring says elsewhere.)
+        # Raised for issue #71: `Glob`'s `pattern` is now validated like its `path`, and a
+        # leaf that does not know that meets a refusal — or, worse, an empty result — it
+        # cannot diagnose. That is the one class of text this file exists to carry.
+        #
+        # NO BYTE ARITHMETIC IN THIS COMMENT, deliberately. The delta was written here
+        # three times and was wrong three times (190 for a 150 bump, then 150 for a 200
+        # bump), each time in the commit that claimed to have corrected the previous one.
+        # The rule is what matters and does not rot: a ceiling exists to catch RE-BLOAT,
+        # so it sits far enough above the file to admit an ordinary sentence and low enough
+        # to notice a section. `wc -c` is one command away for anyone who wants the number.
         "docs/AGENT_CONTRACT.md": 19000,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
@@ -35437,6 +35440,76 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
             check = self._probe(self._repo(td), runner)
         self.assertIs(check["pass"], False)
         self.assertIn("Prompt blocked by a hook", check["detail"])
+
+    def test_the_no_capture_detail_reads_the_envelope_rather_than_truncating(self) -> None:
+        """The message must survive `--output-format json`.
+
+        The CLI writes `usage` and `subagent_stats` before `result`, so a flat 400-byte
+        truncation of stdout showed the operator zeroed token counters and hid the sentence
+        that explains the failure — measured at around byte 940 on the hook-refusal case
+        this detail exists for. The envelope's own fields are read instead.
+        """
+        envelope = {
+            "usage": {"input_tokens": 0, "output_tokens": 0,
+                      "padding": ["0"] * 200},
+            "subagent_stats": {"spawned": 0},
+            "subtype": "success",
+            "result": "UserPromptSubmit operation blocked by hook: not a git repository",
+        }
+        self.assertGreater(json.dumps(envelope).index("blocked by hook"), 400)
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            return _FakeCompletedProcess(0, stdout=json.dumps(envelope))
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("blocked by hook", check["detail"])
+        self.assertNotIn("input_tokens", check["detail"])
+
+    def test_a_late_roster_is_classified_rather_than_dropped(self) -> None:
+        """WHERE the caller reads the captures, which had no witness.
+
+        The read sits after the context manager because `server_close()` has joined the
+        handlers by then. Reading it INSIDE takes the list while a handler may still be
+        appending — and the wrong value is already in scope 31 lines above
+        (`captured_snapshot`, read inside for the setup/teardown discriminator), so the
+        regression is a one-token edit. Demonstrated: with that edit, a second request
+        carrying `Monitor` whose body arrives late is dropped and the check reports PASS on
+        the remaining six, while the whole targeted suite stays green.
+
+        The delay is the measured one: below about half a second the exit takes that long
+        anyway and the capture lands either way.
+        """
+        import socket
+        import threading
+        import time
+        from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            base_url = kwargs["env"]["ANTHROPIC_BASE_URL"]
+            _answer_claude_roster_probe(args, kwargs)
+            body = json.dumps({"tools": [{"name": "Monitor"}]}).encode("utf-8")
+            head, tail = body[:10], body[10:]
+            host, port = base_url.rsplit("//", 1)[1].split(":")
+            client = socket.create_connection((host, int(port)), timeout=20)
+            client.sendall(
+                b"POST /v1/messages HTTP/1.1\r\n"
+                + f"Host: {host}:{port}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode() + head)
+            threading.Thread(
+                target=lambda: (time.sleep(_IN_FLIGHT_TRICKLE_SECONDS),
+                                client.sendall(tail), client.close()),
+                daemon=True).start()
+            time.sleep(0.2)
+            return _FakeCompletedProcess(1, stdout="{}")
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("Monitor", check["detail"].split("measured ")[0])
+        self.assertIn(",".join(sorted([*CLAUDE_LEAF_TOOLS, "Monitor"])), check["detail"])
 
     def test_the_prompt_is_delivered_on_stdin(self) -> None:
         """`input="."` is load-bearing and its loss is an operator-visible outage.

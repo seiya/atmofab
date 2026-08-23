@@ -16681,10 +16681,11 @@ CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
 # near 2 s and the same code under review load sits near 5 s (measured both ways against
 # the same commit, which is why a single figure kept being wrong). The launch ends at the
 # stand-in's 400, before any model turn. So this is more than an order of magnitude of
-# headroom idle. Under heavy load it is less: six probes taken while ~20 pytest processes
-# ran measured 15.6-22.4 s (seeded and unseeded alike, so not the seeding), which is 5.4x
-# rather than an order of magnitude. Still a bound, and it must be one: the probe runs
-# inside preflight, and a hang there is a run that never begins with nothing said about why.
+# headroom IDLE, and 5.4x under load: six probes taken while ~20 pytest processes ran
+# measured 15.6-22.4 s (seeded and unseeded alike, so the seeding is not the cause). Read
+# the 2-6 s figure above as the idle case and this one as the ceiling an operator judging
+# "has preflight hung" should use. Still a bound, and it must be one: the probe runs inside
+# preflight, and a hang there is a run that never begins with nothing said about why.
 # A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
 # is the state this check exists to refuse.
 CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS = 120
@@ -17169,7 +17170,7 @@ def _probe_claude_leaf_tool_roster(
             # carrying a session id belonging to no leaf — to that run's
             # `hooks/native_hook_events.jsonl`, which `tools/audit_orchestration.py` reads
             # as the record of what the leaves did. Measured, twice and independently.
-            # Removing the two names the hooks key on leaves the probe unattributed, which
+            # Removing the names the hooks key on leaves the probe unattributed, which
             # is what it is; nothing about the roster depends on them.
             for workflow_identity in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
                                       "METDSL_CHILD_AGENT_RUN_ID"):
@@ -17255,10 +17256,29 @@ def _probe_claude_leaf_tool_roster(
         # pointing `repo_root` at a directory that is not a git working tree, which the
         # `UserPromptSubmit` command's `git rev-parse` needs. Holding stdout and printing
         # only stderr left an operator with a roster remedy for a hook failure.
+        # THE MESSAGE, not the first 400 bytes. The launch carries `--output-format json`,
+        # and the CLI puts `usage` and `subagent_stats` first, so a flat truncation handed
+        # the operator four hundred bytes of zeroed token counters while the sentence that
+        # explains the failure — "UserPromptSubmit operation blocked by hook: … not a git
+        # repository" — sat around byte 940. Measured, on the very case this detail was
+        # written for. The envelope's own fields are read when it parses, and a truncation
+        # is the fallback for output that is not one.
+        stdout_text = (proc.stdout or "").strip()
+        try:
+            envelope = json.loads(stdout_text)
+        except (json.JSONDecodeError, ValueError):
+            envelope = None
+        if isinstance(envelope, dict):
+            parts = [str(envelope.get(key)) for key in ("subtype", "result")
+                     if envelope.get(key)]
+            errors = envelope.get("errors")
+            if isinstance(errors, list):
+                parts.extend(str(item) for item in errors)
+            stdout_text = " ".join(parts) or stdout_text
         streams = " ".join(
-            f"{label}: {text.strip()[:400]}"
-            for label, text in (("stdout", proc.stdout or ""), ("stderr", proc.stderr or ""))
-            if text.strip())
+            f"{label}: {text[:400]}"
+            for label, text in (("stdout", stdout_text), ("stderr", (proc.stderr or "").strip()))
+            if text)
         return {"name": name, "pass": False,
                 "detail": (f"the CLI made no request carrying a tool roster (rc="
                            f"{proc.returncode}), so what a leaf would be launched with is "
