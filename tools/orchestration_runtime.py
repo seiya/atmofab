@@ -16645,12 +16645,12 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # matchers for both long predate that (issue #42), so the CLI, not this repository, is what
 # had made them dormant — but the consequence is live either way. The `path` of both is
 # validated fail-closed (an absent one is validated as the repository root and therefore
-# blocks). What is NOT validated is `Glob`'s `pattern`, which names paths: `tools/hooks/cli.py`
-# records that an absolute or `../` pattern reaches outside the validated root, as issue #42's
-# documented residue. `Grep`'s `pattern` is a CONTENT regex and names no path
-# (`docs/HOOKS.md` is canonical), so it is not part of that residue and must not be
-# validated as one — treating `grep '\.\./config'` as a path escape is the over-refusal
-# direction. The residue applies whenever a leaf holds `Glob`, which since this change it does.
+# blocks), and `Glob`'s `pattern` is validated too, at the place the read would land —
+# closed on this branch rather than inherited, because it was issue #42's residue only for
+# as long as no leaf held `Glob`. `Grep`'s `pattern` is a CONTENT regex and names no path
+# (`docs/HOOKS.md` is canonical), so it is deliberately not validated: treating
+# `grep '\.\./config'` as a path escape is the over-refusal direction. `tools/hooks/cli.py`
+# is canonical for both, and carries the measurement of what the Glob TOOL can reach.
 # TODO.md carries the follow-up; it is not closed here, because narrowing a second
 # enforcement layer is a different change from choosing which tools a leaf gets.
 #

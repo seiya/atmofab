@@ -35371,6 +35371,23 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIs(check["pass"], False)
         self.assertIn("unmeasured", check["detail"])
         self.assertIn("command not found", check["detail"])
+        # BOTH streams, and the pointer at the other thing this launch runs. The scratch
+        # home is seeded with the leaf configuration, so the probe executes the leaf's whole
+        # hook chain, and a hook that refuses the prompt lands here with rc=0 and an empty
+        # stderr — a roster verdict for something that is not about tools. Holding stdout
+        # back left an operator with no way to see that.
+        self.assertIn("hook chain", check["detail"])
+        self.assertIn(ort.CLAUDE_LEAF_CONFIG_REL, check["detail"])
+
+    def test_the_no_capture_detail_surfaces_stdout_too(self) -> None:
+        """stdout is where a blocked prompt says so; stderr can be empty."""
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            return _FakeCompletedProcess(0, stdout="Prompt blocked by a hook\n")
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("Prompt blocked by a hook", check["detail"])
 
     def test_the_prompt_is_delivered_on_stdin(self) -> None:
         """`input="."` is load-bearing and its loss is an operator-visible outage.

@@ -4005,15 +4005,17 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         for pattern in (
             "../*.py", "../../etc/*", "/etc/*", "~/.ssh/*",
             # A `..` AFTER A WILDCARD, which the literal prefix cannot see: the prefix of
-            # `docs/*/../../spec/*` is `docs` itself, so the first version of this check
-            # compared it with `path`, found them equal, and validated NOTHING — while
-            # `glob.glob` really does return `docs/<sub>/../../spec/<file>`. Two reviewers
-            # reproduced the read independently, and the identical read spelled for `Bash`
-            # was blocked, so the same repository answered one request two ways. Every
-            # metacharacter class the prefix helper stops at gets its own row, because a
-            # fix that handled only `*` would leave the others.
+            # `docs/*/../../etc/*` is `docs` itself, so the first version of this check
+            # compared it with `path`, found them equal, and validated NOTHING. Judging the
+            # NORMALIZED pattern is what sees it — these land in `/etc`, outside every
+            # grant. Every metacharacter class the prefix helper stops at gets its own row,
+            # because a fix that handled only `*` would leave the others.
             "*/../../etc/*", "**/../../etc/*", "?/../../etc/*", "[a-z]*/../../etc/*",
-            "*/../secret.txt",
+            # A `..` COMBINED WITH an escaping head, which an earlier version let through:
+            # it re-rooted any `..` pattern to the repository root BEFORE asking whether
+            # the head leaves the repository, so these were allowed while their `..`-less
+            # forms blocked.
+            "/etc/*/../*", "~/.ssh/*/../*", "~/*/../.ssh/*",
         ):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
@@ -4021,6 +4023,50 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                     repo_root, "Glob", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
                 self.assertIn("pattern", body)
+
+    def test_a_pattern_landing_in_another_granted_root_agrees_with_bash(self) -> None:
+        """The route-disagreement test, in the direction that actually bit.
+
+        `Glob(path="docs", pattern="*/../../spec/*")` lands in `spec/`, which the manifest
+        grants, and the identical read spelled for `Bash` is allowed. A version of this
+        check that validated every `..` pattern at the repository root refused the `Glob`
+        spelling — recreating, in the other direction, the disagreement it was written to
+        remove. Both routes are asserted here so neither can drift alone.
+        """
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "spec").mkdir(exist_ok=True)
+            (repo_root / "spec" / "s.yaml").write_text("x", encoding="utf-8")
+            (repo_root / "docs" / "sub").mkdir(exist_ok=True)
+            glob_code, glob_body = self._run(
+                repo_root, "Glob", {"path": "docs", "pattern": "*/../../spec/*"})
+            bash_code, bash_body = self._run(
+                repo_root, "Bash", {"command": "cat docs/*/../../spec/*"})
+        self.assertEqual(glob_code, 0, f"Glob refused a granted read: {glob_body}")
+        self.assertEqual(bash_code, 0, f"Bash refused a granted read: {bash_body}")
+
+    def test_the_access_log_records_what_the_pattern_searched(self) -> None:
+        """The durable record must distinguish two reads the leaf-facing message already does.
+
+        `append_hook_access_log` carries no reason field, so logging `path` for a block
+        CAUSED BY the pattern filed `Glob path=docs` for both `pattern=*.md` and
+        `pattern=/etc/*` — and `tools/audit_orchestration.py` reads that file as the record
+        of what a leaf reached for. Measured: reverting to `path` left the whole file green.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            code, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": "/etc/*"})
+            self.assertEqual(code, 2)
+            blocked = self._log_lines(repo_root)[-1]
+            code, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": "*.md"})
+            self.assertEqual(code, 0)
+            allowed = self._log_lines(repo_root)[-1]
+        self.assertEqual(blocked["decision"], "block")
+        self.assertEqual(blocked["path"], "/etc")
+        self.assertEqual(allowed["decision"], "allow")
+        self.assertEqual(allowed["path"], "docs")
 
     def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
         """Two remedies for one refusal are worse than one.
@@ -4082,7 +4128,13 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         """
         manifest = {"allowed_read_roots": ["docs"]}
         for pattern in ("*.md", "**/*.md", "sub/*.md", "**/sub/*.md", "[a-z]*.md",
-                        "./sub/*.md", "sub/../*.md", "*", "?.md", "{a,b}/*.md"):
+                        "./sub/*.md", "sub/../*.md", "*", "?.md", "{a,b}/*.md",
+                        # A `..` that LANDS BACK INSIDE the granted root. The version that
+                        # re-rooted every `..` pattern to the repository root refused this
+                        # — and refused `*/../../spec/*` with `spec/` granted, while the
+                        # identical Bash spelling was allowed. Judging the landing place is
+                        # what makes the two routes agree.
+                        "*/../a.md", "sub/*/../*.md"):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
@@ -4100,6 +4152,62 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 code, body = self._run(
                     repo_root, "Grep", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
+    def test_every_tool_the_leaf_is_launched_with_is_actually_judged(self) -> None:
+        """Registering a matcher is not the same as the hook JUDGING the tool.
+
+        `CLAUDE_LEAF_TOOLS` is derived from the `PreToolUse` matcher coverage, and that
+        derivation is documented as making it impossible to hand a leaf a tool the hook
+        cannot judge. It does not, on its own: `_evaluate_pre_command_file_access_policy`
+        returns `None` — which the caller treats as ALLOW — for any tool name it has no
+        branch for, and nothing tied the coverage map to the branch set. Measured on the
+        unfixed shape: `Monitor`, `WebFetch` and `NotebookEdit` all came back ALLOW under a
+        manifest granting `docs` only. So the ordinary-looking edit that grants a leaf a
+        new built-in (add it to the coverage map, add a matcher to the committed leaf
+        configuration — which is exactly what the config probe checks) would pass preflight
+        and the roster check while leaving the tool unvalidated.
+
+        This test is that tie. Each covered tool is DRIVEN with a payload that reads or
+        writes outside the manifest and must be refused; the table below must name every
+        covered tool and no other, so widening the coverage set fails here until someone
+        adds the row — and adding the row means finding the branch that judges it.
+        """
+        from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
+
+        ungranted = {
+            "Read": {"file_path": "tools/secret.py"},
+            "Write": {"file_path": "tools/secret.py", "content": "x"},
+            "Edit": {"file_path": "tools/secret.py", "old_string": "a", "new_string": "b"},
+            "Grep": {"path": "tools", "pattern": "x"},
+            "Glob": {"path": "tools", "pattern": "*.py"},
+            "Bash": {"command": "cat tools/secret.py"},
+        }
+        self.assertEqual(set(ungranted), _CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])
+        manifest = {"allowed_read_roots": ["docs"]}
+        for tool_name, tool_input in sorted(ungranted.items()):
+            with self.subTest(tool_name), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                (repo_root / "tools").mkdir(exist_ok=True)
+                (repo_root / "tools" / "secret.py").write_text("x", encoding="utf-8")
+                code, body = self._run(repo_root, tool_name, tool_input)
+                self.assertEqual(code, 2, f"{tool_name} was not judged: {body}")
+
+    def test_a_tool_outside_the_leaf_allowlist_is_not_judged_by_the_hook(self) -> None:
+        """The other half, stated rather than left to be discovered.
+
+        A tool the leaf is NOT launched with falls through to allow — the hook has no
+        branch for it. That is safe only because the `--tools` allowlist keeps such a tool
+        out of the leaf entirely, which is why the allowlist and the matcher coverage must
+        stay the same set. If this ever starts blocking, the hook grew a fail-closed
+        default and the sibling test above is no longer the only thing holding the tie.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            for tool_name in ("Monitor", "WebFetch", "NotebookEdit"):
+                code, _body = self._run(
+                    repo_root, tool_name, {"file_path": "tools/secret.py"})
+                self.assertEqual(code, 0, tool_name)
 
     def test_settings_json_registers_grep_and_glob_with_bash_first(self) -> None:
         """Read from the LEAF's settings file, the owner of the hook wiring."""

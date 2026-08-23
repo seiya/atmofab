@@ -1131,42 +1131,54 @@ def _evaluate_grep_glob_read_policy(
         agent_role=agent_role,
         session_id=decoded.session_id,
     )
-    # THE PATTERN, for the tools whose pattern names paths. Every match of a glob lies
-    # under its literal prefix, so that prefix is what decides where the search reads —
-    # the same definition `_glob_literal_prefix` already gives the Bash extractor, reused
-    # rather than restated. An ordinary pattern (`**/*`, `src/*`) resolves under `path`
-    # and is authorized by the same manifest entry that authorized `path`, so this refuses
-    # nothing that was working; what it stops is `../../etc/**` and `/etc/**`, which reach
-    # outside the validated root while `path` looks innocent. (That example named a
-    # source-file extension until the token ratchet caught it: this module is `neutral
-    # core` and must not carry a token a target stack implies — docs/BACKEND_BOUNDARY.md.)
     pattern_blocked = False
+    # What the access log records. The PATTERN is part of the read boundary now, so a
+    # block caused by it must not be filed as a read of the innocent `path`: the durable
+    # record showed `Glob path=docs` for both `pattern=*.md` and `pattern=/etc/*`, and
+    # `append_hook_access_log` carries no reason field to tell them apart.
+    logged_path = search_path
+    # THE PATTERN, for the tools whose pattern names paths. `Glob`'s pattern decides where
+    # the search reads, so it is authorized like a path — judged AT THE PLACE THE READ
+    # WOULD LAND, which is what `os.path.normpath` computes for a pattern carrying `..`.
+    #
+    # MEASURED, because two rounds of this check were built on the wrong engine and the
+    # wrong engine's semantics reached four documents as "measured". Claude Code's `Glob`
+    # tool is not a filesystem glob: it runs `rg --files --glob <pattern>` with the search
+    # root set to `path`, and only an ABSOLUTE pattern re-roots that search. Run against
+    # ripgrep 14.1.1 in a fixture whose granted directory holds a subdirectory and a
+    # symlink pointing out of it, every relative escape returns NOTHING — `../spec/*`,
+    # `*/../../spec/*`, `**/../../spec/*`, `{../spec,sub}/*`, and a symlinked directory —
+    # while the same fixture with `-L` returns the symlinked file, which proves the empty
+    # results are the tool's policy and not a broken probe. So the reachable escape today
+    # is the absolute pattern, and the `..` forms cannot read anything at all.
+    #
+    # The check is still general, and that is deliberate: judging the landing place costs
+    # an ordinary pattern nothing (it normalizes to itself), it keeps the absolute case
+    # closed, and it does not depend on a vendor implementation detail staying true. What
+    # it must NOT do is refuse a `..` pattern outright — the version that validated those
+    # at the repository root refused `Glob(path=docs, pattern=*/../../spec/*)` while `spec/`
+    # was granted and the identical Bash spelling was allowed, which is the route
+    # disagreement it was written to remove, recreated in the other direction.
     if (decision.action != HookDecisionAction.BLOCK
             and tool_name in _PATTERN_IS_A_PATH_TOOLS):
         raw_pattern = _tool_input(decoded.payload).get("pattern")
+        # `.strip()` because leading whitespace hides an absolute pattern: `"\t/etc/*"` is
+        # not `startswith("/")` and would be joined under `path` instead of re-rooting.
         pattern = raw_pattern.strip() if isinstance(raw_pattern, str) else ""
         if pattern:
             joined = pattern if pattern.startswith(("/", "~")) else f"{search_path}/{pattern}"
-            literal, prefix, resolved = _glob_literal_prefix(repo_root, joined)
-            # "EVERY MATCH LIES UNDER THE LITERAL PREFIX" IS FALSE ONCE A `..` FOLLOWS A
-            # WILDCARD, and the first version of this check rested on it — in its comment,
-            # in `docs/HOOKS.md`, and in the refusal message shown to the leaf: with `path=docs`
-            # and `pattern=*/../../spec/*` the prefix is `docs` — equal to `path`, so the
-            # comparison below skipped validation entirely — while `glob.glob` really does
-            # return `docs/<sub>/../../spec/<file>` (measured, with a real glob engine, and
-            # the Bash route BLOCKS the identical read). This repository already spelled
-            # the rule at `_bounded_glob_read_targets`; what the first version reused was
-            # only the prefix helper, not the rule. Validating at the repository root is
-            # what that code does in the same situation, and it is the only prefix that
-            # still contains such a match.
-            if ".." in joined.split("/")[len(literal):]:
-                prefix = "."
-            # And the EXPANDED prefix when the pattern leaves the repository by `~` or a
+            # NORMALIZE, then take the literal prefix — in that order. `a/*/../b` lands in
+            # `b`, and taking the prefix first stops at `a` and sees no `..` at all, which
+            # is how the first version of this let an escaping pattern through unvalidated.
+            literal, prefix, resolved = _glob_literal_prefix(
+                repo_root, os.path.normpath(joined))
+            # And the EXPANDED location when the pattern leaves the repository by `~` or a
             # variable: `_glob_literal_prefix` computes that third value for exactly this
-            # case, and the first version discarded it, validating `~/.ssh/*` as the
-            # in-repo literal `<repo>/~/.ssh`. That blocked only because no manifest grants
-            # the root — it would have ALLOWED the read the moment one did.
-            elif not _is_path_under_root(resolved, repo_root.resolve()):
+            # case, and validating the literal spelling instead read `~/.ssh/*` as the
+            # in-repo path `<repo>/~/.ssh` — which blocked only because no manifest grants
+            # the root. Checked AFTER normalization, so a `..` cannot mask it: `/etc/*/../*`
+            # and `~/.ssh/*/../*` were both allowed while their `..`-less forms blocked.
+            if not _is_path_under_root(resolved, repo_root.resolve()):
                 prefix = str(resolved)
             if prefix != search_path:
                 pattern_decision = validate_read_access(
@@ -1183,6 +1195,7 @@ def _evaluate_grep_glob_read_policy(
                     # path" are two contradictory sentences, and only the first names
                     # something the leaf can act on.
                     pattern_blocked = True
+                    logged_path = prefix
                     decision = dataclasses.replace(
                         pattern_decision,
                         reason=(
@@ -1192,9 +1205,8 @@ def _evaluate_grep_glob_read_policy(
                             + (", even though the repository root it defaulted to does. "
                                if path_missing else
                                ", even though its 'path' does. ") +
-                            "The pattern decides where a search reads, so it is authorized "
-                            "like a path: a `..` after a wildcard, an absolute pattern and "
-                            "a `~` pattern are all judged where they land."
+                            "A pattern decides where a search reads, so it is authorized "
+                            "like a path: re-issue it against a granted directory."
                         ).strip(),
                     )
     if decision.action == HookDecisionAction.BLOCK and path_missing and not pattern_blocked:
@@ -1211,7 +1223,7 @@ def _evaluate_grep_glob_read_policy(
         orchestration_id=orchestration_id,
         agent_run_id=resolved_run_id,
         tool_name=tool_name,
-        path=search_path,
+        path=logged_path,
         decision=decision,
     )
     return decision
