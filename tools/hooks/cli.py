@@ -1181,6 +1181,11 @@ def _evaluate_grep_glob_read_policy(
             if not _is_path_under_root(resolved, repo_root.resolve()):
                 prefix = str(resolved)
             if prefix != search_path:
+                # WHERE THE READ WAS JUDGED, for the log, on both verdicts. Recording
+                # `path` filed a pattern-caused block as a read of the innocent directory,
+                # and an allowed `../spec/*` as a read of `docs` — and the first fix moved
+                # the conflation instead of removing it, by changing only the block side.
+                logged_path = prefix
                 pattern_decision = validate_read_access(
                     repo_root,
                     orchestration_id,
@@ -1195,13 +1200,13 @@ def _evaluate_grep_glob_read_policy(
                     # path" are two contradictory sentences, and only the first names
                     # something the leaf can act on.
                     pattern_blocked = True
-                    logged_path = prefix
                     decision = dataclasses.replace(
                         pattern_decision,
                         reason=(
                             f"{pattern_decision.reason or ''} "
-                            f"{tool_name}'s pattern {pattern!r} searches {prefix!r}, which "
-                            f"the read_manifest does not grant"
+                            f"{tool_name}'s pattern {pattern!r} is authorized at {prefix!r} "
+                            f"— where its matches would lie — which the read_manifest does "
+                            f"not grant"
                             + (", even though the repository root it defaulted to does. "
                                if path_missing else
                                ", even though its 'path' does. ") +

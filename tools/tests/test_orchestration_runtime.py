@@ -29689,11 +29689,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # only in gate code, so a verify leaf authoring a structured incident dict was writing
         # an unrepairable artifact it had never been told was invalid. E2E #4
         # (orch_20260712T014005Z_e02a2d4d, validate.execute post_execute_violation).
-        # Bumped 18800->18950: `Glob`'s `pattern` is now validated like its `path`
+        # Bumped 18800->19000: `Glob`'s `pattern` is now validated like its `path`
         # (issue #71 put `Glob` in a leaf's hands), and a leaf that does not know the rule
         # meets a refusal it cannot diagnose — the one class of text this file exists to
-        # carry. 190 bytes, stated in the shortest form that names every blocked shape.
-        "docs/AGENT_CONTRACT.md": 18950,
+        # carry. 150 bytes of ceiling for a 187-byte sentence, stated in the shortest form
+        # that names what is judged and where. (The first bump left ONE byte of headroom
+        # and its comment said 190 where the bump was 150; a ceiling with no room is a
+        # tripwire, which this class's own docstring says elsewhere.)
+        "docs/AGENT_CONTRACT.md": 19000,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -35109,6 +35112,52 @@ class ClaudeRosterCaptureServerTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertEqual(body["type"], "error")
         self.assertEqual(captured, [["Bash"]])
+
+    def test_a_stalled_connection_cannot_hold_the_probe_open(self) -> None:
+        """The handler's socket timeout, which had no witness while its comment called it
+        load-bearing.
+
+        `server_close()` waits for every handler, so a connection opened and then abandoned
+        — headers promising a body that never arrives — would stall the context manager's
+        exit forever. The bound is lowered here rather than waited out: at its real ten
+        seconds the only honest test is a ten-second one.
+
+        The manager runs on a WORKER THREAD and the assertion is on the join, so removing
+        the mechanism makes this test FAIL in a bounded time. Driven inline it hangs
+        instead, which stalls the whole suite and reports nothing — measured, by removing
+        the line and watching a mutation run pass ten minutes with no verdict.
+        """
+        import socket
+        import threading
+        import time
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        finished = threading.Event()
+        address: list[str] = []
+        opened = threading.Event()
+
+        def serve() -> None:
+            with _claude_roster_capture_server() as (base_url, _captured):
+                address.append(base_url)
+                opened.set()
+                # Hold the manager open until the client has stalled its request.
+                time.sleep(0.4)
+            finished.set()
+
+        with mock.patch.object(ort, "CLAUDE_ROSTER_CAPTURE_HANDLER_TIMEOUT_SECONDS", 1):
+            worker = threading.Thread(target=serve, daemon=True)
+            worker.start()
+            self.assertTrue(opened.wait(10))
+            host, port = address[0].rsplit("//", 1)[1].split(":")
+            client = socket.create_connection((host, int(port)), timeout=10)
+            self.addCleanup(client.close)
+            client.sendall(
+                b"POST /v1/messages HTTP/1.1\r\n"
+                + f"Host: {host}:{port}\r\n".encode()
+                + b"Content-Length: 4096\r\n\r\n")
+            self.assertTrue(
+                finished.wait(8),
+                "the context manager was still waiting for a stalled handler")
 
     def test_the_listening_socket_is_released_on_exit(self) -> None:
         """Preflight runs in one process and may probe more than once; a leaked socket is

@@ -16651,8 +16651,10 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # (`docs/HOOKS.md` is canonical), so it is deliberately not validated: treating
 # `grep '\.\./config'` as a path escape is the over-refusal direction. `tools/hooks/cli.py`
 # is canonical for both, and carries the measurement of what the Glob TOOL can reach.
-# TODO.md carries the follow-up; it is not closed here, because narrowing a second
-# enforcement layer is a different change from choosing which tools a leaf gets.
+# (These two lines said the opposite — "TODO.md carries the follow-up; it is not closed
+# here" — for four rounds after it WAS closed, sitting directly under their own
+# contradiction, because the replacement that rewrote the paragraph stopped one sentence
+# short of them.)
 #
 # A pure leaf passes `--tools ""` (`pure_leaf.py`) and is unaffected by any of this.
 CLAUDE_LEAF_TOOLS = tuple(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))
@@ -16681,11 +16683,19 @@ CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
 # stand-in's 400, before any model turn. So this is more than an order of magnitude of
 # headroom idle. Under heavy load it is less: six probes taken while ~20 pytest processes
 # ran measured 15.6-22.4 s (seeded and unseeded alike, so not the seeding), which is 5.4x
-# rather than an order of magnitude. Still a bound, and still far from firing — and still a bound, because the probe runs
-# inside preflight and a hang there is a run that never begins with nothing said about why.
+# rather than an order of magnitude. Still a bound, and it must be one: the probe runs
+# inside preflight, and a hang there is a run that never begins with nothing said about why.
 # A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
 # is the state this check exists to refuse.
 CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS = 120
+
+# How long ONE connection may hold a capture handler. `server_close()` waits for every
+# handler, so an unbounded handler is an unbounded preflight — an abandoned but still-open
+# connection would stall the exit with nothing to end it. A module constant rather than a
+# literal on the handler so a test can lower it and witness the bound: at ten seconds the
+# only honest test is a ten-second one, which is why this went unwitnessed while its
+# comment called it load-bearing.
+CLAUDE_ROSTER_CAPTURE_HANDLER_TIMEOUT_SECONDS = 10
 
 
 # The ONLY paths inside the private home a leaf may write, MEASURED on CLI 2.1.235
@@ -16848,7 +16858,7 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
         # read ends at EOF (measured — the probe returns ~0.4 s after the timeout at 0.6,
         # 1.2 and 2.0 s). What this bounds is a connection that is genuinely abandoned
         # while still open, which costs exactly this many seconds instead of forever.
-        timeout = 10
+        timeout = CLAUDE_ROSTER_CAPTURE_HANDLER_TIMEOUT_SECONDS
 
         def log_message(self, *args: Any) -> None:  # noqa: A003 - silence the stderr log
             """The default handler writes every request to stderr, which under preflight

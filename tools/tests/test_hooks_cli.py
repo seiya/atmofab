@@ -4011,10 +4011,14 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             # grant. Every metacharacter class the prefix helper stops at gets its own row,
             # because a fix that handled only `*` would leave the others.
             "*/../../etc/*", "**/../../etc/*", "?/../../etc/*", "[a-z]*/../../etc/*",
-            # A `..` COMBINED WITH an escaping head, which an earlier version let through:
-            # it re-rooted any `..` pattern to the repository root BEFORE asking whether
-            # the head leaves the repository, so these were allowed while their `..`-less
-            # forms blocked.
+            # A `..` COMBINED WITH an escaping head. Under THIS manifest these three add
+            # nothing — they normalize to `/etc/*` and `~/.ssh/*`, which are already above,
+            # and the version they were written against blocked them too. They witness the
+            # ordering bug only under a manifest granting the repository ROOT, so that is
+            # where the sibling test drives them; kept here because the normalization must
+            # not start depending on which grant is in force. (The claim that they "were
+            # allowed while their `..`-less forms blocked" was true only under `["."]`, and
+            # was written here, under `["docs"]`, without that precondition.)
             "/etc/*/../*", "~/.ssh/*/../*", "~/*/../.ssh/*",
         ):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
@@ -4049,24 +4053,35 @@ class GrepGlobReadGuardTests(unittest.TestCase):
     def test_the_access_log_records_what_the_pattern_searched(self) -> None:
         """The durable record must distinguish two reads the leaf-facing message already does.
 
-        `append_hook_access_log` carries no reason field, so logging `path` for a block
-        CAUSED BY the pattern filed `Glob path=docs` for both `pattern=*.md` and
-        `pattern=/etc/*` — and `tools/audit_orchestration.py` reads that file as the record
-        of what a leaf reached for. Measured: reverting to `path` left the whole file green.
+        `append_hook_access_log` carries no reason field, so logging `path` filed
+        `Glob path=docs` for `pattern=*.md`, for `pattern=/etc/*` and for an allowed
+        `pattern=../spec/*` alike — three different reads, one row. The consumer is the
+        `workflow-audit-claude` SKILL (`tools/audit_orchestration.py` reads
+        `native_hook_events.jsonl`, not this file — an earlier version of this docstring
+        named it, wrongly).
+
+        BOTH VERDICTS, because fixing only the block side moves the conflation rather than
+        removing it: an allowed pattern judged at `spec/` still filed a read of `docs`.
         """
-        manifest = {"allowed_read_roots": ["docs"]}
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, manifest=manifest)
-            code, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": "/etc/*"})
-            self.assertEqual(code, 2)
-            blocked = self._log_lines(repo_root)[-1]
-            code, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": "*.md"})
-            self.assertEqual(code, 0)
-            allowed = self._log_lines(repo_root)[-1]
-        self.assertEqual(blocked["decision"], "block")
-        self.assertEqual(blocked["path"], "/etc")
-        self.assertEqual(allowed["decision"], "allow")
-        self.assertEqual(allowed["path"], "docs")
+            (repo_root / "spec").mkdir(exist_ok=True)
+            rows = {}
+            for label, tool_input, expected_code in (
+                ("blocked_by_pattern", {"path": "docs", "pattern": "/etc/*"}, 2),
+                ("allowed_elsewhere", {"path": "docs", "pattern": "../spec/*"}, 0),
+                ("allowed_here", {"path": "docs", "pattern": "*.md"}, 0),
+            ):
+                code, body = self._run(repo_root, "Glob", tool_input)
+                self.assertEqual(code, expected_code, f"{label}: {body}")
+                rows[label] = self._log_lines(repo_root)[-1]
+        self.assertEqual(rows["blocked_by_pattern"]["decision"], "block")
+        self.assertEqual(rows["blocked_by_pattern"]["path"], "/etc")
+        self.assertEqual(rows["allowed_elsewhere"]["decision"], "allow")
+        self.assertEqual(rows["allowed_elsewhere"]["path"], "spec")
+        self.assertEqual(rows["allowed_here"]["decision"], "allow")
+        self.assertEqual(rows["allowed_here"]["path"], "docs")
 
     def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
         """Two remedies for one refusal are worse than one.
@@ -4110,7 +4125,14 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         ALLOWS the read and this test fails.
         """
         manifest = {"allowed_read_roots": ["."]}
-        for pattern in ("~/.ssh/*", "~/*"):
+        for pattern in ("~/.ssh/*", "~/*",
+                        # The ORDERING, which only a root-granting manifest can witness:
+                        # a version that re-rooted every `..` pattern to the repository
+                        # root before asking whether the head left the repository allowed
+                        # these three while blocking the two above. Measured against that
+                        # version; under a `docs`-only manifest it blocks either way,
+                        # which is why they cannot live in the sibling test alone.
+                        "~/.ssh/*/../*", "~/*/../.ssh/*", "/etc/*/../*"):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
