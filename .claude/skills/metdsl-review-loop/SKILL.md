@@ -485,6 +485,43 @@ the breakdown of what you dropped into the PR body / your report to the user —
 
 ## Stopping conditions
 
+**The budget comes first. Every condition below is a property of the FINDINGS, and none of them
+bounds the cost** — which is why no recorded loop was ended by one of them alone.
+
+**Round 0 plus TWO rounds is the default; FIVE rounds is the cap.** At the cap you stop, whatever
+the class did. A change that fixes existing machinery often closes at round 0 plus one. What
+counts: every round counts, the disclosure round and the census round included — the disclosure
+round is one of the budgeted rounds, never an addition to them. A Codex pass rides inside a round
+and is not a round of its own.
+
+**What the cap ends is the SEARCH, not the REPAIR.** An in-scope finding already on the table at
+the cap — a `leaf shortcut`, a wrong verdict, a broken contract, a false record — is fixed before
+the branch goes anywhere. **The budget never ships a known one**, and a fix commit answering a
+finding you already hold is not a new round. What stops is looking for the next finding.
+
+**Rounds past the cap do find real defects. The budget is a decision to pay that cost, not a claim
+that nothing is left** — writing it down the second way would be false, and recorded false: issue
+#71's round 15 found five defects in a committed measurement script, two of them functional, and
+PR #72's third Codex pass found what four subagent rounds had missed. What the budget weighs
+against them is the work not being done meanwhile (`references/class-descent-log.md` §"The budget").
+
+**Stopping at the cap is not convergence. Say which condition you did not meet**, in the PR body
+and to the user, and never write "converged" for it.
+
+**The remainder goes into the PR body as a disclosure, not into a new issue.** Filing it as an
+issue reads as closure while the backlog is what actually grew; measured, every open issue on this
+repository is infrastructure spun out of a review loop. File an issue only for work someone has
+decided to do, not for a remainder nobody has. This is about a ROUND's remainder and leaves the
+residue convention alone: a rough edge in existing behaviour the PR does not touch still goes to
+`TODO.md` under "Fix or out of scope" above.
+
+**Reaching the cap with something in scope still open is a signal about the CHANGE.** Do not
+answer it with a sixth round — split the branch, narrow the rule, or hand it over with what would
+have to be built to make a strong claim. The sign below ("five rounds without the class descending
+→ the shape of the rule is wrong") is the same reading arrived at from the findings' side.
+**Past the cap, adding a round is the USER's decision**, put to them with the count, what the last
+round found, and what you would spend the round on.
+
 **The main condition is "class descent plus a demonstration that the remainder is bounded".** Stop
 once the severity class of the findings has dropped **and** you can show the remainder is bounded.
 Read class descent as **"is it a hole in the original design / a hole in my fix / a hole in the
@@ -531,6 +568,12 @@ code:
   the severity of the action it causes
 - **Text a maintainer reads to decide** — a residue entry, a justification comment, a measured
   number — is descriptive, and belongs in the bounded remainder
+- **Text only a maintainer reads gets no ROUND of its own**, which is a statement about the budget
+  and not about whether it is fixed. `TODO.md`, `references/`, a skill file, a commit-message body:
+  correct a defect there in the commit that notices it — "false evidence" keeps it in the fix list
+  — but it never advances or resets a stopping condition and never justifies spending a budgeted
+  round. These are the files where a round can always find one more thing, and measured over one
+  month `TODO.md` alone took more than an order of magnitude more commits than `spec/` did
 - The tell that you are in the first category: the sentence contains an imperative, or names a
   condition under which something is refused
 

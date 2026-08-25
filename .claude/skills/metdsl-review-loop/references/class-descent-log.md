@@ -288,3 +288,36 @@ reaches it the other way, and `docs/design/zero_base_architecture.md` §A4 state
 form, a kernel co-generated with checks that report its defect as passing. A cut that classified
 those as "the leaf would have to be trying" would have taken the review off the machinery that
 makes a verdict mean anything. **The axis is the gain, never how deliberate the route looks.**
+
+## The budget — why SKILL.md caps the rounds, and what the cap costs
+
+`SKILL.md` §"Stopping conditions" opens with round 0 plus two rounds as the default and five as the
+cap. Every other condition in that section is a property of the findings, so none of them bounds
+what a loop costs, and the histories above are what that looks like: **17 subagent rounds plus 3
+Codex passes** (PR #51), **15** (issue #71), **9** (L128), **8 segments and stopped by the user
+rather than by a condition** (PR #58 — and `SKILL.md`'s own "five rounds without the class
+descending" sign would have stopped it earlier), **6** (PR #68). The short ones are the changes
+that fixed existing machinery: **4** (issue #63), **3** (PR #53).
+
+**The cap is calibrated on a real loop, not chosen round.** The skill split (2026-08-25, the entry
+above) ran round 0 plus four — exactly the cap — on a change that ADDS checking machinery, the
+expensive class, and its ~50 findings were nearly all introduced by the change under review.
+
+**What the cap costs is real and is accepted knowingly.** Rounds past five have produced genuine
+defects here: issue #71's round 15 found five in a committed measurement script, two of them
+functional; PR #72's third Codex pass found what four subagent rounds had missed. **Do not restate
+the budget as "nothing is left after five"** — that sentence is false, and this repository punishes
+a false claim harder than an unfound defect.
+
+**What it is weighed against, measured at `811dfff` over 2026-08-01..2026-09-01** (a numeric
+breakdown rots, so read the conclusion and re-take the figures rather than citing these): 486
+commits, of which `spec/` took **4** while `tools/tests` took 258, `TODO.md` 143, `docs/` 120 and
+`.claude/skills` 46 — and every open issue on the repository was infrastructure spun out of a
+review loop, none about the generation the repository exists for. **The conclusion that survives
+re-measurement**: the loop's cost is not paid out of slack, it is paid out of the work the
+repository exists to do, and no finding-defined condition can see that.
+
+**The two halves of the cap, kept apart.** It ends the SEARCH, never the REPAIR — an in-scope
+finding already on the table at round 5 is fixed before the branch moves, and the fix commit
+answering it is not a sixth round. A budget that let a known `leaf shortcut` ship would be a
+fail-open dressed as a process rule.
