@@ -317,6 +317,12 @@ Test-file hunks are excluded by default (`--include-tests`
 **One round = two subagents in parallel**, on separate axes (security-bypass /
 correctness+regression+doc-truth).
 
+**One round of the loop puts BOTH agents on the disclosure axis instead** — doc-truth bundled
+with correctness loses to it, measured. Plan it before you decide to stop. The evidence and the
+two briefs are under "Stopping conditions"; this line is here because a reader composing round
+prompts reaches that section 400 lines later. **A disclosure round runs no security agent, so
+it neither advances nor resets the two-consecutive-clean-security-rounds condition below.**
+
 - **Do not edit until both results are in.** Touch a file while one is running and its findings
   go stale (this happened). But in PR #53 one ran for **78 minutes** and I broke this rule twice.
   **Do not rely on the prohibition; absorb it in the launch prompt**:
@@ -663,8 +669,9 @@ out of scope", stop at that round.** More rounds produce the same layer, and fix
 diff away from the purpose. State the out-of-scope breakdown and why you declared the scope.
 
 **The superior condition (stop there if you reach it)**: the security axis produces **nothing new
-for two consecutive rounds**. It has **never been achieved in any recorded loop** — the
-nine histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
+for two consecutive rounds** (a disclosure round, which runs no security agent, is skipped in
+that count rather than breaking it). It has **never been achieved in any recorded loop** — the
+histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
 it** — do not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
@@ -686,6 +693,49 @@ boundary was these two holding together:
 
 When both hold, the remainder has fallen to "an enumerable, finite set of descriptive fixes". One
 alone is not enough.
+
+**"Only prose remains" is a claim about SEVERITY, and it is wrong whenever the prose is executed
+by someone.** Issue #71 is the counterexample: both proxies above read as held from round 11 — the second
+of them wrongly, see below — and rounds
+12 through 15 each still carried statements that were false, including a refusal message a leaf
+follows and a remedy an operator follows. Two of round 15's "prose" findings had real
+consequence: one made a leaf report absence after obeying half a remedy, the other told an
+operator to permanently subtract a tool from a required set to paper over a one-line
+configuration bug.
+
+**Be careful what you conclude from "the code was clean".** On that branch it was not quite
+true, and the way it was untrue is the more useful lesson: round 15 found five defects in a
+measurement SCRIPT the branch had committed — an environment built as a denylist, so one
+variable would have sent an unbilled probe to a real endpoint, and a timed-out launch scored as
+a successful read, so a run where nothing launched would have reported its premise holding.
+Those are functional defects. They went unfound for two rounds because **the reviewers were
+told to look at the enforcement code, and a committed instrument is not obviously that**. When
+a branch adds a script, a harness or a fixture generator to the repository, name it as review
+surface explicitly; "zero functional defects" otherwise means "zero in the files anyone
+looked at".
+
+So before calling the remainder descriptive, **classify each remaining finding by audience and
+consequence, not by whether it is code**:
+
+- **Text a leaf or an operator ACTS ON is behaviour delivered as prose** — refusal messages,
+  remedies, the leaf-read contract, the runbook step for a failure mode. Treat a defect there
+  at the severity of the action it causes
+- **Text a maintainer reads to decide** — a residue entry, a justification comment, a measured
+  number — is descriptive, and belongs in the bounded remainder
+- The tell that you are in the first category: the sentence contains an imperative, or names a
+  condition under which something is refused
+
+**The move that finds them: spend one round on the disclosure axis alone**, with no functional
+brief. Note what this implies about the standing arrangement: doc-truth is already bundled into
+the correctness axis of every round (see "Running a round"), and bundled it loses to whatever
+functional question shares the brief. Give it a round of its own, with two briefs: "verify
+every claim in the commit messages at HEAD" and "read it as the next maintainer: what would
+mislead you, can the deletion's measurement be re-taken from what is written, what does a LEAF
+see, what does an OPERATOR see, would you merge". On issue #71 that round returned two
+real-consequence items and five documents stating the rule's own trigger wrongly — one of them
+a document every leaf reads — in a branch whose ENFORCEMENT CODE had been clean for four
+rounds. **Run it before stopping, not as an extra round after deciding to stop** — and if it returns items in the first category
+above, the record has not converged even though the enforcement code has.
 
 **But the two are not equal in standing. Use them by change type.**
 
@@ -785,7 +835,10 @@ as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fi
   **your own fixes** — put the focus instruction in from the first round
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/metdsl-enforcement-change/references/verification.md`)
+  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one statement
+  repeatedly is a SWEEP problem, which this row owns; several sites that each state the rule is a
+  COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the threshold
+  for.** Do not restate its number here — that is the drift this pair is about
 - **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
   numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
   this kind of prose **rots silently on every rename or addition**. PR #57's breakdown of test
@@ -793,7 +846,9 @@ as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fi
   three times — "all 7 iterate" (5) → a test name that a rename had removed → "8" (9). The fourth
   fix **stopped fixing the number** and put `_DEFINITION_DRIVEN` / `_SAMPLE_DRIVEN` in data with one
   test cross-checking them against the class's real methods (confirmed to fail on rename).
-  **Criterion: should this prose break if one test is renamed? Then make it a check**
+  **Criterion: should this prose break if one test is renamed? Then make it a check** (the
+  general form of this, and when a check is the wrong answer, is rule 3-a — this row is the
+  enumeration case of it)
 - **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
   after that into another PR. Stacking 25 commits on one branch compounds fixes calling for fixes.
   If you continue without splitting, **give the user the options and ask** (L128 redesigned in

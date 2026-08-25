@@ -132,6 +132,66 @@ emitted** 40 lines below stayed stale. Worse, the "measured value" I cited as gr
 inverted by an implementation change (the consequence of `language: " fortran"`). Use the grep
 procedure in `references/verification.md`.
 
+**3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3
+is a discipline, and on issue #71 it failed **four consecutive rounds after it had been
+diagnosed**: round 11 named "the rounds were reliable about code and unreliable about their own
+record", and rounds 12 through 15 each CARRIED the same class — carried, not found: round 12 is the
+narrowing commit and discovered no record defect, so "four rounds found it" would overstate what
+the history shows. The worst instance: the hook
+refuses a `Glob` pattern beginning with `/` or with `~`, and **five canonical statements said
+"ONLY when it is ABSOLUTE"** — `~` is not absolute, which was that branch's own central
+measurement — so `docs/AGENT_CONTRACT.md`, the one document EVERY leaf reads, told a leaf that
+a refusal it can actually receive cannot happen.
+
+**Reach for the pattern this repository already uses three times** rather than inventing one.
+`tools/tests/test_hooks_cli.py` holds `_SCRATCH_SURFACES`, `_REDIRECT_RULE_SURFACES` and
+`_SURFACES` — but they are three DIFFERENT shapes, so read the one nearest your rule before
+copying it: `_SURFACES` is `(file, anchor)`; `_SCRATCH_SURFACES` is `(file, anchor, scope)` and
+that third column IS the bound; `_REDIRECT_RULE_SURFACES` has no anchor at all and couples by a
+phrase regex over a paragraph. **They also duplicate each other** — two near-identical
+anchored-window readers with two different window constants live in that one file — so copying
+is the starting point and not the goal. The three traps, each of which cost a round:
+
+- **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are
+  refusing.** Anchoring on your own corrected sentence pins that the correction survived, not
+  that the rule is stated — witness the check by restoring the old wording and confirming the
+  failure names what is missing, not the anchor
+- **Bound the reader and self-test the bound**, or a document that mentions the rule's terms
+  anywhere passes on the strength of an unrelated sentence
+- **Decide what "names the rule" means for THIS rule.** Couple by MEMBERS only when the prose
+  names them in full — a two-element trigger, yes; `LEAF_ENV_ALLOWLIST`, never, because its
+  documents state the policy ("the environment is a declared allowlist") and correctly do not
+  enumerate it. Otherwise couple by POINTER (each site must cite where the constant lives) or
+  by NUMBER. **The rule is defined once, IN THE CODE, and the documents are checked against it**
+  — never the reverse, and never both spelled out independently, which is two spellings of one
+  rule and the defect this whole section is about
+- **Pin the members, not the source line.** A legitimate extraction to a named constant must
+  not turn a true statement red — and the exemplar above FAILS this: `_trigger_prefixes` reads
+  `pattern.startswith((…))` with a regex, so replacing the inline literal with a named constant
+  raises its assertion. Resolve a named constant before giving up, and make the failure name
+  the repair. This is the trap that is easiest to reintroduce, because pinning the spelling is
+  three lines and pinning the members is fifteen
+
+**Before adding a check, ask whether the sites should exist.** The cheaper fix is this
+repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
+§Dedicated rule documents) — and it cannot rot. Coupling is for the sites that must repeat the
+rule anyway: a leaf-read contract has to be self-contained, and a refusal message has to say it
+to whoever was refused. Note this is NOT surface 5's twin, though both count to three: surface
+5 changes the CHANNEL a decision travels on so the decision stops being forgeable, and 3-a adds
+machinery so that many statements of one rule stay honest. Different question, same threshold.
+
+**The trigger is the count; the audience is the priority.** Three or more statement sites is
+when discipline has already lost. That one of them is read by a leaf or an operator does not
+lower the count — it decides how soon you do it, and which site you check first.
+
+**Sites a test cannot reach are real and the check does not cover them**: a commit message,
+which cannot be edited once pushed, and a prompt assembled at runtime. For those the only moves
+are to remove the statement or to make it derived; say in the commit which sites you could not
+couple. **Check before assuming a site is out of reach** — an issue or PR body can be edited
+(`gh issue edit --body`), and `docs/examples/*.yaml` was untested and permanently drifting until
+`tools/tests/test_llm_config.py` closed it, so citing that as a live example of the unreachable
+sends a reader past a site that is already coupled.
+
 **The flip side of 3: prose you newly write in that same commit is also unverified until you
 run it.** Read rule 3 as being about old text and you keep only half of it. In L128 I got
 **four newly written measurements or citations wrong inside the fix itself**:
@@ -280,6 +340,11 @@ pinning the range and the class **name** → now the class's **branches** were w
 **Rule**: never let a pin and the command with authority to loosen it **live in the same file
 or the same procedure**. And pin the rule, not the result the rule produced (pinning results
 makes ordinary work fail and teaches the habit of regenerating without reading the rule).
+
+This surface asks what a remedy REWRITES. **A remedy is also READ, by a person or a leaf**, and
+the two rules for that — order the causes by reachability, and never let it be followable by
+half — are in §3 "Decide the failure's attribution", because they are about the message a
+failure hands back. Open both when you write one.
 
 **Surface 7: when you say you closed a configuration surface, what else does that tool read
 besides configuration files?** The six above are about inputs reaching a gate; this one is
@@ -453,6 +518,22 @@ cannot converge in principle**, handed back to the leaf (flagged two rounds runn
   program unit rather than the actual cause). Do not let it read as "the cause is here"
 - If the enumeration does not close, **say so and describe the shape to look for** ("an
   identifier or label sits where the parser expects structure")
+- **Order the causes by REACHABILITY, most reachable first** — this one is not only about a
+  leaf: it applies to any remedy a check prints, an operator's included, and it is surface 6's
+  question asked of the message instead of the command. Issue #71's roster check offered
+  a vendor cause ("the CLI stopped offering this tool, record it in the absent-on-CLI seam")
+  when the shortest path to that failure was a one-line `permissions.deny` in the leaf
+  configuration the probe itself seeds. Following the printed remedy subtracts the tool from
+  the required set permanently: **the check goes green by having been WIDENED rather than
+  satisfied**, which is surface 6's regenerate command delivered as prose
+- **A remedy must not be followable by HALF.** The same branch's `Glob` refusal ended
+  "Re-issue it against a granted directory, or drop the leading `/` and pass the directory as
+  `path`" — read as two options. A leaf doing only the first half is ALLOWED by the hook (rc=0,
+  measured) and the tool then matches nothing, because a relative pattern is anchored at the
+  repository root while the search is confined to `path`. No refusal, no log line, nothing
+  below that could produce one. **Silent empty is the worst answer a boundary can give**: it is
+  indistinguishable from a true negative, so the leaf reports absence and stops. When a remedy
+  is a conjunction, say so, and say what doing one half produces
 
 ### 4. Tests pin properties
 
