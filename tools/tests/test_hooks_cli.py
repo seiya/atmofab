@@ -3993,269 +3993,127 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             if line.strip()
         ]
 
-    def test_a_glob_pattern_that_escapes_the_granted_path_is_blocked(self) -> None:
-        """`Glob`'s `pattern` names PATHS, so it decides where the search reads.
+    def test_an_absolute_glob_pattern_is_blocked(self) -> None:
+        """The one shape MEASURED to reach outside `path`.
 
-        Until issue #71 no leaf had `Glob` on a CLI whose default roster omits it, so
-        this was an unreachable residue of issue #42; the tool allowlist made it
-        reachable. `path` alone looks innocent in every case below — the escape is
-        entirely in the pattern.
+        The tool asks `path.isAbsolute` of the whole pattern and re-roots the search when
+        it is true, ignoring `path`. Driven against the real tool (CLI 2.1.239):
+        `/etc/hostname`, `/tmp/<marker>/*`, `//tmp/<marker>/*`, `/tmp/{a,b}/*` and
+        `/tmp/x/../x/*` all READ what they name — braces and `..` AFTER the leading slash
+        included, which is why the prefix is normalized before it is judged.
         """
         manifest = {"allowed_read_roots": ["docs"]}
-        for pattern in (
-            "../*.py", "../../etc/*", "/etc/*", "~/.ssh/*",
-            # A `..` AFTER A WILDCARD, which the literal prefix cannot see: the prefix of
-            # `docs/*/../../etc/*` is `docs` itself, so the first version of this check
-            # compared it with `path`, found them equal, and validated NOTHING. Judging the
-            # NORMALIZED pattern is what sees it — these land in `/etc`, outside every
-            # grant. Every metacharacter class the prefix helper stops at gets its own row,
-            # because a fix that handled only `*` would leave the others.
-            "*/../../etc/*", "**/../../etc/*", "?/../../etc/*", "[a-z]*/../../etc/*",
-            # A `..` COMBINED WITH an escaping head. Under THIS manifest these three add
-            # nothing — they normalize to `/etc/*` and `~/.ssh/*`, which are already above,
-            # and the version they were written against blocked them too. They witness the
-            # ordering bug only under a manifest granting the repository ROOT, so that is
-            # where the sibling test drives them; kept here because the normalization must
-            # not start depending on which grant is in force. (The claim that they "were
-            # allowed while their `..`-less forms blocked" was true only under `["."]`, and
-            # was written here, under `["docs"]`, without that precondition.)
-            "/etc/*/../*", "~/.ssh/*/../*", "~/*/../.ssh/*",
-        ):
+        for pattern in ("/etc/*", "//etc/*", "/etc/hostname", "/etc/{a,b}/*",
+                        "/etc/x/../*", "/", "~/.ssh/*", "~/*"):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
                     repo_root, "Glob", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
-                self.assertIn("pattern", body)
+                self.assertIn("ABSOLUTE", body)
 
-    def test_a_brace_alternation_is_judged_alternative_by_alternative(self) -> None:
-        """A brace pattern names SEVERAL paths, and one of them is enough to read outside.
-
-        `_GLOB_META_RE` does not treat `{` as a wildcard — deliberately, because the Bash
-        extractor that shares it resolves against the filesystem — so the literal prefix of
-        `docs/{../secret,sub}/*` is `docs/{../secret,sub}`, which sits under a granted
-        `docs/` with the `..` hidden inside the braces. MEASURED before the fix: allowed,
-        while `../secret/*` and `cat docs/{../secret,sub}/*` were both refused — the route
-        disagreement this check exists to remove, open in the leaking direction.
-        """
-        manifest = {"allowed_read_roots": ["docs", "spec"]}
-        for pattern in ("{../secret,sub}/*", "{,../secret/}*", "{sub,../secret}/**",
-                        "{a,{b,../secret}}/*"):
-            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
-                repo_root = self._make_repo(tmp, manifest=manifest)
-                (repo_root / "secret").mkdir(exist_ok=True)
-                code, body = self._run(
-                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
-                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
-
-    def test_the_audit_names_the_alternative_that_caused_the_refusal(self) -> None:
-        """The first refusal is the verdict, and the log must name ITS place.
-
-        TWO BLOCKING alternatives are what it takes. `logged_path` and `decision` are
-        assigned only inside the blocking branch, so a granted alternative can never
-        overwrite the row — an earlier version of this docstring said it could, and pinned
-        that impossible mechanism instead: with one blocked and one granted alternative the
-        row is the same with the `break` and without it, so deleting the `break` left every
-        row in this file green. `{../secret,../other}/*` with neither granted is the case
-        that separates them, since without the `break` the LAST refusal wins the row.
-        """
-        manifest = {"allowed_read_roots": ["docs", "spec"]}
+    def test_an_absolute_pattern_inside_a_granted_root_is_allowed(self) -> None:
+        """Absolute is not by itself a refusal — it is judged where it points."""
+        manifest = {"allowed_read_roots": ["docs"]}
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, manifest=manifest)
-            for name in ("spec", "secret", "other"):
-                (repo_root / name).mkdir(exist_ok=True)
-            rows = {}
-            for label, pattern in (
-                ("two_blocked", "{../secret,../other}/*"),
-                ("one_blocked_one_granted", "{../secret,../spec}/*"),
-            ):
-                code, body = self._run(repo_root, "Glob", {"path": "docs", "pattern": pattern})
-                self.assertEqual(code, 2, f"{label}: {body}")
-                rows[label] = self._log_lines(repo_root)[-1]
-        for label, row in rows.items():
-            self.assertEqual(row["decision"], "block", label)
-        # The alternatives are judged in sorted order, so the row names the alphabetically
-        # FIRST refusing one — `other`, not `secret`. Without the `break` the LAST refusal
-        # wins instead and this row reads `secret`, which is the difference the test exists
-        # for. (I expected `secret` here and was wrong about my own ordering; the run said
-        # so before this assertion was written down.)
-        self.assertEqual(rows["two_blocked"]["path"], "other")
-        # With only one refusing alternative both orders agree — which is why the shape
-        # this test used to have could not witness anything.
-        self.assertEqual(rows["one_blocked_one_granted"]["path"], "secret")
+            code, body = self._run(
+                repo_root, "Glob",
+                {"path": "docs", "pattern": f"{repo_root}/docs/**/*.md"})
+        self.assertEqual(code, 0, body)
 
-    def test_brace_expansion_handles_nesting_the_unbalanced_and_the_repeated(self) -> None:
-        """`_brace_alternatives` directly, for the branches the end-to-end rows cannot see.
+    def test_an_absolute_pattern_is_judged_after_its_dots_are_collapsed(self) -> None:
+        """`normpath` before the literal prefix.
 
-        Three mutants survived the hook-level tests: splitting on a comma at ANY depth
-        (which mangles nesting), turning an unbalanced `{` into a refusal instead of a
-        literal, and skipping the alternative whose prefix equals `path`. The first two are
-        invisible end to end because the mangled or refused forms still block for another
-        reason, so they are asserted here on the function's own output.
+        An absolute pattern may carry `..` after its leading slash — measured, the tool
+        reads what that resolves to (`/tmp/x/../x/*` returned the file). The VERDICT is the
+        same either way, because `validate_read_access` resolves the path itself: measured,
+        dropping `normpath` leaves all three of `<repo>/spec/../docs/*` (allow),
+        `<repo>/docs/../spec/*` (block) and `<repo>/../../etc/*` (block) unchanged. What it
+        changes is the AUDIT ROW, which reads `REPO/docs/../spec` instead of `REPO/spec` —
+        the durable record of where a leaf reached, spelled as the leaf spelled it rather
+        than as the place. That is what this pins; the verdicts are here as the control
+        showing they do not move.
         """
-        from tools.hooks.cli import _brace_alternatives
-
-        # NESTING: a comma at depth 2 belongs to the inner group. Splitting on it at any
-        # depth yields `['a', '{b', 'c}}/*']` — every one of which still blocks, which is
-        # why the escape rows do not see it.
-        self.assertEqual(_brace_alternatives("{a,{b,c}}/*"), ["a/*", "b/*", "c/*"])
-        # UNBALANCED: not an alternation, so it stays a literal and the pattern is judged
-        # as written. Returning None instead would refuse every pattern carrying a stray
-        # brace — an over-refusal nothing else would have caught.
-        #
-        # `{a{b` is the row that matters and the three above cannot reach: they have ONE
-        # `{`, so they leave by the "no further brace" exit. With a second one the function
-        # recurses on the tail, gets the tail back unchanged, and replaces the list with
-        # itself — which loops FOREVER without the no-progress guard. Measured: the guard
-        # removed, this call never returns, and because the hook calls it synchronously the
-        # leaf's `Glob` never returns either and the step stalls. Not a refusal — a hang.
-        for pattern in ("{a", "a}b{c", "docs/{", "{a{b", "{{{", "a{b{c{d"):
-            self.assertEqual(_brace_alternatives(pattern), [pattern], pattern)
-        # The bound applies inside the unbalanced branch too, where the round-9 fix added a
-        # second copy of the check: two pre-existing alternatives times the recursion's 64.
-        self.assertIsNone(_brace_alternatives("{a,b}/{c" + "{d,e}" * 6))
-        # And the stray `{` STAYS in the head. Stripping it lets `normpath` collapse the
-        # `..` that follows and turns an allowed pattern into a refusal — `{{../secret,b}/*`
-        # keeps a first component of `{..`, which normalizes to nothing and is judged where
-        # it is, exactly as `bash -c 'echo {{../secret,b}/*'` spells it.
-        self.assertEqual(_brace_alternatives("{{../secret,b}/*"),
-                         ["{../secret/*", "{b/*"])
-        # A pattern with more braces than the bound is refused BY RETURN, not by blowing
-        # the recursion the unbalanced branch uses: the depth is one per `{`, and a
-        # `RecursionError` escapes to the entrypoint's catch-all, which blocks with no
-        # `read_manifest_read_guard` row written at all — a refusal the audit cannot see.
-        self.assertIsNone(_brace_alternatives("{" * 2000))
-        # BOUNDED: past the limit there is no enumeration, and the caller falls back to the
-        # repository root.
-        self.assertEqual(len(_brace_alternatives("{a,b}" * 6)), 64)
-        self.assertIsNone(_brace_alternatives("{a,b}" * 7))
-        # An empty alternative is a real one.
-        self.assertEqual(_brace_alternatives("{,x}y"), ["y", "xy"])
-
-    def test_a_brace_alternation_inside_the_grants_is_allowed(self) -> None:
-        """The other half: expanding must not turn a legitimate alternation into a refusal.
-
-        Every alternative here lands somewhere the manifest grants — under `path` itself,
-        or in the second granted root — so all of them pass. A check that refused any
-        pattern containing a brace, or that validated the whole alternation at the
-        repository root, would refuse correct work.
-        """
-        manifest = {"allowed_read_roots": ["docs", "spec"]}
-        for pattern in ("{a,b}/*.md", "{sub,.}/*.md", "{../spec,sub}/*", "{a,{b,c}}/*.md"):
-            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+        manifest = {"allowed_read_roots": ["docs"]}
+        for suffix, expected, logged in (("/spec/../docs/*", 0, "docs"),
+                                         ("/docs/../spec/*", 2, "spec")):
+            with self.subTest(suffix), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 (repo_root / "spec").mkdir(exist_ok=True)
+                code, body = self._run(
+                    repo_root, "Glob",
+                    {"path": "docs", "pattern": f"{repo_root}{suffix}"})
+                self.assertEqual(code, expected, f"{suffix}: {body}")
+                row = self._log_lines(repo_root)[-1]
+                self.assertEqual(row["path"], str(repo_root / logged) if expected else logged,
+                                 f"{suffix}: {row}")
+
+    def test_a_tilde_pattern_is_judged_on_its_expansion(self) -> None:
+        """`_glob_literal_prefix`'s third return, which the literal spelling hides.
+
+        `~/.ssh/*`'s literal prefix is `~`, which reads as the IN-REPO path `<repo>/~` —
+        granted whenever the manifest grants the root. Only the expanded location shows it
+        leaves the repository, so the root is granted here on purpose: with the expansion
+        ignored these rows pass.
+        """
+        manifest = {"allowed_read_roots": ["."]}
+        for pattern in ("~/.ssh/*", "~/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
+
+    def test_a_relative_pattern_is_not_refused_however_it_is_spelled(self) -> None:
+        """THE DELETED DEFENCE, kept as its own witness.
+
+        Until round 12 this check normalized every pattern, expanded brace alternatives and
+        judged each landing place — machinery that refused `../secret/*`, `{../secret,sub}/*`
+        and the rest. All of them are INERT: measured against the real tool in a saturated
+        fixture (an `outside/` and a `secret/` holding a marked file at every ancestor a
+        pattern could resolve to, so an empty result cannot mean "the target was absent"),
+        every one returns "No files found" — including a brace whose absolute alternative is
+        not at the start, in both orders, and a symlinked directory and file.
+
+        So these rows assert that the check does NOT refuse them. If a future CLI starts
+        resolving `..`, this test is what turns green into a decision: it will still pass,
+        and `TODO.md` carries the harness to re-measure the premise it rests on.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in ("../secret/*", "../../secret/*", "*/../../secret/*",
+                        "{../secret,sub}/*", "{sub,/etc}/*", "{/etc,sub}/*",
+                        "sub/../../secret/*", " /etc/*", "$HOME/.ssh/*",
+                        "linkdir/*", "docs/linkdir/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
                     repo_root, "Glob", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, 0, f"{pattern} was refused: {body}")
 
-    def test_a_balanced_group_after_an_unbalanced_brace_is_still_expanded(self) -> None:
-        """Bailing on the first `{` left a balanced group behind it unjudged.
+    def test_the_access_log_records_where_an_absolute_pattern_pointed(self) -> None:
+        """A pattern-caused refusal must not be filed as a read of the innocent `path`.
 
-        `{a/{../../../etc,b}/*` carries an unbalanced leading `{` and a balanced group after
-        it. The version that declared the whole pattern a literal on seeing the first `{`
-        never expanded the second, so the escaping alternative was never judged — measured:
-        allowed, while `{../../../etc,b}/*` was refused. Real expanders do not bail either
-        (`bash -c 'echo {a/{x,y}/*'` yields two words).
-
-        The allowed row is the other half: `{a/{../secret,b}/*` expands to
-        `docs/{a/../secret/*`, which LANDS at `docs/secret` — inside the granted root — so
-        refusing it would be an over-refusal. The unbalanced brace does not by itself make
-        a pattern suspicious; what matters is where each alternative ends up.
+        `append_hook_access_log` carries no reason field, so recording `path` filed
+        `Glob path=docs` for both `pattern=*.md` and `pattern=/etc/*`. On the ALLOW side
+        `path` IS where the tool walked (a relative pattern reads only under it, measured),
+        so only the block side names the pattern's target.
         """
         manifest = {"allowed_read_roots": ["docs"]}
-        for pattern, expected in (("{a/{../../../etc,b}/*", 2),
-                                  ("a{b/{/etc,c}/../../../*", 2),
-                                  ("{a/{../secret,b}/*", 0),
-                                  ("{a,b}/*.md", 0)):
-            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
-                repo_root = self._make_repo(tmp, manifest=manifest)
-                (repo_root / "secret").mkdir(exist_ok=True)
-                code, body = self._run(
-                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
-                self.assertEqual(code, expected, f"{pattern}: {body}")
-
-    def test_an_unenumerable_brace_pattern_is_judged_at_the_repository_root(self) -> None:
-        """Braces multiply, and this hook runs synchronously on every tool call.
-
-        Past the bound the alternatives are not enumerated, and the answer is the only
-        prefix that certainly contains all of them. That is conservative rather than a
-        refusal — with the repository root granted the same pattern passes — so a crafted
-        pattern costs the leaf a redirect, not the run.
-        """
-        pattern = "{a,b}" * 8  # 256 alternatives, past the limit
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs"]})
-            blocked, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": pattern})
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["."]})
-            allowed, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": pattern})
-        self.assertEqual(blocked, 2)
-        self.assertEqual(allowed, 0)
-
-    def test_a_pattern_landing_in_another_granted_root_is_not_refused(self) -> None:
-        """A `..` pattern whose landing place is granted must not be refused.
-
-        NOT a claim of route agreement, which is what this test asserted until the tool was
-        driven: `cat docs/*/../../spec/*` really reads `spec/`, while
-        `Glob(path="docs", pattern="*/../../spec/*")` reads NOTHING — a relative pattern is
-        confined to `path`. The two routes do not do the same thing, so pinning them as
-        equal pinned a falsehood. What must hold is the weaker, true property: the check
-        does not refuse a pattern whose landing place the manifest grants, which is what a
-        version validating every `..` pattern at the repository root got wrong. The Bash
-        row stays because it is the spelling that DOES reach `spec/`, and it must keep
-        working.
-        """
-        manifest = {"allowed_read_roots": ["docs", "spec"]}
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, manifest=manifest)
-            (repo_root / "spec").mkdir(exist_ok=True)
-            (repo_root / "spec" / "s.yaml").write_text("x", encoding="utf-8")
-            (repo_root / "docs" / "sub").mkdir(exist_ok=True)
-            glob_code, glob_body = self._run(
-                repo_root, "Glob", {"path": "docs", "pattern": "*/../../spec/*"})
-            bash_code, bash_body = self._run(
-                repo_root, "Bash", {"command": "cat docs/*/../../spec/*"})
-        self.assertEqual(glob_code, 0, f"Glob refused a granted read: {glob_body}")
-        self.assertEqual(bash_code, 0, f"Bash refused a granted read: {bash_body}")
-
-    def test_the_access_log_records_what_the_pattern_searched(self) -> None:
-        """The durable record must distinguish two reads the leaf-facing message already does.
-
-        `append_hook_access_log` carries no reason field, so logging `path` filed
-        `Glob path=docs` for `pattern=*.md`, for `pattern=/etc/*` and for an allowed
-        `pattern=../spec/*` alike — three different reads, one row. The consumer is the
-        `workflow-audit-claude` SKILL (`tools/audit_orchestration.py` reads
-        `native_hook_events.jsonl`, not this file — an earlier version of this docstring
-        named it, wrongly).
-
-        THE BLOCK SIDE ONLY. An earlier round recorded the judged prefix on BOTH verdicts,
-        calling `path` on the allow side a conflation. Measured since, by driving the real
-        tool: a relative pattern reads only under `path`, so on an allowed call `path` IS
-        where the read happened — and recording the judged prefix there produced rows like
-        `docs/docs` for `Glob(path="docs", pattern="docs/**/*.md")`, which is the one
-        relative spelling that finds anything.
-        """
-        manifest = {"allowed_read_roots": ["docs", "spec"]}
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = self._make_repo(tmp, manifest=manifest)
-            (repo_root / "spec").mkdir(exist_ok=True)
             rows = {}
-            for label, tool_input, expected_code in (
+            for label, tool_input, expected in (
                 ("blocked_by_pattern", {"path": "docs", "pattern": "/etc/*"}, 2),
-                ("allowed_elsewhere", {"path": "docs", "pattern": "../spec/*"}, 0),
-                ("allowed_here", {"path": "docs", "pattern": "docs/**/*.md"}, 0),
+                ("allowed", {"path": "docs", "pattern": "docs/**/*.md"}, 0),
             ):
                 code, body = self._run(repo_root, "Glob", tool_input)
-                self.assertEqual(code, expected_code, f"{label}: {body}")
+                self.assertEqual(code, expected, f"{label}: {body}")
                 rows[label] = self._log_lines(repo_root)[-1]
-        # The refusal names where the PATTERN was judged, not the innocent `path`.
         self.assertEqual(rows["blocked_by_pattern"]["decision"], "block")
         self.assertEqual(rows["blocked_by_pattern"]["path"], "/etc")
-        # An allowed call names the directory the tool actually walks.
-        for label in ("allowed_elsewhere", "allowed_here"):
-            self.assertEqual(rows[label]["decision"], "allow", label)
-            self.assertEqual(rows[label]["path"], "docs", label)
+        self.assertEqual(rows["allowed"]["decision"], "allow")
+        self.assertEqual(rows["allowed"]["path"], "docs")
 
     def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
         """Two remedies for one refusal are worse than one.
@@ -4263,83 +4121,15 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         A pathless `Glob` is validated at the repository root, so with the root granted the
         `path` half passes and the PATTERN is what refuses. The pathless remedy ("pass
         path=…") then fired beside it, producing "its 'path' does grant it" next to "you
-        passed no path" — contradictory, and only one of them names something the leaf can
-        act on.
+        passed no path" — contradictory, and only one names something the leaf can act on.
         """
         manifest = {"allowed_read_roots": ["."]}
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, manifest=manifest)
-            code, body = self._run(repo_root, "Glob", {"pattern": "../../etc/*"})
+            code, body = self._run(repo_root, "Glob", {"pattern": "/etc/*"})
         self.assertEqual(code, 2, body)
-        self.assertIn("pattern", body)
+        self.assertIn("ABSOLUTE", body)
         self.assertNotIn("was called without a 'path'", body)
-
-    def test_a_pattern_is_read_with_surrounding_whitespace_stripped(self) -> None:
-        """`\t/etc/*` is an ABSOLUTE pattern, and only the strip makes it look like one.
-
-        Without it the leading tab makes `pattern.startswith("/")` false, the pattern is
-        joined under `path`, and the escape is judged as the in-repo spelling
-        `docs/\t/etc/*`. Measured: dropping the `.strip()` left the whole file green.
-        """
-        manifest = {"allowed_read_roots": ["docs"]}
-        # The LEADING rows carry this test; `"/etc/*  "` is a passenger, since trailing
-        # whitespace does not defeat `startswith("/")` and it blocks either way. Kept
-        # because a future `.lstrip()` would be a silent narrowing, and named so nobody
-        # reads it as a witness.
-        for pattern in ("\t/etc/*", " /etc/*", "/etc/*  "):
-            with self.subTest(repr(pattern)), tempfile.TemporaryDirectory() as tmp:
-                repo_root = self._make_repo(tmp, manifest=manifest)
-                code, body = self._run(
-                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
-                self.assertEqual(code, 2, f"{pattern!r} was not blocked: {body}")
-
-    def test_a_pattern_that_leaves_the_repository_by_expansion_is_blocked(self) -> None:
-        """`~` and `$VAR` leave the repository, and must be judged on the EXPANSION.
-
-        `_glob_literal_prefix` computes the expanded path for exactly this reason, and the
-        first version of this check discarded it — validating `~/.ssh/*` as the literal
-        in-repo path `<repo>/~/.ssh`, which blocked only because no manifest granted the
-        root. This grants the root, so a check that reasons about the literal spelling
-        ALLOWS the read and this test fails.
-        """
-        manifest = {"allowed_read_roots": ["."]}
-        for pattern in ("~/.ssh/*", "~/*",
-                        # The ORDERING, which only a root-granting manifest can witness:
-                        # a version that re-rooted every `..` pattern to the repository
-                        # root before asking whether the head left the repository allowed
-                        # these three while blocking the two above. Measured against that
-                        # version; under a `docs`-only manifest it blocks either way,
-                        # which is why they cannot live in the sibling test alone.
-                        "~/.ssh/*/../*", "~/*/../.ssh/*", "/etc/*/../*"):
-            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
-                repo_root = self._make_repo(tmp, manifest=manifest)
-                code, body = self._run(
-                    repo_root, "Glob", {"path": ".", "pattern": pattern})
-                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
-
-    def test_an_ordinary_glob_pattern_under_a_granted_path_is_allowed(self) -> None:
-        """The other half, and the one that decides whether this is an over-refusal.
-
-        For a pattern with no `..` after a wildcard — which is every ordinary one — the
-        matches do lie under the literal prefix, and that prefix is `path` itself or a
-        subdirectory of it, already authorized by the entry that authorized `path`. (The
-        unqualified form of that sentence is false, which is the hole the sibling test
-        above covers.) If any of these blocked, the check would be refusing correct work.
-        """
-        manifest = {"allowed_read_roots": ["docs"]}
-        for pattern in ("*.md", "**/*.md", "sub/*.md", "**/sub/*.md", "[a-z]*.md",
-                        "./sub/*.md", "sub/../*.md", "*", "?.md", "{a,b}/*.md",
-                        # A `..` that LANDS BACK INSIDE the granted root. The version that
-                        # re-rooted every `..` pattern to the repository root refused this
-                        # — and refused `*/../../spec/*` with `spec/` granted, while the
-                        # identical Bash spelling was allowed. Judging the landing place is
-                        # what makes the two routes agree.
-                        "*/../a.md", "sub/*/../*.md"):
-            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
-                repo_root = self._make_repo(tmp, manifest=manifest)
-                code, body = self._run(
-                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
-                self.assertEqual(code, 0, f"{pattern} was refused: {body}")
 
     def test_a_grep_pattern_is_a_content_regex_and_is_not_path_validated(self) -> None:
         """`Grep`'s pattern is content, not a path. Validating it as one would refuse a
