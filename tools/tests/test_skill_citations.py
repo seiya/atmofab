@@ -288,5 +288,85 @@ class CitationScannerSelfTests(unittest.TestCase):
                 self.assertTrue(is_tracked(targets[0]), spelling)
 
 
+class SkillReachabilityTests(unittest.TestCase):
+    """Every file a skill directory holds must be reachable from its `SKILL.md`.
+
+    A skill's `SKILL.md` is loaded in full whenever the skill fires; its `references/` and
+    `scripts/` are loaded only when something points a reader at them. That split is what keeps
+    the loaded-on-every-invocation cost down, and it holds only while the entry point can reach
+    everything: a reference nothing cites is not cheap, it is dead, and the material it holds is
+    gone without anyone noticing it left. Measured on the commit that split the two dev skills
+    into rule + episode files, which is exactly the edit that can drop a pointer.
+
+    REACHABILITY, not direct citation. Requiring `SKILL.md` to name every file would refuse a
+    legitimate second-level split (a reference that grows its own sub-file, cited from its
+    parent), which is correct work.
+    """
+
+    def _reachable(self, skill: str, root: Path | None = None) -> tuple[set[str], set[str]]:
+        """`(files reachable from SKILL.md, every tracked file in the skill)`.
+
+        `root` is resolved at CALL time so the self-test below can point the walk at a tree it
+        built; `document_body`'s default binds `REPO_ROOT` at import and cannot be redirected.
+        """
+        root = root or REPO_ROOT
+        files, _directories = _git_paths()
+        prefix = f"{SKILL_ROOT}/{skill}/"
+        owned = {entry for entry in files if entry.startswith(prefix)}
+        entry_point = f"{prefix}SKILL.md"
+        self.assertIn(entry_point, owned, f"{skill} has no SKILL.md")
+        seen, queue = {entry_point}, [entry_point]
+        while queue:
+            document = queue.pop()
+            if not document.endswith(".md"):
+                continue          # only a document carries citations onward
+            for target in citation_targets(document_body(document, root), document):
+                if target in owned and target not in seen:
+                    seen.add(target)
+                    queue.append(target)
+        return seen, owned
+
+    def test_no_file_in_a_skill_is_unreachable_from_its_skill_md(self) -> None:
+        orphans = []
+        for skill in sorted(skill_names()):
+            reachable, owned = self._reachable(skill)
+            for entry in sorted(owned - reachable):
+                orphans.append(f"{entry}: nothing reachable from {SKILL_ROOT}/{skill}/SKILL.md "
+                               f"cites it — cite it from SKILL.md (or from a file SKILL.md "
+                               f"reaches), or delete it")
+        self.assertEqual(orphans, [], "\n".join(orphans))
+
+    def test_the_walk_can_actually_see_an_orphan(self) -> None:
+        """SELF-TEST of the row above, which is an absence-assertion over a graph walk.
+
+        A walk that marked everything reachable — an `owned`-returning bug, a citation scanner
+        that matched every token — would report zero orphans for ever. Drive it against a tree
+        built here that HAS one, so the detector is witnessed in both directions in one place.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = functools.partial(subprocess.run, cwd=root, check=True,
+                                    capture_output=True, text=True)
+            run(["git", "init", "-q"])
+            skill = root / SKILL_ROOT / "probe" / "references"
+            skill.mkdir(parents=True)
+            (skill.parent / "SKILL.md").write_text("see `references/cited.md`", encoding="utf-8")
+            (skill / "cited.md").write_text("onward to `references/second.md`", encoding="utf-8")
+            (skill / "second.md").write_text("a second-level split", encoding="utf-8")
+            (skill / "orphan.md").write_text("nobody points here", encoding="utf-8")
+            run(["git", "add", "-A"])
+            _git_paths.cache_clear()
+            try:
+                original_root = globals()["REPO_ROOT"]
+                globals()["REPO_ROOT"] = root          # `_git_paths` reads it at call time
+                reachable, owned = self._reachable("probe", root)
+            finally:
+                globals()["REPO_ROOT"] = original_root
+                _git_paths.cache_clear()
+            self.assertEqual(sorted(owned - reachable),
+                             [f"{SKILL_ROOT}/probe/references/orphan.md"])
+            # and the second-level split is NOT reported, which is the over-refusal direction
+            self.assertIn(f"{SKILL_ROOT}/probe/references/second.md", reachable)
+
 if __name__ == "__main__":
     unittest.main()
