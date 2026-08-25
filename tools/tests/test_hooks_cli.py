@@ -4051,23 +4051,38 @@ class GrepGlobReadGuardTests(unittest.TestCase):
     def test_the_audit_names_the_alternative_that_caused_the_refusal(self) -> None:
         """The first refusal is the verdict, and the log must name ITS place.
 
-        With `{../secret,../spec}/*` and only `spec` granted, the alternatives sort to
-        `secret` then `spec`. Carrying on past the refusal lets the granted one overwrite
-        the recorded path, so the audit would file a call refused because of `secret/` as a
-        read of `spec/` — the conflation the log fix exists to remove, arriving through the
-        loop instead of through the verdict.
+        TWO BLOCKING alternatives are what it takes. `logged_path` and `decision` are
+        assigned only inside the blocking branch, so a granted alternative can never
+        overwrite the row — an earlier version of this docstring said it could, and pinned
+        that impossible mechanism instead: with one blocked and one granted alternative the
+        row is the same with the `break` and without it, so deleting the `break` left every
+        row in this file green. `{../secret,../other}/*` with neither granted is the case
+        that separates them, since without the `break` the LAST refusal wins the row.
         """
         manifest = {"allowed_read_roots": ["docs", "spec"]}
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, manifest=manifest)
-            (repo_root / "spec").mkdir(exist_ok=True)
-            (repo_root / "secret").mkdir(exist_ok=True)
-            code, body = self._run(
-                repo_root, "Glob", {"path": "docs", "pattern": "{../secret,../spec}/*"})
-            row = self._log_lines(repo_root)[-1]
-        self.assertEqual(code, 2, body)
-        self.assertEqual(row["decision"], "block")
-        self.assertEqual(row["path"], "secret")
+            for name in ("spec", "secret", "other"):
+                (repo_root / name).mkdir(exist_ok=True)
+            rows = {}
+            for label, pattern in (
+                ("two_blocked", "{../secret,../other}/*"),
+                ("one_blocked_one_granted", "{../secret,../spec}/*"),
+            ):
+                code, body = self._run(repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{label}: {body}")
+                rows[label] = self._log_lines(repo_root)[-1]
+        for label, row in rows.items():
+            self.assertEqual(row["decision"], "block", label)
+        # The alternatives are judged in sorted order, so the row names the alphabetically
+        # FIRST refusing one — `other`, not `secret`. Without the `break` the LAST refusal
+        # wins instead and this row reads `secret`, which is the difference the test exists
+        # for. (I expected `secret` here and was wrong about my own ordering; the run said
+        # so before this assertion was written down.)
+        self.assertEqual(rows["two_blocked"]["path"], "other")
+        # With only one refusing alternative both orders agree — which is why the shape
+        # this test used to have could not witness anything.
+        self.assertEqual(rows["one_blocked_one_granted"]["path"], "secret")
 
     def test_brace_expansion_handles_nesting_the_unbalanced_and_the_repeated(self) -> None:
         """`_brace_alternatives` directly, for the branches the end-to-end rows cannot see.
@@ -4112,6 +4127,32 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 code, body = self._run(
                     repo_root, "Glob", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
+    def test_a_balanced_group_after_an_unbalanced_brace_is_still_expanded(self) -> None:
+        """Bailing on the first `{` left a balanced group behind it unjudged.
+
+        `{a/{../../../etc,b}/*` carries an unbalanced leading `{` and a balanced group after
+        it. The version that declared the whole pattern a literal on seeing the first `{`
+        never expanded the second, so the escaping alternative was never judged — measured:
+        allowed, while `{../../../etc,b}/*` was refused. Real expanders do not bail either
+        (`bash -c 'echo {a/{x,y}/*'` yields two words).
+
+        The allowed row is the other half: `{a/{../secret,b}/*` expands to
+        `docs/{a/../secret/*`, which LANDS at `docs/secret` — inside the granted root — so
+        refusing it would be an over-refusal. The unbalanced brace does not by itself make
+        a pattern suspicious; what matters is where each alternative ends up.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern, expected in (("{a/{../../../etc,b}/*", 2),
+                                  ("a{b/{/etc,c}/../../../*", 2),
+                                  ("{a/{../secret,b}/*", 0),
+                                  ("{a,b}/*.md", 0)):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                (repo_root / "secret").mkdir(exist_ok=True)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, expected, f"{pattern}: {body}")
 
     def test_an_unenumerable_brace_pattern_is_judged_at_the_repository_root(self) -> None:
         """Braces multiply, and this hook runs synchronously on every tool call.

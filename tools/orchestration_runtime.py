@@ -16639,6 +16639,19 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # ignored in silence. The version numbers are kept as the record of WHEN each was taken;
 # they are not a claim about the CLI you have, which is what the preflight check measures.
 #
+# EVERY COUNT HERE BELONGS TO AN ARGV, and the argv is the leaf's: `--setting-sources user`
+# against an empty scratch home, plus `--strict-mcp-config --mcp-config .mcp.json
+# --disable-slash-commands`. Repeated on 2.1.239: 19 built-ins under the denylist in 8 runs
+# of 8, and exactly the six above under this value in 6 runs of 6. A launch that loads a
+# settings layer supplying SKILLS gets a further built-in, `Skill`, which no matcher judges
+# — it does not reach a leaf, because the private home the conductor prepares carries no
+# skills, and `--tools` would exclude it in any case. It is named here because the list of
+# fifteen is written as exhaustive and is exhaustive only for this argv: a review reported
+# 24/20/16 for that reason, and my own first attempt to check it reported the same for a
+# worse one — zsh does not word-split an unquoted variable, so the flags never reached the
+# launch and I measured a plain `claude`. The repo's own `references/verification.md` warns
+# about that shell behaviour; it costs a measurement about twice a year here.
+#
 # WHAT A LEAF GAINS, not only what it loses — the framing "fifteen removed" is half of it.
 # MEASURED on 2.1.238: `Grep` and `Glob` are absent from the CLI's DEFAULT roster, so the
 # denylist argv did not give a leaf either one, and this allowlist does. The `PreToolUse`
@@ -16681,10 +16694,12 @@ CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
 # near 2 s and the same code under review load sits near 5 s (measured both ways against
 # the same commit, which is why a single figure kept being wrong). The launch ends at the
 # stand-in's 400, before any model turn. So this is more than an order of magnitude of
-# headroom IDLE, and 5.4x under load: six probes taken while ~20 pytest processes ran
-# measured 15.6-22.4 s (seeded and unseeded alike, so the seeding is not the cause). Read
-# the 2-6 s figure above as the idle case and this one as the ceiling an operator judging
-# "has preflight hung" should use. Still a bound, and it must be one: the probe runs inside
+# headroom IDLE. Under load it is less, but by how much is NOT settled: one series measured
+# 15.6-22.4 s under ~20 concurrent pytest processes and a re-take under the same load
+# measured 3.7-5.5 s. This host SUSPENDS, and a suspended interval lands inside a wall-clock
+# span as if it were work — the same error that made a live reviewer look stalled for nine
+# hours on this branch — so the high series is most likely that, and the honest ceiling is
+# the low one. Treat anything past ~10 s as worth a look rather than as normal. Still a bound, and it must be one: the probe runs inside
 # preflight, and a hang there is a run that never begins with nothing said about why.
 # A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
 # is the state this check exists to refuse.

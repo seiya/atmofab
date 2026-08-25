@@ -1136,8 +1136,32 @@ def _brace_alternatives(pattern: str) -> list[str] | None:
                     parts.append(candidate[start:position])
                     start = position + 1
             if close_at < 0:
-                # An unbalanced `{` is not an alternation; leave it as a literal.
-                continue
+                # An unbalanced `{` is not an alternation — but a BALANCED group may follow
+                # it, and bailing on the whole pattern left that one unexpanded and
+                # unjudged: `{a/{../secret,b}/*` was allowed where `{../secret,b}/*` was
+                # refused. Real expanders do not bail either (`bash -c 'echo
+                # {a/{../secret,b}/*'` yields `{a/../secret/*`). So skip past this `{` and
+                # keep looking, rather than declaring the rest a literal.
+                #
+                # Not exploitable in this corpus — every such expansion keeps a literal
+                # `{`-bearing component, which names no directory — but the rule this file
+                # sets itself is that the check must not DEPEND on that, and for this
+                # family it did.
+                candidate_from = open_at + 1
+                remainder = candidate.find("{", candidate_from)
+                if remainder < 0:
+                    continue
+                head_literal = candidate[:remainder]
+                tail_expanded = _brace_alternatives(candidate[remainder:])
+                if tail_expanded is None:
+                    return None
+                expanded = [head_literal + part for part in tail_expanded]
+                if expanded == [candidate]:
+                    continue
+                alternatives[index:index + 1] = expanded
+                if len(alternatives) > _GLOB_BRACE_ALTERNATIVE_LIMIT:
+                    return None
+                break
             head, tail = candidate[:open_at], candidate[close_at + 1:]
             expanded = [f"{head}{part}{tail}" for part in parts]
             alternatives[index:index + 1] = expanded
@@ -1210,14 +1234,21 @@ def _evaluate_grep_glob_read_policy(
     #
     #     pattern=sub/*.md              -> No files found
     #     pattern=docs/sub/*.md         -> docs/sub/b.md
+    #     pattern=b.md                  -> docs/sub/b.md    (slashless: basename, any depth)
     #     pattern=../spec/*.yaml        -> No files found
-    #     pattern=*/../../outside/*     -> No files found
     #     pattern={../../outside,sub}/* -> No files found
-    #     pattern=linkdir/*             -> No files found   (a symlinked directory)
+    #     pattern=docs/linkdir/*        -> No files found    (a symlinked directory)
     #     pattern=/etc/hostname         -> /etc/hostname     (an ABSOLUTE pattern re-roots)
     #
-    # So a relative pattern is matched against the REPOSITORY-relative path and the read is
-    # confined to `path`; only an absolute pattern leaves it. `Grep`'s `glob` filter cannot
+    # So the matching is GITIGNORE-STYLE — a pattern containing `/` is anchored at the
+    # repository root, one without matches the basename at any depth — and either way the
+    # read is confined to `path`; only an absolute pattern leaves it. (Two rows of an
+    # earlier version of this table were true for a reason other than the one they were
+    # labelled with: `linkdir/*` is slashed, so it anchors at the root where no `linkdir`
+    # exists and never reaches the symlink at all — `docs/linkdir/*` is the row that
+    # witnesses the symlink; and `*/../../outside/*` pointed at an ancestor the fixture
+    # never created. Both conclusions survive a fixture that creates every ancestor the
+    # patterns could resolve to.) `Grep`'s `glob` filter cannot
     # leave either (`glob=../../outside/*` and an absolute `glob` both return nothing), so
     # it stays out of `_PATTERN_IS_A_PATH_TOOLS` — as does `Grep`'s `pattern`, a content
     # regex where refusing `\.\./config` would be an over-refusal.
@@ -1315,10 +1346,15 @@ def _evaluate_grep_glob_read_policy(
                             "like a path: re-issue it against a granted directory."
                         ).strip(),
                     )
-                    # The FIRST refusal is the verdict. Carrying on would let a later
-                    # alternative that happens to be granted overwrite `logged_path`, so
-                    # the audit would name a place the read was allowed to reach while the
-                    # call was refused for another.
+                    # THE FIRST BLOCKING alternative is the verdict, and the audit names
+                    # ITS place. Carrying on would let a SECOND blocking alternative
+                    # overwrite both, so `{../secret,../other}/*` would be filed as a read
+                    # of `other` when `secret` is what refused it. (This comment used to
+                    # say a GRANTED alternative could overwrite the row, which cannot
+                    # happen — `logged_path` and `decision` are assigned only inside this
+                    # branch — and that impossible mechanism was also the whole docstring
+                    # of the test meant to witness the `break`, which is why deleting the
+                    # `break` left every row green.)
                     break
     if decision.action == HookDecisionAction.BLOCK and path_missing and not pattern_blocked:
         decision = dataclasses.replace(
