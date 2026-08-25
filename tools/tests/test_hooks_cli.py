@@ -3993,14 +3993,21 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             if line.strip()
         ]
 
-    def test_an_absolute_glob_pattern_is_blocked(self) -> None:
-        """The one shape MEASURED to reach outside `path`.
+    def test_an_absolute_or_tilde_glob_pattern_is_blocked(self) -> None:
+        """The trigger: a pattern beginning with `/` — the one shape MEASURED to reach
+        outside `path` — or with `~`, which is refused although it is inert.
 
         The tool asks `path.isAbsolute` of the whole pattern and re-roots the search when
         it is true, ignoring `path`. Driven against the real tool (CLI 2.1.239):
         `/etc/hostname`, `/tmp/<marker>/*`, `//tmp/<marker>/*`, `/tmp/{a,b}/*` and
         `/tmp/x/../x/*` all READ what they name — braces and `..` AFTER the leading slash
         included, which is why the prefix is normalized before it is judged.
+
+        The `~` rows are the deliberate exception, and the refusal text says so rather than
+        calling them absolute: measured, `~/.bashrc` reads NOTHING (the tool asks
+        `isAbsolute`, which `~` is not). It stays in the trigger because
+        `_glob_literal_prefix` already returns the expanded location, so it costs one
+        character — not because it is reachable.
         """
         manifest = {"allowed_read_roots": ["docs"]}
         for pattern in ("/etc/*", "//etc/*", "/etc/hostname", "/etc/{a,b}/*",
@@ -4010,7 +4017,7 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 code, body = self._run(
                     repo_root, "Glob", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
-                self.assertIn("ABSOLUTE", body)
+                self.assertIn("is authorized at", body)
 
     def test_when_both_the_path_and_the_pattern_are_ungranted_the_path_is_reported(self) -> None:
         """Precedence when BOTH halves refuse — untested until a reviewer mutated the guard.
@@ -4029,7 +4036,7 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 repo_root, "Glob", {"path": "tools", "pattern": "/etc/*"})
             row = self._log_lines(repo_root)[-1]
         self.assertEqual(code, 2, body)
-        self.assertNotIn("ABSOLUTE", body)
+        self.assertNotIn("is authorized at", body)
         self.assertEqual(row["path"], "tools")
 
     def test_an_absolute_pattern_inside_a_granted_root_is_allowed(self) -> None:
@@ -4066,8 +4073,9 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                     {"path": "docs", "pattern": f"{repo_root}{suffix}"})
                 self.assertEqual(code, expected, f"{suffix}: {body}")
                 row = self._log_lines(repo_root)[-1]
-                self.assertEqual(row["path"], str(repo_root / logged) if expected else logged,
-                                 f"{suffix}: {row}")
+                # The judged location on BOTH verdicts now, so the allowed row names
+                # `<repo>/docs` rather than the `path` the tool ignored.
+                self.assertEqual(row["path"], str(repo_root / logged), f"{suffix}: {row}")
 
     def test_a_tilde_pattern_is_judged_on_its_expansion(self) -> None:
         """`_glob_literal_prefix`'s third return, which the literal spelling hides.
@@ -4098,13 +4106,16 @@ class GrepGlobReadGuardTests(unittest.TestCase):
 
         So these rows assert that the check does NOT refuse them. If a future CLI starts
         resolving `..`, this test is what turns green into a decision: it will still pass,
-        and `TODO.md` carries the harness to re-measure the premise it rests on.
+        and the premise it rests on is re-measurable by
+        `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`, whose default
+        case list is these rows plus the controls that make an empty result mean something.
         """
         manifest = {"allowed_read_roots": ["docs"]}
-        for pattern in ("../secret/*", "../../secret/*", "*/../../secret/*",
-                        "{../secret,sub}/*", "{sub,/etc}/*", "{/etc,sub}/*",
-                        "sub/../../secret/*", " /etc/*", "$HOME/.ssh/*",
-                        "linkdir/*", "docs/linkdir/*"):
+        for pattern in ("../secret/*", "../../secret/*", "../../../secret/*",
+                        "*/../../secret/*", "{../secret,sub}/*", "{sub,/etc}/*",
+                        "{/etc,sub}/*", "sub/../../secret/*", " /etc/*", "\t/etc/*",
+                        "$HOME/.ssh/*", "linkdir/*", "docs/linkdir/*",
+                        "docs/linkfile.txt"):
             with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
                 code, body = self._run(
@@ -4116,24 +4127,32 @@ class GrepGlobReadGuardTests(unittest.TestCase):
 
         `append_hook_access_log` carries no reason field, so recording `path` filed
         `Glob path=docs` for both `pattern=*.md` and `pattern=/etc/*`. On the ALLOW side
-        `path` IS where the tool walked (a relative pattern reads only under it, measured),
-        so only the block side names the pattern's target.
+        `path` is where the tool walked — but only for a RELATIVE pattern. An ABSOLUTE one
+        ignores `path` entirely (measured), so an ALLOWED `<repo>/spec/*` issued with
+        `path=docs` was filed as a read of `docs`: the same conflation, surviving on the
+        allow side of the fix that removed it from the block side. All three shapes are
+        asserted here, because the two-row version could not see it.
         """
-        manifest = {"allowed_read_roots": ["docs"]}
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "spec").mkdir(exist_ok=True)
             rows = {}
-            for label, tool_input, expected in (
-                ("blocked_by_pattern", {"path": "docs", "pattern": "/etc/*"}, 2),
-                ("allowed", {"path": "docs", "pattern": "docs/**/*.md"}, 0),
+            for label, pattern, expected in (
+                ("blocked_by_pattern", "/etc/*", 2),
+                ("allowed_absolute_elsewhere", f"{repo_root}/spec/*", 0),
+                ("allowed_relative", "docs/**/*.md", 0),
             ):
-                code, body = self._run(repo_root, "Glob", tool_input)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
                 self.assertEqual(code, expected, f"{label}: {body}")
                 rows[label] = self._log_lines(repo_root)[-1]
         self.assertEqual(rows["blocked_by_pattern"]["decision"], "block")
         self.assertEqual(rows["blocked_by_pattern"]["path"], "/etc")
-        self.assertEqual(rows["allowed"]["decision"], "allow")
-        self.assertEqual(rows["allowed"]["path"], "docs")
+        self.assertEqual(rows["allowed_absolute_elsewhere"]["decision"], "allow")
+        self.assertEqual(rows["allowed_absolute_elsewhere"]["path"], str(repo_root / "spec"))
+        self.assertEqual(rows["allowed_relative"]["decision"], "allow")
+        self.assertEqual(rows["allowed_relative"]["path"], "docs")
 
     def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
         """Two remedies for one refusal are worse than one.
@@ -4148,7 +4167,7 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             repo_root = self._make_repo(tmp, manifest=manifest)
             code, body = self._run(repo_root, "Glob", {"pattern": "/etc/*"})
         self.assertEqual(code, 2, body)
-        self.assertIn("ABSOLUTE", body)
+        self.assertIn("is authorized at", body)
         self.assertNotIn("was called without a 'path'", body)
 
     def test_a_grep_pattern_is_a_content_regex_and_is_not_path_validated(self) -> None:

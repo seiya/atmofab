@@ -16663,7 +16663,7 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # matchers for both long predate that (issue #42), so the CLI, not this repository, is what
 # had made them dormant — but the consequence is live either way. The `path` of both is
 # validated fail-closed (an absent one is validated as the repository root and therefore
-# blocks), and `Glob`'s `pattern` is validated too, at the place the read would land —
+# blocks), and `Glob`'s `pattern` is validated too when it is ABSOLUTE —
 # closed on this branch rather than inherited, because it was issue #42's residue only for
 # as long as no leaf held `Glob`. `Grep`'s `pattern` is a CONTENT regex and names no path
 # (`docs/HOOKS.md` is canonical), so it is deliberately not validated: treating

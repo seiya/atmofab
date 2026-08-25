@@ -1166,8 +1166,9 @@ def _evaluate_grep_glob_read_policy(
     # THE COST, stated rather than discovered later: this rule now DEPENDS on that vendor
     # behaviour. If a future CLI resolves `..` or follows a brace alternative, a relative
     # escape reopens and nothing here notices — the preflight roster check measures which
-    # TOOLS a leaf gets, not what one of them can reach. `TODO.md` carries that, with the
-    # harness to re-measure it.
+    # TOOLS a leaf gets, not what one of them can reach. `TODO.md` carries that, and the
+    # measurement is re-runnable:
+    # `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`.
     #
     # `~` is kept in the trigger although it is inert, because `_glob_literal_prefix`
     # already returns the expanded location and the condition costs one character.
@@ -1194,6 +1195,15 @@ def _evaluate_grep_glob_read_policy(
             if not _is_path_under_root(resolved, repo_root.resolve()):
                 prefix = str(resolved)
             if prefix != search_path:
+                # WHERE THE READ HAPPENS, on BOTH verdicts — because for an absolute
+                # pattern the tool ignores `path` entirely (measured). Recording `path`
+                # here filed an ALLOWED `<repo>/spec/*` issued with `path=docs` as a read
+                # of `docs`, which is the conflation this assignment exists to remove,
+                # surviving on the allow side. An earlier round moved it to the block side
+                # on the reasoning that "on an allowed call `path` is where the tool
+                # walked" — true of a RELATIVE pattern, and this branch is only ever
+                # reached by an absolute one.
+                logged_path = prefix
                 pattern_decision = validate_read_access(
                     repo_root,
                     orchestration_id,
@@ -1207,14 +1217,15 @@ def _evaluate_grep_glob_read_policy(
                     # fire: "its 'path' does grant it" beside "you passed no path" are two
                     # contradictory sentences and only the first is actionable.
                     pattern_blocked = True
-                    logged_path = prefix
                     decision = dataclasses.replace(
                         pattern_decision,
                         reason=(
                             f"{pattern_decision.reason or ''} "
-                            f"{tool_name}'s pattern {pattern!r} is ABSOLUTE, so it searches "
-                            f"{prefix!r} and ignores 'path' entirely — and the read_manifest "
-                            f"does not grant it. Re-issue it against a granted directory, or "
+                            f"{tool_name}'s pattern {pattern!r} is authorized at {prefix!r}, "
+                            f"which the read_manifest does not grant. A pattern beginning "
+                            f"with '/' re-roots the search and ignores 'path' entirely; one "
+                            f"beginning with '~' is refused here although the tool reads "
+                            f"nothing through it. Re-issue it against a granted directory, or "
                             f"drop the leading '/' and pass the directory as 'path'. "
                             f"A brace in an absolute pattern is judged at the literal text "
                             f"before it, so `<repo>/{{a,b}}/*` is refused even when both `a` "
