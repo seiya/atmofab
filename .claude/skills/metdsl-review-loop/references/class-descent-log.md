@@ -291,8 +291,12 @@ makes a verdict mean anything. **The axis is the gain, never how deliberate the 
 
 ## The budget — why SKILL.md caps the rounds, and what the cap costs
 
-`SKILL.md` §"Stopping conditions" opens with round 0 plus two rounds as the default and five as the
-cap. Every other condition in that section is a property of the findings, so none of them bounds
+`SKILL.md` §"Stopping conditions" opens with round 0 plus three rounds as the default and five as
+the cap. **The default is the Codex launch's shape, not a round number picked for size**: the
+launch belongs in round 2, and its findings need a round after them, because the regularity this
+whole file records is that most findings sit inside the previous round's fix — PR #51 three rounds
+running, PR #68 all six. A two-round default would have ended exactly where that regularity says
+the next defect is. Every other condition in that section is a property of the findings, so none of them bounds
 what a loop costs, and the histories above are what that looks like: **17 subagent rounds plus 3
 Codex passes** (PR #51), **15** (issue #71), **9** (L128), **8 segments and stopped by the user
 rather than by a condition** (PR #58 — and `SKILL.md`'s own "five rounds without the class
@@ -301,7 +305,9 @@ that fixed existing machinery: **4** (issue #63), **3** (PR #53).
 
 **The cap is calibrated on a real loop, not chosen round.** The skill split (2026-08-25, the entry
 above) ran round 0 plus four — exactly the cap — on a change that ADDS checking machinery, the
-expensive class, and its ~50 findings were nearly all introduced by the change under review.
+expensive class, and its ~50 findings were nearly all introduced by the change under review. So
+the cap sits one round above the default, and that gap is where a change of that class lives
+rather than being spare budget for an ordinary one.
 
 **What the cap costs is real and is accepted knowingly.** Rounds past five have produced genuine
 defects here: issue #71's round 15 found five in a committed measurement script, two of them

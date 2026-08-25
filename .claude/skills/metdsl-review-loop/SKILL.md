@@ -364,7 +364,9 @@ had dropped it into residual).
 **Codex's token budget is scarce. One launch per branch as a rule, two at the most.** Do not launch
 in round 1 — round 1 findings are the coarse layer subagents also produce, and spending the launch
 there **leaves nothing for the moment independence pays most: after your own fixes have piled up**.
-Launch once **in round 2 or 3** (do not save it for the end).
+Launch once **in round 2** (do not save it for the end). Round 3 is not an equal alternative under
+the budget above: the launch has to leave a round behind it for its own findings' fixes to be
+reviewed in, and at the default of round 0 plus three, only a round-2 launch does.
 
 **Cases where not launching is better** (spend a blank-slate subagent review instead): a change
 that **adds checking machinery** (Codex structurally almost always finds "one more construct", so
@@ -488,11 +490,22 @@ the breakdown of what you dropped into the PR body / your report to the user —
 **The budget comes first. Every condition below is a property of the FINDINGS, and none of them
 bounds the cost** — which is why no recorded loop was ended by one of them alone.
 
-**Round 0 plus TWO rounds is the default; FIVE rounds is the cap.** At the cap you stop, whatever
-the class did. A change that fixes existing machinery often closes at round 0 plus one. What
-counts: every round counts, the disclosure round and the census round included — the disclosure
-round is one of the budgeted rounds, never an addition to them. A Codex pass rides inside a round
-and is not a round of its own.
+**Round 0 plus THREE rounds is the default; FIVE rounds is the cap.** At the cap you stop, whatever
+the class did.
+
+**The default is three because of where Codex lands.** The launch goes in round 2 (see "When to
+bring in Codex": not round 1, which is the coarse layer, and not the end), it is the pass that
+structurally sees what subagents do not, and **what it finds then has to be fixed — so round 3 is
+the round that reviews those fixes**. Ending at round 2 would ship the answers to Codex's findings
+unreviewed, against this loop's strongest recorded regularity: **most findings sit inside the
+previous round's fix**. Round 3 is not slack in the budget; it is the round Codex's launch creates.
+A change that fixes existing machinery, or one where the Codex launch is deliberately not spent,
+often closes at round 0 plus one or two — spend fewer than the default when the reason is that
+kind, never to reach a deadline.
+
+What counts: every round counts, the disclosure round and the census round included — the
+disclosure round is one of the budgeted rounds, never an addition to them. A Codex pass rides
+inside a round and is not a round of its own.
 
 **What the cap ends is the SEARCH, not the REPAIR.** An in-scope finding already on the table at
 the cap — a `leaf shortcut`, a wrong verdict, a broken contract, a false record — is fixed before
