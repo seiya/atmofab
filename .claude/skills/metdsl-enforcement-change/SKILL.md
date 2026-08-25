@@ -19,204 +19,129 @@ canonical sources are `mcp_servers/README.md` / `docs/HOOKS.md` / `docs/AGENT_SK
 copying them here would add one more twin document, which is itself the defect class this
 skill exists to kill).
 
+**This file carries the rules; `references/` carries the episode each rule came from.** A rule
+here that does not obviously apply to your case is answered in its reference file, not by
+guessing.
+
+- `references/judgment-episodes.md` — what each judgment rule below cost, in full
+- `references/input-surfaces.md` — surfaces 5-9, the marker-narrowing version table, the recipes
+- `references/source-text-surface.md` — the spelling variation a source-text-reading gate must survive
+- `references/dual-read-pairs.md` — the table of facts two layers read
+- `references/failure-routing.md` — attribution criteria, the known branches, and remedy wording
+- `references/deterministic-substep-wiring.md` — wiring a conductor in-process substep
+- `references/verification.md` — the verification commands and the prose grep procedure
+
 ## Judgment rules you never drop
 
 These three hold everywhere in the procedure. Finish reading them before you open any
-reference file.
+reference file. Episodes for all of them: `references/judgment-episodes.md`.
 
-**1. Before classifying anything as residual or unreachable, run the attack.** Nothing goes
-into the residual bucket without a record of an attempt that failed. PR #51's only P1 (a
-caller can forge a capability by naming its own `repo_root`) had been found by two reviewers,
-yet was accepted for five rounds on the **unverified premise** that exploiting it needed a
-primitive the file-tool hook refuses. The actual primitive was one the contract hands over
-explicitly: `workspace/tmp/<agent_run_id>` (a bwrap rw bind) plus `Bash(python3
-workspace/tmp/*)` (committed in `.claude/settings.json`, the dev layer, and since issue #63 in
-`leaf_config/claude/settings.json`, the layer a leaf actually loads — both carry it today). **Decide by what you ran, not by who said
-it.**
+**1. Before classifying anything as residual or unreachable, run the attack.** Nothing goes into
+the residual bucket without a record of an attempt that failed. **Decide by what you ran, not by
+who said it** — PR #51's only P1 was accepted for five rounds on an unverified premise, after two
+reviewers had found it.
 
-**1-b. Deleting a defense is also a classification.** Rule 1 is not only about triaging
-someone else's finding. **When you delete a defense you wrote**, the reason is always "this
-shape cannot occur", and that is the classification itself. In PR #53 I deleted a derived-type
-guard I had added in that very round, judging that "F2008 forbids this arrangement", and
-shipped a fail-open — the evidence was **one** gfortran probe (a host-associated binding),
-while `nopass` plus **use association** makes the compiler accept the same arrangement. One
-probe means "I tried one", not "I tried".
+**1-b. Deleting a defense is also a classification.** When you delete a defense you wrote, the
+reason is always "this shape cannot occur", and that is the classification itself (PR #53 shipped
+a fail-open that way, on the strength of **one** compiler probe).
 
-- **Do not conclude impossibility from a single counterexample.** Try at least one more
+- **Do not conclude impossibility from a single counterexample** — try at least one more
   **different spelling or different association path** for the same construct
 - **"The mutation survives" is not grounds for deletion.** "There is no test" and "the code is
-  unnecessary" are different claims. If it survives, the default is: keep it, and write in the
-  docstring that it is not pinned
-- This repo pushes the other way too ("delete dead defenses", e.g.
-  `_validate_apply_patch_gate_coverage`), and that collided head-on here. **How the tug-of-war
-  settles**: you may delete only when there is **an execution record of an attempt to reach it
-  that failed**. "No caller exists" (dead code) counts as such a record; "the language spec
-  makes it impossible" does not
-- **The moment you write "the language spec makes this impossible" is the most dangerous one.
-  If you write it, execute one case from that spec and confirm.** This is the second time in
-  this repo. In PR #66 the import reader did not read relative imports, and the docstring
-  justified it as "a relative import cannot leave its package, so the neutral core cannot
-  reach a backend". In fact `tools/` is a PEP 420 namespace package
-  **containing** `tools/backends/`, so a relative import such as
-  `from .backends.language.fortran import signatures` **crosses the boundary without leaving the
-  package** — confirmed by running it. (An earlier version of this note named a `build_system`
-  module that does not exist yet, so the import that proves the point could not be executed.) Same shape as PR #53's `nopass` plus use
-  association: what breaks these claims is always the language's **special form** (namespace
-  packages, use association, implicit association rules). Any "impossible" about package
-  structure, scope, or visibility gets one run the moment you write it
+  unnecessary" are different claims. If it survives, keep it and write in the docstring that it
+  is not pinned
+- This repo pushes the other way too ("delete dead defenses"). **How the tug-of-war settles**:
+  you may delete only when there is **an execution record of an attempt to reach it that
+  failed**. "No caller exists" (dead code) counts; "the language spec makes it impossible" does not
+- **The moment you write "the language spec makes this impossible" is the most dangerous one. If
+  you write it, execute one case from that spec and confirm.** What breaks these claims is always
+  the language's **special form** (PEP 420 namespace packages, use association, implicit
+  association rules). Any "impossible" about package structure, scope, or visibility gets one run
 
 **1-c. Severity is a classification too. Do not decide it from one reproduction.** Rule 1 says
-decide "does it happen" by execution; it says **nothing about how far it happens**. The moment
-you can reproduce the hole in one layer is the most dangerous one — write the verdict there
-and the remaining layers are necessarily inference. The procedure is: **enumerate every place
-that reads that fact, then open each layer**. Skip the enumeration and each layer you open
-raises your confidence while the unopened ones fall out of view.
+decide "does it happen" by execution; it says **nothing about how far it happens**. The procedure
+is: **enumerate every place that reads that fact, then open each layer** (PR #55 got one severity
+wrong three times, each time having run a reproduction).
 
 - **Do not use a layer you have not executed in the verdict; say explicitly that you have not
   executed it**
-- In PR #55 I got the severity of the `agent_role` hole wrong **three times** (medium → high →
-  medium → high). Each time "I ran the reproduction", so the letter of rule 1 was satisfied —
-  and I missed anyway. Opening only the producer (the manifest) gave high; opening the hook
-  gave medium; opening `build_bwrap_profile` and `_validate_actual_write_paths` last showed
-  **the answer was neither** — the sandbox rw-binds it, and the audit that
-  `docs/AGENT_CONTRACT.md` calls authoritative never runs because of an early return
-- In the same round I cited a **function that does not exist** (`_build_capability_payload`;
-  the real one is `build_capability_document`). Enumerating the readers first would have kept
-  that out of the first draft
-- Finding the counterparts: `references/dual-read-pairs.md`. **When a fact is not in that
-  table, that is exactly when you write the enumeration out**
-- **Once every reader is open, enumerate what the other layers already cover before writing
-  the severity.** The number of readers alone does not justify high. In PR #57 I had six
-  readers open and still needed a **fourth correction**, this time toward the **safe** side:
-  counting every place bwrap rw-binds showed that inside `write_roots` FS-diff containment
-  permits the write **for every role**, and every rw-bind outside it was exempted as runtime
-  bookkeeping ⇒ **with the sandbox active, no write became newly undetectable under an unknown
-  role**. The defense is still silently dead, so the fix ships — but **do not write "this is
-  exploitable"**. Conversely, skip this enumeration and the reader count alone reads as high
-- **But never turn "another layer catches it" into a reason not to fix** (as with the
-  `feedback_no_redundant_persistence` family, this repo does not accept leaving something
-  because of a second layer). The enumeration exists to **make the severity description
-  accurate**, not to decide whether to fix
+- Finding the counterparts: `references/dual-read-pairs.md`. **When a fact is not in that table,
+  that is exactly when you write the enumeration out**
+- **Once every reader is open, enumerate what the other layers already cover before writing the
+  severity.** The number of readers alone does not justify high — and the correction runs both
+  ways (PR #57's fourth correction was toward the safe side: the defense was silently dead, so
+  the fix shipped, but **"this is exploitable" was the wrong thing to write**)
+- **But never turn "another layer catches it" into a reason not to fix.** The enumeration exists
+  to **make the severity description accurate**, not to decide whether to fix
 
 **1-d. The premises of a fix you have not written yet are also a classification.** Rules 1
-through 1-c are about things that **already exist** — someone else's finding, a defense you
-are deleting, the severity of a hole — and say nothing about **the facts an unwritten fix
-assumes**. That is where it costs most: if the premise is false, the plan, the implementation,
-the tests, and the prose are all wasted at once.
+through 1-c are about things that already exist. If an unwritten fix's premise is false, the plan,
+the implementation, the tests and the prose are wasted at once (issue #75: a six-phase plan died
+to **one unbilled observation**).
 
-- **The moment your plan says "today this shape is handled like so", execute that one
-  sentence before implementing.** Docs, old logs, and issue bodies are not sources for a
-  premise (each describes one observation moment, and layers change with versions)
-- Hit in issue #75: on the premise that "a post-#72 leaf silently loses read commands that do
-  not match the committed `permissions.allow`", I wrote a plan complete with six phases, test
-  families, and mutation targets. At the start of the work, **one unbilled observation** showed
-  that CLI 2.1.234 applies **its own read-only command analysis ahead of the allowlist** and
-  every target form passed. No implementation was needed. **Observation costs two orders of
-  magnitude less than implementation**
-- **"It was not refused" cannot be shown from refusal logs.** In a layer where refusals leave
-  no event, **count the traces on the success side** — here the decider was whether each
-  `pre_command_execute` had a matching `post_command_execute` (evidence that it ran). The issue
-  body itself proposed that cross-check, and nobody had run it
-- When a premise collapses, **keep the measurements**. The plan dies; the measured facts, and
-  any other hole found along the way (here, a real refusal in the opposite direction), stay
+- **The moment your plan says "today this shape is handled like so", execute that one sentence
+  before implementing.** Docs, old logs and issue bodies are not sources for a premise
+- **Observation costs two orders of magnitude less than implementation**
+- **"It was not refused" cannot be shown from refusal logs.** In a layer where refusals leave no
+  event, **count the traces on the success side**
+- When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **2. Do not close an environment-dependent finding with a mock on the test side.** When told
-"this test fails on a machine without gfortran", first ask **what happens in production on
-that machine**. In PR #51, mocking `which` removed the environment dependence and capped a
-hole where the validation rule itself was inert on machines with no compiler installed (Codex
-later picked it up as a P2).
+"this test fails on a machine without the compiler", first ask **what happens in production on
+that machine** (PR #51: mocking `which` capped a hole where the rule was inert on machines with
+no compiler installed).
 
-**3. Changing a rule is not done until you have swept the prose that cites that rule as
-grounds.** Three rounds running, I fixed a docstring while **the violation message actually
-emitted** 40 lines below stayed stale. Worse, the "measured value" I cited as grounds had been
-inverted by an implementation change (the consequence of `language: " fortran"`). Use the grep
-procedure in `references/verification.md`.
+**3. Changing a rule is not done until you have swept the prose that cites that rule as grounds.**
+Use the grep procedure in `references/verification.md`. **Right after you write a sentence,
+execute it**: numbers, rule ids, compiler diagnostics and "X catches this" are all executable
+claims, and **write a range when the number varies**; and **the flip side of rule 3 is that prose you newly write in the same commit is
+unverified until you run it** (L128 got four freshly written measurements or citations wrong
+inside the fix itself). **Do not write someone else's measurement as your own** — cite the source
+explicitly, or re-measure before writing. **Keep a list of every place you wrote a number and
+re-measure them together at the end**; a commit message cannot be fixed afterwards, so either
+mark the number as measured at a point or rewrite it in the final round.
 
-**3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3
-is a discipline, and on issue #71 it failed **four consecutive rounds after it had been
-diagnosed**: round 11 named "the rounds were reliable about code and unreliable about their own
-record", and rounds 12 through 15 each CARRIED the same class — carried, not found: round 12 is the
-narrowing commit and discovered no record defect, so "four rounds found it" would overstate what
-the history shows. The worst instance: the hook
-refuses a `Glob` pattern beginning with `/` or with `~`, and **five canonical statements said
-"ONLY when it is ABSOLUTE"** — `~` is not absolute, which was that branch's own central
-measurement — so `docs/AGENT_CONTRACT.md`, the one document EVERY leaf reads, told a leaf that
-a refusal it can actually receive cannot happen.
+**3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3 is a
+discipline, and it failed four consecutive rounds on issue #71 **after it had been diagnosed**
+(carried, not found: the narrowing round discovered no record defect of its own, so "four rounds
+found it" would overstate the history) —
+the worst instance told every leaf, in the one document every leaf reads, that a refusal it can
+actually receive cannot happen. **The trigger is the count; the audience is the priority**: three
+or more statement sites is when discipline has already lost, and a site read by a leaf or an
+operator does not lower the count — it decides which site you check first.
 
-**Reach for the pattern this repository already uses three times** rather than inventing one.
-`tools/tests/test_hooks_cli.py` holds `_SCRATCH_SURFACES`, `_REDIRECT_RULE_SURFACES` and
-`_SURFACES` — but they are three DIFFERENT shapes, so read the one nearest your rule before
-copying it: `_SURFACES` is `(file, anchor)`; `_SCRATCH_SURFACES` is `(file, anchor, scope)` and
-that third column IS the bound; `_REDIRECT_RULE_SURFACES` has no anchor at all and couples by a
-phrase regex over a paragraph. **They also duplicate each other** — two near-identical
-anchored-window readers with two different window constants live in that one file — so copying
-is the starting point and not the goal. The three traps, each of which cost a round:
+**Reach for the pattern this repository already uses three times** (`_SCRATCH_SURFACES`,
+`_REDIRECT_RULE_SURFACES`, `_SURFACES` in `tools/tests/test_hooks_cli.py`) — but they are three
+DIFFERENT shapes and **they duplicate each other**, so read the one nearest your rule and treat
+copying as the starting point. The four traps, each of which cost a round:
 
-- **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are
-  refusing.** Anchoring on your own corrected sentence pins that the correction survived, not
-  that the rule is stated — witness the check by restoring the old wording and confirming the
-  failure names what is missing, not the anchor
+- **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are refusing.**
+  Anchoring on your own corrected sentence pins that the correction survived, not that the rule is
+  stated — witness the check by restoring the old wording and confirming the failure names
+  what is missing, not the anchor
 - **Bound the reader and self-test the bound**, or a document that mentions the rule's terms
   anywhere passes on the strength of an unrelated sentence
 - **Decide what "names the rule" means for THIS rule.** Couple by MEMBERS only when the prose
-  names them in full — a two-element trigger, yes; `LEAF_ENV_ALLOWLIST`, never, because its
-  documents state the policy ("the environment is a declared allowlist") and correctly do not
-  enumerate it. Otherwise couple by POINTER (each site must cite where the constant lives) or
-  by NUMBER. **The rule is defined once, IN THE CODE, and the documents are checked against it**
-  — never the reverse, and never both spelled out independently, which is two spellings of one
-  rule and the defect this whole section is about
-- **Pin the members, not the source line.** A legitimate extraction to a named constant must
-  not turn a true statement red — and the exemplar above FAILS this: `_trigger_prefixes` reads
-  `pattern.startswith((…))` with a regex, so replacing the inline literal with a named constant
-  raises its assertion. Resolve a named constant before giving up, and make the failure name
-  the repair. This is the trap that is easiest to reintroduce, because pinning the spelling is
-  three lines and pinning the members is fifteen
+  names them in full; otherwise couple by POINTER (each site cites where the constant lives) or by
+  NUMBER. **The rule is defined once, IN THE CODE, and the documents are checked against it** —
+  never the reverse, and never both spelled out independently
+- **Pin the members, not the source line.** A legitimate extraction to a named constant must not
+  turn a true statement red — resolve a named constant before giving up, and make the failure name
+  the repair. This is the easiest one to reintroduce, because pinning the spelling is three lines
+  and pinning the members is fifteen
 
 **Before adding a check, ask whether the sites should exist.** The cheaper fix is this
 repository's ordinary practice — one canonical statement, everyone else cites it (`AGENTS.md`
 §Dedicated rule documents) — and it cannot rot. Coupling is for the sites that must repeat the
-rule anyway: a leaf-read contract has to be self-contained, and a refusal message has to say it
-to whoever was refused. Note this is NOT surface 5's twin, though both count to three: surface
-5 changes the CHANNEL a decision travels on so the decision stops being forgeable, and 3-a adds
-machinery so that many statements of one rule stay honest. Different question, same threshold.
+rule anyway: a leaf-read contract has to be self-contained, and a refusal message has to say it to
+whoever was refused. (This is NOT surface 5's twin, though both count to three: surface 5 changes
+the CHANNEL a decision travels on; 3-a keeps many statements of one rule honest.)
 
-**The trigger is the count; the audience is the priority.** Three or more statement sites is
-when discipline has already lost. That one of them is read by a leaf or an operator does not
-lower the count — it decides how soon you do it, and which site you check first.
-
-**Sites a test cannot reach are real and the check does not cover them**: a commit message,
-which cannot be edited once pushed, and a prompt assembled at runtime. For those the only moves
-are to remove the statement or to make it derived; say in the commit which sites you could not
-couple. **Check before assuming a site is out of reach** — an issue or PR body can be edited
-(`gh issue edit --body`), and `docs/examples/*.yaml` was untested and permanently drifting until
-`tools/tests/test_llm_config.py` closed it, so citing that as a live example of the unreachable
-sends a reader past a site that is already coupled.
-
-**The flip side of 3: prose you newly write in that same commit is also unverified until you
-run it.** Read rule 3 as being about old text and you keep only half of it. In L128 I got
-**four newly written measurements or citations wrong inside the fix itself**:
-
-- The suite count three times (the first written blind; the second still off by one after I
-  wrote "re-measured")
-- A perf ratio twice (off by 3.5x against the raw baseline, then quoting a single point while
-  ignoring directory dependence — **write a range when the number varies**)
-- A lint rule id (of fortitude's: the one that enforces `implicit none` is C001; **C003 is the
-  rule the phase doc has the leaf suppress**, so the citation pointed at a check that never fires)
-- **Numbers that were right rot when the branch moves.** In PR #53 I got the suite count wrong
-  twice; the second time it was **correct when written** and was obsoleted by a later round
-  adding tests. **Keep a list of every place you wrote a number and re-measure them together at
-  the end** (a commit message cannot be fixed, so either mark the number in TODO.md or the
-  docstring as "measured at this point" or rewrite it in the final round)
-- Attribution of the residue (I put all three candidates on the producer side; one was on the
-  consumption side, which would have sent the next person at half the problem)
-- **Do not write someone else's measurement as your own.** This flip side is about "prose I
-  wrote is unverified until run", but the path most often missed is **a number sourced from a
-  reviewer**. In PR #55, commit `0d444c2` reproduced a reviewer's "30 commits, 26 of them DONE"
-  verbatim; measuring it myself gave **71 / 42 / 6** — all wrong. Cite the source explicitly,
-  or re-measure before writing
-
-**Right after you write a sentence, execute it.** Numbers, rule ids, compiler diagnostics, and
-"X catches this" are all executable claims. If you have not run it, do not write it.
+**Sites a test cannot reach are real and the check does not cover them**: a commit message, and a
+prompt assembled at runtime. For those the only moves are to remove the statement or to make it
+derived; say in the commit which sites you could not couple. **Check before assuming a site is out
+of reach** — an issue or PR body can be edited (`gh issue edit --body`), and `docs/examples/*.yaml`
+is coupled today by `tools/tests/test_llm_config.py`.
 
 ## Procedure
 
@@ -231,227 +156,82 @@ Leave the enumeration in the commit message or TODO.md. The next round's reviewe
 looking to break it.
 
 **When the gate reads the source text rather than the meaning of an input (validators and
-parsers), the surface is a different one.** The exec/env/argv surface above is the MCP
-capability gate's and barely applies to the Fortran-reading gates in
-`validate_pipeline_semantics.py`. What you inventory there is **the spelling variation the
-language permits**:
+parsers), the surface is a different one** — it is **the spelling variation the language
+permits**, and writing out each grammar is the losing line. Close the family at once by
+**inverting the polarity: do not parse statements that start with a keyword; take every identifier
+that appears in them to the safe side.** The concrete spellings (keywords are not reserved words,
+the optional space in a two-word keyword, omitted `::`, statement labels, the 18 attribute-bearing
+forms) and the boundary note that governs them are in `references/source-text-surface.md`.
 
-- **Keywords are not reserved words.** A variable may be named `module` / `parameter` /
-  `contains` / `endmodule`. Every rule that treats "a statement starting with a keyword" as
-  structure breaks on this
-- **The space in a two-word keyword is sometimes optional** (F2008 Table 3.1). `selecttype` /
-  `endsubroutine` / `doubleprecision` are legal as one word. Sweep every `\s+` you wrote (some
-  forms such as `abstractinterface` are not legal, so **ask the compiler** to settle each one)
-- **`::` may be omitted** (`integer ncomp`, `public ncomp`, `enumerator red`). Check that the
-  two spellings of one statement are not treated differently
-- **A statement label may precede any statement** (`10 contains`, `100 use m`, `20 subroutine
-  f(x)`)
-- Attribute-bearing statements have 18 forms without `::` (`common` / `dimension` /
-  `equivalence` / `data` / `namelist` / bare `pointer` …). **Writing out each grammar is the
-  losing line** — close them all at once by inverting the polarity: do not parse statements
-  that start with a keyword; take every identifier that appears in them to the safe side
+When a rule derives its safety from an enumeration, **write a test that kills each element of the
+enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in no
+other test.
 
-This checklist names concrete spellings of one target language, which is knowledge
-`docs/BACKEND_BOUNDARY.md` keeps out of the neutral core. It is here because the gates it warns
-about are in `validate_pipeline_semantics.py`, and it goes when the source-reading area on the
-TODO ledger goes. Two things about that are worth stating rather than implying. Nothing measures
-this file: `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds this
-kind of growth elsewhere does not read it at all. And the debt is **new to the repository**, since
-until this branch these files lived in one operator's home directory. Most of it is not in this
-checklist, either: the majority of the sampled tokens under `.claude/skills/` are in episodes and
-identifier names, in both skills, and `metdsl-review-loop` carries some while having no checklist
-at all. TODO.md's development-documentation entry holds the measurement and the command that
-reproduces it — do not quote a figure from here, because every edit to these files moves it.
+The five surfaces that are none of exec / env / argv / FS / evidence paths and none of the
+spelling variation. Each is one question; the episodes, the version tables and the measurement
+recipes are in `references/input-surfaces.md`:
 
-When a rule derives its safety from an enumeration, **write a test that kills each element of
-the enumeration by mutation** (round 0 in `metdsl-review-loop`). A missing element shows up in
-no other test.
-
-**Surface 5: whether caller-controlled data is mixed into the classification channel the
-verdict reads.** There is one surface that is none of exec / env / argv / FS / evidence paths,
-and none of the spelling variation. **The values that classify and route a gate failure**
-(marker strings, failure_category, reason, excerpt) — **where are they read from**? If they
-come from scanning output text, and that text embeds data whose content a caller decides
-(**file names, identifiers, or paths the leaf chose**), the classification is forgeable.
-
-L174 was broken three rounds running. The gate scanned the validator's stdout for
-`[fortran-structure-unavailable]` and, on finding it, classified the failure as "this machine
-has no parser" = terminal. But violations embed **a file name the leaf chose**, in the form
-`f"{model_file}: ..."`. Writing a model named `[fortran-structure-unavailable]_model.f90` was
-therefore enough to turn a naming slip into "machine failure", and **a failure that should have
-been warm-retried killed the whole run**.
-
-Each fix narrowed the scan, and **each was broken by one byte**:
-
-| Version | Test | How it broke |
-|---|---|---|
-| 1 | marker anywhere in the output | `[marker]_model.f90` |
-| 2 | marker at start of line | `x\n[marker]_model.f90` (newline in the path) |
-| 3 | `- ` + marker at start of line | `x\n- [marker]_model.f90` |
-| 4 | **exit code** | unbreakable (the leaf cannot write it) |
-
-(v5 closed the twin marker `[stale-dependency-ir]` the same way — see below.)
-
-**Rule**: if a classification comes from scanning text, check whether caller-derived data
-enters that text. If it does, **change the channel rather than narrowing the sample** — exit
-code, exception type, a dedicated field, a sidecar. Each of these is written by the side that
-knows and cannot be written by the caller. This is the classification-channel version of
-`metdsl-review-loop`'s "when a pin keeps being broken in a new shape, move the definition to
-one place".
-
-The same shape usually exists several times in the same repository. In L174 the twin survived
-on `[stale-dependency-ir]`, and two further sites — post_execute and pre_judge — **scanned
-neither marker**, so a machine failure arrived there as a warm retry no leaf could converge on.
-Once you find one, **count every site that makes the same decision**. At three or more, change
-the channel design instead of fixing them individually.
-
-**The twin was closed the same way (TODO:269, 2026-08-21) — as v5 of the table above, and the
-follow-through is the part worth copying.** The channel is the violation's TYPE
-(`StaleDependencyIRViolation(str)`, wrapped at the single emit site) mapped by `main()` to a
-dedicated exit code: a `str` subclass keeps the message byte-identical, so no existing message
-pin moved. Two things that cost time:
-
-- **A type channel dies silently on a list rebuild.** `[str(v) for v in violations]`, a JSON
-  round-trip, or a `sorted(...)` that constructs new strings drops it back to the generic code.
-  Trace the container from the emit site to the decision, and put the witness in a test that
-  drives the **real CLI in a real subprocess** — a helper-level assertion stays green while
-  production degrades.
-- **Counting the sites is not the same as answering them.** Six conductor readers made this
-  decision; four were changed and two were unreachable by construction. The unreachable pair
-  still got a comment, because the next reader cannot tell "deliberately not classified" from
-  "missed" — and prove unreachability with a call-graph closure, not by reading the file.
-
-**Surface 6: if the check tells the reader "do this to fix it", what else does that remedy
-rewrite?** If surface 5 is the read-side question, this is its write-side twin. Wherever a
-ratchet, baseline, or allowlist says "on failure, run this command to update", check that the
-command does not also rewrite the pin.
-
-In PR #66 the failure message for a sample (a token-count baseline) instructed the reader to
-run `--write-baseline`, and that command wrote **both the sample and the pin** (the bypass
-import allowlist). A pin described in three places as "a module removed from the list cannot
-quietly come back" **was regenerated by following the instructions**. Regeneration is not rare:
-a commit that removes a single token demands it, so normal operation hits it.
-
-It then **recurred in three stages**: separating the allowlist into its own file → now the
-**scan range** was washed by the same path (the range was only visible through the baseline) →
-pinning the range and the class **name** → now the class's **branches** were washable (dropping
-`\bgcc\b` together with its probe removed 13 occurrences and went green after one regenerate).
-
-**Rule**: never let a pin and the command with authority to loosen it **live in the same file
-or the same procedure**. And pin the rule, not the result the rule produced (pinning results
-makes ordinary work fail and teaches the habit of regenerating without reading the rule).
-
-This surface asks what a remedy REWRITES. **A remedy is also READ, by a person or a leaf**, and
-the two rules for that — order the causes by reachability, and never let it be followable by
-half — are in §3 "Decide the failure's attribution", because they are about the message a
-failure hands back. Open both when you write one.
-
-**Surface 7: when you say you closed a configuration surface, what else does that tool read
-besides configuration files?** The six above are about inputs reaching a gate; this one is
-about **the side that launches an external tool**. **A flag that narrows configuration sources
-(`--setting-sources`, `--config`) governs configuration files and nothing else.** Whatever else
-the tool reads — auto-injected memory, environment variables, files auto-discovered from the
-cwd, remote configuration fetched at startup — stays outside the flag.
-
-Hit for real in PR #72: I wrote that `claude --setting-sources project` closed the leaf's
-configuration surface, but **auto-memory is not a configuration file**, so the operator's
-`~/.claude/.../memory/MEMORY.md` **kept being injected into the leaf's first user message**
-(past PRs, open issues, standing instructions to the operator). Environment variables
-(`ANTHROPIC_BASE_URL` / `ANTHROPIC_MODEL`) passed through just as freely, so a different model
-can be run with every flag set. **The doc that said "closed" made the reader read closure over
-things that were not closed.**
-
-- **Do not conclude from the flag. Capture what the process actually received and count it.**
-  For an LLM CLI, point `ANTHROPIC_BASE_URL` at a local HTTP server, save the request body and
-  return 400 (**unbilled**, and it yields both the injected strings and the byte delta).
-  "Given what the flag means, that cannot reach it" is the same inference shape as rule 1's
-  "impossible"
-- **Look only at paths that are already closed and you will never see it.** This hole stayed
-  invisible for so long because the pure leaf was closed from the start **by a different flag**
-  (`--safe-mode`). **When several paths claim closure, observe each path** — one being closed
-  for another reason structurally hides the hole in the other
-- **The checkout you observe from is itself a confounder. Until you take a control, you cannot
-  say which way it falls.** A development checkout carries an uncommitted
-  `.claude/settings.local.json` (untracked; if it is in a global gitignore it does not even show
-  in `git status`), so when observing the permission layer **take a clean `git worktree`
-  checkout as a control**. Here both gave the same verdict, and the three entries that exist
-  only locally (`Bash(patch *)` / `Bash(jq --version)` / `Bash(fortitude --version)`) all three
-  came back `This command requires approval` even in the development checkout, which lets me
-  write that **`--setting-sources project` does not read `settings.local.json`**. **The
-  inference at the start of the observation was the opposite** — I read it as "it was allowed
-  because local is in effect". Without the control, that error would have become the
-  conclusion. **Do not decide from one entry**: with a single probe you cannot distinguish it
-  from "that spelling simply did not match a prefix rule"
-- **The same harness measures verdicts, not just injection.** Return a synthetic `tool_use` in
-  the first response and read the `tool_result` in the second request body: that is **the
-  permission layer's actual verdict**, unbilled. **Mix in one control that must be refused, to
-  show first that the layer is alive** — without it, "everything passed" is indistinguishable
-  from "the layer was dead"
-- **A closure claim names the surface it closed.** Not "closed the configuration surface" but
-  "**closed the configuration-file surface**; environment and auto-memory are separate and
-  remain open". Drop the surface name and the reader takes the widest meaning
-
-**Surface 8: the place you created for isolation is an input to that tool.** If surface 7 is
-"what stays outside the flag", this is the shape where **what you built to make the flag
-effective** becomes a new input surface. Create a private configuration dir to confine a tool,
-make it writable, and **everything that tool reads from that dir** is a wholly new injection
-surface.
-
-Hit in issue #63. To cut the leaf off from the operator's `~/.claude`, I created a
-per-orchestration private `CLAUDE_CONFIG_DIR` and bound it rw. But under `--setting-sources
-user` that dir's `CLAUDE.md` is injected as "the user's personal global instructions", and its
-`agents/*.md` join the subagent roster (both measured). Worse, **one home is shared by every
-leaf in the run**. So a `generate` leaf that writes `<home>/CLAUDE.md` has the later
-`validate.judge` leaf read it as instructions — **a forged certification with zero trace in the
-artifacts**. Under `--setting-sources project` the same file was inert, so **the change made to
-close a path opened a new one**.
-
-- **Check**: once you create an isolation target, enumerate what the tool **reads** from that
-  dir, separately from what it **writes**. The write enumeration (a state allowlist) is about
-  availability; the read enumeration is about security. You need both
-- **Polarity**: block the read side with a denylist and any name the tool adds in its next
-  version becomes a silent hole. **Bind the dir ro and allowlist only the writable places**, so
-  unknown names fall on the inert side. Issue #63's allowlist was built **by measurement** (run
-  one agentic leaf and diff the tree). The first version, measured with a tool-less leaf, missed
-  2 of 6 — **the allowlist is short unless the kind of leaf you measure matches production too**
-- **Measure and state the cost of the polarity**: going ro breaks whatever the tool writes
-  atomically (the lock-dir plus temp-file pattern directly under the home). In issue #63 the
-  `.claude.json` update fails while transcript, resume, and MCP calls survive — **measured**, then
-  accepted. Do not settle for "it should not break"
-- **Decide shared vs per-leaf first**: the severity above comes entirely from one home being
-  shared by every leaf. Split per leaf and the injection surface closes on itself. If you choose
-  sharing, write into the design the sentence that **a write to the shared object is an input to
-  the other leaves**
-
-**Surface 9: "it moved under something the other side already covers" is a claim about a
-CONFIGURATION, and it holds only for the configurations you enumerated.** Surfaces 7 and 8 are
-about what a flag leaves open and what an isolation dir lets in. This one is the reassuring
-version of the same mistake: you move a protected thing so that an EXISTING rule covers it, and
-write that the closure came for free.
-
-Hit on PR #86. The isolated backend homes moved under `operator_secret_root()`, which the Bash
-read guard refuses unconditionally, so enforcement did appear to come for free and only the
-attribution looked resolver-dependent. But the location is relocatable by an environment
-variable, and with it pointed outside that root a leaf could read a SIBLING orchestration's
-transcript — measured — while three documents asserted the closure with no mention of the
-condition. Worse, one of those documents was a docstring I had written "MEASURED, both
-directions" next to, having measured only the default. Codex found it; four subagent rounds had
-not.
-
-- **Enumerate what can MOVE the thing before writing that it is covered**: an environment
-  override, a config key, a CLI flag, a symlink, a different `$HOME`. Each is a configuration in
-  which the claim must be re-checked, and the check is one execution each
-- **The fix that survives is one resolver, not one sentence.** Documenting the condition leaves
-  the reader to remember it. Moving the resolution into the module that owns the protected-root
-  list, and having the writer import it, makes the tree that gets created the tree that gets
-  guarded by construction. That is the same arrangement the repo already uses for
-  `backend_credential_home_paths` — when a rule keeps needing a caveat, look for a
-  neighbouring pair that already solved it
-- **Attribution is not enforcement, and adding a longer protected root changes it silently.**
-  Roots are sorted longest-path-first, so a new entry beneath an existing one takes over the
-  block message for everything under it. The read stays refused; the id in the message changes,
-  and any test or document that named the old id becomes false. Check both, and keep a control
-  read that must still be attributed to the root above
+- **Surface 5 — is caller-controlled data mixed into the classification channel the verdict
+  reads?** If a marker string, `failure_category`, reason or excerpt is obtained by scanning
+  output text, and that text embeds data whose content a caller decides (file names, identifiers,
+  paths the leaf chose), **the classification is forgeable**. L174 was broken three rounds running
+  and each narrowing was defeated by one byte. **Rule: change the channel rather than narrowing
+  the sample** — exit code, exception type, a dedicated field, a sidecar; each is written by the
+  side that knows and cannot be written by the caller. This is the classification-channel version
+  of `metdsl-review-loop`'s sign "the pin was broken in a different shape every time — move the
+  definition to one place". Then **count every site that makes the same
+  decision** (there were six, and two further sites scanned neither marker), and at three or more
+  change the channel design instead of fixing them individually. Two follow-through traps: **a
+  type channel dies silently on a list rebuild** (`[str(v) for v in …]`, a JSON round-trip, a
+  `sorted(...)`) so trace the container from emit site to decision and witness it through the
+  **real CLI in a real subprocess**; and **counting the sites is not answering them** — a site you
+  leave unchanged needs a comment saying it is deliberate, with unreachability proved by call-graph
+  closure rather than by reading
+- **Surface 6 — if the check tells the reader "do this to fix it", what else does that remedy
+  rewrite?** Wherever a ratchet, baseline or allowlist says "on failure, run this to update",
+  check that the command does not also rewrite the pin (PR #66: a pin described in three places as
+  unremovable **was regenerated by following the instructions**, then recurred in three stages as
+  each fix left a wider thing washable). **Rule: never let a pin and the command with authority to
+  loosen it live in the same file or the same procedure**, and pin the rule, not the result the
+  rule produced. A remedy is also READ — the two rules for that (order the causes by reachability;
+  never let it be followable by half) are in §3, because they are about the message a failure hands
+  back. Open both when you write one
+- **Surface 7 — when you say you closed a configuration surface, what else does that tool read?**
+  **A flag that narrows configuration sources (`--setting-sources`, `--config`) governs
+  configuration files and nothing else**; auto-injected memory, environment variables,
+  cwd-discovered files and startup fetches stay outside it (PR #72: the operator's `MEMORY.md` kept
+  reaching the leaf's first user message under a flag documented as closing the surface).
+  **Do not conclude from the flag — capture what the process actually received and count it**
+  (point `ANTHROPIC_BASE_URL` at a loopback server, save the request body, return 400: unbilled,
+  and the same harness reads back the permission layer's real verdicts if you return a synthetic
+  `tool_use`; **mix in one control that must be refused**, or "everything passed" cannot be told
+  from a dead layer). **When several paths claim closure, observe each path** — one closed for
+  another reason structurally hides the hole in the other. **Take a clean `git worktree` as a
+  control**, because a development checkout's untracked `settings.local.json` is a confounder, and
+  **do not decide from one entry**. **A closure claim names the surface it closed** — not "closed
+  the configuration surface" but "closed the configuration-**file** surface"
+- **Surface 8 — the place you created for isolation is an input to that tool.** Create a private
+  configuration dir to confine a tool, make it writable, and everything the tool reads from that
+  dir is a new injection surface (issue #63: one home shared by every leaf meant a `generate` leaf
+  could write instructions the later `validate.judge` leaf reads — **a forged certification with
+  zero trace in the artifacts**). **Enumerate what the tool READS from that dir separately from
+  what it WRITES** — the write enumeration is about availability, the read enumeration about
+  security. **Bind the dir ro and allowlist only the writable places**, so unknown names added by
+  the tool's next version fall on the inert side, and **build that allowlist by measurement with
+  the kind of leaf production runs** (measured with a tool-less leaf it missed 2 of 6).
+  **Measure and state the cost of the polarity**, and **decide shared vs per-leaf first** — the
+  severity came entirely from sharing
+- **Surface 9 — "it moved under something the other side already covers" is a claim about a
+  CONFIGURATION**, and it holds only for the configurations you enumerated (PR #86: the covering
+  root is relocatable by an environment variable, and with it moved a leaf could read a sibling
+  orchestration's transcript, while three documents asserted the closure unconditionally).
+  **Enumerate what can MOVE the thing before writing that it is covered**: an environment
+  override, a config key, a CLI flag, a symlink, a different `$HOME` — each is one execution.
+  **The fix that survives is one resolver, not one sentence**: move the resolution into the module
+  that owns the protected-root list so the tree that gets created is the tree that gets guarded.
+  And **attribution is not enforcement** — roots are sorted longest-path-first, so a new entry
+  beneath an existing one silently takes over the block message; keep a control read that must
+  still be attributed to the root above
 
 ### 2. Confirm the path production actually takes
 
@@ -464,76 +244,57 @@ auto-discovery side went straight through).
 - Confirm the **position** of the check too. Placed after a skip or an early return, it is inert
   under that condition
 - Check whether two places read the same fact, via `references/dual-read-pairs.md`
+- **If what you are adding is a conductor in-process (deterministic) substep, work
+  `references/deterministic-substep-wiring.md` before writing anything** — it lists the sites that
+  special-case one, across `tools/workflow_conductor.py` and `tools/orchestration_runtime.py`, and
+  every miss recorded there left the unit suite green while the real flow failed closed
 
 **There are two kinds of position. Look only at control flow inside the function and you miss
 one.**
 
 - **Inside the function**: is it after the skip / early return (above)
 - **Inside the pipeline**: **does it run before the side that reads the value?** PR #57 put the
-  normalization in the "right function", but `record_launch` called
-  `prepare_launch_request_payload` (which **renders** the prompt, and the rendering reads
-  `agent_role`) **first**. The normalization ran 15 lines later, **the symptom did not go away**,
-  and it newly created an **audit-trail mismatch**: the persisted request normalized, the prompt
-  next to it rendered un-normalized. Worse than before the fix
-- **There is one way to find this. Do not poke the validator in a unit test; drive the
-  production entry point end to end and assert on the final product** (the rendered prompt, the
-  persisted JSON). PR #57's first test called `_build_task_card` itself, so it went green while
-  nobody looked at the prompt that actually ships
+  normalization in the "right function", but the caller had already **rendered** the prompt from
+  the un-normalized value 15 lines earlier: the symptom did not go away and it newly created an
+  **audit-trail mismatch** — worse than before the fix
+- **There is one way to find this. Do not poke the validator in a unit test; drive the production
+  entry point end to end and assert on the final product** (the rendered prompt, the persisted
+  JSON)
 
 ### 3. Decide the failure's attribution
 
-Every refusal you add gets routed to someone as their fault. The criteria and the known
-branches are in `references/failure-routing.md`. The essentials: **what the leaf can fix is a
-content failure; what the conductor, the IR, or the environment caused is a transport
-fail_closed**. Name exceptions by type; do not catch at the width of `except ValueError` (that
-burns the leaf's retry budget on the conductor's own defects).
+Every refusal you add gets routed to someone as their fault. The criteria and the known branches
+are in `references/failure-routing.md`. The essentials: **what the leaf can fix is a content
+failure; what the conductor, the IR, or the environment caused is a transport fail_closed**. Name
+exceptions by type; do not catch at the width of `except ValueError` (that burns the leaf's retry
+budget on the conductor's own defects).
 
-**Once attribution is decided, decide when it should surface.** Attribution can be right while
-the **moment** is wrong, and the attribution discussion alone never surfaces that. In L174 a new
-parser dependency (two Python packages) missing from a machine makes the gate fail closed and
-go terminal — attribution "operator" is correct. But it surfaces **at the first Generate node's
-gate, after lint and syntax passed, in the middle of a billed run**. **The right failure at the
-wrong moment.**
-
-- **Do not fail mid-run on something detectable at launch.** The precedent exists
-  (`REQUIRED_CLI_TOOLS` in `tools/run_workflow.py`, whose comment even states the reason:
-  "Missing any one fails the run before init, so agents never hit a partial-failure state")
-- Order of decisions: **(a) whose fault is it → (b) where is the earliest place it can be
-  detected reliably**. If (b) is earlier than the gate, **keep the gate's fail-closed as a
-  backstop** and add the earlier check as well
-- Eight subagents across four rounds never raised this; **Codex raised it on its first pass**.
-  Dependencies, preflight, and operations are surfaces subagents structurally do not look at (see
-  the Codex section of `metdsl-review-loop`)
+**Once attribution is decided, decide when it should surface.** Attribution can be right while the
+**moment** is wrong. **Do not fail mid-run on something detectable at launch** — the precedent is
+`REQUIRED_CLI_TOOLS` in `tools/run_workflow.py`. Order of decisions: **(a) whose fault is it →
+(b) where is the earliest place it can be detected reliably**; if (b) is earlier than the gate,
+add the earlier check and **keep the gate's fail-closed as a backstop**. (Eight subagents across
+four rounds never raised this; Codex raised it on its first pass — dependencies, preflight and
+operations are surfaces subagents structurally do not look at.)
 
 **The cause a refusal message names must match the actual set of causes.** For a fail-closed,
-failing correctly is not enough. If the party that failed is a leaf, it is closed only once the
-message is **an instruction under which a warm retry converges**. L174's refusal asserted **a
-single cause** ("the cause is a variable named with a keyword; rename it"), and once a
-label-induced refusal was added, that input had no rename target at all = **an instruction that
-cannot converge in principle**, handed back to the leaf (flagged two rounds running).
+failing correctly is not enough: if the party that failed is a leaf, it is closed only once the
+message is **an instruction under which a warm retry converges** (L174 handed back an instruction
+that could not converge in principle).
 
-- When the causes grow, **grow the message**. Do not assert "the measured cause is X" in the
-  singular
-- For parsers, say that **the reported position drifts** (error recovery reports the head of the
-  program unit rather than the actual cause). Do not let it read as "the cause is here"
-- If the enumeration does not close, **say so and describe the shape to look for** ("an
-  identifier or label sits where the parser expects structure")
-- **Order the causes by REACHABILITY, most reachable first** — this one is not only about a
-  leaf: it applies to any remedy a check prints, an operator's included, and it is surface 6's
-  question asked of the message instead of the command. Issue #71's roster check offered
-  a vendor cause ("the CLI stopped offering this tool, record it in the absent-on-CLI seam")
-  when the shortest path to that failure was a one-line `permissions.deny` in the leaf
-  configuration the probe itself seeds. Following the printed remedy subtracts the tool from
-  the required set permanently: **the check goes green by having been WIDENED rather than
-  satisfied**, which is surface 6's regenerate command delivered as prose
-- **A remedy must not be followable by HALF.** The same branch's `Glob` refusal ended
-  "Re-issue it against a granted directory, or drop the leading `/` and pass the directory as
-  `path`" — read as two options. A leaf doing only the first half is ALLOWED by the hook (rc=0,
-  measured) and the tool then matches nothing, because a relative pattern is anchored at the
-  repository root while the search is confined to `path`. No refusal, no log line, nothing
-  below that could produce one. **Silent empty is the worst answer a boundary can give**: it is
-  indistinguishable from a true negative, so the leaf reports absence and stops. When a remedy
-  is a conjunction, say so, and say what doing one half produces
+- When the causes grow, **grow the message**. Do not assert "the measured cause is X" in the singular
+- For parsers, say that **the reported position drifts**; do not let it read as "the cause is here"
+- If the enumeration does not close, **say so and describe the shape to look for**
+- **Order the causes by REACHABILITY, most reachable first** — this applies to any remedy a check
+  prints, an operator's included, and it is surface 6's question asked of the message instead of
+  the command. Issue #71's roster check named a vendor cause when the shortest path was a one-line
+  `permissions.deny`, and following the printed remedy **subtracts the tool from the required set
+  permanently: the check goes green by having been WIDENED rather than satisfied**
+- **A remedy must not be followable by HALF.** A leaf doing only the first half of "re-issue it
+  against a granted directory, or drop the leading `/` and pass the directory as `path`" is ALLOWED
+  by the hook (rc=0, measured) and the tool then matches nothing. **Silent empty is the worst
+  answer a boundary can give** — indistinguishable from a true negative, so the leaf reports
+  absence and stops. When a remedy is a conjunction, say so, and say what doing one half produces
 
 ### 4. Tests pin properties
 
@@ -544,29 +305,20 @@ cannot converge in principle**, handed back to the leaf (flagged two rounds runn
   actually happened (4 of 5 sites)
 - **Keep one test that pushes a production payload through the real validator.** The conductor's
   tests mock each tool function, so they never traverse the validation layer
-- **Do not call a sample a pin.** A test placed **outside** the place that defines the set
-  cannot claim set identity — it can only sample rejections. **Write in the docstring what is
-  pinned and what is sampled.** In PR #55 all three rounds said "pinned" and all three were
-  broken (a three-name denylist → a substring → "a file, not a directory"). If the predicate has
-  several branches (`==` / `startswith` / trailing slash), **each branch needs its own probe**
-
-- **If one string states two rules, a substring pin is necessarily true via the other one.**
-  This repo's remedy, hint, and contract texts fold **two rules into one message** ("write
-  artifacts like this, write scratch like that"). Aim `assertIn("Write tool", reason)` at that
-  and rule A's sentence satisfies rule B's pin. PR #76 hit this **four times on one branch**:
-  `WRITE_HINT` (the artifact sentence also contains "Edit/Write tool", so emptying the temp
-  sentence stayed green) / the positive half of the document-inspection test (**699 characters
-  later on the same line**, the artifact sentence) / the managed-artifact refusal (green against
-  `origin/main`'s "Bash may only write scratch" wording) / one more. All four times I wrote
-  "fixed" and it recurred in a different shape the next round
-  - **The remedy is the same every time: split on the half the rule governs, then read**
-    (`WRITE_HINT.split("For temp files")[1]` / `reason.split("allowed_tmp_root")[1]`)
-  - **Decision procedure**: before writing a pin, read the whole message and count whether the
-    same word is used in the explanation of another rule. One use and the substring pin does not
-    hold
-  - **Confirmation runs to "the mutation makes it fail".** Here too, run it against
-    `origin/main`'s wording and see it actually fail — "I asserted the new wording, so it is
-    pinned" is inference
+- **Do not call a sample a pin.** A test placed **outside** the place that defines the set cannot
+  claim set identity — it can only sample rejections. **Write in the docstring what is pinned and
+  what is sampled**, and if the predicate has several branches (`==` / `startswith` / trailing
+  slash), **each branch needs its own probe** — PR #55 said "pinned" three rounds running and was
+  broken three different ways, the third being "a file and **not a directory**", a branch nobody
+  had probed
+- **If one string states two rules, a substring pin is necessarily true via the other one.** This
+  repo's remedy, hint and contract texts fold two rules into one message, and PR #76 hit this four
+  times on one branch. **Remedy: split on the half the rule governs, then read**
+  (`WRITE_HINT.split("For temp files")[1]`). **Decision procedure**: before writing a pin, read the
+  whole message and count whether the same word is used in explaining another rule — one use and
+  the substring pin does not hold. **Confirmation runs to "the mutation makes it fail"**: run it
+  against `origin/main`'s wording and see it actually fail. Episode:
+  `references/judgment-episodes.md` §Appendix
 
 ### 5. Run the mutation check before committing
 
@@ -605,6 +357,9 @@ Signs to look for:
 - **You hesitated over failure attribution, or it fit no existing category** →
   `references/failure-routing.md`
 - **A verification step was missing, or a command had gone stale** → `references/verification.md`
+- **You added or changed a conductor in-process (deterministic) substep** →
+  `references/deterministic-substep-wiring.md`
+- **A new input surface, or a new episode of an existing one** → `references/input-surfaces.md`
 - **The mutation check gave a false positive, or missed something** →
   `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`
 - **The skill did not fire when it should have, or fired when it should not** → `description`
@@ -613,7 +368,8 @@ Signs to look for:
   elsewhere"
 - **A trap not written here consumed your time** → a candidate for addition. But check that it
   **is not a copy of a canonical source** (rule content belongs to the repo's docs; only the
-  procedure and traps written nowhere else belong here)
+  procedure and traps written nowhere else belong here), and put the EPISODE in the reference
+  file and the RULE here — that split is what keeps this file loadable
 - **Memory** (`feedback_enforcement_change_skill.md`) is a pointer only. Wanting to add content
   there means the skill is what needs updating
 

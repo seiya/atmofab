@@ -1,6 +1,6 @@
 # Workflow scaling redesign roadmap
 
-Status: **proposed** (no item below is implemented). Recorded 2026-07-06 from a workflow review against the measured cost baseline. This document is the canonical record of the redesign direction; per-item detailed designs are authored separately when an item is picked up.
+Status: **partially implemented**. Recorded 2026-07-06 from a workflow review against the measured cost baseline. This document is the canonical record of the redesign direction; per-item detailed designs are authored separately when an item is picked up. R2 (`tools/verdict_evaluator.py`) and R5 (exemplar injection, `7302b52`) have landed; R1, R3, R4, R6 have not.
 
 ## Purpose
 
@@ -45,7 +45,7 @@ This generalizes the established host-authored `src/Makefile` decision (correct-
 
 ### R2. Deterministic per-test verdict
 
-Formalize each test's pass rule (`tests.md` `pass_when` / `judgment`) into a machine-evaluable predicate in `spec.ir.yaml` during Compile. `validate.execute` computes `verdict.json#per_test` deterministically from `diagnostics.json` and the predicates at the end of its in-process run (implementation note: moved from the originally-proposed `validate.post_judge` to `execute` so a predicate failure short-circuits the judge spawn entirely — see `deterministic_followups.md` G8); the judge leaf authors `semantic_review.json` only. This removes the judge-nondeterminism failure class (`xfail_verdict_contract_gap`) and the per-test schema-fabrication class, and is a precondition for scale: probabilistic judge variance multiplied by thousands of nodes is not acceptable. Continues the G6/G7 trajectory.
+**Landed** (`tools/verdict_evaluator.py`). Formalize each test's pass rule (`tests.md` `pass_when` / `judgment`) into a machine-evaluable predicate in `spec.ir.yaml` during Compile. `validate.execute` computes `verdict.json#per_test` deterministically from `diagnostics.json` and the predicates at the end of its in-process run (implementation note: moved from the originally-proposed `validate.post_judge` to `execute` so a predicate failure short-circuits the judge spawn entirely — see `deterministic_followups.md` G8); the judge leaf authors `semantic_review.json` only. This removes the judge-nondeterminism failure class (`xfail_verdict_contract_gap`) and the per-test schema-fabrication class, and is a precondition for scale: probabilistic judge variance multiplied by thousands of nodes is not acceptable. Continues the G6/G7 trajectory.
 
 ### R3. Oracle-free verification stack
 
@@ -67,7 +67,7 @@ Split the IR into a hardware-neutral semantic layer (`case` / `algorithm` / `io_
 
 ### R5. Self-grown exemplar corpus
 
-Premise 2 forbids human-prepared references, not machine-certified precedent. The conductor injects, per `(family, spec_kind, language, target)`, a previously certified model+checks source as a rendered exemplar block in the `generate.generate` launch prompt (same mechanism as `<dependency_facts>`; certified-source selector already exists). Exemplars trade cheap, cacheable input tokens for expensive thinking tokens and raise first-attempt pass rate; the corpus grows with every certified node (self-bootstrapping).
+**Landed** (exemplar injection, `7302b52`). Premise 2 forbids human-prepared references, not machine-certified precedent. The conductor injects, per `(family, spec_kind, language, target)`, a previously certified model+checks source as a rendered exemplar block in the `generate.generate` launch prompt (same mechanism as `<dependency_facts>`; certified-source selector already exists). Exemplars trade cheap, cacheable input tokens for expensive thinking tokens and raise first-attempt pass rate; the corpus grows with every certified node (self-bootstrapping).
 
 ### R6. Scaling substrate
 

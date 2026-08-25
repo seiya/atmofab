@@ -20,8 +20,12 @@ defect in the enforcement code, and a false or missing statement every round".
 
 Evidence for two of SKILL.md's stopping conditions — that "only prose remains" is a claim about
 severity, and that a disclosure round is worth running before stopping. **And for the limit of
-proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, one of them
-functional (a denylist environment that could send an unbilled probe to a real endpoint). Nobody
+proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, two of them
+functional — a denylist environment that could send an unbilled probe to a real endpoint, and a
+timed-out launch scored as a successful read, which would have reported the premise holding for a
+run where nothing launched. (This file said "one of them functional" from before the split, while
+`SKILL.md` described both incidents and called them functional defects, plural; the count is
+corrected to two on both sides. Five were found in total, two of them described.) Nobody
 had been asked to review it, because the briefs named the enforcement code — so "a reviewer with
 no exclusions returns zero functional defects" was true of the files anyone looked at. A
 committed instrument is review surface.
@@ -159,3 +163,104 @@ minutes, "no actionable correctness regression on the changed production paths")
 premise that Codex always finds something. **But the same round's two subagents produced
 unwitnessed mechanisms, over-refusals, and the abandoned mirror, so clean was not evidence of
 convergence.** Treat it as one independent signal and do not launch a second time.
+
+## issue #40 / PR #41 — a distinct convergence pattern: only unmeasured prose is left
+
+A 14-site print-statement replacement ran 14 subagent review rounds. **Code defects were gone by
+round 4.** Rounds 5-14 found the same class every time, in a different sentence: a commit message,
+code comment, or doc line **asserting something about behaviour the PR never touched and no test
+covers.** The same two sentences were wrong in four DIFFERENT ways across four consecutive rounds
+(what happens to a dead reader before init, what category a specific failure terminalizes as, how
+many events elapse before the next flush) — a moving target, not one typo fixed four times.
+
+This is a class distinct from "findings inside the previous round's fix" (PR #57, #68, #70): here
+the class does not descend at all across rounds, because deleting a false claim about existing
+behaviour cannot itself introduce a new defect the way editing production code can. **The stopping
+rule this loop supplies**: once every remaining finding is "this prose asserts something
+unmeasured about code the PR does not touch," the fix is to DELETE the claim rather than to write
+a test proving it — a PR is not obligated to characterize behaviour it left alone, and a doc that
+tries anyway is one guess away from being the next round's finding.
+
+## The skill split itself (2026-08-25) — a loop whose findings were all in the compression
+
+Recorded here because this file is where a loop's history belongs, and because the loop that
+produced it found ~50 defects, nearly all introduced by the change being reviewed. Four rounds,
+plus round 0; no Codex (a change that ADDS checking machinery and is otherwise prose-centred is
+the skill's own non-launch case, so this branch could not use Codex as a convergence signal).
+
+**The class, round by round.** R1: content lost or distorted by compression, plus a vacuous new
+check. R2: the SAME class, larger — the round-1 deletion of a "duplicate" block had taken ten
+distinctive tokens out of the tree — plus a widened check that had loosened past its own
+argument. R3: a CENSUS instead of another opinion round, which turned the remainder into a list
+(9 weakened clauses, 8 reference-only imperatives, 1 absent rule, 7 absent evidence tokens, all
+closed) — and the blank-slate reviewer independently reported no rule had left the tree. R4:
+zero content findings; everything left was in the checking machinery's own witnesses, and a
+disclosure round found four operator-actionable clauses the census's instrument could not see.
+
+**What the loop is worth keeping for:**
+
+- **The instrument that ended it was the census, and its limit was the shape it enumerated.** It
+  extracted `**bold**` spans, so every rule dropped as a NON-BOLD TRAILING CLAUSE on a bold-headed
+  bullet was invisible to it — four of them, found afterwards by a disclosure round reading for
+  audience rather than for structure. A census bounds the remainder only within the shape it can
+  see; say what that shape is when you report one.
+- **Three defects were "the fix applied to one side of a pair".** The reporting-layer extraction
+  made for the orphan row and not for its twin; a depth guard added to the walk and not to the
+  corpus filter; a `scripts/` exemption whose argument covered helpers and whose implementation
+  covered the entry script. Each was found one round after the fix it belonged to.
+- **One sentence was corrected four times** ("five functional defects" → "one of them functional"
+  → the count left unedited beside a corrected parenthetical → "two of them functional"). Round 1
+  resolved the disagreement by adopting the reference file's number, which was the wrong side.
+  Reconcile against the OLDEST source, not the nearest one.
+- **Deleting duplicate prose needs the opposite polarity from writing it.** Restore by default and
+  subtract only what duplication is proven for: a 6-gram check said 42 sentences had no surviving
+  match, and the judgment that the instrument was crude, rather than the reading of its output,
+  cost a whole round.
+
+**The size measurement, as a historical record.** Command:
+`for f in .claude/skills/*/SKILL.md; do wc -c "$f"; done`, summed.
+
+| at | loaded-at-invocation total |
+|---|---|
+| `d8d48c7` (before the split) | 116,596 B |
+| `e2de95a` (the split) | 66,397 B |
+| `2cb9b84` (after three rounds of restoration) | 71,739 B |
+
+The property, which does not move: **every byte added back after `e2de95a` is material a reviewer
+measured as lost, and nothing pins the total** — the reachability check pins that a reference is
+reachable, not that the entry point stays small. A reader who needs today's figure runs the
+command.
+
+## Census practical notes: the episode behind each (restored 2026-08-25)
+
+These six were compressed to one line each in `SKILL.md` §"Stopping conditions" and their
+evidence was carried in the block deleted as duplicate in round 1 — wrongly: the block was a
+second spelling of the RULES, and these EPISODES existed nowhere else. Restored verbatim.
+
+- **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
+  "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
+  on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
+- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable —
+  `_require_axis` inside `provides`, and `LANGUAGES`'s `implemented_backend_ids`, which the
+  following filter subsumes — and the right response was a comment saying "a marker of intent,
+  not a live guard". The problem
+  is not the redundant call; it is that it **reads as a live guard**
+- **The census makes you doubt your own instrument too** — the verification test built from PR #67's
+  census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
+  instrument as well
+- **A corpus measurement does not prove vacuity.** In PR #68 a guard labelled unreachable from
+  "0 empty atoms / 151,633 logical lines / 876 files" did fire, because the scanner and the normalizer
+  **disagreed on the definition of blank** (gfortran's space/tab/FF vs Python's wider `\s`), so a
+  line of only U+00A0 survived. Vacuous may be claimed **only when unreachability is shown by
+  construction**; "not in today's tree" is corpus-dependent — and because the label invites
+  deletion, a wrong vacuous is worse than no label
+- **A census conclusion rots in one round; re-run it the round after you consume it** (PR #68's
+  "zero ratchet-only decisions" was falsified the next round). Record conclusions that survive
+  re-measurement, not the numeric breakdown — numbers always rot (the suite count was wrong four
+  times on that PR alone)
+- **When you replace an enumeration with a computation, witness the computation on a synthetic
+  tree.** In PR #68 the scan target became a reachability closure, and deleting the transitive
+  expansion entirely stayed all green: a test against real data confirms "today's graph happens to
+  be like this" and never observes the algorithm (cf.
+  `test_backend_boundary.py::ScannedSetTests`)
+

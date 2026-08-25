@@ -77,6 +77,9 @@ once first.
 
 ## Where Codex sees what subagents do not
 
+Issue #63 is the data point on the other side of "clean is not a stopping condition": both of its
+completed runs returned real defects, both in subagent blind spots.
+
 In PR #51 it caught in one pass what 17 subagent rounds had walked past. Not capability — **it did
 not share the premises I had handed over**. Hence: do not over-brief Codex on history either.
 
