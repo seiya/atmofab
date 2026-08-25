@@ -4170,6 +4170,31 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         self.assertIn("is authorized at", body)
         self.assertNotIn("was called without a 'path'", body)
 
+    def test_the_pattern_remedy_cannot_be_followed_by_half(self) -> None:
+        """Half a remedy returns an empty result with no diagnostic anywhere.
+
+        The refusal used to end "drop the leading '/' and pass the directory as 'path'",
+        which READS AS TWO OPTIONS. A leaf that does only the first half — `<repo>/spec/*`
+        with `path=docs` becomes `spec/*` with `path=docs` — is ALLOWED by this hook (the
+        second row asserts it, because that is why the text has to carry the warning: no
+        layer below can catch it) and the tool then matches nothing, since a relative
+        pattern is anchored at the repository root and the search is confined to `path`.
+        Silent empty is the worst answer a read boundary can hand a leaf: it looks like
+        "the files are not there", so the leaf reports absence instead of re-issuing.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "spec").mkdir(exist_ok=True)
+            code, body = self._run(
+                repo_root, "Glob", {"path": "docs", "pattern": f"{repo_root}/spec/*.md"})
+            self.assertEqual(code, 2, body)
+            self.assertIn("matches nothing SILENTLY", body)
+            self.assertIn("BOTH", body)
+            half, half_body = self._run(
+                repo_root, "Glob", {"path": "docs", "pattern": "spec/*.md"})
+        self.assertEqual(half, 0, half_body)
+
     def test_a_grep_pattern_is_a_content_regex_and_is_not_path_validated(self) -> None:
         """`Grep`'s pattern is content, not a path. Validating it as one would refuse a
         legitimate search for text that happens to look like a path escape — the
