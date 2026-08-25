@@ -180,6 +180,36 @@ Same reason as above, and one of this loop's own rules besides: the earlier form
 plus `git checkout -- .`, and `metdsl-review-loop` forbids `git checkout -- <path>` by name for
 discarding uncommitted work along with whatever it was meant to revert.
 
+## Tidying tangled commit history (no interactive rebase available)
+
+This environment has no `git rebase -i` / `git add -i` / `git add -p`. To split N tangled commits
+(several items touching the same file, build-then-remove churn mixed in) into per-item commits:
+
+1. **Take a safety ref and a fingerprint first.** `git branch -f backup-pre-tidy HEAD`,
+   `git rev-parse HEAD^{tree}`, `git diff origin/main | sha256sum`.
+2. `git reset --mixed origin/main` — HEAD and the index move to the base; the working tree stays
+   at the final state. `git diff` now shows the whole base→final difference.
+3. Stage per item: a file wholly owned by one item gets `git add <file>`. A shared file needs
+   **hunk selection** — build a partial patch from `git diff -U{ctx} -- <file>` filtered by the
+   `@@` old-start line, apply with `git apply --cached` (`-U0` + `--unidiff-zero` when two items'
+   changes sit only a few lines apart). Commit.
+4. **The trap:** staging part of a shared file shifts the OLD-START line numbers the next item's
+   hunks are selected by, because the index moved. Re-read `git diff -- <file> | grep '^@@'`
+   immediately before selecting each item's hunks. Appended (end-of-file) changes do not shift
+   earlier line numbers.
+5. Two items editing the same physical line cannot be hunk-split; fold to whichever item makes
+   more sense and say so in the commit message.
+6. A size threshold and the body it gates, when they land in different items: bump the threshold
+   in the item that first grows the file, to its FINAL value — later items then stay green too.
+7. **Verify, always.** `git diff backup-pre-tidy HEAD` must be empty (tree bytes identical); the
+   tree hash and net-diff sha from step 1 must match. Checkout each new commit and run the full
+   suite (bisectability). End on `git checkout main` — a detached HEAD left behind reads as an
+   uncommitted working-tree difference to the harness. Delete the backup ref only after the user
+   confirms.
+
+Tree-byte identity is what makes this mechanical rather than trusted: a `git diff` that comes back
+non-empty means a hunk was mis-assigned, and it says so immediately rather than at review time.
+
 ## Doc size ceilings
 
 Docs that enter a leaf's context have ceiling tests — but only the nine in the `_CEILINGS` table
@@ -340,6 +370,11 @@ section:**
   `docs/BACKEND_BOUNDARY.md` §Enforcement warns the ratchet itself can teach — regenerating
   without reading the rule. Record the debt and the reasoning instead, so the operator can
   overturn it.
+- **Pin what the rule MEANS, not the file list a run of it happened to produce.** PR #66's import
+  scanner pinned an enumerated set of scanned files; adding one ordinary new module then failed it
+  for a reason that had nothing to do with a boundary violation. A pin over a RESULT breaks on
+  every legitimate change to the result's shape and teaches "regenerate without reading" faster
+  than the ratchet itself does.
 
 **A ratchet failure is also a false KILL in a mutation sweep.** Deleting an identifier to test
 something else moves the count, so the ratchet fails and the mutant reads as killed for a reason

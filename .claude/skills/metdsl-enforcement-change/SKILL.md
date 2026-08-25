@@ -605,6 +605,8 @@ Signs to look for:
 - **You hesitated over failure attribution, or it fit no existing category** →
   `references/failure-routing.md`
 - **A verification step was missing, or a command had gone stale** → `references/verification.md`
+- **You added or changed a conductor in-process (deterministic) substep** →
+  `references/deterministic-substep-wiring.md`
 - **The mutation check gave a false positive, or missed something** →
   `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`
 - **The skill did not fire when it should have, or fired when it should not** → `description`

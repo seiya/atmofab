@@ -159,3 +159,20 @@ minutes, "no actionable correctness regression on the changed production paths")
 premise that Codex always finds something. **But the same round's two subagents produced
 unwitnessed mechanisms, over-refusals, and the abandoned mirror, so clean was not evidence of
 convergence.** Treat it as one independent signal and do not launch a second time.
+
+## issue #40 / PR #41 — a distinct convergence pattern: only unmeasured prose is left
+
+A 14-site print-statement replacement ran 14 subagent review rounds. **Code defects were gone by
+round 4.** Rounds 5-14 found the same class every time, in a different sentence: a commit message,
+code comment, or doc line **asserting something about behaviour the PR never touched and no test
+covers.** The same two sentences were wrong in four DIFFERENT ways across four consecutive rounds
+(what happens to a dead reader before init, what category a specific failure terminalizes as, how
+many events elapse before the next flush) — a moving target, not one typo fixed four times.
+
+This is a class distinct from "findings inside the previous round's fix" (PR #57, #68, #70): here
+the class does not descend at all across rounds, because deleting a false claim about existing
+behaviour cannot itself introduce a new defect the way editing production code can. **The stopping
+rule this loop supplies**: once every remaining finding is "this prose asserts something
+unmeasured about code the PR does not touch," the fix is to DELETE the claim rather than to write
+a test proving it — a PR is not obligated to characterize behaviour it left alone, and a doc that
+tries anyway is one guess away from being the next round's finding.

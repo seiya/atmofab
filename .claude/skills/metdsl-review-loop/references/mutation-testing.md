@@ -129,6 +129,31 @@ against `origin/main`'s wording, which only replacing the whole file revealed.
 - Put it in the reviewer launch prompt as well: PR #76's two reviewers built harnesses that abort
   on patch failure and caught two real application failures
 
+## A hand-built fixture can test a shape that does not exist (Z2 M-E)
+
+Hunk-level mutation cannot see this either, because nothing is broken — the mechanism runs
+against input that was never real. Hit twice in the same PR, found separately by a reviewer and
+by Codex.
+
+A function reading `orchestration_checkpoint.json#completed_steps[].pipeline_ref` was tested
+against a hand-built fixture where every entry carried `pipeline_ref`. Production only ever
+populates that field for the `validate` step — every other step's entries have `pipeline_ref: ''`
+across all 16 real orchestrations in the repository — so the function's entire reason for
+existing was dead in production while every test stayed green. Same shape a second time: a field
+was assumed backend-specific from its name and rendered from a fixture that only ever produced
+one backend's runs; in production the same field is written for every backend and the "backend
+scoping" premise was false.
+
+**The fix is not a better fixture, it is a different SOURCE for the fixture.** Before
+implementing a feature that reads an artifact, dump every real instance of that artifact under
+`workspace/orchestrations/` and confirm the field is populated the way you assume — "I read the
+writer's code" is not enough, because a caller can fail to supply a value the writer is capable of
+writing. Where possible, drive the fixture through the real production writer instead of hand-
+authoring it (a writer-driven fixture catches the writer being renamed or deleted; a hand-built
+one does not). And run a mutation pass over the reader deliberately looking for a vacuous filter:
+deleting a `found`-style guard and staying green means the fixture never created the case the
+guard exists for.
+
 ## Tests spinning in neutral
 
 Hunk-level reverting cannot see "the hunk is alive, merely unobserved". In L128, replacing the
