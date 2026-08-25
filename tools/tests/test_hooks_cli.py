@@ -4424,10 +4424,29 @@ class GlobPatternTriggerSurfaceTests(unittest.TestCase):
 
     @classmethod
     def _trigger_prefixes(cls) -> tuple[str, ...]:
-        """The literal prefixes the hook refuses on, read out of the hook's source."""
+        """The literal prefixes the hook refuses on, read out of the hook's source.
+
+        A NAMED CONSTANT is resolved rather than refused. The first version matched only
+        `pattern.startswith((...))` with the tuple inline, so extracting it to
+        `_PREFIXES = ("/", "~")` — a refactor that changes nothing — raised its assertion
+        and turned a set of true documents red, with a message naming no repair. That is
+        an over-refusal on correct work, and this class is the exemplar
+        `metdsl-enforcement-change` rule 3-a tells a reader to copy, so the flaw would have
+        been copied with it.
+        """
         source = (cls._REPO_ROOT / "tools" / "hooks" / "cli.py").read_text(encoding="utf-8")
-        match = re.search(r"pattern\.startswith\(\(([^)]*)\)\)", source)
-        assert match is not None, "the pattern trigger is no longer a startswith tuple"
+        match = re.search(r"pattern\.startswith\(\s*\(([^)]*)\)\s*\)", source)
+        if match is None:
+            named = re.search(r"pattern\.startswith\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)", source)
+            assert named is not None, (
+                "the pattern trigger is neither an inline tuple nor a named constant; "
+                "point this reader at wherever the prefixes now live")
+            definition = re.search(
+                rf"^{named.group(1)}\s*(?::[^=]+)?=\s*\(([^)]*)\)", source, re.M)
+            assert definition is not None, (
+                f"the trigger names {named.group(1)}, which is not defined as a literal "
+                "tuple in this module; read it from wherever it is defined")
+            match = definition
         return tuple(re.findall(r'"([^"]*)"', match.group(1)))
 
     @classmethod

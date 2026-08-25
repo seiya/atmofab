@@ -317,10 +317,11 @@ Test-file hunks are excluded by default (`--include-tests`
 **One round = two subagents in parallel**, on separate axes (security-bypass /
 correctness+regression+doc-truth).
 
-**But doc-truth bundled with correctness loses to it, measured** — so plan one round of the
-loop where BOTH agents are on disclosure alone, and plan it before you decide to stop rather
-than after. The evidence and the two briefs are under "Stopping conditions"; this line is here
-because a reader composing round prompts reaches that section 400 lines too late.
+**One round of the loop puts BOTH agents on the disclosure axis instead** — doc-truth bundled
+with correctness loses to it, measured. Plan it before you decide to stop. The evidence and the
+two briefs are under "Stopping conditions"; this line is here because a reader composing round
+prompts reaches that section 400 lines later. **A disclosure round runs no security agent, so
+it neither advances nor resets the two-consecutive-clean-security-rounds condition below.**
 
 - **Do not edit until both results are in.** Touch a file while one is running and its findings
   go stale (this happened). But in PR #53 one ran for **78 minutes** and I broke this rule twice.
@@ -668,8 +669,9 @@ out of scope", stop at that round.** More rounds produce the same layer, and fix
 diff away from the purpose. State the out-of-scope breakdown and why you declared the scope.
 
 **The superior condition (stop there if you reach it)**: the security axis produces **nothing new
-for two consecutive rounds**. It has **never been achieved in any recorded loop** — the
-nine histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
+for two consecutive rounds** (a disclosure round, which runs no security agent, is skipped in
+that count rather than breaking it). It has **never been achieved in any recorded loop** — the
+histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
 it** — do not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
@@ -693,7 +695,8 @@ When both hold, the remainder has fallen to "an enumerable, finite set of descri
 alone is not enough.
 
 **"Only prose remains" is a claim about SEVERITY, and it is wrong whenever the prose is executed
-by someone.** Issue #71 is the counterexample: both proxies above held from round 11, and rounds
+by someone.** Issue #71 is the counterexample: both proxies above read as held from round 11 — the second
+of them wrongly, see below — and rounds
 12 through 15 each still carried statements that were false, including a refusal message a leaf
 follows and a remedy an operator follows. Two of round 15's "prose" findings had real
 consequence: one made a leaf report absence after obeying half a remedy, the other told an
@@ -724,15 +727,15 @@ consequence, not by whether it is code**:
 
 **The move that finds them: spend one round on the disclosure axis alone**, with no functional
 brief. Note what this implies about the standing arrangement: doc-truth is already bundled into
-the correctness axis of every round (see "Running a round"), and on issue #71 that bundling did
-NOT fire for four rounds while five documents stated a rule's own trigger wrongly. Bundled, it
-loses to whatever functional question shares the brief. Give it a round of its own — "verify every claim in the commit messages at HEAD" and "read it as the next
-maintainer: what would mislead you, can the deletion's measurement be re-taken from what is
-written, what does a LEAF see, what does an OPERATOR see, would you merge". On issue #71 that
-round returned two real-consequence items and five documents stating the rule's own trigger
-wrongly, in a branch whose code had been clean for four rounds. **Run it before stopping, not
-as an extra round after deciding to stop** — and if it returns items in the first category
-above, the record has not converged even though the code has.
+the correctness axis of every round (see "Running a round"), and bundled it loses to whatever
+functional question shares the brief. Give it a round of its own, with two briefs: "verify
+every claim in the commit messages at HEAD" and "read it as the next maintainer: what would
+mislead you, can the deletion's measurement be re-taken from what is written, what does a LEAF
+see, what does an OPERATOR see, would you merge". On issue #71 that round returned two
+real-consequence items and five documents stating the rule's own trigger wrongly — one of them
+a document every leaf reads — in a branch whose ENFORCEMENT CODE had been clean for four
+rounds. **Run it before stopping, not as an extra round after deciding to stop** — and if it returns items in the first category
+above, the record has not converged even though the enforcement code has.
 
 **But the two are not equal in standing. Use them by change type.**
 
@@ -832,10 +835,10 @@ as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fi
   **your own fixes** — put the focus instruction in from the first round
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Three rewrites of
-  ONE statement is a sweep problem; three SITES that each state the rule is a coupling problem**
-  — for the second, `metdsl-enforcement-change` rule 3-a, which is canonical for both thresholds
-  so they cannot drift apart again
+  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one statement
+  repeatedly is a SWEEP problem, which this row owns; several sites that each state the rule is a
+  COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the threshold
+  for.** Do not restate its number here — that is the drift this pair is about
 - **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
   numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
   this kind of prose **rots silently on every rename or addition**. PR #57's breakdown of test

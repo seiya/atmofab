@@ -49,9 +49,12 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   version of this line claimed one permanent calibration skip and sent a reader hunting a test that
   does not exist
 
-## Two ways a verification step silently does not run
+## Verification steps that silently do not run, and records that silently do not hold
 
-Both were hit on issue #71, and both look exactly like a passing step.
+All of these were hit on issue #71, and each looks exactly like a passing step or a kept
+record. (An earlier version of this heading said "two ways" over five items — a hand-typed
+count, rotting inside the commit that wrote it, in the file that tells you not to hand-type
+counts.)
 
 **`cmd | tail && git commit` does not gate on `cmd`.** A pipeline exits with the status of its
 LAST element, so `python3 -m pytest … | tail -3 && git commit` commits whatever pytest did — the

@@ -9,25 +9,26 @@ to the content filter — `codex-episodes.md` has them); PR #53 ran 3 rounds
 with none empty and Codex never clean (it found a hole on the first pass); in PR #55 round 3 both
 a subagent and Codex produced new findings.
 
-## issue #71 — the proxies held from R11 and four more rounds still found real defects
+## issue #71 — the proxies read as held from R11 and four more rounds found real defects
 
 15 rounds, the longest recorded. R1-R5 "witnesses weaker than their names, and four of my own
-'measurements' of a vendor tool were measurements of something else" → R8 "a brace alternation
-walked out of the manifest, found by a reviewer" → R11 **"the rounds are reliable about code and
-unreliable about their own record"** → R12 narrowing (a net 164 lines out of `tools/hooks/cli.py`)
-→ R13-R15 "no defect in the enforcement code, and a false or missing statement every round".
+'measurements' of a vendor tool were measurements of something else — Python's `glob` twice and
+bare `ripgrep` once, each written down as the tool" → R8 "a brace alternation walked out of the
+manifest, found by a reviewer" → R11 **"the rounds are reliable about code and unreliable about
+their own record"** → R12 narrowing (a net 164 lines out of `tools/hooks/cli.py`) → R13-R15 "no
+defect in the enforcement code, and a false or missing statement every round".
 
-What ends the loop is not what this history teaches. Two things it is the evidence for, both now
-in SKILL.md's stopping conditions: **"only prose remains" is a claim about severity** that fails
-when a leaf or an operator acts on the prose, and **a round spent on disclosure alone is worth
-running before stopping** — that round found five documents stating a rule's own trigger wrongly,
-one of them a document every leaf reads.
+Evidence for two of SKILL.md's stopping conditions — that "only prose remains" is a claim about
+severity, and that a disclosure round is worth running before stopping. **And for the limit of
+proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, one of them
+functional (a denylist environment that could send an unbilled probe to a real endpoint). Nobody
+had been asked to review it, because the briefs named the enforcement code — so "a reviewer with
+no exclusions returns zero functional defects" was true of the files anyone looked at. A
+committed instrument is review surface.
 
-**And "the code was clean" was itself imprecise**, which is the sharper lesson: R15 found five
-defects in a measurement script the branch had COMMITTED, two of them functional (a denylist
-environment that could send an unbilled probe to a real endpoint; a timed-out launch scored as a
-successful read). Nobody had been asked to review it, because the briefs named the enforcement
-code. A committed instrument is review surface.
+Defects introduced by the fixes themselves recurred in most rounds — four in the final round
+alone, of which the one recorded nowhere else is a correction to the leaf-read contract that
+blew its byte ceiling: the fix was right and its LENGTH was the defect.
 
 ## issue #63 — the first time both proxies held at once (R4)
 
