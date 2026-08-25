@@ -16601,7 +16601,11 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # `--tools` (issue #71). DERIVED from the `PreToolUse` coverage above rather than listed:
 # a tool the read-boundary hook cannot judge is a hole in that boundary, so the only way to
 # put a new built-in in a leaf's hands is to add a matcher for it first — and the matcher
-# side is already gated by `_probe_claude_leaf_config`.
+# side is already gated by `_probe_claude_leaf_config`. A matcher makes the hook FIRE, not
+# JUDGE: the policy allows any tool it has no dispatch branch for (measured: `Monitor`,
+# `WebFetch`, `NotebookEdit` all allowed under a manifest granting one directory), so a
+# grant needs BOTH, and `test_every_tool_the_leaf_is_launched_with_is_actually_judged` is
+# what ties the two sets rather than construction.
 #
 # An ALLOWLIST, replacing the `Task,WebFetch,WebSearch,NotebookEdit` denylist that stood
 # here until issue #71. The denylist enumerated names over a roster the VENDOR grows: at the
@@ -16647,8 +16651,9 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
 # — it does not reach a leaf, because the private home the conductor prepares carries no
 # skills, and `--tools` would exclude it in any case. It is named here because the list of
 # fifteen is written as exhaustive and is exhaustive only for this argv: a review reported
-# 24/20/16 for that reason, and my own first attempt to check it reported the same for a
-# worse one — zsh does not word-split an unquoted variable, so the flags never reached the
+# 24/20/16 for that reason — 24 unfiltered, 20 under the denylist, and 16 unjudged, the
+# last being 20 minus the same four the matchers judge — and my own first attempt to check
+# it reported the same for a worse one — zsh does not word-split an unquoted variable, so the flags never reached the
 # launch and I measured a plain `claude`. The repo's own `references/verification.md` warns
 # about that shell behaviour; it costs a measurement about twice a year here.
 #
@@ -16978,6 +16983,11 @@ def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
     # `serve_forever`'s default `poll_interval` is 0.5 s, and `shutdown()` waits for the
     # current tick, so every probe paid a FIXED 0.501 s (measured over five cycles) and
     # every test using this manager paid it too. Nothing here needs a coarse tick.
+    # NOT PINNED: this is a cost, and a test asserting a duration would be flaky. Same for
+    # the `thread.join(timeout=5)` below, which `shutdown()` already makes redundant, and
+    # for `do_GET`'s 404 STATUS (its headers are asserted, the code is not). A round
+    # claimed these were "named in TODO.md or in their own comments"; they were not, so
+    # they are named here.
     thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
                               daemon=True)
     thread.start()

@@ -1103,15 +1103,30 @@ def _brace_alternatives(pattern: str) -> list[str] | None:
     `_GLOB_META_RE` deliberately omits `{`, because the Bash extractor that shares it
     resolves its targets against the FILESYSTEM and a brace is not a filesystem wildcard.
     For a pattern the omission is a hole: `docs/{../secret,sub}/*` has the literal prefix
-    `docs/{../secret,sub}`, which sits under a granted `docs/` and hides the `..` inside
-    the braces. Measured against the real tool, that pattern reads the out-of-root file,
-    while `../secret/*` and the Bash spelling of the same read are both refused — the
-    route disagreement this check exists to remove, still open in the leaking direction.
+    `docs/{../secret,sub}`, which sits under a granted `docs/` and hides what is inside the
+    braces.
+
+    THE EXAMPLE THAT MAKES THIS LOAD-BEARING IS THE ABSOLUTE ONE, and it is not the one
+    this docstring used to give. `{../secret,sub}/*` was cited as reading the out-of-root
+    file "measured against the real tool"; that measurement did not reproduce, and the
+    branch's own later measurement says a relative pattern reads nothing at all. What does
+    reach outside is an ABSOLUTE alternative — `_brace_alternatives("{/etc,sub}/*")` yields
+    `["/etc/*", "sub/*"]`, and an absolute pattern re-roots the search — so without the
+    expansion the literal prefix is `docs/{/etc,sub}` and the escape is judged nowhere.
+    Recorded because a reader who checked only the inert example could delete this and
+    reopen a reachable hole.
 
     Expanding is what lets each alternative be judged where it lands, so `{a,b}/*` stays
     allowed under a granted `path` (it never leaves) while `{../secret,sub}/*` is judged at
     `secret/` as well as at `sub/`.
     """
+    # A PATTERN IS UNTRUSTED INPUT, and the unbalanced branch below recurses once per `{`,
+    # so its depth is the caller's to choose. Past this many the answer is the same as past
+    # the alternative bound — not enumerable, judged at the repository root — reached by a
+    # return rather than by a `RecursionError` that escapes into the entrypoint's catch-all
+    # and blocks with no `read_manifest_read_guard` row written at all.
+    if pattern.count("{") > _GLOB_BRACE_ALTERNATIVE_LIMIT:
+        return None
     alternatives = [pattern]
     while True:
         for index, candidate in enumerate(alternatives):

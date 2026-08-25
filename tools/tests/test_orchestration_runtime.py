@@ -29702,7 +29702,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # The rule is what matters and does not rot: a ceiling exists to catch RE-BLOAT,
         # so it sits far enough above the file to admit an ordinary sentence and low enough
         # to notice a section. `wc -c` is one command away for anyone who wants the number.
-        "docs/AGENT_CONTRACT.md": 19000,
+        # Raised again in round 11: at 19000 the file sat 14 bytes below the ceiling, which
+        # is the tripwire this very comment says a ceiling must not be — the rule was
+        # written and then not applied to the number beside it.
+        "docs/AGENT_CONTRACT.md": 19200,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -35414,10 +35417,21 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         self.assertIn("built-ins=", check["detail"])
 
     def test_a_missing_required_tool_fails(self) -> None:
+        """TWO captures, one of them complete, so the per-request rendering is not
+        byte-identical to the union.
+
+        With a single capture the two agree and the content assertion below establishes
+        nothing — measured: rendering the union survives. A round claimed this fixture had
+        been changed to send two differing captures; it had not, and the claim stood for
+        two rounds until an audit of the record went looking for it.
+        """
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            _answer_claude_roster_probe(args, kwargs)
+            return _answer_claude_roster_probe(
+                args, kwargs, roster=self._full_roster(without=["Bash"]))
+
         with tempfile.TemporaryDirectory() as td:
-            check = self._probe(
-                self._repo(td),
-                self._runner(roster=self._full_roster(without=["Bash"])))
+            check = self._probe(self._repo(td), runner)
         self.assertIs(check["pass"], False)
         problems = check["detail"].split("measured ")[0]
         self.assertIn("Bash", problems)
@@ -35428,8 +35442,13 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
         # two tests up warns about — the label is not the rule.
         self.assertIn("per request:", problems)
         rendered = problems.split("per request:")[1]
-        self.assertIn("Edit,Glob,Grep,Read,Write", rendered)
-        self.assertNotIn("Bash", rendered)
+        # TWO rosters, separated — one complete, one short. That is precisely what the
+        # union cannot show: it would render the six as a single list and hide which
+        # request was narrow. Asserted as the pair, not as the absence of `Bash`, because
+        # `Bash` is legitimately in the complete capture.
+        self.assertEqual(len([part for part in rendered.split("|") if part.strip()]), 2)
+        self.assertIn("Bash,Edit,Glob,Grep,Read,Write", rendered)
+        self.assertIn("Edit,Glob,Grep,Read,Write |", rendered.replace("Bash,", ""))
 
     def test_a_tool_from_an_undeclared_mcp_server_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:

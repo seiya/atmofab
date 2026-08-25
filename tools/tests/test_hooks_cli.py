@@ -4102,8 +4102,29 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         # UNBALANCED: not an alternation, so it stays a literal and the pattern is judged
         # as written. Returning None instead would refuse every pattern carrying a stray
         # brace — an over-refusal nothing else would have caught.
-        for pattern in ("{a", "a}b{c", "docs/{"):
+        #
+        # `{a{b` is the row that matters and the three above cannot reach: they have ONE
+        # `{`, so they leave by the "no further brace" exit. With a second one the function
+        # recurses on the tail, gets the tail back unchanged, and replaces the list with
+        # itself — which loops FOREVER without the no-progress guard. Measured: the guard
+        # removed, this call never returns, and because the hook calls it synchronously the
+        # leaf's `Glob` never returns either and the step stalls. Not a refusal — a hang.
+        for pattern in ("{a", "a}b{c", "docs/{", "{a{b", "{{{", "a{b{c{d"):
             self.assertEqual(_brace_alternatives(pattern), [pattern], pattern)
+        # The bound applies inside the unbalanced branch too, where the round-9 fix added a
+        # second copy of the check: two pre-existing alternatives times the recursion's 64.
+        self.assertIsNone(_brace_alternatives("{a,b}/{c" + "{d,e}" * 6))
+        # And the stray `{` STAYS in the head. Stripping it lets `normpath` collapse the
+        # `..` that follows and turns an allowed pattern into a refusal — `{{../secret,b}/*`
+        # keeps a first component of `{..`, which normalizes to nothing and is judged where
+        # it is, exactly as `bash -c 'echo {{../secret,b}/*'` spells it.
+        self.assertEqual(_brace_alternatives("{{../secret,b}/*"),
+                         ["{../secret/*", "{b/*"])
+        # A pattern with more braces than the bound is refused BY RETURN, not by blowing
+        # the recursion the unbalanced branch uses: the depth is one per `{`, and a
+        # `RecursionError` escapes to the entrypoint's catch-all, which blocks with no
+        # `read_manifest_read_guard` row written at all — a refusal the audit cannot see.
+        self.assertIsNone(_brace_alternatives("{" * 2000))
         # BOUNDED: past the limit there is no enumeration, and the caller falls back to the
         # repository root.
         self.assertEqual(len(_brace_alternatives("{a,b}" * 6)), 64)
