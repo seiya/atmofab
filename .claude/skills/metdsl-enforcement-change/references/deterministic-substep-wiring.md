@@ -1,6 +1,6 @@
 # Adding a new deterministic (conductor in-process) substep
 
-`docs/ORCHESTRATION.md` §"Deterministic in-process execution" describes the substeps that exist
+`docs/ORCHESTRATION.md`'s "Deterministic in-process execution" (a bold bullet, not a heading) describes the substeps that exist
 today (`Compile.static`, `Generate.gate`, `Build`, `Validate.pre_judge`, `Validate.execute`,
 `Validate.post_judge`). This file is the wiring checklist for adding another one — every one of
 these was hit adding `Generate.static` (later folded into `Generate.gate`), and every miss left

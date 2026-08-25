@@ -20,7 +20,7 @@ defect in the enforcement code, and a false or missing statement every round".
 
 Evidence for two of SKILL.md's stopping conditions — that "only prose remains" is a claim about
 severity, and that a disclosure round is worth running before stopping. **And for the limit of
-proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, one of them
+proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, two of them
 functional — a denylist environment that could send an unbilled probe to a real endpoint, and a
 timed-out launch scored as a successful read, which would have reported the premise holding for a
 run where nothing launched. (This file said "one of them functional" from before the split, while
@@ -180,6 +180,56 @@ rule this loop supplies**: once every remaining finding is "this prose asserts s
 unmeasured about code the PR does not touch," the fix is to DELETE the claim rather than to write
 a test proving it — a PR is not obligated to characterize behaviour it left alone, and a doc that
 tries anyway is one guess away from being the next round's finding.
+
+## The skill split itself (2026-08-25) — a loop whose findings were all in the compression
+
+Recorded here because this file is where a loop's history belongs, and because the loop that
+produced it found ~50 defects, nearly all introduced by the change being reviewed. Four rounds,
+plus round 0; no Codex (a change that ADDS checking machinery and is otherwise prose-centred is
+the skill's own non-launch case, so this branch could not use Codex as a convergence signal).
+
+**The class, round by round.** R1: content lost or distorted by compression, plus a vacuous new
+check. R2: the SAME class, larger — the round-1 deletion of a "duplicate" block had taken ten
+distinctive tokens out of the tree — plus a widened check that had loosened past its own
+argument. R3: a CENSUS instead of another opinion round, which turned the remainder into a list
+(9 weakened clauses, 8 reference-only imperatives, 1 absent rule, 7 absent evidence tokens, all
+closed) — and the blank-slate reviewer independently reported no rule had left the tree. R4:
+zero content findings; everything left was in the checking machinery's own witnesses, and a
+disclosure round found four operator-actionable clauses the census's instrument could not see.
+
+**What the loop is worth keeping for:**
+
+- **The instrument that ended it was the census, and its limit was the shape it enumerated.** It
+  extracted `**bold**` spans, so every rule dropped as a NON-BOLD TRAILING CLAUSE on a bold-headed
+  bullet was invisible to it — four of them, found afterwards by a disclosure round reading for
+  audience rather than for structure. A census bounds the remainder only within the shape it can
+  see; say what that shape is when you report one.
+- **Three defects were "the fix applied to one side of a pair".** The reporting-layer extraction
+  made for the orphan row and not for its twin; a depth guard added to the walk and not to the
+  corpus filter; a `scripts/` exemption whose argument covered helpers and whose implementation
+  covered the entry script. Each was found one round after the fix it belonged to.
+- **One sentence was corrected four times** ("five functional defects" → "one of them functional"
+  → the count left unedited beside a corrected parenthetical → "two of them functional"). Round 1
+  resolved the disagreement by adopting the reference file's number, which was the wrong side.
+  Reconcile against the OLDEST source, not the nearest one.
+- **Deleting duplicate prose needs the opposite polarity from writing it.** Restore by default and
+  subtract only what duplication is proven for: a 6-gram check said 42 sentences had no surviving
+  match, and the judgment that the instrument was crude, rather than the reading of its output,
+  cost a whole round.
+
+**The size measurement, as a historical record.** Command:
+`for f in .claude/skills/*/SKILL.md; do wc -c "$f"; done`, summed.
+
+| at | loaded-at-invocation total |
+|---|---|
+| `d8d48c7` (before the split) | 116,596 B |
+| `e2de95a` (the split) | 66,397 B |
+| `2cb9b84` (after three rounds of restoration) | 71,739 B |
+
+The property, which does not move: **every byte added back after `e2de95a` is material a reviewer
+measured as lost, and nothing pins the total** — the reachability check pins that a reference is
+reachable, not that the entry point stays small. A reader who needs today's figure runs the
+command.
 
 ## Census practical notes: the episode behind each (restored 2026-08-25)
 

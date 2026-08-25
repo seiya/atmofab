@@ -117,7 +117,8 @@ against `origin/main`'s wording, which only replacing the whole file revealed.
   bare `git apply -R` refusal, so that half is asserted from the code, not measured) (until 2026-08-19 it was counted as neither a survivor
   nor inconclusive, so a run where every hunk skipped printed "every hunk is pinned" and exited 0).
   It does **not** do it for a range that produced no hunks at all: that prints "nothing to check"
-  and exits 0, which is why the rule above is to read the hunk count rather than the exit code.
+  and exits 0, which is why `SKILL.md`'s round-0 rule is to read the hunk count rather than the
+exit code.
   What it will not miss any more, each measured while fixing it: a change with no revertible hunk
   (a pure rename, a binary file, a mode change, an empty new file) is listed by name and exits 1
   even when other hunks are pinned; a hunk carrying a rename is SKIPPED rather than judged by the
@@ -182,7 +183,7 @@ was never observed at all. A kill from a setup error is worth exactly as much as
 
 **Rewriting a test can delete a witness.** PR #57's round 3 replaced a test with a better one and
 removed the only test observing a validator-side backstop it had deliberately kept. The mechanism
-lived on, and mutants went green. Sibling of "pin at the handler, not the helper".
+lived on, and mutants went green. Sibling of `metdsl-enforcement-change` §4's "Pin at the handler, not the helper".
 
 **Reproducing the wiring is not observing the wiring.** A test meant to pin what `run_substep`
 passes as `pure=` computed `pure` itself and handed it to `_resolve_reuse_resume` directly, so

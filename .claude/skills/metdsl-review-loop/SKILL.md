@@ -117,7 +117,9 @@ when a rule does not obviously apply:
   a `#` inside a string literal is not prose, a prose hunk in another file type is unlabelled,
   and **a hunk that also carries a code move is never annotated**: a missing annotation is not
   evidence that a hunk is code. One half of a code move is expected to survive — read the pair
-  together
+  together, and for a move between Python modules pass `--continue-on-collection-errors` FIRST:
+  the halves whose import breaks at collection report INCONCLUSIVE otherwise, and you have spent
+  a run to learn it
 - **Get `--range`'s base wrong and "no hunks in range" looks green** (exit 0). Causes: a base
   that resolves but is wrong (`origin/main..HEAD` is empty after a merge; after a rebase it is
   your own commits replayed), a `--paths` matching nothing, a round that is all test files.
@@ -125,7 +127,9 @@ when a rule does not obviously apply:
   listed by name and **exits 1 whatever else the run found, because nothing was tested for it**
 - **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
   to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
-  rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives). Build
+  rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives; a hunk
+  that CHANGED an assertion is different — reverting it makes the old assertion contradict the
+  fixed code, so it reports `killed` while saying nothing about the code under review). Build
   mutants that kill each decision of the new machinery one at a time
 - **Do not handwrite a mutation harness** (PR #53's `str.replace` rewrote all occurrences at
   once, hiding 2 reachable fail-opens). If you must: hit occurrences one at a time, **assert the
@@ -311,7 +315,8 @@ cheap, so run more" does not hold — **use it only to free up a slot**. Run one
 replacing one.
 
 **Work you may delegate (verifiable = running it settles the truth)**: re-measuring every number
-in the diff; back-checking "recorded in X" / "pinned by Y" / "covered by Z"; a correspondence
+in the diff **and reporting mismatches**; back-checking "recorded in X" / "pinned by Y" /
+"covered by Z" (grep for existence; **delete the test and see it fail**); a correspondence
 table of whether each new failure class has a test; counting the call sites that make the same
 decision; contradictions between prose and implementation.
 
@@ -510,7 +515,7 @@ reviewer:
 > unwitnessed ones, construct a violating input yourself and report whether the suite notices.
 
 Practical notes on reading a census: keep **"killed only by the token ratchet" as a fourth
-class**; **close a vacuous finding by marking, not deleting**; **aim "does it wrongly refuse
+class**; **a vacuous finding may be closed by marking rather than deleting**; **aim "does it wrongly refuse
 legitimate work" at the instrument too**; **claim vacuity only by construction** — a corpus
 measurement does not prove it; **a census conclusion rots in one round, so re-run it the round
 after you consume it, recording the conclusions that survive re-measurement rather than the

@@ -32,7 +32,7 @@ about are in `validate_pipeline_semantics.py`, and it goes when the source-readi
 TODO ledger goes. Two things about that are worth stating rather than implying. Nothing measures
 this file: `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds this
 kind of growth elsewhere does not read it at all. And the debt is **new to the repository**, since
-until this branch these files lived in one operator's home directory. Most of it is not in this
+until 2026-08-19 these files lived in one operator's home directory. Most of it is not in this
 checklist, either: the majority of the sampled tokens under `.claude/skills/` are in episodes and
 identifier names, in both skills, and `metdsl-review-loop` carries some while having no checklist
 at all. TODO.md's development-documentation entry holds the measurement and the command that
