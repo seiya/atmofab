@@ -176,3 +176,166 @@ rule this loop supplies**: once every remaining finding is "this prose asserts s
 unmeasured about code the PR does not touch," the fix is to DELETE the claim rather than to write
 a test proving it — a PR is not obligated to characterize behaviour it left alone, and a doc that
 tries anyway is one guess away from being the next round's finding.
+
+## Stopping-condition detail moved from SKILL.md (2026-08-25)
+
+`SKILL.md` §"Stopping conditions" keeps the conditions, the proxies and the census instruction.
+This section is the evidence and the practical notes it used to carry inline.
+
+for two consecutive rounds** (a disclosure round, which runs no security agent, is skipped in
+that count rather than breaking it). It has **never been achieved in any recorded loop** — the
+histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
+it** — do not add rounds waiting for it.
+
+**Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
+relaunch a Codex you have no budget for**. Use Codex as one independent pass and finish once you
+have classified the result. Clean did come back once (PR #67), and **the same
+round's two subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror — so
+clean was not evidence of convergence**. TODO:269 is the second such data point: Codex returned
+clean in round 2, and **round 3 found a mechanism with no behavioural witness at all**. Issue #63 is the opposite data point: both completed runs
+returned real defects, both in subagent blind spots.
+
+**Practical proxies for "the remainder is bounded"** (so you can say it on the spot, not in
+hindsight). In PR #57 defects kept appearing inside the previous round's fix and **round 3 (severity
+rose) was indistinguishable in the moment from round 4 (bounded)**. What actually marked the
+boundary was these two holding together:
+
+- **a reviewer with no exclusions returns zero functional defects** — only prose and consistency
+  findings remain
+- **an independent mutation sweep is fully killed** (one the reviewer built, not one you ran)
+
+When both hold, the remainder has fallen to "an enumerable, finite set of descriptive fixes". One
+alone is not enough.
+
+**"Only prose remains" is a claim about SEVERITY, and it is wrong whenever the prose is executed
+by someone.** Issue #71 is the counterexample: both proxies above read as held from round 11 — the second
+of them wrongly, see below — and rounds
+12 through 15 each still carried statements that were false, including a refusal message a leaf
+follows and a remedy an operator follows. Two of round 15's "prose" findings had real
+consequence: one made a leaf report absence after obeying half a remedy, the other told an
+operator to permanently subtract a tool from a required set to paper over a one-line
+configuration bug.
+
+**Be careful what you conclude from "the code was clean".** On that branch it was not quite
+true, and the way it was untrue is the more useful lesson: round 15 found five defects in a
+measurement SCRIPT the branch had committed — an environment built as a denylist, so one
+variable would have sent an unbilled probe to a real endpoint, and a timed-out launch scored as
+a successful read, so a run where nothing launched would have reported its premise holding.
+Those are functional defects. They went unfound for two rounds because **the reviewers were
+told to look at the enforcement code, and a committed instrument is not obviously that**. When
+a branch adds a script, a harness or a fixture generator to the repository, name it as review
+surface explicitly; "zero functional defects" otherwise means "zero in the files anyone
+looked at".
+
+So before calling the remainder descriptive, **classify each remaining finding by audience and
+consequence, not by whether it is code**:
+
+- **Text a leaf or an operator ACTS ON is behaviour delivered as prose** — refusal messages,
+  remedies, the leaf-read contract, the runbook step for a failure mode. Treat a defect there
+  at the severity of the action it causes
+- **Text a maintainer reads to decide** — a residue entry, a justification comment, a measured
+  number — is descriptive, and belongs in the bounded remainder
+- The tell that you are in the first category: the sentence contains an imperative, or names a
+  condition under which something is refused
+
+**The move that finds them: spend one round on the disclosure axis alone**, with no functional
+brief. Note what this implies about the standing arrangement: doc-truth is already bundled into
+the correctness axis of every round (see "Running a round"), and bundled it loses to whatever
+functional question shares the brief. Give it a round of its own, with two briefs: "verify
+every claim in the commit messages at HEAD" and "read it as the next maintainer: what would
+mislead you, can the deletion's measurement be re-taken from what is written, what does a LEAF
+see, what does an OPERATOR see, would you merge". On issue #71 that round returned two
+real-consequence items and five documents stating the rule's own trigger wrongly — one of them
+a document every leaf reads — in a branch whose ENFORCEMENT CODE had been clean for four
+rounds. **Run it before stopping, not as an extra round after deciding to stop** — and if it returns items in the first category
+above, the record has not converged even though the enforcement code has.
+
+**But the two are not equal in standing. Use them by change type.**
+
+- **changes that fix existing machinery** (closing a fail-open, tightening a gate): both apply. The
+  sweep measures "is what I fixed pinned", which is exactly what is being asked
+- **changes that add checking machinery** (a new guard, validator, meta-test): **the sweep is not
+  grounds for stopping.** It answers "is what I built pinned", not "is what I built enough" —
+  **it can only mutate mechanisms that exist, so a missing mechanism is structurally invisible**. In
+  PR #58 the sweep recommended stopping at round 4 (193 mutants) and round 6 (170 mutants), while
+  **the same rounds' blank-slate reviewer returned live routes with end-to-end reproductions**, and
+  every finding from round 3 on was a missing mechanism. Here the proxy becomes **a blank-slate
+  review with zero functional defects for two consecutive rounds**. Still run the sweep, but read it
+  as a list of "unpinned but correct behaviour"
+
+**For a change that adds checking machinery, run a witness census once**, rather than only the
+negative proxies. In PR #66, rounds R3-R5 had only the feeling of "the same class keeps recurring",
+and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
+
+> Enumerate **every decision** in the checking machinery (predicates, constants, each table entry,
+> each regex branch, globs, exclusions, file-format assumptions, every assertion added), and
+> classify each **by execution** as **witnessed** (a constructed input witnesses it) /
+> **corpus-dependent** (green only because today's tree happens to contain no violation) /
+> **vacuous** (already observing nothing). Classification by reading is not allowed. For the
+> unwitnessed ones, construct a violating input yourself and report whether the suite notices.
+
+What comes back turns "the remainder is bounded" from a feeling into a list, and the instrument
+reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Practical
+notes (the numbers and
+transitions are in `references/class-descent-log.md`):
+
+- **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
+  "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
+  on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
+- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable —
+  `_require_axis` inside `provides`, and `LANGUAGES`'s `implemented_backend_ids`, which the
+  following filter subsumes — and the right response was a comment saying "a marker of intent,
+  not a live guard". The problem
+  is not the redundant call; it is that it **reads as a live guard**
+- **The census makes you doubt your own instrument too** — the verification test built from PR #67's
+  census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
+  instrument as well
+- **A corpus measurement does not prove vacuity.** In PR #68 a guard labelled unreachable from
+  "0 empty atoms / 151,633 logical lines / 876 files" did fire, because the scanner and the normalizer
+  **disagreed on the definition of blank** (gfortran's space/tab/FF vs Python's wider `\s`), so a
+  line of only U+00A0 survived. Vacuous may be claimed **only when unreachability is shown by
+  construction**; "not in today's tree" is corpus-dependent — and because the label invites
+  deletion, a wrong vacuous is worse than no label
+- **A census conclusion rots in one round; re-run it the round after you consume it** (PR #68's
+  "zero ratchet-only decisions" was falsified the next round). Record conclusions that survive
+  re-measurement, not the numeric breakdown — numbers always rot (the suite count was wrong four
+  times on that PR alone)
+- **When you replace an enumeration with a computation, witness the computation on a synthetic
+  tree.** In PR #68 the scan target became a reachability closure, and deleting the transitive
+  expansion entirely stayed all green: a test against real data confirms "today's graph happens to
+  be like this" and never observes the algorithm (cf.
+  `test_backend_boundary.py::ScannedSetTests`)
+
+**Before concluding "the shape of the rule is wrong" from recurrence, measure inherited decisions
+separately from decisions the last fix added.** The sign below ("you rebuilt the instrument and the
+second behaved the same → do not build a third") **can produce a wrong judgment if followed
+literally**. PR #66 at the start of R6 matched that condition on its face; measured, the decisions
+common to both versions had improved (20 → 28 witnessed) while **15 of the decisions the rebuild added were
+unwitnessed** — the recurrence was localized to the additions, the shape of the rule was
+right, and the problem was the habit of writing a fix without its witness. Stopping there would
+have handed over as unresolved something bounded and fixable. **The test**: inherited decisions got
+worse → a problem of shape (stop and hand over); concentrated in what the last fix added → a
+problem of habit (write the witnesses and it closes). The full table is in
+`references/class-descent-log.md`.
+
+**Another proxy: does the finding exist in the real corpus?** This is cheap to measure and saves
+several rounds. **If every finding in a round is a construct that occurs zero times in the real
+corpus, what remains is not implementation but a written scope declaration.** PR #58's guard read
+skip declarations statically, and the corpus had 23 skips in 2 spellings; from round 4 on every
+finding was a future form an adversarial reviewer wrote to break it, present nowhere in the tree —
+and I dutifully kept closing them for three rounds. The right response was **declaring the scope**
+("regression prevention for ordinary spelling, not enforcement against circumvention") and stopping.
+Each round, measure the count per finding class with one `grep`.
+
+**Look at `ListAgents` before judging a round finished** — as part of the stopping decision, not
+only as orphan hygiene. I once issued a "merge recommended" without checking which reviewers were
+still running, and the report that arrived afterwards carried a real defect.
+
+In every case, **finish with one convergence judgment**. The question is not "any new findings" but
+**"is any finding left that would change code, tests, or a description a reader relies on?"** If
+only preferences remain, have it recommend stopping explicitly.
+
+When you stop short, **state the condition you did not meet** and hand it to the user. Do not say
+"converged". **Put the class transitions and the defects your own fixes introduced into the PR body
+as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fixes).
+

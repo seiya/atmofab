@@ -206,3 +206,66 @@ whole file, a single-procedure fixture cannot pin it. PR #53's `select` leak rep
 two-procedure fixture, and its nested variant additionally required "another kind of select inside
 plus a following guard". Always include a version with one level of syntactic nesting: the round
 after the flat version was fixed, the nested version ate the fix.
+
+## Additions moved from SKILL.md (2026-08-25)
+
+The sub-rules below had no section here and were carried in `SKILL.md` in full. They are the
+"spinning in neutral" family; `SKILL.md` now keeps one line each.
+
+### A class docstring goes stale by ADDITION (TODO:269)
+
+  - **A CLASS docstring goes stale as rows are appended to the class, and nobody re-reads it.**
+    Distinct from the row above: the prose was TRUE when written and became false by addition. On
+    TODO:269 a class docstring said "these drive the REAL CLI in a REAL subprocess" when all its
+    rows did; two rows added later read module attributes, one of them calling `main` in-process
+    — **in a class I had created one round after renaming a sibling for exactly this**. When you
+    append a row to an existing class, re-read the class docstring as part of the append
+
+### A test can pass because of the suite's own environment (PR #86)
+
+  - **a test can pass because of the SUITE'S OWN ENVIRONMENT.** Distinct from "two paths to the
+    outcome": here the fixture is fine and `conftest.py` is what decides the verdict. On PR #86 a
+    session fixture redirected `METDSL_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
+    which protected root a path falls under was reasoning about a nesting that did not exist while
+    it ran — green under pytest, **failing under `env -u <VAR> python3 -m unittest <dotted.path>`**,
+    which is the production resolution. Two tests on that branch had it.
+    - **The tell**: the test reasons about a RELATIONSHIP (this path is under that root, this id
+      matches that record) whose two halves are not both built by the fixture
+    - **The check is one command.** Run the branch's new test classes both ways and diff the
+      verdicts. Cheap enough to be routine when conftest touches the environment at all
+    - **The fix is not to unset the variable — it is to build the relationship in the fixture**, so
+      the test asserts the workflow's answer instead of the harness's
+
+### A mechanism that guards the HARNESS cannot be witnessed from inside the suite (PR #86)
+
+  - **a mechanism that guards the HARNESS cannot be witnessed from inside the suite.** If the same
+    protection also comes from `conftest.py`, every mutant of it is green there, and the thing it
+    prevents happens only where conftest is not loaded. PR #86's module-level redirect — added
+    after two reviewers wrote real directories into the operator's home — survived every mutation
+    until the witness left the process: **a subprocess running a dependent class under plain
+    `unittest` with a fake `$HOME`, asserting the directory never appears.** Reach for this
+    whenever the mechanism's whole purpose is what happens outside the runner you are testing under
+
+### Mutate the property a justification names (PR #81)
+
+  - **when a comment JUSTIFIES a rule, mutate the property the justification names.** The rule
+    usually has a witness and the property holding it up usually does not. On PR #81 the
+    surviving justification for passing `METDSL_*` by prefix was "the names that redirect a leaf
+    are outside the prefix BY CONSTRUCTION" — true only because the match is anchored, and
+    `startswith` -> `in` kept all 4972 tests green, admitting `MY_METDSL_API_KEY`. The neighbouring
+    spelling too: the prefix STRING was separately unpinned, and shortening `"METDSL_"` to
+    `"METDS"` stayed green while widening the namespace to one the repo does not own. Read your own
+    justification as a list of claims and write one mutant per claim — and note this is the sign's
+    other half: rewriting a justification three times (below) is when its supporting property is
+    newest and least witnessed
+
+### The sharpest trigger for "one test per occurrence" is a TWIN (TODO:269)
+
+  - **The sharpest trigger for that is a TWIN.** When a change touches one of a matched pair —
+    two exit codes, two markers, two gates, the two halves of a symmetry — **the witness you build
+    for one is the specification for the other, and building only one is the likeliest miss you
+    will make.** On TODO:269 I built a real-subprocess witness for exit code 4 and none for its
+    twin exit code 3, in the same commits, while adding three readers keyed on rc 3 plus a
+    `--help` line and a RUNBOOK entry: mutating rc 3's mapping to `return 1` left **1555 rows
+    green**, and three review rounds walked past it. The check is mechanical — **list the pair,
+    then list your witnesses, and compare the two lists** before handing over

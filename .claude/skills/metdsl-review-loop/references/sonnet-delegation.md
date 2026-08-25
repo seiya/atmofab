@@ -86,3 +86,32 @@ A substantial share of the findings were decided not by depth but by **whether s
 re-measured**: "44 of 48" was actually 38 (just re-checking a subtraction), byte counts and suite
 counts gone stale, "recorded in TODO" with no record present, three call sites making the same
 decision left unscanned. **That layer does not need an up-model.**
+
+## Method: how to keep measuring (moved from SKILL.md, 2026-08-25)
+
+**Numbers to collect**: real findings / total findings, elapsed time, and the **overlap count**
+with the up-model. One up-model plus one sonnet against the same HEAD in parallel gets this for
+free.
+
+**How to read overlap — high overlap does not mean "no point adding", it means "replaceable".**
+Look only at the adding axis and forget the removing axis and you misread it (the first version of
+this section did exactly that, and was wrong).
+
+| Result | Meaning | What to do |
+|---|---|---|
+| sonnet ⊇ opus | this axis is fine on the cheap model | **move the axis to sonnet permanently**; spend the freed up-model slot on deep layers |
+| sonnet ⊂ opus (with misses) | partial substitute | look at what it dropped: mechanical → reject; judgment-requiring → the axis is cut wrong |
+| sonnet ∖ opus ≠ ∅ | it works as an independent eye | keep both |
+| mostly false positives | triage costs more than it yields | reject |
+
+**Do not confound the comparison.** To measure substitutability (row 1), **give both the same
+checklist**. To measure whether it works as a different axis, use different prompts. A comparison
+with a checklist on one side and free-form on the other yields neither conclusion.
+
+**This conclusion holds only inside the axis delegated.** "sonnet matched opus at recomputing
+numbers" does not give "it matches on parser semantics". Measure per axis.
+
+**The reverse is not an experiment.** When the implementation was sonnet or fable, reviewing with
+opus is plain quality escalation — do it without hesitating. Finding a defect is often harder than
+writing the code (L174's offset-translation layer: 10 lines to write, a purpose-built mutant to
+find).

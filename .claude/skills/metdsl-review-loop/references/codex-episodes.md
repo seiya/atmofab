@@ -122,3 +122,56 @@ counterexample).
   for **counterexample construction** rather than attack
 - **One rewrite-and-retry at most** (it consumes the second launch). If that fails too, say
   explicitly that the judgment is made without Codex and move on
+
+## Operating-rule detail moved from SKILL.md (2026-08-25)
+
+`SKILL.md` keeps the launch budget, the when-not-to-launch list and the operating rules in
+compressed form. The paragraphs below are the fuller statements it used to carry.
+
+- **Check the base before launching.** On a merged branch `origin/main` points at your own merge
+  commit and you review an empty diff: look at `git diff --shortstat <base>...HEAD`
+- **Before suspecting a stall, check whether you killed it.** The tell is the timestamp of the
+  log's last line: investigation commands at even intervals that cut off at one instant means an
+  external kill, not a stall. A true stall shows `phase` not advancing **and no commands
+  accumulating**
+- **Treat the same phase for more than 15 minutes as a stall and cancel.** Waiting collapses the
+  "do not edit until both are in" rule with it
+- **`result <job-id>` returns `No job found` before completion** (a different channel from status).
+  Take in-flight information from status's `Progress:` and **the launch command's stdout** — a
+  partial verdict sometimes appears there (PR #57's second run emitted
+  `Assistant message captured: {"verdict":"needs-attention", ...}` minutes before stalling, and its
+  gist matched what a subagent found independently). **Read the output up to the stall**
+- **Do not count a stall as clean** (same for a filter drop). **Stalls are intermittent, though:
+  do not conclude "Codex cannot be used on this branch"** — PR #72 stalled twice and **the third
+  run finished in about 2 minutes with the one defect that four subagent rounds, census and
+  convergence judgment included, had all missed**. So **the two-launch cap is a budget, not
+  evidence of quality**: whether to stop or draw a third is decided by **how large the remaining
+  doubt is**, with the log's command accumulation as the evidence. If you stop, **write in the PR /
+  TODO that this branch could not use Codex as a convergence signal**
+- **It can be dropped by the content filter.** Engineering-flavoured phrasing gets through
+  ("evaluate this static analyser's parsing soundness", not "find the fail-opens"); **limit the
+  target files explicitly** so it does not wander; ask for **counterexample construction** rather
+  than attack. **One rewrite-and-retry at most** (which consumes the second launch)
+
+It fails differently from a subagent. In PR #51 it caught in one pass what 17 subagent rounds had
+walked past — not from capability but because **it did not share the premises I had handed over**.
+So do not over-brief Codex on history either.
+
+**Subagents are weak where the premise was handed to them (PR #72).** Codex's single finding was
+"if the operator writes the same flag in the `command:` prefix, the conductor appends its own, two
+appear in argv, and `argv.index()` reads the operator's". **Four subagent rounds took argv as
+"something the conductor builds" and nobody looked at the interaction with the prefix.** The harm
+was not only a mis-record but **a fail-open in the very fail-closed check that PR added**.
+**Interaction with elements that come from anywhere other than "the input I built"** is a blind
+spot for a subagent handed the diff and the threat model.
+
+**The axes sometimes differ — but do not generalize from one case; PR #66 did not reproduce it.**
+L174 split cleanly (Codex = environment and operations, subagents = the diff's internal logic),
+while PR #66's two Codex runs were both **internal logic** and one **fully duplicated** a
+blank-slate subagent's finding. Allocate the single launch believing it is "a net on another axis"
+and you will miss. **Expect no split; use it as one independent pass.** The right framing is Codex
+as **a net on a different axis, not a convergence signal**: not "run until clean" but "pass once
+over the surfaces subagents structurally do not look at" (dependencies, preflight, execution
+policy, consistency with repository conventions). That asymmetry also follows from what each is
+given — **subagents get the diff and the threat model, Codex gets only `AGENTS.md`**.
+

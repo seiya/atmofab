@@ -15,16 +15,19 @@ Track record: PR #51 converged after 17 subagent rounds plus 3 Codex passes, and
 defects had been introduced by the fixes themselves**. What follows was derived backwards from
 that breakdown.
 
-`L128` and `L174` below name entries of `TODO.md` by the line they sat on when the work happened
-(as does `L118` in the sibling skill); the lines have moved since, so search TODO.md for
-the subject rather than the number.
+**This file carries the rules; `references/` carries the episode each rule came from.** A rule
+here that does not obviously apply to your case is answered in its reference file, not by
+guessing. `L128` / `L174` name entries of `TODO.md` by the line they sat on when the work
+happened (as does `L118` in the sibling skill); the lines have moved — search TODO.md for the
+subject, not the number.
 
-Reference files, loaded when you need them:
-
-- `references/mutation-testing.md` — the episodes behind the round-0 rules
-- `references/codex-episodes.md` — the stall / filter case log and the launch mechanics
-- `references/sonnet-delegation.md` — the four-data-point experiment log
-- `references/class-descent-log.md` — the per-PR stopping-condition histories
+- `references/mutation-testing.md` — round 0's episodes, and the "spinning in neutral" family
+- `references/measurement-records.md` — why a measured number rots once per round
+- `references/round-conduct.md` — commit granularity, PR staging, orphan waits, over-refusal
+- `references/codex-episodes.md` — the launch mechanics and the stall / filter case log
+- `references/sonnet-delegation.md` — the delegation experiment log and how to keep measuring
+- `references/class-descent-log.md` — per-PR stopping-condition histories and the proxies' evidence
+- `references/signs-episodes.md` — the case history behind each mid-loop sign
 
 ## Review target and commit granularity
 
@@ -33,58 +36,26 @@ Show only the most recent commit and you miss the defects the previous round's f
 in practice **most findings sat inside the previous round's fix**.
 
 **Confirm the working tree matches the commits before handing it over** (`git status
---porcelain` empty). Leave uncommitted changes and the diff the reviewer reads is not the
-thing.
+--porcelain` empty).
 
-**One commit per finding is the default.** Three reasons:
+**One commit per finding is the default**: the mutation check works as-is with `--range
+HEAD~1..HEAD`, which fix answers which finding stays traceable, and the next round can be told
+to look hardest at the files you just fixed. Folding is allowed when splitting is unnatural —
+**say in one line why**, and **read `git show --stat` before writing the message**, which must
+describe everything in the commit (PR #67 folded eight fixes and described two).
 
-- the mutation check works as-is with `--range HEAD~1..HEAD`
-- which fix answers which finding stays traceable afterwards (put the gist of the finding in
-  the commit message)
-- the next round can be told to look hardest at the files you just fixed
+**`git commit --amend` for a message-only fix requires an empty index** (or `--only`); it
+silently absorbs whatever is staged (PR #58: an amend swallowed a file replacement, leaving a
+commit that claims work `git log -S` cannot find).
 
-Not committing separately is allowed when you judge it better (several findings in one place
-where splitting is unnatural, an experimental check, something you expect to revert
-immediately). When you do that, **say in one line why you are not splitting**.
+**If the plan staged the PRs, close each stage before starting the next** — implement A →
+review → fix → merge → then B. The review target is the whole stack, so splitting the history
+afterwards misaligns the review unit from the PR unit, and every fix lands on B while A's tip
+stays "A before review". **The moment stage A is not correct on its own, the point of staging
+is gone.** Recovery: fold into one, or move A's fixes onto A and rebase, or merge in order —
+all more expensive than keeping the order (L174).
 
-**If you fold a whole round into one commit, the message must describe everything in it.** In
-PR #67 I judged splitting unnatural, ran `git add -A`, and wrote a message covering only the
-first two fixes — **saying nothing about the other six in the same commit**. That is a defect on
-the "false evidence" side (the message disagrees with the artifact), and I caught it myself
-rather than a reviewer. Once you decide to fold, **read `git show --stat` before writing the
-message**.
-
-**`git commit --amend` for a message-only fix requires an empty index** (or pass `--only`).
-`--amend` silently absorbs whatever is staged. In PR #58 an `--amend` meant to fix one false
-sentence swallowed a file replacement that happened to be staged, leaving **a commit that
-claims work `git log -S` cannot find**. I did not notice until a reviewer raised it as high. If
-it is unpushed you can fix it by squashing — and say in the message that you did.
-
-## If the plan staged the PRs, close each stage before starting the next
-
-**Implement stage A → review → fix → merge → then implement stage B.** Do not implement both
-and split the history into two afterwards. The review target is `origin/main...HEAD` = **the
-whole stack**, so splitting later **misaligns the review unit from the PR unit**.
-
-L174 (2026-08-14) did exactly this: the plan said "PR A = swap the front end (semantics
-unchanged), PR B =
-visibility (moves verdicts)", and I implemented A and B back to back, split them with `git
-branch` + `git reset --hard`, then ran four rounds against the whole stack. **Most defects the
-review found were in A's code** — a recursion crash, a forgeable classification channel, a
-label-induced over-refusal and a silently renamed grammar, none of which a
-"semantics-preserving swap" is supposed to be able to produce — **and every fix commit landed on
-B**, so PR A's tip was
-"A before review" and **merging it alone would have put the unfixed state on main**. I
-closed PR A and folded the stack back into one; the point of staging was gone.
-
-**The judgment**: staging exists so that "a semantics-preserving swap" and "a change that moves
-meaning" can be read and reverted separately, so **the moment stage A is not correct on its own,
-that purpose is lost**. Recovery is (1) fold into one, (2) move A's fixes forward onto A and
-rebase, or (3) merge the stack in order. (2) needs history rebuilt and re-measurement on both
-branches, so **keeping the order from the start is always cheaper**.
-
-Merge stage A before starting stage B and stage B's review target is automatically stage B
-alone (`origin/main...HEAD` equals stage B's diff). That is the shape the staging was for.
+Episodes for all of the above: `references/round-conduct.md`.
 
 ## Before you hand it over (round 0)
 
@@ -102,212 +73,113 @@ python3 .claude/skills/metdsl-review-loop/scripts/mutation_check.py \
 ```
 
 **Pass `-x`.** The exit code decides the verdict — the output is read only to tell a real
-failure from a suite that never ran — so a killed hunk may stop at the first failure. Hunks run in
-separate worktrees, `min(cores - 2, 4)` at a time by default and never more than the hunk count
-(`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in `--test-cmd`**: the script gives each job its own
-temp root, a prefix overrides it and puts every job back on one, and that is the shape that
-produces failures belonging to no hunk — recorded as `killed`, i.e. a false pin. At more than one
-job it refuses the combination (exit 2) rather than mismeasuring; at `--jobs 1` there is nothing to
-share, so it only says so. **Run the un-mutated baseline once first**: an already-red suite makes every hunk
-look "killed", and a red baseline exits 2 (`--skip-baseline` removes the check — write down why
-if you use it).
+failure from a suite that never ran. Hunks run in separate worktrees, `min(cores - 2, 4)` at a
+time (`--jobs`); 4 hunks × 805 tests measured 5m52s → 43s. **Do not put a `TMPDIR=` prefix in
+`--test-cmd`**: each job already gets its own temp root, a prefix puts them all back on one, and
+failures then belong to no hunk and are recorded as `killed` — a false pin (at more than one job
+the script refuses the combination, exit 2). **Run the un-mutated baseline first**; a red
+baseline exits 2 (`--skip-baseline` removes the check — write down why).
 
-The rules below are compact; `references/mutation-testing.md` carries the episodes each one
-came from, and the reasoning you need when a rule does not obviously apply.
+**Exit codes**: 0 = clean, or the sole survivors are prose-only, or nothing was left to check —
+**so read the hunk count**. 1 = an unannotated survivor, an inconclusive or skipped hunk, or a
+change with no revertible hunk. 2 = the run itself cannot be trusted (red baseline, baseline
+`--timeout`, unresolvable range, `--repo` that is not one, `TMPDIR=` with several jobs).
 
-- **A red baseline is the HARNESS's fault before it is the suite's.** The script's own scratch
-  paths are inputs to the suite it runs: the per-job temp root (`$TMPDIR`) and the worktree
-  location (`--workdir`, whose filesystem DEPTH differs from your checkout's). A suite green in
-  your checkout and red under the harness is almost always one of those, and it is not a finding
-  about your change. Measured in met-dsl: the old `/dev/shm` temp-root default reddened the two
-  `DevShmWriteBlockTests` rows that reason about `/dev/shm`, and the default `--workdir` under
-  `~/.cache` reddens the hook rows that resolve `..` and `~` against the checkout — together they
-  made a full-suite `--test-cmd` impossible to run at all, while the message said "fix the suite".
-  The rule generalises past those two: **the harness's scratch paths must not be paths the suite
-  makes assertions about**, and nothing can know which those are for you. The BASELINE RED message
-  now names both levers; when it fires, try them before touching a test
-- **A documentation-only diff reports every hunk as SURVIVED, and that is a MEASUREMENT, not a
-  failure.** It says no test observes any claim the branch makes, which for prose is usually
-  correct and occasionally not. Do not respond by pinning everything, and do not respond by
-  skipping round 0. Split the hunks: a claim that is **mechanically checkable** — a path that must
-  exist, a table column that must agree with `git`, a pointer that must be reachable — gets a
-  check; everything else is declared prose in the commit message, with the count. On the TODO:414
-  branch this turned 13 of 13 surviving into 5 killed plus 8 named as prose, and writing the
-  checks found an over-refusal before any reviewer saw the branch. **Beware the trap on the other
-  side**: a check that parses prose to decide what a claim IS will refuse correct writing, which
-  is the failure that took two rebuilds and a scope declaration to stop on that same branch
+The rules, one line each; `references/mutation-testing.md` has the episode and the reasoning for
+when a rule does not obviously apply:
+
+- **A red baseline is the HARNESS's fault before it is the suite's** — the per-job temp root and
+  the `--workdir` location are inputs to the suite. **The harness's scratch paths must not be
+  paths the suite asserts about.** The BASELINE RED message names both levers; try them before
+  touching a test
+- **A documentation-only diff reports every hunk SURVIVED, and that is a MEASUREMENT** — split
+  the hunks: mechanically checkable claims get a check, the rest is declared prose in the commit
+  message with the count. Do not write a check that parses prose to decide what a claim IS
 - **Pass `--continue-on-collection-errors` when a hunk comes back INCONCLUSIVE, and drop `-x`
-  when you do.** A mutation can kill pytest during collection, and a scorer reading only `FAILED`
-  lines records that as green (PR #68: 3 mutants hid 41-47 real failures). The two flags cancel:
-  measured, `-x` stops at the first error, so a collection error can end the run with nothing else
-  attempted and the same INCONCLUSIVE comes back. Put both facts in your scorer **and** in the
-  reviewer's instructions
-- **Run the baseline for handwritten sweeps too.** A stale worktree makes a red baseline look like
-  every mutant was killed (PR #67). A sweep interrupted by a timeout never writes the mutation
-  back, so rebuild the worktree or always print the baseline line
-- **If the change is a move, hunk mutation answers almost nothing.** `--range` cannot reach code
-  that moved without changing (PR #68: my 39 mutants had 0 unexpected survivors; a reviewer's
-  independent sweep found 11 real unwitnessed decisions). For move / rename / extract PRs, build
-  **mechanism-level mutants over every mechanism in the files you touched**
+  when you do** — a mutant can kill pytest during collection and a `FAILED`-line scorer reads
+  that as green (PR #68: 3 mutants hid 41-47 real failures). Put both facts in the reviewer's
+  instructions too
+- **Run the baseline for handwritten sweeps too** — a stale worktree makes a red baseline look
+  like every mutant was killed (PR #67)
+- **If the change is a move, hunk mutation answers almost nothing** — `--range` cannot reach code
+  that moved without changing. For move / rename / extract PRs build **mechanism-level mutants
+  over every mechanism in the files you touched** (PR #68: my 39 mutants, 0 unexpected survivors;
+  a reviewer's independent sweep found 11)
 - **Past 50 lines, a hunk hides the decisions inside it** — re-target each judgment individually
 - **Survivors** mean no pin, or a neighbouring check killing it. Fix them or write down why not.
-Test-file hunks are excluded by default (`--include-tests`
-  keeps them). **Nothing else is excluded on a guess about `#`**: it opens a heading in Markdown
-  (which this repository pins), a preprocessor directive in the c/cpp families, a shebang, a lint
-  pragma, and inside a Python string or a YAML block scalar it is the prompt-template text met-dsl
-  pins. Prose hunks are checked and, for Python only, LABELLED by comparing ASTs. One half of a
-  code move is expected to survive, so read the pair together — though a move between Python
-  modules usually reports INCONCLUSIVE for the halves whose import breaks at collection, so pass
-  `--continue-on-collection-errors` first
-- **Prose-only hunks are annotated, not excluded** (`[prose-only (comment/docstring) —
-  expected]`): comments and docstrings alike are checked, because real tests pin prompt templates
-  and contract text. The classification is an AST comparison over Python files, so a `#` line
-  added inside a string literal is NOT prose — it changes a constant — and a prose hunk in any
-  other file type is reported unlabelled. **An unannotated survivor exits 1, and so
-  does any inconclusive or skipped hunk, or a change with no revertible hunk. Exit 0 means a clean
-  run, or one whose sole survivors are prose-only (comments or docstrings) — and also a range with
-  nothing left to check, which is why the hunk count is what you read. Exit 2 means the run
-  itself cannot be trusted** — a red baseline, a baseline that hits `--timeout` (1800s default), a
-  range that does not resolve, a `--repo` that is not one, or a `TMPDIR=` in `--test-cmd` with
-  several jobs. In PR #67, 2 of 5 survivors were docstrings listed
-  beside 3 real defects.
-  The annotation is decided mechanically by AST comparison (blank the docstring, is it
-  isomorphic), so **a hunk that also carries a code move is never annotated** and stays an
-  unmarked SURVIVED — the absence of the annotation is not evidence that a hunk is code
-- **Get `--range`'s base wrong and "no hunks in range" looks green** — it exits 0, because a
-  range that resolves to nothing is not a failure. Check that the output states a hunk count. The
-  causes: a base that resolves but is wrong (after a MERGE `origin/main..HEAD` is empty; after a
-  REBASE it is not — it is your own commits, replayed), a `--paths` that matches nothing, and a
-  round whose diff is all test files. A change with no revertible hunk — a pure rename, a binary
-  file, a mode change, an empty new file — is listed by name and exits 1 whatever else the run
-  found, because nothing was tested for it
-- **If the change's mechanism lives inside a test file, hunk mutation does not apply.** "Nothing to
-  check" with a correct base is **not applicable, not a pass** (PR #58). `--include-tests` does not
-  rescue it: reverting an ADDED test hunk deletes an assertion, so it always survives. (A hunk
-  that CHANGED an assertion is different — reverting it makes the old assertion contradict the
-  fixed code, so it reports `killed` while saying nothing about the code under review.) Build mutants that kill each decision of the new machinery one at a time
-- **Do not handwrite a mutation harness.** PR #53's produced three real harms, the worst being
-  `str.replace` rewriting all occurrences at once so per-site mutation showed 2 of the 3
-  surviving, both of them reachable fail-opens. If you must, **count the occurrences and hit them
-  one at a time**, and **assert the
-  patch applied** — a mutation that did not apply is indistinguishable from green (PR #76).
-  **A mutant list REUSED across rounds goes stale as the source moves**, and then reports as a
-  survivor: on PR #86 three "survivors" in one sweep were stale target strings, visible only
-  because the harness printed `PATCH DID NOT APPLY` instead of counting them green. Re-point them
-  before reading the result, and treat a not-applied patch as a failed run rather than a finding. The
-  script is not universal either: one hunk can bundle a pinned and an unpinned change, so **follow
-  up at line granularity when one rule lives in N places**
-- **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too** (done
-  twice on the issue #63 PR, once losing an uncommitted P1 fix). Use a separate worktree (the
-  script's default; with `--keep` those worktrees stay REGISTERED in your repository, and
-  `git worktree prune` will NOT unregister one whose directory still exists — `git worktree remove
-  <path>` does) or a `cp` backup
-- **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk looks
-  like a pass (L128: deleting the scope mechanism outright kept everything green and all 5 tests
-  meant to pin it were inert). The countermeasures, each with its episode in the reference file:
+  Test-file hunks are excluded by default (`--include-tests` keeps them); **nothing else is
+  excluded on a guess about `#`**. Prose-only hunks are **annotated, not excluded**
+  (`[prose-only (comment/docstring) — expected]`), by AST comparison over Python files only — so
+  a `#` inside a string literal is not prose, a prose hunk in another file type is unlabelled,
+  and **a hunk that also carries a code move is never annotated**: a missing annotation is not
+  evidence that a hunk is code. One half of a code move is expected to survive — read the pair
+  together
+- **Get `--range`'s base wrong and "no hunks in range" looks green** (exit 0). Causes: a base
+  that resolves but is wrong (`origin/main..HEAD` is empty after a merge; after a rebase it is
+  your own commits replayed), a `--paths` matching nothing, a round that is all test files.
+  A change with no revertible hunk — pure rename, binary, mode change, empty new file — is
+  listed by name and exits 1
+- **If the change's mechanism lives inside a test file, hunk mutation does not apply** — "nothing
+  to check" with a correct base is **not applicable, not a pass**, and `--include-tests` does not
+  rescue it (reverting an ADDED test hunk deletes an assertion, so it always survives). Build
+  mutants that kill each decision of the new machinery one at a time
+- **Do not handwrite a mutation harness** (PR #53's `str.replace` rewrote all occurrences at
+  once, hiding 2 reachable fail-opens). If you must: hit occurrences one at a time, **assert the
+  patch applied**, and **re-point a mutant list reused across rounds** — a stale target reports
+  as a survivor (PR #86), and a not-applied patch is a failed run, not a finding
+- **Never revert a mutation with `git checkout -- <file>`; it deletes uncommitted work too.** Use
+  a worktree (the script's default; `--keep` leaves it REGISTERED — `git worktree remove <path>`,
+  not `prune`) or a `cp` backup
+- **Mutation checking cannot detect a test spinning in neutral.** A live-but-unobserved hunk
+  looks like a pass (L128: deleting the scope mechanism outright kept everything green and all 5
+  tests meant to pin it were inert). Countermeasures — each with its episode in the reference:
   - **run one mutation that deletes a whole mechanism** (pass-through `return`, constant condition)
-  - **a mutation list you build carries your own blind spots** — a layer you did not recognize as a
-    mechanism is never mutated (L174: an offset-translation layer replaced by the identity kept 825
-    tests green). Hence the standing instruction to reviewers to build their own; **do not hand
-    over your list**
-  - **doubt once why a test passed**, especially when it felt obvious: until every other path in
-    the fixture that could produce the expected violation is removed, it does not pin its name
-  - **a negative assertion is green when the detector breaks — self-test the detector** by feeding
-    it one string that must be flagged and one that must be admitted, with the rule defined once
-    and called from both sides (PR #76)
+  - **a mutation list you build carries your own blind spots**; hence the standing instruction to
+    reviewers to build their own, and **do not hand over your list**
+  - **doubt once why a test passed**, especially when it felt obvious
+  - **a negative assertion is green when the detector breaks — self-test the detector**
   - **when a mutant dies, read why**: a kill from a setup error is worth exactly as much as green
-    (PR #57, twice)
-  - **when you rewrite a test, diff what the old version observed** — PR #57 deleted the only
-    witness of a mechanism it deliberately kept
-  - **a test that reproduces the wiring does not observe the wiring**: if it does not call the
-    production entry point, it pins "the argument is forwarded", not "that value is chosen" (issue
-    #63). **And that shape lies in its docstring easily** — grep the body for the function names
-    the docstring claims to drive. On TODO:269 a row named
-    `test_the_cli_answers_with_a_dedicated_exit_code`, whose comment said "this runs `main` in a
-    real interpreter", drove a gate helper and printed a module CONSTANT; `main` was never
-    entered, and the exit code it was named for had no witness at all
-  - **A CLASS docstring goes stale as rows are appended to the class, and nobody re-reads it.**
-    Distinct from the row above: the prose was TRUE when written and became false by addition. On
-    TODO:269 a class docstring said "these drive the REAL CLI in a REAL subprocess" when all its
-    rows did; two rows added later read module attributes, one of them calling `main` in-process
-    — **in a class I had created one round after renaming a sibling for exactly this**. When you
-    append a row to an existing class, re-read the class docstring as part of the append
-  - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
-    together, a missing element goes unnoticed
-  - **a test can pass because of the SUITE'S OWN ENVIRONMENT.** Distinct from "two paths to the
-    outcome": here the fixture is fine and `conftest.py` is what decides the verdict. On PR #86 a
-    session fixture redirected `METDSL_WORKFLOW_HOMES_ROOT` for every test, so a test asserting
-    which protected root a path falls under was reasoning about a nesting that did not exist while
-    it ran — green under pytest, **failing under `env -u <VAR> python3 -m unittest <dotted.path>`**,
-    which is the production resolution. Two tests on that branch had it.
-    - **The tell**: the test reasons about a RELATIONSHIP (this path is under that root, this id
-      matches that record) whose two halves are not both built by the fixture
-    - **The check is one command.** Run the branch's new test classes both ways and diff the
-      verdicts. Cheap enough to be routine when conftest touches the environment at all
-    - **The fix is not to unset the variable — it is to build the relationship in the fixture**, so
-      the test asserts the workflow's answer instead of the harness's
-  - **a mechanism that guards the HARNESS cannot be witnessed from inside the suite.** If the same
-    protection also comes from `conftest.py`, every mutant of it is green there, and the thing it
-    prevents happens only where conftest is not loaded. PR #86's module-level redirect — added
-    after two reviewers wrote real directories into the operator's home — survived every mutation
-    until the witness left the process: **a subprocess running a dependent class under plain
-    `unittest` with a fake `$HOME`, asserting the directory never appears.** Reach for this
-    whenever the mechanism's whole purpose is what happens outside the runner you are testing under
-  - **when a comment JUSTIFIES a rule, mutate the property the justification names.** The rule
-    usually has a witness and the property holding it up usually does not. On PR #81 the
-    surviving justification for passing `METDSL_*` by prefix was "the names that redirect a leaf
-    are outside the prefix BY CONSTRUCTION" — true only because the match is anchored, and
-    `startswith` -> `in` kept all 4972 tests green, admitting `MY_METDSL_API_KEY`. The neighbouring
-    spelling too: the prefix STRING was separately unpinned, and shortening `"METDSL_"` to
-    `"METDS"` stayed green while widening the namespace to one the repo does not own. Read your own
-    justification as a list of claims and write one mutant per claim — and note this is the sign's
-    other half: rewriting a justification three times (below) is when its supporting property is
-    newest and least witnessed
-  - **one test per occurrence of a rule, not per rule** (PR #53: the same line in three gates, two
-    of them surviving as reachable fail-opens)
-  - **The sharpest trigger for that is a TWIN.** When a change touches one of a matched pair —
-    two exit codes, two markers, two gates, the two halves of a symmetry — **the witness you build
-    for one is the specification for the other, and building only one is the likeliest miss you
-    will make.** On TODO:269 I built a real-subprocess witness for exit code 4 and none for its
-    twin exit code 3, in the same commits, while adding three readers keyed on rc 3 plus a
-    `--help` line and a RUNBOOK entry: mutating rc 3's mapping to `return 1` left **1555 rows
-    green**, and three review rounds walked past it. The check is mechanical — **list the pair,
-    then list your witnesses, and compare the two lists** before handing over
+  - **when you rewrite a test, diff what the old version observed**
+  - **a test that reproduces the wiring does not observe the wiring** — and that shape lies in its
+    docstring easily; grep the body for the function names the docstring claims to drive
+  - **a CLASS docstring goes stale by ADDITION** — re-read it when you append a row
+  - **a test can pass because of the SUITE'S OWN ENVIRONMENT** (a `conftest.py` redirect). The
+    tell: the test reasons about a RELATIONSHIP whose two halves are not both built by the
+    fixture. The check is one command — run the new classes under pytest and under
+    `env -u <VAR> python3 -m unittest <dotted.path>` and diff the verdicts. The fix is to build
+    the relationship in the fixture, not to unset the variable
+  - **a mechanism that guards the HARNESS cannot be witnessed from inside the suite** — put the
+    witness in a subprocess outside the runner
+  - **when a comment JUSTIFIES a rule, mutate the property the justification names** — the rule
+    has a witness, the property holding it up usually does not
+  - **one test per occurrence of a rule, not per rule** — and **the sharpest trigger is a TWIN**:
+    when a change touches one of a matched pair, list the pair, list your witnesses, compare the
+    two lists before handing over
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
-    version with one level of syntactic nesting (PR #53: the round after the flat version was
-    fixed, the nested version ate the fix)
+    version with one level of syntactic nesting
 
-2. **Do not type measured values by hand; generate them from the artifact you measured.** Keeping
-   "a list of every place you wrote a number, re-measured at the end" is not enough — in PR #66 I
-   **mistyped it immediately after measuring** (measured suite 4679, wrote 4680). Seven numeric
-   errors appeared on that one branch, the last of them in the PR body's disclosure section. What
-   worked was **a script that substitutes the numbers in TODO / docs from the measurement
-   artifacts**, run and diffed. Leave no path where a human transcribes.
+2. **Do not type measured values by hand; generate them from the artifact you measured.** A list
+   of "every place you wrote a number, re-measured at the end" is not enough, and **"re-measure
+   at the end" fails outright once a review loop starts, because the end keeps moving** — a fix
+   commit adds a test or a hunk, so answering a finding invalidates the ledger describing the
+   branch. **The form is the bug, not the numbers**:
 
-   **"Re-measure at the end" fails outright once a review loop starts, because the end keeps
-   moving.** On TODO:269 one paragraph rotted **three times, twice inside a commit whose stated
-   purpose was to restate it** — each restatement was correct when written and was falsified by
-   the next round's own fix commits, and reviewers reported the same two numbers in three
-   consecutive rounds. Note the shape: a fix commit adds a test or a hunk, so the very act of
-   answering a review finding invalidates the ledger that describes the branch.
-
-   - **The form is the bug, not the numbers. Write every measurement as a HISTORICAL RECORD that
-     names the commit it was taken at** ("at `7c6d187`: 17 hunks, 10 killed …"). A record cannot
-     go stale; a claim about the present can, and will, once per round. A reader who needs today's
-     figure runs the command.
+   - **Write every measurement as a HISTORICAL RECORD naming the commit it was taken at** ("at
+     `7c6d187`: 17 hunks, 10 killed …"). A record cannot go stale; a claim about the present can,
+     and will, once per round
    - **State the PROPERTY the count stands for, next to the count** ("every behavioural hunk is
-     pinned"). That is the part the reader needs and the part that does not move — and it is what
-     survives when the number is obsolete anyway.
-   - **A count with no unit is not reproducible.** "14 hunks" was reported as 19 and as 16 by two
-     reviewers before anyone noticed the figure depends on the diff CONTEXT WIDTH (`-U0` / `-U3` /
-     `-U5` gave 21 / 17 / 15 on one range). Name the width, the command, and the exclusions.
-   - **Recording that a number "was right when written" does not stop the next rot** — that
-     sentence itself was written twice and rotted twice. Only changing the form stopped it.
+     pinned") — that is what the reader needs and what survives when the number is obsolete
+   - **A count with no unit is not reproducible** — "14 hunks" came back as 19 and 16 because the
+     figure depends on the diff CONTEXT WIDTH. Name the width, the command, and the exclusions
+   - **Recording that a number "was right when written" does not stop the next rot.** Only
+     changing the form stopped it
+
+   Episodes: `references/measurement-records.md`.
 
 3. **Run the verification set** and record the measurements. The commands are in
    `.claude/skills/metdsl-enforcement-change/references/verification.md` (suite baseline, ruff
-   diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for enforcement
-   machinery).
+   diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for
+   enforcement machinery).
 
 4. **Leave the list of surfaces you touched** in the commit message or TODO.md. That is where
    reviewers attack from.
@@ -318,208 +190,112 @@ Test-file hunks are excluded by default (`--include-tests`
 correctness+regression+doc-truth).
 
 **One round of the loop puts BOTH agents on the disclosure axis instead** — doc-truth bundled
-with correctness loses to it, measured. Plan it before you decide to stop. The evidence and the
-two briefs are under "Stopping conditions"; this line is here because a reader composing round
-prompts reaches that section 400 lines later. **A disclosure round runs no security agent, so
-it neither advances nor resets the two-consecutive-clean-security-rounds condition below.**
+with correctness loses to it, measured. Plan it before you decide to stop; the two briefs are
+under "Stopping conditions". **A disclosure round runs no security agent, so it neither advances
+nor resets the two-consecutive-clean-security-rounds condition.**
 
-- **Do not edit until both results are in.** Touch a file while one is running and its findings
-  go stale (this happened). But in PR #53 one ran for **78 minutes** and I broke this rule twice.
-  **Do not rely on the prohibition; absorb it in the launch prompt**:
+- **Do not edit until both results are in** — touch a file while one is running and its findings
+  go stale. **Do not rely on the prohibition; absorb it in the launch prompt**:
 
   > "**HEAD may advance while you run. Re-verify each finding against the current HEAD before
   > reporting, and state which revision you measured on.**"
 
-  The one report that did this unprompted was the most useful of that round. If you do start
-  editing, **write the fact and the time into the next round's prompt**.
+  If you do start editing, **write the fact and the time into the next round's prompt**.
 - Always in the prompt: **the target is `git diff origin/main...HEAD`**, and **"do not modify the
-  checkout; run mutation tests against a `git archive` snapshot or a separate worktree"** (one
-  agent left the working tree mutated and invalidated another review's results)
-- **A scratchpad per agent.** Spell out: "**create your own subdirectory; do not reuse or
-  overwrite existing paths**" (one agent wrote a file with the same name as mine, `mutate.py`,
-  and broke the harness). Put your own working files in a subdirectory the same way
-- **Hand over this environment's trap**: in an agent session `grep` may be shadowed — measured
-  here, a shell function that execs `ugrep` with `--ignore-files`, so it **respects `.gitignore`**
-  (a plain interactive shell has the real `grep`; check with `type grep`). Have corpus measurements enumerate with `find` / `os.walk` (1 of
-  365 files was visible, and I nearly designed on the false premise that "`interface` occurs 0
-  times")
+  checkout; run mutation tests against a `git archive` snapshot or a separate worktree"**
+- **A scratchpad per agent**: "**create your own subdirectory; do not reuse or overwrite existing
+  paths**". Put your own working files in a subdirectory the same way
+- **Hand over this environment's trap**: in an agent session `grep` may be shadowed — a shell
+  function execing `ugrep --ignore-files`, so it **respects `.gitignore`** (check with `type
+  grep`). Have corpus measurements enumerate with `find` / `os.walk` (1 of 365 files was visible
+  once, and I nearly designed on "`interface` occurs 0 times")
 - Write "report only what you ran. Give reproduction steps and file:line. **State explicitly if
   you found nothing**" — this prevents filler
-- **What you may hand over to reduce duplication is the axis, not the list.** Saying "hunk
-  mutation over the diff range is done and green" moves budget to *sibling rules outside the
-  diff* and *mechanism level*; handing over my mutation list breaks independence, naming which
-  axes are covered does not. In PR #68 most of the reviewer's sweep was a re-run of my mutants
-  (the yield was concentrated outside the diff)
-- **Spell out the process and shared-resource rules.** Three accidents happened for real, each
-  spilling into other sessions: an unscoped `pkill -f "pytest tools/tests/"` took out my run and
-  another session's; a `until ! kill -0 $(pgrep -f "pytest tools/tests")` wait **matched its own
-  cmdline** and left four orphans spinning for 45 minutes; agents left 4.6GB in `/tmp` and 14.7GB in
-  `~/.cache`, and the next reviewer hit `0 bytes free`. So the prompt says: no unscoped `pkill`;
-  **create only waits whose exit condition can be satisfied, and no background polling**; `/tmp` is
-  a shared tmpfs, delete the trees you create.
-  - **Handing over the rules is not enough. At the end of the round, check for orphans and kill
-    them by PID.** All three were written explicitly in the prompt and broken anyway, in the shape
-    this skill gives as its example (`until ! pgrep -f mut5.py` matching its own zsh command line).
-    Pick them up with `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID
-    — `pkill -f` re-enacts the first accident. **Before killing anything, confirm no process doing
-    real work is alive at the same time**: the orphan and the work it was waiting for look alike
-  - **The symptom disguises itself as "the subagent is running and never returns".** I once waited
-    on the precedent that long runs happen, when there was no work to wait for. When `ListAgents`
-    shows running, suspect that agent's child processes
-  - **This trap catches me too.** On the issue #63 PR I forbade the shape to three reviewers,
-    killed the one that broke it, and ran four of my own waits in the same shape for 5.7 hours
-    (`until ! pgrep -f "mutation_check.py"` matching itself; the real run had finished hours
-    earlier). The user noticed. My end-of-round check was `ListAgents` only — **I never looked at
-    my own background shells**
-  - **A wait must not carry the name of what it waits for in its own command line.** Safe forms:
-    (a) for work the harness tracks, **do not poll — the completion notification arrives**, (b)
-    **wait on the PID** (`while kill -0 <pid> 2>/dev/null; do sleep N; done`), (c) split the
-    matching string. **The end-of-round check is `ListAgents` and `ps`, both**
-  - **Evaluate the exit condition ONCE, by hand, before you leave a wait running.** "Can be
-    satisfied" is not a property you can see by reading — twice on PR #81 I wrote a
-    condition that was false for every possible input, the second being
-    `until grep -qE "…" a.txt b.txt | grep -c . | grep -q 2`: `-q` prints nothing, so the count is
-    always `0` and no suite result could ever end it. It also survives the thing it waits for:
-    the other one watched an output file whose producer I had killed, so it polled a
-    permanently empty file. Run the condition once and look at the exit status; if it is already the
-    value that ends the loop, the loop is pointless, and if it cannot reach that value it is an
-    orphan you have not noticed yet
-  - **Two things make the end-of-round `ps` check actually fire.** (i) it is a reconciliation, not
-    a memory: keep the PID of every wait you start and match the list, because "did I leave one
-    running" is exactly the question a tired reviewer answers wrong; (ii) **a backgrounded wait
-    returns immediately** — you get a task id, not a pause — so a turn that launches one and then
-    keeps working has NOT waited, and the loop is still out there. On PR #81 I noticed
-    that mid-session, said so, and still left two behind for the user to find
+- **What you may hand over to reduce duplication is the axis, not the list.** "Hunk mutation over
+  the diff range is done and green" moves budget to sibling rules outside the diff and to
+  mechanism level; handing over your mutation list breaks independence
 - **Include "build your own mutants that delete one mechanism at a time, run them, and report
-  survivors".** Do not hand over your mutation list — independence is the point (see L174 above)
-- **If the reported HEAD is a hash you do not recognize, find out what commit it is first.** Even
-  when you have not edited, the user or another session can commit to the same branch (L174: a
-  reviewer reported `d24a7bb`, which was not my commit). That is concurrency, not staleness — read
-  it and judge whether it collides with your scope
-- **Hand over the threat model and the purpose in one paragraph** (the first half of "Fix or out
-  of scope" below): "a single-operator research workflow platform; what is defended against is a
-  deviating `LLM` leaf and the defects my own changes introduce; hardening paths only the operator
-  can reach, and handling constructs that exist nowhere in the real corpus, are out of scope."
+  survivors"**
+- **Spell out the process and shared-resource rules**: no unscoped `pkill`; **create only waits
+  whose exit condition can be satisfied, and no background polling**; `/tmp` is a shared tmpfs,
+  delete the trees you create. Three accidents happened for real, each spilling into other
+  sessions. **Handing over the rules is not enough** — all three were in the prompt and broken
+  anyway, and I have broken them myself for 5.7 hours at a stretch:
+  - **A wait must not carry the name of what it waits for in its own command line.** Safe forms:
+    (a) for work the harness tracks, **do not poll — the completion notification arrives**,
+    (b) **wait on the PID**, (c) split the matching string
+  - **Evaluate the exit condition ONCE, by hand, before you leave a wait running.** "Can be
+    satisfied" is not visible by reading; run it and look at the exit status
+  - **The end-of-round check is `ListAgents` and `ps`, both** — pick orphans up with
+    `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID (`pkill -f`
+    re-enacts the first accident), after confirming no process doing real work is alive at the
+    same time. It is a **reconciliation**: keep the PID of every wait you start and match the
+    list — and remember **a backgrounded wait returns immediately**, so a turn that launches one
+    has not waited
+  - **The symptom disguises itself as "the subagent is running and never returns"** — when
+    `ListAgents` shows running, suspect that agent's child processes
+- **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
+  the user or another session can commit to the same branch. That is concurrency, not staleness
+- **Hand over the threat model and the purpose in one paragraph** (from "Fix or out of scope"
+  below): "a single-operator research workflow platform; what is defended against is a deviating
+  `LLM` leaf and the defects my own changes introduce; hardening paths only the operator can
+  reach, and handling constructs that exist nowhere in the real corpus, are out of scope."
   **Without it the report fills with future forms of details.** But **do not name individual
   findings as excluded** — that is an exclusion list, subject to the three-round rule below
-
 - **For a change that adds checking machinery, include "construct legitimate work that this check
-  wrongly refuses".** Ask only for misses and the over-refusals stay. PR #66 hit this twice:
-  pinning the **list** of scanned files made **adding one ordinary new module a scope violation**,
-  and moving a migration doc to the location the rule specifies reported "knowledge grew in the
-  neutral core". Both harm the same way — **they teach the habit of regenerating without reading
-  the rule, and destroy the value of the pin**. The criterion is whether the pin is on **the rule**
-  or on **the result the rule produced**; pinning results makes ordinary work fail
+  wrongly refuses".** Ask only for misses and the over-refusals stay. The criterion is whether the
+  pin is on **the rule** or on **the result the rule produced**; pinning results makes ordinary
+  work fail and teaches the habit of regenerating without reading the rule
 - **Over-refusal is not a one-off trap; it is my default error direction. Put a probe in every
-  round.** Twice in PR #66 and **three more times in PR #67** (five total), and PR #67's three
-  **recurred each time I rewrote the same rule**: ① "every record should be implemented" refused
-  registering before writing the backend (a state the docs call the default) → ② "every axis has
-  one implemented member" **refused the docs' three-step "Adding an axis" outright** (a new axis
-  has neither an implementation nor a declarable capability) → ③ extending the duplicate-definition
-  guard to dict values flagged a legitimate mapping. **Miss-direction bugs come one per round;
-  over-refusal comes in a new shape with every rewrite.** Four countermeasures that DETECT it —
-  a fifth that prevents it is the next bullet: (a) for each check
-  you write, construct one piece of correct work that violates it, (b) **keep the over-refusal probe
-  in the reviewer instructions through the final round** (not once), (c) if over-refusals persist
-  after two rewrites, conclude **the rule is not an invariant** and change its shape, (d) **build
-  probes from the project's own "what we do next", not from imagination** — in PR #68, widening the
-  scan to the whole backend directory refused **the very area the migration ledger names as
-  next** (`build_system/make`),
-  and a reviewer produced it just by reading the ledger. Implementing the next TODO / plan item is
-  the cheapest over-refusal probe there is (PR #67 landed on "a census that constrains nobody's
-  registration" = moving the target from a rule to **checking the declaration**)
-- **A fifth countermeasure, and the one that actually worked: when you add a FLOOR, default to
-  FILL rather than REFUSE.** The others detect over-refusal after you write it; this one stops you
-  writing it. Ask what the missing thing IS. An input that omits a value has said nothing that
-  contradicts you — and if the value is something the layer already knows (its own arguments, a
-  field the record carries), supply it. Refuse only a DISAGREEMENT, where two sources make
-  incompatible claims and you cannot tell which is wrong. PR #81 got this backwards first: told
-  that a fallback path skipped an id check, I made it refuse, and one exported variable took the
-  suite from 4971 passed to 152 failed while production turned the same `ValueError` into
-  `fail_closed` — an unreachable stale record traded for a reachable killed run. Rewritten as
-  "overwrite the stale value, refuse only a disagreement" it fixed the finding and broke nothing.
-  The two later floors on that PR were written FILL-first for this reason, and the second is the
-  clearest case: refusing a profile that lacked the ids would have rejected every profile
-  persisted before the branch, i.e. broken `--resume` of an older run, while filling them from the
-  record's own fields cost one line. **Before writing a refusal into a floor, name the legitimate
-  input it rejects.** If you cannot, you have not looked; if you can, that input is the test.
+  round.** Five instances across PR #66 / #67, three of them recurring **each time I rewrote the
+  same rule**. Miss-direction bugs come one per round; over-refusal comes in a new shape with
+  every rewrite. Four countermeasures that DETECT it: (a) for each check you write, construct one
+  piece of correct work that violates it, (b) **keep the probe in the reviewer instructions
+  through the final round**, (c) if over-refusals persist after two rewrites, conclude **the rule
+  is not an invariant** and change its shape, (d) **build probes from the project's own "what we
+  do next", not from imagination** — implementing the next TODO / plan item is the cheapest
+  over-refusal probe there is
+- **The fifth countermeasure, and the one that actually worked: when you add a FLOOR, default to
+  FILL rather than REFUSE.** An input that omits a value has said nothing that contradicts you;
+  if the value is something the layer already knows, supply it. Refuse only a DISAGREEMENT, where
+  two sources make incompatible claims and you cannot tell which is wrong. **Before writing a
+  refusal into a floor, name the legitimate input it rejects** — if you cannot, you have not
+  looked; if you can, that input is the test
+
+Episodes for the last four bullets, and the three accidents in full: `references/round-conduct.md`.
 
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
 "the implementation is right but the test is weak" as real.
 
-**Verify a reviewer's negative claims the same way.** This is the flip side of "verify agent
-findings by execution" and is easy to miss. In PR #66 a sweep reported "only the token ratchet
-kills this hunk (= the pin is weak)"; checking showed **a test in another file caught it
-correctly** — that file was simply not in the sweep's narrow gate. **When told "only X caught
-it", check whether the files holding the other guards were inside that reviewer's test command.**
-If not, it is a report about the measurement scope, not a measurement.
+**Verify a reviewer's negative claims the same way.** In PR #66 a sweep reported "only the token
+ratchet kills this hunk"; a test in another file caught it correctly and was simply outside the
+sweep's gate. **When told "only X caught it", check whether the files holding the other guards
+were inside that reviewer's test command.** If not, it is a report about the measurement scope.
 
 ## Delegate verifiable work to sonnet
 
 **Operational conclusion (4 data points, the confound resolved in PR #72 by giving both models
 the same checklist): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
-cheap, so run more" does not hold — **use it only to free up a slot**.
+cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
+`model: "sonnet"`, **in parallel** with the up-model reviewers; it adds an axis rather than
+replacing one.
 
-Run one via `Agent` with `model: "sonnet"`, **in parallel** with the up-model reviewers. It adds
-an axis, so add it to the default two rather than replacing them.
+**Work you may delegate (verifiable = running it settles the truth)**: re-measuring every number
+in the diff; back-checking "recorded in X" / "pinned by Y" / "covered by Z"; a correspondence
+table of whether each new failure class has a test; counting the call sites that make the same
+decision; contradictions between prose and implementation.
 
-**This stays an experiment: add a data point each time you use it, and delete this section if it
-stops paying.**
+**Work you must not delegate**: open-ended "find bugs" (plausible noise grows and **I** pay the
+triage), and layers needing a hypothesis → mutate → run cycle (gate semantics, parsers, offset
+arithmetic).
 
-**Work you may delegate (verifiable = running it settles the truth)**:
-
-- **re-measure every number in the diff** and report mismatches (counts, byte counts, suite
-  counts, "M of N")
-- **back-checking claims** of the form "recorded in X", "pinned by Y", "covered by Z" (grep for
-  existence; delete the test and see it fail)
-- **a correspondence table of whether each new failure class has a test**
-- **counting the call sites that make the same decision** (marker scans, category classification,
-  early returns)
-- contradictions between prose and implementation (docstring / doc / SKILL behaviour vs the code)
-
-**Work you must not delegate**:
-
-- open-ended "find bugs" — plausible noise grows and triage gets expensive. Since every finding
-  is reproduced by me, low-precision search consumes **my** time
-- layers needing a hypothesis → mutate → run cycle: gate semantics, parsers, offset arithmetic.
-  L174's three findings of that kind all needed the round trip — the unobserved offset-translation
-  layer, an exemption granted by `result`, and the label family
-
-**Make the prompt a checklist** (not free-form). Hand over the same ground rules as above: do not
-modify the checkout / a dedicated scratchpad / `grep` may be shadowed and respect `.gitignore` /
-report only what you
-ran / HEAD moves.
-
-**Numbers to collect**: real findings / total findings, elapsed time, and the **overlap count**
-with the up-model. One up-model plus one sonnet against the same HEAD in parallel gets this for
-free.
-
-**How to read overlap — high overlap does not mean "no point adding", it means "replaceable".**
-Look only at the adding axis and forget the removing axis and you misread it (the first version of
-this section did exactly that, and was wrong).
-
-| Result | Meaning | What to do |
-|---|---|---|
-| sonnet ⊇ opus | this axis is fine on the cheap model | **move the axis to sonnet permanently**; spend the freed up-model slot on deep layers |
-| sonnet ⊂ opus (with misses) | partial substitute | look at what it dropped: mechanical → reject; judgment-requiring → the axis is cut wrong |
-| sonnet ∖ opus ≠ ∅ | it works as an independent eye | keep both |
-| mostly false positives | triage costs more than it yields | reject |
-
-**Do not confound the comparison.** To measure substitutability (row 1), **give both the same
-checklist**. To measure whether it works as a different axis, use different prompts. A comparison
-with a checklist on one side and free-form on the other yields neither conclusion.
-
-**This conclusion holds only inside the axis delegated.** "sonnet matched opus at recomputing
-numbers" does not give "it matches on parser semantics". Measure per axis.
-
-**The reverse is not an experiment.** When the implementation was sonnet or fable, reviewing with
-opus is plain quality escalation — do it without hesitating. Finding a defect is often harder than
-writing the code (L174's offset-translation layer: 10 lines to write, a purpose-built mutant to
-find).
-
-The experiment log for all four data points is in `references/sonnet-delegation.md`.
+**Make the prompt a checklist**, not free-form, and hand over the same ground rules as above.
+**This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
+add a data point each time, and delete this section if it stops paying. How to read overlap, how
+not to confound the comparison, and why the reverse (opus reviewing sonnet's implementation) is
+not an experiment at all: `references/sonnet-delegation.md`.
 
 ## Exclusion lists (the most important section)
 
@@ -539,75 +315,43 @@ had dropped it into residual).
 **Codex's token budget is scarce. One launch per branch as a rule, two at the most.** Do not launch
 in round 1 — round 1 findings are the coarse layer subagents also produce, and spending the launch
 there **leaves nothing for the moment independence pays most: after your own fixes have piled up**.
+Launch once **in round 2 or 3** (do not save it for the end).
 
-Launch once **in round 2 or 3** (do not save it for the end). Its perspective is independent.
-
-**Cases where not launching is better** (spend a blank-slate subagent review instead):
-
-- **a change that adds checking machinery** — Codex structurally almost always finds "one more
-  construct", so clean never comes back and it is not a convergence signal. Use it once as a source
-  of test cases, or not at all
-- the diff is prose / doc centred and changes no mechanism behaviour
-- the previous round's findings are still unfixed — spend the launch on the fixed HEAD
+**Cases where not launching is better** (spend a blank-slate subagent review instead): a change
+that **adds checking machinery** (Codex structurally always finds "one more construct", so clean
+never comes back and it is not a convergence signal); a prose / doc-centred diff; a HEAD whose
+previous findings are still unfixed.
 
 **`/codex:review` and `/codex:adversarial-review` are `disable-model-invocation: true` — I cannot
-launch them** (they are for the user to type). The command bodies are one line of the companion
-script, so **call that directly**; the mechanics, the flags, and the failure modes are in
-`references/codex-episodes.md`. The operating rules that decide what you do:
+launch them**; the command bodies are one line of the companion script, so call that directly.
+The mechanics, the flags and the failure modes are in `references/codex-episodes.md`. The rules
+that decide what you do:
 
-- **Prefer native `review`. `adversarial-review` stalls more often** (measured). Only adversarial
-  takes focus text, but the probability of getting an answer back outweighs that. Run native once
-  first even when you want to narrow the focus
-- **Never wrap it in `timeout`. `--background` does not detach** — killing the launcher kills the
-  codex child, and the job record stays `running`, indistinguishable from a stall. **Let the
-  harness's background execution do the waiting** (`run_in_background`); do not add your own
-  timeout or polling
-- **Check the base before launching.** On a merged branch `origin/main` points at your own merge
-  commit and you review an empty diff: look at `git diff --shortstat <base>...HEAD`
-- **Before suspecting a stall, check whether you killed it.** The tell is the timestamp of the
-  log's last line: investigation commands at even intervals that cut off at one instant means an
-  external kill, not a stall. A true stall shows `phase` not advancing **and no commands
-  accumulating**
-- **Treat the same phase for more than 15 minutes as a stall and cancel.** Waiting collapses the
-  "do not edit until both are in" rule with it
-- **`result <job-id>` returns `No job found` before completion** (a different channel from status).
-  Take in-flight information from status's `Progress:` and **the launch command's stdout** — a
-  partial verdict sometimes appears there (PR #57's second run emitted
-  `Assistant message captured: {"verdict":"needs-attention", ...}` minutes before stalling, and its
-  gist matched what a subagent found independently). **Read the output up to the stall**
-- **Do not count a stall as clean** (same for a filter drop). **Stalls are intermittent, though:
-  do not conclude "Codex cannot be used on this branch"** — PR #72 stalled twice and **the third
-  run finished in about 2 minutes with the one defect that four subagent rounds, census and
-  convergence judgment included, had all missed**. So **the two-launch cap is a budget, not
-  evidence of quality**: whether to stop or draw a third is decided by **how large the remaining
-  doubt is**, with the log's command accumulation as the evidence. If you stop, **write in the PR /
-  TODO that this branch could not use Codex as a convergence signal**
-- **It can be dropped by the content filter.** Engineering-flavoured phrasing gets through
-  ("evaluate this static analyser's parsing soundness", not "find the fail-opens"); **limit the
-  target files explicitly** so it does not wander; ask for **counterexample construction** rather
-  than attack. **One rewrite-and-retry at most** (which consumes the second launch)
+- **Prefer native `review`; `adversarial-review` stalls more often** (measured), even though only
+  adversarial takes focus text
+- **Never wrap it in `timeout`; `--background` does not detach.** Let the harness's background
+  execution do the waiting; add no polling of your own
+- **Check the base before launching** — on a merged branch `origin/main` is your own merge commit
+- **Before suspecting a stall, check whether you killed it** (commands cut off at one instant =
+  an external kill; a true stall shows `phase` not advancing **and no commands accumulating**).
+  **Treat the same phase for more than 15 minutes as a stall and cancel**
+- **`result <job-id>` returns `No job found` before completion** — take in-flight information from
+  status's `Progress:` and **the launch command's stdout**, where a partial verdict sometimes
+  appears
+- **Do not count a stall as clean** (same for a filter drop) — but **stalls are intermittent**, so
+  do not conclude "Codex cannot be used on this branch". The two-launch cap is a budget, not
+  evidence of quality; decide a third by how large the remaining doubt is. If you stop, **write in
+  the PR / TODO that this branch could not use Codex as a convergence signal**
+- **It can be dropped by the content filter** — engineering-flavoured phrasing gets through, limit
+  the target files explicitly, ask for counterexample construction rather than attack. **One
+  rewrite-and-retry at most**
 
-It fails differently from a subagent. In PR #51 it caught in one pass what 17 subagent rounds had
-walked past — not from capability but because **it did not share the premises I had handed over**.
-So do not over-brief Codex on history either.
-
-**Subagents are weak where the premise was handed to them (PR #72).** Codex's single finding was
-"if the operator writes the same flag in the `command:` prefix, the conductor appends its own, two
-appear in argv, and `argv.index()` reads the operator's". **Four subagent rounds took argv as
-"something the conductor builds" and nobody looked at the interaction with the prefix.** The harm
-was not only a mis-record but **a fail-open in the very fail-closed check that PR added**.
-**Interaction with elements that come from anywhere other than "the input I built"** is a blind
-spot for a subagent handed the diff and the threat model.
-
-**The axes sometimes differ — but do not generalize from one case; PR #66 did not reproduce it.**
-L174 split cleanly (Codex = environment and operations, subagents = the diff's internal logic),
-while PR #66's two Codex runs were both **internal logic** and one **fully duplicated** a
-blank-slate subagent's finding. Allocate the single launch believing it is "a net on another axis"
-and you will miss. **Expect no split; use it as one independent pass.** The right framing is Codex
-as **a net on a different axis, not a convergence signal**: not "run until clean" but "pass once
-over the surfaces subagents structurally do not look at" (dependencies, preflight, execution
-policy, consistency with repository conventions). That asymmetry also follows from what each is
-given — **subagents get the diff and the threat model, Codex gets only `AGENTS.md`**.
+**Use it as one independent pass on another axis, not as a convergence signal.** It fails
+differently from a subagent because **it does not share the premises you handed over** —
+subagents get the diff and the threat model, Codex gets only `AGENTS.md`. **Interaction with
+elements that come from anywhere other than "the input I built"** is the subagent blind spot it
+covers (PR #72). **Do not expect a clean axis split** — L174 split cleanly, PR #66 did not
+reproduce it and one of its two runs fully duplicated a subagent's finding.
 
 ## Fix or out of scope (cut by this repository's purpose)
 
@@ -660,99 +404,60 @@ the breakdown of what you dropped into the PR body / your report to the user —
 
 **The main condition is "class descent plus a demonstration that the remainder is bounded".** Stop
 once the severity class of the findings has dropped **and** you can show the remainder is bounded.
-Per-PR transition histories are in `references/class-descent-log.md`; read class descent as **"is
-it a hole in the original design / a hole in my fix / a hole in the witnesses"**, not as a count —
-in issue #63 the count barely fell between the last two rounds.
+Read class descent as **"is it a hole in the original design / a hole in my fix / a hole in the
+witnesses"**, not as a count — in issue #63 the count barely fell between the last two rounds.
 
 **A second stopping shape, equal in standing: if every finding in one round falls into "real but
 out of scope", stop at that round.** More rounds produce the same layer, and fixing them moves the
 diff away from the purpose. State the out-of-scope breakdown and why you declared the scope.
 
 **The superior condition (stop there if you reach it)**: the security axis produces **nothing new
-for two consecutive rounds** (a disclosure round, which runs no security agent, is skipped in
-that count rather than breaking it). It has **never been achieved in any recorded loop** — the
-histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
-it** — do not add rounds waiting for it.
+for two consecutive rounds** (a disclosure round is skipped in that count rather than breaking
+it). It has **never been achieved in any recorded loop**. **Run assuming you will not reach it.**
 
-**Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
-relaunch a Codex you have no budget for**. Use Codex as one independent pass and finish once you
-have classified the result. Clean did come back once (PR #67), and **the same
-round's two subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror — so
-clean was not evidence of convergence**. TODO:269 is the second such data point: Codex returned
-clean in round 2, and **round 3 found a mechanism with no behavioural witness at all**. Issue #63 is the opposite data point: both completed runs
-returned real defects, both in subagent blind spots.
+**Do not make "Codex is clean" a stopping condition** — as a condition it becomes a motive to
+relaunch a Codex you have no budget for. Clean came back once (PR #67) and the same round's two
+subagents produced unwitnessed mechanisms, over-refusals and an abandoned mirror; on TODO:269
+Codex was clean in round 2 and round 3 found a mechanism with no behavioural witness at all.
 
-**Practical proxies for "the remainder is bounded"** (so you can say it on the spot, not in
-hindsight). In PR #57 defects kept appearing inside the previous round's fix and **round 3 (severity
-rose) was indistinguishable in the moment from round 4 (bounded)**. What actually marked the
-boundary was these two holding together:
+**Practical proxies for "the remainder is bounded"**, both of which must hold:
 
 - **a reviewer with no exclusions returns zero functional defects** — only prose and consistency
   findings remain
 - **an independent mutation sweep is fully killed** (one the reviewer built, not one you ran)
 
-When both hold, the remainder has fallen to "an enumerable, finite set of descriptive fixes". One
-alone is not enough.
+**But the two are not equal in standing.** For changes that **fix existing machinery** both apply.
+For changes that **add checking machinery the sweep is not grounds for stopping**: it answers "is
+what I built pinned", not "is what I built enough", and **can only mutate mechanisms that exist,
+so a missing mechanism is structurally invisible**. There the proxy becomes **a blank-slate review
+with zero functional defects for two consecutive rounds**; still run the sweep, but read it as a
+list of "unpinned but correct behaviour".
 
 **"Only prose remains" is a claim about SEVERITY, and it is wrong whenever the prose is executed
-by someone.** Issue #71 is the counterexample: both proxies above read as held from round 11 — the second
-of them wrongly, see below — and rounds
-12 through 15 each still carried statements that were false, including a refusal message a leaf
-follows and a remedy an operator follows. Two of round 15's "prose" findings had real
-consequence: one made a leaf report absence after obeying half a remedy, the other told an
-operator to permanently subtract a tool from a required set to paper over a one-line
-configuration bug.
-
-**Be careful what you conclude from "the code was clean".** On that branch it was not quite
-true, and the way it was untrue is the more useful lesson: round 15 found five defects in a
-measurement SCRIPT the branch had committed — an environment built as a denylist, so one
-variable would have sent an unbilled probe to a real endpoint, and a timed-out launch scored as
-a successful read, so a run where nothing launched would have reported its premise holding.
-Those are functional defects. They went unfound for two rounds because **the reviewers were
-told to look at the enforcement code, and a committed instrument is not obviously that**. When
-a branch adds a script, a harness or a fixture generator to the repository, name it as review
-surface explicitly; "zero functional defects" otherwise means "zero in the files anyone
-looked at".
-
-So before calling the remainder descriptive, **classify each remaining finding by audience and
-consequence, not by whether it is code**:
+by someone.** Classify each remaining finding by audience and consequence, not by whether it is
+code:
 
 - **Text a leaf or an operator ACTS ON is behaviour delivered as prose** — refusal messages,
-  remedies, the leaf-read contract, the runbook step for a failure mode. Treat a defect there
-  at the severity of the action it causes
+  remedies, the leaf-read contract, the runbook step for a failure mode. Treat a defect there at
+  the severity of the action it causes
 - **Text a maintainer reads to decide** — a residue entry, a justification comment, a measured
   number — is descriptive, and belongs in the bounded remainder
 - The tell that you are in the first category: the sentence contains an imperative, or names a
   condition under which something is refused
 
+**Also name any script, harness or fixture generator the branch committed as review surface** —
+"zero functional defects" otherwise means "zero in the files anyone looked at" (issue #71's round
+15 found five functional defects in a committed measurement script).
+
 **The move that finds them: spend one round on the disclosure axis alone**, with no functional
-brief. Note what this implies about the standing arrangement: doc-truth is already bundled into
-the correctness axis of every round (see "Running a round"), and bundled it loses to whatever
-functional question shares the brief. Give it a round of its own, with two briefs: "verify
-every claim in the commit messages at HEAD" and "read it as the next maintainer: what would
-mislead you, can the deletion's measurement be re-taken from what is written, what does a LEAF
-see, what does an OPERATOR see, would you merge". On issue #71 that round returned two
-real-consequence items and five documents stating the rule's own trigger wrongly — one of them
-a document every leaf reads — in a branch whose ENFORCEMENT CODE had been clean for four
-rounds. **Run it before stopping, not as an extra round after deciding to stop** — and if it returns items in the first category
-above, the record has not converged even though the enforcement code has.
+brief, **before stopping rather than as an extra round after deciding to stop**. Two briefs:
+"verify every claim in the commit messages at HEAD" and "read it as the next maintainer: what
+would mislead you, can the deletion's measurement be re-taken from what is written, what does a
+LEAF see, what does an OPERATOR see, would you merge". If it returns first-category items, the
+record has not converged even though the enforcement code has.
 
-**But the two are not equal in standing. Use them by change type.**
-
-- **changes that fix existing machinery** (closing a fail-open, tightening a gate): both apply. The
-  sweep measures "is what I fixed pinned", which is exactly what is being asked
-- **changes that add checking machinery** (a new guard, validator, meta-test): **the sweep is not
-  grounds for stopping.** It answers "is what I built pinned", not "is what I built enough" —
-  **it can only mutate mechanisms that exist, so a missing mechanism is structurally invisible**. In
-  PR #58 the sweep recommended stopping at round 4 (193 mutants) and round 6 (170 mutants), while
-  **the same rounds' blank-slate reviewer returned live routes with end-to-end reproductions**, and
-  every finding from round 3 on was a missing mechanism. Here the proxy becomes **a blank-slate
-  review with zero functional defects for two consecutive rounds**. Still run the sweep, but read it
-  as a list of "unpinned but correct behaviour"
-
-**For a change that adds checking machinery, run a witness census once**, rather than only the
-negative proxies. In PR #66, rounds R3-R5 had only the feeling of "the same class keeps recurring",
-and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
+**For a change that adds checking machinery, run a witness census once.** Instruct a dedicated
+reviewer:
 
 > Enumerate **every decision** in the checking machinery (predicates, constants, each table entry,
 > each regex branch, globs, exclusions, file-format assumptions, every assertion added), and
@@ -761,58 +466,21 @@ and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
 > **vacuous** (already observing nothing). Classification by reading is not allowed. For the
 > unwitnessed ones, construct a violating input yourself and report whether the suite notices.
 
-What comes back turns "the remainder is bounded" from a feeling into a list, and the instrument
-reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Practical
-notes (the numbers and
-transitions are in `references/class-descent-log.md`):
-
-- **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
-  "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
-  on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
-- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable —
-  `_require_axis` inside `provides`, and `LANGUAGES`'s `implemented_backend_ids`, which the
-  following filter subsumes — and the right response was a comment saying "a marker of intent,
-  not a live guard". The problem
-  is not the redundant call; it is that it **reads as a live guard**
-- **The census makes you doubt your own instrument too** — the verification test built from PR #67's
-  census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
-  instrument as well
-- **A corpus measurement does not prove vacuity.** In PR #68 a guard labelled unreachable from
-  "0 empty atoms / 151,633 logical lines / 876 files" did fire, because the scanner and the normalizer
-  **disagreed on the definition of blank** (gfortran's space/tab/FF vs Python's wider `\s`), so a
-  line of only U+00A0 survived. Vacuous may be claimed **only when unreachability is shown by
-  construction**; "not in today's tree" is corpus-dependent — and because the label invites
-  deletion, a wrong vacuous is worse than no label
-- **A census conclusion rots in one round; re-run it the round after you consume it** (PR #68's
-  "zero ratchet-only decisions" was falsified the next round). Record conclusions that survive
-  re-measurement, not the numeric breakdown — numbers always rot (the suite count was wrong four
-  times on that PR alone)
-- **When you replace an enumeration with a computation, witness the computation on a synthetic
-  tree.** In PR #68 the scan target became a reachability closure, and deleting the transitive
-  expansion entirely stayed all green: a test against real data confirms "today's graph happens to
-  be like this" and never observes the algorithm (cf.
-  `test_backend_boundary.py::ScannedSetTests`)
+Practical notes on reading a census: keep **"killed only by the token ratchet" as a fourth
+class**; **close a vacuous finding by marking, not deleting**; **aim "does it wrongly refuse
+legitimate work" at the instrument too**; **claim vacuity only by construction** — a corpus
+measurement does not prove it; **a census conclusion rots in one round, so re-run it the round
+after you consume it**; **when you replace an enumeration with a computation, witness the
+computation on a synthetic tree**.
 
 **Before concluding "the shape of the rule is wrong" from recurrence, measure inherited decisions
-separately from decisions the last fix added.** The sign below ("you rebuilt the instrument and the
-second behaved the same → do not build a third") **can produce a wrong judgment if followed
-literally**. PR #66 at the start of R6 matched that condition on its face; measured, the decisions
-common to both versions had improved (20 → 28 witnessed) while **15 of the decisions the rebuild added were
-unwitnessed** — the recurrence was localized to the additions, the shape of the rule was
-right, and the problem was the habit of writing a fix without its witness. Stopping there would
-have handed over as unresolved something bounded and fixable. **The test**: inherited decisions got
-worse → a problem of shape (stop and hand over); concentrated in what the last fix added → a
-problem of habit (write the witnesses and it closes). The full table is in
-`references/class-descent-log.md`.
+separately from decisions the last fix added.** Inherited got worse → a problem of shape (stop and
+hand over); concentrated in what the last fix added → a problem of habit (write the witnesses and
+it closes).
 
-**Another proxy: does the finding exist in the real corpus?** This is cheap to measure and saves
-several rounds. **If every finding in a round is a construct that occurs zero times in the real
-corpus, what remains is not implementation but a written scope declaration.** PR #58's guard read
-skip declarations statically, and the corpus had 23 skips in 2 spellings; from round 4 on every
-finding was a future form an adversarial reviewer wrote to break it, present nowhere in the tree —
-and I dutifully kept closing them for three rounds. The right response was **declaring the scope**
-("regression prevention for ordinary spelling, not enforcement against circumvention") and stopping.
-Each round, measure the count per finding class with one `grep`.
+**Another proxy: does the finding exist in the real corpus?** **If every finding in a round is a
+construct that occurs zero times in the real corpus, what remains is not implementation but a
+written scope declaration.** Measure the count per finding class with one `grep` each round.
 
 **Look at `ListAgents` before judging a round finished** — as part of the stopping decision, not
 only as orphan hygiene. I once issued a "merge recommended" without checking which reviewers were
@@ -824,107 +492,70 @@ only preferences remain, have it recommend stopping explicitly.
 
 When you stop short, **state the condition you did not meet** and hand it to the user. Do not say
 "converged". **Put the class transitions and the defects your own fixes introduced into the PR body
-as a disclosure** (PR #53: 5 fail-opens and 1 false positive came from my own fixes).
+as a disclosure**.
+
+The per-PR histories, and the evidence for every proxy above: `references/class-descent-log.md`.
 
 ## Signs to catch mid-loop
 
-- **A finding sits inside the previous round's fix** → not a coincidence. **Name the fixed files as
-  the focus** in the next round's prompt (PR #51: three rounds running; PR #68: **all six rounds**,
-  with zero defects in the moved code itself and everything in the fixes and the prose). The more
-  a change is a move or rename where the body is known correct, the more the review is really about
-  **your own fixes** — put the focus instruction in from the first round
+Each sign is one line plus its criterion; `references/signs-episodes.md` carries the case history
+that tells you how it closed.
+
+- **A finding sits inside the previous round's fix** → not a coincidence. **Name the fixed files
+  as the focus** in the next round's prompt. The more the change is a move or rename whose body is
+  known correct, the more the review is really about **your own fixes** — put that instruction in
+  from round 1
 - **You have rewritten the same string three times** → the problem is not the rule but the prose
   citing it. Switch to the grep sweep
-  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one statement
-  repeatedly is a SWEEP problem, which this row owns; several sites that each state the rule is a
-  COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the threshold
-  for.** Do not restate its number here — that is the drift this pair is about
-- **Prose that enumerates entities in the code** (lists of test names, counts of call sites,
-  numbers of readers) → **re-measuring loses. Turn it into a check.** Unlike a number measured once,
-  this kind of prose **rots silently on every rename or addition**. PR #57's breakdown of test
-  classes ("which iterate the definition, which sample") was written in prose three times and wrong
-  three times — "all 7 iterate" (5) → a test name that a rename had removed → "8" (9). The fourth
-  fix **stopped fixing the number** and put `_DEFINITION_DRIVEN` / `_SAMPLE_DRIVEN` in data with one
-  test cross-checking them against the class's real methods (confirmed to fail on rename).
-  **Criterion: should this prose break if one test is renamed? Then make it a check** (the
-  general form of this, and when a check is the wrong answer, is rule 3-a — this row is the
-  enumeration case of it)
+  (`.claude/skills/metdsl-enforcement-change/references/verification.md`). **Rewriting one
+  statement repeatedly is a SWEEP problem, which this row owns; several sites that each state the
+  rule is a COUPLING problem, which `metdsl-enforcement-change` rule 3-a owns and states the
+  threshold for.** Do not restate its number here — that is the drift this pair is about
+- **Prose that enumerates entities in the code** (test names, call-site counts, numbers of
+  readers) → **re-measuring loses. Turn it into a check.** Criterion: should this prose break if
+  one test is renamed? Then make it a check (the general form, and when a check is the wrong
+  answer, is rule 3-a — this row is the enumeration case of it)
 - **A fix changed the shape of the rule** (denylist → allowlist and the like) → split everything
-  after that into another PR. Stacking 25 commits on one branch compounds fixes calling for fixes.
-  If you continue without splitting, **give the user the options and ask** (L128 redesigned in
-  place, but that was a deviation taken after asking)
+  after that into another PR. If you continue without splitting, **give the user the options and
+  ask**
 - **Five rounds or more without the class descending** → the shape of the rule is wrong. Change
-  the design instead of adding a round (the sign below is the case where you already did that
-  once)
+  the design instead of adding a round
 - **You rebuilt the instrument itself and the second one behaved the same** → **do not build a
-  third.** The first rebuild was right (the question could not be answered). If the second keeps
-  breaking the same way, the sign is that **the question is at the wrong level**, and lining up
-  instruments will not fix it. Declare the scope and hand it over. PR #58 went from a guard reading
-  path expressions (infinite spellings) to a ledger of skip reasons (a closed domain, but Python's
-  binding forms have a long tail), and the second produced 3-6 isomorphic findings every round from
-  5 to 7. The user stopped it at round 7; **this rule would have stopped it at 6.** When handing
-  over, name what would have to be built to make a strong claim (here: **cross-check the skips the
-  runner reported at runtime against the ledger**, which needs no Python semantics and closes all
-  seven rounds' escape routes at once)
-
-  **But do not confuse "a third instrument" with "a defect in the second".** The test is whether
-  what broke it was **the shape** or **an implementation bug / a missing witness**. PR #68 rebuilt
-  twice (enumeration → full scan → reachability closure) and broke on the sixth round, but the cause
-  was **one line not resolving relative imports** plus **the redesign having no witness**, not the
-  closure design. Applying "do not build a third" mechanically there would have handed over as
-  residual a hole that a single line fixed. Shape → stop; bug and witness → fix
-- **The same family appeared two rounds running** → the sign to change shape, without waiting for a
-  third. In PR #53 "keywords are not reserved words" came back as `=` (assignment to a variable)
-  then `:` (a construct name). Rather than adding a third guard, it closed by **moving to a
-  normalization stage ahead of the structural decision** (strip labels, strip construct names,
-  detect assignment). The criterion is whether you placed it **where a rule added later is protected
-  automatically**
-- **The pin was broken in a different shape every time** → this looks like the family sign but
-  **closes differently: normalization will not close it.** It means the pin is in the wrong
-  **place** — the rule has no single definition. PR #55 was broken three times in three rounds, all
-  differently: a three-name denylist → a substring → "a file and **not a directory**" (the predicate
-  had another branch). The criterion is **"can this test claim set identity, or can it only produce
-  rejection samples?"** If only samples, stop adding samples and **switch to the work of moving the
-  definition to one place** — adding rounds just yields one finding per shape. The three escape
-  routes left in PR #55's round 3 (another literal name / a subtree prefix / an extension family)
-  went unchased for this reason: **a fourth sample was the same mistake for the fourth time**
+  third.** Declare the scope and hand it over, naming what would have to be built to make a strong
+  claim. **But do not confuse "a third instrument" with "a defect in the second"**: the test is
+  whether what broke it was **the shape** or **an implementation bug / a missing witness**. Shape
+  → stop; bug and witness → fix
+- **The same family appeared two rounds running** → change shape without waiting for a third. The
+  criterion is whether you placed the rule **where a rule added later is protected automatically**
+  (PR #53 closed it by normalizing ahead of the structural decision)
+- **The pin was broken in a different shape every time** → looks like the family sign but **closes
+  differently: normalization will not close it.** The pin is in the wrong **place** — the rule has
+  no single definition. Criterion: **"can this test claim set identity, or can it only produce
+  rejection samples?"** If only samples, stop adding samples and move the definition to one place
 - **A mechanism you fixed one round ago is eaten together with the fix** → your fix granularity is
-  too fine. PR #53 fixed the flat version of the `select` leak with a test, and the next round the
-  nested version came back eating that decrement. Closed by moving from two counters to **a stack of
-  construct kinds**
+  too fine (PR #53 closed it by moving from two counters to a stack of construct kinds)
 - **The same mechanism keeps being broken for three rounds or more** → suspect that **the question
-  the rule is trying to answer** cannot be answered at this level of analysis. L128 tried to decide
-  "is this name a constant here" by regex and was broken 16 ways; it was solved by changing to **a
-  weaker question that can be answered** (is there no other declaration anywhere in the file).
-  **If the simple and the complex version give identical measured diffs, the complexity bought
-  nothing** — take that diff first
+  the rule is trying to answer** cannot be answered at this level of analysis; change to a weaker
+  question that can be. **If the simple and the complex version give identical measured diffs, the
+  complexity bought nothing**
 - **A reviewer said "it is environment-dependent"** → do not close it with a mock on the test side.
-  Ask first what happens in production on that environment
+  Ask first what happens in production on that environment (`metdsl-enforcement-change` rule 2
+  owns this)
 - **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are
-  read as evidence that the mechanism is still protected. In L128, 10 tests named after a deleted
-  scope mechanism were in fact a behavioural regression that only one shared mutation killed.
-  **Do not delete them; annotate at the head of the group what they pin and what they do not**
+  read as evidence that the mechanism is still protected. **Do not delete them; annotate at the
+  head of the group what they pin and what they do not**
 - **You extracted a predicate to one place and shared it** → **the call sites need their own pin.**
-  Give the function a witness and still nobody observes that it is **called**. In PR #67,
-  hardcoding `record_launch`'s `_resolved_makefile_host_authored` to the constant `True` left
-  **all 4718 tests green** (only the True-side assertion existed). **The predicate's test and the
-  "the call site writes the expected value" test are different things**, and the latter can only be
-  written by reading the artifact (payload / artifact / file)
+  **The predicate's test and the "the call site writes the expected value" test are different
+  things**, and the latter can only be written by reading the artifact
 - **A change has "mirrors of the same predicate" and you fixed one** → there can be three mirrors.
-  PR #67 found `_ir_is_m3c_physics` mirrored across the conductor, `orchestration_runtime` and
-  the validator (today the live copies have moved — grep before quoting this);
-  moving one to the registry and abandoning two makes one declared line doubly own an artifact and
-  silently disables another gate. **`grep` first for prose saying "mirrors", "cannot disagree",
-  "same decision"** — mirrors usually announce themselves in a comment
+  **`grep` first for prose saying "mirrors", "cannot disagree", "same decision"** — mirrors usually
+  announce themselves in a comment
 - **That mirror's agreement test is written as a reconstructed copy of the real thing** → **it
-  cannot see a disagreement structurally.** PR #67's agreement test reimplemented one side inside
-  the test and stayed green with the old spelling after the body moved to the registry. **Extract
-  the real thing as a function and call it from both the body and the test**
+  cannot see a disagreement structurally.** Extract the real thing as a function and call it from
+  both the body and the test
 - **A witness test's probe value contains the implemented value as a substring** → the assertion is
-  automatically true via another clause. PR #67 asserted that `missing_capability_reason(...,
-  "cmake", ...)`'s message contains the implemented `make`, which is always true because **`"cmake"`
-  contains `"make"`** (found independently by two reviewers). **Assert inside the test that the
-  probe has the property it needs** (`assertNotIn(implemented_id, probe)`)
+  automatically true via another clause (`"cmake"` contains `"make"`). **Assert inside the test
+  that the probe has the property it needs**
 
 ## Finally
 
