@@ -27,6 +27,8 @@ from tools.hooks.common import (
     _workflow_orchestration_id,
     _read_target_in_allowed_roots,
     _resolve_target_path,
+    _BASH_FD_DUP_RE,
+    _blank_heredoc_bodies,
     _strip_quoted_strings,
     _utc_now_iso,
     append_hook_access_log,
@@ -363,8 +365,21 @@ def _get_orchestration_agent_run_id(repo_root: Path, orchestration_id: str) -> s
     return run_id.strip() if isinstance(run_id, str) and run_id.strip() else None
 
 
-# shell redirection: cmd > path, cmd >> path
-_BASH_REDIRECT_RE = re.compile(r"(?:>>?)\s+([^\s;&|<>)]+)")
+# shell redirection: cmd > path, cmd >> path, cmd >|path (clobber), and every
+# one of those written with NO space before the path (`cat >path`, which bash
+# parses identically and which the earlier `\s+` spelling missed entirely —
+# issue #74(c)).
+#
+# The target alternation is matched against the QUOTE-STRIPPED command, where a
+# quoted run survives as its delimiters around blanks; the caller recovers the
+# original span (_strip_quoted_strings is length-preserving) and shlex-splits it,
+# so `> "a b"/c` and `> pre"post"` come back as one dequoted token instead of the
+# bare `"` the previous `[^\s…]+` collapsed them to (issue #74(a)).
+#
+# `(` is excluded from the unquoted class so process substitution `>(cmd)` — which
+# names no file — does not become a phantom target now that no space is required.
+# `&` stays excluded, so `2>&1` / `>&2` remain non-matches.
+_BASH_REDIRECT_RE = re.compile(r"(?:>>?)\|?\s*((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)")
 # tee: tee [-opts] path
 _BASH_TEE_RE = re.compile(r"\btee\b(?:\s+-\w+)*\s+([^\n;&|<>]+)")
 _REDIRECT_SKIP = frozenset({
@@ -538,6 +553,53 @@ def _extract_command_substitution_bodies(command: str) -> list[str]:
 
 _SHELL_CONTROL_TOKENS = frozenset({"|", "||", "&&", ";"})
 
+# Input redirections. Blanked out of the argv view below for the same reason the
+# write redirects are: `<`, `<<` and their targets are shell syntax, not operands,
+# so leaving them in makes the LAST operand of `cp a b < x` the heredoc/file name.
+_BASH_INPUT_REDIRECT_RE = re.compile(r"<<?\|?\s*((?:\"[^\"]*\"|'[^']*'|[^\s;&|<>)(])+)")
+# Commands whose write DESTINATION is an operand rather than a shell redirect.
+# Until this was added (TODO.md 378(d), landed with issue #74) none of them
+# produced a write target at all, so `cp x workspace/pipelines/y.json` reached
+# `cli.main`'s write guard with an EMPTY target list and fell through to the
+# harness permission list.
+#
+#   _ARGV_WRITE_LAST_OPERAND — the destination is the final operand (`cp SRC… DEST`).
+#     Requires at least two operands: a one-operand `ln target` writes
+#     `./$(basename target)`, a name that appears nowhere in the argv, and
+#     reporting the operand there would name a path the leaf did not write.
+#     That single-operand form is accepted residue on the fail-open side.
+#   _ARGV_WRITE_ALL_OPERANDS — every operand is a destination (`touch a b c`).
+_ARGV_WRITE_LAST_OPERAND = frozenset({"cp", "mv", "install", "ln"})
+_ARGV_WRITE_ALL_OPERANDS = frozenset({"touch", "truncate"})
+# `dd` takes `key=value` operands; only `of=` names a write destination.
+_DD_OUTPUT_PREFIX = "of="
+
+# Options whose VALUE is the destination, per command.
+_ARGV_WRITE_DEST_OPTS: dict[str, frozenset[str]] = {
+    "cp": frozenset({"-t", "--target-directory"}),
+    "mv": frozenset({"-t", "--target-directory"}),
+    "install": frozenset({"-t", "--target-directory"}),
+    "ln": frozenset({"-t", "--target-directory"}),
+}
+# Options that CONSUME the next argv element, whose value is NOT a destination.
+# Only options with a MANDATORY argument belong here: GNU's optional-argument long
+# forms (`--backup[=CONTROL]`, `--preserve[=LIST]`, `--reflink[=WHEN]`) never take a
+# separate word, so listing them would swallow a real operand. Counting a consumed
+# value as a target is the false-BLOCK direction — a block naming a mode string
+# (`install -m 644 …`), a size (`truncate -s 0 …`) or a timestamp is the same
+# defect class as issue #74(a)/(b), which is why `-t` is a DESTINATION option for
+# `cp`/`mv`/`install`/`ln` and a TIMESTAMP option for `touch`.
+_ARGV_WRITE_VALUE_OPTS: dict[str, frozenset[str]] = {
+    "cp": frozenset({"-S", "--suffix"}),
+    "mv": frozenset({"-S", "--suffix"}),
+    "install": frozenset(
+        {"-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix"}
+    ),
+    "ln": frozenset({"-S", "--suffix"}),
+    "touch": frozenset({"-d", "--date", "-r", "--reference", "-t", "--time"}),
+    "truncate": frozenset({"-s", "--size", "-r", "--reference"}),
+}
+
 # Bash commands whose ONLY file-write vector is shell redirection (which
 # _detect_bash_write_targets catches) — they carry no own write/exec flags.
 # Deliberately EXCLUDES find (-exec/-delete), awk (in-program `print > f`),
@@ -655,10 +717,141 @@ def _detect_sed_inplace_targets(command: str) -> list[str]:
     return targets
 
 
+def _shlex_one(blob: str) -> str:
+    """Dequote a single-word span lifted out of the original command.
+
+    The redirect and tee branches both match against the QUOTE-STRIPPED copy and
+    then recover the ORIGINAL characters at the same offsets (_strip_quoted_strings
+    is length-preserving). That original still carries its quotes, so `"a b"/c`
+    has to be joined back into one word here; shlex does it, and a blob shlex
+    rejects (an unbalanced quote) falls back to the raw text rather than vanishing.
+    """
+    try:
+        words = shlex.split(blob)
+    except ValueError:
+        return blob
+    return "".join(words) if words else blob
+
+
+def _argv_view(command: str, scanned: str) -> str:
+    """`command` with every redirection blanked, so what remains is operands.
+
+    Length-preserving: the caller shlex-splits the result, and blanking (rather
+    than deleting) keeps a redirect from gluing the words on either side of it
+    together. Redirections are located in `scanned` so a `>` or `<` living inside
+    a quoted argument is not mistaken for one. `_BASH_FD_DUP_RE` is imported from
+    `common` rather than respelled here: `2>&1` is neither a write nor an operand,
+    and the two modules must agree on what fd-duplication looks like.
+    """
+    out = list(command)
+    for regex in (_BASH_FD_DUP_RE, _BASH_REDIRECT_RE, _BASH_INPUT_REDIRECT_RE):
+        for m in regex.finditer(scanned):
+            for pos in range(*m.span()):
+                out[pos] = " "
+    return "".join(out)
+
+
+def _detect_argv_write_targets(command: str, scanned: str) -> list[str]:
+    """Write destinations named as OPERANDS rather than by a shell redirect.
+
+    Covers the commands in `_ARGV_WRITE_LAST_OPERAND` / `_ARGV_WRITE_ALL_OPERANDS`
+    plus `dd of=`. The command name is read at the FRAGMENT HEAD only (the position
+    after `|`, `||`, `&&`, `;` or the start), the same argv0 rule the read side uses
+    in `extract_bash_read_targets`, so `echo cp a b` names nothing.
+
+    Accepted residue, all yielding nothing: a destination reached through another
+    program (`xargs cp`, `find -exec cp`), a `$VAR` or glob destination, a `cd`
+    issued earlier in the same command (this function does not anchor on `cd`,
+    which the read side does), `install -d` directory creation, the single-operand
+    `ln`, and a fragment whose head is not the writer itself (`sudo cp …`, an
+    `env`-assignment prefix `VAR=1 cp …`). An empty result means "nothing
+    extracted", not "no write".
+    """
+    argv_source = _argv_view(command, scanned)
+    try:
+        tokens = shlex.split(argv_source)
+    except ValueError:
+        tokens = argv_source.split()
+    targets: list[str] = []
+    idx = 0
+    while idx < len(tokens):
+        if tokens[idx] in _SHELL_CONTROL_TOKENS:
+            idx += 1
+            continue
+        # This fragment runs to the next control token; its head is the command.
+        end = idx + 1
+        while end < len(tokens) and tokens[end] not in _SHELL_CONTROL_TOKENS:
+            end += 1
+        name = tokens[idx].split("/")[-1]
+        args = tokens[idx + 1 : end]
+        if name == "dd":
+            targets.extend(
+                arg[len(_DD_OUTPUT_PREFIX) :]
+                for arg in args
+                if arg.startswith(_DD_OUTPUT_PREFIX) and arg[len(_DD_OUTPUT_PREFIX) :]
+            )
+        elif name in _ARGV_WRITE_LAST_OPERAND or name in _ARGV_WRITE_ALL_OPERANDS:
+            dest_opts = _ARGV_WRITE_DEST_OPTS.get(name, frozenset())
+            value_opts = _ARGV_WRITE_VALUE_OPTS.get(name, frozenset())
+            operands: list[str] = []
+            dest_from_opt = False
+            k = 0
+            while k < len(args):
+                arg = args[k]
+                if arg == "--":  # everything after is an operand
+                    operands.extend(args[k + 1 :])
+                    break
+                if arg.startswith("-") and arg != "-":
+                    head, sep, value = arg.partition("=")
+                    if sep and head in dest_opts:
+                        if value:
+                            targets.append(value)
+                            dest_from_opt = True
+                        k += 1
+                        continue
+                    if sep and head in value_opts:
+                        k += 1
+                        continue
+                    if arg in dest_opts:
+                        if k + 1 < len(args):
+                            targets.append(args[k + 1])
+                            dest_from_opt = True
+                        k += 2
+                        continue
+                    if arg in value_opts:
+                        k += 2
+                        continue
+                    k += 1
+                    continue
+                operands.append(arg)
+                k += 1
+            if name in _ARGV_WRITE_ALL_OPERANDS:
+                targets.extend(operands)
+            elif dest_from_opt:
+                # With `-t DIR` every operand is a SOURCE.
+                pass
+            elif len(operands) >= 2:
+                targets.append(operands[-1])
+        idx = end
+    return targets
+
+
 def _detect_bash_write_targets(command: str | None) -> list[str]:
-    """Extract write-target paths from a Bash command."""
+    """Extract write-target paths from a Bash command.
+
+    Best-effort by design: what it can see is bounded by the redirect / `tee` /
+    `sed -i` grammars and by `_detect_argv_write_targets`' command tables. An empty
+    result means "nothing extracted", NOT "this command writes nothing" — the only
+    reader, `cli.main`, treats an empty list as a purely read-only command.
+    """
     if not command:
         return []
+    # A heredoc body is a document being WRITTEN, not commands being run, so a `>`
+    # inside it is text. `extract_bash_read_targets` blanks it for the same reason
+    # (tools/hooks/common.py). Without this, `cat > s.py <<'EOF'` carrying a line
+    # `if a > b:` yields the phantom target `b:` and blocks an authorized write
+    # (issue #74(b)). Length-preserving, so the span recovery below stays aligned.
+    command = _blank_heredoc_bodies(command)
     targets: list[str] = []
     # Recurse into $(...) and `...` bodies first.  Double-quoted strings do NOT
     # suppress command substitutions in bash, so a redirect inside "$(cmd > path)"
@@ -671,7 +864,10 @@ def _detect_bash_write_targets(command: str | None) -> list[str]:
     # _detect_sed_inplace_targets uses shlex.split internally and is not affected.
     scanned = _strip_quoted_strings(command)
     for m in _BASH_REDIRECT_RE.finditer(scanned):
-        path = m.group(1)
+        # Same idiom as the tee branch below: match on `scanned`, then recover the
+        # ORIGINAL span and dequote it. Reading m.group(1) off `scanned` instead is
+        # what collapsed `> "path"` to the single character `"` (issue #74(a)).
+        path = _shlex_one(command[slice(*m.span(1))])
         if path not in _REDIRECT_SKIP and not path.startswith("&"):
             targets.append(path)
     for m in _BASH_TEE_RE.finditer(scanned):
@@ -691,6 +887,7 @@ def _detect_bash_write_targets(command: str | None) -> list[str]:
                 break
             targets.append(arg)
     targets.extend(_detect_sed_inplace_targets(command))
+    targets.extend(_detect_argv_write_targets(command, scanned))
     return targets
 
 

@@ -5113,5 +5113,254 @@ class ReadDecisionAccessLogTests(unittest.TestCase):
             self.assertEqual(lines[1]["policy"], "read_manifest_read_guard")
 
 
+class BashWriteTargetGrammarTests(unittest.TestCase):
+    """`_detect_bash_write_targets`: the issue #74 defects and TODO.md 378(d).
+
+    SAMPLED, not pinned: what this class fixes is the set of command spellings
+    listed below, not "every write bash can express". `_detect_bash_write_targets`
+    is best-effort by construction and its own docstring carries the residue list;
+    an empty extraction means "nothing extracted", never "this command writes
+    nothing". What IS pinned here is the membership of the two option tables
+    (`_ARGV_WRITE_DEST_OPTS` / `_ARGV_WRITE_VALUE_OPTS`), by mutation: the probes
+    are generated FROM the tables, so a member added to the code without a
+    corresponding grammar gets probed automatically.
+    """
+
+    # Issue #74's three measured defects plus the clobber spelling `>|`, which was
+    # found while reproducing (c) and is the same fail-open. Each row is
+    # (command, expected targets).
+    _ISSUE_74_WITNESSES = (
+        # (a) a quoted redirect target used to collapse to the single char '"'
+        ('cat > "workspace/tmp/run1/work.py" <<EOF', ["workspace/tmp/run1/work.py"]),
+        ("cat > 'workspace/tmp/run1/work.py'", ["workspace/tmp/run1/work.py"]),
+        ("cmd > 'a b'/c", ["a b/c"]),
+        ('cmd > pre"post"', ["prepost"]),
+        # (b) a heredoc BODY is data; a `>` inside it is not a redirect
+        (
+            "cat > workspace/tmp/run1/s.py <<'EOF'\nif a > b:\n    pass\nEOF",
+            ["workspace/tmp/run1/s.py"],
+        ),
+        # (c) no space between the operator and the path
+        ("cat >workspace/pipelines/x.json <<'EOF'", ["workspace/pipelines/x.json"]),
+        ("cmd >>workspace/out.log", ["workspace/out.log"]),
+        # `>|` clobber, both spacings
+        ("cmd >|workspace/out.txt", ["workspace/out.txt"]),
+        ("cmd >| workspace/out.txt", ["workspace/out.txt"]),
+    )
+
+    # Spellings whose CURRENT result must survive the widened regex. `>(` is the
+    # one the widening itself put at risk: with no space required, process
+    # substitution would otherwise be reported as a write to the phantom `(cat`.
+    _MUST_NOT_REGRESS = (
+        ("cmd 2>&1 > out.txt", ["out.txt"]),
+        ("cmd >&2", []),
+        ("cmd 1>&2", []),
+        ("cmd >> log.txt", ["log.txt"]),
+        ("cmd 1> a.txt 2> b.txt", ["a.txt", "b.txt"]),
+        ("cmd &> all.log", ["all.log"]),
+        ("cmd &>> all.log", ["all.log"]),
+        ("cmd > /dev/null", []),
+        ("tee >(cat) < a", []),
+        ("diff <(a) <(b) > out", ["out"]),
+        ("echo test | tee file1.txt file2.txt", ["file1.txt", "file2.txt"]),
+        ("sed -i's/a/b/' file.txt", ["file.txt"]),
+        ('python3 foo.py --reply-text "exit code > 0"', []),
+        ('python3 foo.py --arg "$(echo hi > workspace/forbidden.txt)"', ["workspace/forbidden.txt"]),
+        ('python3 foo.py --val "$((1 > 0))"', []),
+    )
+
+    def _targets(self, command: str) -> list[str]:
+        return cli._detect_bash_write_targets(command)
+
+    def test_issue_74_witnesses(self) -> None:
+        for command, expected in self._ISSUE_74_WITNESSES:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_redirect_spellings_that_must_not_regress(self) -> None:
+        for command, expected in self._MUST_NOT_REGRESS:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_heredoc_body_alone_yields_no_target(self) -> None:
+        # No outer redirect at all: everything in the body is data.
+        command = "cat <<'EOF'\necho x > /etc/passwd\nEOF"
+        self.assertEqual(self._targets(command), [])
+
+    # ---- TODO.md 378(d): destinations named as operands -------------------
+
+    def test_argv_grammar_destinations_are_detected(self) -> None:
+        rows = (
+            ("cp a.txt workspace/pipelines/y.json", ["workspace/pipelines/y.json"]),
+            ("cp -r a b workspace/tmp/r1/", ["workspace/tmp/r1/"]),
+            ("cp -- a b", ["b"]),
+            ("mv old.txt workspace/ir/new.txt", ["workspace/ir/new.txt"]),
+            ("install -m 644 src workspace/ir/dst", ["workspace/ir/dst"]),
+            ("ln -s target workspace/ir/link", ["workspace/ir/link"]),
+            ("touch a.txt workspace/ir/b.txt", ["a.txt", "workspace/ir/b.txt"]),
+            ("truncate -s 0 workspace/ir/log.txt", ["workspace/ir/log.txt"]),
+            ("dd if=/dev/zero of=workspace/ir/x.bin bs=1", ["workspace/ir/x.bin"]),
+            ("cp 'a b.txt' 'c d.txt'", ["c d.txt"]),
+            # a redirect and an operand destination in the same command
+            ("cp a b > log.txt", ["log.txt", "b"]),
+            # an input redirect must not become the last operand
+            ("cp a b < in.txt", ["b"]),
+            # fragment head only: argv0 of each fragment, never a bare word
+            ("ls && cp a b", ["b"]),
+            ("echo cp a b", []),
+            # residue, deliberately empty (see the function's docstring): a
+            # single-operand `ln` names its link nowhere in the argv, and a
+            # destination reached through another program is not at a fragment head
+            ("ln -s ../x", []),
+            ("xargs cp -t workspace/ir", []),
+            ("sudo cp a workspace/ir/b", []),
+            ("VAR=1 cp a workspace/ir/b", []),
+            ("find . -name x -exec cp {} workspace/ir \\\\;", []),
+        )
+        for command, expected in rows:
+            with self.subTest(command=command):
+                self.assertEqual(sorted(self._targets(command)), sorted(expected))
+
+    def test_dest_opt_members_are_each_load_bearing(self) -> None:
+        """Every member of `_ARGV_WRITE_DEST_OPTS` decides a real destination.
+
+        Probes are generated from the table, so this covers whatever it holds.
+        """
+        for cmd, opts in cli._ARGV_WRITE_DEST_OPTS.items():
+            for opt in opts:
+                spellings = [f"{cmd} {opt} workspace/ir/dest src1 src2"]
+                if opt.startswith("--"):
+                    spellings.append(f"{cmd} {opt}=workspace/ir/dest src1 src2")
+                for command in spellings:
+                    with self.subTest(command=command):
+                        self.assertEqual(self._targets(command), ["workspace/ir/dest"])
+                        mutated = dict(cli._ARGV_WRITE_DEST_OPTS)
+                        mutated[cmd] = frozenset(opts - {opt})
+                        with patch.object(cli, "_ARGV_WRITE_DEST_OPTS", mutated):
+                            self.assertNotIn("workspace/ir/dest", self._targets(command))
+
+    def test_value_opt_members_are_each_load_bearing(self) -> None:
+        """Every member of `_ARGV_WRITE_VALUE_OPTS` keeps a value out of the targets.
+
+        Dropping one produces a BLOCK naming a mode string / size / timestamp the
+        leaf never wrote — the false-BLOCK direction of issue #74(a)/(b). The option
+        is written AFTER the operands for the last-operand commands, because that is
+        where its value would displace the real destination.
+        """
+        for cmd, opts in cli._ARGV_WRITE_VALUE_OPTS.items():
+            all_operands = cmd in cli._ARGV_WRITE_ALL_OPERANDS
+            for opt in opts:
+                command = (
+                    f"{cmd} {opt} OPTVAL workspace/ir/dest"
+                    if all_operands
+                    else f"{cmd} src workspace/ir/dest {opt} OPTVAL"
+                )
+                with self.subTest(command=command):
+                    self.assertEqual(self._targets(command), ["workspace/ir/dest"])
+                    mutated = dict(cli._ARGV_WRITE_VALUE_OPTS)
+                    mutated[cmd] = frozenset(opts - {opt})
+                    with patch.object(cli, "_ARGV_WRITE_VALUE_OPTS", mutated):
+                        self.assertIn("OPTVAL", self._targets(command))
+
+    # ---- end to end through cli.main --------------------------------------
+
+    def _setup(self, repo_root: Path, *, orch: str, run_id: str, tmp_root: str) -> None:
+        orch_root = repo_root / "workspace" / "orchestrations" / orch
+        (orch_root / "output_manifests").mkdir(parents=True, exist_ok=True)
+        (orch_root / "read_manifests").mkdir(parents=True, exist_ok=True)
+        (orch_root / "active_child_agent_run_id.txt").write_text(run_id, encoding="utf-8")
+        (orch_root / "output_manifests" / f"{run_id}.json").write_text(
+            json.dumps(
+                {
+                    "orchestration_id": orch,
+                    "agent_run_id": run_id,
+                    "allowed_output_paths": [],
+                    "allowed_file_tool_paths": [],
+                    "allowed_tmp_root": tmp_root,
+                    "write_roots": ["workspace/ir"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _run_bash_hook(self, *, orch: str, repo_root: Path, command: str) -> tuple[int, dict]:
+        payload = {
+            "orchestration_id": orch,
+            "repo_root": str(repo_root),
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+        }
+        out = io.StringIO()
+        with patch.dict(os.environ, {"METDSL_WORKFLOW_MODE": "1"}, clear=False):
+            with redirect_stdout(out):
+                code = cli.main(
+                    [
+                        "--backend",
+                        "claude",
+                        "--event",
+                        "PreToolUse",
+                        "--input-json",
+                        json.dumps(payload),
+                    ]
+                )
+        body_text = out.getvalue().strip()
+        return code, (json.loads(body_text) if body_text else {})
+
+    def test_quoted_redirect_target_under_tmp_root_is_not_blocked(self) -> None:
+        """Issue #74(a) end to end: the block named `'"'`, a path nobody wrote."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_quoted"
+            run_id = "step_run_issue74_quoted"
+            tmp_root = f"workspace/tmp/{run_id}"
+            self._setup(repo_root, orch=orch, run_id=run_id, tmp_root=tmp_root)
+            code, body = self._run_bash_hook(
+                orch=orch,
+                repo_root=repo_root,
+                command=f'cat > "{tmp_root}/work.py" <<EOF',
+            )
+            self.assertNotEqual(code, 2, body)
+            self.assertNotEqual(body.get("decision"), "block", body)
+
+    def test_redirect_without_space_reaches_the_write_guard(self) -> None:
+        """Issue #74(c) end to end: `cat >path` used to produce no target at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_nospace"
+            run_id = "step_run_issue74_nospace"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            for command in (
+                "cat > workspace/pipelines/evil.json <<'EOF'",
+                "cat >workspace/pipelines/evil.json <<'EOF'",
+            ):
+                with self.subTest(command=command):
+                    code, body = self._run_bash_hook(
+                        orch=orch, repo_root=repo_root, command=command
+                    )
+                    self.assertEqual(code, 2, body)
+                    self.assertEqual(body.get("decision"), "block", body)
+                    self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
+
+    def test_argv_grammar_destination_reaches_the_write_guard(self) -> None:
+        """TODO.md 378(d) end to end: `cp` named no target before this change."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            orch = "orch_issue74_argv"
+            run_id = "step_run_issue74_argv"
+            self._setup(
+                repo_root, orch=orch, run_id=run_id, tmp_root=f"workspace/tmp/{run_id}"
+            )
+            code, body = self._run_bash_hook(
+                orch=orch,
+                repo_root=repo_root,
+                command="cp a.txt workspace/pipelines/evil.json",
+            )
+            self.assertEqual(code, 2, body)
+            self.assertEqual(body.get("decision"), "block", body)
+            self.assertIn("workspace/pipelines/evil.json", body.get("reason", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
