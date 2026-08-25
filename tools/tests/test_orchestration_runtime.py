@@ -35747,7 +35747,7 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
 
     def test_no_repo_root_is_an_advisory_skip(self) -> None:
         """`pass is None`, on the precedent of `_probe_claude_mcp_registry`: production
-        reaches this through `cmd_preflight`, which always passes one. NOT False — a skip
+        reaches this through the `preflight` subcommand, which always passes one. NOT False — a skip
         that gated would refuse every launch from a caller that has no repo root."""
         from tools.orchestration_runtime import _probe_claude_leaf_tool_roster
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]

@@ -17157,7 +17157,7 @@ def _probe_claude_leaf_tool_roster(
     reproduce the denylist's failure in a new place.
 
     `repo_root is None` is an advisory SKIP (`pass=None`), on the precedent of
-    `_probe_claude_mcp_registry`: production reaches this through `cmd_preflight`, which
+    `_probe_claude_mcp_registry`: production reaches this through the `preflight` subcommand, whose `--repo-root` is required and which
     always passes one, and without a repo root there is no `.mcp.json` to classify the
     MCP half against.
     """
@@ -17166,7 +17166,7 @@ def _probe_claude_leaf_tool_roster(
     if repo_root is None:
         return {"name": name, "pass": None,
                 "detail": ("skipped; probe_execution_platform was called without repo_root "
-                           "(advisory only — production calls via cmd_preflight always pass "
+                           "(advisory only — the preflight subcommand always passes "
                            "repo_root)")}
     command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
     if not command_argv:
@@ -18562,7 +18562,7 @@ def _probe_claude_mcp_registry(
                     "pass": None,
                     "detail": (
                         "skipped; probe_execution_platform was called without repo_root "
-                        "(advisory only — production calls via cmd_preflight always pass repo_root)"
+                        "(advisory only — the preflight subcommand always passes repo_root)"
                     ),
                 },
                 {
@@ -18572,7 +18572,7 @@ def _probe_claude_mcp_registry(
                     "pass": None,
                     "detail": (
                         "skipped; probe_execution_platform was called without repo_root "
-                        "(advisory only — production calls via cmd_preflight always pass repo_root)"
+                        "(advisory only — the preflight subcommand always passes repo_root)"
                     ),
                 },
             ],
