@@ -184,7 +184,7 @@ This section is the evidence and the practical notes it used to carry inline.
 
 for two consecutive rounds** (a disclosure round, which runs no security agent, is skipped in
 that count rather than breaking it). It has **never been achieved in any recorded loop** — the
-histories in `references/class-descent-log.md`, plus PR #51. **Run assuming you will not reach
+histories in this file, plus PR #51. **Run assuming you will not reach
 it** — do not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition.** As a condition it becomes **a motive to
@@ -277,7 +277,7 @@ and running this in R6 settled it on the spot. Instruct a dedicated reviewer:
 What comes back turns "the remainder is bounded" from a feeling into a list, and the instrument
 reproduces: PR #66 classified 70 decisions, PR #67 233 decisions with 111 mutants. Practical
 notes (the numbers and
-transitions are in `references/class-descent-log.md`):
+transitions are in the per-PR sections of this file):
 
 - **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
   "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
@@ -315,8 +315,7 @@ unwitnessed** — the recurrence was localized to the additions, the shape of th
 right, and the problem was the habit of writing a fix without its witness. Stopping there would
 have handed over as unresolved something bounded and fixable. **The test**: inherited decisions got
 worse → a problem of shape (stop and hand over); concentrated in what the last fix added → a
-problem of habit (write the witnesses and it closes). The full table is in
-`references/class-descent-log.md`.
+problem of habit (write the witnesses and it closes). The full table is in this file's PR #66 section.
 
 **Another proxy: does the finding exist in the real corpus?** This is cheap to measure and saves
 several rounds. **If every finding in a round is a construct that occurs zero times in the real

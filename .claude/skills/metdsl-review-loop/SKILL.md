@@ -266,7 +266,9 @@ Episodes for the last four bullets, and the three accidents in full: `references
 
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
-"the implementation is right but the test is weak" as real.
+"the implementation is right but the test is weak" as real. (`metdsl-enforcement-change` judgment
+rule 1 owns this rule and states what a "record" has to be; this line is the round's trigger for
+it, not a second statement of it.)
 
 **Verify a reviewer's negative claims the same way.** In PR #66 a sweep reported "only the token
 ratchet kills this hunk"; a test in another file caught it correctly and was simply outside the
@@ -275,8 +277,8 @@ were inside that reviewer's test command.** If not, it is a report about the mea
 
 ## Delegate verifiable work to sonnet
 
-**Operational conclusion (4 data points, the confound resolved in PR #72 by giving both models
-the same checklist): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
+**Operational conclusion (5 data points; the confound resolved in PR #72 by giving both models
+the same checklist, the axis run as delegated in PR #88): sonnet ⊂ opus, with real misses.** Move **the mechanical-recomputation axis**
 permanently to sonnet and keep judgment on the up-model. Costs came out roughly equal, so "it is
 cheap, so run more" does not hold — **use it only to free up a slot**. Run one via `Agent` with
 `model: "sonnet"`, **in parallel** with the up-model reviewers; it adds an axis rather than
@@ -292,6 +294,8 @@ triage), and layers needing a hypothesis → mutate → run cycle (gate semantic
 arithmetic).
 
 **Make the prompt a checklist**, not free-form, and hand over the same ground rules as above.
+**Tell it to report claims it cannot locate rather than accounting for them** — refusing a false
+premise I had put in its prompt is the most valuable thing this axis has done (data point 5).
 **This stays an experiment**: collect real/total findings, elapsed time and the overlap count,
 add a data point each time, and delete this section if it stops paying. How to read overlap, how
 not to confound the comparison, and why the reverse (opus reviewing sonnet's implementation) is
