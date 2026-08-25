@@ -91,17 +91,32 @@ def normalize(token: str) -> str:
     return re.sub(r":L?\d+(-L?\d+)?$", "", token)
 
 
+def _strip_fenced_blocks(text: str) -> str:
+    """`text` with ``` fenced blocks removed.
+
+    These documents teach by quoting commands and examples, so a fence holds spellings that are
+    NOT pointers — a deliberately bad path, a `<placeholder>`, another repository's layout. The
+    link scanner below reads raw text, so without this a fenced example of a broken link fails
+    the citation row: an over-refusal introduced by widening, which is the direction a widening
+    fails in. An unterminated fence swallows the rest of the file, which is why the split keeps
+    the odd-numbered segments rather than pairing greedily.
+    """
+    return "".join(part for index, part in enumerate(re.split(r"```", text)) if index % 2 == 0)
+
+
 def _pointer_tokens(text: str) -> set[str]:
     """Every token in `text` written as a pointer to a reader: backticked, or a link target.
 
     Backticks are how these documents point today; `[label](path)` and `![alt](path)` are the
     other spelling Markdown gives, and reading only the first reports a file pointed at by a link
     as unreachable — an over-refusal on correct writing, which is what gets a check deleted rather
-    than fixed. A target carrying a scheme (`https:`) is left to the path filter in the caller,
-    which admits only first segments this repository tracks.
+    than fixed. A link may carry a title (`[x](path "title")`), which is not part of the path. A
+    target carrying a scheme (`https:`) is left to the path filter in the caller, which admits
+    only first segments this repository tracks.
     """
-    return (set(re.findall(r"`([^`\n]+)`", text))
-            | set(re.findall(r"\]\(([^)\s]+)\)", text)))
+    body = _strip_fenced_blocks(text)
+    return (set(re.findall(r"`([^`\n]+)`", body))
+            | set(re.findall(r"\]\(\s*([^)\s]+)(?:\s+\"[^\"]*\")?\s*\)", body)))
 
 
 def citation_targets(text: str, source: str) -> list[str]:
@@ -114,9 +129,12 @@ def citation_targets(text: str, source: str) -> list[str]:
     """
     files, _directories = _git_paths()
     top_level = {entry.split("/")[0] for entry in files}
-    skill_dir = Path(source).parent
-    if skill_dir.parent.as_posix() != SKILL_ROOT:      # a file under references/ or scripts/
-        skill_dir = skill_dir.parent
+    # The skill directory is the third path component, however deep the SOURCE sits. Climbing one
+    # level instead resolved `references/b.md` cited from `references/sub/a.md` to
+    # `references/references/b.md` — a path that never existed, reported as both a broken citation
+    # and an orphan, for the second-level split this module says it supports.
+    parts = Path(source).parts
+    skill_dir = Path(*parts[:3]) if len(parts) > 3 else Path(source).parent
     targets = []
     for raw in sorted(_pointer_tokens(text)):
         if any(char in raw for char in _NOT_A_PATH):
@@ -124,6 +142,8 @@ def citation_targets(text: str, source: str) -> list[str]:
         token = normalize(raw)
         if not token:
             continue
+        if token.startswith("./"):
+            token = token[2:]
         if token.startswith(_SKILL_RELATIVE_ROOTS):
             targets.append((skill_dir / token).as_posix())
         elif token.split("/")[0] in top_level:
@@ -320,13 +340,17 @@ class SkillReachabilityTests(unittest.TestCase):
     - a reference SHARED between the two skills, cited from the other one's `SKILL.md`, so the
       roots are every skill's entry point at once and only the ownership split is per skill
 
-    What it still does not see is a path that appears only inside a fenced code block, where the
-    fence's own backticks hide it from the inline scan. The refusal message says what counts.
+    What it does not see is a path spelled with no backticks and no link syntax, and anything
+    inside a fenced code block, which is stripped before scanning because a fence holds examples
+    rather than pointers. The refusal message states the forms that count, including the
+    `references/…` / `scripts/…` / repository-root spellings the resolver actually accepts —
+    a message that names a rule wider than the one applied refuses correct work twice.
     """
 
     #: What a pointer has to look like for the walk to follow it. Named because the refusal
     #: message quotes it: a rule a reader is told to satisfy must be stated where it is applied.
-    _POINTER_FORMS = "a backticked path or a Markdown link target, outside a fenced code block"
+    _POINTER_FORMS = ("a backticked path or a Markdown link target, outside a fenced code block, "
+                      "spelled `references/…`, `scripts/…`, or from the repository root")
 
     def _reachable(self, root: Path | None = None) -> tuple[dict[str, set[str]], set[str]]:
         """`(files each skill owns, every skill file reachable from SOME skill's SKILL.md)`.
@@ -338,8 +362,12 @@ class SkillReachabilityTests(unittest.TestCase):
         files, _directories = _git_paths()
         owned: dict[str, set[str]] = {}
         for entry in files:
-            if entry.startswith(SKILL_ROOT + "/"):
-                owned.setdefault(entry.split("/")[2], set()).add(entry)
+            # `<root>/<skill>/<file>` — a file sitting DIRECTLY under the root (a README) is not
+            # a skill, and treating it as one made the entry-point guard blame it for having no
+            # SKILL.md.
+            parts = entry.split("/")
+            if entry.startswith(SKILL_ROOT + "/") and len(parts) > 3:
+                owned.setdefault(parts[2], set()).add(entry)
         seen, queue = set(), []
         for skill, entries in sorted(owned.items()):
             entry_point = f"{SKILL_ROOT}/{skill}/SKILL.md"
@@ -366,18 +394,23 @@ class SkillReachabilityTests(unittest.TestCase):
         this list assembled inline in the row, dropping every append left all rows green, because
         the real tree has no orphan and the self-tests were calling the WALK rather than the row.
 
-        DOCUMENTS only, and the reason is over-refusal rather than tidiness. The walk FOLLOWS a
-        script (a reference cited only from `scripts/x.py` is reachable), but a script's own
-        dependencies arrive by import, which is not a citation: requiring one would report an
-        ordinary helper module beside a cited script as dead and tell the author to delete it.
-        Caught by a `.pyc` that a scratch fixture had committed, which the rule then demanded a
-        citation for. What the cost argument is about is documents — they are what a reader loads.
+        Everything a skill holds EXCEPT `scripts/`, and the exemption is exactly as wide as the
+        reason for it: the walk FOLLOWS a script (a reference cited only from `scripts/x.py` is
+        reachable), but a script's own dependencies arrive by import, which is not a citation, so
+        requiring one would report an ordinary helper module beside a cited script as dead and
+        tell the author to delete it. Caught by a `.pyc` a scratch fixture had committed.
+
+        An earlier version exempted every non-`.md` file, which is broader than that argument:
+        a `references/*.yaml` or `*.csv` is a document a reader loads, and it could then be
+        dropped with no signal — the loosening direction, which is how a widened check ends up
+        observing nothing.
         """
         return [f"{entry}: no chain of citations from any skill's SKILL.md reaches it — point at "
                 f"it ({self._POINTER_FORMS}) from SKILL.md or from a file SKILL.md reaches, or "
                 f"delete it"
                 for skill in sorted(owned)
-                for entry in sorted(owned[skill] - reachable) if entry.endswith(".md")]
+                for entry in sorted(owned[skill] - reachable)
+                if not entry.startswith(f"{SKILL_ROOT}/{skill}/scripts/")]
 
     def test_no_file_in_a_skill_is_unreachable_from_a_skill_md(self) -> None:
         owned, reachable = self._reachable()
@@ -438,7 +471,15 @@ class SkillReachabilityTests(unittest.TestCase):
         report = self._orphan_report(owned, reachable)
         self.assertEqual(len(report), 1, report)
         self.assertIn(f"{probe}/references/orphan.md", report[0])
-        self.assertIn(self._POINTER_FORMS, report[0])
+        # not `assertIn(self._POINTER_FORMS, ...)`: emptying the constant satisfies that for
+        # ever, since "" is a substring of everything — measured as a surviving mutant. Assert
+        # the properties the message has to carry instead.
+        for stated in ("backticked", "link target", "fenced code block",
+                       "from the repository root"):
+            # each phrase cannot occur in a PATH, so the assertion reads the message rather than
+            # the finding it wraps: `references/` did, and dropping the spellings from the
+            # constant stayed green because the orphan's own path supplied it.
+            self.assertIn(stated, report[0], stated)
         # the over-refusal direction: each of these is correct work an earlier version refused
         for reached in ("references/second.md", "scripts/tool.py",
                         "references/from_script.md"):
@@ -496,6 +537,65 @@ class SkillReachabilityTests(unittest.TestCase):
         })
         self.assertEqual(owned["probe"] - reachable, set())
         self.assertNotIn("docs/HOOKS.md", reachable)
+
+    def test_a_reference_that_is_not_markdown_still_has_to_be_reached(self) -> None:
+        """The exemption is `scripts/`, not "not a .md".
+
+        A `references/*.yaml` or `*.csv` is a document a reader loads, which is what the whole
+        cost argument is about; exempting it by extension let it be dropped with no signal.
+        """
+        owned, reachable = self._walk_a_built_tree({
+            f"{SKILL_ROOT}/probe/SKILL.md": "nothing points onward",
+            f"{SKILL_ROOT}/probe/references/table.yaml": "rows: []\n",
+        })
+        self.assertEqual([finding.split(":")[0] for finding
+                          in self._orphan_report(owned, reachable)],
+                         [f"{SKILL_ROOT}/probe/references/table.yaml"])
+
+    def test_a_second_level_split_one_directory_deeper_is_followed(self) -> None:
+        """The docstring promises second-level splits; one directory deeper used to break.
+
+        `references/deep.md` cited from `references/sub/index.md` resolved to
+        `references/references/deep.md` — a path that never existed — so the author got both a
+        broken-citation failure and an orphan report for writing the supported shape.
+        """
+        owned, reachable = self._walk_a_built_tree({
+            f"{SKILL_ROOT}/probe/SKILL.md": "see `references/sub/index.md`",
+            f"{SKILL_ROOT}/probe/references/sub/index.md": "onward to `references/sub/deep.md`",
+            f"{SKILL_ROOT}/probe/references/sub/deep.md": "the deeper split",
+        })
+        self.assertEqual(self._orphan_report(owned, reachable), [])
+
+    def test_a_file_directly_under_the_skills_root_is_not_a_skill(self) -> None:
+        """A README beside the skill directories is ordinary, and it has no SKILL.md by design."""
+        owned, reachable = self._walk_a_built_tree({
+            f"{SKILL_ROOT}/README.md": "what this directory is",
+            f"{SKILL_ROOT}/probe/SKILL.md": "a skill",
+        })
+        self.assertEqual(sorted(owned), ["probe"])
+        self.assertEqual(self._orphan_report(owned, reachable), [])
+
+    def test_examples_inside_a_fenced_block_are_not_pointers(self) -> None:
+        """A fence holds commands and examples; reading them as pointers refuses correct writing.
+
+        Both scanners are checked: the backticked spelling and the link spelling, each inside a
+        fence, and each with a target that does not exist.
+        """
+        fenced = ("```sh\n"
+                  "cat `references/not_real.md`\n"
+                  "see [label](tools/no_such_file.py)\n"
+                  "```\n"
+                  "the real pointer is `references/cited.md`\n")
+        self.assertEqual(citation_targets(fenced, f"{SKILL_ROOT}/probe/SKILL.md"),
+                         [f"{SKILL_ROOT}/probe/references/cited.md"])
+
+    def test_a_dot_slash_pointer_and_a_titled_link_resolve(self) -> None:
+        """Two ordinary spellings that an earlier version reported as orphans."""
+        source = f"{SKILL_ROOT}/probe/SKILL.md"
+        self.assertEqual(citation_targets("see `./references/x.md`", source),
+                         [f"{SKILL_ROOT}/probe/references/x.md"])
+        self.assertEqual(citation_targets('see [x](references/y.md "the notes")', source),
+                         [f"{SKILL_ROOT}/probe/references/y.md"])
 
     def test_a_skill_with_no_entry_point_is_named_as_such(self) -> None:
         """Witness for the `assertIn` guard: without it the walk dies on `git show` instead.
