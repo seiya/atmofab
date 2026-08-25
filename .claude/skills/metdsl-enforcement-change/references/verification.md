@@ -305,3 +305,27 @@ behavioural witness at all. When a mutant dies, read WHICH row died.
 
 Use `.claude/skills/metdsl-review-loop/scripts/mutation_check.py`. The procedure is owned by
 `metdsl-review-loop`'s "Before you hand it over (round 0)".
+
+## Measuring what a Claude Code TOOL actually reaches
+
+`scripts/measure_claude_tool.py` in this skill. Use it whenever a rule you are writing,
+deleting or narrowing rests on **what a vendor tool can reach** — which paths a search
+tool walks, whether a filter can leave its root, whether a spelling is inert.
+
+    python3 .claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py
+
+It drives the real tool through a loopback stand-in for the Messages endpoint (no model
+turn, so nothing is billed), in a fixture where every location a pattern could resolve to
+holds a marked file, and each row DECLARES whether it must read or must be inert. It exits
+non-zero on any disagreement, so it can be run without classifying rows by eye.
+
+**Why a script and not a probe you write on the spot.** Issue #71's `Glob` question was
+answered wrongly four times before this existed — Python's `glob` twice, bare `ripgrep`
+once, and a hand-written driver whose fixture could not tell "the tool is confined" from
+"the target was absent". Every one of those was written down as a measurement of the tool.
+Rule 1-b says a deletion needs an execution record; this is what makes that record
+re-takeable by the next person instead of a sentence they have to trust.
+
+`tools/tests/test_measure_claude_tool.py` pins its case-list coverage, fixture saturation,
+result detector and verdict — a harness with no witness gets broken again, and this one had
+four faults in that layer found in a single review round.

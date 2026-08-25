@@ -369,6 +369,54 @@ _CLAUDE_EMPTY_PROMPT_REFUSAL = (
     "when using --print"
 )
 
+
+def _answer_claude_roster_probe(args, kwargs, *, roster=None):
+    """The CLI double for `_probe_claude_leaf_tool_roster`'s launch.
+
+    A REAL POST to the probe's own capture server, read off the env the probe built, so
+    the server, its request parsing and the classification all run for real; only the CLI
+    is faked. Returning a canned check result instead would leave every one of those
+    unexercised — the shape that let a broken server look green.
+
+    `roster` defaults to the passing case: the declared allowlist PLUS one tool from the
+    server the fixture's `.mcp.json` declares, because a declared server that contributes
+    nothing to the roster is a finding of its own. The tools carry only `name`, which is
+    the one field the server reads.
+    """
+    import urllib.error
+    import urllib.request
+    from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+
+    names = ([*CLAUDE_LEAF_TOOLS, "mcp__build-runtime__run_linter"]
+             if roster is None else list(roster))
+    base_url = kwargs["env"]["ANTHROPIC_BASE_URL"]
+    body = json.dumps({
+        "model": "claude-opus-5",
+        "tools": [{"name": name} for name in names],
+        "messages": [{"role": "user", "content": "."}],
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url}/v1/messages?beta=true", data=body,
+        headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(request, timeout=10).read()
+    except urllib.error.HTTPError as exc:
+        # The 400 IS the contract: the stand-in refuses a request carrying tools so no
+        # model turn happens. The CLI reports it and exits 1, which is what is returned.
+        exc.read()
+    return _FakeCompletedProcess(
+        1, stdout=json.dumps({"is_error": True, "subtype": "success",
+                              "api_error_status": 400,
+                              "result": "API Error: 400 met-dsl preflight roster capture"}))
+
+
+def _is_claude_roster_probe(args) -> bool:
+    """The roster probe's launch, told apart from every other CLI double call by the flag
+    that decides the tool set. Matching on the whole argv would make every double a second
+    copy of `claude_leaf_roster_probe_argv`."""
+    return "--tools" in list(args)
+
+
 _CODEX_EXEC_HELP = (
     "--model --json --output-schema --sandbox --ignore-rules --config "
     "--dangerously-bypass-hook-trust --dangerously-bypass-approvals-and-sandbox\n"
@@ -850,6 +898,8 @@ shell_tool                       stable             true
                 if raise_on_mcp_list is not None:
                     raise raise_on_mcp_list
                 return _FakeCompletedProcess(mcp_returncode, stdout=mcp_stdout)
+            if _is_claude_roster_probe(args):
+                return _answer_claude_roster_probe(args, kwargs)
             raise AssertionError(args)
 
         return runner
@@ -915,6 +965,20 @@ shell_tool                       stable             true
             (repo_root / ".mcp.json").write_text(
                 json.dumps({"mcpServers": mcp_servers}), encoding="utf-8"
             )
+        elif not (repo_root / ".mcp.json").exists():
+            # A leaf is launched with `--strict-mcp-config --mcp-config .mcp.json`, so
+            # since issue #71 preflight FAILS CLOSED when that file is unreadable — the
+            # roster check cannot classify an `mcp__…` tool without knowing which servers
+            # this repository declares. A repo fixture with no such file is therefore not
+            # a repo any leaf could launch from. Seeded with the server the committed file
+            # declares, and only when the caller did not spell out its own: this affects no
+            # ENABLEMENT decision, which reads `.claude/settings.json`, except under
+            # `enableAllProjectMcpServers`, whose one test passes `mcp_servers` explicitly.
+            (repo_root / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"build-runtime": {
+                    "command": "python3",
+                    "args": ["./mcp_servers/build_runtime_server.py"]}}}),
+                encoding="utf-8")
         if (
             local_disabled_mcpjson_servers is not None
             or local_allow_permissions is not None
@@ -1122,6 +1186,8 @@ shell_tool                       stable             true
             if args[0] == "claude" and args[1:] == ["mcp", "list"]:
                 captured["cwd"] = kwargs.get("cwd")
                 return _FakeCompletedProcess(0, stdout="")
+            if _is_claude_roster_probe(args):
+                return _answer_claude_roster_probe(args, kwargs)
             raise AssertionError(args)
 
         with tempfile.TemporaryDirectory() as td:
@@ -29626,7 +29692,20 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # only in gate code, so a verify leaf authoring a structured incident dict was writing
         # an unrepairable artifact it had never been told was invalid. E2E #4
         # (orch_20260712T014005Z_e02a2d4d, validate.execute post_execute_violation).
-        "docs/AGENT_CONTRACT.md": 18800,
+        # Raised for issue #71: `Glob`'s `pattern` is now validated like its `path`, and a
+        # leaf that does not know that meets a refusal — or, worse, an empty result — it
+        # cannot diagnose. That is the one class of text this file exists to carry.
+        #
+        # NO BYTE ARITHMETIC IN THIS COMMENT, deliberately. The delta was written here
+        # three times and was wrong three times (190 for a 150 bump, then 150 for a 200
+        # bump), each time in the commit that claimed to have corrected the previous one.
+        # The rule is what matters and does not rot: a ceiling exists to catch RE-BLOAT,
+        # so it sits far enough above the file to admit an ordinary sentence and low enough
+        # to notice a section. `wc -c` is one command away for anyone who wants the number.
+        # Raised again in round 11: at 19000 the file sat 14 bytes below the ceiling, which
+        # is the tripwire this very comment says a ceiling must not be — the rule was
+        # written and then not applied to the number beside it.
+        "docs/AGENT_CONTRACT.md": 19200,
         # Consolidated runner-output contract (was duplicated across phase_02/04 +
         # PERF §2/§6); M3d: a validate.judge-only leaf must-read (generate dropped it).
         # Bumped 7600->8100: §3 disambiguated the guard-case snapshot rule (declared
@@ -34735,6 +34814,1150 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ClaudeLeafToolAllowlistTests(unittest.TestCase):
+    """The tool allowlist an agentic claude leaf is launched with (issue #71).
+
+    What is pinned here is that the two sets AGREE, in both directions, at every moment the
+    suite runs. That is what stops a tool being added to a leaf without a hook that can
+    judge it, which is the hole issue #71 closes. The coverage table's own membership is
+    pinned against the committed leaf configuration by `ClaudeLeafConfigProbeTests`.
+
+    What it does NOT catch, stated because the first version of this docstring claimed it
+    did: replacing the derivation with a LITERAL of today's six names survives (measured),
+    since an equality of sets is satisfied by any spelling with the same members. The value
+    is in the next divergence, not in the spelling — a literal that stayed behind while the
+    coverage table moved fails here on the following edit, in whichever direction it went.
+    """
+
+    def test_the_allowlist_is_the_hook_matcher_coverage(self) -> None:
+        from tools.orchestration_runtime import (
+            CLAUDE_LEAF_TOOLS, _CLAUDE_HOOK_MATCHER_COVERAGE)
+        self.assertEqual(set(CLAUDE_LEAF_TOOLS),
+                         _CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])
+        # SORTED and deduplicated: the value is comma-joined onto the argv and the roster
+        # probe reproduces that argv, so an unstable order would make the two disagree for
+        # no reason a reader could see.
+        self.assertEqual(list(CLAUDE_LEAF_TOOLS), sorted(set(CLAUDE_LEAF_TOOLS)))
+        # No member may be empty or carry the separator, or the joined value would name a
+        # tool nobody declared (and an empty member spells "no tools" to the CLI).
+        for name in CLAUDE_LEAF_TOOLS:
+            self.assertTrue(name.strip(), repr(name))
+            self.assertNotIn(",", name)
+
+    def test_the_absent_seam_is_a_subset_and_required_is_the_remainder(self) -> None:
+        """`CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` is an escape hatch for a CLI that stops
+        offering a tool this repository still hooks. It may only ever SUBTRACT from the
+        declared set — a name that is not in `CLAUDE_LEAF_TOOLS` would silently excuse the
+        roster check from a tool nobody asked for.
+
+        MEASURED EMPTY on CLI 2.1.238: all six load when `--tools` names them. The
+        emptiness is asserted so that adding a name is a deliberate, visible edit rather
+        than a quiet loosening of the roster comparison.
+        """
+        from tools.orchestration_runtime import (
+            CLAUDE_LEAF_REQUIRED_TOOLS, CLAUDE_LEAF_TOOLS, CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI)
+        self.assertLessEqual(set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI), set(CLAUDE_LEAF_TOOLS))
+        self.assertEqual(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI, ())
+        self.assertEqual(set(CLAUDE_LEAF_REQUIRED_TOOLS),
+                         set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
+        # THE SUBTRACTION ITSELF, which the equality above cannot witness while the seam
+        # is empty — deleting it left the suite green (measured). Recomputed here from the
+        # module's own source expression against a non-empty seam, so the day someone
+        # records a name the derivation is known to honour it rather than merely to have
+        # been written.
+        import ast
+        import inspect
+        source = inspect.getsource(ort)
+        expression = next(
+            node.value for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "CLAUDE_LEAF_REQUIRED_TOOLS" for t in node.targets)
+        )
+        for seam in ((), ("Glob",), ("Glob", "Grep")):
+            recomputed = eval(  # noqa: S307 - the module's own expression, not input
+                compile(ast.Expression(expression), "<derivation>", "eval"),
+                {"tuple": tuple, "sorted": sorted, "set": set,
+                 "CLAUDE_LEAF_TOOLS": CLAUDE_LEAF_TOOLS,
+                 "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI": seam})
+            self.assertEqual(set(recomputed), set(CLAUDE_LEAF_TOOLS) - set(seam), seam)
+        # Non-empty, or the roster check would require nothing at all and a leaf launched
+        # with no working tools would pass preflight.
+        self.assertTrue(CLAUDE_LEAF_REQUIRED_TOOLS)
+
+
+#: How long the in-flight witness below holds a request body back. MEASURED, not chosen:
+#: without `daemon_threads = False` the context manager's own exit takes ~0.5 s, so a
+#: shorter trickle lands inside that window and the capture arrives whether the fix is
+#: present or not. At this value the unfixed server returns no capture at all.
+_IN_FLIGHT_TRICKLE_SECONDS = 2.0
+
+
+class ClaudeRosterCaptureServerTests(unittest.TestCase):
+    """`_claude_roster_capture_server` — the stand-in the roster probe measures through.
+
+    Driven with a real HTTP client, because everything the check concludes rests on this
+    server behaving like the endpoint the CLI expects. A canned-response double here would
+    leave the request parsing, the status codes and the keep-alive framing unexercised, and
+    each of those failing looks like "the CLI sent no roster" — a FAIL the operator cannot
+    tell from a real one.
+    """
+
+    @staticmethod
+    def _post(base_url: str, document: dict) -> tuple[int, dict]:
+        import urllib.error
+        import urllib.request
+        request = urllib.request.Request(
+            f"{base_url}/v1/messages?beta=true",
+            data=json.dumps(document).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        try:
+            response = urllib.request.urlopen(request, timeout=10)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+        return response.code, json.loads(response.read().decode("utf-8"))
+
+    def test_a_request_carrying_tools_is_recorded_and_refused(self) -> None:
+        """400, so no model turn happens and the capture is UNBILLED. A 200 here would
+        let the CLI proceed into a conversation against a fake endpoint."""
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        with _claude_roster_capture_server() as (base_url, captured):
+            status, body = self._post(base_url, {
+                "model": "claude-opus-5",
+                "tools": [{"name": "Bash"}, {"name": "mcp__build-runtime__run_linter"}]})
+            self.assertEqual(status, 400)
+            self.assertEqual(body["type"], "error")
+            self.assertEqual(captured, [["Bash", "mcp__build-runtime__run_linter"]])
+            # Every capture is kept, not just the first: the CLI sends more than one
+            # request per launch (measured) and the classification is over their union.
+            self._post(base_url, {"tools": [{"name": "Read"}]})
+            self.assertEqual(len(captured), 2)
+
+    def test_a_toolless_request_is_answered_and_not_recorded(self) -> None:
+        """A side request is not the measurement. Answering it with an error could make
+        the CLI abort before it ever composes the roster request; recording it as an empty
+        roster would read as "a leaf with no tools", which is a false PASS."""
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        with _claude_roster_capture_server() as (base_url, captured):
+            status, body = self._post(base_url, {"model": "m", "messages": []})
+            self.assertEqual(status, 200)
+            self.assertEqual(body["stop_reason"], "end_turn")
+            self.assertEqual(captured, [])
+            # An EMPTY tools array is the same case, and it is the one that would have
+            # been recorded as a capture by a `"tools" in document` test.
+            self._post(base_url, {"tools": []})
+            self.assertEqual(captured, [])
+
+    def test_the_response_declares_its_length(self) -> None:
+        """`Content-Length` is load-bearing, and its absence has an operator-visible cost.
+
+        The connection is HTTP/1.1 keep-alive, so without an exact length the client waits
+        for a close the threading server does not make. MEASURED against the real CLI:
+        with that one `send_header` deleted, the probe ran to its TIMEOUT and returned
+        `pass=False` "unmeasured" — i.e. EVERY run refused, on a machine where nothing is
+        wrong. Nothing pinned it (measured: the deletion left the whole file green), which
+        is why this asserts the header rather than only the parsed body.
+        """
+        import urllib.error
+        import urllib.request
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        with _claude_roster_capture_server() as (base_url, _captured):
+            for document in ({"tools": [{"name": "Bash"}]}, {"messages": []}):
+                request = urllib.request.Request(
+                    f"{base_url}/v1/messages", data=json.dumps(document).encode("utf-8"),
+                    headers={"Content-Type": "application/json"})
+                try:
+                    response = urllib.request.urlopen(request, timeout=10)
+                    headers, body = response.headers, response.read()
+                except urllib.error.HTTPError as exc:
+                    headers, body = exc.headers, exc.read()
+                self.assertEqual(headers.get("Content-Length"), str(len(body)), document)
+                # `Connection: close` is the other half, and it is a CORRECTNESS property
+                # of the join rather than a nicety: `server_close()` waits for handlers, so
+                # a handler kept alive by an idle connection makes it wait out the
+                # handler's own socket timeout — measured, a 2.3 s probe became 10 s.
+                # Asserted as a header rather than as a duration, which would be flaky.
+                self.assertEqual(headers.get("Connection"), "close", document)
+            # The GET branch too. Same mechanism, same outage: the CLI makes non-Messages
+            # requests at startup, and one answered on a keep-alive connection with no
+            # declared length hangs the client to the probe timeout. Measured: deleting
+            # the header from `do_GET` alone left the whole file green.
+            get = urllib.request.Request(f"{base_url}/whatever")
+            try:
+                response = urllib.request.urlopen(get, timeout=10)
+                headers, body = response.headers, response.read()
+            except urllib.error.HTTPError as exc:
+                headers, body = exc.headers, exc.read()
+            self.assertEqual(headers.get("Content-Length"), str(len(body)))
+            self.assertEqual(headers.get("Connection"), "close")
+
+    def test_a_request_still_in_flight_is_not_dropped(self) -> None:
+        """The capture list must be COMPLETE when the caller reads it.
+
+        `ThreadingHTTPServer` sets `daemon_threads = True`, and `socketserver._Threads`
+        DISCARDS a daemon thread instead of tracking it, so `block_on_close` joins nothing
+        and `server_close()` returns while a handler is still running. Reproduced before
+        the fix: a roster carrying `Monitor` was dropped and the check reported PASS on the
+        remaining six — the fail-open direction. Moving the read out of the `with` did NOT
+        fix it on its own; `daemon_threads = False` is the line that does, and this is its
+        witness.
+
+        The body is TRICKLED, and the delay is chosen from a MEASUREMENT rather than
+        guessed. Without the fix the exit takes ~0.5 s of its own, so a 0.5 s trickle lands
+        inside that window and the capture arrives anyway — a witness that passes either
+        way. At 2 s the unfixed version returns `captured=[]` and the fixed one returns the
+        roster, which is the difference this test exists to see. Sending the body all at
+        once measures nothing at all.
+        """
+        import socket
+        import threading
+        import time
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        body = json.dumps({"tools": [{"name": "Monitor"}]}).encode("utf-8")
+        head, tail = body[:10], body[10:]
+
+        with _claude_roster_capture_server() as (base_url, captured):
+            host, port = base_url.rsplit("//", 1)[1].split(":")
+            client = socket.create_connection((host, int(port)), timeout=10)
+            self.addCleanup(client.close)
+            client.sendall(
+                b"POST /v1/messages HTTP/1.1\r\n"
+                + f"Host: {host}:{port}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                + head)
+            # The handler is now blocked reading the rest. Hand the remainder over from a
+            # thread that fires AFTER this one has entered the context manager's exit.
+            finisher = threading.Thread(
+                target=lambda: (time.sleep(_IN_FLIGHT_TRICKLE_SECONDS),
+                                client.sendall(tail)))
+            finisher.start()
+            self.addCleanup(finisher.join)
+            time.sleep(0.2)
+        # `server_close()` has joined the handler, so the trickled request is recorded.
+        self.assertEqual(captured, [["Monitor"]])
+
+
+    def test_a_client_that_hangs_up_writes_nothing_to_stderr(self) -> None:
+        """A traceback from an abandoned connection would land in the operator's terminal.
+
+        Reachable on the probe TIMEOUT path, where the CLI is killed mid-request — that
+        is, exactly when that stderr is being read to find out what went wrong.
+
+        DETERMINISTIC through repetition, which one connection is not: a single RST may or
+        may not arrive before the server's write. Thirty of them separate the two states
+        cleanly — a review measured 10 runs each way with the override present (zero bytes
+        of stderr, every time) and renamed away (58-63 KB, every time). An earlier round
+        declared this "not pinnable" after one-connection attempts; that was a statement
+        about the attempts.
+        """
+        import socket
+        import struct
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        body = json.dumps({"tools": [{"name": "Bash"}]}).encode("utf-8")
+        stderr = io.StringIO()
+        linger = struct.pack("ii", 1, 0)
+        with redirect_stderr(stderr):
+            with _claude_roster_capture_server() as (base_url, captured):
+                host, port = base_url.rsplit("//", 1)[1].split(":")
+                for _ in range(30):
+                    client = socket.create_connection((host, int(port)), timeout=10)
+                    client.sendall(
+                        b"POST /v1/messages HTTP/1.1\r\n"
+                        + f"Host: {host}:{port}\r\n".encode()
+                        + b"Content-Type: application/json\r\n"
+                        + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+                    # RST rather than FIN, and without reading the reply: the server's
+                    # write then fails, which is what the default handler reports.
+                    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
+                    client.close()
+        # MOST of them, not all: an RST can arrive before the server has finished reading
+        # that connection's body, in which case there is no capture and no write to fail
+        # on either. The count is here to show the traffic really happened; the assertion
+        # that carries the mechanism is the empty stderr.
+        self.assertGreater(len(captured), 20)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_a_defect_in_the_handler_is_not_silenced(self) -> None:
+        """The other half, and the reason the override is narrow.
+
+        The first version swallowed EVERY exception, so a `TypeError` in `do_POST` gave
+        zero captures, zero stderr, and a refusal with nothing to act on. Only the
+        connection family is silenced; our own defects keep their traceback.
+        """
+        import urllib.error
+        import urllib.request
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with _claude_roster_capture_server() as (base_url, _captured):
+                with mock.patch.object(json, "dumps",
+                                       side_effect=TypeError("a defect of ours")):
+                    request = urllib.request.Request(
+                        f"{base_url}/v1/messages", data=b'{"tools": [{"name": "Bash"}]}',
+                        headers={"Content-Type": "application/json"})
+                    with self.assertRaises(Exception):
+                        urllib.request.urlopen(request, timeout=10).read()
+        self.assertIn("TypeError", stderr.getvalue())
+
+    def test_a_tools_array_that_names_nothing_is_not_a_capture(self) -> None:
+        """A non-empty `tools` array whose entries carry no `name` is not a roster.
+
+        Recorded as an EMPTY capture it becomes, under the per-request rule, a turn the
+        leaf ran with no tools at all — and the run is refused although every real request
+        carried the full set. That is the same false PASS/FAIL confusion the toolless
+        branch exists to prevent, in the other direction, and it is reachable the moment
+        the API grows a tool shape whose entry is keyed differently.
+        """
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        with _claude_roster_capture_server() as (base_url, captured):
+            status, _body = self._post(base_url, {"tools": [{"name": "Bash"}]})
+            self.assertEqual(status, 400)
+            status, body = self._post(
+                base_url, {"tools": [{"type": "web_search_20250305"}]})
+            # Answered as the roster request it looks like, and recorded as nothing.
+            self.assertEqual(status, 400)
+            self.assertEqual(body["type"], "error")
+        self.assertEqual(captured, [["Bash"]])
+
+    def test_a_stalled_connection_cannot_hold_the_probe_open(self) -> None:
+        """The handler's socket timeout, which had no witness while its comment called it
+        load-bearing.
+
+        `server_close()` waits for every handler, so a connection opened and then abandoned
+        — headers promising a body that never arrives — would stall the context manager's
+        exit forever. The bound is lowered here rather than waited out: at its real ten
+        seconds the only honest test is a ten-second one.
+
+        The manager runs on a WORKER THREAD and the assertion is on the join, so removing
+        the mechanism makes this test FAIL in a bounded time. Driven inline it hangs
+        instead, which stalls the whole suite and reports nothing — measured, by removing
+        the line and watching a mutation run pass ten minutes with no verdict.
+        """
+        import socket
+        import threading
+        import time
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        finished = threading.Event()
+        address: list[str] = []
+        opened = threading.Event()
+
+        def serve() -> None:
+            with _claude_roster_capture_server() as (base_url, _captured):
+                address.append(base_url)
+                opened.set()
+                # Hold the manager open until the client has stalled its request.
+                time.sleep(0.4)
+            finished.set()
+
+        with mock.patch.object(ort, "CLAUDE_ROSTER_CAPTURE_HANDLER_TIMEOUT_SECONDS", 1):
+            worker = threading.Thread(target=serve, daemon=True)
+            worker.start()
+            self.assertTrue(opened.wait(10))
+            host, port = address[0].rsplit("//", 1)[1].split(":")
+            client = socket.create_connection((host, int(port)), timeout=10)
+            self.addCleanup(client.close)
+            client.sendall(
+                b"POST /v1/messages HTTP/1.1\r\n"
+                + f"Host: {host}:{port}\r\n".encode()
+                + b"Content-Length: 4096\r\n\r\n")
+            self.assertTrue(
+                finished.wait(8),
+                "the context manager was still waiting for a stalled handler")
+
+    def test_the_listening_socket_is_released_on_exit(self) -> None:
+        """Preflight runs in one process and may probe more than once; a leaked socket is
+        a port the next probe cannot bind.
+
+        The obvious version of this test — exit the `with`, then rebind the port — passes
+        WITHOUT `server_close()` (measured: deleting that line left the whole file green).
+        Exiting the generator drops the last reference to the server, so CPython's socket
+        finaliser closes the fd whatever the context manager did, and the rebind succeeds
+        for a reason the test does not name.
+
+        Two things make the assertion about the MECHANISM instead. The spy WITNESSES the
+        call, so a deleted `server_close()` fails outright; and it keeps a strong
+        reference to the server, so the finaliser cannot be what frees the port when the
+        rebind below is attempted.
+        """
+        import http.server
+        import socket
+        from tools.orchestration_runtime import _claude_roster_capture_server
+
+        closed: list[Any] = []
+        real_close = http.server.ThreadingHTTPServer.server_close
+
+        def spy(server):  # type: ignore[no-untyped-def]
+            closed.append(server)
+            real_close(server)
+
+        with mock.patch.object(http.server.ThreadingHTTPServer, "server_close", spy):
+            with _claude_roster_capture_server() as (base_url, _captured):
+                port = int(base_url.rsplit(":", 1)[1])
+        self.assertEqual(len(closed), 1, "server_close() was not called on exit")
+        with socket.socket() as probe:
+            probe.settimeout(5)
+            probe.bind(("127.0.0.1", port))
+
+    def test_the_accept_loop_is_stopped_before_the_socket_is_closed(self) -> None:
+        """`shutdown()` is the other half and had no witness.
+
+        Without it `serve_forever` keeps selecting on a socket `server_close()` has closed
+        — measured: not a failure but a busy spin, a 58 s suite run still going at 135% CPU
+        after 25 minutes, which no assertion notices. Witnessed by the thread actually
+        ending: `serve_forever` returns only when `shutdown()` asks it to.
+        """
+        import threading
+        from tools.orchestration_runtime import _claude_roster_capture_server
+        before = set(threading.enumerate())
+        with _claude_roster_capture_server() as (_base_url, _captured):
+            live = [t for t in threading.enumerate() if t not in before]
+            self.assertTrue(live)
+        for thread in live:
+            thread.join(timeout=10)
+            self.assertFalse(thread.is_alive(), thread)
+
+
+class ClaudeLeafRosterClassificationTests(unittest.TestCase):
+    """`_classify_claude_leaf_roster` — the comparison, with no process in the way."""
+
+    def _classify(self, *rosters, servers=("build-runtime",)):
+        from tools.orchestration_runtime import _classify_claude_leaf_roster
+        return _classify_claude_leaf_roster(list(rosters), list(servers))
+
+    def _allowed(self) -> list[str]:
+        from tools.orchestration_runtime import CLAUDE_LEAF_REQUIRED_TOOLS
+        return list(CLAUDE_LEAF_REQUIRED_TOOLS)
+
+    def test_the_declared_roster_is_fully_classified(self) -> None:
+        report = self._classify(self._allowed() + ["mcp__build-runtime__run_linter"])
+        self.assertEqual(report["unclassified"], [])
+        self.assertEqual(report["missing"], [])
+        self.assertEqual(report["undeclared_mcp"], [])
+
+    def test_an_extra_builtin_is_unclassified(self) -> None:
+        report = self._classify(self._allowed() + ["Monitor", "Workflow"])
+        self.assertEqual(report["unclassified"], ["Monitor", "Workflow"])
+        self.assertEqual(report["missing"], [])
+
+    def test_a_missing_builtin_is_reported(self) -> None:
+        """The direction a subset test would miss. It is not hypothetical: the CLI
+        silently ignores an unknown `--tools` name (measured), so an upstream rename
+        strips the tool without a word."""
+        report = self._classify([name for name in self._allowed() if name != "Bash"])
+        self.assertEqual(report["missing"], ["Bash"])
+        self.assertEqual(report["unclassified"], [])
+
+    def test_a_tool_missing_from_ONE_capture_is_reported(self) -> None:
+        """Omissions are judged PER CAPTURE; only extras take the union.
+
+        The union hides the case it must not: rosters `[required]` and
+        `[required minus Bash]` union to the full set and would pass, while the second is a
+        turn the leaf genuinely ran without `Bash`. Both orders, because a per-capture rule
+        written as "the last one" would pass one of them.
+        """
+        for label, captures in (
+            ("short capture first",
+             [[n for n in self._allowed() if n != "Bash"], self._allowed()]),
+            ("short capture last",
+             [self._allowed(), [n for n in self._allowed() if n != "Bash"]]),
+        ):
+            with self.subTest(label):
+                report = self._classify(*captures)
+                self.assertEqual(report["missing"], ["Bash"])
+                # And it is not reported as an extra: the union still has every name.
+                self.assertEqual(report["unclassified"], [])
+
+    def test_an_mcp_tool_is_classified_by_its_server(self) -> None:
+        report = self._classify(self._allowed() + ["mcp__evil__exfiltrate",
+                                                   "mcp__build-runtime__run_program"])
+        self.assertEqual(report["undeclared_mcp"], ["mcp__evil__exfiltrate"])
+        # NOT by tool name: a server this repository declares may add tools, and whether a
+        # particular one exists is `_probe_claude_mcp_registry`'s question.
+        self.assertNotIn("mcp__build-runtime__run_program", report["undeclared_mcp"])
+        self.assertEqual(report["unclassified"], [])
+
+    def test_a_declared_server_that_contributes_no_tool_is_reported(self) -> None:
+        """A declared server putting NOTHING in the roster is the `missing` failure again.
+
+        The same argument the built-in half makes applies with more force: every
+        `compile` / `run` / `lint` gate goes through `mcp__build-runtime__*`, so a leaf
+        that comes up without them dies mid-billing looking like a model failure. Measured
+        against the real CLI with `.mcp.json`'s `command` pointed at a nonexistent
+        interpreter: the roster carries the six built-ins and no MCP names at all, every
+        other preflight row stays green, and this check used to report pass on it.
+        """
+        report = self._classify(self._allowed(), servers=("build-runtime",))
+        self.assertEqual(report["silent_mcp_servers"], ["build-runtime"])
+        # And a server that does contribute is not reported, including when a SECOND
+        # declared server is the silent one.
+        report = self._classify(self._allowed() + ["mcp__build-runtime__run_linter"],
+                                servers=("build-runtime", "other"))
+        self.assertEqual(report["silent_mcp_servers"], ["other"])
+
+    def test_a_server_name_containing_the_separator_is_matched_whole(self) -> None:
+        """`mcp__<server>__<tool>` is matched against the DECLARED names by prefix.
+
+        Splitting the tool name on its first `__` reads `build__runtime` as the server
+        `build`, which nothing declared, and refuses a legitimate tool while naming the
+        wrong cause. Absent from this repository's corpus — the committed `.mcp.json`
+        declares `build-runtime` — but it is an over-refusal of correct work, which is the
+        error direction this repository keeps making.
+        """
+        report = self._classify(self._allowed() + ["mcp__build__runtime__run_linter"],
+                                servers=("build__runtime",))
+        self.assertEqual(report["undeclared_mcp"], [])
+        self.assertEqual(report["unclassified"], [])
+
+    def test_a_tool_recorded_as_absent_on_the_cli_is_unclassified_when_present(self) -> None:
+        """`CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` says "this CLI does not offer it". If the CLI
+        then DOES offer it, the classification is stale and must fail rather than quietly
+        accept a tool that was written off. Measured empty today, so the seam is exercised
+        by patching the derived set it feeds."""
+        from tools.orchestration_runtime import CLAUDE_LEAF_REQUIRED_TOOLS
+        without_grep = tuple(n for n in CLAUDE_LEAF_REQUIRED_TOOLS if n != "Grep")
+        with mock.patch.object(
+                ort, "CLAUDE_LEAF_REQUIRED_TOOLS", without_grep):
+            report = self._classify(list(CLAUDE_LEAF_REQUIRED_TOOLS))
+        self.assertEqual(report["unclassified"], ["Grep"])
+
+    def test_the_union_over_captures_is_what_is_classified(self) -> None:
+        """A name in ANY request is a name the leaf could have called, so a LATER capture
+        cannot launder an earlier one.
+
+        BOTH ORDERS, because one order does not pin the union. With the extra tool in the
+        LAST capture, `names = {...}` (last capture wins) keeps it and the assertion still
+        holds — measured: that mutant left the whole file green. The FIRST-capture case is
+        the one that fails under it, and it is also the realistic shape, since the CLI
+        sends its roster before anything the leaf does could change it.
+        """
+        for label, captures in (
+            ("extra in the first capture",
+             [self._allowed() + ["Monitor"], self._allowed()]),
+            ("extra in the last capture",
+             [self._allowed(), self._allowed() + ["Monitor"]]),
+        ):
+            with self.subTest(label):
+                report = self._classify(*captures)
+                self.assertEqual(report["unclassified"], ["Monitor"])
+                self.assertEqual(report["captures"], 2)
+
+
+class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
+    """`_probe_claude_leaf_tool_roster` end to end: the real server, the real request
+    parsing and the real comparison, with only the CLI faked (issue #71).
+
+    The double POSTs to the base URL the probe itself put in the environment, so a probe
+    that stopped starting a server, stopped pointing the launch at it, or stopped reading
+    what came back fails here rather than passing on a canned verdict.
+    """
+
+    def _repo(self, td: str, servers=("build-runtime",)) -> Path:
+        """A repository the probe can measure from: the MCP configuration it classifies
+        against, and the leaf configuration it seeds the scratch home with (the layer a
+        leaf's roster is actually decided under). Seeded from the REAL committed file, so
+        the fixture cannot drift into describing a leaf configuration nothing ships."""
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+        root = Path(td)
+        (root / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {name: {"command": "python3"} for name in servers}}),
+            encoding="utf-8")
+        seed_claude_leaf_config(root)
+        return root
+
+    def _probe(self, root: Path, runner):
+        from tools.orchestration_runtime import _probe_claude_leaf_tool_roster
+        return _probe_claude_leaf_tool_roster("claude", root, runner, cli_version="2.1.238")
+
+    def _runner(self, *, roster=None):
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            return _answer_claude_roster_probe(args, kwargs, roster=roster)
+        return runner
+
+    #: The passing roster: the declared built-ins plus one tool from the declared server,
+    #: because a server that contributes nothing is now a finding of its own.
+    def _full_roster(self, extra=(), without=()):
+        return [*(n for n in _leaf_tools() if n not in without),
+                "mcp__build-runtime__run_linter", *extra]
+
+    def test_the_declared_roster_passes_and_the_detail_records_it(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), self._runner())
+        self.assertIs(check["pass"], True)
+        self.assertEqual(check["name"], "claude_leaf_tool_roster_classified")
+        # The measurement is the evidence, so it is recorded on the PASSING path too — a
+        # check that only speaks when it fails leaves the operator's preflight.json unable
+        # to say what a leaf was allowed to do on the day the run started.
+        self.assertIn("Bash,Edit,Glob,Grep,Read,Write", check["detail"])
+        self.assertIn("cli=2.1.238", check["detail"])
+
+    def test_an_unhooked_builtin_fails_and_is_named(self) -> None:
+        """The fail-open issue #71 closes, arriving through the CLI rather than the flag.
+
+        The detail NAMES the tool: the remedy is a judgement about that specific tool —
+        may a leaf have it, and which `PreToolUse` matcher would validate it — which an
+        operator cannot begin from a count.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td),
+                                self._runner(roster=self._full_roster(extra=["Monitor"])))
+        self.assertIs(check["pass"], False)
+        # SPLIT on the half the rule governs. The detail states TWO things — the problems
+        # and the whole measured roster — and `Monitor` appears in the second half by
+        # construction, so a plain `assertIn` over the string is satisfied by the roster
+        # listing and stays green when the problem half stops naming anything (measured:
+        # replacing the names with a COUNT survived this test before the split).
+        problems = check["detail"].split("measured ")[0]
+        self.assertIn("Monitor", problems)
+        self.assertIn("PreToolUse", problems)
+        # And the roster is still recorded beside it, which is the other half's job.
+        self.assertIn("built-ins=", check["detail"])
+
+    def test_a_missing_required_tool_fails(self) -> None:
+        """TWO captures, one of them complete, so the per-request rendering is not
+        byte-identical to the union.
+
+        With a single capture the two agree and the content assertion below establishes
+        nothing — measured: rendering the union survives. A round claimed this fixture had
+        been changed to send two differing captures; it had not, and the claim stood for
+        two rounds until an audit of the record went looking for it.
+        """
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            _answer_claude_roster_probe(args, kwargs)
+            return _answer_claude_roster_probe(
+                args, kwargs, roster=self._full_roster(without=["Bash"]))
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        problems = check["detail"].split("measured ")[0]
+        self.assertIn("Bash", problems)
+        self.assertIn("left out of at least one request", problems)
+        # The evidence is rendered PER REQUEST, like the verdict, and asserted by its
+        # CONTENT: `assertIn("per request:", …)` alone passed with the union rendered
+        # behind that label (measured), which is the shape this repository's own comment
+        # two tests up warns about — the label is not the rule.
+        self.assertIn("per request:", problems)
+        rendered = problems.split("per request:")[1]
+        # TWO rosters, separated — one complete, one short. That is precisely what the
+        # union cannot show: it would render the six as a single list and hide which
+        # request was narrow. Asserted as the pair, not as the absence of `Bash`, because
+        # `Bash` is legitimately in the complete capture.
+        self.assertEqual(len([part for part in rendered.split("|") if part.strip()]), 2)
+        self.assertIn("Bash,Edit,Glob,Grep,Read,Write", rendered)
+        self.assertIn("Edit,Glob,Grep,Read,Write |", rendered.replace("Bash,", ""))
+
+    def test_each_failure_names_its_own_remedy(self) -> None:
+        """The remedy follows the problem, one per failure class.
+
+        Appended unconditionally, an MCP failure told the operator to add a `PreToolUse`
+        matcher or to edit `CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` — neither of which is the fix
+        for "your MCP server did not start". Reproduced against the real CLI by pointing
+        `.mcp.json`'s `command` at a nonexistent interpreter.
+        """
+        cases = (
+            ("unclassified", self._full_roster(extra=["Monitor"]),
+             "dispatch branch", "ABSENT_ON_CLI"),
+            # The remedy must lead with the LOCAL cause. `ABSENT_ON_CLI` alone was
+            # measured to be the wrong first move for the most reachable way to produce
+            # this row (a `permissions.deny` in the committed leaf config, which the probe
+            # deliberately seeds and which removes the tool from the roster): following it
+            # subtracts the tool from the required set permanently, turning the check
+            # green by widening it. Both halves are asserted, so neither can be dropped.
+            ("missing", self._full_roster(without=["Bash"]),
+             "ABSENT_ON_CLI", "dispatch branch"),
+            ("missing names the local cause first", self._full_roster(without=["Bash"]),
+             "permissions.deny", "dispatch branch"),
+            ("missing names the file to look in", self._full_roster(without=["Bash"]),
+             "leaf_config/claude/settings.json", "dispatch branch"),
+            ("silent server", list(_leaf_tools()),
+             "did not start", "PreToolUse matcher"),
+            ("undeclared server", self._full_roster(extra=["mcp__evil__x"]),
+             "strict-mcp-config", "PreToolUse matcher"),
+        )
+        for label, roster, expected, unwanted in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                check = self._probe(self._repo(td), self._runner(roster=roster))
+                self.assertIs(check["pass"], False, label)
+                remedy = check["detail"].split("deliberately.")[1]
+                self.assertIn(expected, remedy, f"{label}: {remedy}")
+                self.assertNotIn(unwanted, remedy, f"{label}: {remedy}")
+
+    def test_a_tool_from_an_undeclared_mcp_server_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(
+                self._repo(td),
+                self._runner(roster=self._full_roster(extra=["mcp__evil__exfiltrate"])))
+        self.assertIs(check["pass"], False)
+        self.assertIn("mcp__evil__exfiltrate", check["detail"].split("measured ")[0])
+
+    def test_no_captured_request_fails_closed(self) -> None:
+        """A CLI that sent no roster leaves it UNMEASURED, which is the state the check
+        exists to refuse — not "a leaf with no tools"."""
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            return _FakeCompletedProcess(1, stderr="command not found: claude\n")
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("unmeasured", check["detail"])
+        self.assertIn("command not found", check["detail"])
+        # BOTH streams, and the pointer at the other thing this launch runs. The scratch
+        # home is seeded with the leaf configuration, so the probe executes the leaf's whole
+        # hook chain, and a hook that refuses the prompt lands here with rc=0 and an empty
+        # stderr — a roster verdict for something that is not about tools. Holding stdout
+        # back left an operator with no way to see that.
+        self.assertIn("hook chain", check["detail"])
+        self.assertIn(ort.CLAUDE_LEAF_CONFIG_REL, check["detail"])
+
+    def test_the_no_capture_detail_surfaces_stdout_too(self) -> None:
+        """stdout is where a blocked prompt says so; stderr can be empty."""
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            return _FakeCompletedProcess(0, stdout="Prompt blocked by a hook\n")
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("Prompt blocked by a hook", check["detail"])
+
+    def test_the_no_capture_detail_reads_the_envelope_rather_than_truncating(self) -> None:
+        """The message must survive `--output-format json`.
+
+        The CLI writes `usage` and `subagent_stats` before `result`, so a flat 400-byte
+        truncation of stdout showed the operator zeroed token counters and hid the sentence
+        that explains the failure — measured at around byte 940 on the hook-refusal case
+        this detail exists for. The envelope's own fields are read instead.
+        """
+        envelope = {
+            "usage": {"input_tokens": 0, "output_tokens": 0,
+                      "padding": ["0"] * 200},
+            "subagent_stats": {"spawned": 0},
+            "subtype": "success",
+            "result": "UserPromptSubmit operation blocked by hook: not a git repository",
+        }
+        self.assertGreater(json.dumps(envelope).index("blocked by hook"), 400)
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            return _FakeCompletedProcess(0, stdout=json.dumps(envelope))
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("blocked by hook", check["detail"])
+        self.assertNotIn("input_tokens", check["detail"])
+
+    def test_a_late_roster_is_classified_rather_than_dropped(self) -> None:
+        """WHERE the caller reads the captures, which had no witness.
+
+        The read sits after the context manager because `server_close()` has joined the
+        handlers by then. Reading it INSIDE takes the list while a handler may still be
+        appending — and the wrong value is already in scope 31 lines above
+        (`captured_snapshot`, read inside for the setup/teardown discriminator), so the
+        regression is a one-token edit. Demonstrated: with that edit, a second request
+        carrying `Monitor` whose body arrives late is dropped and the check reports PASS on
+        the remaining six, while the whole targeted suite stays green.
+
+        The delay is the measured one: below about half a second the exit takes that long
+        anyway and the capture lands either way.
+        """
+        import socket
+        import threading
+        import time
+        from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            base_url = kwargs["env"]["ANTHROPIC_BASE_URL"]
+            _answer_claude_roster_probe(args, kwargs)
+            body = json.dumps({"tools": [{"name": "Monitor"}]}).encode("utf-8")
+            head, tail = body[:10], body[10:]
+            host, port = base_url.rsplit("//", 1)[1].split(":")
+            client = socket.create_connection((host, int(port)), timeout=20)
+            client.sendall(
+                b"POST /v1/messages HTTP/1.1\r\n"
+                + f"Host: {host}:{port}\r\n".encode()
+                + b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode() + head)
+            threading.Thread(
+                target=lambda: (time.sleep(_IN_FLIGHT_TRICKLE_SECONDS),
+                                client.sendall(tail), client.close()),
+                daemon=True).start()
+            time.sleep(0.2)
+            return _FakeCompletedProcess(1, stdout="{}")
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("Monitor", check["detail"].split("measured ")[0])
+        self.assertIn(",".join(sorted([*CLAUDE_LEAF_TOOLS, "Monitor"])), check["detail"])
+
+    def test_the_prompt_is_delivered_on_stdin(self) -> None:
+        """`input="."` is load-bearing and its loss is an operator-visible outage.
+
+        `claude -p` refuses an empty prompt — it is the same refusal
+        `_probe_claude_backend` reads to certify stdin support — so dropping it makes the
+        CLI exit before composing any roster request and every launch is refused with
+        "unmeasured" (measured against the real CLI: rc=1, `Error: Input must be provided
+        either through stdin or as a prompt argument`). With a tty on stdin instead of
+        `/dev/null` it would hang to the probe timeout. Same class as `Content-Length`,
+        and it had no witness.
+        """
+        seen: dict = {}
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            seen.update(kwargs)
+            return _answer_claude_roster_probe(args, kwargs)
+
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], True)
+        self.assertEqual(seen.get("input"), ".")
+
+    def test_a_capture_server_that_cannot_start_fails_closed(self) -> None:
+        """The listener and the scratch home are failure paths like any other.
+
+        Both used to sit outside every `try` while the docstring said "fail closed on
+        everything", so a taken port escaped as a traceback: the run stopped, but with no
+        `preflight.json`, no named check and no remedy — the opposite of the attributable
+        refusal every other failure here produces, and the case RUNBOOK tells the operator
+        this check reports on.
+        """
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched without a capture server")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            # The failure is injected at the context manager, not at the server class:
+            # the production code SUBCLASSES `ThreadingHTTPServer`, so replacing that name
+            # with a mock breaks the subclass statement instead of the bind, and would
+            # test a TypeError this code does not claim to handle. What is under test is
+            # the placement of the `try`, which this reaches the same way a taken port does.
+            @contextmanager
+            def refuses_to_bind():
+                raise OSError(98, "Address already in use")
+                yield  # pragma: no cover - unreachable, keeps this a generator
+
+            with mock.patch.object(ort, "_claude_roster_capture_server", refuses_to_bind):
+                check = self._probe(root, runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("Address already in use", check["detail"])
+        self.assertIn("unmeasured", check["detail"])
+
+    def test_a_teardown_failure_is_not_reported_as_a_setup_failure(self) -> None:
+        """The stage discriminator, which had no witness.
+
+        A probe that already ran can fail on the scratch home's REMOVAL, and telling the
+        operator it "could not set up" points them at the wrong thing — the very
+        misattribution this branch added the discriminator to fix.
+        """
+        real_exit = tempfile.TemporaryDirectory.__exit__
+
+        def exploding_exit(self_, *exc):  # type: ignore[no-untyped-def]
+            real_exit(self_, *exc)
+            raise OSError(28, "No space left on device")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            with mock.patch.object(tempfile.TemporaryDirectory, "__exit__", exploding_exit):
+                check = self._probe(root, self._runner())
+        self.assertIs(check["pass"], False)
+        self.assertIn("tear down", check["detail"])
+        self.assertNotIn("could not set up", check["detail"])
+
+    def test_a_timeout_fails_closed(self) -> None:
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise subprocess.TimeoutExpired(cmd=args, timeout=kwargs["timeout"])
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("unmeasured", check["detail"])
+
+    def test_a_spawn_error_fails_closed(self) -> None:
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise FileNotFoundError(2, "No such file or directory", "claude")
+        with tempfile.TemporaryDirectory() as td:
+            check = self._probe(self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("FileNotFoundError", check["detail"])
+
+    def test_an_unreadable_mcp_config_fails_closed(self) -> None:
+        """Classifying the MCP half against an empty set would turn every MCP tool into an
+        "undeclared" finding and point the operator at the wrong repair.
+
+        THREE ways the file can fail to answer, one per `except` clause: absent (OSError),
+        malformed (ValueError), and present but not an MCP configuration (KeyError). Only
+        the first had a witness, so a narrowing of that clause list would have gone
+        unnoticed."""
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched without a usable .mcp.json")
+
+        for label, content in (("absent", None),
+                               ("malformed", "{not json"),
+                               ("not an mcp configuration", '{"servers": {}}')):
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                seed_claude_leaf_config(root)
+                if content is not None:
+                    (root / ".mcp.json").write_text(content, encoding="utf-8")
+                check = self._probe(root, runner)
+                self.assertIs(check["pass"], False)
+                self.assertIn(".mcp.json", check["detail"])
+
+    def test_the_scratch_home_carries_the_layer_a_leaf_loads(self) -> None:
+        """The probe must measure under the leaf's own `user` layer, not an empty home.
+
+        That layer DECIDES the roster: a `permissions.deny` in the committed file removes
+        the named tools from what the CLI sends. Measured end to end against the real CLI
+        in a worktree — unmodified passes, and the same file with `deny: ["Grep","Glob"]`
+        fails naming both — which is the fail-open an empty home left open. Here the unit
+        witness is that the bytes reach the home the launch is pointed at.
+        """
+        from tools.tests.leaf_config_fixture import LEAF_CONFIG_REL
+        seen: dict = {}
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            home = Path(kwargs["env"]["CLAUDE_CONFIG_DIR"])
+            seen["settings"] = (home / "settings.json").read_bytes()
+            return _answer_claude_roster_probe(args, kwargs)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            check = self._probe(root, runner)
+            expected = (root / LEAF_CONFIG_REL).read_bytes()
+        self.assertIs(check["pass"], True)
+        self.assertEqual(seen["settings"], expected)
+
+    def test_an_unreadable_leaf_configuration_fails_closed(self) -> None:
+        """Without it the probe would measure an empty home again — silently, and in the
+        direction that reports pass."""
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched without the leaf configuration")
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"build-runtime": {"command": "python3"}}}),
+                encoding="utf-8")
+            check = self._probe(root, runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("leaf configuration", check["detail"])
+
+    def test_no_repo_root_is_an_advisory_skip(self) -> None:
+        """`pass is None`, on the precedent of `_probe_claude_mcp_registry`: production
+        reaches this through the `preflight` subcommand, which always passes one. NOT False — a skip
+        that gated would refuse every launch from a caller that has no repo root."""
+        from tools.orchestration_runtime import _probe_claude_leaf_tool_roster
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched on the skip path")
+        check = _probe_claude_leaf_tool_roster("claude", None, runner)
+        self.assertIsNone(check["pass"])
+        self.assertIn("skipped", check["detail"])
+
+    def test_an_empty_command_fails_closed_rather_than_launching_nothing(self) -> None:
+        """Both spellings of "there is no CLI to probe" refuse.
+
+        Unreachable from production today — `probe_execution_platform` strips an empty
+        `agent_command` to the backend default before this is called — but the two guards
+        are written fail-closed, and neither had a witness. That matters more than the
+        reachability, because the wiring gates on `pass is not False`: a guard that
+        drifted to `pass=None` here would report a skip and LAUNCH.
+        """
+        from tools.orchestration_runtime import (
+            _probe_claude_leaf_tool_roster, claude_leaf_roster_probe_argv)
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched with an empty command")
+
+        with tempfile.TemporaryDirectory() as td:
+            check = _probe_claude_leaf_tool_roster("   ", self._repo(td), runner)
+        self.assertIs(check["pass"], False)
+        self.assertIn("empty", check["detail"])
+        # The pure argv builder refuses outright rather than returning a flags-only argv
+        # that would run whatever `--setting-sources` resolves to as argv[0].
+        with self.assertRaises(ValueError):
+            claude_leaf_roster_probe_argv([])
+
+    def test_the_launch_environment_cannot_reach_the_real_endpoint(self) -> None:
+        """Asserted on the ENV the probe actually built, because every safety property of
+        this check is a property of that environment rather than of the flags."""
+        seen: dict = {}
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            seen.update(argv=list(args), kwargs=dict(kwargs))
+            return _answer_claude_roster_probe(args, kwargs)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = self._repo(td)
+            with mock.patch.dict(
+                    os.environ, {"ANTHROPIC_AUTH_TOKEN": "operator-oauth-token",
+                                 "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+                                 "CLAUDE_CODE_USE_BEDROCK": "1",
+                                 "HTTPS_PROXY": "http://operator-proxy:8080",
+                                 "METDSL_WORKFLOW_MODE": "1",
+                                 "METDSL_ORCHESTRATION_ID": "orch_live",
+                                 "METDSL_CHILD_AGENT_RUN_ID": "arid_live"}):
+                check = self._probe(root, runner)
+        self.assertIs(check["pass"], True)
+        env = seen["kwargs"]["env"]
+        self.assertTrue(env["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:"),
+                        env["ANTHROPIC_BASE_URL"])
+        self.assertNotEqual(env.get("ANTHROPIC_API_KEY"), "")
+        # ALLOWLIST POLARITY, which is what makes "cannot reach a real endpoint" a
+        # property rather than a list of names someone remembered. The OAuth token is the
+        # obvious redirector; `CLAUDE_CODE_USE_BEDROCK` and the proxy family redirect a
+        # launch just as effectively, and the next such name ships with a CLI nobody here
+        # has read about. A denylist would have caught only the first.
+        for redirector in ("ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "HTTPS_PROXY"):
+            self.assertNotIn(redirector, env)
+        # AND THE WORKFLOW IDENTITY, which `leaf_env_from` forwards by prefix. The scratch
+        # home is seeded with the leaf configuration, so its hooks RUN; with these set the
+        # mid-run TTL re-probe appended a `user_prompt_submit` row — a session belonging to
+        # no leaf — to the LIVE orchestration's `hooks/native_hook_events.jsonl`, which the
+        # audit reads as the record of what the leaves did. Measured twice, independently.
+        for name in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                     "METDSL_CHILD_AGENT_RUN_ID"):
+            self.assertNotIn(name, env)
+        # The set itself is `leaf_env_from`'s — the same declaration a LEAF is launched
+        # under — plus exactly the three names this probe owns. Pinned as an equality, so
+        # a quiet return to `dict(os.environ)` fails here rather than only for the names
+        # listed above.
+        self.assertEqual(
+            set(env),
+            (set(ort.leaf_env_from(os.environ))
+             - {"METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                "METDSL_CHILD_AGENT_RUN_ID"})
+            | {"ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"})
+        # A scratch home, so the roster measured is not one the operator's own
+        # configuration shaped — and it is gone by the time the probe returns.
+        self.assertNotEqual(env["CLAUDE_CONFIG_DIR"], os.environ.get("CLAUDE_CONFIG_DIR"))
+        self.assertFalse(Path(env["CLAUDE_CONFIG_DIR"]).exists())
+        self.assertEqual(seen["kwargs"]["cwd"], str(root))
+        self.assertEqual(seen["kwargs"]["timeout"],
+                         ort.CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS)
+        self.assertEqual(seen["argv"],
+                         ort.claude_leaf_roster_probe_argv(["claude"]))
+
+
+def _leaf_tools() -> list[str]:
+    from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+    return list(CLAUDE_LEAF_TOOLS)
+
+
+class AdvisorySkipDetailNamesTheRealEntryPointTests(unittest.TestCase):
+    """An operator-facing detail must not name a function that does not exist.
+
+    These strings tell a reader "this skip cannot happen in production, because the
+    production caller always passes `repo_root`" — a claim whose whole weight is the
+    caller's name. For four sites that name was `cmd_preflight`, which `git grep` finds
+    only in those four mentions; the real entry is the `preflight` subcommand, whose
+    `--repo-root` is required. A reader who greps for the named caller and finds nothing
+    cannot check the claim, and one of the four is printed, not a comment.
+
+    Round 15 found it, and this round's mutation sweep then reported both string sites as
+    SURVIVED — the correction had no witness, which is how the wrong name lasted. The
+    assertion is on the property that failed (the detail names something a reader can
+    find), not on the exact sentence.
+    """
+
+    def _advisory_details(self) -> list[str]:
+        def unused_runner(*_a, **_k):
+            raise AssertionError("the advisory path must not launch anything")
+
+        # `_probe_claude_mcp_registry` returns `(checks, ok)`; the roster probe returns a
+        # single check. Both advisory paths are read, because the four wrong names were
+        # split across them and fixing one would have looked like fixing both.
+        checks = list(ort._probe_claude_mcp_registry("claude", None, unused_runner)[0])
+        checks.append(ort._probe_claude_leaf_tool_roster("claude", None, unused_runner))
+        return [str(check.get("detail") or "") for check in checks
+                if check.get("pass") is None]
+
+    def test_the_advisory_details_name_the_preflight_subcommand(self) -> None:
+        details = self._advisory_details()
+        self.assertTrue(details, "no advisory-skip detail was produced")
+        for detail in details:
+            self.assertIn("preflight", detail, detail)
+
+    def test_no_advisory_detail_names_a_callable_the_repository_lacks(self) -> None:
+        """`cmd_preflight` specifically, because that is the name that was there.
+
+        Pinned as "this dead name is absent from every tracked file" rather than only
+        from these strings: it had spread to three comments and a test docstring from one
+        original, which is how a name nobody can resolve becomes four places to fix.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        hits = subprocess.run(
+            ["git", "grep", "-l", "cmd_preflight"], cwd=repo_root,
+            capture_output=True, text=True).stdout.split()
+        # This file is excluded because it must SPELL the name to forbid it. That is the
+        # whole exclusion: it is one path, named here, and not a pattern that could grow
+        # to cover a real occurrence.
+        hits = [path for path in hits if path != "tools/tests/test_orchestration_runtime.py"]
+        self.assertEqual(hits, [], f"a name no callable answers to is back in: {hits}")
+
+
+class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
+    """`repo_root` must reach EVERY claude probe, not only the top-level one.
+
+    Without it `_probe_claude_leaf_tool_roster` records the advisory skip (`pass=None`),
+    which the wiring deliberately does not gate — so a dropped `repo_root` silently turns
+    the roster check off rather than failing. That matters most exactly where it was
+    unpinned: `probe_all_providers` is the ONLY thing that measures a per-substep
+    `command:` prefix, and a prefix may carry its own `--tools`, which the CLI UNIONS with
+    the conductor's (measured on 2.1.238/2.1.239). `_reprobe_recorded_providers` is the
+    same hole for the mid-run TTL re-probe RUNBOOK advertises. Both survived mutation
+    before this class existed; the third call site (`_run_live_probe_and_update`) was
+    already pinned, so the coverage was inconsistent rather than absent.
+    """
+
+    def _seen_repo_roots(self, call: Callable[[], Any]) -> list[Any]:
+        seen: list[Any] = []
+
+        def spy(**kwargs):  # type: ignore[no-untyped-def]
+            seen.append(kwargs.get("repo_root"))
+            return {"backend": kwargs.get("backend"), "checks": [], "probe_command": "",
+                    "status": "fail"}
+
+        with mock.patch.object(ort, "probe_execution_platform", spy):
+            call()
+        return seen
+
+    def test_probe_all_providers_passes_the_repo_root(self) -> None:
+        from tools.llm_config import load_llm_config
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = load_llm_config(
+                root / "llm.yaml",
+                content=("defaults:\n  provider: claude_cli\n  model: opus\n"
+                         "phases:\n  generate:\n    substeps:\n      generate:\n"
+                         "        command: claude --tools Monitor\n").encode("utf-8"))
+            seen = self._seen_repo_roots(
+                lambda: ort.probe_all_providers(config=config, repo_root=root))
+        # EVERY surface, not just the first. `assertTrue(seen)` left a regression that
+        # probed only the first `describe_providers` row green — and that row is the
+        # `defaults` entry, so the per-substep `command:` prefix this class's docstring
+        # calls the surface that matters would have gone unprobed.
+        self.assertEqual(len(seen), 2)
+        for value in seen:
+            self.assertEqual(value, root)
+
+    def test_the_ttl_reprobe_passes_the_repo_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cached = {"claude": {"provider_type": "claude_cli", "probe_command": "claude",
+                                 "surfaces": [{"provider_type": "claude_cli",
+                                               "probe_command": "claude"},
+                                              {"provider_type": "claude_cli",
+                                               "probe_command": "claude --tools Monitor"}]}}
+            seen = self._seen_repo_roots(
+                lambda: ort._reprobe_recorded_providers(cached, root))
+        self.assertEqual(len(seen), 2)
+        for value in seen:
+            self.assertEqual(value, root)
+
+
 class ClaudeLeafConfigProbeTests(unittest.TestCase):
     """The structural gate on the committed leaf configuration (issue #63).
 
@@ -34935,6 +36158,8 @@ class ClaudeLeafConfigPreflightTests(unittest.TestCase):
                 0,
                 stdout=("build-runtime: stdio python3 ./mcp_servers/build_runtime_server.py"
                         " - \u2713 Connected\n"))
+        if _is_claude_roster_probe(args):
+            return _answer_claude_roster_probe(args, kwargs)
         raise AssertionError(args)
 
     def _probe(self, *, break_hooks: bool, drop_matcher: str = "Glob") -> dict:
@@ -34945,6 +36170,12 @@ class ClaudeLeafConfigPreflightTests(unittest.TestCase):
             (root / ".claude").mkdir()
             (root / ".claude" / "settings.json").write_text(
                 json.dumps({"enabledMcpjsonServers": ["build-runtime"]}), encoding="utf-8")
+            # A leaf is launched with `--mcp-config .mcp.json`, and since issue #71 the
+            # roster check fails closed without it — a repo fixture with no such file is
+            # not one a leaf could launch from.
+            (root / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"build-runtime": {"command": "python3"}}}),
+                encoding="utf-8")
             leaf = seed_claude_leaf_config(root)
             if break_hooks:
                 # The GRANT stays intact and only the hook wiring is broken, so the
@@ -34991,6 +36222,95 @@ class ClaudeLeafConfigPreflightTests(unittest.TestCase):
         self.assertIs(by_name["claude_mcp_build_runtime_permission_granted"]["pass"], True)
         self.assertEqual(broken["status"], "fail")
         self.assertFalse(broken["can_launch_step_agents"])
+
+
+class ClaudeRosterPreflightWiringTests(unittest.TestCase):
+    """The roster check is REPORTED and GATES, through the real `probe_execution_platform`.
+
+    Appending a check without ANDing it into `can_launch_agents` is the mutation this
+    class exists to kill: preflight would then print the finding and start the run anyway,
+    which is the pre-issue-#71 behaviour with extra text. Unlike the leaf-configuration
+    check there is no launch-time backstop for this one — the conductor cannot see a
+    roster, only the endpoint can — so a check that merely reported would be no
+    enforcement at all.
+    """
+
+    def _runner(self, *, roster=None):
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            if args[0] == "claude" and args[1:] == ["--version"]:
+                return _FakeCompletedProcess(0, stdout="2.1.238 (Claude Code)\n")
+            if args[0] == "claude" and args[1:] == ["features", "list"]:
+                return _FakeCompletedProcess(1, stderr="unknown command\n")
+            if args[0] == "claude" and args[1:] == ["-p"]:
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+            if args[0] == "claude" and args[1:] == ["--help"]:
+                return _FakeCompletedProcess(
+                    0, stdout="Usage: claude [options] [command] [prompt]\n")
+            if args[0] == "claude" and args[1:] == ["mcp", "list"]:
+                return _FakeCompletedProcess(
+                    0,
+                    stdout=("build-runtime: stdio python3 ./mcp_servers/build_runtime_server.py"
+                            " - ✓ Connected\n"))
+            if _is_claude_roster_probe(args):
+                return _answer_claude_roster_probe(args, kwargs, roster=roster)
+            raise AssertionError(args)
+        return runner
+
+    def _preflight(self, *, roster=None) -> dict:
+        from tools.orchestration_runtime import probe_execution_platform
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"enabledMcpjsonServers": ["build-runtime"]}), encoding="utf-8")
+            (root / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"build-runtime": {"command": "python3"}}}),
+                encoding="utf-8")
+            seed_claude_leaf_config(root)
+            return probe_execution_platform(
+                backend="claude", runner=self._runner(roster=roster), repo_root=root)
+
+    def test_a_classified_roster_is_reported_and_launches(self) -> None:
+        result = self._preflight()
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertIn("claude_leaf_tool_roster_classified", by_name)
+        self.assertIs(by_name["claude_leaf_tool_roster_classified"]["pass"], True)
+        self.assertEqual(result["status"], "pass")
+        self.assertTrue(result["can_launch_step_agents"])
+        # The CLI version reaches the detail from the version probe, so a preflight.json
+        # read months later says which CLI the roster was measured on.
+        self.assertIn("cli=2.1.238",
+                      by_name["claude_leaf_tool_roster_classified"]["detail"])
+
+    def test_an_unhooked_builtin_refuses_the_launch_attributably(self) -> None:
+        from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+        result = self._preflight(roster=[*CLAUDE_LEAF_TOOLS, "Monitor"])
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertIs(by_name["claude_leaf_tool_roster_classified"]["pass"], False)
+        self.assertIn("Monitor", by_name["claude_leaf_tool_roster_classified"]["detail"]
+                      .split("measured ")[0])
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(result["can_launch_step_agents"])
+        self.assertFalse(result["can_launch_substep_agents"])
+        # ATTRIBUTABLE: every sibling check still passes, so the refusal names its own
+        # cause rather than arriving as a general preflight failure the operator has to
+        # bisect.
+        for name in ("claude_leaf_config_validated",
+                     "claude_mcp_build_runtime_registered",
+                     "claude_mcp_build_runtime_permission_granted"):
+            self.assertIs(by_name[name]["pass"], True, name)
+
+    def test_a_missing_required_tool_refuses_the_launch(self) -> None:
+        """The other direction, end to end: the CLI silently ignoring a renamed `--tools`
+        entry must stop the run rather than start a leaf without the tool."""
+        from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+        result = self._preflight(roster=[n for n in CLAUDE_LEAF_TOOLS if n != "Read"])
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertIs(by_name["claude_leaf_tool_roster_classified"]["pass"], False)
+        self.assertIn("Read", by_name["claude_leaf_tool_roster_classified"]["detail"]
+                      .split("measured ")[0])
+        self.assertFalse(result["can_launch_step_agents"])
 
 
 class ClaudeWorkflowHomeTests(unittest.TestCase):

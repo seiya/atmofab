@@ -508,14 +508,23 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         pin the pure/agentic split.
 
         What is still pure-only is the flag set that makes the leaf a pure FUNCTION: no
-        ambient customization at all, a replaced system prompt, and no tools. An agentic
-        leaf must have none of those — it reads files, runs the gates through MCP, and
-        carries the repo's PreToolUse hook.
+        ambient customization at all, and a replaced system prompt. An agentic leaf must
+        have neither — it reads files, runs the gates through MCP, and carries the repo's
+        PreToolUse hook.
+
+        `--tools` joined the shared list for the same reason as those two, in issue #71:
+        the agentic branch now passes it as an ALLOWLIST of the hook-validated tools, so
+        the FLAG no longer discriminates and only the VALUE does — `""` for a pure leaf
+        (no tools at all), a non-empty list for an agentic one. Asserting the flag's
+        absence here would forbid that hardening, exactly as it would have forbidden
+        issue #63's; asserting the values keeps the split pinned.
         """
         argv = self._conductor("claude").leaf_command(session_id="a")
         self.assertNotIn("--safe-mode", argv)
         self.assertNotIn("--system-prompt", argv)
-        self.assertNotIn("--tools", argv)
+        self.assertNotEqual(argv[argv.index("--tools") + 1], "")
+        pure_argv = self._conductor("claude").leaf_command(session_id="a", pure=True)
+        self.assertEqual(pure_argv[pure_argv.index("--tools") + 1], "")
 
     def test_codex_pure_uses_structured_readonly_approximation(self):
         argv = self._conductor("codex").leaf_command(session_id="arid-1", pure=True)

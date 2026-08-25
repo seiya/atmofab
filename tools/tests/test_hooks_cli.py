@@ -3993,6 +3993,291 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             if line.strip()
         ]
 
+    def test_an_absolute_or_tilde_glob_pattern_is_blocked(self) -> None:
+        """The trigger: a pattern beginning with `/` — the one shape MEASURED to reach
+        outside `path` — or with `~`, which is refused although it is inert.
+
+        The tool asks `path.isAbsolute` of the whole pattern and re-roots the search when
+        it is true, ignoring `path`. Driven against the real tool (CLI 2.1.239):
+        `/etc/hostname`, `/tmp/<marker>/*`, `//tmp/<marker>/*`, `/tmp/{a,b}/*` and
+        `/tmp/x/../x/*` all READ what they name — braces and `..` AFTER the leading slash
+        included, which is why the prefix is normalized before it is judged.
+
+        The `~` rows are the deliberate exception, and the refusal text says so rather than
+        calling them absolute: measured, `~/.bashrc` reads NOTHING (the tool asks
+        `isAbsolute`, which `~` is not). It stays in the trigger because
+        `_glob_literal_prefix` already returns the expanded location, so it costs one
+        character — not because it is reachable.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in ("/etc/*", "//etc/*", "/etc/hostname", "/etc/{a,b}/*",
+                        "/etc/x/../*", "/", "~/.ssh/*", "~/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
+                self.assertIn("is authorized at", body)
+
+    def test_when_both_the_path_and_the_pattern_are_ungranted_the_path_is_reported(self) -> None:
+        """Precedence when BOTH halves refuse — untested until a reviewer mutated the guard.
+
+        The pattern branch runs only when the `path` verdict is not already a block, so the
+        `path` is the reported cause and the audit row names it. That is the right order:
+        `path` is what the leaf passed first and what it can fix first, and for an absolute
+        pattern the tool ignores `path` anyway, so reporting the pattern would send the
+        leaf to change something that was not consulted.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "tools").mkdir(exist_ok=True)
+            code, body = self._run(
+                repo_root, "Glob", {"path": "tools", "pattern": "/etc/*"})
+            row = self._log_lines(repo_root)[-1]
+        self.assertEqual(code, 2, body)
+        self.assertNotIn("is authorized at", body)
+        self.assertEqual(row["path"], "tools")
+
+    def test_an_absolute_pattern_inside_a_granted_root_is_allowed(self) -> None:
+        """Absolute is not by itself a refusal — it is judged where it points."""
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            code, body = self._run(
+                repo_root, "Glob",
+                {"path": "docs", "pattern": f"{repo_root}/docs/**/*.md"})
+        self.assertEqual(code, 0, body)
+
+    def test_an_absolute_pattern_is_judged_after_its_dots_are_collapsed(self) -> None:
+        """`normpath` before the literal prefix.
+
+        An absolute pattern may carry `..` after its leading slash — measured, the tool
+        reads what that resolves to (`/tmp/x/../x/*` returned the file). The VERDICT is the
+        same either way, because `validate_read_access` resolves the path itself: measured,
+        dropping `normpath` leaves all three of `<repo>/spec/../docs/*` (allow),
+        `<repo>/docs/../spec/*` (block) and `<repo>/../../etc/*` (block) unchanged. What it
+        changes is the AUDIT ROW, which reads `REPO/docs/../spec` instead of `REPO/spec` —
+        the durable record of where a leaf reached, spelled as the leaf spelled it rather
+        than as the place. That is what this pins; the verdicts are here as the control
+        showing they do not move.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for suffix, expected, logged in (("/spec/../docs/*", 0, "docs"),
+                                         ("/docs/../spec/*", 2, "spec")):
+            with self.subTest(suffix), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                (repo_root / "spec").mkdir(exist_ok=True)
+                code, body = self._run(
+                    repo_root, "Glob",
+                    {"path": "docs", "pattern": f"{repo_root}{suffix}"})
+                self.assertEqual(code, expected, f"{suffix}: {body}")
+                row = self._log_lines(repo_root)[-1]
+                # The judged location on BOTH verdicts now, so the allowed row names
+                # `<repo>/docs` rather than the `path` the tool ignored.
+                self.assertEqual(row["path"], str(repo_root / logged), f"{suffix}: {row}")
+
+    def test_a_tilde_pattern_is_judged_on_its_expansion(self) -> None:
+        """`_glob_literal_prefix`'s third return, which the literal spelling hides.
+
+        `~/.ssh/*`'s literal prefix is `~`, which reads as the IN-REPO path `<repo>/~` —
+        granted whenever the manifest grants the root. Only the expanded location shows it
+        leaves the repository, so the root is granted here on purpose: with the expansion
+        ignored these rows pass.
+        """
+        manifest = {"allowed_read_roots": ["."]}
+        for pattern in ("~/.ssh/*", "~/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
+
+    def test_a_relative_pattern_is_not_refused_however_it_is_spelled(self) -> None:
+        """THE DELETED DEFENCE, kept as its own witness.
+
+        Until round 12 this check normalized every pattern, expanded brace alternatives and
+        judged each landing place — machinery that refused `../secret/*`, `{../secret,sub}/*`
+        and the rest. All of them are INERT: measured against the real tool in a saturated
+        fixture (an `outside/` and a `secret/` holding a marked file at every ancestor a
+        pattern could resolve to, so an empty result cannot mean "the target was absent"),
+        every one returns "No files found" — including a brace whose absolute alternative is
+        not at the start, in both orders, and a symlinked directory and file.
+
+        So these rows assert that the check does NOT refuse them. If a future CLI starts
+        resolving `..`, this test is what turns green into a decision: it will still pass,
+        and the premise it rests on is re-measurable by
+        `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`. That list asks
+        the same SHAPES as the rows below, not the same strings: its absolute alternative
+        points into the fixture rather than at `/etc`, so the row is saturated, and it also
+        carries `~/…`, which cannot appear here because the hook refuses it. An earlier
+        version of this docstring claimed the two lists were the same, and they differed in
+        BOTH directions; the harness's own coverage is pinned by
+        `tools/tests/test_measure_claude_tool.py` instead of asserted here in prose.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in ("../secret/*", "../../secret/*", "../../../secret/*",
+                        "*/../../secret/*", "{../secret,sub}/*", "{sub,/etc}/*",
+                        "{/etc,sub}/*", "sub/../../secret/*", " /etc/*", "\t/etc/*",
+                        "$HOME/.ssh/*", "linkdir/*", "docs/linkdir/*",
+                        "docs/linkfile.txt"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
+    def test_the_access_log_records_where_an_absolute_pattern_pointed(self) -> None:
+        """A pattern-caused refusal must not be filed as a read of the innocent `path`.
+
+        `append_hook_access_log` carries no reason field, so recording `path` filed
+        `Glob path=docs` for both `pattern=*.md` and `pattern=/etc/*`. On the ALLOW side
+        `path` is where the tool walked — but only for a RELATIVE pattern. An ABSOLUTE one
+        ignores `path` entirely (measured), so an ALLOWED `<repo>/spec/*` issued with
+        `path=docs` was filed as a read of `docs`: the same conflation, surviving on the
+        allow side of the fix that removed it from the block side. All three shapes are
+        asserted here, because the two-row version could not see it.
+        """
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "spec").mkdir(exist_ok=True)
+            rows = {}
+            for label, pattern, expected in (
+                ("blocked_by_pattern", "/etc/*", 2),
+                ("allowed_absolute_elsewhere", f"{repo_root}/spec/*", 0),
+                ("allowed_relative", "docs/**/*.md", 0),
+            ):
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, expected, f"{label}: {body}")
+                rows[label] = self._log_lines(repo_root)[-1]
+        self.assertEqual(rows["blocked_by_pattern"]["decision"], "block")
+        self.assertEqual(rows["blocked_by_pattern"]["path"], "/etc")
+        self.assertEqual(rows["allowed_absolute_elsewhere"]["decision"], "allow")
+        self.assertEqual(rows["allowed_absolute_elsewhere"]["path"], str(repo_root / "spec"))
+        self.assertEqual(rows["allowed_relative"]["decision"], "allow")
+        self.assertEqual(rows["allowed_relative"]["path"], "docs")
+
+    def test_a_pattern_block_without_a_path_names_one_cause(self) -> None:
+        """Two remedies for one refusal are worse than one.
+
+        A pathless `Glob` is validated at the repository root, so with the root granted the
+        `path` half passes and the PATTERN is what refuses. The pathless remedy ("pass
+        path=…") then fired beside it, producing "its 'path' does grant it" next to "you
+        passed no path" — contradictory, and only one names something the leaf can act on.
+        """
+        manifest = {"allowed_read_roots": ["."]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            code, body = self._run(repo_root, "Glob", {"pattern": "/etc/*"})
+        self.assertEqual(code, 2, body)
+        self.assertIn("is authorized at", body)
+        self.assertNotIn("was called without a 'path'", body)
+
+    def test_the_pattern_remedy_cannot_be_followed_by_half(self) -> None:
+        """Half a remedy returns an empty result with no diagnostic anywhere.
+
+        The refusal used to end "drop the leading '/' and pass the directory as 'path'",
+        which READS AS TWO OPTIONS. A leaf that does only the first half — `<repo>/spec/*`
+        with `path=docs` becomes `spec/*` with `path=docs` — is ALLOWED by this hook (the
+        second row asserts it, because that is why the text has to carry the warning: no
+        layer below can catch it) and the tool then matches nothing, since a relative
+        pattern is anchored at the repository root and the search is confined to `path`.
+        Silent empty is the worst answer a read boundary can hand a leaf: it looks like
+        "the files are not there", so the leaf reports absence instead of re-issuing.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "spec").mkdir(exist_ok=True)
+            code, body = self._run(
+                repo_root, "Glob", {"path": "docs", "pattern": f"{repo_root}/spec/*.md"})
+            self.assertEqual(code, 2, body)
+            self.assertIn("matches nothing SILENTLY", body)
+            self.assertIn("BOTH", body)
+            half, half_body = self._run(
+                repo_root, "Glob", {"path": "docs", "pattern": "spec/*.md"})
+        self.assertEqual(half, 0, half_body)
+
+    def test_a_grep_pattern_is_a_content_regex_and_is_not_path_validated(self) -> None:
+        """`Grep`'s pattern is content, not a path. Validating it as one would refuse a
+        legitimate search for text that happens to look like a path escape — the
+        over-refusal direction, and the one this repository keeps making."""
+        manifest = {"allowed_read_roots": ["docs"]}
+        for pattern in (r"\.\./config", "^/usr/local", "~/.ssh"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                code, body = self._run(
+                    repo_root, "Grep", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
+    def test_every_tool_the_leaf_is_launched_with_is_actually_judged(self) -> None:
+        """Registering a matcher is not the same as the hook JUDGING the tool.
+
+        `CLAUDE_LEAF_TOOLS` is derived from the `PreToolUse` matcher coverage, and that
+        derivation is documented as making it impossible to hand a leaf a tool the hook
+        cannot judge. It does not, on its own: `_evaluate_pre_command_file_access_policy`
+        returns `None` — which the caller treats as ALLOW — for any tool name it has no
+        branch for, and nothing tied the coverage map to the branch set. Measured on the
+        unfixed shape: `Monitor`, `WebFetch` and `NotebookEdit` all came back ALLOW under a
+        manifest granting `docs` only. So the ordinary-looking edit that grants a leaf a
+        new built-in (add it to the coverage map, add a matcher to the committed leaf
+        configuration — which is exactly what the config probe checks) would pass preflight
+        and the roster check while leaving the tool unvalidated.
+
+        This test is that tie. Each covered tool is DRIVEN with a payload naming a path the
+        manifest does not grant and must be refused; the table below must name every
+        covered tool and no other, so widening the coverage set fails here until someone
+        adds the row — and adding the row means finding the branch that judges it.
+
+        WHAT EACH ROW ESTABLISHES, since the refusals do not all come from the same rule
+        (measured by re-running the table with `tools/` GRANTED): `Read`, `Grep` and `Glob`
+        discriminate on the read manifest — granted passes, ungranted refuses. `Write` and
+        `Edit` refuse on the absent OUTPUT manifest, which is the write boundary's own
+        judgement rather than the read one. `Bash` refuses on the rule that forbids reading
+        `tools/` directly, which fires even when the manifest grants it. So what the whole
+        table pins is that every covered tool reaches SOME judging branch — which is the
+        claim the derivation makes — and not that each is judged by the read manifest. An
+        earlier version of this docstring said the latter.
+        """
+        from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
+
+        ungranted = {
+            "Read": {"file_path": "tools/secret.py"},
+            "Write": {"file_path": "tools/secret.py", "content": "x"},
+            "Edit": {"file_path": "tools/secret.py", "old_string": "a", "new_string": "b"},
+            "Grep": {"path": "tools", "pattern": "x"},
+            "Glob": {"path": "tools", "pattern": "*.py"},
+            "Bash": {"command": "cat tools/secret.py"},
+        }
+        self.assertEqual(set(ungranted), _CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"])
+        manifest = {"allowed_read_roots": ["docs"]}
+        for tool_name, tool_input in sorted(ungranted.items()):
+            with self.subTest(tool_name), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                (repo_root / "tools").mkdir(exist_ok=True)
+                (repo_root / "tools" / "secret.py").write_text("x", encoding="utf-8")
+                code, body = self._run(repo_root, tool_name, tool_input)
+                self.assertEqual(code, 2, f"{tool_name} was not judged: {body}")
+
+    def test_a_tool_outside_the_leaf_allowlist_is_not_judged_by_the_hook(self) -> None:
+        """The other half, stated rather than left to be discovered.
+
+        A tool the leaf is NOT launched with falls through to allow — the hook has no
+        branch for it. That is safe only because the `--tools` allowlist keeps such a tool
+        out of the leaf entirely, which is why the allowlist and the matcher coverage must
+        stay the same set. If this ever starts blocking, the hook grew a fail-closed
+        default and the sibling test above is no longer the only thing holding the tie.
+        """
+        manifest = {"allowed_read_roots": ["docs"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            for tool_name in ("Monitor", "WebFetch", "NotebookEdit"):
+                code, _body = self._run(
+                    repo_root, tool_name, {"file_path": "tools/secret.py"})
+                self.assertEqual(code, 0, tool_name)
+
     def test_settings_json_registers_grep_and_glob_with_bash_first(self) -> None:
         """Read from the LEAF's settings file, the owner of the hook wiring."""
         from tools.orchestration_runtime import CLAUDE_LEAF_CONFIG_REL
@@ -4100,6 +4385,104 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             code, _ = self._run(repo_root, "Grep", {"pattern": "foo", "path": "docs"})
             self.assertEqual(code, 0)
             self.assertEqual(self._log_lines(repo_root), [])
+
+
+class GlobPatternTriggerSurfaceTests(unittest.TestCase):
+    """Every canonical statement of the `Glob` pattern trigger must name every prefix.
+
+    WHY THIS EXISTS. Round 12 narrowed the pattern check to `pattern.startswith(("/",
+    "~"))` and every prose statement of the rule was written as "ONLY when it is
+    ABSOLUTE". `~` is NOT absolute — that is this branch's own central measurement, the
+    reason the tool reads nothing through it — so five documents, including
+    `docs/AGENT_CONTRACT.md`, which is the ONLY document a leaf reads, told a leaf that a
+    refusal it can actually receive cannot happen. Round 14 corrected the refusal string
+    and propagated it to none of them; round 15 found that.
+
+    The rule is defined ONCE, in `tools/hooks/cli.py`, and read from there: the members of
+    the trigger tuple are extracted from the source and every surface must name each one.
+    Add a prefix to the trigger and this fails until the documents say so, which is the
+    only mechanism on this branch that couples them.
+    """
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    _WINDOW = 300
+
+    # (file, anchor for the sentence that states the trigger). The anchor is not the
+    # whole line: `docs/HOOKS.md` line 14 states this rule and the `Grep`-is-not-validated
+    # rule on one line, and only the first names the prefixes.
+    _SURFACES = (
+        ("tools/hooks/cli.py", "NAMES PATHS and is validated too"),
+        # Anchored on text that PRECEDES the rule and is identical in the wording this
+        # check was written to refuse, so a failure reads "the statement does not name
+        # `~`" rather than "the sentence I wrote is gone" — an anchor taken from the
+        # corrected wording would only pin that the correction is still there.
+        ("docs/AGENT_CONTRACT.md", "finds nothing — use `path=`"),
+        ("docs/HOOKS.md", "is validated too"),
+        ("docs/ORCHESTRATION.md", "a `Glob` `pattern` too"),
+        ("TODO.md", "The check refuses"),
+    )
+
+    @classmethod
+    def _trigger_prefixes(cls) -> tuple[str, ...]:
+        """The literal prefixes the hook refuses on, read out of the hook's source."""
+        source = (cls._REPO_ROOT / "tools" / "hooks" / "cli.py").read_text(encoding="utf-8")
+        match = re.search(r"pattern\.startswith\(\(([^)]*)\)\)", source)
+        assert match is not None, "the pattern trigger is no longer a startswith tuple"
+        return tuple(re.findall(r'"([^"]*)"', match.group(1)))
+
+    @classmethod
+    def _statements(cls, text: str, anchor: str) -> list[str]:
+        """`_WINDOW` characters from each anchor, joined with the next line.
+
+        Joined because both the `cli.py` comment and the reflowed Markdown put the
+        second prefix on the line after the first.
+        """
+        out: list[str] = []
+        lines = text.splitlines()
+        for n, line in enumerate(lines):
+            if anchor not in line:
+                continue
+            joined = " ".join([line] + lines[n + 1 : n + 2])
+            i = joined.index(anchor)
+            out.append(joined[i : i + cls._WINDOW])
+        return out
+
+    def test_the_trigger_is_the_two_measured_prefixes(self) -> None:
+        """A change to the trigger must be deliberate, and must reach the documents.
+
+        Pinned as a SET rather than a behaviour because the behavioural witnesses
+        (`test_an_absolute_or_tilde_glob_pattern_is_blocked` and its relative twin)
+        cannot tell "a prefix was added" from "a prefix was added and documented".
+        """
+        self.assertEqual(self._trigger_prefixes(), ("/", "~"))
+
+    def test_every_canonical_statement_names_every_prefix(self) -> None:
+        prefixes = self._trigger_prefixes()
+        for rel, anchor in self._SURFACES:
+            text = (self._REPO_ROOT / rel).read_text(encoding="utf-8")
+            statements = self._statements(text, anchor)
+            self.assertTrue(statements, f"{rel}: anchor {anchor!r} not found")
+            for statement in statements:
+                for prefix in prefixes:
+                    self.assertIn(
+                        f"`{prefix}`",
+                        statement,
+                        f"{rel}: a statement of the pattern rule does not name "
+                        f"`{prefix}`, which the hook refuses on: {statement!r}",
+                    )
+
+    def test_the_statement_reader_is_bounded(self) -> None:
+        """SELF-TEST. Without it the window could be the whole file and nothing notice.
+
+        A document that names the second prefix far away from the rule it states is the
+        exact shape the check exists to refuse — `docs/HOOKS.md` names `~` several times
+        in its MEASUREMENT list while the RULE sentence beside it said "absolute".
+        """
+        anchor = "is validated too"
+        near = f"{anchor} when it begins with `/` or `~`."
+        far = f"{anchor} when it is absolute." + " padding" * 80 + " `~`"
+        self.assertTrue(all("`~`" in s for s in self._statements(near, anchor)))
+        self.assertFalse(all("`~`" in s for s in self._statements(far, anchor)))
 
 
 class BashReadManifestGuardTests(unittest.TestCase):

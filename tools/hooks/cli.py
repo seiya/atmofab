@@ -1072,10 +1072,20 @@ def _log_read_decision(
 
 
 # Search tools whose read boundary is enforced by validating their `path` root.
-# Their `pattern` is NOT validated: a Glob pattern can still reach outside the
-# validated root via an absolute or `../` pattern (documented residue, issue #42).
-# `**` only recurses within `path`, so it is not part of that residue.
+#
+# `Glob`'s `pattern` NAMES PATHS and is validated too — but ONLY when it begins with `/`
+# or `~`, the trigger the block below states and justifies; every relative spelling is
+# deliberately not judged, because none of them reaches outside `path` (measured). It is
+# validated at all because issue #71 put `Glob` in a leaf's hands for the first time, on a
+# CLI whose default roster omits it: until then the pattern
+# was a documented residue of issue #42 that no leaf could reach; the allowlist made it
+# reachable, so it is closed here rather than inherited. `Grep`'s `pattern` is a CONTENT
+# regex and names no path, so it is deliberately NOT validated — treating `\.\./config`
+# as a path escape would refuse a legitimate search.
 _PATH_SEARCH_TOOLS = frozenset({"Grep", "Glob"})
+
+# The tools among them whose `pattern` is a PATH pattern rather than a content regex.
+_PATTERN_IS_A_PATH_TOOLS = frozenset({"Glob"})
 
 # Shell glob metacharacters. A token carrying one is expanded by the shell, so
 # it must be resolved against the filesystem rather than tested for existence.
@@ -1124,7 +1134,123 @@ def _evaluate_grep_glob_read_policy(
         agent_role=agent_role,
         session_id=decoded.session_id,
     )
-    if decision.action == HookDecisionAction.BLOCK and path_missing:
+    pattern_blocked = False
+    # What the access log records. The PATTERN is part of the read boundary now, so a
+    # block caused by it must not be filed as a read of the innocent `path`: the durable
+    # record showed `Glob path=docs` for both `pattern=*.md` and `pattern=/etc/*`, and
+    # `append_hook_access_log` carries no reason field to tell them apart.
+    logged_path = search_path
+    # THE PATTERN, for the tools whose pattern names paths — narrowed, in round 12, to the
+    # one shape MEASURED to reach outside `path`: a pattern that begins with `/`. The
+    # trigger below also carries `~`, which is INERT (the tool reads nothing through it)
+    # and is kept for the reason given at the end of this block — so "absolute" alone is
+    # not a description of what refuses here, and a leaf refused for `~/…` must not be
+    # able to read anywhere that only absolute patterns are judged.
+    #
+    # WHAT WAS REMOVED AND WHY, because deleting a defence is a classification and this one
+    # is large. Driven against the real tool (a loopback stand-in answers turn one with a
+    # synthetic `tool_use`; the `tool_result` is read out of the next request; unbilled;
+    # CLI 2.1.239), in a SATURATED fixture — the repository two levels down, and an
+    # `outside/` and `secret/` holding a marked file at EVERY ancestor a pattern could
+    # resolve to, so "No files found" cannot be true merely because the target was absent:
+    #
+    #     ../secret/*  ../../secret/*  ../../../secret/*  */../../secret/*  -> nothing
+    #     sub/../../secret/*   {../secret,sub}/*                            -> nothing
+    #     linkdir/*  docs/linkdir/*  docs/linkfile.txt   (symlinks)         -> nothing
+    #     ~/secret/*   $HOME/secret/*    (HOME is the fixture base)         -> nothing
+    #     {<base>/secret,sub}/*   {sub,<base>/secret}/*   (both orders)     -> nothing
+    #     " <base>/secret/*"   "\t<base>/secret/*"   (leading whitespace)   -> nothing
+    #     <base>/secret/*   /<base>/secret/*   (doubled leading slash)      -> READ
+    #     <base>/{secret,outside}/*   <base>/secret/../secret/*             -> READ
+    #     <base>/[s]ecret/*    (braces, `..` and a class AFTER the slash)   -> READ
+    #
+    # Every path above is INSIDE the fixture, including the `~` rows — an earlier version
+    # of this table named `/etc/hostname` and `~/.bashrc`, which the fixture does not
+    # create, so those rows proved nothing on a host that happens to lack them. That is
+    # the "the target was absent" trap this measurement exists to avoid, surviving inside
+    # the record of the measurement that avoids it.
+    #
+    # The tool asks `path.isAbsolute` of the WHOLE pattern string, so a brace alternative
+    # that is absolute does not re-root and neither does `~`. Every shape this check used
+    # to normalize, brace-expand and judge at its landing place is therefore INERT: the
+    # machinery defended reads that cannot happen, and it was where seven of this branch's
+    # eleven review rounds found defects — an escape it missed, an over-refusal it caused,
+    # an infinite loop, and four claims about the tool that turned out to be measurements
+    # of something else.
+    #
+    # THE COST, stated rather than discovered later: this rule now DEPENDS on that vendor
+    # behaviour. If a future CLI resolves `..` or follows a brace alternative, a relative
+    # escape reopens and nothing here notices — the preflight roster check measures which
+    # TOOLS a leaf gets, not what one of them can reach. `TODO.md` carries that, and the
+    # measurement is re-runnable:
+    # `.claude/skills/metdsl-enforcement-change/scripts/measure_claude_tool.py`.
+    #
+    # `~` is kept in the trigger although it is inert, because `_glob_literal_prefix`
+    # already returns the expanded location and the condition costs one character.
+    #
+    # ONE OVER-REFUSAL IS KNOWINGLY KEPT, because closing it costs the machinery this
+    # commit deleted. `{` is not in `_GLOB_META_RE` (the Bash extractor that shares it
+    # resolves against the filesystem, where a brace is not a wildcard), so an ABSOLUTE
+    # brace pattern spanning two granted roots — `<repo>/{docs,sub}/*` — has the literal
+    # prefix `<repo>/{docs,sub}`, which is under neither, and is refused although it
+    # READS both (measured by driving the tool). Judging it properly needs brace
+    # expansion, whose four guards were where three review rounds found defects. Absent
+    # from the corpus — no skill or prompt directs a leaf to an absolute brace `Glob` —
+    # and the leaf has a working alternative the refusal names: pass the directory as
+    # `path`.
+    if (decision.action != HookDecisionAction.BLOCK
+            and tool_name in _PATTERN_IS_A_PATH_TOOLS):
+        raw_pattern = _tool_input(decoded.payload).get("pattern")
+        pattern = raw_pattern if isinstance(raw_pattern, str) else ""
+        # NO `.strip()`: a leading space is not absolute to the tool either (measured), so
+        # stripping it would refuse a pattern that reads nothing.
+        if pattern.startswith(("/", "~")):
+            _literal, prefix, resolved = _glob_literal_prefix(
+                repo_root, os.path.normpath(pattern))
+            if not _is_path_under_root(resolved, repo_root.resolve()):
+                prefix = str(resolved)
+            if prefix != search_path:
+                # WHERE THE READ HAPPENS, on BOTH verdicts — because for an absolute
+                # pattern the tool ignores `path` entirely (measured). Recording `path`
+                # here filed an ALLOWED `<repo>/spec/*` issued with `path=docs` as a read
+                # of `docs`, which is the conflation this assignment exists to remove,
+                # surviving on the allow side. An earlier round moved it to the block side
+                # on the reasoning that "on an allowed call `path` is where the tool
+                # walked" — true of a RELATIVE pattern, and this branch is only ever
+                # reached by an absolute one.
+                logged_path = prefix
+                pattern_decision = validate_read_access(
+                    repo_root,
+                    orchestration_id,
+                    resolved_run_id,
+                    prefix,
+                    agent_role=agent_role,
+                    session_id=decoded.session_id,
+                )
+                if pattern_decision.action == HookDecisionAction.BLOCK:
+                    # The PATTERN is the cause, so the pathless remedy below must not also
+                    # fire: "its 'path' does grant it" beside "you passed no path" are two
+                    # contradictory sentences and only the first is actionable.
+                    pattern_blocked = True
+                    decision = dataclasses.replace(
+                        pattern_decision,
+                        reason=(
+                            f"{pattern_decision.reason or ''} "
+                            f"{tool_name}'s pattern {pattern!r} is authorized at {prefix!r}, "
+                            f"which the read_manifest does not grant. A pattern beginning "
+                            f"with '/' re-roots the search and ignores 'path' entirely; one "
+                            f"beginning with '~' is refused here although the tool reads "
+                            f"nothing through it. Re-issue it against a granted directory, or "
+                            f"move that directory into 'path' AND rewrite the pattern relative "
+                            f"to it - BOTH, because a relative pattern naming a directory that "
+                            f"is not under 'path' matches nothing SILENTLY: dropping the "
+                            f"leading '/' by itself returns an empty result, not a refusal. "
+                            f"A brace in an absolute pattern is judged at the literal text "
+                            f"before it, so `<repo>/{{a,b}}/*` is refused even when both `a` "
+                            f"and `b` are granted — pass one of them as 'path' instead."
+                        ).strip(),
+                    )
+    if decision.action == HookDecisionAction.BLOCK and path_missing and not pattern_blocked:
         decision = dataclasses.replace(
             decision,
             reason=(
@@ -1138,7 +1264,7 @@ def _evaluate_grep_glob_read_policy(
         orchestration_id=orchestration_id,
         agent_run_id=resolved_run_id,
         tool_name=tool_name,
-        path=search_path,
+        path=logged_path,
         decision=decision,
     )
     return decision

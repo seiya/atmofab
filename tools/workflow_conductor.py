@@ -1411,21 +1411,20 @@ def build_launch_request(
 # leaves actually run.
 LEAF_MAX_OUTPUT_TOKENS = 128000
 
-# Tools an agentic claude leaf is launched WITHOUT (issue #42, decision 3). The
-# read boundary in `read_manifests/<agent_run_id>.json` is enforced by the
-# PreToolUse hook, which can only validate a tool whose payload names what it
-# touches: Read/Grep/Glob (a path) and Bash (an extractable command). These four
-# read or spawn outside that vocabulary — `Task` launches a subagent whose own
-# tool calls carry a different session identity, `WebFetch`/`WebSearch` pull
-# content from outside the repo entirely, and `NotebookEdit` writes through a
-# payload shape the write guard does not parse. A boundary that depends on the
-# agent not reaching for them is a declaration, not enforcement, so they are
-# removed at launch. Pure leaves already pass `--tools ""` and need no exclusion.
-# Comma-joined single value: the CLI documents `--disallowedTools <tools...>`
-# as "Comma or space-separated" (checked against the installed CLI). The flag is
-# variadic, so it is emitted immediately before `-p` — the prompt travels on
-# stdin, and restoring a positional prompt would let the list swallow it.
-CLAUDE_LEAF_DISALLOWED_TOOLS = "Task,WebFetch,WebSearch,NotebookEdit"
+# The tools an agentic claude leaf is launched WITH are an ALLOWLIST (issue #71),
+# `orchestration_runtime.CLAUDE_LEAF_TOOLS`, derived there from the PreToolUse hook's
+# matcher coverage and imported lazily at the emission site below. It is deliberately
+# NOT restated here: two spellings of one set is the drift this repository keeps
+# paying for, and the value is a fact about the read boundary, which
+# `orchestration_runtime` owns.
+#
+# It replaces the `--disallowedTools Task,WebFetch,WebSearch,NotebookEdit` denylist that
+# stood here from issue #42 decision 3 until issue #71 — a denylist over a roster the
+# vendor grows, which by CLI 2.1.238 left fifteen hook-unjudged built-ins in a leaf's
+# hands (measured; the rationale and the measurement live next to the constant).
+# Comma-joined single value: the CLI documents `--tools <tools...>` in the same
+# "comma or space-separated" variadic form the denylist used, so the PLACEMENT RULE
+# below applies to it unchanged. Pure leaves pass `--tools ""` and take none of this.
 
 # The ONLY MCP configuration an agentic claude leaf is launched with, paired with
 # `--strict-mcp-config` (which makes this file the whole server set instead of an
@@ -1437,16 +1436,16 @@ CLAUDE_LEAF_DISALLOWED_TOOLS = "Task,WebFetch,WebSearch,NotebookEdit"
 # committed file in both.
 #
 # PLACEMENT RULE for this and the other variadic flags on this argv
-# (`--mcp-config <configs...>`, `--disallowedTools <tools...>`): a variadic flag keeps
+# (`--mcp-config <configs...>`, `--tools <tools...>`): a variadic flag keeps
 # consuming tokens until one starts with `-`, so each of their values must be followed
 # by an OPTION token. Here `--mcp-config`'s value is followed by
-# `--disable-slash-commands` and `--disallowedTools`'s by `--output-format`.
+# `--disable-slash-commands` and `--tools`'s by `--output-format`.
 # MEASURED (CLI 2.1.234), because the obvious guess is wrong in the safe direction:
 # `claude --mcp-config <file> -p` does NOT swallow the `-p` — it is a `-` token, so it
 # terminates the list and is parsed as `--print`. A SHORT option therefore terminates a
 # variadic just as a long one does, and the trailing `-p` is safe even directly after a
 # variadic value. What is genuinely unsafe is a bare word: a positional prompt restored
-# after `--disallowedTools` would be eaten by the list, which is one more reason the
+# after `--tools` would be eaten by the list, which is one more reason the
 # prompt rides stdin.
 CLAUDE_LEAF_MCP_CONFIG = ".mcp.json"
 
@@ -4019,9 +4018,12 @@ class Conductor:
                           "--mcp-config", CLAUDE_LEAF_MCP_CONFIG,
                           "--disable-slash-commands"]
                 # A tool the PreToolUse hook cannot validate is a hole in the read
-                # boundary, so it must be absent rather than merely discouraged.
-                # A pure leaf already passes `--tools ""` and needs no exclusion.
-                flags += ["--disallowedTools", CLAUDE_LEAF_DISALLOWED_TOOLS]
+                # boundary, so the leaf is given the judged set and nothing else
+                # (issue #71) — an ALLOWLIST, so a built-in the CLI adds in its next
+                # release arrives outside the leaf instead of silently inside it.
+                # A pure leaf already passes `--tools ""` and needs no allowlist.
+                from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
+                flags += ["--tools", ",".join(CLAUDE_LEAF_TOOLS)]
                 # The SAME result envelope the pure path selects (`pure_leaf_flags`), for the
                 # same reason: it is the only in-boundary channel that reports what the leaf
                 # actually cost and which model ran. Without it an agentic leaf's `usage` was
@@ -5399,6 +5401,17 @@ class Conductor:
         sources = _effective_option_value(argv, "--setting-sources")
         if sources is not None:
             surface["claude_setting_sources"] = sources
+        if "--tools" in argv:
+            # WHICH tools the leaf came up with (issue #71). Recorded for the same reason as
+            # the settings layers: the persisted `sandbox_command` renders `command_argv` as
+            # the executable alone, so the tool set a leaf was actually launched with is
+            # written down nowhere else, and it is the enforcement boundary a later audit of
+            # "could this leaf have done that" turns on. Read off the ARGV like every other
+            # field here, so a change to the flag cannot leave the record describing the
+            # constant instead of the launch. A PURE leaf records `[""]` — the CLI's spelling
+            # for "no tools at all" — which is the honest description of its argv rather than
+            # an absence indistinguishable from a codex leaf's.
+            surface["claude_tools"] = _variadic_values(argv, "--tools")
         if "--mcp-config" in argv:
             refs = _variadic_values(argv, "--mcp-config")
             entries: list[dict[str, str]] = []

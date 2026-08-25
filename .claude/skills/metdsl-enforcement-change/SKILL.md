@@ -497,6 +497,13 @@ The procedure and the script are **owned by `metdsl-review-loop`**
 (`.claude/skills/metdsl-review-loop/scripts/mutation_check.py`).
 The same thing runs before review, so read its "Before you hand it over (round 0)".
 
+**When the rule rests on what a vendor TOOL can reach, mutation says nothing — measure the
+tool.** `scripts/measure_claude_tool.py` in this skill drives a real Claude Code tool
+through a loopback stand-in, unbilled, in a saturated fixture, and exits non-zero when any
+row fails its declared expectation. Reach for it before writing "this spelling cannot
+reach outside" — that claim was written down wrong four times on issue #71, each time from
+a probe that measured something else. `references/verification.md` carries the details.
+
 ### 6. Verify and record
 
 Run the procedures in `references/verification.md` (suite baseline, ruff diff against

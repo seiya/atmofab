@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
 import types
 import uuid
@@ -16596,6 +16597,127 @@ _CLAUDE_HOOK_MATCHER_COVERAGE = {
     "Stop": {"anything"},
 }
 
+# The COMPLETE set of built-in tools an agentic claude leaf is launched with, passed as
+# `--tools` (issue #71). DERIVED from the `PreToolUse` coverage above rather than listed:
+# a tool the read-boundary hook cannot judge is a hole in that boundary, so the only way to
+# put a new built-in in a leaf's hands is to add a matcher for it first — and the matcher
+# side is already gated by `_probe_claude_leaf_config`. A matcher makes the hook FIRE, not
+# JUDGE: the policy allows any tool it has no dispatch branch for (measured: `Monitor`,
+# `WebFetch`, `NotebookEdit` all allowed under a manifest granting one directory), so a
+# grant needs BOTH, and `test_every_tool_the_leaf_is_launched_with_is_actually_judged` is
+# what ties the two sets rather than construction.
+#
+# An ALLOWLIST, replacing the `Task,WebFetch,WebSearch,NotebookEdit` denylist that stood
+# here until issue #71. The denylist enumerated names over a roster the VENDOR grows: at the
+# time it was written it named every built-in the hook could not judge, and by CLI 2.1.238
+# it removed four names from a roster of twenty-three, leaving nineteen of which the
+# `PreToolUse` matchers judge four. MEASURED on 2.1.238 with an unbilled request capture,
+# the denylist argv put these fifteen unjudged built-ins in a leaf's hands — `CronCreate`, `CronDelete`,
+# `CronList`, `DesignSync`, `EnterWorktree`, `ExitWorktree`, `ListAgents`, `Monitor`,
+# `PushNotification`, `ReportFindings`, `ScheduleWakeup`, `SendMessage`, `TaskOutput`,
+# `TaskStop`, `Workflow` — several of which defeat the denylist's own stated reasons
+# (`Workflow` orchestrates subagents, which is why `Task` was denied; `Monitor` runs a
+# long-lived script no matcher sees; `EnterWorktree` moves the working directory the whole
+# read boundary is spelled against). Every CLI release could add another, silently. Under an
+# allowlist a new built-in arrives OUTSIDE the leaf, and `_probe_claude_leaf_tool_roster`
+# fails preflight until it is deliberately classified.
+#
+# MEASURED on CLI 2.1.238 (unbilled capture, issue #71 step 0), because three parts of this
+# are not inferable from `--help`:
+#   * `--tools` IS honoured in headless `-p`: the roster collapses to exactly the named set.
+#   * MCP tools SURVIVE it — `mcp__build-runtime__*` stays in the roster with no `mcp__` entry
+#     in the value, so the value carries built-ins only.
+#   * The vendor RENAMES built-ins: what the denylist called `Task` the 2.1.238 roster calls
+#     `Agent` (both spellings still remove it, measured). A denylist that named the tool by
+#     its old name after a rename would have removed nothing at all, silently.
+#   * An unknown name is SILENTLY IGNORED, not an error. The allowlist can therefore shrink
+#     without a word if a future CLI renames a tool, which is the second half of what
+#     `_probe_claude_leaf_tool_roster` checks (a MISSING member fails exactly as an extra one
+#     does).
+# `--tools` and `--disallowedTools` compose as an intersection (also measured), so the
+# denylist is redundant under this value rather than merely superseded.
+#
+# EVERY MEASUREMENT ABOVE WAS RE-TAKEN ON 2.1.239 (a release landed mid-review) and each
+# came back the same: 23 built-ins unfiltered, 19 under the denylist, 6 under this value,
+# `Task` still removing the tool the roster now calls `Agent`, an unknown name still
+# ignored in silence. The version numbers are kept as the record of WHEN each was taken;
+# they are not a claim about the CLI you have, which is what the preflight check measures.
+#
+# EVERY COUNT HERE BELONGS TO AN ARGV, and the argv is the leaf's: `--setting-sources user`
+# against an empty scratch home, plus `--strict-mcp-config --mcp-config .mcp.json
+# --disable-slash-commands`. Repeated on 2.1.239: 19 built-ins under the denylist in 8 runs
+# of 8, and exactly the six above under this value in 6 runs of 6. A launch that loads a
+# settings layer supplying SKILLS gets a further built-in, `Skill`, which no matcher judges
+# — it does not reach a leaf, because the private home the conductor prepares carries no
+# skills, and `--tools` would exclude it in any case. It is named here because the list of
+# fifteen is written as exhaustive and is exhaustive only for this argv: a review reported
+# 24/20/16 for that reason — 24 unfiltered, 20 under the denylist, and 16 unjudged, the
+# last being 20 minus the same four the matchers judge — and my own first attempt to check
+# it reported the same for a worse one — zsh does not word-split an unquoted variable, so the flags never reached the
+# launch and I measured a plain `claude`. The repo's own `references/verification.md` warns
+# about that shell behaviour; it costs a measurement about twice a year here.
+#
+# WHAT A LEAF GAINS, not only what it loses — the framing "fifteen removed" is half of it.
+# MEASURED on 2.1.238: `Grep` and `Glob` are absent from the CLI's DEFAULT roster, so the
+# denylist argv did not give a leaf either one, and this allowlist does. The `PreToolUse`
+# matchers for both long predate that (issue #42), so the CLI, not this repository, is what
+# had made them dormant — but the consequence is live either way. The `path` of both is
+# validated fail-closed (an absent one is validated as the repository root and therefore
+# blocks), and `Glob`'s `pattern` is validated too when it is ABSOLUTE —
+# closed on this branch rather than inherited, because it was issue #42's residue only for
+# as long as no leaf held `Glob`. `Grep`'s `pattern` is a CONTENT regex and names no path
+# (`docs/HOOKS.md` is canonical), so it is deliberately not validated: treating
+# `grep '\.\./config'` as a path escape is the over-refusal direction. `tools/hooks/cli.py`
+# is canonical for both, and carries the measurement of what the Glob TOOL can reach.
+# (These two lines said the opposite — "TODO.md carries the follow-up; it is not closed
+# here" — for four rounds after it WAS closed, sitting directly under their own
+# contradiction, because the replacement that rewrote the paragraph stopped one sentence
+# short of them.)
+#
+# A pure leaf passes `--tools ""` (`pure_leaf.py`) and is unaffected by any of this.
+CLAUDE_LEAF_TOOLS = tuple(sorted(_CLAUDE_HOOK_MATCHER_COVERAGE["PreToolUse"]))
+
+# Members of `CLAUDE_LEAF_TOOLS` the installed CLI does not actually put in the roster when
+# asked for them. MEASURED EMPTY on CLI 2.1.238: all six load when named — `Grep` and `Glob`
+# are absent from the CLI's DEFAULT roster but present as soon as `--tools` names them.
+#
+# The seam exists because the roster check compares in BOTH directions, and a CLI that drops
+# a tool this repository still hooks would otherwise leave preflight failing with no honest
+# way to say so: shrinking `CLAUDE_LEAF_TOOLS` is the wrong repair (the hook still covers the
+# tool, and the coverage set is what the leaf's tool set is derived from). Adding a name here
+# is a DELIBERATE classification — record the CLI version that dropped it.
+CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI: tuple[str, ...] = ()
+
+# What the roster must actually contain. Computed, never transcribed: `_classify_claude_leaf_roster`
+# requires exactly this set and nothing else among the non-MCP names.
+CLAUDE_LEAF_REQUIRED_TOOLS = tuple(
+    sorted(set(CLAUDE_LEAF_TOOLS) - set(CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI))
+)
+
+# How long one roster probe may take. MEASURED at 2.0-6.1 s wall on one machine across
+# CLI 2.1.238 and 2.1.239. The spread is MACHINE LOAD, not the change: an idle run sits
+# near 2 s and the same code under review load sits near 5 s (measured both ways against
+# the same commit, which is why a single figure kept being wrong). The launch ends at the
+# stand-in's 400, before any model turn. So this is more than an order of magnitude of
+# headroom IDLE. Under load it is less, but by how much is NOT settled: one series measured
+# 15.6-22.4 s under ~20 concurrent pytest processes and a re-take under the same load
+# measured 3.7-5.5 s. This host SUSPENDS, and a suspended interval lands inside a wall-clock
+# span as if it were work — the same error that made a live reviewer look stalled for nine
+# hours on this branch — so the high series is most likely that, and the honest ceiling is
+# the low one. Treat anything past ~10 s as worth a look rather than as normal. Still a bound, and it must be one: the probe runs inside
+# preflight, and a hang there is a run that never begins with nothing said about why.
+# A timeout is a FAILURE, not a skip: an unanswerable probe leaves the roster unknown, which
+# is the state this check exists to refuse.
+CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS = 120
+
+# How long ONE connection may hold a capture handler. `server_close()` waits for every
+# handler, so an unbounded handler is an unbounded preflight — an abandoned but still-open
+# connection would stall the exit with nothing to end it. A module constant rather than a
+# literal on the handler so a test can lower it and witness the bound: at ten seconds the
+# only honest test is a ten-second one, which is why this went unwitnessed while its
+# comment called it load-bearing.
+CLAUDE_ROSTER_CAPTURE_HANDLER_TIMEOUT_SECONDS = 10
+
 
 # The ONLY paths inside the private home a leaf may write, MEASURED on CLI 2.1.235
 # by running an agentic (tool-using) leaf against a fresh home and diffing the tree:
@@ -16674,6 +16796,606 @@ def _claude_hook_invokes_event(hook: Any, event: str) -> bool:
         return False
     command = hook.get("command")
     return isinstance(command, str) and command == _canonical_claude_hook_command(event)
+
+
+def claude_leaf_roster_probe_argv(command_argv: Sequence[str]) -> list[str]:
+    """The argv whose tool roster the preflight check measures.
+
+    THE SAME ARGV A LEAF IS LAUNCHED WITH, minus nothing that decides the tool set. A
+    roster captured from a different launch shape answers a different question — that is
+    the whole failure mode this function exists to prevent — so
+    `test_the_roster_probe_argv_is_the_agentic_leaf_argv` pins it against
+    `Conductor.leaf_command()`'s default agentic argv by FULL EQUALITY, from the test
+    module that can import both. `references/dual-read-pairs.md` records the pair.
+
+    The one element deliberately outside the equality is the executable: this takes the
+    argv prefix the caller resolved (`shlex.split` of a configured wrapper command, or the
+    bare backend name), because the probe certifies the CLI the operator's configuration
+    actually launches.
+
+    Per-launch flags a leaf may additionally carry — `--model`, `--effort`, `--session-id`,
+    `--resume`/`--fork-session` — are absent HERE by construction: `leaf_command()`'s
+    default entry declares no model. The sync test drives each of those variants and
+    requires it to differ from this argv by EXACTLY its own flags, so a flag that started
+    moving the tool set shows up as a token the comparison does not account for. (This
+    sentence credited the test with that before the test exercised any of them — it called
+    `leaf_command()` with no arguments, twice.) That none of them MOVES the roster is a
+    separate, measured fact: `--model haiku` and `--effort xhigh` leave it unchanged on
+    2.1.238, and a session resumed with `--resume … --fork-session` still honours `--tools`.
+    """
+    argv = list(command_argv)
+    if not argv:
+        raise ValueError("claude command must be non-empty")
+    # NOT imported from `workflow_conductor`: the import runs one way (conductor →
+    # runtime), and the preflight must not pull the conductor in. This is therefore a
+    # SECOND SPELLING of `workflow_conductor.CLAUDE_LEAF_MCP_CONFIG`, and the sync test
+    # above is what keeps the two from drifting.
+    argv += ["--setting-sources", "user",
+             "--strict-mcp-config",
+             "--mcp-config", ".mcp.json",
+             "--disable-slash-commands",
+             "--tools", ",".join(CLAUDE_LEAF_TOOLS),
+             "--output-format", "json", "-p"]
+    return argv
+
+
+@contextlib.contextmanager
+def _claude_roster_capture_server() -> Iterator[tuple[str, list[list[str]]]]:
+    """A loopback stand-in for the Messages endpoint that RECORDS the tool roster.
+
+    Yields `(base_url, captured)`, where `captured` grows one entry per request that
+    carried a `tools` array — the CLI's own declaration of what it would let the model
+    call. UNBILLED and modelless: a request carrying tools is answered `400`, which the
+    CLI reports as an API error and exits on, so no model turn happens and no token is
+    spent. This is the same harness shape issue #63 used to measure what a leaf's launch
+    injects, made a production component.
+
+    MEASURED on CLI 2.1.238: one launch produces TWO requests, both to
+    `/v1/messages?beta=true` and both carrying the full roster, and the CLI does not retry
+    the 400 into a loop. Nothing here depends on which request is the interesting one —
+    every captured array is classified — so a future CLI that sends one, or five, needs no
+    change.
+
+    A request WITHOUT tools is answered with a minimal `end_turn` message instead of a
+    400: a toolless side request is not the thing being measured, and refusing it could
+    make the CLI abort before it ever composes the roster request. It is recorded as no
+    capture at all rather than as an empty roster, which would otherwise read as "a leaf
+    with no tools" — the exact false PASS the check must not produce.
+    """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    captured: list[list[str]] = []
+    lock = threading.Lock()
+
+    class _Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        # A KEEP-ALIVE connection holds its handler thread until the client closes it, and
+        # `server_close()` below waits for every handler, so an unbounded handler is an
+        # unbounded preflight. `StreamRequestHandler.setup` turns this into a socket
+        # timeout, so a stalled read raises instead of blocking.
+        #
+        # NOT for the path this comment used to name. A CLI killed at the probe timeout
+        # costs nothing: the kernel closes the dead process's sockets and the handler's
+        # read ends at EOF (measured — the probe returns ~0.4 s after the timeout at 0.6,
+        # 1.2 and 2.0 s). What this bounds is a connection that is genuinely abandoned
+        # while still open, which costs exactly this many seconds instead of forever.
+        timeout = CLAUDE_ROSTER_CAPTURE_HANDLER_TIMEOUT_SECONDS
+
+        def log_message(self, *args: Any) -> None:  # noqa: A003 - silence the stderr log
+            """The default handler writes every request to stderr, which under preflight
+            is the operator's terminal and, worse, the captured stderr of the process."""
+
+        def _reply(self, status: int, payload: dict[str, Any]) -> None:
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            # Both headers, for two different failures. WITHOUT the length, an HTTP/1.1
+            # client waits for a close that a threading server does not make and the probe
+            # hangs to its timeout. WITHOUT the close, the handler thread lives until the
+            # CLIENT hangs up — and since `server_close()` now joins handlers, that turned
+            # a 2.3 s probe into a 10 s one (measured: the join waited out the handler's
+            # own socket timeout on an idle keep-alive connection). Closing per response
+            # keeps every handler short-lived, so the join is instant and no capture can
+            # sit in flight for long.
+            self.send_header("Content-Length", str(len(body)))
+            # `send_header` sets `close_connection` itself when it sees this value (read
+            # from the installed 3.13), so the header alone is the mechanism; an explicit
+            # assignment beside it was a no-op that read as one, and both its mutants
+            # survived because there was nothing to observe.
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            raw = self.rfile.read(length) if length > 0 else b""
+            try:
+                document = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                document = {}
+            tools = document.get("tools") if isinstance(document, dict) else None
+            if isinstance(tools, list) and tools:
+                names = [str(item.get("name")) for item in tools
+                         if isinstance(item, dict) and item.get("name")]
+                # A NON-EMPTY `tools` array whose entries name nothing is not a roster.
+                # Recording it as an empty capture makes the per-capture rule below read
+                # it as a turn the leaf ran with no tools at all, and refuse the run — a
+                # FALSE refusal, and one that contradicts the paragraph above (a request
+                # that is not a measurement is no capture, not an empty one).
+                if names:
+                    with lock:
+                        captured.append(names)
+                self._reply(400, {"type": "error", "error": {
+                    "type": "invalid_request_error",
+                    "message": "met-dsl preflight roster capture: no model turn is made"}})
+                return
+            self._reply(200, {
+                "id": "msg_metdsl_roster_probe", "type": "message", "role": "assistant",
+                "model": str(document.get("model") or "unknown") if isinstance(document, dict)
+                else "unknown",
+                "content": [{"type": "text", "text": "."}],
+                "stop_reason": "end_turn", "stop_sequence": None,
+                "usage": {"input_tokens": 1, "output_tokens": 1}})
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler's spelling
+            """Anything else the CLI reaches for at startup is not this probe's business."""
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+
+    class _CaptureServer(ThreadingHTTPServer):
+        # THE HANDLER THREADS MUST BE JOINABLE. `ThreadingHTTPServer` sets
+        # `daemon_threads = True`, and `socketserver._Threads.append` DISCARDS a daemon
+        # thread instead of tracking it (`if thread.daemon: return`, read from the
+        # installed interpreter), so `block_on_close` joins nothing and `server_close()`
+        # returns while a handler is still running. MEASURED, not reasoned: with the
+        # default, a request whose body arrived 2 s late was DROPPED and the check
+        # reported `pass` on a roster missing a tool — the fail-open direction. (At 0.5 s
+        # it happened to land, because the exit takes about that long anyway, which is why
+        # the witness for this uses the measured 2 s.)
+        daemon_threads = False
+
+        def handle_error(self, request, client_address):
+            """A CLIENT that hangs up is expected here; a defect of ours is not.
+
+            `handle_error` is the SERVER's method, not the handler's — an override on the
+            handler class is never called, which is how the first version of this
+            suppressed nothing while looking like it did. The default writes the whole
+            traceback to stderr, which under preflight is the operator's terminal AND the
+            captured stderr of the process, on the timeout path where the CLI is killed
+            mid-request — exactly when that stderr is being read to find out what went
+            wrong. Same reason as `log_message` above.
+
+            NARROW, because the first version swallowed EVERY exception: a `TypeError` in
+            `do_POST` produced zero captures, zero stderr, and a check that refused the
+            run with nothing to act on. Only the connection family is silenced; anything
+            else keeps the default traceback, which is the diagnosis.
+            """
+            if not isinstance(sys.exc_info()[1],
+                              (BrokenPipeError, ConnectionResetError, TimeoutError)):
+                super().handle_error(request, client_address)
+
+    server = _CaptureServer(("127.0.0.1", 0), _Handler)
+    # `serve_forever`'s default `poll_interval` is 0.5 s, and `shutdown()` waits for the
+    # current tick, so every probe paid a FIXED 0.501 s (measured over five cycles) and
+    # every test using this manager paid it too. Nothing here needs a coarse tick.
+    # NOT PINNED: this is a cost, and a test asserting a duration would be flaky. Same for
+    # the `thread.join(timeout=5)` below, which `shutdown()` already makes redundant, and
+    # for `do_GET`'s 404 STATUS (its headers are asserted, the code is not). A round
+    # claimed these were "named in TODO.md or in their own comments"; they were not, so
+    # they are named here.
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.05),
+                              daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address[0], server.server_address[1]
+        yield f"http://{host}:{port}", captured
+    finally:
+        # In this order: `shutdown` stops the accept loop (and blocks until it has),
+        # `server_close` releases the listening socket AND — because of the line above —
+        # joins every handler still running. Preflight runs several probes in one process,
+        # so a leaked socket is a port the next run cannot have.
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _classify_claude_leaf_roster(
+    captured: Sequence[Sequence[str]],
+    declared_servers: Sequence[str],
+) -> dict[str, Any]:
+    """Sort a captured roster into classified / unclassified, in BOTH directions.
+
+    The union over every capture, because a name that appeared in any request is a name
+    the leaf could have called.
+
+    A built-in must be exactly `CLAUDE_LEAF_REQUIRED_TOOLS`:
+
+      * an EXTRA name is a tool no `PreToolUse` matcher validates — the fail-open issue #71
+        closes, arriving here as the CLI grew its roster or stopped honouring `--tools`;
+      * a MISSING name is the other half, and it is not hypothetical: an unknown tool name
+        is SILENTLY IGNORED by the CLI (measured), so a rename upstream would quietly strip
+        a leaf of a tool its skill depends on and the run would fail later, mid-billing,
+        looking like a model failure.
+
+    Equality, deliberately, rather than "⊆ the allowed set". A subset test tolerates a
+    dormant matcher, and it would also pass a leaf launched with nothing at all. The
+    operational cost is real and accepted: a CLI release that moves the roster stops
+    preflight until someone classifies the change on purpose. That is the issue's
+    acceptance condition working, not a malfunction.
+
+    An `mcp__<server>__<tool>` name is classified by its SERVER against the committed
+    `.mcp.json` — which under `--strict-mcp-config` is the leaf's entire server set — and
+    NOT by tool name. So "every tool a leaf gets is deliberately classified" is exact for
+    built-ins and coarser for MCP: a seventh tool added to this repository's own
+    build-runtime server enters every leaf's roster, is validated by no `PreToolUse`
+    matcher, and passes here on its server prefix. That is deliberate — the tool set of a
+    declared server is this repository's own to change, and no matcher has ever seen an
+    MCP call (`docs/HOOKS.md`) — but it is a different guarantee, and the sentence that
+    said otherwise is retracted. What this DOES reject is a tool from a server nobody
+    declared, which would mean the strict-config closure had failed.
+    """
+    names: set[str] = set()
+    per_capture_builtins: list[set[str]] = []
+    for roster in captured:
+        roster_names = {str(name) for name in roster}
+        names |= roster_names
+        per_capture_builtins.append({n for n in roster_names if not n.startswith("mcp__")})
+    builtins = {name for name in names if not name.startswith("mcp__")}
+    mcp_names = sorted(names - builtins)
+    required = set(CLAUDE_LEAF_REQUIRED_TOOLS)
+    undeclared_mcp: list[str] = []
+    declared = set(declared_servers)
+    for name in mcp_names:
+        # Matched against the DECLARED names by prefix, rather than by splitting the tool
+        # name on its first `__`. The CLI's spelling is `mcp__<server>__<tool>` and a
+        # server name may itself contain `__`, which the split reads as a shorter server
+        # nobody declared — a refusal aimed at the wrong thing.
+        #
+        # THE FLATTENED NAME IS AMBIGUOUS AND NEITHER SPELLING RESOLVES IT: with `build`
+        # declared, `mcp__build__runtime__run_linter` is equally "server `build`, tool
+        # `runtime__run_linter`" and "server `build__runtime`, tool `run_linter`", and the
+        # prefix match ACCEPTS it — an under-refusal where the split was an over-refusal.
+        # The trade is deliberate: over-refusing a declared server's tool stops legitimate
+        # work on a plausible name, while the accepted case needs `--strict-mcp-config` to
+        # have already failed AND the leaked server to be named as an extension of a
+        # declared one. Zero occurrences in this repository's `.mcp.json`, which declares
+        # `build-runtime` alone. Recorded rather than closed, because closing it means
+        # guessing at the vendor's naming (requiring the tail to carry no `__`), which is
+        # a new refusal resting on an unmeasured premise.
+        if not any(name.startswith(f"mcp__{server}__") for server in declared):
+            undeclared_mcp.append(name)
+    # A DECLARED SERVER THAT CONTRIBUTES NOTHING is the same failure as a missing built-in,
+    # and the argument the `missing` half already makes applies with more force here: every
+    # `compile` / `run` / `lint` gate goes through `mcp__build-runtime__*`, so a leaf that
+    # comes up without them dies mid-billing looking like a model failure. Measured: with
+    # `.mcp.json`'s `command` pointed at a nonexistent interpreter the roster carries the
+    # six built-ins and NO mcp names, and every other preflight row stays green — this
+    # check holds the only direct evidence and used to discard it.
+    silent_servers = sorted(
+        server for server in declared
+        if not any(name.startswith(f"mcp__{server}__") for name in mcp_names))
+    return {
+        "builtins": sorted(builtins),
+        "mcp": mcp_names,
+        "silent_mcp_servers": silent_servers,
+        "unclassified": sorted(builtins - required),
+        # THE UNION FOR EXTRAS, EACH CAPTURE FOR OMISSIONS. The two questions are not
+        # symmetric and one set cannot answer both: a name in ANY request is a tool the
+        # leaf could have called, so extras take the union — but a request that OMITS a
+        # required tool is a turn the leaf ran without it, and the union hides exactly
+        # that (rosters `[required]` and `[required minus Bash]` union to the full set and
+        # would pass). Measured today: one launch sends two requests carrying identical
+        # rosters. This is what keeps that a measurement rather than an assumption.
+        "missing": sorted(set().union(*(required - c for c in per_capture_builtins))
+                          if per_capture_builtins else required),
+        "per_capture_builtins": [sorted(c) for c in per_capture_builtins],
+        "undeclared_mcp": undeclared_mcp,
+        "captures": len(captured),
+    }
+
+
+def _probe_claude_leaf_tool_roster(
+    command: str | Sequence[str],
+    repo_root: Path | None,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    cli_version: str | None = None,
+) -> dict[str, Any]:
+    """Check `claude_leaf_tool_roster_classified`: the tools the INSTALLED CLI would
+    actually hand a leaf are all deliberately classified (issue #71).
+
+    `CLAUDE_LEAF_TOOLS` is a declaration; this is the measurement. The two can part
+    company without a word from either side — the CLI ignores an unknown `--tools` name
+    silently (measured on 2.1.238), and a future release may stop honouring the flag,
+    reinstate a built-in, or rename one. A declaration nobody measures is what the
+    denylist was.
+
+    HOW: launch the leaf argv (`claude_leaf_roster_probe_argv`) against a loopback
+    stand-in for the Messages endpoint and read the `tools` array the CLI itself sends.
+    UNBILLED — the stand-in answers 400 before any model turn — and it costs ONE CLI START
+    PER PROBE, 2.0-6.1 s wall measured on one machine — the spread is machine LOAD, not
+    the work: the same commit measures near 2 s idle and near 5 s under review load. That
+    start produces two captures, not one each. A preflight pays it once per provider surface it probes plus
+    once per TTL window, so a long orchestration can hit it mid-run.
+
+    Environment: the DECLARED ALLOWLIST (`leaf_env_from`), plus the API base pointed at
+    the stand-in and a dummy key. An allowlist rather than `os.environ` minus the names
+    that look dangerous, for the reason `LEAF_ENV_ALLOWLIST` already gives: a denylist over
+    environment names does not terminate. `ANTHROPIC_AUTH_TOKEN` is the obvious one to
+    strip, but `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` and the proxy family
+    redirect a launch just as effectively, and the next such name ships with a CLI nobody
+    here has read about. Under the allowlist every one of them is absent by construction,
+    so the probe cannot reach a real endpoint and cannot be billed. It is also the closer measurement: a leaf's
+    environment is built from the same `leaf_env_from` allowlist. NOT identical, and the
+    difference is not measured to matter — `_child_env` also drops the declared
+    `api_key_env` names and adds `METDSL_ORCHESTRATION_ID`,
+    `METDSL_CHILD_AGENT_RUN_ID`, `TMPDIR`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and
+    `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, and a leaf runs under bwrap. None of those is known
+    to move the roster; none has been measured to leave it alone either.
+
+    Deliberately not `_child_env` even so: that function's job is to build a LEAF's
+    environment, and it strips `ANTHROPIC_BASE_URL` — the one variable this probe exists to
+    set. `CLAUDE_CONFIG_DIR` is a fresh empty scratch directory (measured: an empty home
+    reaches the request, so no trust seed is needed), which also keeps the operator's own
+    home out of the roster the check reads.
+
+    The scratch home is SEEDED with the committed `leaf_config/claude/settings.json`, the
+    same file a leaf loads as its `user` layer, because that layer decides the roster: a
+    `permissions.deny` in it removes the named tools from what the CLI sends (measured).
+    Probing an empty home measured a configuration no leaf runs under, and left exactly
+    the fail-open this check exists to refuse — a tool silently stripped from every leaf,
+    reported as pass.
+
+    FAIL CLOSED on everything: a spawn error, a timeout, no capture at all, an
+    unparseable `.mcp.json`, an unclassified name, or a missing required one. An
+    unmeasured roster is exactly the state the check refuses; reporting `pass` on it would
+    reproduce the denylist's failure in a new place.
+
+    `repo_root is None` is an advisory SKIP (`pass=None`), on the precedent of
+    `_probe_claude_mcp_registry`: production reaches this through the `preflight` subcommand, whose `--repo-root` is required and which
+    always passes one, and without a repo root there is no `.mcp.json` to classify the
+    MCP half against.
+    """
+    name = "claude_leaf_tool_roster_classified"
+    version_note = f"; cli={cli_version}" if cli_version else ""
+    if repo_root is None:
+        return {"name": name, "pass": None,
+                "detail": ("skipped; probe_execution_platform was called without repo_root "
+                           "(advisory only — the preflight subcommand always passes "
+                           "repo_root)")}
+    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
+    if not command_argv:
+        return {"name": name, "pass": False, "detail": "claude command is empty"}
+    mcp_path = repo_root / ".mcp.json"
+    try:
+        mcp_document = json.loads(mcp_path.read_text(encoding="utf-8"))
+        declared_servers = sorted(mcp_document["mcpServers"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # FAIL CLOSED rather than classify the MCP half against an empty set: an
+        # unreadable file would turn every MCP tool in the roster into an "undeclared"
+        # finding and point the operator at the wrong repair.
+        return {"name": name, "pass": False,
+                "detail": (f"cannot read the leaf's MCP configuration {mcp_path} "
+                           f"({type(exc).__name__}: {exc}); the roster's MCP tools cannot be "
+                           f"classified against it{version_note}")}
+
+    argv = claude_leaf_roster_probe_argv(command_argv)
+    captured_snapshot: list[list[str]] = []
+    try:
+        # THE LISTENER AND THE SCRATCH HOME ARE FAILURE PATHS TOO. Both were outside every
+        # `try` while the docstring said "fail closed on everything", so a taken port or a
+        # full temp filesystem escaped as a traceback: the run still stopped (the preflight
+        # subprocess exits non-zero), but with no `preflight.json`, no named check and no
+        # remedy — the opposite of the attributable refusal every other failure here gets,
+        # and precisely the case RUNBOOK tells the operator this check reports on.
+        stack = contextlib.ExitStack()
+        with stack:
+            base_url, captured = stack.enter_context(_claude_roster_capture_server())
+            scratch_home = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="metdsl-roster-home-"))
+            env = leaf_env_from(os.environ)
+            # THE PROBE IS NOT A LEAF OF THIS ORCHESTRATION, and since the scratch home is
+            # seeded with the leaf configuration its hooks RUN. `leaf_env_from` forwards
+            # the whole `METDSL_` prefix, so during the mid-run TTL re-probe the hook
+            # resolved the LIVE orchestration id and appended a `user_prompt_submit` row —
+            # carrying a session id belonging to no leaf — to that run's
+            # `hooks/native_hook_events.jsonl`, which `tools/audit_orchestration.py` reads
+            # as the record of what the leaves did. Measured, twice and independently.
+            # Removing the names the hooks key on leaves the probe unattributed, which
+            # is what it is; nothing about the roster depends on them.
+            for workflow_identity in ("METDSL_ORCHESTRATION_ID", "METDSL_WORKFLOW_MODE",
+                                      "METDSL_CHILD_AGENT_RUN_ID"):
+                env.pop(workflow_identity, None)
+            env["ANTHROPIC_BASE_URL"] = base_url
+            env["ANTHROPIC_API_KEY"] = "metdsl-preflight-roster-probe"
+            env["CLAUDE_CONFIG_DIR"] = scratch_home
+            # SEEDED WITH THE LAYER A LEAF ACTUALLY LOADS, not left empty. The `user` tier
+            # of a leaf's private home is a copy of this same committed file, and it
+            # DECIDES THE ROSTER: a `permissions.deny` in it removes the named tools from
+            # what the CLI sends (measured). An empty home therefore measured a
+            # configuration no leaf runs under, and the difference was written up as a
+            # blind spot the technique could not close — on the claim that the file's
+            # `UserPromptSubmit` hook blocks the probe prompt before any request. That
+            # claim is FALSE, measured here against the committed file: rc=1, two captures,
+            # the same six built-ins. (It was reported to me twice and I wrote it down
+            # without running it, which is how it reached three documents.)
+            #
+            # Copied rather than SHA-pinned: `_prepare_claude_workflow_home` owns the
+            # pinning, and this is a read-only measurement of the same bytes. A file that
+            # cannot be read fails closed below, and whether it is STRUCTURALLY valid is
+            # `claude_leaf_config_validated`'s question, ANDed beside this one.
+            try:
+                shutil.copyfile(_claude_leaf_config_path(repo_root),
+                                Path(scratch_home) / "settings.json")
+            except OSError as exc:
+                return {"name": name, "pass": False,
+                        "detail": (f"cannot read the leaf configuration "
+                                   f"{_claude_leaf_config_path(repo_root)} "
+                                   f"({type(exc).__name__}: {exc}); the roster a leaf would "
+                                   f"come up with cannot be measured under the layer it "
+                                   f"actually loads{version_note}")}
+            try:
+                proc = runner(argv, text=True, capture_output=True, check=False,
+                              input=".", env=env, cwd=str(repo_root),
+                              timeout=CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS)
+                # Only whether ANYTHING was captured, and only to tell a teardown failure
+                # from a setup one below. The roster itself is read after the manager
+                # exits, where the handlers have been joined — reading it here is the
+                # mistake this file documents two paragraphs down.
+                captured_snapshot = list(captured)
+            except subprocess.TimeoutExpired:
+                return {"name": name, "pass": False,
+                        "detail": (f"the roster probe did not finish within "
+                                   f"{CLAUDE_ROSTER_PROBE_TIMEOUT_SECONDS}s; the tools a leaf "
+                                   f"would be launched with are unmeasured{version_note}")}
+            except (OSError, ValueError) as exc:
+                return {"name": name, "pass": False,
+                        "detail": (f"the roster probe could not run {argv[0]!r} "
+                                   f"({type(exc).__name__}: {exc}){version_note}")}
+    except OSError as exc:
+        # Setup AND teardown both land here, and they are different failures: a probe that
+        # already ran can fail on the scratch home's REMOVAL, and telling the operator it
+        # "could not set up" points them at the wrong thing. Which one it was is decided
+        # by whether the launch produced anything.
+        stage = "tear down" if captured_snapshot else "set up"
+        return {"name": name, "pass": False,
+                "detail": (f"the roster probe could not {stage} its capture server or its "
+                           f"scratch home ({type(exc).__name__}: {exc}); the tools a leaf "
+                           f"would be launched with are unmeasured{version_note}")}
+
+    # AFTER the context manager, deliberately, and only because that manager was ALSO
+    # changed to make the handlers joinable. Reading `captured` inside it took the list
+    # while the server was still accepting: a request whose handler had not finished was
+    # DROPPED, and a dropped capture is a tool nobody classified — the fail-OPEN direction
+    # this check refuses everywhere else. That was reproduced, and moving the read out
+    # ALONE did not fix it, because `ThreadingHTTPServer`'s daemon handler threads are not
+    # tracked and so `server_close()` joined nothing. With `daemon_threads = False` set
+    # there, `server_close()` has joined every handler by the time this line runs, so the
+    # list is complete and needs no lock. The comment that stood here asserted this
+    # conclusion from the code's shape without the line that makes it true.
+    snapshot = [list(roster) for roster in captured]
+
+    if not snapshot:
+        # The CLI ran and sent no request carrying tools. That is not "no tools" — it is
+        # no measurement, and the difference matters: a leaf launched from this CLI might
+        # have any roster at all.
+        # BOTH STREAMS, and a pointer at the other thing this launch runs. Since the
+        # scratch home is seeded with the leaf configuration, the probe executes the
+        # leaf's whole hook chain, and a hook that exits non-zero blocks the prompt before
+        # any request — so the CLI reports rc=0 with an empty stderr and the roster is
+        # "unmeasured" for a reason that has nothing to do with tools. Reproduced by
+        # pointing `repo_root` at a directory that is not a git working tree, which the
+        # `UserPromptSubmit` command's `git rev-parse` needs. Holding stdout and printing
+        # only stderr left an operator with a roster remedy for a hook failure.
+        # THE MESSAGE, not the first 400 bytes. The launch carries `--output-format json`,
+        # and the CLI puts `usage` and `subagent_stats` first, so a flat truncation handed
+        # the operator four hundred bytes of zeroed token counters while the sentence that
+        # explains the failure — "UserPromptSubmit operation blocked by hook: … not a git
+        # repository" — sat around byte 940. Measured, on the very case this detail was
+        # written for. The envelope's own fields are read when it parses, and a truncation
+        # is the fallback for output that is not one.
+        stdout_text = (proc.stdout or "").strip()
+        try:
+            envelope = json.loads(stdout_text)
+        except (json.JSONDecodeError, ValueError):
+            envelope = None
+        if isinstance(envelope, dict):
+            parts = [str(envelope.get(key)) for key in ("subtype", "result")
+                     if envelope.get(key)]
+            errors = envelope.get("errors")
+            if isinstance(errors, list):
+                parts.extend(str(item) for item in errors)
+            stdout_text = " ".join(parts) or stdout_text
+        streams = " ".join(
+            f"{label}: {text[:400]}"
+            for label, text in (("stdout", stdout_text), ("stderr", (proc.stderr or "").strip()))
+            if text)
+        return {"name": name, "pass": False,
+                "detail": (f"the CLI made no request carrying a tool roster (rc="
+                           f"{proc.returncode}), so what a leaf would be launched with is "
+                           f"unmeasured. The probe runs the leaf's own hook chain (the "
+                           f"scratch home is seeded with {CLAUDE_LEAF_CONFIG_REL}), so a "
+                           f"hook that refuses the prompt lands here too{version_note}"
+                           + (f"; {streams}" if streams else ""))}
+
+    report = _classify_claude_leaf_roster(snapshot, declared_servers)
+    problems: list[str] = []
+    if report["unclassified"]:
+        # NAMED, not counted. The remedy is a judgement about each specific tool — is it
+        # something a leaf may have, and if so which `PreToolUse` matcher will validate it
+        # — and an operator cannot begin that with a number.
+        problems.append("built-ins no PreToolUse matcher validates: "
+                        + ", ".join(report["unclassified"]))
+    if report["missing"]:
+        # PER CAPTURE, like the verdict. Rendering the union here produced a detail that
+        # contradicted itself — "did not provide: Bash, Edit, …" beside "built-ins=Bash,
+        # Edit, …" — and sent the operator to `CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI`, which
+        # subtracts globally and is the wrong remedy for "one request was narrower".
+        problems.append(
+            "built-ins the CLI left out of at least one request: "
+            + ", ".join(report["missing"])
+            + " (per request: "
+            + " | ".join(",".join(sorted(roster)) or "(none)"
+                         for roster in report["per_capture_builtins"])
+            + ")")
+    if report["undeclared_mcp"]:
+        problems.append("MCP tools from servers .mcp.json does not declare: "
+                        + ", ".join(report["undeclared_mcp"]))
+    if report["silent_mcp_servers"]:
+        problems.append("servers .mcp.json declares that put NO tool in the roster: "
+                        + ", ".join(report["silent_mcp_servers"]))
+    measured = (f"measured {report['captures']} capture(s); built-ins="
+                f"{','.join(report['builtins']) or '(none)'}; mcp="
+                f"{','.join(report['mcp']) or '(none)'}{version_note}")
+    if problems:
+        # THE REMEDY FOLLOWS THE PROBLEM. It used to be appended unconditionally, so an MCP
+        # failure told the operator to add a `PreToolUse` matcher or to edit
+        # `CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI` — neither of which is the fix for "your MCP
+        # server did not start". That is the same defect named one paragraph up for the
+        # per-request case, left standing for the MCP half.
+        remedies = []
+        if report["unclassified"]:
+            remedies.append(
+                "For a built-in a leaf may keep, TWO things are needed: a PreToolUse "
+                "matcher in leaf_config/claude/settings.json AND a dispatch branch that "
+                "judges it in tools/hooks/cli.py — a matcher makes the hook fire, not "
+                "judge (docs/HOOKS.md).")
+        if report["missing"]:
+            # CHECK THE LEAF CONFIG FIRST. The probe deliberately seeds its scratch home
+            # with the committed `leaf_config/claude/settings.json`, because that layer
+            # decides the roster — a `permissions.deny` naming a tool removes it (measured
+            # on 2.1.238 and 2.1.239). That makes a local edit to that file the MOST
+            # REACHABLE cause of `missing`, and it is the one cause the remedy used to
+            # omit: an operator following "record it in CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI"
+            # would permanently subtract a tool from the required set to paper over a
+            # one-line configuration bug, and the check would go green having been
+            # widened rather than satisfied.
+            remedies.append(
+                "A built-in the CLI did not offer is USUALLY a local cause, not a vendor "
+                "one: check leaf_config/claude/settings.json for a permissions.deny "
+                "naming it, which removes it from the roster the leaf is given. Only for "
+                "a built-in the CLI itself stopped offering, record it in "
+                "CLAUDE_LEAF_TOOLS_ABSENT_ON_CLI with the version that dropped it - that "
+                "seam subtracts from the required set and must not be used to absorb a "
+                "configuration mistake.")
+        if report["silent_mcp_servers"]:
+            remedies.append(
+                "A declared server that contributed no tool did not start: check its "
+                "`command` in .mcp.json and run it by hand (mcp_servers/README.md).")
+        if report["undeclared_mcp"]:
+            remedies.append(
+                "A tool from an undeclared server means the --strict-mcp-config closure "
+                "did not hold: a leaf's server set must be the committed .mcp.json.")
+        return {"name": name, "pass": False,
+                "detail": ("; ".join(problems) + ". " + measured
+                           + ". Classify the change deliberately. " + " ".join(remedies)
+                           + " See docs/RUNBOOK.md §0-2.")}
+    return {"name": name, "pass": True, "detail": measured}
 
 
 def _probe_claude_leaf_config(repo_root: Path | None) -> dict[str, Any]:
@@ -17840,7 +18562,7 @@ def _probe_claude_mcp_registry(
                     "pass": None,
                     "detail": (
                         "skipped; probe_execution_platform was called without repo_root "
-                        "(advisory only — production calls via cmd_preflight always pass repo_root)"
+                        "(advisory only — the preflight subcommand always passes repo_root)"
                     ),
                 },
                 {
@@ -17850,7 +18572,7 @@ def _probe_claude_mcp_registry(
                     "pass": None,
                     "detail": (
                         "skipped; probe_execution_platform was called without repo_root "
-                        "(advisory only — production calls via cmd_preflight always pass repo_root)"
+                        "(advisory only — the preflight subcommand always passes repo_root)"
                     ),
                 },
             ],
@@ -18181,6 +18903,31 @@ def probe_execution_platform(
         leaf_config_check = _probe_claude_leaf_config(repo_root)
         checks.append(leaf_config_check)
         can_launch_agents = can_launch_agents and (leaf_config_check.get("pass") is True)
+        # EARLIEST CERTAIN DETECTION, same shape and same reason (issue #71). What a leaf
+        # can DO is decided by the installed CLI's roster, and nothing else measures it:
+        # `CLAUDE_LEAF_TOOLS` is a declaration the CLI may silently disagree with — it
+        # ignores an unknown `--tools` name without a word, and a release can reinstate a
+        # built-in or stop honouring the flag. Detected at the first leaf launch that
+        # would mean a leaf reaching for a tool no `PreToolUse` matcher validates, mid-run
+        # and mid-billing, with nothing in the artifacts saying so. It is fully knowable
+        # before init — one unbilled CLI start — so it is surfaced here.
+        #
+        # Unlike the leaf configuration above there is NO launch-time backstop for this
+        # one: the conductor cannot see the roster, only the endpoint can, so this check
+        # is the whole enforcement. Hence it gates rather than reports.
+        roster_check = _probe_claude_leaf_tool_roster(
+            command, repo_root, runner, cli_version=agent_version)
+        checks.append(roster_check)
+        # `is not False`, NOT `is True` — the sibling line above uses `is True` and this
+        # one deliberately does not. The difference is the advisory skip: a probe called
+        # without `repo_root` records `pass=None` here (as `_probe_claude_mcp_registry`
+        # does), and `is True` would turn that skip into a refusal of every launch from
+        # such a caller. `is not False` gates every real verdict and lets the documented
+        # skip through. (This comment claimed the opposite predicate, and claimed the skip
+        # "neither gates nor silently greens", which no predicate can mean.)
+        # `_all_strict_boolean_probe_checks_pass` is not used because the claude branch
+        # ANDs each check at its probe, the existing arrangement this follows.
+        can_launch_agents = can_launch_agents and (roster_check.get("pass") is not False)
     else:
         # Codex's internal multi_agent feature is diagnostic only: the conductor
         # launches independent CLI processes and does not use Codex subagents. Every
