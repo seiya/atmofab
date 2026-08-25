@@ -31,10 +31,12 @@ Two properties the first draft lacked, both found by review:
 from __future__ import annotations
 
 import functools
+import os
 import re
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from functools import lru_cache
 from pathlib import Path
 
@@ -92,16 +94,29 @@ def normalize(token: str) -> str:
 
 
 def _strip_fenced_blocks(text: str) -> str:
-    """`text` with ``` fenced blocks removed.
+    """`text` with fenced and indented code blocks removed.
 
     These documents teach by quoting commands and examples, so a fence holds spellings that are
     NOT pointers — a deliberately bad path, a `<placeholder>`, another repository's layout. The
     link scanner below reads raw text, so without this a fenced example of a broken link fails
     the citation row: an over-refusal introduced by widening, which is the direction a widening
-    fails in. An unterminated fence swallows the rest of the file, which is why the split keeps
-    the odd-numbered segments rather than pairing greedily.
+    fails in. All three CommonMark spellings count — ``` , ~~~ and an indented command line —
+    because an author picking the one this function does not know gets the over-refusal back.
     """
-    return "".join(part for index, part in enumerate(re.split(r"```", text)) if index % 2 == 0)
+    kept = [part for index, part in enumerate(re.split(r"```|~~~", text)) if index % 2 == 0]
+    if len(re.findall(r"```|~~~", text)) % 2:
+        # An UNTERMINATED fence: everything after it is prose by the split above, which would
+        # hide every pointer in the rest of the file and report live references as orphans. The
+        # earlier docstring claimed the even-index rule prevented that; it caused it. Keep the
+        # trailing segment instead — an unterminated fence is a typo, not a licence to stop
+        # reading.
+        kept.append(re.split(r"```|~~~", text)[-1])
+    body = "\n".join(kept)
+    # A 4-space indented block is the third spelling, and it is the one prose accidentally
+    # produces; drop a line only when it is indented AND holds no inline pointer syntax, so an
+    # ordinary wrapped bullet (which these documents indent by two) is not eaten.
+    return "\n".join(line for line in body.split("\n")
+                     if not (line.startswith("    ") and line.lstrip().startswith(("$", ">", "#"))))
 
 
 def _pointer_tokens(text: str) -> set[str]:
@@ -148,6 +163,14 @@ def citation_targets(text: str, source: str) -> list[str]:
             targets.append((skill_dir / token).as_posix())
         elif token.split("/")[0] in top_level:
             targets.append(token)
+        elif token.startswith("../"):
+            # A second-level split reaching back up. Resolved against the citing file and kept
+            # only when it lands inside the SAME skill and is tracked, so it can add an edge but
+            # never a broken-citation finding — a `..` walk out of the tree is not a pointer this
+            # module has anything to say about.
+            climbed = os.path.normpath(str(Path(source).parent / token))
+            if climbed.startswith(skill_dir.as_posix() + "/") and climbed in files:
+                targets.append(climbed)
         elif "/" not in token and token.endswith(".md"):
             # A SIBLING named bare, which this tree already writes:
             # `references/class-descent-log.md` cites `codex-episodes.md` that way. Resolved
@@ -216,9 +239,43 @@ class SkillCitationTests(unittest.TestCase):
         still cleared "at least 6 documents, at least 30 citations".
         """
         out = subprocess.run(
-            ["git", "ls-files", "-z", "--", f":(glob){SKILL_ROOT}/**/*.md"],
+            # `*/**/` not `**/`: git's `**` matches ZERO directories, so `<root>/**/*.md` also
+            # matches a README sitting directly under the root, which `in_a_skill` excludes. The
+            # two derivations then disagreed about a file neither of them should have argued
+            # over, and the row named for that disagreement did not call this one.
+            ["git", "ls-files", "-z", "--", f":(glob){SKILL_ROOT}/*/**/*.md"],
             cwd=REPO_ROOT, capture_output=True, text=True, check=True).stdout
         return frozenset(entry for entry in out.split("\0") if entry)
+
+    @staticmethod
+    def broken_report(documents, root: Path | None = None) -> list[str]:
+        """The finding list, defined once so a self-test can drive the row that runs in anger.
+
+        Measured while this was assembled inline in the row below: replacing the append with
+        `pass`, emptying the target loop, or weakening the assertion all left every row in this
+        module green, because the real tree has no broken pointer and nothing else exercised the
+        loop. Same defect as `_orphan_report`'s, on the other half of the pair — the repair was
+        made there and not here.
+        """
+        # `root` resolved at CALL time. Written first as `root: Path = REPO_ROOT`, which binds
+        # the global at class-creation time — the same trap `document_body`'s docstring records,
+        # reintroduced in the helper extracted to fix a different one.
+        root = root or REPO_ROOT
+        return [f"{document}: `{target}` is not a tracked path"
+                for document in documents
+                for target in citation_targets(document_body(document, root), document)
+                if not is_tracked(target)]
+
+    @staticmethod
+    def _every_skill_file() -> tuple[str, ...]:
+        """Every tracked file in a skill, not only the documents.
+
+        The walk follows a `scripts/` file's citations, so a stale pointer in a script docstring
+        creates an edge; leaving it out of the broken-pointer row meant the one reader that
+        follows it was the one reader that never checked it.
+        """
+        files, _directories = _git_paths()
+        return tuple(sorted(entry for entry in files if in_a_skill(entry)))
 
     def test_every_repository_path_a_skill_cites_is_tracked(self) -> None:
         """A pointer nobody can follow is worse than no pointer.
@@ -227,12 +284,7 @@ class SkillCitationTests(unittest.TestCase):
         branch three places asserted that `TODO.md` carried a measurement harness while it
         carried a pointer to a file that had never been in this repository.
         """
-        broken = []
-        for document in skill_documents():
-            text = document_body(document)
-            for target in citation_targets(text, document):
-                if not is_tracked(target):
-                    broken.append(f"{document}: `{target}` is not a tracked path")
+        broken = self.broken_report(self._every_skill_file())
         self.assertEqual(broken, [], "\n".join(broken))
 
     def test_the_corpus_is_not_empty(self) -> None:
@@ -372,8 +424,9 @@ class SkillReachabilityTests(unittest.TestCase):
 
     #: What a pointer has to look like for the walk to follow it. Named because the refusal
     #: message quotes it: a rule a reader is told to satisfy must be stated where it is applied.
-    _POINTER_FORMS = ("a backticked path or a Markdown link target, outside a fenced code block, "
-                      "spelled `references/…`, `scripts/…`, or from the repository root")
+    _POINTER_FORMS = ("a backticked path or a Markdown link target, outside a code block, spelled "
+                      "`references/…`, `scripts/…`, `../…`, a sibling's bare filename, or from "
+                      "the repository root")
 
     def _reachable(self, root: Path | None = None) -> tuple[dict[str, set[str]], set[str]]:
         """`(files each skill owns, every skill file reachable from SOME skill's SKILL.md)`.
@@ -453,8 +506,8 @@ class SkillReachabilityTests(unittest.TestCase):
         orphans = self._orphan_report(owned, reachable)
         self.assertEqual(orphans, [], "\n".join(orphans))
 
-    def _walk_a_built_tree(self, layout: dict[str, str]) -> tuple[dict[str, set[str]], set[str]]:
-        """Run the walk over a git tree built here from `layout` (path -> body).
+    def _build_tree(self, layout: dict[str, str]) -> Path:
+        """Build a git tree here from `layout` (path -> body) and point the readers at it.
 
         `-f` on the add and a neutralised `core.excludesFile`: the fixture builds under
         `.claude/`, and an operator whose global ignore file lists that directory would otherwise
@@ -479,10 +532,16 @@ class SkillReachabilityTests(unittest.TestCase):
         run(["git", "add", "-A", "-f"])
         _git_paths.cache_clear()
         self.addCleanup(_git_paths.cache_clear)          # not a `finally`: a failed assertion
-        original_root = globals()["REPO_ROOT"]           # below must not leak the temp index
+        skill_documents.cache_clear()                    # below must not leak the temp index
+        self.addCleanup(skill_documents.cache_clear)     # (both caches, or the two readers
+        original_root = globals()["REPO_ROOT"]           #  disagree about which tree they saw)
         self.addCleanup(globals().__setitem__, "REPO_ROOT", original_root)
         globals()["REPO_ROOT"] = root                    # `_git_paths` reads it at call time
-        return self._reachable(root)
+        return root
+
+    def _walk_a_built_tree(self, layout: dict[str, str]) -> tuple[dict[str, set[str]], set[str]]:
+        """`_build_tree`, then the walk over it."""
+        return self._reachable(self._build_tree(layout))
 
     def test_the_walk_can_actually_see_an_orphan(self) -> None:
         """SELF-TEST of the row above, which is an absence-assertion over a graph walk.
@@ -509,7 +568,7 @@ class SkillReachabilityTests(unittest.TestCase):
         # not `assertIn(self._POINTER_FORMS, ...)`: emptying the constant satisfies that for
         # ever, since "" is a substring of everything — measured as a surviving mutant. Assert
         # the properties the message has to carry instead.
-        for stated in ("backticked", "link target", "fenced code block",
+        for stated in ("backticked", "link target", "code block", "sibling",
                        "from the repository root"):
             # each phrase cannot occur in a PATH, so the assertion reads the message rather than
             # the finding it wraps: `references/` did, and dropping the spellings from the
@@ -688,6 +747,132 @@ class SkillReachabilityTests(unittest.TestCase):
                          [f"{SKILL_ROOT}/probe/references/x.md"])
         self.assertEqual(citation_targets('see [x](references/y.md "the notes")', source),
                          [f"{SKILL_ROOT}/probe/references/y.md"])
+
+    def test_the_broken_pointer_row_can_actually_fire(self) -> None:
+        """SELF-TEST of the headline row, which is an absence-assertion like the orphan row.
+
+        Measured before this existed: `broken.append(...)` -> `pass`, an emptied target loop and
+        a weakened assertion each left all 26 rows green.  The row does work — it fires on a real
+        stale pointer — but nothing witnessed that it can.
+        """
+        probe = f"{SKILL_ROOT}/probe"
+        self._build_tree({
+            f"{probe}/SKILL.md": "the rule is in `docs/definitely_not_here.md`",
+            f"{probe}/references/cited.md": "unused here",
+            # `docs` has to be a tracked top-level entry or the token is prose, not a pointer —
+            # which is the scope rule `citation_targets` documents, not an accident of the tree.
+            "docs/HOOKS.md": "a real document beside the missing one",
+        })
+        report = SkillCitationTests.broken_report([f"{probe}/SKILL.md"], REPO_ROOT)
+        self.assertEqual(len(report), 1, report)
+        self.assertIn("docs/definitely_not_here.md", report[0])
+        self.assertIn("is not a tracked path", report[0])
+
+    def test_the_two_corpus_derivations_are_independent(self) -> None:
+        """The equality in `test_the_corpus_is_not_empty` is worth what its two sides are.
+
+        Measured: replacing `_corpus_by_pathspec`'s body with `frozenset(skill_documents())`
+        makes the assertion a tautology and survives every row.  Behaviour cannot separate two
+        derivations that must agree, so witness the INDEPENDENCE instead: the pathspec side still
+        answers when the Python-filtered side is emptied.
+        """
+        self._build_tree({
+            f"{SKILL_ROOT}/README.md": "not part of any skill",
+            f"{SKILL_ROOT}/probe/SKILL.md": "see `references/a.md`",
+            f"{SKILL_ROOT}/probe/references/a.md": "the episode",
+        })
+        skill_documents.cache_clear()
+        self.addCleanup(skill_documents.cache_clear)
+        by_pathspec = SkillCitationTests._corpus_by_pathspec()
+        self.assertEqual(by_pathspec, frozenset(skill_documents()))
+        self.assertNotIn(f"{SKILL_ROOT}/README.md", by_pathspec)
+        with unittest.mock.patch(f"{__name__}.skill_documents", return_value=()):
+            self.assertEqual(SkillCitationTests._corpus_by_pathspec(), by_pathspec)
+
+    def test_every_code_block_spelling_is_stripped(self) -> None:
+        """``` , ~~~ and an indented command are all code, and an author picks one of the three."""
+        source = f"{SKILL_ROOT}/probe/SKILL.md"
+        for fence in ("```", "~~~"):
+            with self.subTest(fence):
+                self.assertEqual(
+                    citation_targets(f"{fence}sh\ncat `tools/no_such_file.py`\n{fence}\n"
+                                     "the pointer is `references/cited.md`\n", source),
+                    [f"{SKILL_ROOT}/probe/references/cited.md"])
+        self.assertEqual(
+            citation_targets("    $ cat `tools/no_such_file.py`\nand `references/cited.md`\n",
+                             source),
+            [f"{SKILL_ROOT}/probe/references/cited.md"])
+
+    def test_an_unterminated_fence_does_not_swallow_the_rest_of_the_file(self) -> None:
+        """The failure the old docstring claimed the design prevented, and caused.
+
+        With an odd number of fence markers, keeping the even segments drops everything after the
+        last one: every pointer past a stray fence goes invisible and its target is reported as
+        an orphan with "or delete it".
+        """
+        self.assertEqual(
+            citation_targets("```md\n```\n```\nafter: `references/cited.md`\n",
+                             f"{SKILL_ROOT}/probe/SKILL.md"),
+            [f"{SKILL_ROOT}/probe/references/cited.md"])
+
+    def test_a_pointer_climbing_out_of_a_subdirectory_is_followed(self) -> None:
+        """`../shared.md` from `references/sub/index.md` — the other half of a deeper split."""
+        owned, reachable = self._walk_a_built_tree({
+            f"{SKILL_ROOT}/probe/SKILL.md": "see `references/sub/index.md`",
+            f"{SKILL_ROOT}/probe/references/sub/index.md": "back up to `../shared.md`",
+            f"{SKILL_ROOT}/probe/references/shared.md": "the shared episode",
+        })
+        self.assertEqual(self._orphan_report(owned, reachable), [])
+
+    def test_a_climbing_pointer_out_of_the_skill_is_not_a_citation(self) -> None:
+        """The bound on the row above: `..` must not walk out of the skill and name a path there."""
+        self.assertEqual(
+            citation_targets("`../../../etc/passwd` and `../other-skill/SKILL.md`",
+                             f"{SKILL_ROOT}/probe/references/sub/index.md"),
+            [])
+
+    def test_a_backtick_span_does_not_cross_a_newline(self) -> None:
+        """A stray backtick would otherwise swallow a paragraph and invent a pointer from it.
+
+        The probe has to start with a tracked top-level segment AND contain no space, or the
+        token is discarded for a different reason and the row passes whatever the scanner does.
+        Measured twice: a first probe put `TODO.md` mid-span, a second left prose in the span,
+        and neither could tell the two behaviours apart.
+        """
+        self.assertEqual(
+            citation_targets("an opened span `docs/HOOKS.md\nAGENTS.md` closed",
+                             f"{SKILL_ROOT}/probe/SKILL.md"),
+            [])
+
+    def test_a_stale_pointer_in_a_script_is_reported(self) -> None:
+        """The walk follows a script's citations, so the broken-pointer row has to read it too.
+
+        Measured: with the row over documents alone, reverting it was invisible, because the two
+        committed scripts happen to carry no stale pointer.
+        """
+        probe = f"{SKILL_ROOT}/probe"
+        self._build_tree({
+            f"{probe}/SKILL.md": "run `scripts/tool.py`",
+            f"{probe}/scripts/tool.py": '"""reads `docs/definitely_not_here.md`."""\n',
+            "docs/HOOKS.md": "a real document beside the missing one",
+        })
+        # Drive the PRODUCTION ROW, not the helper: the helper's own corpus argument is what
+        # was wrong (documents only), so a self-test that passes its own corpus in cannot see
+        # the defect. Measured — with the helper called directly here, reverting the row's
+        # corpus to `skill_documents()` survived.
+        failures = self._run_row("test_every_repository_path_a_skill_cites_is_tracked")
+        self.assertEqual(len(failures), 1, failures)
+        self.assertIn("scripts/tool.py", failures[0][1])
+        self.assertIn("docs/definitely_not_here.md", failures[0][1])
+
+    def _run_row(self, name: str) -> list:
+        """Run one `SkillCitationTests` row against the tree this test built, and return its
+        failures. The only way to witness that the row READS what it is supposed to read."""
+        result = unittest.TestResult()
+        SkillCitationTests(name).run(result)
+        # errors count as failures here: a row that RAISES has not reported, and treating that
+        # as "no finding" is how a crash passes for a clean run.
+        return result.failures + result.errors
 
     def test_a_skill_with_no_entry_point_is_named_as_such(self) -> None:
         """Witness for the `assertIn` guard: without it the walk dies on `git show` instead.
