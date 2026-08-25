@@ -152,6 +152,8 @@ when a rule does not obviously apply:
     witness in a subprocess outside the runner
   - **when a comment JUSTIFIES a rule, mutate the property the justification names** — the rule
     has a witness, the property holding it up usually does not
+  - **kill enumerations one element at a time** (regex alternatives, keyword tables); checked
+    together, a missing element goes unnoticed
   - **one test per occurrence of a rule, not per rule** — and **the sharpest trigger is a TWIN**:
     when a change touches one of a matched pair, list the pair, list your witnesses, compare the
     two lists before handing over
@@ -235,7 +237,8 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   - **The symptom disguises itself as "the subagent is running and never returns"** — when
     `ListAgents` shows running, suspect that agent's child processes
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
-  the user or another session can commit to the same branch. That is concurrency, not staleness
+  the user or another session can commit to the same branch. That is concurrency, not staleness:
+  read it and **judge whether it collides with your scope**
 - **Hand over the threat model and the purpose in one paragraph** (from "Fix or out of scope"
   below): "a single-operator research workflow platform; what is defended against is a deviating
   `LLM` leaf and the defects my own changes introduce; hardening paths only the operator can
@@ -262,12 +265,12 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   refusal into a floor, name the legitimate input it rejects** — if you cannot, you have not
   looked; if you can, that input is the test
 
-Episodes for the last four bullets, and the three accidents in full: `references/round-conduct.md`.
+Episodes for the last three bullets, and the three accidents in full: `references/round-conduct.md`.
 
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
 "the implementation is right but the test is weak" as real. (`metdsl-enforcement-change` judgment
-rule 1 owns this rule and states what a "record" has to be; this line is the round's trigger for
+rules 1 and 1-b own this rule and state what a "record" has to be; this line is the round's trigger for
 it, not a second statement of it.)
 
 **Verify a reviewer's negative claims the same way.** In PR #66 a sweep reported "only the token
@@ -451,7 +454,7 @@ code:
 
 **Also name any script, harness or fixture generator the branch committed as review surface** —
 "zero functional defects" otherwise means "zero in the files anyone looked at" (issue #71's round
-15 found five functional defects in a committed measurement script).
+15 found five defects in a committed measurement script, one of them functional).
 
 **The move that finds them: spend one round on the disclosure axis alone**, with no functional
 brief, **before stopping rather than as an extra round after deciding to stop**. Two briefs:
@@ -475,7 +478,7 @@ class**; **close a vacuous finding by marking, not deleting**; **aim "does it wr
 legitimate work" at the instrument too**; **claim vacuity only by construction** — a corpus
 measurement does not prove it; **a census conclusion rots in one round, so re-run it the round
 after you consume it**; **when you replace an enumeration with a computation, witness the
-computation on a synthetic tree**.
+computation on a synthetic tree** (cf. `tools/tests/test_backend_boundary.py::ScannedSetTests`).
 
 **Before concluding "the shape of the rule is wrong" from recurrence, measure inherited decisions
 separately from decisions the last fix added.** Inherited got worse → a problem of shape (stop and

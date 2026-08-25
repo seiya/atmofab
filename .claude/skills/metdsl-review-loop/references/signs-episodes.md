@@ -30,7 +30,7 @@ the case history that tells you how it closed.
   If you continue without splitting, **give the user the options and ask** (L128 redesigned in
   place, but that was a deviation taken after asking)
 - **Five rounds or more without the class descending** → the shape of the rule is wrong. Change
-  the design instead of adding a round (the sign below is the case where you already did that
+  the design instead of adding a round (the next sign in this file is the case where you already did that
   once)
 - **You rebuilt the instrument itself and the second one behaved the same** → **do not build a
   third.** The first rebuild was right (the question could not be answered). If the second keeps
@@ -74,7 +74,8 @@ the case history that tells you how it closed.
   weaker question that can be answered** (is there no other declaration anywhere in the file).
   **If the simple and the complex version give identical measured diffs, the complexity bought
   nothing** — take that diff first
-- **A reviewer said "it is environment-dependent"** → do not close it with a mock on the test side.
+- **A reviewer said "it is environment-dependent"** (`metdsl-enforcement-change` judgment rule 2
+  owns this rule; this row is the episode) → do not close it with a mock on the test side.
   Ask first what happens in production on that environment
 - **You rebuilt the design and tests carrying the old mechanism's name remain** → test names are
   read as evidence that the mechanism is still protected. In L128, 10 tests named after a deleted

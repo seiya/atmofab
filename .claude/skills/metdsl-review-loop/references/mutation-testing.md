@@ -215,7 +215,8 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
 ### A class docstring goes stale by ADDITION (TODO:269)
 
   - **A CLASS docstring goes stale as rows are appended to the class, and nobody re-reads it.**
-    Distinct from the row above: the prose was TRUE when written and became false by addition. On
+    Distinct from this file's §"Reproducing the wiring is not observing the wiring": the prose
+    was TRUE when written and became false by addition. On
     TODO:269 a class docstring said "these drive the REAL CLI in a REAL subprocess" when all its
     rows did; two rows added later read module attributes, one of them calling `main` in-process
     — **in a class I had created one round after renaming a sibling for exactly this**. When you
@@ -256,7 +257,8 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
     spelling too: the prefix STRING was separately unpinned, and shortening `"METDSL_"` to
     `"METDS"` stayed green while widening the namespace to one the repo does not own. Read your own
     justification as a list of claims and write one mutant per claim — and note this is the sign's
-    other half: rewriting a justification three times (below) is when its supporting property is
+    other half: rewriting a justification three times (`SKILL.md` §"Signs to catch mid-loop") is
+    when its supporting property is
     newest and least witnessed
 
 ### The sharpest trigger for "one test per occurrence" is a TWIN (TODO:269)

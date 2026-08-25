@@ -171,8 +171,10 @@ recipes are in `references/input-surfaces.md`:
   paths the leaf chose), **the classification is forgeable**. L174 was broken three rounds running
   and each narrowing was defeated by one byte. **Rule: change the channel rather than narrowing
   the sample** — exit code, exception type, a dedicated field, a sidecar; each is written by the
-  side that knows and cannot be written by the caller. Then **count every site that makes the same
-  decision** (there were six; the twin marker survived two more rounds), and at three or more
+  side that knows and cannot be written by the caller. This is the classification-channel version
+  of `metdsl-review-loop`'s sign "the pin was broken in a different shape every time — move the
+  definition to one place". Then **count every site that makes the same
+  decision** (there were six, and two further sites scanned neither marker), and at three or more
   change the channel design instead of fixing them individually. Two follow-through traps: **a
   type channel dies silently on a list rebuild** (`[str(v) for v in …]`, a JSON round-trip, a
   `sorted(...)`) so trace the container from emit site to decision and witness it through the

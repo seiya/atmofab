@@ -134,7 +134,7 @@ copying it: `_SURFACES` is `(file, anchor)`; `_SCRATCH_SURFACES` is `(file, anch
 that third column IS the bound; `_REDIRECT_RULE_SURFACES` has no anchor at all and couples by a
 phrase regex over a paragraph. **They also duplicate each other** — two near-identical
 anchored-window readers with two different window constants live in that one file — so copying
-is the starting point and not the goal. The three traps, each of which cost a round:
+is the starting point and not the goal. The four traps, each of which cost a round:
 
 - **Anchor on text that PRECEDES the rule and is byte-identical in the wording you are
   refusing.** Anchoring on your own corrected sentence pins that the correction survived, not

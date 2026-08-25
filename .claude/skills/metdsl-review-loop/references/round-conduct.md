@@ -1,8 +1,8 @@
 # Round conduct: the episodes behind the rules
 
 Moved out of `SKILL.md` verbatim (2026-08-25) so the skill body carries the rules and this file
-carries the evidence. Open it when a rule in `SKILL.md` §"Review target and commit granularity",
-§"If the plan staged the PRs" or §"Running a round" does not obviously apply, or when you want to
+carries the evidence. Open it when a rule in `SKILL.md` §"Review target and commit granularity"
+or §"Running a round" does not obviously apply, or when you want to
 know what it cost.
 
 ## Commit granularity, and staging the PRs
@@ -65,6 +65,24 @@ branches, so **keeping the order from the start is always cheaper**.
 Merge stage A before starting stage B and stage B's review target is automatically stage B
 alone (`origin/main...HEAD` equals stage B's diff). That is the shape the staging was for.
 
+
+## What each launch-prompt clause cost before it was a clause
+
+`SKILL.md` §"Running a round" lists the clauses; these are the incidents that put them there.
+
+- **"Do not edit until both results are in"**: in PR #53 one reviewer ran for **78 minutes** and I
+  broke the rule twice waiting. That is why the rule is absorbed into the launch prompt as "HEAD
+  may advance while you run" rather than kept as a prohibition on myself — and the one report that
+  re-verified against current HEAD unprompted was **the most useful of that round**.
+- **"Do not modify the checkout"**: one agent left the working tree mutated and **invalidated
+  another review's results**, which were running against what it had changed.
+- **"Create your own scratchpad subdirectory"**: one agent wrote a file with the same name as mine,
+  `mutate.py`, and broke the harness mid-run. (It recurred while this very branch was under review:
+  one reviewer's scratch directory was deleted out from under its running pytest by another
+  session, and it had to re-create under a PID-unique path and re-run everything.)
+- **"If the reported HEAD is a hash you do not recognize"**: on L174 a reviewer reported `d24a7bb`,
+  which was not my commit — the user had committed to the same branch. Concurrency, not staleness;
+  read it and judge whether it collides with your scope.
 
 ## Process and shared-resource discipline (orphan waits, /tmp, pkill)
 
