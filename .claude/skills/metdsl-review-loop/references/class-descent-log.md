@@ -21,7 +21,9 @@ defect in the enforcement code, and a false or missing statement every round".
 Evidence for two of SKILL.md's stopping conditions — that "only prose remains" is a claim about
 severity, and that a disclosure round is worth running before stopping. **And for the limit of
 proxy 1**: R15 found five defects in a measurement script the branch had COMMITTED, one of them
-functional (a denylist environment that could send an unbilled probe to a real endpoint). Nobody
+functional (a denylist environment that could send an unbilled probe to a real endpoint; a second
+incident in the same script, a timed-out launch scored as a successful read, would have reported
+the premise holding for a run where nothing launched). Nobody
 had been asked to review it, because the briefs named the enforcement code — so "a reviewer with
 no exclusions returns zero functional defects" was true of the files anyone looked at. A
 committed instrument is review surface.
@@ -176,3 +178,37 @@ rule this loop supplies**: once every remaining finding is "this prose asserts s
 unmeasured about code the PR does not touch," the fix is to DELETE the claim rather than to write
 a test proving it — a PR is not obligated to characterize behaviour it left alone, and a doc that
 tries anyway is one guess away from being the next round's finding.
+
+## Census practical notes: the episode behind each (restored 2026-08-25)
+
+These six were compressed to one line each in `SKILL.md` §"Stopping conditions" and their
+evidence was carried in the block deleted as duplicate in round 1 — wrongly: the block was a
+second spelling of the RULES, and these EPISODES existed nowhere else. Restored verbatim.
+
+- **Have "killed only by the token ratchet" separated out as a fourth class.** Folded into
+  "killed", it counts as a witness something `docs/BACKEND_BOUNDARY.md` §Enforcement calls a bound
+  on growth rather than a detector — in PR #67 an abandoned mirror hid exactly there
+- **A vacuous finding may be closed by marking, not deleting.** PR #67 proved two calls unreachable —
+  `_require_axis` inside `provides`, and `LANGUAGES`'s `implemented_backend_ids`, which the
+  following filter subsumes — and the right response was a comment saying "a marker of intent,
+  not a live guard". The problem
+  is not the redundant call; it is that it **reads as a live guard**
+- **The census makes you doubt your own instrument too** — the verification test built from PR #67's
+  census was wrong twice while being built. Aim "does it wrongly refuse legitimate work" at the
+  instrument as well
+- **A corpus measurement does not prove vacuity.** In PR #68 a guard labelled unreachable from
+  "0 empty atoms / 151,633 logical lines / 876 files" did fire, because the scanner and the normalizer
+  **disagreed on the definition of blank** (gfortran's space/tab/FF vs Python's wider `\s`), so a
+  line of only U+00A0 survived. Vacuous may be claimed **only when unreachability is shown by
+  construction**; "not in today's tree" is corpus-dependent — and because the label invites
+  deletion, a wrong vacuous is worse than no label
+- **A census conclusion rots in one round; re-run it the round after you consume it** (PR #68's
+  "zero ratchet-only decisions" was falsified the next round). Record conclusions that survive
+  re-measurement, not the numeric breakdown — numbers always rot (the suite count was wrong four
+  times on that PR alone)
+- **When you replace an enumeration with a computation, witness the computation on a synthetic
+  tree.** In PR #68 the scan target became a reachability closure, and deleting the transitive
+  expansion entirely stayed all green: a test against real data confirms "today's graph happens to
+  be like this" and never observes the algorithm (cf.
+  `test_backend_boundary.py::ScannedSetTests`)
+

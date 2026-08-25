@@ -189,6 +189,11 @@ passes as `pure=` computed `pure` itself and handed it to `_resolve_reuse_resume
 rewriting the production line did not kill it (issue #63's PR). One test: does the test call the
 production entry point? If not, it pins "the argument is forwarded", not "that value is chosen".
 
+A second data point, TODO:269: a row named `test_the_cli_answers_with_a_dedicated_exit_code`,
+whose comment said "this runs `main` in a real interpreter", drove a gate helper and printed a
+module CONSTANT. `main` was never entered, and the exit code it was named for had no witness at
+all.
+
 That shape lies in its docstring easily: the same test's docstring claimed to assert "the value
 that actually reaches the probe on each production path" while the body never called one. When you
 write "drives X" or "the value that actually arrives", grep for that function name in the body. If
@@ -215,7 +220,8 @@ The sub-rules below had no section here and were carried in `SKILL.md` in full. 
 ### A class docstring goes stale by ADDITION (TODO:269)
 
   - **A CLASS docstring goes stale as rows are appended to the class, and nobody re-reads it.**
-    Distinct from this file's §"Reproducing the wiring is not observing the wiring": the prose
+    Distinct from this file's "Reproducing the wiring is not observing the wiring" (a bold sentence
+    inside §"Tests spinning in neutral", not a heading): the prose
     was TRUE when written and became false by addition. On
     TODO:269 a class docstring said "these drive the REAL CLI in a REAL subprocess" when all its
     rows did; two rows added later read module attributes, one of them calling `main` in-process

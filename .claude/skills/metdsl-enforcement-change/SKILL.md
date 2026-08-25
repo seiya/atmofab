@@ -24,7 +24,7 @@ here that does not obviously apply to your case is answered in its reference fil
 guessing.
 
 - `references/judgment-episodes.md` — what each judgment rule below cost, in full
-- `references/input-surfaces.md` — surfaces 5-9, their version tables and measurement recipes
+- `references/input-surfaces.md` — surfaces 5-9, the marker-narrowing version table, the recipes
 - `references/source-text-surface.md` — the spelling variation a source-text-reading gate must survive
 - `references/dual-read-pairs.md` — the table of facts two layers read
 - `references/failure-routing.md` — attribution criteria, the known branches, and remedy wording
@@ -69,7 +69,8 @@ wrong three times, each time having run a reproduction).
   that is exactly when you write the enumeration out**
 - **Once every reader is open, enumerate what the other layers already cover before writing the
   severity.** The number of readers alone does not justify high — and the correction runs both
-  ways (PR #57's fourth correction was toward the safe side)
+  ways (PR #57's fourth correction was toward the safe side: the defense was silently dead, so
+  the fix shipped, but **"this is exploitable" was the wrong thing to write**)
 - **But never turn "another layer catches it" into a reason not to fix.** The enumeration exists
   to **make the severity description accurate**, not to decide whether to fix
 
@@ -93,10 +94,12 @@ no compiler installed).
 **3. Changing a rule is not done until you have swept the prose that cites that rule as grounds.**
 Use the grep procedure in `references/verification.md`. **Right after you write a sentence,
 execute it**: numbers, rule ids, compiler diagnostics and "X catches this" are all executable
-claims, and **the flip side of rule 3 is that prose you newly write in the same commit is
+claims, and **write a range when the number varies**; and **the flip side of rule 3 is that prose you newly write in the same commit is
 unverified until you run it** (L128 got four freshly written measurements or citations wrong
 inside the fix itself). **Do not write someone else's measurement as your own** — cite the source
-explicitly, or re-measure before writing.
+explicitly, or re-measure before writing. **Keep a list of every place you wrote a number and
+re-measure them together at the end**; a commit message cannot be fixed afterwards, so either
+mark the number as measured at a point or rewrite it in the final round.
 
 **3-a. When the sweep keeps losing, COUPLE the documents to the rule with a check.** Rule 3 is a
 discipline, and it failed four consecutive rounds on issue #71 **after it had been diagnosed** —

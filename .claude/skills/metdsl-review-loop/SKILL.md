@@ -136,7 +136,8 @@ when a rule does not obviously apply:
   - **run one mutation that deletes a whole mechanism** (pass-through `return`, constant condition)
   - **a mutation list you build carries your own blind spots**; hence the standing instruction to
     reviewers to build their own, and **do not hand over your list**
-  - **doubt once why a test passed**, especially when it felt obvious
+  - **doubt once why a test passed**, especially when it felt obvious: until every other path in
+    the fixture that could produce the expected violation is removed, it does not pin its name
   - **a negative assertion is green when the detector breaks — self-test the detector**
   - **when a mutant dies, read why**: a kill from a setup error is worth exactly as much as green
   - **when you rewrite a test, diff what the old version observed**
@@ -157,6 +158,8 @@ when a rule does not obviously apply:
   - **one test per occurrence of a rule, not per rule** — and **the sharpest trigger is a TWIN**:
     when a change touches one of a matched pair, list the pair, list your witnesses, compare the
     two lists before handing over
+  - **a hand-built fixture can test a shape that does not exist** — check the construct against
+    the real corpus before writing the witness
   - **for stateful code, match the fixture to the lifetime of the state**, and always include a
     version with one level of syntactic nesting
 
@@ -205,8 +208,15 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   If you do start editing, **write the fact and the time into the next round's prompt**.
 - Always in the prompt: **the target is `git diff origin/main...HEAD`**, and **"do not modify the
   checkout; run mutation tests against a `git archive` snapshot or a separate worktree"**
-- **A scratchpad per agent**: "**create your own subdirectory; do not reuse or overwrite existing
-  paths**". Put your own working files in a subdirectory the same way
+- **A scratchpad per agent**: "**create your own subdirectory, named uniquely to you (add your
+  PID); do not reuse or overwrite existing paths, and delete only the subdirectory you created,
+  never the round's shared root**". Put your own working files in a subdirectory the same way.
+  Two agents given the same round directory is enough: on this skill's own review round, one
+  reviewer's cleanup deleted another's scratch out from under its running pytest
+- **Say where a worktree may be created.** `git worktree add` with a relative path under `-C
+  <repo>` puts the worktree INSIDE the checkout, where it is untracked clutter another reviewer
+  then prunes. Ask for an absolute path under the agent's own scratch directory, and for
+  `git worktree remove` when finished
 - **Hand over this environment's trap**: in an agent session `grep` may be shadowed — a shell
   function execing `ugrep --ignore-files`, so it **respects `.gitignore`** (check with `type
   grep`). Have corpus measurements enumerate with `find` / `os.walk` (1 of 365 files was visible
@@ -236,6 +246,9 @@ nor resets the two-consecutive-clean-security-rounds condition.**
     has not waited
   - **The symptom disguises itself as "the subagent is running and never returns"** — when
     `ListAgents` shows running, suspect that agent's child processes
+  - **Check the checkout itself at the end of a round**, not only processes: `git status
+    --porcelain` and `git worktree list`. A reviewer's stray worktree inside the repository
+    contaminated another reviewer's suite run on this skill's own review
 - **If the reported HEAD is a hash you do not recognize, find out what commit it is first** —
   the user or another session can commit to the same branch. That is concurrency, not staleness:
   read it and **judge whether it collides with your scope**
@@ -270,8 +283,9 @@ Episodes for the last three bullets, and the three accidents in full: `reference
 **Reproduce a finding yourself before classifying it.** Real / false positive / residual /
 **real but out of scope** (below) are decided only with a record of a reproduction you ran. Treat
 "the implementation is right but the test is weak" as real. (`metdsl-enforcement-change` judgment
-rules 1 and 1-b own this rule and state what a "record" has to be; this line is the round's trigger for
-it, not a second statement of it.)
+rules 1 and 1-b own the residual / unreachable half and state what a "record" has to be there;
+the false-positive and out-of-scope classes are this skill's own, below. This line is the round's
+trigger, not a second statement of the rule.)
 
 **Verify a reviewer's negative claims the same way.** In PR #66 a sweep reported "only the token
 ratchet kills this hunk"; a test in another file caught it correctly and was simply outside the
@@ -325,8 +339,9 @@ there **leaves nothing for the moment independence pays most: after your own fix
 Launch once **in round 2 or 3** (do not save it for the end).
 
 **Cases where not launching is better** (spend a blank-slate subagent review instead): a change
-that **adds checking machinery** (Codex structurally always finds "one more construct", so clean
-never comes back and it is not a convergence signal); a prose / doc-centred diff; a HEAD whose
+that **adds checking machinery** (Codex structurally almost always finds "one more construct", so
+clean never comes back and it is not a convergence signal — use it once as a source of test
+cases, or not at all); a prose / doc-centred diff; a HEAD whose
 previous findings are still unfixed.
 
 **`/codex:review` and `/codex:adversarial-review` are `disable-model-invocation: true` — I cannot
@@ -353,7 +368,9 @@ that decide what you do:
   the target files explicitly, ask for counterexample construction rather than attack. **One
   rewrite-and-retry at most**
 
-**Use it as one independent pass on another axis, not as a convergence signal.** It fails
+**Use it as one independent pass on another axis, not as a convergence signal**: not "run until
+clean" but "pass once over the surfaces subagents structurally do not look at" — dependencies,
+preflight, execution policy, consistency with repository conventions. It fails
 differently from a subagent because **it does not share the premises you handed over** —
 subagents get the diff and the threat model, Codex gets only `AGENTS.md`. **Interaction with
 elements that come from anywhere other than "the input I built"** is the subagent blind spot it
@@ -414,13 +431,19 @@ once the severity class of the findings has dropped **and** you can show the rem
 Read class descent as **"is it a hole in the original design / a hole in my fix / a hole in the
 witnesses"**, not as a count — in issue #63 the count barely fell between the last two rounds.
 
+**A third shape, from a loop that ended on prose alone: once every remaining finding is "this
+prose asserts something unmeasured about code the PR does not touch", the fix is to DELETE the
+claim, not to write a test proving it** — a PR is not obliged to characterise behaviour it left
+alone (issue #40 / PR #41; `references/class-descent-log.md`).
+
 **A second stopping shape, equal in standing: if every finding in one round falls into "real but
 out of scope", stop at that round.** More rounds produce the same layer, and fixing them moves the
 diff away from the purpose. State the out-of-scope breakdown and why you declared the scope.
 
 **The superior condition (stop there if you reach it)**: the security axis produces **nothing new
 for two consecutive rounds** (a disclosure round is skipped in that count rather than breaking
-it). It has **never been achieved in any recorded loop**. **Run assuming you will not reach it.**
+it). It has **never been achieved in any recorded loop**. **Run assuming you will not reach it** — do
+not add rounds waiting for it.
 
 **Do not make "Codex is clean" a stopping condition** — as a condition it becomes a motive to
 relaunch a Codex you have no budget for. Clean came back once (PR #67) and the same round's two
@@ -477,7 +500,8 @@ Practical notes on reading a census: keep **"killed only by the token ratchet" a
 class**; **close a vacuous finding by marking, not deleting**; **aim "does it wrongly refuse
 legitimate work" at the instrument too**; **claim vacuity only by construction** — a corpus
 measurement does not prove it; **a census conclusion rots in one round, so re-run it the round
-after you consume it**; **when you replace an enumeration with a computation, witness the
+after you consume it, recording the conclusions that survive re-measurement rather than the
+numeric breakdown**; **when you replace an enumeration with a computation, witness the
 computation on a synthetic tree** (cf. `tools/tests/test_backend_boundary.py::ScannedSetTests`).
 
 **Before concluding "the shape of the rule is wrong" from recurrence, measure inherited decisions
@@ -501,7 +525,8 @@ When you stop short, **state the condition you did not meet** and hand it to the
 "converged". **Put the class transitions and the defects your own fixes introduced into the PR body
 as a disclosure**.
 
-The per-PR histories, and the evidence for every proxy above: `references/class-descent-log.md`.
+The per-PR histories, and the episode behind each census note and most of the proxies:
+`references/class-descent-log.md`.
 
 ## Signs to catch mid-loop
 

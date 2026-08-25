@@ -8,8 +8,13 @@ the unit suite green while the real flow fail-closed, because the conductor-leve
 mock conductor that captures `record-launch` / `reopen-phase` as call tuples and never reaches
 `orchestration_runtime.py`'s own CLI enforcement.
 
-Grep the existing deterministic substep's name across `tools/orchestration_runtime.py` — every
-site that special-cases it is a site the new substep also needs:
+Grep the existing deterministic substep's name across **both** `tools/workflow_conductor.py` and
+`tools/orchestration_runtime.py` — every site that special-cases it is a site the new substep also
+needs. Items 1-3 below live in the conductor (measured: `_is_deterministic_substep` and
+`determine_substep_status` have zero occurrences of any kind in `orchestration_runtime.py`), items
+4-9 in `orchestration_runtime.py`, and `classify_failure` / `build_launch_request` appear in both.
+Grepping only the one file the first version of this line named misses exactly the classification
+and dispatch sites — which is how the green-unit-suite failure above happens:
 
 1. The substep-set declaration and its `_is_deterministic_substep` classification, and the
    conductor dispatch that routes to the in-process body instead of a leaf.

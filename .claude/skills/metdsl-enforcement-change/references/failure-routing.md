@@ -71,8 +71,13 @@ reading and confirming, not something known when it was written**.
 
 ## Attribution detail moved from SKILL.md (2026-08-25)
 
-`SKILL.md` §3 keeps the criteria. This is the evidence: when a correct attribution surfaces at the
-wrong moment, and what a refusal message must say to be followable.
+The fuller statement of two rules `SKILL.md` §3 now carries compressed — when a correct
+attribution surfaces at the wrong moment, and what a refusal message must say to be followable —
+together with their episodes. Both sides state a rule, which is one site over the pair; if a third
+appears, rule 3-a applies to this pair as much as to anything else.
+
+The surfaces named in the last bullet — dependencies, preflight, execution policy, consistency
+with repository conventions — are the list `metdsl-review-loop` §"When to bring in Codex" carries.
 
 **Once attribution is decided, decide when it should surface.** Attribution can be right while
 the **moment** is wrong, and the attribution discussion alone never surfaces that. In L174 a new

@@ -150,10 +150,12 @@ is the starting point and not the goal. The four traps, each of which cost a rou
   — never the reverse, and never both spelled out independently, which is two spellings of one
   rule and the defect this whole section is about
 - **Pin the members, not the source line.** A legitimate extraction to a named constant must
-  not turn a true statement red — and the exemplar above FAILS this: `_trigger_prefixes` reads
-  `pattern.startswith((…))` with a regex, so replacing the inline literal with a named constant
-  raises its assertion. Resolve a named constant before giving up, and make the failure name
-  the repair. This is the trap that is easiest to reintroduce, because pinning the spelling is
+  not turn a true statement red — the exemplar `_trigger_prefixes` FAILED this when written — it read
+  `pattern.startswith((…))` with the tuple inline, so extracting it to a named constant, a
+  refactor that changes nothing, raised its assertion and named no repair. It resolves a named
+  constant today (`tools/tests/test_hooks_cli.py`, its own docstring records the episode), so copy
+  the current version. Resolve a named constant before giving up, and make the failure name the
+  repair. This is the trap that is easiest to reintroduce, because pinning the spelling is
   three lines and pinning the members is fifteen
 
 **Before adding a check, ask whether the sites should exist.** The cheaper fix is this
@@ -178,7 +180,7 @@ sends a reader past a site that is already coupled.
 
 **The flip side of 3: prose you newly write in that same commit is also unverified until you
 run it.** Read rule 3 as being about old text and you keep only half of it. In L128 I got
-**four newly written measurements or citations wrong inside the fix itself**:
+**six newly written measurements or citations wrong inside the fix itself**:
 
 - The suite count three times (the first written blind; the second still off by one after I
   wrote "re-measured")

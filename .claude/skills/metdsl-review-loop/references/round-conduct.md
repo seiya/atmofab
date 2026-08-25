@@ -77,9 +77,16 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
 - **"Do not modify the checkout"**: one agent left the working tree mutated and **invalidated
   another review's results**, which were running against what it had changed.
 - **"Create your own scratchpad subdirectory"**: one agent wrote a file with the same name as mine,
-  `mutate.py`, and broke the harness mid-run. (It recurred while this very branch was under review:
-  one reviewer's scratch directory was deleted out from under its running pytest by another
-  session, and it had to re-create under a PID-unique path and re-run everything.)
+  `mutate.py`, and broke the harness mid-run. It recurred twice while this very branch was under
+  review, and the second shape is the one the clause did not cover: **two reviewers were given the
+  same round directory**, and one's cleanup deleted the other's scratch out from under its running
+  pytest, which then died in `os.chdir`. Naming a shared round root is not naming a private one —
+  ask for a PID-unique subdirectory, and for deletion of that subdirectory only.
+- **"Say where a worktree may be created"**: a reviewer's `git worktree add` with a relative path
+  under `-C <repo>` landed the worktree INSIDE the checkout. It was removed, but before that it was
+  picked up by a third reviewer's run as a spurious test failure, and the cleanup also pruned a
+  stale entry belonging to someone else. Absolute paths under the agent's own scratch dir, and
+  `git worktree remove` when done.
 - **"If the reported HEAD is a hash you do not recognize"**: on L174 a reviewer reported `d24a7bb`,
   which was not my commit — the user had committed to the same branch. Concurrency, not staleness;
   read it and judge whether it collides with your scope.
