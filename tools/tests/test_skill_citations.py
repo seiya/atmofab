@@ -148,6 +148,19 @@ def citation_targets(text: str, source: str) -> list[str]:
             targets.append((skill_dir / token).as_posix())
         elif token.split("/")[0] in top_level:
             targets.append(token)
+        elif "/" not in token and token.endswith(".md"):
+            # A SIBLING named bare, which this tree already writes:
+            # `references/class-descent-log.md` cites `codex-episodes.md` that way. Resolved
+            # against the citing file's own directory, and ONLY WHEN THAT RESOLVES to a tracked
+            # file: a bare name is ambiguous — `MEMORY.md` and `feedback_*.md` name an operator's
+            # memory files, `SKILL.md` in a reference means the skill's entry point, and
+            # `AGENTS.md` / `TODO.md` (handled above) are repository-root documents. Treating
+            # every bare name as a sibling invented 25 paths that never existed and reported each
+            # as a broken pointer. So a bare name can add a reachability edge; it can never
+            # produce a broken-citation finding, which is where the ambiguity would do harm.
+            sibling = (Path(source).parent / token).as_posix()
+            if sibling in files:
+                targets.append(sibling)
     return targets
 
 
@@ -156,11 +169,21 @@ def is_tracked(path: str) -> bool:
     return path in _UNTRACKED_ON_PURPOSE or path in files or path in directories
 
 
+def in_a_skill(path: str) -> bool:
+    """Is `path` a file INSIDE a skill directory (`<root>/<skill>/…`)?
+
+    A file sitting directly under the root — a README describing the directory — is not part of
+    a skill, and reading it as one names it as a skill called `README.md`, which then has no
+    `SKILL.md` and contributes no citations. Defined once because it was applied in the walk and
+    not in the corpus filter, and the two rows then disagreed about the same tree.
+    """
+    return path.startswith(SKILL_ROOT + "/") and len(path.split("/")) > 3
+
+
 @lru_cache(maxsize=1)
 def skill_documents() -> tuple[str, ...]:
     files, _directories = _git_paths()
-    return tuple(sorted(f for f in files
-                        if f.startswith(SKILL_ROOT + "/") and f.endswith(".md")))
+    return tuple(sorted(f for f in files if in_a_skill(f) and f.endswith(".md")))
 
 
 def document_body(path: str, root: Path = REPO_ROOT) -> str:
@@ -362,12 +385,8 @@ class SkillReachabilityTests(unittest.TestCase):
         files, _directories = _git_paths()
         owned: dict[str, set[str]] = {}
         for entry in files:
-            # `<root>/<skill>/<file>` — a file sitting DIRECTLY under the root (a README) is not
-            # a skill, and treating it as one made the entry-point guard blame it for having no
-            # SKILL.md.
-            parts = entry.split("/")
-            if entry.startswith(SKILL_ROOT + "/") and len(parts) > 3:
-                owned.setdefault(parts[2], set()).add(entry)
+            if in_a_skill(entry):
+                owned.setdefault(entry.split("/")[2], set()).add(entry)
         seen, queue = set(), []
         for skill, entries in sorted(owned.items()):
             entry_point = f"{SKILL_ROOT}/{skill}/SKILL.md"
@@ -410,7 +429,23 @@ class SkillReachabilityTests(unittest.TestCase):
                 f"delete it"
                 for skill in sorted(owned)
                 for entry in sorted(owned[skill] - reachable)
-                if not entry.startswith(f"{SKILL_ROOT}/{skill}/scripts/")]
+                if not self._rides_on_a_reached_script(skill, entry, owned, reachable)]
+
+    @staticmethod
+    def _rides_on_a_reached_script(skill: str, entry: str, owned: dict[str, set[str]],
+                                   reachable: set[str]) -> bool:
+        """Is `entry` a `scripts/` file that some OTHER reached script vouches for?
+
+        The exemption is for a helper a cited script imports, so it lasts exactly as long as
+        something in that `scripts/` directory is actually reached. Exempting the directory
+        outright hides the entry script itself: measured, deleting every citation of
+        `scripts/mutation_check.py` from both SKILL.md files left all rows green, and that file
+        is the one the skill exists to send a reader to.
+        """
+        prefix = f"{SKILL_ROOT}/{skill}/scripts/"
+        if not entry.startswith(prefix):
+            return False
+        return any(other.startswith(prefix) for other in reachable)
 
     def test_no_file_in_a_skill_is_unreachable_from_a_skill_md(self) -> None:
         owned, reachable = self._reachable()
@@ -565,6 +600,63 @@ class SkillReachabilityTests(unittest.TestCase):
             f"{SKILL_ROOT}/probe/references/sub/deep.md": "the deeper split",
         })
         self.assertEqual(self._orphan_report(owned, reachable), [])
+
+    def test_an_uncited_entry_script_is_reported(self) -> None:
+        """The `scripts/` exemption rides on a reached script; it does not create one.
+
+        Measured before this row existed: deleting every citation of `scripts/mutation_check.py`
+        from both SKILL.md files left all rows green, so the file the skill exists to send a
+        reader to was orphanable with no signal.
+        """
+        owned, reachable = self._walk_a_built_tree({
+            f"{SKILL_ROOT}/probe/SKILL.md": "no pointer to the script",
+            f"{SKILL_ROOT}/probe/scripts/tool.py": "the entry script nobody cites\n",
+            f"{SKILL_ROOT}/probe/scripts/helper.py": "imported by it\n",
+        })
+        self.assertEqual([finding.split(":")[0] for finding
+                          in self._orphan_report(owned, reachable)],
+                         [f"{SKILL_ROOT}/probe/scripts/helper.py",
+                          f"{SKILL_ROOT}/probe/scripts/tool.py"])
+
+    def test_a_sibling_cited_by_bare_name_is_followed(self) -> None:
+        """`references/class-descent-log.md` cites `codex-episodes.md` exactly this way."""
+        owned, reachable = self._walk_a_built_tree({
+            f"{SKILL_ROOT}/probe/SKILL.md": "see `references/a.md`",
+            f"{SKILL_ROOT}/probe/references/a.md": "and its sibling `b.md`",
+            f"{SKILL_ROOT}/probe/references/b.md": "the sibling",
+        })
+        self.assertEqual(self._orphan_report(owned, reachable), [])
+
+    def test_a_readme_under_the_root_is_not_a_corpus_disagreement(self) -> None:
+        """The corpus filter and the walk must read the same tree.
+
+        The depth guard was applied in the walk only, so a README under the root was excluded
+        there and still demanded to contribute citations here — a refusal whose message named
+        the scan as dead when the scan was fine.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = functools.partial(subprocess.run, cwd=root, check=True,
+                                    capture_output=True, text=True)
+            run(["git", "-c", "core.excludesFile=/dev/null", "init", "-q"])
+            for relative, body in {
+                f"{SKILL_ROOT}/README.md": "what this directory is",
+                f"{SKILL_ROOT}/probe/SKILL.md": "see `references/a.md`",
+                f"{SKILL_ROOT}/probe/references/a.md": "the episode",
+            }.items():
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(body, encoding="utf-8")
+            run(["git", "add", "-A", "-f"])
+            _git_paths.cache_clear()
+            skill_documents.cache_clear()
+            self.addCleanup(skill_documents.cache_clear)
+            self.addCleanup(_git_paths.cache_clear)
+            original_root = globals()["REPO_ROOT"]
+            self.addCleanup(globals().__setitem__, "REPO_ROOT", original_root)
+            globals()["REPO_ROOT"] = root
+            self.assertEqual(sorted(skill_names()), ["probe"])
+            self.assertNotIn(f"{SKILL_ROOT}/README.md", skill_documents())
 
     def test_a_file_directly_under_the_skills_root_is_not_a_skill(self) -> None:
         """A README beside the skill directories is ordinary, and it has no SKILL.md by design."""
