@@ -1073,8 +1073,11 @@ def _log_read_decision(
 
 # Search tools whose read boundary is enforced by validating their `path` root.
 #
-# `Glob`'s `pattern` NAMES PATHS and is validated too, since issue #71 put `Glob` in a
-# leaf's hands for the first time on a CLI whose default roster omits it. Until then this
+# `Glob`'s `pattern` NAMES PATHS and is validated too — but ONLY when it begins with `/`
+# or `~`, the trigger the block below states and justifies; every relative spelling is
+# deliberately not judged, because none of them reaches outside `path` (measured). It is
+# validated at all because issue #71 put `Glob` in a leaf's hands for the first time, on a
+# CLI whose default roster omits it: until then the pattern
 # was a documented residue of issue #42 that no leaf could reach; the allowlist made it
 # reachable, so it is closed here rather than inherited. `Grep`'s `pattern` is a CONTENT
 # regex and names no path, so it is deliberately NOT validated — treating `\.\./config`
@@ -1087,6 +1090,7 @@ _PATTERN_IS_A_PATH_TOOLS = frozenset({"Glob"})
 # Shell glob metacharacters. A token carrying one is expanded by the shell, so
 # it must be resolved against the filesystem rather than tested for existence.
 _GLOB_META_RE = re.compile(r"[*?\[]")
+
 
 def _evaluate_grep_glob_read_policy(
     *,
@@ -1137,7 +1141,11 @@ def _evaluate_grep_glob_read_policy(
     # `append_hook_access_log` carries no reason field to tell them apart.
     logged_path = search_path
     # THE PATTERN, for the tools whose pattern names paths — narrowed, in round 12, to the
-    # one shape MEASURED to reach outside `path`: a pattern that begins with `/`.
+    # one shape MEASURED to reach outside `path`: a pattern that begins with `/`. The
+    # trigger below also carries `~`, which is INERT (the tool reads nothing through it)
+    # and is kept for the reason given at the end of this block — so "absolute" alone is
+    # not a description of what refuses here, and a leaf refused for `~/…` must not be
+    # able to read anywhere that only absolute patterns are judged.
     #
     # WHAT WAS REMOVED AND WHY, because deleting a defence is a classification and this one
     # is large. Driven against the real tool (a loopback stand-in answers turn one with a

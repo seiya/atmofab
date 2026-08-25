@@ -4382,6 +4382,104 @@ class GrepGlobReadGuardTests(unittest.TestCase):
             self.assertEqual(self._log_lines(repo_root), [])
 
 
+class GlobPatternTriggerSurfaceTests(unittest.TestCase):
+    """Every canonical statement of the `Glob` pattern trigger must name every prefix.
+
+    WHY THIS EXISTS. Round 12 narrowed the pattern check to `pattern.startswith(("/",
+    "~"))` and every prose statement of the rule was written as "ONLY when it is
+    ABSOLUTE". `~` is NOT absolute — that is this branch's own central measurement, the
+    reason the tool reads nothing through it — so five documents, including
+    `docs/AGENT_CONTRACT.md`, which is the ONLY document a leaf reads, told a leaf that a
+    refusal it can actually receive cannot happen. Round 14 corrected the refusal string
+    and propagated it to none of them; round 15 found that.
+
+    The rule is defined ONCE, in `tools/hooks/cli.py`, and read from there: the members of
+    the trigger tuple are extracted from the source and every surface must name each one.
+    Add a prefix to the trigger and this fails until the documents say so, which is the
+    only mechanism on this branch that couples them.
+    """
+
+    _REPO_ROOT = Path(__file__).resolve().parents[2]
+    _WINDOW = 300
+
+    # (file, anchor for the sentence that states the trigger). The anchor is not the
+    # whole line: `docs/HOOKS.md` line 14 states this rule and the `Grep`-is-not-validated
+    # rule on one line, and only the first names the prefixes.
+    _SURFACES = (
+        ("tools/hooks/cli.py", "NAMES PATHS and is validated too"),
+        # Anchored on text that PRECEDES the rule and is identical in the wording this
+        # check was written to refuse, so a failure reads "the statement does not name
+        # `~`" rather than "the sentence I wrote is gone" — an anchor taken from the
+        # corrected wording would only pin that the correction is still there.
+        ("docs/AGENT_CONTRACT.md", "finds nothing — use `path=`"),
+        ("docs/HOOKS.md", "is validated too"),
+        ("docs/ORCHESTRATION.md", "a `Glob` `pattern` too"),
+        ("TODO.md", "The check refuses"),
+    )
+
+    @classmethod
+    def _trigger_prefixes(cls) -> tuple[str, ...]:
+        """The literal prefixes the hook refuses on, read out of the hook's source."""
+        source = (cls._REPO_ROOT / "tools" / "hooks" / "cli.py").read_text(encoding="utf-8")
+        match = re.search(r"pattern\.startswith\(\(([^)]*)\)\)", source)
+        assert match is not None, "the pattern trigger is no longer a startswith tuple"
+        return tuple(re.findall(r'"([^"]*)"', match.group(1)))
+
+    @classmethod
+    def _statements(cls, text: str, anchor: str) -> list[str]:
+        """`_WINDOW` characters from each anchor, joined with the next line.
+
+        Joined because both the `cli.py` comment and the reflowed Markdown put the
+        second prefix on the line after the first.
+        """
+        out: list[str] = []
+        lines = text.splitlines()
+        for n, line in enumerate(lines):
+            if anchor not in line:
+                continue
+            joined = " ".join([line] + lines[n + 1 : n + 2])
+            i = joined.index(anchor)
+            out.append(joined[i : i + cls._WINDOW])
+        return out
+
+    def test_the_trigger_is_the_two_measured_prefixes(self) -> None:
+        """A change to the trigger must be deliberate, and must reach the documents.
+
+        Pinned as a SET rather than a behaviour because the behavioural witnesses
+        (`test_an_absolute_or_tilde_glob_pattern_is_blocked` and its relative twin)
+        cannot tell "a prefix was added" from "a prefix was added and documented".
+        """
+        self.assertEqual(self._trigger_prefixes(), ("/", "~"))
+
+    def test_every_canonical_statement_names_every_prefix(self) -> None:
+        prefixes = self._trigger_prefixes()
+        for rel, anchor in self._SURFACES:
+            text = (self._REPO_ROOT / rel).read_text(encoding="utf-8")
+            statements = self._statements(text, anchor)
+            self.assertTrue(statements, f"{rel}: anchor {anchor!r} not found")
+            for statement in statements:
+                for prefix in prefixes:
+                    self.assertIn(
+                        f"`{prefix}`",
+                        statement,
+                        f"{rel}: a statement of the pattern rule does not name "
+                        f"`{prefix}`, which the hook refuses on: {statement!r}",
+                    )
+
+    def test_the_statement_reader_is_bounded(self) -> None:
+        """SELF-TEST. Without it the window could be the whole file and nothing notice.
+
+        A document that names the second prefix far away from the rule it states is the
+        exact shape the check exists to refuse — `docs/HOOKS.md` names `~` several times
+        in its MEASUREMENT list while the RULE sentence beside it said "absolute".
+        """
+        anchor = "is validated too"
+        near = f"{anchor} when it begins with `/` or `~`."
+        far = f"{anchor} when it is absolute." + " padding" * 80 + " `~`"
+        self.assertTrue(all("`~`" in s for s in self._statements(near, anchor)))
+        self.assertFalse(all("`~`" in s for s in self._statements(far, anchor)))
+
+
 class BashReadManifestGuardTests(unittest.TestCase):
     """Bash read targets are authorized before the read-only auto-approve."""
 
