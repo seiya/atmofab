@@ -1088,6 +1088,65 @@ _PATTERN_IS_A_PATH_TOOLS = frozenset({"Glob"})
 # it must be resolved against the filesystem rather than tested for existence.
 _GLOB_META_RE = re.compile(r"[*?\[]")
 
+# How many alternatives a brace pattern may expand to before this hook stops enumerating
+# them and validates at the repository root instead. Braces multiply — `{a,b}{c,d}{e,f}`
+# is eight — and this runs synchronously on every tool call, so the bound is what keeps a
+# crafted pattern from turning the hook into the expensive thing. Falling back to the root
+# is the conservative answer, not a refusal: a pattern that reaches it is authorized
+# exactly when the manifest grants the root.
+_GLOB_BRACE_ALTERNATIVE_LIMIT = 64
+
+
+def _brace_alternatives(pattern: str) -> list[str] | None:
+    """Every path a brace alternation can name, or None when there are too many.
+
+    `_GLOB_META_RE` deliberately omits `{`, because the Bash extractor that shares it
+    resolves its targets against the FILESYSTEM and a brace is not a filesystem wildcard.
+    For a pattern the omission is a hole: `docs/{../secret,sub}/*` has the literal prefix
+    `docs/{../secret,sub}`, which sits under a granted `docs/` and hides the `..` inside
+    the braces. Measured against the real tool, that pattern reads the out-of-root file,
+    while `../secret/*` and the Bash spelling of the same read are both refused — the
+    route disagreement this check exists to remove, still open in the leaking direction.
+
+    Expanding is what lets each alternative be judged where it lands, so `{a,b}/*` stays
+    allowed under a granted `path` (it never leaves) while `{../secret,sub}/*` is judged at
+    `secret/` as well as at `sub/`.
+    """
+    alternatives = [pattern]
+    while True:
+        for index, candidate in enumerate(alternatives):
+            open_at = candidate.find("{")
+            if open_at < 0:
+                continue
+            depth = 0
+            close_at = -1
+            parts: list[str] = []
+            start = open_at + 1
+            for position in range(open_at, len(candidate)):
+                char = candidate[position]
+                if char == "{":
+                    depth += 1
+                elif char == "}":
+                    depth -= 1
+                    if depth == 0:
+                        parts.append(candidate[start:position])
+                        close_at = position
+                        break
+                elif char == "," and depth == 1:
+                    parts.append(candidate[start:position])
+                    start = position + 1
+            if close_at < 0:
+                # An unbalanced `{` is not an alternation; leave it as a literal.
+                continue
+            head, tail = candidate[:open_at], candidate[close_at + 1:]
+            expanded = [f"{head}{part}{tail}" for part in parts]
+            alternatives[index:index + 1] = expanded
+            if len(alternatives) > _GLOB_BRACE_ALTERNATIVE_LIMIT:
+                return None
+            break
+        else:
+            return alternatives
+
 
 def _evaluate_grep_glob_read_policy(
     *,
@@ -1139,26 +1198,27 @@ def _evaluate_grep_glob_read_policy(
     logged_path = search_path
     # THE PATTERN, for the tools whose pattern names paths. `Glob`'s pattern decides where
     # the search reads, so it is authorized like a path — judged AT THE PLACE THE READ
-    # WOULD LAND, which is what `os.path.normpath` computes for a pattern carrying `..`.
+    # WOULD LAND, which is what `os.path.normpath` computes for a pattern carrying `..`
+    # and what brace expansion computes for one carrying alternatives.
     #
-    # MEASURED, because two rounds of this check were built on the wrong engine and the
-    # wrong engine's semantics reached four documents as "measured". Claude Code's `Glob`
-    # tool is not a filesystem glob: it runs `rg --files --glob <pattern>` with the search
-    # root set to `path`, and only an ABSOLUTE pattern re-roots that search. Run against
-    # ripgrep 14.1.1 in a fixture whose granted directory holds a subdirectory and a
-    # symlink pointing out of it, every relative escape returns NOTHING — `../spec/*`,
-    # `*/../../spec/*`, `**/../../spec/*`, `{../spec,sub}/*`, and a symlinked directory —
-    # while the same fixture with `-L` returns the symlinked file, which proves the empty
-    # results are the tool's policy and not a broken probe. So the reachable escape today
-    # is the absolute pattern, and the `..` forms cannot read anything at all.
+    # THIS CHECK DELIBERATELY DOES NOT REST ON WHAT THE TOOL CAN REACH, and that is the
+    # correction of two earlier rounds. They narrowed and then widened this code on a
+    # premise about the vendor's implementation — "the tool runs `rg --files --glob` rooted
+    # at `path`, so a relative `..` reads nothing" — which was written as MEASURED and was
+    # not: what had been measured was bare ripgrep, not the tool, and the same paragraph
+    # was self-inconsistent (under ripgrep the ABSOLUTE pattern reads nothing either,
+    # while the paragraph called it the one live escape). Driving the real tool returned
+    # files for `../x/*`, for `*/../../x/*`, through a symlinked directory and for a brace
+    # alternation, with the results spelled as literal joins — so the premise was false in
+    # the direction that matters. It is gone rather than corrected: the landing place is
+    # computable from the pattern alone, so the rule holds whichever engine runs it, and a
+    # vendor change cannot reopen a hole. What the tool actually does belongs in a
+    # measurement note, not in a load-bearing predicate.
     #
-    # The check is still general, and that is deliberate: judging the landing place costs
-    # an ordinary pattern nothing (it normalizes to itself), it keeps the absolute case
-    # closed, and it does not depend on a vendor implementation detail staying true. What
-    # it must NOT do is refuse a `..` pattern outright — the version that validated those
-    # at the repository root refused `Glob(path=docs, pattern=*/../../spec/*)` while `spec/`
-    # was granted and the identical Bash spelling was allowed, which is the route
-    # disagreement it was written to remove, recreated in the other direction.
+    # `Grep`'s pattern is a CONTENT regex and names no path, so it stays out of
+    # `_PATTERN_IS_A_PATH_TOOLS`: treating `\.\./config` as a path escape would refuse a
+    # legitimate search. Its `glob` / `type` FILTERS are a separate, unvalidated residue
+    # that this branch did not close and did not re-measure — `docs/HOOKS.md` records it.
     if (decision.action != HookDecisionAction.BLOCK
             and tool_name in _PATTERN_IS_A_PATH_TOOLS):
         raw_pattern = _tool_input(decoded.payload).get("pattern")
@@ -1166,21 +1226,43 @@ def _evaluate_grep_glob_read_policy(
         # not `startswith("/")` and would be joined under `path` instead of re-rooting.
         pattern = raw_pattern.strip() if isinstance(raw_pattern, str) else ""
         if pattern:
-            joined = pattern if pattern.startswith(("/", "~")) else f"{search_path}/{pattern}"
-            # NORMALIZE, then take the literal prefix — in that order. `a/*/../b` lands in
-            # `b`, and taking the prefix first stops at `a` and sees no `..` at all, which
-            # is how the first version of this let an escaping pattern through unvalidated.
-            literal, prefix, resolved = _glob_literal_prefix(
-                repo_root, os.path.normpath(joined))
-            # And the EXPANDED location when the pattern leaves the repository by `~` or a
-            # variable: `_glob_literal_prefix` computes that third value for exactly this
-            # case, and validating the literal spelling instead read `~/.ssh/*` as the
-            # in-repo path `<repo>/~/.ssh` — which blocked only because no manifest grants
-            # the root. Checked AFTER normalization, so a `..` cannot mask it: `/etc/*/../*`
-            # and `~/.ssh/*/../*` were both allowed while their `..`-less forms blocked.
-            if not _is_path_under_root(resolved, repo_root.resolve()):
-                prefix = str(resolved)
-            if prefix != search_path:
+            # EVERY ALTERNATIVE, because one of them is enough to read outside. A brace
+            # pattern names several paths and `_GLOB_META_RE` does not treat `{` as a
+            # wildcard, so `{../secret,sub}/*` was judged at the literal `docs/{...}` —
+            # under the granted root, with the `..` invisible inside the braces. Too many
+            # alternatives to enumerate is answered at the repository root, which is the
+            # only prefix that certainly contains all of them.
+            alternatives = _brace_alternatives(pattern)
+            prefixes: list[str] = []
+            for alternative in (alternatives if alternatives is not None else [pattern]):
+                joined = (alternative if alternative.startswith(("/", "~"))
+                          else f"{search_path}/{alternative}")
+                # NORMALIZE, then take the literal prefix — in that order. `a/*/../b` lands
+                # in `b`, and taking the prefix first stops at `a` and sees no `..` at all,
+                # which is how the first version of this let an escaping pattern through
+                # unvalidated.
+                _literal, prefix, resolved = _glob_literal_prefix(
+                    repo_root, os.path.normpath(joined))
+                # And the EXPANDED location when the pattern leaves the repository by `~`:
+                # `_glob_literal_prefix` computes that third value for exactly this case,
+                # and validating the literal spelling instead read `~/.ssh/*` as the in-repo
+                # path `<repo>/~/.ssh` — which blocked only because no manifest grants the
+                # root. Checked AFTER normalization, so a `..` cannot mask it: `/etc/*/../*`
+                # and `~/.ssh/*/../*` were both allowed while their `..`-less forms blocked.
+                # A `$VAR` pattern is NOT covered: it is joined under `path` before this
+                # runs, so the expansion never sees it. Measured — `$HOME/.ssh/*` is
+                # allowed where `~/.ssh/*` is blocked — and left alone, because the tool
+                # performs no variable expansion, so the pattern names a literal directory
+                # called `$HOME` that does not exist. An earlier version of this comment
+                # claimed the variable case as covered.
+                if not _is_path_under_root(resolved, repo_root.resolve()):
+                    prefix = str(resolved)
+                prefixes.append(prefix)
+            if alternatives is None:
+                prefixes = ["."]
+            for prefix in sorted(set(prefixes)):
+                if prefix == search_path:
+                    continue
                 # WHERE THE READ WAS JUDGED, for the log, on both verdicts. Recording
                 # `path` filed a pattern-caused block as a read of the innocent directory,
                 # and an allowed `../spec/*` as a read of `docs` — and the first fix moved
@@ -1214,6 +1296,11 @@ def _evaluate_grep_glob_read_policy(
                             "like a path: re-issue it against a granted directory."
                         ).strip(),
                     )
+                    # The FIRST refusal is the verdict. Carrying on would let a later
+                    # alternative that happens to be granted overwrite `logged_path`, so
+                    # the audit would name a place the read was allowed to reach while the
+                    # call was refused for another.
+                    break
     if decision.action == HookDecisionAction.BLOCK and path_missing and not pattern_blocked:
         decision = dataclasses.replace(
             decision,

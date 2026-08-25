@@ -4028,6 +4028,82 @@ class GrepGlobReadGuardTests(unittest.TestCase):
                 self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
                 self.assertIn("pattern", body)
 
+    def test_a_brace_alternation_is_judged_alternative_by_alternative(self) -> None:
+        """A brace pattern names SEVERAL paths, and one of them is enough to read outside.
+
+        `_GLOB_META_RE` does not treat `{` as a wildcard — deliberately, because the Bash
+        extractor that shares it resolves against the filesystem — so the literal prefix of
+        `docs/{../secret,sub}/*` is `docs/{../secret,sub}`, which sits under a granted
+        `docs/` with the `..` hidden inside the braces. MEASURED before the fix: allowed,
+        while `../secret/*` and `cat docs/{../secret,sub}/*` were both refused — the route
+        disagreement this check exists to remove, open in the leaking direction.
+        """
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
+        for pattern in ("{../secret,sub}/*", "{,../secret/}*", "{sub,../secret}/**",
+                        "{a,{b,../secret}}/*"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                (repo_root / "secret").mkdir(exist_ok=True)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 2, f"{pattern} was not blocked: {body}")
+
+    def test_the_audit_names_the_alternative_that_caused_the_refusal(self) -> None:
+        """The first refusal is the verdict, and the log must name ITS place.
+
+        With `{../secret,../spec}/*` and only `spec` granted, the alternatives sort to
+        `secret` then `spec`. Carrying on past the refusal lets the granted one overwrite
+        the recorded path, so the audit would file a call refused because of `secret/` as a
+        read of `spec/` — the conflation the log fix exists to remove, arriving through the
+        loop instead of through the verdict.
+        """
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest=manifest)
+            (repo_root / "spec").mkdir(exist_ok=True)
+            (repo_root / "secret").mkdir(exist_ok=True)
+            code, body = self._run(
+                repo_root, "Glob", {"path": "docs", "pattern": "{../secret,../spec}/*"})
+            row = self._log_lines(repo_root)[-1]
+        self.assertEqual(code, 2, body)
+        self.assertEqual(row["decision"], "block")
+        self.assertEqual(row["path"], "secret")
+
+    def test_a_brace_alternation_inside_the_grants_is_allowed(self) -> None:
+        """The other half: expanding must not turn a legitimate alternation into a refusal.
+
+        Every alternative here lands somewhere the manifest grants — under `path` itself,
+        or in the second granted root — so all of them pass. A check that refused any
+        pattern containing a brace, or that validated the whole alternation at the
+        repository root, would refuse correct work.
+        """
+        manifest = {"allowed_read_roots": ["docs", "spec"]}
+        for pattern in ("{a,b}/*.md", "{sub,.}/*.md", "{../spec,sub}/*", "{a,{b,c}}/*.md"):
+            with self.subTest(pattern), tempfile.TemporaryDirectory() as tmp:
+                repo_root = self._make_repo(tmp, manifest=manifest)
+                (repo_root / "spec").mkdir(exist_ok=True)
+                code, body = self._run(
+                    repo_root, "Glob", {"path": "docs", "pattern": pattern})
+                self.assertEqual(code, 0, f"{pattern} was refused: {body}")
+
+    def test_an_unenumerable_brace_pattern_is_judged_at_the_repository_root(self) -> None:
+        """Braces multiply, and this hook runs synchronously on every tool call.
+
+        Past the bound the alternatives are not enumerated, and the answer is the only
+        prefix that certainly contains all of them. That is conservative rather than a
+        refusal — with the repository root granted the same pattern passes — so a crafted
+        pattern costs the leaf a redirect, not the run.
+        """
+        pattern = "{a,b}" * 8  # 256 alternatives, past the limit
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["docs"]})
+            blocked, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": pattern})
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._make_repo(tmp, manifest={"allowed_read_roots": ["."]})
+            allowed, _body = self._run(repo_root, "Glob", {"path": "docs", "pattern": pattern})
+        self.assertEqual(blocked, 2)
+        self.assertEqual(allowed, 0)
+
     def test_a_pattern_landing_in_another_granted_root_agrees_with_bash(self) -> None:
         """The route-disagreement test, in the direction that actually bit.
 
@@ -4108,6 +4184,10 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         `docs/\t/etc/*`. Measured: dropping the `.strip()` left the whole file green.
         """
         manifest = {"allowed_read_roots": ["docs"]}
+        # The LEADING rows carry this test; `"/etc/*  "` is a passenger, since trailing
+        # whitespace does not defeat `startswith("/")` and it blocks either way. Kept
+        # because a future `.lstrip()` would be a silent narrowing, and named so nobody
+        # reads it as a witness.
         for pattern in ("\t/etc/*", " /etc/*", "/etc/*  "):
             with self.subTest(repr(pattern)), tempfile.TemporaryDirectory() as tmp:
                 repo_root = self._make_repo(tmp, manifest=manifest)
@@ -4189,10 +4269,20 @@ class GrepGlobReadGuardTests(unittest.TestCase):
         configuration — which is exactly what the config probe checks) would pass preflight
         and the roster check while leaving the tool unvalidated.
 
-        This test is that tie. Each covered tool is DRIVEN with a payload that reads or
-        writes outside the manifest and must be refused; the table below must name every
+        This test is that tie. Each covered tool is DRIVEN with a payload naming a path the
+        manifest does not grant and must be refused; the table below must name every
         covered tool and no other, so widening the coverage set fails here until someone
         adds the row — and adding the row means finding the branch that judges it.
+
+        WHAT EACH ROW ESTABLISHES, since the refusals do not all come from the same rule
+        (measured by re-running the table with `tools/` GRANTED): `Read`, `Grep` and `Glob`
+        discriminate on the read manifest — granted passes, ungranted refuses. `Write` and
+        `Edit` refuse on the absent OUTPUT manifest, which is the write boundary's own
+        judgement rather than the read one. `Bash` refuses on the rule that forbids reading
+        `tools/` directly, which fires even when the manifest grants it. So what the whole
+        table pins is that every covered tool reaches SOME judging branch — which is the
+        claim the derivation makes — and not that each is judged by the read manifest. An
+        earlier version of this docstring said the latter.
         """
         from tools.orchestration_runtime import _CLAUDE_HOOK_MATCHER_COVERAGE
 

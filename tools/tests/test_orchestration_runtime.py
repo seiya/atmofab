@@ -35602,12 +35602,28 @@ class ClaudeLeafToolRosterPreflightTests(unittest.TestCase):
 
     def test_an_unreadable_mcp_config_fails_closed(self) -> None:
         """Classifying the MCP half against an empty set would turn every MCP tool into an
-        "undeclared" finding and point the operator at the wrong repair."""
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            check = self._probe(root, self._runner())
-        self.assertIs(check["pass"], False)
-        self.assertIn(".mcp.json", check["detail"])
+        "undeclared" finding and point the operator at the wrong repair.
+
+        THREE ways the file can fail to answer, one per `except` clause: absent (OSError),
+        malformed (ValueError), and present but not an MCP configuration (KeyError). Only
+        the first had a witness, so a narrowing of that clause list would have gone
+        unnoticed."""
+        from tools.tests.leaf_config_fixture import seed_claude_leaf_config
+
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            raise AssertionError("no CLI may be launched without a usable .mcp.json")
+
+        for label, content in (("absent", None),
+                               ("malformed", "{not json"),
+                               ("not an mcp configuration", '{"servers": {}}')):
+            with self.subTest(label), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                seed_claude_leaf_config(root)
+                if content is not None:
+                    (root / ".mcp.json").write_text(content, encoding="utf-8")
+                check = self._probe(root, runner)
+                self.assertIs(check["pass"], False)
+                self.assertIn(".mcp.json", check["detail"])
 
     def test_the_scratch_home_carries_the_layer_a_leaf_loads(self) -> None:
         """The probe must measure under the leaf's own `user` layer, not an empty home.
