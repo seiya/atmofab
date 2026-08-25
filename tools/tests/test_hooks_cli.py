@@ -5232,6 +5232,10 @@ class BashWriteTargetGrammarTests(unittest.TestCase):
             ("cp -- -S b", ["b"], "-- operand boundary"),
             # a token still carrying redirection syntax is dropped, not reported
             ("cp a b <&3", ["b"], "unmodelled redirection token dropped"),
+            # the INPUT redirect's fd prefix is inside its span too: without it the
+            # orphan `2` is a bare token, so the `<`-carrying drop above misses it
+            ("cp a b 2<in.txt", ["b"], "input redirect fd prefix"),
+            ("touch out.txt 2<in.txt", ["out.txt"], "input redirect fd prefix"),
         )
         for command, expected, clause in rows:
             with self.subTest(clause=clause, command=command):
